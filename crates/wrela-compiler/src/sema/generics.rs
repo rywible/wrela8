@@ -907,3 +907,116 @@ fn direct_method_call(
         _ => None,
     }
 }
+
+// --- tests --------------------------------------------------------------
+//
+// 02-language.md §6.3: "A const argument is `bool`, `char`, an integer, or
+// a fieldless enum, evaluated by the comptime engine." plans/M2.md item H
+// narrows this for M2: "Const arguments evaluate only as literals,
+// fieldless-enum variants, and direct `const` references (the comptime
+// engine is M3); anything else fails closed." These pin `eval_const_expr`
+// directly against each of those four shapes plus the arithmetic-rejection
+// case, rather than only through a full generic-instantiation golden.
+//
+// `eval_const_expr` takes a `&ModuleCtx` (for const-name/enum-variant
+// lookup), so the tests build one the same way `sema::mod::check` does —
+// lex -> parse -> `types::declare` -> `bodies::build_module_ctx` — real
+// production code, not a mock/fixture rig.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::{lexer, parser};
+
+    fn build_mctx(src: &str) -> ModuleCtx {
+        let tokens = lexer::lex(src).expect("test source must lex");
+        let module = parser::parse(tokens).expect("test source must parse");
+        let decl_items = types::declare(&module).expect("test source must declare");
+        bodies::build_module_ctx(&module, &decl_items)
+    }
+
+    const SRC: &str = "module examples.const_eval
+
+const LIMIT: u64 = 4
+
+enum Color:
+    Red
+    Green
+    Blue
+
+pub fn use_const() -> u64:
+    return LIMIT
+";
+
+    #[test]
+    fn eval_const_expr_literal_int_bool_char() {
+        let mctx = build_mctx(SRC);
+        let span = Span::default();
+        assert_eq!(
+            eval_const_expr(&Expr::Int(span, "42".to_string()), &mctx, 0).unwrap(),
+            ConstVal::Int(42)
+        );
+        assert_eq!(
+            eval_const_expr(&Expr::Bool(span, true), &mctx, 0).unwrap(),
+            ConstVal::Bool(true)
+        );
+        assert_eq!(
+            eval_const_expr(&Expr::Char(span, "x".to_string()), &mctx, 0).unwrap(),
+            ConstVal::Char("x".to_string())
+        );
+    }
+
+    /// A bare `const` reference resolves by looking its initializer back
+    /// up and evaluating that (here, `LIMIT`'s own `4` literal).
+    #[test]
+    fn eval_const_expr_resolves_a_const_name() {
+        let mctx = build_mctx(SRC);
+        let span = Span::default();
+        let result = eval_const_expr(&Expr::Name(span, "LIMIT".to_string()), &mctx, 0);
+        assert_eq!(result.unwrap(), ConstVal::Int(4));
+    }
+
+    /// A fieldless enum variant path (`Color.Red`) evaluates to its own
+    /// `(enum name, variant name)` pair.
+    #[test]
+    fn eval_const_expr_fieldless_enum_variant() {
+        let mctx = build_mctx(SRC);
+        let span = Span::default();
+        let expr = Expr::Field(
+            Box::new(Expr::Name(span, "Color".to_string())),
+            span,
+            "Red".to_string(),
+        );
+        let result = eval_const_expr(&expr, &mctx, 0);
+        assert_eq!(
+            result.unwrap(),
+            ConstVal::Variant("Color".to_string(), "Red".to_string())
+        );
+    }
+
+    /// An unknown const name fails closed rather than guessing.
+    #[test]
+    fn eval_const_expr_unknown_const_name_fails_closed() {
+        let mctx = build_mctx(SRC);
+        let span = Span::default();
+        assert!(eval_const_expr(&Expr::Name(span, "NOPE".to_string()), &mctx, 0).is_err());
+    }
+
+    /// Arithmetic is explicitly out of scope for M2's const-argument
+    /// evaluator (plans/M2.md item H: "anything else fails closed") — a
+    /// binary expression is rejected, not folded.
+    #[test]
+    fn eval_const_expr_rejects_arithmetic() {
+        let mctx = build_mctx(SRC);
+        let span = Span::default();
+        let expr = Expr::Binary(
+            span,
+            BinOp::Add,
+            Box::new(Expr::Int(span, "1".to_string())),
+            Box::new(Expr::Int(span, "1".to_string())),
+        );
+        assert!(
+            eval_const_expr(&expr, &mctx, 0).is_err(),
+            "arithmetic in a const argument must fail closed, not evaluate"
+        );
+    }
+}
