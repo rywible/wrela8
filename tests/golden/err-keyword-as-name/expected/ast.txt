@@ -1,4 +1,1 @@
-Module @1:1 path=test
-  Fn @3:1 name=return
-    Body
-      Pass @4:5
+error[parse]: keyword `return` cannot be used as a name at 3:4

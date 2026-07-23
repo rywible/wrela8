@@ -134,8 +134,8 @@ note = "every docs/language ```wrela block and every docs/language/examples/*.wr
 id = "syntax.diagnostics.parse-errors"
 doc = "02-language.md#8"
 status = "test"
-tests = ["golden/err-bad-dedent", "golden/err-five-space-indent", "golden/err-unterminated-string", "golden/err-unterminated-paren", "golden/err-missing-colon", "golden/err-take-rvalue", "golden/err-lone-else", "golden/err-stray-ellipsis", "golden/err-unmatched-close"]
-note = "nine representative syntax errors (bad dedent, five-space indent, unterminated string/paren, missing colon, take rvalue, lone else, stray ellipsis, unmatched close); err-keyword-as-name not included (parser bug: keywords accepted as identifiers)"
+tests = ["golden/err-bad-dedent", "golden/err-five-space-indent", "golden/err-unterminated-string", "golden/err-unterminated-paren", "golden/err-missing-colon", "golden/err-take-rvalue", "golden/err-lone-else", "golden/err-stray-ellipsis", "golden/err-unmatched-close", "golden/err-keyword-as-name"]
+note = "ten representative syntax errors (bad dedent, five-space indent, unterminated string/paren, missing colon, take rvalue, lone else, stray ellipsis, unmatched close, keyword as a declared name); a Keyword token is rejected wherever a fresh name is declared or a type is named (fn/method/struct/enum/pool/const/variant/field names, parameters, local assignment targets, closure params, generic params, import aliases), message `keyword <kw> cannot be used as a name`, with three narrow exceptions: after `.` (member access/call, Enum.Variant paths), argument labels (`name=`), and `pool` as a callable in primary-expression position (the `with pool(...)` intrinsic); dotted import paths keep accepting keyword segments"
 
 # --- value model ----------------------------------------------------------
 

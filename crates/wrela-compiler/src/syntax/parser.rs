@@ -208,11 +208,22 @@ impl Parser {
         }
     }
 
+    /// Where a fresh name is declared, or a type is named: a `Keyword`
+    /// token gets its own diagnostic (`keyword \`<kw>\` cannot be used as a
+    /// name`) rather than the generic "expected X, found Y" — declaration
+    /// positions are not the member/label/`pool`-callable exceptions
+    /// (`expect_word`, `parse_path_segment`) where a reserved word doubles
+    /// as an ordinary word.
     fn expect_ident(&mut self, what: &str) -> Result<(Span, String), ParseError> {
         if self.at_kind(TokenKind::Ident) {
             let span = self.peek_span();
             let text = self.bump().text;
             Ok((span, text))
+        } else if self.at_kind(TokenKind::Keyword) {
+            Err(self.error_here(format!(
+                "keyword `{}` cannot be used as a name",
+                self.peek_text()
+            )))
         } else {
             Err(self.error_here(format!("expected {what}, found `{}`", self.peek_display())))
         }
@@ -821,10 +832,11 @@ impl Parser {
         doc: Option<Doc>,
         attrs: Vec<Attr>,
     ) -> Result<FnItem, ParseError> {
-        // A word, not strictly an `Ident`: the docs' own conversion-method
-        // convention (02-language.md §7.4, §7.5) names a method `from`,
-        // which is otherwise a reserved word.
-        let (_, name) = self.expect_word("a function name")?;
+        // A declared name: `Ident` only. Reserved-word conversion/accessor
+        // method names (`from`, `read`, `take`, ...) are a stdlib-milestone
+        // question (deferred; see the commit note), not a parser leniency —
+        // a declared `fn` name never accepts a `Keyword` token.
+        let (_, name) = self.expect_ident("a function name")?;
         let generics = self.parse_generic_params()?;
         let (receiver, params) = self.parse_param_list()?;
         let (ret, body) = self.parse_fn_tail()?;

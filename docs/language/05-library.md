@@ -158,7 +158,7 @@ Operators desugar structurally to the named methods of
 [02 §7.4](02-language.md); this chapter fixes the standard shapes a type
 declares to participate:
 
-```wrela
+```text
 fn add(read self, right: Self) -> Self
 fn subtract(read self, right: Self) -> Self
 fn less_than(read self, right: Self) -> bool   # a strict total order
