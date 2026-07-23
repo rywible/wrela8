@@ -18,3 +18,15 @@
 # so it catches an algorithmic blowup (e.g. an accidental O(n^2)) and never
 # a false alarm from ordinary machine noise.
 full_corpus_median_us = 60000
+
+# `cargo xtask bench compiler`'s check lane (plans/M2.md item I): median
+# wall time (microseconds) for one full pass of lex+parse+`sema::check`
+# over every tests/golden/*/input.wr that lexes and parses (both
+# sema-success and sema-error outcomes are timed and counted; the golden
+# inputs that are themselves lex/parse errors are excluded — see
+# `bench_check_entries` in crates/xtask/src/main.rs; 25 entries as of this
+# lock). Measured median on the locking machine, across several runs of 15
+# timed iterations each: ~3.9-4.0ms (3900-4000us). This threshold is 10x
+# that, rounded up to a clean number — same rationale as
+# full_corpus_median_us above.
+check_golden_median_us = 40000
