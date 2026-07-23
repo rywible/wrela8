@@ -47,6 +47,10 @@ fn main() -> ExitCode {
             "profile",
             "requires record/replay on the VMM (lands at M5); no profile may be faked",
         ),
+        Some("fuzz") => fail_closed(
+            "fuzz",
+            "the deterministic in-tree fuzzer lands in M1 (plans/M1.md, items B and E)",
+        ),
         Some("bench") => fail_closed(
             "bench",
             "compiler lane lands at M1 (times the pipeline over the corpus), guest lane at M5; \
@@ -318,7 +322,10 @@ fn ledger() -> Result<(), String> {
                     // `xtask:<command>` names a harness check instead of a
                     // tests/ path (e.g. the doc corpus).
                     if let Some(cmd) = t.strip_prefix("xtask:") {
-                        if !matches!(cmd, "corpus" | "repro" | "diff-eval" | "profile" | "bench") {
+                        if !matches!(
+                            cmd,
+                            "corpus" | "repro" | "diff-eval" | "profile" | "bench" | "fuzz"
+                        ) {
                             return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
                         }
                         continue;

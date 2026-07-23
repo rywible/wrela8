@@ -48,8 +48,20 @@ Done means: goldens pinned, ledger clauses flipped, `cargo xtask check`
 green. Each milestone names the clauses it flips (existing ids) or opens
 (new ids added in the same commit as the work).
 
+**Planning is two-resolution.** This file stays coarse for everything
+beyond the active milestone. A milestone's *first deliverable* is its plan
+— `plans/M<n>.md`: the ordered clause walk, the golden cases named before
+code exists, the shape decisions that milestone freezes, and explicit
+non-goals. Plans are written when a milestone activates, never earlier
+(each milestone manufactures the facts the next plan needs), and become
+history when it completes. The active plan: [plans/M1.md](plans/M1.md).
+
 ### M1 — Parse everything
-Full grammar → stable AST dumps (`wrela dump --stage=ast`).
+Full grammar → stable AST dumps (`wrela dump --stage=ast`). Includes
+finishing and hardening the lexer (floats, escapes, doc comments) and
+deterministic in-tree fuzzing of both lexer and parser — no panics on any
+input, every find committed as a golden error case — plus a
+pretty-print/reparse roundtrip oracle. Detail: [plans/M1.md](plans/M1.md).
 The spec corpus (`cargo xtask corpus`) is the test suite: every ```wrela
 block in docs/language/ must lex and — except `...` fragments — parse.
 The **compiler lane of `bench` comes alive here**: `wrela --timings`

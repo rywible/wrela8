@@ -6,8 +6,10 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
 
 ## Ground truth, in order
 
-0. `ROADMAP.md` — the v0 doctrine (dumb-and-correct) and milestone ladder.
-   Sessions pick work from it; they do not relitigate its decisions.
+0. `ROADMAP.md` — the standing doctrine (dumb-and-correct) and milestone
+   ladder — plus `plans/M<n>.md`, the active milestone's ordered plan
+   (its first deliverable; sessions pick the next item from it). Neither
+   is relitigated mid-milestone.
 1. `docs/language/` — normative. If code disagrees with the docs, the code
    is wrong. Doc changes are deliberate and human-reviewed.
 2. `ledger/ledger.toml` — maps every normative clause to tests (or an
