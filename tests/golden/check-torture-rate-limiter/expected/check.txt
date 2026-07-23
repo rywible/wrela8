@@ -1,0 +1,53 @@
+Module path=examples.rate_limiter
+  Struct Ticks data
+    field value: u64
+    fn add(read self, right: read Ticks) -> Ticks
+    fn subtract(read self, right: read Ticks) -> Ticks
+    fn less_than(read self, right: read Ticks) -> bool
+  Struct Priority data
+    field value: u64
+    fn less_than(read self, right: read Priority) -> bool
+  Fn earlier[T](a: read T, b: read T) -> T
+  Fn use_earlier_ticks(a: read Ticks, b: read Ticks) -> Ticks
+  Fn use_earlier_priority(a: read Priority, b: read Priority) -> Priority
+  Struct TokenBucket data
+    field capacity: u64
+    field tokens: u64
+    field refill_rate: u64
+    init(mut self, capacity: read u64, refill_rate: read u64) -> unit
+    fn try_take(mut self, amount: read u64) -> bool
+    fn refill(mut self, elapsed: read Ticks) -> unit
+    fn level(read self) -> u64
+  Enum ConfigError data deriving(From)
+    variant BadRate(u64)
+  Struct BucketConfig data
+    field capacity: u64
+    field refill_rate: u64
+    init(mut self, capacity: read u64, refill_rate: read u64) -> Result[unit, ConfigError]
+  Fn make_bucket(capacity: read u64, refill_rate: read u64) -> Result[TokenBucket, ConfigError]
+  Struct Ticket resource
+    field cost: u64
+    init(mut self, cost: read u64) -> unit
+  Enum GateState data
+    variant Closed
+    variant Open(Ticks)
+    variant Cooldown(Ticks)
+  Enum GateError data deriving(From)
+    variant Denied(u64)
+  Enum LimiterError data deriving(From)
+    variant Blocked(GateError)
+  Struct Gate data
+    field state: GateState
+    field bucket: TokenBucket
+    init(mut self, bucket: take TokenBucket) -> unit
+    fn with_bucket_bool(mut self, body: read fn(mut TokenBucket) -> bool) -> bool
+    fn with_bucket_unit(mut self, body: read fn(mut TokenBucket) -> unit) -> unit
+    fn admit(mut self, cost: read u64, now: read Ticks) -> Result[Option[Ticket], GateError]
+    fn admit_checked(mut self, cost: read u64, now: read Ticks) -> Result[Option[Ticket], LimiterError]
+    fn tick(mut self, elapsed: read Ticks) -> unit
+    fn describe(read self) -> u64
+  Fn spend_ticket(ticket: take Ticket) -> u64
+  Fn maybe_spend(slot: take Option[Ticket]) -> u64
+  Fn pair_of_tickets(a: take Ticket, b: take Ticket) -> (u64, u64)
+  Fn log_reset() -> unit
+  Fn run_gate(bucket: take TokenBucket, first_cost: read u64, second_cost: read u64, now: read Ticks) -> u64

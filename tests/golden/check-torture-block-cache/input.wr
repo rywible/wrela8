@@ -1,0 +1,157 @@
+module examples.block_cache
+
+pool BlockPayloads
+
+resource struct DmaBlock:
+    id: u64
+
+    init(mut self, id: u64):
+        self.id = id
+
+    pub fn identity(read self) -> u64:
+        return self.id
+
+enum CacheState:
+    Invalid
+    Clean(u64)
+    Dirty(u64)
+
+resource struct CacheLine:
+    state: CacheState
+    block: own[BlockPayloads] DmaBlock
+
+    init(mut self, take block: own[BlockPayloads] DmaBlock):
+        self.state = CacheState.Invalid
+        self.block = take block
+
+    fn lba(self) -> u64:
+        match self.state:
+            case .Invalid:
+                return 0
+            case .Clean(lba):
+                return lba
+            case .Dirty(lba):
+                return lba
+
+    pub fn is_dirty(read self) -> bool:
+        match self.state:
+            case .Dirty(_):
+                return true
+            case .Invalid | .Clean(_):
+                return false
+
+    pub fn mark_clean(mut self, lba: u64):
+        self.state = CacheState.Clean(lba)
+
+    pub fn mark_dirty(mut self, lba: u64):
+        self.state = CacheState.Dirty(lba)
+
+    pub fn touch(mut self) -> unit:
+        match self.state:
+            case .Invalid:
+                block = take self.block
+                self.block = take block
+            case .Clean(lba):
+                block = take self.block
+                self.block = take block
+                self.state = CacheState.Clean(lba)
+            case .Dirty(lba):
+                block = take self.block
+                self.block = take block
+                self.state = CacheState.Dirty(lba)
+
+    pub fn swap_block(mut self, take fresh: own[BlockPayloads] DmaBlock) -> own[BlockPayloads] DmaBlock:
+        old = take self.block
+        self.block = take fresh
+        self.state = CacheState.Invalid
+        return take old
+
+    pub fn evict(take self) -> own[BlockPayloads] DmaBlock:
+        return take self.block
+
+resource struct BlockCache:
+    lines: [CacheLine; 4]
+
+    init(mut self, take b0: own[BlockPayloads] DmaBlock, take b1: own[BlockPayloads] DmaBlock,
+         take b2: own[BlockPayloads] DmaBlock, take b3: own[BlockPayloads] DmaBlock):
+        self.lines = [CacheLine(block=take b0), CacheLine(block=take b1),
+                      CacheLine(block=take b2), CacheLine(block=take b3)]
+
+    pub fn lookup(read self, index: usize) -> u64:
+        return self.lines[index].lba()
+
+    pub fn is_dirty(read self, index: usize) -> bool:
+        return self.lines[index].is_dirty()
+
+    pub fn mark_dirty(mut self, index: usize, lba: u64):
+        self.lines[index].mark_dirty(lba)
+
+    pub fn mark_clean(mut self, index: usize, lba: u64):
+        self.lines[index].mark_clean(lba)
+
+    pub fn touch_all(mut self) -> unit:
+        i: usize = 0
+        while i < 4:
+            self.lines[i].touch()
+            i += 1
+
+    pub fn swap(mut self, index: usize, take fresh: own[BlockPayloads] DmaBlock) -> own[BlockPayloads] DmaBlock:
+        return self.lines[index].swap_block(take fresh)
+
+pub fn make_cache(take b0: own[BlockPayloads] DmaBlock, take b1: own[BlockPayloads] DmaBlock,
+                  take b2: own[BlockPayloads] DmaBlock, take b3: own[BlockPayloads] DmaBlock) -> BlockCache:
+    return BlockCache(b0=take b0, b1=take b1, b2=take b2, b3=take b3)
+
+fn log_flushed():
+    pass
+
+fn log_evicted():
+    pass
+
+pub fn flush_dirty(mut cache: BlockCache) -> u64:
+    defer log_flushed()
+    dirty: u64 = 0
+    i: usize = 0
+    while i < 4:
+        if cache.is_dirty(i):
+            dirty += 1
+            cache.mark_clean(i, cache.lookup(i))
+        i += 1
+    return dirty
+
+pub fn evict_index(mut cache: BlockCache, index: usize, take fresh: own[BlockPayloads] DmaBlock)
+    -> own[BlockPayloads] DmaBlock:
+    defer log_evicted()
+    return cache.swap(index, take fresh)
+
+pub fn close_cache(take cache: BlockCache) -> unit:
+    pass
+
+pub struct Slot[T, const N: usize]:
+    items: [Option[T]; N]
+
+    pub fn get(read self, index: usize) -> Option[T]:
+        return self.items[index]
+
+pub fn use_data_slots() -> unit:
+    slots = Slot[u64, 2]([None, None])
+    pass
+
+resource struct Handle:
+    block: own[BlockPayloads] DmaBlock
+
+pub fn use_resource_slots(take a: own[BlockPayloads] DmaBlock, take b: own[BlockPayloads] DmaBlock) -> unit:
+    slots = Slot[Handle, 2](items=[Some(Handle(block=take a)), Some(Handle(block=take b))])
+    pass
+
+pub fn run_cycle(take b0: own[BlockPayloads] DmaBlock, take b1: own[BlockPayloads] DmaBlock,
+                  take b2: own[BlockPayloads] DmaBlock, take b3: own[BlockPayloads] DmaBlock,
+                  take spare: own[BlockPayloads] DmaBlock) -> u64:
+    cache = make_cache(take b0, take b1, take b2, take b3)
+    cache.mark_dirty(0, 100)
+    cache.mark_dirty(2, 300)
+    cache.touch_all()
+    flushed = flush_dirty(mut cache)
+    old = evict_index(mut cache, 1, take spare)
+    close_cache(take cache)
+    return flushed + old.identity()

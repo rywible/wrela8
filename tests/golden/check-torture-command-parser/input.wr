@@ -1,0 +1,166 @@
+module examples.command_parser
+
+pub enum Opcode:
+    Ping
+    Get
+    Set
+    Delete
+
+pub enum ParseError deriving(From):
+    BadOpcode(u8)
+
+pub enum CommandError deriving(From):
+    Invalid(ParseError)
+
+pub struct Header:
+    opcode: Opcode
+    length: u8
+
+    init(mut self, code: u8, length: u8) -> Result[unit, ParseError]:
+        match code:
+            case 0:
+                self.opcode = Opcode.Ping
+            case 1:
+                self.opcode = Opcode.Get
+            case 2:
+                self.opcode = Opcode.Set
+            case 3:
+                self.opcode = Opcode.Delete
+            case _:
+                return Err(ParseError.BadOpcode(code))
+        self.length = length
+        return Ok(unit)
+
+    fn payload_len(self) -> u8:
+        return self.length
+
+pub enum Command:
+    Ping
+    Get(key: u8)
+    Set(key: u8, value: u8)
+    Delete(key: u8)
+
+pub fn parse_command(raw: [u8; 4]) -> Result[Command, CommandError]:
+    header = Header(code=raw[0], length=raw[1])?
+    match header.opcode:
+        case .Ping:
+            return Ok(.Ping)
+        case .Get:
+            return Ok(.Get(key=raw[2]))
+        case .Set:
+            return Ok(.Set(key=raw[2], value=raw[3]))
+        case .Delete:
+            return Ok(.Delete(key=raw[2]))
+
+pub fn describe(cmd: Command) -> u8:
+    match cmd:
+        case .Ping:
+            return 0
+        case .Get(key) | .Delete(key):
+            return key
+        case .Set(key, value) if value > 0:
+            return key + value
+        case .Set(key, _):
+            return key
+
+resource struct Reply:
+    code: u64
+
+    init(mut self, code: u64):
+        self.code = code
+
+    pub fn is_ok(read self) -> bool:
+        return self.code == 0
+
+fn execute(cmd: Command) -> Reply:
+    match cmd:
+        case .Ping:
+            return Reply(code=0)
+        case .Get(_):
+            return Reply(code=1)
+        case .Set(_, _):
+            return Reply(code=2)
+        case .Delete(_):
+            return Reply(code=3)
+
+fn log_dispatch():
+    pass
+
+pub fn dispatch(raw: [u8; 4]) -> Result[Reply, CommandError]:
+    defer log_dispatch()
+    cmd = parse_command(raw)?
+    return Ok(execute(cmd))
+
+pub fn bundle(take a: Reply, take b: Reply) -> (Reply, Reply):
+    return (take a, take b)
+
+pub fn first_of(take pair: (Reply, Reply)) -> Reply:
+    match pair:
+        case (take first, _):
+            return take first
+
+pub fn dispatch_pair(raw_a: [u8; 4], raw_b: [u8; 4]) -> Result[(Reply, Reply), CommandError]:
+    first = dispatch(raw_a)?
+    second = dispatch(raw_b)?
+    return Ok((take first, take second))
+
+pub fn stash_reply(take reply: Reply) -> Option[Reply]:
+    if reply.is_ok():
+        return Some(take reply)
+    return None
+
+pub fn unwrap_reply(take slot: Option[Reply], fallback: u64) -> u64:
+    match slot:
+        case .Some(reply):
+            return reply.code
+        case .None:
+            return fallback
+
+pub fn first_matching[T](items: [T; 3], target: T) -> Option[usize]:
+    i: usize = 0
+    while i < 3:
+        if items[i] == target:
+            return Some(i)
+        i += 1
+    return None
+
+pub fn use_first_matching_u8() -> Option[usize]:
+    return first_matching([1, 2, 3], 2)
+
+pub fn use_first_matching_bool() -> Option[usize]:
+    return first_matching([true, false, true], false)
+
+pub fn count_gets(cmds: [Command; 3]) -> u64:
+    total: u64 = 0
+    i: usize = 0
+    while i < 3:
+        match cmds[i]:
+            case .Get(_):
+                total += 1
+            case .Ping | .Set(_, _) | .Delete(_):
+                pass
+        i += 1
+    return total
+
+pub fn make_ping() -> Command:
+    return .Ping
+
+pub fn make_get(key: u8) -> Command:
+    return .Get(key=key)
+
+pub fn make_set(key: u8, value: u8) -> Command:
+    return .Set(key=key, value=value)
+
+pub fn all_pings() -> u64:
+    cmds = [make_ping(), make_get(1), make_set(2, 3)]
+    return count_gets(cmds)
+
+pub fn checked_reply(mut count: u64, raw: [u8; 4]) -> u64:
+    outcome = dispatch(raw)
+    match outcome:
+        case .Ok(reply):
+            if reply.is_ok():
+                count += 1
+            return count
+        case .Err(_):
+            return count

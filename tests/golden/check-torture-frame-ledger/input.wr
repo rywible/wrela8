@@ -1,0 +1,164 @@
+module examples.frame_ledger
+
+pool FramePayloads
+
+resource struct FrameBuf:
+    id: u64
+
+    init(mut self, id: u64):
+        self.id = id
+
+    pub fn identity(read self) -> u64:
+        return self.id
+
+pub enum FrameState:
+    Empty
+    Filled(u64)
+    Presented(u64)
+
+resource struct FrameSlot:
+    state: FrameState
+    handle: own[FramePayloads] FrameBuf
+
+    init(mut self, take handle: own[FramePayloads] FrameBuf):
+        self.state = FrameState.Empty
+        self.handle = take handle
+
+    pub fn fill(mut self, id: u64):
+        self.state = FrameState.Filled(id)
+
+    pub fn present(mut self):
+        match self.state:
+            case .Filled(id):
+                self.state = FrameState.Presented(id)
+            case .Empty | .Presented(_):
+                pass
+
+    pub fn refresh(mut self, valid: bool):
+        match self.state:
+            case .Empty:
+                pass
+            case .Filled(id) | .Presented(id):
+                h = take self.handle
+                self.handle = take h
+                if valid:
+                    self.state = FrameState.Filled(id)
+                else:
+                    self.state = FrameState.Empty
+
+    pub fn swap_handle(mut self, take fresh: own[FramePayloads] FrameBuf) -> own[FramePayloads] FrameBuf:
+        old = take self.handle
+        self.handle = take fresh
+        self.state = FrameState.Empty
+        return take old
+
+    pub fn into_handle(take self) -> own[FramePayloads] FrameBuf:
+        return take self.handle
+
+    fn slot_id(self) -> u64:
+        match self.state:
+            case .Empty:
+                return 0
+            case .Filled(id):
+                return id
+            case .Presented(id):
+                return id
+
+resource struct DoubleBuffer:
+    front: FrameSlot
+    back: FrameSlot
+
+    init(mut self, take front: own[FramePayloads] FrameBuf, take back: own[FramePayloads] FrameBuf):
+        self.front = FrameSlot(handle=take front)
+        self.back = FrameSlot(handle=take back)
+
+    pub fn flip(mut self) -> unit:
+        tmp = take self.front
+        self.front = take self.back
+        self.back = take tmp
+
+    pub fn fill_back(mut self, id: u64):
+        self.back.fill(id)
+
+    pub fn present_front(mut self):
+        self.front.present()
+
+    fn front_id(self) -> u64:
+        return self.front.slot_id()
+
+    fn back_id(self) -> u64:
+        return self.back.slot_id()
+
+pub fn touch_front_repeatedly(mut buf: DoubleBuffer, times: u64) -> unit:
+    i: u64 = 0
+    while i < times:
+        slot = take buf.front
+        buf.front = take slot
+        i += 1
+
+pub fn cycle_frames(mut buf: DoubleBuffer, times: u64) -> unit:
+    i: u64 = 0
+    while i < times:
+        buf.flip()
+        i += 1
+
+pub fn stash_slot(take slot: FrameSlot, keep: bool) -> Option[FrameSlot]:
+    if keep:
+        return Some(take slot)
+    return None
+
+pub fn stash_handle(take handle: own[FramePayloads] FrameBuf, keep: bool) -> Option[own[FramePayloads] FrameBuf]:
+    if keep:
+        return Some(take handle)
+    return None
+
+pub enum PresentOutcome:
+    Delivered(FrameSlot)
+    Rejected(u64)
+
+fn present_or_reject(take slot: FrameSlot, ok: bool) -> PresentOutcome:
+    if ok:
+        return PresentOutcome.Delivered(take slot)
+    return PresentOutcome.Rejected(0)
+
+fn unwrap_outcome(take outcome: PresentOutcome) -> u64:
+    match outcome:
+        case .Delivered(take slot):
+            handle = slot.into_handle()
+            return handle.identity()
+        case .Rejected(code):
+            return code
+
+pub struct Cell[T, const N: usize]:
+    slots: [Option[T]; N]
+
+pub fn use_data_cell() -> unit:
+    cell = Cell[u64, 2]([None, None])
+    pass
+
+resource struct FrameHandle:
+    buf: own[FramePayloads] FrameBuf
+
+pub fn use_resource_cell(take a: own[FramePayloads] FrameBuf, take b: own[FramePayloads] FrameBuf) -> unit:
+    cell = Cell[FrameHandle, 2](slots=[Some(FrameHandle(buf=take a)), Some(FrameHandle(buf=take b))])
+    pass
+
+fn log_close():
+    pass
+
+pub fn close_buffer(take buf: DoubleBuffer) -> u64:
+    defer log_close()
+    total = buf.front_id() + buf.back_id()
+    return total
+
+pub fn run_ledger(take front: own[FramePayloads] FrameBuf, take back: own[FramePayloads] FrameBuf,
+                   take spare: own[FramePayloads] FrameBuf) -> u64:
+    buf = DoubleBuffer(front=take front, back=take back)
+    buf.fill_back(7)
+    buf.flip()
+    buf.present_front()
+    touch_front_repeatedly(mut buf, 3)
+    cycle_frames(mut buf, 2)
+    old = buf.front.swap_handle(take spare)
+    total = close_buffer(take buf)
+    return total + old.identity()
