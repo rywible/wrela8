@@ -2147,6 +2147,18 @@ impl Parser {
             self.expect_indent()?;
             let stmts = self.parse_stmts_until_dedent()?;
             self.expect_dedent()?;
+            // A suite holds at least one statement (`pass` exists for the
+            // empty case). Unreachable at depth 0 — a content-free block
+            // never lexes an INDENT there — but a layout island's INDENT
+            // can be immediately closed by the enclosing bracket
+            // (`combine(||:` then an indented `)`), which parsed as an
+            // empty suite until the sema-roundtrip oracle caught it.
+            if stmts.is_empty() {
+                return Err(self.error_here(format!(
+                    "expected a statement, found `{}`",
+                    self.peek_display()
+                )));
+            }
             Ok(stmts)
         } else {
             self.inline_depth += 1;

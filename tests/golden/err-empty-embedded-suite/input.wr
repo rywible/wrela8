@@ -1,0 +1,11 @@
+# Minimized from a fuzz find (pre-M3 shoring, fuzz sema seed=5): a layout
+# island whose INDENT is immediately closed by the enclosing bracket
+# parsed as an empty closure suite; a suite holds at least one statement.
+module examples.empty_embedded_suite
+
+fn combine(body: fn() -> u64) -> u64:
+    return body()
+
+pub fn use_it() -> u64:
+    return combine(||:
+        )
