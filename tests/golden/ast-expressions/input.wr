@@ -1,0 +1,25 @@
+module examples.expressions
+
+async fn op() -> Result[u64, Error]:
+    return Ok(1)
+
+fn combine(a: u64, b: u64, c: u64, d: u64) -> u64:
+    x = await op()?
+    y = a + b * c << d
+    z = a < b and c > d or not a == b
+    r = 0 .. 4
+    inclusive = 0 ..= 4
+    neg = -a
+    inv = ~a +% b -% c *% d
+    call_result = combine(a, mut b, take c, label=d)
+    f = .Found(a)
+    g = Lookup.Found(a)
+    closure = |mut item: u64| item + 1
+    block_closure = |read item: u64|:
+        y = item + 1
+        return y
+    pair = (a, b)
+    one = (a,)
+    items = [a, b, c]
+    guard = a is .Found(value) and value > 0
+    return x + y + z + r.len() + inclusive.len() + neg + inv + call_result + f + g + closure(1) + block_closure(1) + pair.len() + one.len() + items.len() + guard.to[u64]()

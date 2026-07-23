@@ -1,0 +1,151 @@
+Module @1:1 path=examples.statements
+  Fn @3:1 name=walk
+    Param @3:9 name=counter mode=mut
+      TypeName @3:22 name=u64
+    Param @3:27 name=xs mode=read
+      ArrayType @3:31
+        TypeName @3:32 name=u64
+        Int @3:37 text=4
+    TypeName @3:44 name=u64
+    Body
+      Assign @4:5 op==
+        Name @4:5 name=total
+        TypeName @4:12 name=u64
+        Int @4:18 text=0
+      Assign @5:5 op=+=
+        Name @5:5 name=total
+        Name @5:14 name=counter
+      Assign @6:5 op=-=
+        Name @6:5 name=total
+        Int @6:14 text=1
+      If @7:5
+        Binary @7:14 op=>
+          Name @7:8 name=total
+          Int @7:16 text=100
+        Then
+          Return @8:9
+            Name @8:16 name=total
+        Elif @9:5
+          Binary @9:16 op===
+            Name @9:10 name=total
+            Int @9:19 text=0
+          Pass @10:9
+        Else
+          Assign @12:9 op=*=
+            Name @12:9 name=total
+            Int @12:18 text=2
+      Match @14:5
+        Name @14:11 name=counter
+        Case @15:9
+          PatternLiteral @15:14
+            Int @15:14 text=0
+          Return @16:13
+            Int @16:20 text=0
+        Case @17:9
+          Binding @17:14 name=n
+          Guard
+            Binary @17:21 op=>
+              Name @17:19 name=n
+              Int @17:23 text=10
+          Assign @18:13 op==
+            Name @18:13 name=total
+            Name @18:21 name=n
+        Case @19:9
+          Wildcard @19:14
+          Pass @20:13
+      For @22:5 name=x
+        Range @22:16 inclusive=false
+          Int @22:14 text=0
+          Int @22:19 text=4
+        Body
+          Assign @23:9 op=+=
+            Name @23:9 name=total
+            Name @23:18 name=x
+      For @25:5 name=item take=true
+        Unary @25:22 op=take
+          Name @25:27 name=xs
+        Body
+          Assign @26:9 op=+=
+            Name @26:9 name=total
+            Name @26:18 name=item
+      Assign @28:5 op==
+        Name @28:5 name=i
+        TypeName @28:8 name=u64
+        Int @28:14 text=0
+      While @29:5
+        Binary @29:13 op=<
+          Name @29:11 name=i
+          Int @29:15 text=4
+        Body
+          Assign @30:9 op=+=
+            Name @30:9 name=total
+            Name @30:18 name=i
+          Assign @31:9 op=+=
+            Name @31:9 name=i
+            Int @31:14 text=1
+          If @32:9
+            Binary @32:14 op===
+              Name @32:12 name=i
+              Int @32:17 text=2
+            Then
+              Continue @33:13
+          If @34:9
+            Binary @34:14 op===
+              Name @34:12 name=i
+              Int @34:17 text=3
+            Then
+              Break @35:13
+      Assert @37:5
+        Binary @37:18 op=>=
+          Name @37:12 name=total
+          Int @37:21 text=0
+      Assert @38:5
+        Binary @38:18 op=<
+          Name @38:12 name=total
+          Int @38:20 text=1000
+        Message
+          Str @38:26 text="total stays bounded"
+      Defer @40:5
+        Call @40:19
+          Name @40:11 name=log_done
+      Defer @41:5
+        Body
+          Assign @42:9 op=+=
+            Name @42:9 name=total
+            Int @42:18 text=1
+          Assign @43:9 op=+=
+            Name @43:9 name=total
+            Int @43:18 text=1
+      With @45:5 as=frame
+        Call @45:14
+          Name @45:10 name=pool
+          Arg @45:15 label=capacity
+            Field @45:28 name=KiB
+              Int @45:24 text=256
+        Body
+          Assign @46:9 op=+=
+            Name @46:9 name=total
+            Int @46:18 text=1
+      Send @48:5
+        Call @48:22
+          Field @48:16 name=record
+            Name @48:10 name=audit
+          Arg @48:23 label=event mode=take
+            Name @48:34 name=total
+      ComptimeIf @50:5
+        Field @50:24 name=debug
+          Name @50:17 name=target
+        Then
+          ComptimeAssert @51:9
+            Binary @51:31 op=>=
+              Name @51:25 name=total
+              Int @51:34 text=0
+        Else
+          ComptimeAssert @53:9
+            Binary @53:31 op=>=
+              Name @53:25 name=total
+              Int @53:34 text=0
+            Message
+              Str @53:37 text="release bound"
+      Return @55:5
+        Name @55:12 name=total

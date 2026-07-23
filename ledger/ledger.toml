@@ -72,7 +72,7 @@ id = "syntax.ast.dump-stable"
 doc = "02-language.md#2"
 status = "test"
 tests = ["golden/ast-module", "golden/ast-module-errors"]
-note = "parser skeleton (plans/M1.md item C): module header + imports fully parsed, one item recognized per top-level declaration form with its body skipped and recorded as a Todo node; wrela dump --stage=ast pins the one-node-per-line dump format (plans/M1.md decision 5)"
+note = "wrela dump --stage=ast pins the one-node-per-line dump format (plans/M1.md decision 5); module header + imports + every declaration form parse to real content (plans/M1.md item D replaced the item-C Todo placeholders)"
 
 [[clause]]
 id = "syntax.lexer.no-panics"
@@ -80,6 +80,41 @@ doc = "02-language.md#1"
 status = "test"
 tests = ["xtask:fuzz"]
 note = "cargo xtask fuzz lexer: seeded deterministic byte-fuzzing + corpus mutation; never panics, INDENT/DEDENT balance, Eof-terminated, monotonic lines, deterministic; 200_000-iteration deep run clean across 12 seeds, smoke budget wired into xtask check"
+
+[[clause]]
+id = "syntax.parser.declarations"
+doc = "02-language.md#7"
+status = "test"
+tests = ["golden/ast-declarations"]
+note = "const (typed/untyped), fn/async fn (generics, receiver/params with access modes, one-line/suite/bodyless forms), struct/resource struct (fields with pub/defaults, methods, init, actor-scoped pool, deriving), enum (tuple and named-field payloads, deriving), module- and member-scope pool, comptime if/else at module and member scope, structured @attr(args) — and the full type grammar of §6 (generic args, arrays, tuples, own[P], fn types, bound forms)"
+
+[[clause]]
+id = "syntax.parser.statements"
+doc = "02-language.md#8.1"
+status = "test"
+tests = ["golden/ast-statements"]
+note = "assignment (introduction, compound ops), if/elif/else, match/case with guards, for (incl. take-consuming), while, break/continue/return/pass, assert with optional message, defer (expr and suite forms), with-as, send (statement and expression positions), comptime if/else and comptime assert in statement position"
+
+[[clause]]
+id = "syntax.parser.expressions"
+doc = "02-language.md#8.2"
+status = "test"
+tests = ["golden/ast-expressions", "golden/ast-fstring"]
+note = "the full precedence ladder as a chain of parse functions (member/call/index; unary - ~ await take; postfix ?; * / % *%; + - +% -%; << >>; & ^ |; ranges; comparisons and is; not; and; or), call arguments with labels and mirrored mut/take (place-expression checked), leading-dot enum refs, closures (expression and suite bodies), list/tuple literals, and f-string segmentation into Literal/Interp parts (interp contents kept raw per plans/M1.md item D)"
+
+[[clause]]
+id = "syntax.parser.patterns"
+doc = "02-language.md#7.2"
+status = "test"
+tests = ["golden/ast-patterns"]
+note = "_, literals (incl. negative numbers), bindings, .Variant(...)/Enum.Variant(...) with positional payload binding, take in payload position, tuple and fixed-array destructuring, | alternatives, if guards on match arms, and is as an expression-position pattern test"
+
+[[clause]]
+id = "docs.examples.wrela-blocks-parse"
+doc = "02-language.md#1"
+status = "test"
+tests = ["xtask:corpus", "golden/ast-virtio"]
+note = "every docs/language ```wrela block and every docs/language/examples/*.wr file parses (xtask corpus reports lexed/parsed/fragments-skipped counts) except a block whose body contains the literal substring `...` (a doc fragment, lex-only); the virtio-storage.wr worked example parses in full and its exact ast dump is pinned by golden/ast-virtio (an intentional duplicate of the example file — the corpus covers the original)"
 
 # --- value model ----------------------------------------------------------
 

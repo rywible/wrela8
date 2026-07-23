@@ -179,27 +179,87 @@ fn extract_doc_blocks() -> Result<(Vec<DocBlock>, Vec<String>), String> {
     Ok((blocks, failures))
 }
 
+/// Every `.wr` file under docs/language/examples/, whole-file, in
+/// deterministic (sorted) order — additional corpus entries alongside the
+/// ```wrela doc blocks (plans/M1.md item D, step 5).
+fn extract_example_files() -> Result<Vec<DocBlock>, String> {
+    let dir = root().join("docs/language/examples");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("read {}: {e}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "wr"))
+        .collect();
+    files.sort();
+    let mut entries = Vec::new();
+    for path in files {
+        let body =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("example.wr")
+            .to_string();
+        entries.push(DocBlock {
+            doc: path,
+            start_line: 1,
+            name,
+            body,
+        });
+    }
+    Ok(entries)
+}
+
+/// Every ```wrela doc block and every docs/language/examples/*.wr file must
+/// lex; from M1 item D on, every one of them must also *parse* — except a
+/// block whose body contains the literal substring `...`, which is a doc
+/// fragment (an illustrative snippet, not a complete construct) and stays
+/// lex-only. `docs.examples.wrela-blocks-parse` is the ledger clause for
+/// the parse half; `docs.examples.wrela-blocks-lex` already covered lexing.
 fn corpus() -> Result<(), String> {
     let out_dir = root().join("target/corpus");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
     let (blocks, mut failures) = extract_doc_blocks()?;
-    let block_count = blocks.len();
-    for b in blocks {
+    let examples = extract_example_files()?;
+    let mut lexed = 0usize;
+    let mut parsed = 0usize;
+    let mut fragments = 0usize;
+    for b in blocks.into_iter().chain(examples) {
         std::fs::write(out_dir.join(&b.name), &b.body)
             .map_err(|e| format!("write corpus {}: {e}", b.name))?;
-        if let Err(e) = lexer::lex(&b.body) {
-            failures.push(format!(
-                "{}:{}: lex error at block line {}:{}: {}",
+        let tokens = match lexer::lex(&b.body) {
+            Ok(tokens) => tokens,
+            Err(e) => {
+                failures.push(format!(
+                    "{}:{}: lex error at block line {}:{}: {}",
+                    b.doc.display(),
+                    b.start_line,
+                    e.line,
+                    e.col,
+                    e.message
+                ));
+                continue;
+            }
+        };
+        lexed += 1;
+        if b.body.contains("...") {
+            fragments += 1;
+            continue;
+        }
+        match wrela_compiler::syntax::parser::parse_any(tokens) {
+            Ok(()) => parsed += 1,
+            Err(e) => failures.push(format!(
+                "{}:{}: parse error at block line {}:{}: {}",
                 b.doc.display(),
                 b.start_line,
                 e.line,
                 e.col,
                 e.message
-            ));
+            )),
         }
     }
     if failures.is_empty() {
-        println!("corpus: {block_count} doc block(s) lex cleanly");
+        println!("corpus: lexed {lexed}, parsed {parsed}, fragments skipped {fragments}");
         Ok(())
     } else {
         for f in &failures {

@@ -1,0 +1,197 @@
+Module @1:1 path=examples.expressions
+  Fn @3:1 name=op async=true
+    TypeName @3:18 name=Result
+      TypeName @3:25 name=u64
+      TypeName @3:30 name=Error
+    Body
+      Return @4:5
+        Call @4:14
+          Name @4:12 name=Ok
+          Arg @4:15
+            Int @4:15 text=1
+  Fn @6:1 name=combine
+    Param @6:12 name=a mode=read
+      TypeName @6:15 name=u64
+    Param @6:20 name=b mode=read
+      TypeName @6:23 name=u64
+    Param @6:28 name=c mode=read
+      TypeName @6:31 name=u64
+    Param @6:36 name=d mode=read
+      TypeName @6:39 name=u64
+    TypeName @6:47 name=u64
+    Body
+      Assign @7:5 op==
+        Name @7:5 name=x
+        Try @7:19
+          Unary @7:9 op=await
+            Call @7:17
+              Name @7:15 name=op
+      Assign @8:5 op==
+        Name @8:5 name=y
+        Binary @8:19 op=<<
+          Binary @8:11 op=+
+            Name @8:9 name=a
+            Binary @8:15 op=*
+              Name @8:13 name=b
+              Name @8:17 name=c
+          Name @8:22 name=d
+      Assign @9:5 op==
+        Name @9:5 name=z
+        Or @9:25
+          And @9:15
+            Binary @9:11 op=<
+              Name @9:9 name=a
+              Name @9:13 name=b
+            Binary @9:21 op=>
+              Name @9:19 name=c
+              Name @9:23 name=d
+          Not @9:28
+            Binary @9:34 op===
+              Name @9:32 name=a
+              Name @9:37 name=b
+      Assign @10:5 op==
+        Name @10:5 name=r
+        Range @10:11 inclusive=false
+          Int @10:9 text=0
+          Int @10:14 text=4
+      Assign @11:5 op==
+        Name @11:5 name=inclusive
+        Range @11:19 inclusive=true
+          Int @11:17 text=0
+          Int @11:23 text=4
+      Assign @12:5 op==
+        Name @12:5 name=neg
+        Unary @12:11 op=neg
+          Name @12:12 name=a
+      Assign @13:5 op==
+        Name @13:5 name=inv
+        Binary @13:19 op=-%
+          Binary @13:14 op=+%
+            Unary @13:11 op=bitnot
+              Name @13:12 name=a
+            Name @13:17 name=b
+          Binary @13:24 op=*%
+            Name @13:22 name=c
+            Name @13:27 name=d
+      Assign @14:5 op==
+        Name @14:5 name=call_result
+        Call @14:26
+          Name @14:19 name=combine
+          Arg @14:27
+            Name @14:27 name=a
+          Arg @14:30 mode=mut
+            Name @14:34 name=b
+          Arg @14:37 mode=take
+            Name @14:42 name=c
+          Arg @14:45 label=label
+            Name @14:51 name=d
+      Assign @15:5 op==
+        Name @15:5 name=f
+        DotVariant @15:9 variant=Found
+          Arg @15:16
+            Name @15:16 name=a
+      Assign @16:5 op==
+        Name @16:5 name=g
+        Call @16:21
+          Field @16:16 name=Found
+            Name @16:9 name=Lookup
+          Arg @16:22
+            Name @16:22 name=a
+      Assign @17:5 op==
+        Name @17:5 name=closure
+        Closure @17:15
+          ClosureParam @17:16 name=item mode=mut
+            TypeName @17:26 name=u64
+          Binary @17:36 op=+
+            Name @17:31 name=item
+            Int @17:38 text=1
+      Assign @18:5 op==
+        Name @18:5 name=block_closure
+        Closure @18:21
+          ClosureParam @18:22 name=item mode=read
+            TypeName @18:33 name=u64
+          Body
+            Assign @19:9 op==
+              Name @19:9 name=y
+              Binary @19:18 op=+
+                Name @19:13 name=item
+                Int @19:20 text=1
+            Return @20:9
+              Name @20:16 name=y
+      Assign @21:5 op==
+        Name @21:5 name=pair
+        Tuple @21:12
+          Name @21:13 name=a
+          Name @21:16 name=b
+      Assign @22:5 op==
+        Name @22:5 name=one
+        Tuple @22:11
+          Name @22:12 name=a
+      Assign @23:5 op==
+        Name @23:5 name=items
+        List @23:13
+          Name @23:14 name=a
+          Name @23:17 name=b
+          Name @23:20 name=c
+      Assign @24:5 op==
+        Name @24:5 name=guard
+        And @24:32
+          Is @24:15
+            Name @24:13 name=a
+            VariantPattern @24:18 variant=Found
+              Binding @24:25 name=value
+          Binary @24:42 op=>
+            Name @24:36 name=value
+            Int @24:44 text=0
+      Return @25:5
+        Binary @25:155 op=+
+          Binary @25:141 op=+
+            Binary @25:129 op=+
+              Binary @25:116 op=+
+                Binary @25:97 op=+
+                  Binary @25:84 op=+
+                    Binary @25:80 op=+
+                      Binary @25:76 op=+
+                        Binary @25:62 op=+
+                          Binary @25:56 op=+
+                            Binary @25:50 op=+
+                              Binary @25:32 op=+
+                                Binary @25:22 op=+
+                                  Binary @25:18 op=+
+                                    Binary @25:14 op=+
+                                      Name @25:12 name=x
+                                      Name @25:16 name=y
+                                    Name @25:20 name=z
+                                  Call @25:29
+                                    Field @25:26 name=len
+                                      Name @25:24 name=r
+                                Call @25:47
+                                  Field @25:44 name=len
+                                    Name @25:34 name=inclusive
+                              Name @25:52 name=neg
+                            Name @25:58 name=inv
+                          Name @25:64 name=call_result
+                        Name @25:78 name=f
+                      Name @25:82 name=g
+                    Call @25:93
+                      Name @25:86 name=closure
+                      Arg @25:94
+                        Int @25:94 text=1
+                  Call @25:112
+                    Name @25:99 name=block_closure
+                    Arg @25:113
+                      Int @25:113 text=1
+                Call @25:126
+                  Field @25:123 name=len
+                    Name @25:118 name=pair
+              Call @25:138
+                Field @25:135 name=len
+                  Name @25:131 name=one
+            Call @25:152
+              Field @25:149 name=len
+                Name @25:143 name=items
+          Call @25:170
+            Index @25:165
+              Field @25:163 name=to
+                Name @25:157 name=guard
+              Name @25:166 name=u64

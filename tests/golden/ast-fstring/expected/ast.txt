@@ -1,0 +1,34 @@
+Module @1:1 path=examples.fstring
+  Fn @3:1 name=describe
+    Param @3:13 name=name mode=read
+      TypeName @3:19 name=String
+    Param @3:27 name=count mode=read
+      TypeName @3:34 name=u64
+    TypeName @3:42 name=String
+    Body
+      Assign @4:5 op==
+        Name @4:5 name=plain
+        FStr @4:13
+          Literal @4:15 text="hello"
+      Assign @5:5 op==
+        Name @5:5 name=escaped
+        FStr @5:15
+          Literal @5:17 text="{literal braces}"
+      Assign @6:5 op==
+        Name @6:5 name=one
+        FStr @6:11
+          Literal @6:13 text="count="
+          Interp @6:20 text="count"
+      Assign @7:5 op==
+        Name @7:5 name=mixed
+        FStr @7:13
+          Interp @7:16 text="name"
+          Literal @7:21 text=" has "
+          Interp @7:27 text="count"
+          Literal @7:33 text=" item{s} in {stock}: "
+          Interp @7:59 text="count:spec"
+      Assign @8:5 op==
+        Name @8:5 name=empty
+        FStr @8:13
+      Return @9:5
+        Name @9:12 name=mixed

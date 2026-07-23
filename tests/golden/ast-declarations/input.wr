@@ -1,0 +1,55 @@
+module examples.declarations
+
+pub const LIMIT: u64 = 0x1000_0000
+
+pool Widgets
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) status: ReadOnly[u32]
+
+pub struct Ring[T, const N: usize]:
+    pub items: [Option[T]; N]
+    total: usize = 0
+
+    pool Items
+
+    init(mut self, take blocks: [T; N]):
+        self.total = N
+
+    pub fn get(read self, index: usize) -> Option[T]:
+        return self.items[index]
+
+    comptime if N == 0:
+        fn empty(read self) -> bool:
+            return true
+    comptime else:
+        fn empty(read self) -> bool:
+            return false
+
+resource struct Ledger:
+    entries: u64
+
+enum Lookup[T] deriving(Format):
+    Found(T)
+    Absent
+    Failed(IoError)
+
+enum CacheState:
+    Invalid
+    Clean(lba: u64)
+    Dirty(lba: u64)
+
+async fn fetch(client: ClientHandle) -> Result[own[NetBufs] Bytes, NetError]:
+    return Ok(client.buffer())
+
+fn hash_pair[T](a: T, b: T) -> u64:
+    return a.hash() ^ b.hash()
+
+fn identity(x: fn(read u64) -> u64) -> u64:
+    return x(0)
+
+comptime if target.debug:
+    const TRACE: bool = true
+comptime else:
+    const TRACE: bool = false

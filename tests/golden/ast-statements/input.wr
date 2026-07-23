@@ -1,0 +1,55 @@
+module examples.statements
+
+fn walk(mut counter: u64, xs: [u64; 4]) -> u64:
+    total: u64 = 0
+    total += counter
+    total -= 1
+    if total > 100:
+        return total
+    elif total == 0:
+        pass
+    else:
+        total *= 2
+
+    match counter:
+        case 0:
+            return 0
+        case n if n > 10:
+            total = n
+        case _:
+            pass
+
+    for x in 0 .. 4:
+        total += x
+
+    for take item in take xs:
+        total += item
+
+    i: u64 = 0
+    while i < 4:
+        total += i
+        i += 1
+        if i == 2:
+            continue
+        if i == 3:
+            break
+
+    assert total >= 0
+    assert total < 1000, "total stays bounded"
+
+    defer log_done()
+    defer:
+        total += 1
+        total += 1
+
+    with pool(capacity=256.KiB) as frame:
+        total += 1
+
+    send audit.record(event=take total)
+
+    comptime if target.debug:
+        comptime assert total >= 0
+    comptime else:
+        comptime assert total >= 0, "release bound"
+
+    return total

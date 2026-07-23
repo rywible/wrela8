@@ -9,12 +9,26 @@ Module @2:1 path=examples.catalogue
     ImportName @7:5 name=Result
     ImportName @8:5 name=Err alias=ResultErr
   Const @11:1 name=LIMIT
-    Todo @11:12
+    TypeName @11:14 name=u64
+    Int @11:20 text=0x1000_0000
   Pool @13:1 name=Widgets
   Fn @16:1 name=increment pub=true
     Doc @15:1 text="Increments the shared counter by one."
-    Todo @16:17
+    Param @16:18 name=counter mode=mut
+      TypeName @16:31 name=u64
+    TypeName @16:39 name=u64
+    Body
+      Return @17:5
+        Binary @17:20 op=+
+          Name @17:12 name=counter
+          Int @17:22 text=1
   Struct @19:1 name=Ledger resource=true
-    Todo @19:23
+    Field @20:5 name=entries
+      TypeName @20:14 name=u64
   ComptimeIf @22:1
-    Todo @22:13
+    Field @22:20 name=debug
+      Name @22:13 name=target
+    Then
+      Const @23:5 name=TRACE
+        TypeName @23:18 name=bool
+        Bool @23:25 value=true

@@ -1,22 +1,29 @@
-//! Recursive-descent parser: token stream -> `ast::Module` (02-language.md
-//! §1, §2). A hand-written `Parser` struct with `pos` plus small
+//! Recursive-descent parser: token stream -> `ast::Module` (02-language.md,
+//! whole chapter). A hand-written `Parser` struct with `pos` plus small
 //! peek/bump/expect helpers (ROADMAP.md: no combinators, no traits, no
-//! lookahead machinery) — dumb and correct.
+//! lookahead machinery) — dumb and correct: one function per grammar
+//! production, precedence realized as a chain of functions (parse_or ->
+//! parse_and -> ... -> parse_postfix -> parse_primary), no Pratt tables.
 //!
-//! Item C (plans/M1.md) lands the spine only: the `module` header, every
-//! import form (aliases, the parenthesized multi-line list, `pub from`),
-//! doc-comment attachment, and top-level dispatch that recognizes which
-//! `Item` each declaration starts. Each item's header (its flags and name)
-//! is parsed; everything after is skipped by tracking INDENT/DEDENT depth
-//! to the declaration's end, so the whole module parses at the item level
-//! today without pretending to understand bodies (item D replaces the
-//! skip). Errors are fail-fast (plans/M1.md decision 2): the first one stops
+//! Item D (plans/M1.md) replaces the item-C token-skip with the full
+//! grammar. Two entry points exist: `parse` (a complete `module ...` file)
+//! and `parse_fragment`/`parse_any` (a bare sequence of items and/or
+//! statements with no `module` header) — most illustrative code blocks in
+//! docs/language/*.md are not full modules, so the corpus driver
+//! (xtask's `corpus` command) needs a lenient top-level entry point too.
+//!
+//! Suite parsing note: `()[]{}` suppress NEWLINE/INDENT/DEDENT in the
+//! lexer (02-language.md §1), so a suite-form closure body embedded inside
+//! an enclosing call's argument list (see docs/language/examples/
+//! virtio-storage.wr, `BlockCache.read_file`) has no layout tokens at all —
+//! its statements run back-to-back. `parse_stmt_suite` handles both the
+//! normal (NEWLINE + INDENT) and this embedded (no separator, bounded by
+//! the enclosing bracket) case with one shared implementation.
+//!
+//! Errors are fail-fast (plans/M1.md decision 2): the first one stops
 //! parsing.
 
-use super::ast::{
-    Attr, ComptimeIfItem, ConstItem, Doc, EnumItem, FnItem, Import, ImportName, Item, Module,
-    PoolItem, Span, StructItem,
-};
+use super::ast::*;
 use super::lexer::{Token, TokenKind};
 
 #[derive(Debug)]
@@ -30,9 +37,42 @@ pub fn parse(tokens: Vec<Token>) -> Result<Module, ParseError> {
     Parser::new(tokens).parse_module()
 }
 
+/// Parses a bare sequence of items and/or statements with no `module`
+/// header — used for corpus doc-blocks that are illustrative fragments
+/// rather than complete files. Discards the result: callers only care
+/// whether the fragment parses.
+pub fn parse_fragment(tokens: Vec<Token>) -> Result<(), ParseError> {
+    Parser::new(tokens).parse_fragment_body()
+}
+
+/// Picks `parse` or `parse_fragment` based on whether the token stream's
+/// first substantive token is the `module` keyword.
+pub fn parse_any(tokens: Vec<Token>) -> Result<(), ParseError> {
+    let is_module = tokens
+        .iter()
+        .find(|t| t.kind != TokenKind::DocComment)
+        .map(|t| t.kind == TokenKind::Keyword && t.text == "module")
+        .unwrap_or(false);
+    if is_module {
+        parse(tokens)?;
+    } else {
+        parse_fragment(tokens)?;
+    }
+    Ok(())
+}
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Nesting depth of "embedded" statement suites — a `|params|: suite`
+    /// (or other colon-suite) sitting inside an enclosing `()[]{}` where the
+    /// lexer has suppressed NEWLINE/INDENT/DEDENT entirely (module doc
+    /// comment above, and `parse_stmt_suite`). Statements run back-to-back
+    /// there with no separator; `end_of_simple_stmt` only tolerates a
+    /// missing terminator while this is nonzero — at true depth 0 the
+    /// lexer always inserts a real `Newline`, so two statements jammed onto
+    /// one physical line remain a real error outside this context.
+    inline_depth: u32,
 }
 
 impl Parser {
@@ -41,7 +81,11 @@ impl Parser {
             !tokens.is_empty() && tokens.last().unwrap().kind == TokenKind::Eof,
             "token stream must end with Eof"
         );
-        Parser { tokens, pos: 0 }
+        Parser {
+            tokens,
+            pos: 0,
+            inline_depth: 0,
+        }
     }
 
     // --- low-level cursor ---------------------------------------------
@@ -154,6 +198,21 @@ impl Parser {
         }
     }
 
+    /// Like `expect_ident`, but also accepts a `Keyword` token (its exact
+    /// text becomes the name). Used after `.` for field/method names: a
+    /// method can be named `read` (`interrupt_status.read()`), colliding
+    /// with the access-mode keyword — the docs' own worked example does
+    /// this, so member names are a separate namespace from reserved words.
+    fn expect_word(&mut self, what: &str) -> Result<(Span, String), ParseError> {
+        if self.at_kind(TokenKind::Ident) || self.at_kind(TokenKind::Keyword) {
+            let span = self.peek_span();
+            let text = self.bump().text;
+            Ok((span, text))
+        } else {
+            Err(self.error_here(format!("expected {what}, found `{}`", self.peek_display())))
+        }
+    }
+
     fn expect_newline(&mut self) -> Result<(), ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
@@ -166,8 +225,72 @@ impl Parser {
         }
     }
 
-    // --- module ----------------------------------------------------------
+    fn expect_indent(&mut self) -> Result<(), ParseError> {
+        if self.at_kind(TokenKind::Indent) {
+            self.bump();
+            Ok(())
+        } else {
+            Err(self.error_here(format!(
+                "expected an indented block, found `{}`",
+                self.peek_display()
+            )))
+        }
+    }
 
+    /// A `Dedent` is always immediately followed by a `Newline` in the
+    /// token stream (lexer.rs `handle_indentation`); consume both.
+    fn expect_dedent(&mut self) -> Result<(), ParseError> {
+        if !self.at_kind(TokenKind::Dedent) {
+            return Err(self.error_here(format!(
+                "expected the block to end, found `{}`",
+                self.peek_display()
+            )));
+        }
+        self.bump();
+        if self.at_kind(TokenKind::Newline) {
+            self.bump();
+        }
+        Ok(())
+    }
+
+    /// A dotted-path segment is any word token — `Ident` or `Keyword`.
+    /// Module/import paths are a separate namespace from ordinary
+    /// identifiers (02-language.md §2), and the docs' own worked example
+    /// uses a reserved word as a path segment (`from runtime.pool import
+    /// Pool`); rejecting it would make the parser wrong, not the doc.
+    fn parse_path_segment(&mut self) -> Result<(Span, String), ParseError> {
+        if self.at_kind(TokenKind::Ident) || self.at_kind(TokenKind::Keyword) {
+            let span = self.peek_span();
+            let text = self.bump().text;
+            Ok((span, text))
+        } else {
+            Err(self.error_here(format!(
+                "expected a path segment, found `{}`",
+                self.peek_display()
+            )))
+        }
+    }
+
+    fn parse_dotted_path(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut path = vec![self.parse_path_segment()?.1];
+        while self.at_op(".") {
+            self.bump();
+            path.push(self.parse_path_segment()?.1);
+        }
+        Ok(path)
+    }
+}
+
+/// `## text` conventionally has one space after the markers; the lexer
+/// keeps it raw (it is not the lexer's job to decode), so the parser strips
+/// exactly one leading space, if present, when building a `Doc` node.
+fn strip_doc_leading_space(raw: &str) -> String {
+    raw.strip_prefix(' ').unwrap_or(raw).to_string()
+}
+
+// --- module ------------------------------------------------------------
+
+impl Parser {
     fn parse_module(&mut self) -> Result<Module, ParseError> {
         let doc = self.collect_leading_doc();
         let span = self.expect_keyword("module")?;
@@ -207,16 +330,7 @@ impl Parser {
         })
     }
 
-    fn parse_dotted_path(&mut self) -> Result<Vec<String>, ParseError> {
-        let mut path = vec![self.expect_ident("a path segment")?.1];
-        while self.at_op(".") {
-            self.bump();
-            path.push(self.expect_ident("a path segment")?.1);
-        }
-        Ok(path)
-    }
-
-    // --- imports -----------------------------------------------------------
+    // --- imports ---------------------------------------------------------
 
     fn parse_imports(&mut self) -> Result<Vec<Import>, ParseError> {
         let mut imports = Vec::new();
@@ -291,8 +405,58 @@ impl Parser {
         Ok(ImportName { span, name, alias })
     }
 
-    // --- top-level items -----------------------------------------------
+    // --- doc/attrs ---------------------------------------------------------
 
+    /// A run of `##` doc-comment lines and `@name(...)` attributes,
+    /// interleaved in any order, immediately before a declaration. Doc
+    /// lines join with `\n`; attributes are parsed as structured nodes in
+    /// source order.
+    fn collect_doc_and_attrs(&mut self) -> Result<(Option<Doc>, Vec<Attr>), ParseError> {
+        let mut doc_span = None;
+        let mut doc_lines = Vec::new();
+        let mut attrs = Vec::new();
+        loop {
+            if self.at_kind(TokenKind::DocComment) {
+                if doc_span.is_none() {
+                    doc_span = Some(self.peek_span());
+                }
+                doc_lines.push(strip_doc_leading_space(&self.bump().text));
+                continue;
+            }
+            if self.at_op("@") {
+                attrs.push(self.parse_attr()?);
+                // An attribute occupies its own logical line (unlike a doc
+                // comment, it is not layout-transparent in the lexer).
+                if self.at_kind(TokenKind::Newline) {
+                    self.bump();
+                }
+                continue;
+            }
+            break;
+        }
+        let doc = doc_span.map(|span| Doc {
+            span,
+            text: doc_lines.join("\n"),
+        });
+        Ok((doc, attrs))
+    }
+
+    /// `@name` or `@name(arg, key=value, ...)` (02-language.md §13).
+    fn parse_attr(&mut self) -> Result<Attr, ParseError> {
+        let span = self.expect_op("@")?;
+        let (_, name) = self.expect_ident("an attribute name")?;
+        let args = if self.at_op("(") {
+            self.parse_call_args()?
+        } else {
+            Vec::new()
+        };
+        Ok(Attr { span, name, args })
+    }
+}
+
+// --- top-level items ---------------------------------------------------
+
+impl Parser {
     fn parse_items(&mut self) -> Result<Vec<Item>, ParseError> {
         let mut items = Vec::new();
         loop {
@@ -313,69 +477,30 @@ impl Parser {
         Ok(items)
     }
 
-    /// A run of `##` doc-comment lines and `@name(...)` attributes,
-    /// interleaved in any order, immediately before a declaration. Doc
-    /// lines join with `\n`; attributes are recorded in source order as raw
-    /// text (item D interprets them — this is recognize-and-record only).
-    fn collect_doc_and_attrs(&mut self) -> Result<(Option<Doc>, Vec<Attr>), ParseError> {
-        let mut doc_span = None;
-        let mut doc_lines = Vec::new();
-        let mut attrs = Vec::new();
+    /// Items nested inside a `comptime if`/`comptime else` branch at module
+    /// scope: same shape as `parse_items`, bounded by `Dedent` instead of
+    /// `Eof`. Assumes the caller has already consumed the branch's `:`.
+    fn parse_indented_items(&mut self) -> Result<Vec<Item>, ParseError> {
+        self.expect_newline()?;
+        self.expect_indent()?;
+        let mut items = Vec::new();
         loop {
-            if self.at_kind(TokenKind::DocComment) {
-                if doc_span.is_none() {
-                    doc_span = Some(self.peek_span());
+            if self.at_kind(TokenKind::Dedent) {
+                break;
+            }
+            let (doc, attrs) = self.collect_doc_and_attrs()?;
+            if self.at_kind(TokenKind::Dedent) {
+                if doc.is_some() || !attrs.is_empty() {
+                    return Err(
+                        self.error_here("expected a declaration after doc comment/attribute")
+                    );
                 }
-                doc_lines.push(strip_doc_leading_space(&self.bump().text));
-                continue;
+                break;
             }
-            if self.at_op("@") {
-                attrs.push(self.parse_attr()?);
-                continue;
-            }
-            break;
+            items.push(self.parse_item(doc, attrs)?);
         }
-        let doc = doc_span.map(|span| Doc {
-            span,
-            text: doc_lines.join("\n"),
-        });
-        Ok((doc, attrs))
-    }
-
-    /// `@name` or `@name(...)`, recorded verbatim as raw text — the
-    /// argument list is opaque to item C, only balanced for skipping.
-    fn parse_attr(&mut self) -> Result<Attr, ParseError> {
-        let span = self.expect_op("@")?;
-        let (_, name) = self.expect_ident("an attribute name")?;
-        let mut text = format!("@{name}");
-        if self.at_op("(") {
-            self.bump();
-            text.push('(');
-            let mut depth: u32 = 1;
-            let mut first = true;
-            loop {
-                if self.at_kind(TokenKind::Eof) {
-                    return Err(self.error_here("unterminated attribute argument list"));
-                }
-                if self.at_op("(") {
-                    depth += 1;
-                } else if self.at_op(")") {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.bump();
-                        text.push(')');
-                        break;
-                    }
-                }
-                if !first {
-                    text.push(' ');
-                }
-                text.push_str(&self.peek_text());
-                first = false;
-                self.bump();
-            }
-        }
-        Ok(Attr { span, text })
+        self.expect_dedent()?;
+        Ok(items)
     }
 
     fn parse_item(&mut self, doc: Option<Doc>, attrs: Vec<Attr>) -> Result<Item, ParseError> {
@@ -389,86 +514,40 @@ impl Parser {
         if self.at_keyword("async") && self.peek_is_keyword_at(1, "fn") {
             self.bump(); // async
             self.bump(); // fn
-            let (_, name) = self.expect_ident("a function name")?;
-            let todo = self.skip_declaration_remainder();
-            return Ok(Item::Fn(FnItem {
-                span: start,
-                name,
-                is_pub,
-                is_async: true,
-                doc,
-                attrs,
-                todo,
-            }));
+            return self
+                .parse_fn_item(start, is_pub, true, doc, attrs)
+                .map(Item::Fn);
         }
         if self.at_keyword("fn") {
             self.bump();
-            let (_, name) = self.expect_ident("a function name")?;
-            let todo = self.skip_declaration_remainder();
-            return Ok(Item::Fn(FnItem {
-                span: start,
-                name,
-                is_pub,
-                is_async: false,
-                doc,
-                attrs,
-                todo,
-            }));
+            return self
+                .parse_fn_item(start, is_pub, false, doc, attrs)
+                .map(Item::Fn);
         }
         if self.at_keyword("resource") && self.peek_is_keyword_at(1, "struct") {
             self.bump(); // resource
             self.bump(); // struct
-            let (_, name) = self.expect_ident("a struct name")?;
-            let todo = self.skip_declaration_remainder();
-            return Ok(Item::Struct(StructItem {
-                span: start,
-                name,
-                is_pub,
-                is_resource: true,
-                doc,
-                attrs,
-                todo,
-            }));
+            return self
+                .parse_struct_item(start, is_pub, true, doc, attrs)
+                .map(Item::Struct);
         }
         if self.at_keyword("struct") {
             self.bump();
-            let (_, name) = self.expect_ident("a struct name")?;
-            let todo = self.skip_declaration_remainder();
-            return Ok(Item::Struct(StructItem {
-                span: start,
-                name,
-                is_pub,
-                is_resource: false,
-                doc,
-                attrs,
-                todo,
-            }));
+            return self
+                .parse_struct_item(start, is_pub, false, doc, attrs)
+                .map(Item::Struct);
         }
         if self.at_keyword("enum") {
             self.bump();
-            let (_, name) = self.expect_ident("an enum name")?;
-            let todo = self.skip_declaration_remainder();
-            return Ok(Item::Enum(EnumItem {
-                span: start,
-                name,
-                is_pub,
-                doc,
-                attrs,
-                todo,
-            }));
+            return self
+                .parse_enum_item(start, is_pub, doc, attrs)
+                .map(Item::Enum);
         }
         if self.at_keyword("const") {
             self.bump();
-            let (_, name) = self.expect_ident("a const name")?;
-            let todo = self.skip_declaration_remainder();
-            return Ok(Item::Const(ConstItem {
-                span: start,
-                name,
-                is_pub,
-                doc,
-                attrs,
-                todo,
-            }));
+            return self
+                .parse_const_item(start, is_pub, doc, attrs)
+                .map(Item::Const);
         }
         if self.at_keyword("pool") {
             if is_pub {
@@ -476,13 +555,12 @@ impl Parser {
             }
             self.bump();
             let (_, name) = self.expect_ident("a pool name")?;
-            let todo = self.skip_declaration_remainder();
+            self.expect_newline()?;
             return Ok(Item::Pool(PoolItem {
                 span: start,
                 name,
                 doc,
                 attrs,
-                todo,
             }));
         }
         if self.at_keyword("comptime") && self.peek_is_keyword_at(1, "if") {
@@ -491,13 +569,9 @@ impl Parser {
             }
             self.bump(); // comptime
             self.bump(); // if
-            let todo = self.skip_declaration_remainder();
-            return Ok(Item::ComptimeIf(ComptimeIfItem {
-                span: start,
-                doc,
-                attrs,
-                todo,
-            }));
+            return self
+                .parse_comptime_if_item(start, doc, attrs)
+                .map(Item::ComptimeIf);
         }
 
         Err(self.error_here(format!(
@@ -506,73 +580,1886 @@ impl Parser {
         )))
     }
 
-    /// Skips from the current token to the end of the declaration whose
-    /// header was just parsed: either the rest of a one-line declaration (up
-    /// to and including its `Newline`) or a full indented suite (tracking
-    /// `Indent`/`Dedent` depth so a nested suite is skipped correctly too).
-    /// Returns the span of the first skipped token, or `None` if nothing
-    /// followed the header but its terminating newline (e.g. a bare `pool
-    /// Name`) — the caller uses this to decide whether a `Todo` node is
-    /// honest (there was something left unparsed) or would just be noise.
-    fn skip_declaration_remainder(&mut self) -> Option<Span> {
-        let mut first: Option<Span> = None;
-        let mut depth: i32 = 0;
-        loop {
-            match self.peek_kind() {
-                TokenKind::Eof => break,
-                TokenKind::Indent => {
-                    if first.is_none() {
-                        first = Some(self.peek_span());
-                    }
-                    depth += 1;
-                    self.bump();
-                }
-                TokenKind::Dedent => {
-                    depth -= 1;
-                    self.bump();
-                    if depth <= 0 {
-                        if self.at_kind(TokenKind::Newline) {
-                            self.bump();
-                        }
-                        break;
-                    }
-                }
-                TokenKind::Newline => {
-                    self.bump();
-                    // A one-line declaration ends at its newline — unless a
-                    // suite opens right after (the common case: a `:`
-                    // header), in which case the `Indent` branch above
-                    // picks up the depth tracking on the next iteration.
-                    if depth == 0 && !self.at_kind(TokenKind::Indent) {
-                        break;
-                    }
-                }
-                _ => {
-                    if first.is_none() {
-                        first = Some(self.peek_span());
-                    }
-                    self.bump();
-                }
-            }
-        }
-        first
+    fn parse_comptime_if_item(
+        &mut self,
+        start: Span,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<ComptimeIfItem, ParseError> {
+        let cond = self.parse_or()?;
+        self.expect_op(":")?;
+        let then_branch = self.parse_indented_items()?;
+        let else_branch = if self.at_keyword("comptime") && self.peek_is_keyword_at(1, "else") {
+            self.bump();
+            self.bump();
+            self.expect_op(":")?;
+            Some(self.parse_indented_items()?)
+        } else {
+            None
+        };
+        Ok(ComptimeIfItem {
+            span: start,
+            doc,
+            attrs,
+            cond,
+            then_branch,
+            else_branch,
+        })
+    }
+
+    fn parse_const_item(
+        &mut self,
+        start: Span,
+        is_pub: bool,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<ConstItem, ParseError> {
+        let (_, name) = self.expect_ident("a const name")?;
+        let ty = if self.at_op(":") {
+            self.bump();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect_op("=")?;
+        let value = self.parse_or()?;
+        self.expect_newline()?;
+        Ok(ConstItem {
+            span: start,
+            name,
+            is_pub,
+            doc,
+            attrs,
+            ty,
+            value,
+        })
     }
 }
 
-/// `## text` conventionally has one space after the markers; the lexer
-/// keeps it raw (it is not the lexer's job to decode), so the parser strips
-/// exactly one leading space, if present, when building a `Doc` node.
-fn strip_doc_leading_space(raw: &str) -> String {
-    raw.strip_prefix(' ').unwrap_or(raw).to_string()
+// --- fragments (corpus doc blocks with no `module` header) -------------
+
+impl Parser {
+    fn parse_fragment_body(&mut self) -> Result<(), ParseError> {
+        loop {
+            if self.at_kind(TokenKind::Eof) {
+                break;
+            }
+            let (doc, attrs) = self.collect_doc_and_attrs()?;
+            if self.at_kind(TokenKind::Eof) {
+                if doc.is_some() || !attrs.is_empty() {
+                    return Err(self.error_here(
+                        "expected a declaration or statement after doc comment/attribute",
+                    ));
+                }
+                break;
+            }
+            if self.looks_like_item_start() {
+                self.parse_item(doc, attrs)?;
+            } else {
+                if doc.is_some() || !attrs.is_empty() {
+                    return Err(
+                        self.error_here("doc comments/attributes may only precede a declaration")
+                    );
+                }
+                self.parse_stmt()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn looks_like_item_start(&self) -> bool {
+        if self.at_keyword("pub") {
+            return true;
+        }
+        if self.at_keyword("async") && self.peek_is_keyword_at(1, "fn") {
+            return true;
+        }
+        if self.at_keyword("fn") {
+            return true;
+        }
+        if self.at_keyword("resource") && self.peek_is_keyword_at(1, "struct") {
+            return true;
+        }
+        if self.at_keyword("struct") {
+            return true;
+        }
+        if self.at_keyword("enum") {
+            return true;
+        }
+        if self.at_keyword("const") {
+            return true;
+        }
+        if self.at_keyword("pool") {
+            return true;
+        }
+        false
+    }
+}
+
+// --- generics, parameters, functions -------------------------------------
+
+impl Parser {
+    /// `[T, const N: usize]`, or nothing.
+    fn parse_generic_params(&mut self) -> Result<Vec<GenericParam>, ParseError> {
+        if !self.at_op("[") {
+            return Ok(Vec::new());
+        }
+        self.bump();
+        let mut params = Vec::new();
+        loop {
+            if self.at_op("]") {
+                break;
+            }
+            let span = self.peek_span();
+            if self.at_keyword("const") {
+                self.bump();
+                let (_, name) = self.expect_ident("a const generic parameter name")?;
+                self.expect_op(":")?;
+                let ty = self.parse_type()?;
+                params.push(GenericParam::Const { span, name, ty });
+            } else {
+                let (_, name) = self.expect_ident("a generic parameter name")?;
+                params.push(GenericParam::Type { span, name });
+            }
+            if self.at_op(",") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_op("]")?;
+        Ok(params)
+    }
+
+    fn parse_optional_mode(&mut self) -> AccessMode {
+        if self.at_keyword("read") {
+            self.bump();
+            AccessMode::Read
+        } else if self.at_keyword("mut") {
+            self.bump();
+            AccessMode::Mut
+        } else if self.at_keyword("take") {
+            self.bump();
+            AccessMode::Take
+        } else {
+            AccessMode::Read
+        }
+    }
+
+    /// `(params...)`, with the first parameter recognized as the receiver
+    /// when it is a bare (possibly mode-prefixed) `self` (02-language.md
+    /// §5.1).
+    fn parse_param_list(&mut self) -> Result<(Option<Receiver>, Vec<Param>), ParseError> {
+        self.expect_op("(")?;
+        let mut receiver = None;
+        let mut params = Vec::new();
+        let mut first = true;
+        loop {
+            if self.at_op(")") {
+                break;
+            }
+            let pspan = self.peek_span();
+            let mode = self.parse_optional_mode();
+            if first && self.at_keyword("self") {
+                self.bump();
+                receiver = Some(Receiver { span: pspan, mode });
+            } else {
+                let (_, name) = self.expect_ident("a parameter name")?;
+                self.expect_op(":")?;
+                let ty = self.parse_type()?;
+                let default = if self.at_op("=") {
+                    self.bump();
+                    Some(self.parse_or()?)
+                } else {
+                    None
+                };
+                params.push(Param {
+                    span: pspan,
+                    mode,
+                    name,
+                    ty,
+                    default,
+                });
+            }
+            first = false;
+            if self.at_op(",") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_op(")")?;
+        Ok((receiver, params))
+    }
+
+    fn parse_fn_item(
+        &mut self,
+        start: Span,
+        is_pub: bool,
+        is_async: bool,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<FnItem, ParseError> {
+        // A word, not strictly an `Ident`: the docs' own conversion-method
+        // convention (02-language.md §7.4, §7.5) names a method `from`,
+        // which is otherwise a reserved word.
+        let (_, name) = self.expect_word("a function name")?;
+        let generics = self.parse_generic_params()?;
+        let (receiver, params) = self.parse_param_list()?;
+        let (ret, body) = self.parse_fn_tail()?;
+        Ok(FnItem {
+            span: start,
+            name,
+            is_pub,
+            is_async,
+            doc,
+            attrs,
+            generics,
+            receiver,
+            params,
+            ret,
+            body,
+        })
+    }
+
+    /// The `-> Ret: body` tail shared by `fn`/`init`, called right after the
+    /// closing `)` of the parameter list. Section 1 allows the header to
+    /// continue onto an indented line beginning with `->`; when it does,
+    /// the continuation shares one indentation level with the body itself
+    /// (there is no separate INDENT/DEDENT pair for the arrow line). A
+    /// header with neither a suite nor a one-line body (bare `fn NAME(...)
+    /// [-> Ret]` followed directly by a newline) is accepted with `body =
+    /// None` — a few library-contract tables in the docs show bare method
+    /// signatures this way (e.g. 05-library.md §8's operator-method table)
+    /// to describe a desugaring target, not a real declaration; the docs
+    /// are otherwise explicit that every real function has a body, so this
+    /// is a deliberately narrow, fail-open-on-syntax/fail-closed-on-
+    /// semantics allowance (a bodyless `fn` is syntactically well formed;
+    /// whether one may exist for real is a later milestone's question).
+    fn parse_fn_tail(&mut self) -> Result<(Option<Type>, Option<Vec<Stmt>>), ParseError> {
+        if self.at_kind(TokenKind::Newline) {
+            self.bump();
+            self.expect_indent()?;
+            let ret = if self.at_op("->") {
+                self.bump();
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            self.expect_op(":")?;
+            self.expect_newline()?;
+            let body = self.parse_stmts_until_dedent()?;
+            self.expect_dedent()?;
+            Ok((ret, Some(body)))
+        } else {
+            let ret = if self.at_op("->") {
+                self.bump();
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            if self.at_op(":") {
+                self.bump();
+                let body = self.parse_stmt_suite()?;
+                Ok((ret, Some(body)))
+            } else {
+                self.expect_newline()?;
+                Ok((ret, None))
+            }
+        }
+    }
+
+    fn parse_init(&mut self, doc: Option<Doc>, attrs: Vec<Attr>) -> Result<InitItem, ParseError> {
+        let span = self.expect_keyword("init")?;
+        let (receiver, params) = self.parse_param_list()?;
+        let receiver =
+            receiver.ok_or_else(|| self.error_here("`init` must declare a `self` receiver"))?;
+        let (ret, body) = self.parse_fn_tail()?;
+        let body = body.ok_or_else(|| self.error_here("`init` requires a body"))?;
+        Ok(InitItem {
+            span,
+            doc,
+            attrs,
+            receiver,
+            params,
+            ret,
+            body,
+        })
+    }
+}
+
+// --- struct / enum bodies --------------------------------------------------
+
+impl Parser {
+    fn parse_optional_deriving(&mut self) -> Result<Vec<String>, ParseError> {
+        if !self.at_keyword("deriving") {
+            return Ok(Vec::new());
+        }
+        self.bump();
+        self.expect_op("(")?;
+        let mut names = Vec::new();
+        loop {
+            if self.at_op(")") {
+                break;
+            }
+            names.push(self.expect_ident("a derived trait name")?.1);
+            if self.at_op(",") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_op(")")?;
+        Ok(names)
+    }
+
+    fn parse_struct_item(
+        &mut self,
+        start: Span,
+        is_pub: bool,
+        is_resource: bool,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<StructItem, ParseError> {
+        let (_, name) = self.expect_ident("a struct name")?;
+        let generics = self.parse_generic_params()?;
+        let deriving = self.parse_optional_deriving()?;
+        self.expect_op(":")?;
+        let members = self.parse_indented_members()?;
+        Ok(StructItem {
+            span: start,
+            name,
+            is_pub,
+            is_resource,
+            doc,
+            attrs,
+            generics,
+            deriving,
+            members,
+        })
+    }
+
+    /// Assumes the caller has already consumed the body's leading `:`.
+    fn parse_indented_members(&mut self) -> Result<Vec<Member>, ParseError> {
+        self.expect_newline()?;
+        self.expect_indent()?;
+        let mut members = Vec::new();
+        loop {
+            if self.at_kind(TokenKind::Dedent) {
+                break;
+            }
+            let (doc, attrs) = self.collect_doc_and_attrs()?;
+            if self.at_kind(TokenKind::Dedent) {
+                if doc.is_some() || !attrs.is_empty() {
+                    return Err(self.error_here("expected a member after doc comment/attribute"));
+                }
+                break;
+            }
+            members.push(self.parse_member(doc, attrs)?);
+        }
+        self.expect_dedent()?;
+        Ok(members)
+    }
+
+    fn parse_member(&mut self, doc: Option<Doc>, attrs: Vec<Attr>) -> Result<Member, ParseError> {
+        let start = self.peek_span();
+        if self.at_keyword("pool") {
+            self.bump();
+            let (_, name) = self.expect_ident("a pool name")?;
+            self.expect_newline()?;
+            return Ok(Member::Pool(PoolItem {
+                span: start,
+                name,
+                doc,
+                attrs,
+            }));
+        }
+        if self.at_keyword("comptime") && self.peek_is_keyword_at(1, "if") {
+            self.bump();
+            self.bump();
+            return self
+                .parse_comptime_if_member(start, doc, attrs)
+                .map(Member::ComptimeIf);
+        }
+        if self.at_keyword("init") {
+            return self.parse_init(doc, attrs).map(Member::Init);
+        }
+        let mut is_pub = false;
+        if self.at_keyword("pub") {
+            self.bump();
+            is_pub = true;
+        }
+        if self.at_keyword("async") && self.peek_is_keyword_at(1, "fn") {
+            self.bump();
+            self.bump();
+            return self
+                .parse_fn_item(start, is_pub, true, doc, attrs)
+                .map(Member::Fn);
+        }
+        if self.at_keyword("fn") {
+            self.bump();
+            return self
+                .parse_fn_item(start, is_pub, false, doc, attrs)
+                .map(Member::Fn);
+        }
+        let (_, name) = self.expect_ident("a field name")?;
+        self.expect_op(":")?;
+        let ty = self.parse_type()?;
+        let default = if self.at_op("=") {
+            self.bump();
+            Some(self.parse_or()?)
+        } else {
+            None
+        };
+        self.expect_newline()?;
+        Ok(Member::Field(FieldItem {
+            span: start,
+            name,
+            is_pub,
+            doc,
+            attrs,
+            ty,
+            default,
+        }))
+    }
+
+    fn parse_comptime_if_member(
+        &mut self,
+        start: Span,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<ComptimeIfMember, ParseError> {
+        let cond = self.parse_or()?;
+        self.expect_op(":")?;
+        let then_branch = self.parse_indented_members()?;
+        let else_branch = if self.at_keyword("comptime") && self.peek_is_keyword_at(1, "else") {
+            self.bump();
+            self.bump();
+            self.expect_op(":")?;
+            Some(self.parse_indented_members()?)
+        } else {
+            None
+        };
+        Ok(ComptimeIfMember {
+            span: start,
+            doc,
+            attrs,
+            cond,
+            then_branch,
+            else_branch,
+        })
+    }
+
+    fn parse_enum_item(
+        &mut self,
+        start: Span,
+        is_pub: bool,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<EnumItem, ParseError> {
+        let (_, name) = self.expect_ident("an enum name")?;
+        let generics = self.parse_generic_params()?;
+        let deriving = self.parse_optional_deriving()?;
+        self.expect_op(":")?;
+        let variants = self.parse_indented_variants()?;
+        Ok(EnumItem {
+            span: start,
+            name,
+            is_pub,
+            doc,
+            attrs,
+            generics,
+            deriving,
+            variants,
+        })
+    }
+
+    fn parse_indented_variants(&mut self) -> Result<Vec<Variant>, ParseError> {
+        self.expect_newline()?;
+        self.expect_indent()?;
+        let mut variants = Vec::new();
+        loop {
+            if self.at_kind(TokenKind::Dedent) {
+                break;
+            }
+            variants.push(self.parse_variant()?);
+        }
+        self.expect_dedent()?;
+        Ok(variants)
+    }
+
+    fn parse_variant(&mut self) -> Result<Variant, ParseError> {
+        let start = self.peek_span();
+        let (_, name) = self.expect_ident("a variant name")?;
+        let payload = if self.at_op("(") {
+            self.bump();
+            if self.at_op(")") {
+                self.bump();
+                VariantPayload::Tuple(Vec::new())
+            } else if self.at_kind(TokenKind::Ident)
+                && self.peek_at(1).kind == TokenKind::Op
+                && self.peek_at(1).text == ":"
+            {
+                let mut fields = Vec::new();
+                loop {
+                    if self.at_op(")") {
+                        break;
+                    }
+                    let fspan = self.peek_span();
+                    let (_, fname) = self.expect_ident("a variant field name")?;
+                    self.expect_op(":")?;
+                    let ty = self.parse_type()?;
+                    fields.push(VariantField {
+                        span: fspan,
+                        name: fname,
+                        ty,
+                    });
+                    if self.at_op(",") {
+                        self.bump();
+                        continue;
+                    }
+                    break;
+                }
+                self.expect_op(")")?;
+                VariantPayload::Named(fields)
+            } else {
+                let mut types = vec![self.parse_type()?];
+                while self.at_op(",") {
+                    self.bump();
+                    if self.at_op(")") {
+                        break;
+                    }
+                    types.push(self.parse_type()?);
+                }
+                self.expect_op(")")?;
+                VariantPayload::Tuple(types)
+            }
+        } else {
+            VariantPayload::None
+        };
+        self.expect_newline()?;
+        Ok(Variant {
+            span: start,
+            name,
+            payload,
+        })
+    }
+}
+
+// --- types (02-language.md §6) ------------------------------------------
+
+impl Parser {
+    fn parse_type(&mut self) -> Result<Type, ParseError> {
+        let span = self.peek_span();
+        if self.at_op("[") {
+            self.bump();
+            let elem = self.parse_type()?;
+            self.expect_op(";")?;
+            let len = self.parse_or()?;
+            self.expect_op("]")?;
+            return Ok(Type::Array(Box::new(ArrayType { span, elem, len })));
+        }
+        if self.at_op("(") {
+            self.bump();
+            if self.at_op(")") {
+                self.bump();
+                return Ok(Type::Tuple(TupleType {
+                    span,
+                    elems: Vec::new(),
+                }));
+            }
+            let first = self.parse_type()?;
+            if self.at_op(")") {
+                self.bump();
+                return Ok(first); // pure grouping: `(u64)` == `u64`
+            }
+            let mut elems = vec![first];
+            loop {
+                if self.at_op(",") {
+                    self.bump();
+                    if self.at_op(")") {
+                        break;
+                    }
+                    elems.push(self.parse_type()?);
+                } else {
+                    break;
+                }
+            }
+            self.expect_op(")")?;
+            return Ok(Type::Tuple(TupleType { span, elems }));
+        }
+        if self.at_keyword("own") {
+            self.bump();
+            self.expect_op("[")?;
+            let pool = self.parse_dotted_path()?;
+            self.expect_op("]")?;
+            let inner = self.parse_type()?;
+            return Ok(Type::Own(Box::new(OwnType { span, pool, inner })));
+        }
+        if self.at_keyword("fn") {
+            self.bump();
+            self.expect_op("(")?;
+            let mut params = Vec::new();
+            loop {
+                if self.at_op(")") {
+                    break;
+                }
+                let pspan = self.peek_span();
+                let mode = self.parse_optional_mode();
+                let ty = self.parse_type()?;
+                params.push(FnTypeParam {
+                    span: pspan,
+                    mode,
+                    ty,
+                });
+                if self.at_op(",") {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+            self.expect_op(")")?;
+            let ret = if self.at_op("->") {
+                self.bump();
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            return Ok(Type::Fn(Box::new(FnType { span, params, ret })));
+        }
+        let name = if self.at_kind(TokenKind::Ident) {
+            self.bump().text
+        } else if self.at_keyword("unit") {
+            self.bump();
+            "unit".to_string()
+        } else if self.at_keyword("self") {
+            self.bump();
+            "self".to_string()
+        } else {
+            return Err(
+                self.error_here(format!("expected a type, found `{}`", self.peek_display()))
+            );
+        };
+        let args = if self.at_op("[") {
+            self.parse_generic_args()?
+        } else {
+            Vec::new()
+        };
+        Ok(Type::Named(NamedType { span, name, args }))
+    }
+
+    fn parse_generic_args(&mut self) -> Result<Vec<GenericArg>, ParseError> {
+        self.expect_op("[")?;
+        let mut args = Vec::new();
+        loop {
+            if self.at_op("]") {
+                break;
+            }
+            args.push(self.parse_generic_arg()?);
+            if self.at_op(",") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_op("]")?;
+        Ok(args)
+    }
+
+    /// One generic argument at a use site: `..N` (bounded occupancy), a
+    /// type, or — since bounded-type parameter positions can also take a
+    /// plain comptime expression like `256.KiB` — a fallback to expression
+    /// parsing when the current token cannot start a type at all.
+    fn parse_generic_arg(&mut self) -> Result<GenericArg, ParseError> {
+        if self.at_op("..") {
+            self.bump();
+            let e = self.parse_or()?;
+            return Ok(GenericArg::Bound(e));
+        }
+        if matches!(
+            self.peek_kind(),
+            TokenKind::Int
+                | TokenKind::Float
+                | TokenKind::Str
+                | TokenKind::BStr
+                | TokenKind::FStr
+                | TokenKind::Char
+        ) || self.at_keyword("true")
+            || self.at_keyword("false")
+        {
+            let e = self.parse_or()?;
+            return Ok(GenericArg::Expr(e));
+        }
+        let ty = self.parse_type()?;
+        Ok(GenericArg::Type(ty))
+    }
+}
+
+// --- expressions (02-language.md §8.2) -----------------------------------
+//
+// Precedence, tightest first: member/call/index; unary `-` `~` `await`
+// `take`; postfix `?`; `* / % *%`; `+ - +% -%`; `<< >>`; `& ^ |`; ranges;
+// comparisons and `is`; `not`; `and`; `or`. Realized as a chain of
+// functions, loosest first (each calls the next-tighter one): parse_or ->
+// parse_and -> parse_not -> parse_compare -> parse_range -> parse_bitor ->
+// parse_shift -> parse_addsub -> parse_muldiv -> parse_try -> parse_unary
+// -> parse_postfix -> parse_primary. `await op()?` therefore parses as
+// `(await op())?`: parse_try parses one parse_unary (which parses `await`
+// around the postfix chain `op()`) and only then wraps the trailing `?`.
+
+impl Parser {
+    /// The general expression entry point used everywhere a bare expression
+    /// is expected (there is no separate "top-level expr" production).
+    fn parse_or(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_and()?;
+        while self.at_keyword("or") {
+            let span = self.peek_span();
+            self.bump();
+            let right = self.parse_and()?;
+            left = Expr::Or(span, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_not()?;
+        while self.at_keyword("and") {
+            let span = self.peek_span();
+            self.bump();
+            let right = self.parse_not()?;
+            left = Expr::And(span, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_not(&mut self) -> Result<Expr, ParseError> {
+        if self.at_keyword("not") {
+            let span = self.peek_span();
+            self.bump();
+            let inner = self.parse_not()?;
+            return Ok(Expr::Not(span, Box::new(inner)));
+        }
+        self.parse_compare()
+    }
+
+    /// Comparisons and `is` do not chain: at most one applies per level.
+    fn parse_compare(&mut self) -> Result<Expr, ParseError> {
+        let left = self.parse_range()?;
+        if self.at_keyword("is") {
+            let span = self.peek_span();
+            self.bump();
+            let pat = self.parse_pattern()?;
+            return Ok(Expr::Is(span, Box::new(left), Box::new(pat)));
+        }
+        const CMP_OPS: &[(&str, BinOp)] = &[
+            ("<=", BinOp::Le),
+            (">=", BinOp::Ge),
+            ("==", BinOp::Eq),
+            ("!=", BinOp::Ne),
+            ("<", BinOp::Lt),
+            (">", BinOp::Gt),
+        ];
+        for (op, bop) in CMP_OPS {
+            if self.at_op(op) {
+                let span = self.peek_span();
+                self.bump();
+                let right = self.parse_range()?;
+                return Ok(Expr::Binary(span, *bop, Box::new(left), Box::new(right)));
+            }
+        }
+        Ok(left)
+    }
+
+    /// Ranges do not chain either (no example combines more than one).
+    fn parse_range(&mut self) -> Result<Expr, ParseError> {
+        let left = self.parse_bitor()?;
+        if self.at_op("..") || self.at_op("..=") {
+            let inclusive = self.at_op("..=");
+            let span = self.peek_span();
+            self.bump();
+            let right = self.parse_bitor()?;
+            return Ok(Expr::Range(
+                span,
+                Box::new(left),
+                Box::new(right),
+                inclusive,
+            ));
+        }
+        Ok(left)
+    }
+
+    fn parse_bitor(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_shift()?;
+        loop {
+            let bop = if self.at_op("&") {
+                BinOp::BitAnd
+            } else if self.at_op("^") {
+                BinOp::BitXor
+            } else if self.at_op("|") {
+                BinOp::BitOr
+            } else {
+                break;
+            };
+            let span = self.peek_span();
+            self.bump();
+            let right = self.parse_shift()?;
+            left = Expr::Binary(span, bop, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_addsub()?;
+        loop {
+            let bop = if self.at_op("<<") {
+                BinOp::Shl
+            } else if self.at_op(">>") {
+                BinOp::Shr
+            } else {
+                break;
+            };
+            let span = self.peek_span();
+            self.bump();
+            let right = self.parse_addsub()?;
+            left = Expr::Binary(span, bop, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_addsub(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_muldiv()?;
+        loop {
+            let bop = if self.at_op("+%") {
+                BinOp::AddW
+            } else if self.at_op("-%") {
+                BinOp::SubW
+            } else if self.at_op("+") {
+                BinOp::Add
+            } else if self.at_op("-") {
+                BinOp::Sub
+            } else {
+                break;
+            };
+            let span = self.peek_span();
+            self.bump();
+            let right = self.parse_muldiv()?;
+            left = Expr::Binary(span, bop, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_muldiv(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_try()?;
+        loop {
+            let bop = if self.at_op("*%") {
+                BinOp::MulW
+            } else if self.at_op("*") {
+                BinOp::Mul
+            } else if self.at_op("/") {
+                BinOp::Div
+            } else if self.at_op("%") {
+                BinOp::Rem
+            } else {
+                break;
+            };
+            let span = self.peek_span();
+            self.bump();
+            let right = self.parse_try()?;
+            left = Expr::Binary(span, bop, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_try(&mut self) -> Result<Expr, ParseError> {
+        let mut e = self.parse_unary()?;
+        while self.at_op("?") {
+            let span = self.peek_span();
+            self.bump();
+            e = Expr::Try(span, Box::new(e));
+        }
+        Ok(e)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        if self.at_op("-") {
+            let span = self.peek_span();
+            self.bump();
+            let inner = self.parse_unary()?;
+            return Ok(Expr::Unary(span, UnaryOp::Neg, Box::new(inner)));
+        }
+        if self.at_op("~") {
+            let span = self.peek_span();
+            self.bump();
+            let inner = self.parse_unary()?;
+            return Ok(Expr::Unary(span, UnaryOp::BitNot, Box::new(inner)));
+        }
+        if self.at_keyword("await") {
+            let span = self.peek_span();
+            self.bump();
+            let inner = self.parse_unary()?;
+            return Ok(Expr::Unary(span, UnaryOp::Await, Box::new(inner)));
+        }
+        if self.at_keyword("take") {
+            let span = self.peek_span();
+            self.bump();
+            let inner = self.parse_unary()?;
+            if !is_place_expr(&inner) {
+                return Err(self.error_here(
+                    "operand of `take` must be a place expression (name, field, index)",
+                ));
+            }
+            return Ok(Expr::Unary(span, UnaryOp::Take, Box::new(inner)));
+        }
+        if self.at_keyword("send") {
+            let span = self.peek_span();
+            self.bump();
+            let inner = self.parse_unary()?;
+            if !matches!(inner, Expr::Call(..)) {
+                return Err(self.error_here("`send` requires a call expression"));
+            }
+            return Ok(Expr::Send(span, Box::new(inner)));
+        }
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        let mut e = self.parse_primary()?;
+        loop {
+            if self.at_op(".") {
+                self.bump();
+                let (span, name) = self.expect_word("a field or method name")?;
+                e = Expr::Field(Box::new(e), span, name);
+            } else if self.at_op("(") {
+                let span = self.peek_span();
+                let args = self.parse_call_args()?;
+                e = Expr::Call(Box::new(e), span, args);
+            } else if self.at_op("[") {
+                let span = self.peek_span();
+                self.bump();
+                let mut items = Vec::new();
+                loop {
+                    if self.at_op("]") {
+                        break;
+                    }
+                    items.push(self.parse_or()?);
+                    if self.at_op(",") {
+                        self.bump();
+                        continue;
+                    }
+                    break;
+                }
+                self.expect_op("]")?;
+                e = Expr::Index(Box::new(e), span, items);
+            } else {
+                break;
+            }
+        }
+        Ok(e)
+    }
+
+    /// `(args...)` shared by calls and attributes: `[label=][mut|take]
+    /// value`. The mirrored `mut`/`take` marker's operand must be a place
+    /// expression (name, field, index — parens are transparent, dropped at
+    /// parse time so a parenthesized place needs no extra case here).
+    fn parse_call_args(&mut self) -> Result<Vec<Arg>, ParseError> {
+        self.expect_op("(")?;
+        let mut args = Vec::new();
+        loop {
+            if self.at_op(")") {
+                break;
+            }
+            let span = self.peek_span();
+            // A label is any word token (`Ident` or `Keyword` — e.g.
+            // `VirtQueue.configure(pool=take control_pool, ...)` labels an
+            // argument `pool`, which is otherwise reserved) directly
+            // followed by `=` (never `==`, a distinct token).
+            let label = if matches!(self.peek_kind(), TokenKind::Ident | TokenKind::Keyword) && {
+                let t = self.peek_at(1);
+                t.kind == TokenKind::Op && t.text == "="
+            } {
+                Some(self.bump().text)
+            } else {
+                None
+            };
+            if label.is_some() {
+                self.bump(); // '='
+            }
+            let mode = if self.at_keyword("mut") {
+                self.bump();
+                AccessMode::Mut
+            } else if self.at_keyword("take") {
+                self.bump();
+                AccessMode::Take
+            } else {
+                AccessMode::Read
+            };
+            let value = self.parse_or()?;
+            if mode != AccessMode::Read && !is_place_expr(&value) {
+                return Err(self.error_here(format!(
+                    "operand of `{}` must be a place expression (name, field, index)",
+                    mode.as_str()
+                )));
+            }
+            args.push(Arg {
+                span,
+                label,
+                mode,
+                value,
+            });
+            if self.at_op(",") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_op(")")?;
+        Ok(args)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+        let span = self.peek_span();
+        match self.peek_kind() {
+            TokenKind::Int => Ok(Expr::Int(span, self.bump().text)),
+            TokenKind::Float => Ok(Expr::Float(span, self.bump().text)),
+            TokenKind::Str => Ok(Expr::Str(span, self.bump().text)),
+            TokenKind::BStr => Ok(Expr::BStr(span, self.bump().text)),
+            TokenKind::Char => Ok(Expr::Char(span, self.bump().text)),
+            TokenKind::FStr => {
+                let t = self.bump();
+                Ok(Expr::FStr(split_fstring(&t)))
+            }
+            TokenKind::Keyword if self.peek_text() == "true" => {
+                self.bump();
+                Ok(Expr::Bool(span, true))
+            }
+            TokenKind::Keyword if self.peek_text() == "false" => {
+                self.bump();
+                Ok(Expr::Bool(span, false))
+            }
+            TokenKind::Keyword if self.peek_text() == "unit" => {
+                self.bump();
+                Ok(Expr::Unit(span))
+            }
+            TokenKind::Keyword if self.peek_text() == "self" => {
+                self.bump();
+                Ok(Expr::Name(span, "self".to_string()))
+            }
+            // `pool(...)` (the scoped-pool constructor, 02-language.md §4)
+            // is an ordinary call in expression position; the `pool NAME`
+            // declaration form is recognized earlier, at item/member
+            // dispatch, so there is no ambiguity here.
+            TokenKind::Keyword if self.peek_text() == "pool" => {
+                self.bump();
+                Ok(Expr::Name(span, "pool".to_string()))
+            }
+            TokenKind::Ident => Ok(Expr::Name(span, self.bump().text)),
+            TokenKind::Op if self.peek_text() == "." => {
+                self.bump();
+                let (_, name) = self.expect_ident("a variant name")?;
+                let args = if self.at_op("(") {
+                    self.parse_call_args()?
+                } else {
+                    Vec::new()
+                };
+                Ok(Expr::DotVariant(span, name, args))
+            }
+            TokenKind::Op if self.peek_text() == "(" => {
+                self.bump();
+                if self.at_op(")") {
+                    self.bump();
+                    return Ok(Expr::Tuple(span, Vec::new()));
+                }
+                let first = self.parse_or()?;
+                if self.at_op(")") {
+                    self.bump();
+                    return Ok(first); // pure grouping
+                }
+                let mut elems = vec![first];
+                loop {
+                    if self.at_op(",") {
+                        self.bump();
+                        if self.at_op(")") {
+                            break;
+                        }
+                        elems.push(self.parse_or()?);
+                    } else {
+                        break;
+                    }
+                }
+                self.expect_op(")")?;
+                Ok(Expr::Tuple(span, elems))
+            }
+            TokenKind::Op if self.peek_text() == "[" => {
+                self.bump();
+                let mut elems = Vec::new();
+                loop {
+                    if self.at_op("]") {
+                        break;
+                    }
+                    elems.push(self.parse_or()?);
+                    if self.at_op(",") {
+                        self.bump();
+                        continue;
+                    }
+                    break;
+                }
+                self.expect_op("]")?;
+                Ok(Expr::List(span, elems))
+            }
+            TokenKind::Op if self.peek_text() == "|" => self.parse_closure(),
+            _ => Err(self.error_here(format!(
+                "expected an expression, found `{}`",
+                self.peek_display()
+            ))),
+        }
+    }
+
+    /// `|params| expr` or `|params|: suite` (02-language.md §8.3).
+    fn parse_closure(&mut self) -> Result<Expr, ParseError> {
+        let span = self.expect_op("|")?;
+        let mut params = Vec::new();
+        loop {
+            if self.at_op("|") {
+                break;
+            }
+            let pspan = self.peek_span();
+            let mode = self.parse_optional_mode();
+            let (_, name) = self.expect_ident("a closure parameter name")?;
+            let ty = if self.at_op(":") {
+                self.bump();
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            params.push(ClosureParam {
+                span: pspan,
+                mode,
+                name,
+                ty,
+            });
+            if self.at_op(",") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_op("|")?;
+        let body = if self.at_op(":") {
+            self.bump();
+            ClosureBody::Suite(self.parse_stmt_suite()?)
+        } else {
+            self.parse_closure_short_body()?
+        };
+        Ok(Expr::Closure(ClosureExpr { span, params, body }))
+    }
+
+    /// The `|params| BODY` short form's body: normally a pure expression,
+    /// but 02-language.md §8.3's own example body is a compound assignment
+    /// (`item.count += 1`) — assignment is a statement, not an expression,
+    /// in this grammar (§8.1). This deliberately does **not** go through
+    /// `parse_stmt`/`end_of_simple_stmt`: the closure is itself nested
+    /// inside a larger expression, so its body must not consume the
+    /// terminator that belongs to whatever statement encloses it.
+    fn parse_closure_short_body(&mut self) -> Result<ClosureBody, ParseError> {
+        let span = self.peek_span();
+        let target = self.parse_or()?;
+        if let Some(op) = self.assign_op_here() {
+            self.bump();
+            let value = self.parse_or()?;
+            return Ok(ClosureBody::Suite(vec![Stmt::Assign(AssignStmt {
+                span,
+                target,
+                ty: None,
+                op,
+                value,
+            })]));
+        }
+        Ok(ClosureBody::Expr(Box::new(target)))
+    }
+}
+
+/// One UTF-8 code point's byte length from its leading byte. Content here
+/// was already validated as UTF-8 by the lexer.
+fn utf8_char_len(b: u8) -> usize {
+    if b & 0x80 == 0 {
+        1
+    } else if b & 0xE0 == 0xC0 {
+        2
+    } else if b & 0xF0 == 0xE0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Segments an `FStr` token's raw text into literal/interpolation parts
+/// (02-language.md §1.1): `{{`/`}}` unescape to literal braces; a single
+/// `{` opens a balanced-brace interpolation extent. Interpolation contents
+/// are **not** parsed recursively in M1 (ast.rs `FStringPart` doc comment)
+/// — each `Interp` keeps its raw source text and span. Column arithmetic is
+/// byte-based, matching the lexer's own convention (lexer.rs `Lexer::bump`),
+/// so non-ASCII content inside the literal keeps consistent spans.
+fn split_fstring(token: &Token) -> FStringLit {
+    let raw = token.text.as_str();
+    // Strip the `f"` prefix (2 bytes) and the trailing `"` (1 byte); a
+    // `b"..."`-style prefix never applies to FStr tokens (lexer.rs only
+    // tags FStr for the `f"` spelling).
+    let body = &raw[2..raw.len() - 1];
+    let bytes = body.as_bytes();
+    let mut parts = Vec::new();
+    let mut i = 0usize;
+    let mut col = token.col + 2;
+    let mut lit_start_col = col;
+    let mut lit = String::new();
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' if bytes.get(i + 1) == Some(&b'{') => {
+                lit.push('{');
+                i += 2;
+                col += 2;
+            }
+            b'{' => {
+                if !lit.is_empty() {
+                    parts.push(FStringPart::Literal(
+                        Span {
+                            line: token.line,
+                            col: lit_start_col,
+                        },
+                        std::mem::take(&mut lit),
+                    ));
+                }
+                i += 1;
+                col += 1;
+                let interp_col = col;
+                let start = i;
+                let mut depth = 1u32;
+                while i < bytes.len() && depth > 0 {
+                    match bytes[i] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                    col += 1;
+                }
+                let interp_text = body[start..i].to_string();
+                if i < bytes.len() {
+                    i += 1; // closing `}`
+                    col += 1;
+                }
+                parts.push(FStringPart::Interp(
+                    Span {
+                        line: token.line,
+                        col: interp_col,
+                    },
+                    interp_text,
+                ));
+                lit_start_col = col;
+            }
+            b'}' if bytes.get(i + 1) == Some(&b'}') => {
+                lit.push('}');
+                i += 2;
+                col += 2;
+            }
+            b => {
+                let n = utf8_char_len(b);
+                lit.push_str(&body[i..i + n]);
+                i += n;
+                col += n as u32;
+            }
+        }
+    }
+    if !lit.is_empty() {
+        parts.push(FStringPart::Literal(
+            Span {
+                line: token.line,
+                col: lit_start_col,
+            },
+            lit,
+        ));
+    }
+    FStringLit {
+        span: Span {
+            line: token.line,
+            col: token.col,
+        },
+        parts,
+    }
+}
+
+// --- patterns (02-language.md §7.2) -------------------------------------
+
+impl Parser {
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let first = self.parse_pattern_primary()?;
+        if self.at_op("|") {
+            let span = first.span();
+            let mut alts = vec![first];
+            while self.at_op("|") {
+                self.bump();
+                alts.push(self.parse_pattern_primary()?);
+            }
+            return Ok(Pattern::Or(span, alts));
+        }
+        Ok(first)
+    }
+
+    fn parse_pattern_payload(&mut self) -> Result<Vec<Pattern>, ParseError> {
+        self.expect_op("(")?;
+        let mut items = Vec::new();
+        loop {
+            if self.at_op(")") {
+                break;
+            }
+            items.push(self.parse_pattern()?);
+            if self.at_op(",") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_op(")")?;
+        Ok(items)
+    }
+
+    fn parse_pattern_primary(&mut self) -> Result<Pattern, ParseError> {
+        let span = self.peek_span();
+        if self.at_kind(TokenKind::Ident) && self.peek_text() == "_" {
+            self.bump();
+            return Ok(Pattern::Wildcard(span));
+        }
+        if self.at_keyword("take") {
+            self.bump();
+            let inner = self.parse_pattern_primary()?;
+            return Ok(Pattern::Take(span, Box::new(inner)));
+        }
+        if self.at_op(".") {
+            self.bump();
+            let (_, variant) = self.expect_ident("a variant name")?;
+            let payload = if self.at_op("(") {
+                self.parse_pattern_payload()?
+            } else {
+                Vec::new()
+            };
+            return Ok(Pattern::Variant {
+                span,
+                enum_name: None,
+                variant,
+                payload,
+            });
+        }
+        if self.at_op("(") {
+            self.bump();
+            if self.at_op(")") {
+                self.bump();
+                return Ok(Pattern::Tuple(span, Vec::new()));
+            }
+            let first = self.parse_pattern()?;
+            if self.at_op(")") {
+                self.bump();
+                return Ok(first); // pure grouping
+            }
+            let mut elems = vec![first];
+            loop {
+                if self.at_op(",") {
+                    self.bump();
+                    if self.at_op(")") {
+                        break;
+                    }
+                    elems.push(self.parse_pattern()?);
+                } else {
+                    break;
+                }
+            }
+            self.expect_op(")")?;
+            return Ok(Pattern::Tuple(span, elems));
+        }
+        if self.at_op("[") {
+            self.bump();
+            let mut elems = Vec::new();
+            loop {
+                if self.at_op("]") {
+                    break;
+                }
+                elems.push(self.parse_pattern()?);
+                if self.at_op(",") {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+            self.expect_op("]")?;
+            return Ok(Pattern::Array(span, elems));
+        }
+        if self.at_op("-") && matches!(self.peek_at(1).kind, TokenKind::Int | TokenKind::Float) {
+            let minus_span = span;
+            self.bump();
+            let lit_span = self.peek_span();
+            let value = match self.peek_kind() {
+                TokenKind::Int => Expr::Int(lit_span, self.bump().text),
+                TokenKind::Float => Expr::Float(lit_span, self.bump().text),
+                _ => unreachable!("guarded by the match above"),
+            };
+            return Ok(Pattern::Literal(
+                span,
+                Expr::Unary(minus_span, UnaryOp::Neg, Box::new(value)),
+            ));
+        }
+        match self.peek_kind() {
+            TokenKind::Int => Ok(Pattern::Literal(span, Expr::Int(span, self.bump().text))),
+            TokenKind::Float => Ok(Pattern::Literal(span, Expr::Float(span, self.bump().text))),
+            TokenKind::Str => Ok(Pattern::Literal(span, Expr::Str(span, self.bump().text))),
+            TokenKind::BStr => Ok(Pattern::Literal(span, Expr::BStr(span, self.bump().text))),
+            TokenKind::Char => Ok(Pattern::Literal(span, Expr::Char(span, self.bump().text))),
+            TokenKind::Keyword if self.peek_text() == "true" => {
+                self.bump();
+                Ok(Pattern::Literal(span, Expr::Bool(span, true)))
+            }
+            TokenKind::Keyword if self.peek_text() == "false" => {
+                self.bump();
+                Ok(Pattern::Literal(span, Expr::Bool(span, false)))
+            }
+            TokenKind::Ident => {
+                let (nspan, name) = self.expect_ident("a pattern")?;
+                if self.at_op(".") {
+                    self.bump();
+                    let (_, variant) = self.expect_ident("a variant name")?;
+                    let payload = if self.at_op("(") {
+                        self.parse_pattern_payload()?
+                    } else {
+                        Vec::new()
+                    };
+                    return Ok(Pattern::Variant {
+                        span,
+                        enum_name: Some(name),
+                        variant,
+                        payload,
+                    });
+                }
+                Ok(Pattern::Binding(nspan, name))
+            }
+            _ => Err(self.error_here(format!(
+                "expected a pattern, found `{}`",
+                self.peek_display()
+            ))),
+        }
+    }
+}
+
+// --- statements (02-language.md §8.1, §9.4, §10) -------------------------
+
+impl Parser {
+    /// Loops `parse_stmt` until `Dedent`, without consuming it — used right
+    /// after an `Indent` this function's caller already consumed.
+    fn parse_stmts_until_dedent(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        let mut stmts = Vec::new();
+        while !self.at_kind(TokenKind::Dedent) {
+            if self.at_kind(TokenKind::Eof) {
+                return Err(self.error_here("expected a statement, found end of file"));
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(stmts)
+    }
+
+    /// The suite following a `:` — either a normal indented block, or (see
+    /// the module doc comment) an embedded run of statements with no
+    /// layout tokens at all, when this suite sits inside an enclosing
+    /// `()[]{}` that already suppressed them. Assumes the caller has
+    /// already consumed the leading `:`.
+    fn parse_stmt_suite(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        if self.at_kind(TokenKind::Newline) {
+            self.bump();
+            self.expect_indent()?;
+            let stmts = self.parse_stmts_until_dedent()?;
+            self.expect_dedent()?;
+            Ok(stmts)
+        } else {
+            self.inline_depth += 1;
+            let result = self.parse_inline_stmt_seq();
+            self.inline_depth -= 1;
+            result
+        }
+    }
+
+    fn parse_inline_stmt_seq(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        let mut stmts = vec![self.parse_stmt()?];
+        loop {
+            if self.at_kind(TokenKind::Newline) {
+                self.bump();
+                break;
+            }
+            if matches!(self.peek_kind(), TokenKind::Eof | TokenKind::Dedent)
+                || self.at_op(")")
+                || self.at_op("]")
+                || self.at_op("}")
+                || self.at_op(",")
+            {
+                break;
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(stmts)
+    }
+
+    /// Validates (without consuming) that a simple statement has ended:
+    /// either a real `Newline` (consumed here) or one of the delimiters
+    /// that bounds an embedded suite. Inside an embedded suite
+    /// (`inline_depth > 0`) a missing terminator is tolerated — the next
+    /// statement simply starts here with no separator token at all — but
+    /// this can never mask a real error at depth 0: the lexer always
+    /// inserts a genuine `Newline` there, so this fallback is unreachable
+    /// outside an embedded context.
+    fn end_of_simple_stmt(&mut self) -> Result<(), ParseError> {
+        if self.at_kind(TokenKind::Newline) {
+            self.bump();
+            return Ok(());
+        }
+        if matches!(self.peek_kind(), TokenKind::Eof | TokenKind::Dedent)
+            || self.at_op(")")
+            || self.at_op("]")
+            || self.at_op("}")
+            || self.at_op(",")
+            || self.inline_depth > 0
+        {
+            return Ok(());
+        }
+        // A simple statement's RHS expression can itself end in a nested
+        // suite (a closure's `|params|: suite` body — ast-expressions
+        // golden) whose own `Dedent`+`Newline` already closed out this
+        // logical line; nothing is left to consume.
+        if self.pos > 0 && self.tokens[self.pos - 1].kind == TokenKind::Newline {
+            return Ok(());
+        }
+        Err(self.error_here(format!(
+            "expected end of line, found `{}`",
+            self.peek_display()
+        )))
+    }
+
+    fn stmt_ends_here(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::Newline | TokenKind::Eof | TokenKind::Dedent
+        ) || self.at_op(")")
+            || self.at_op("]")
+            || self.at_op("}")
+            || self.at_op(",")
+    }
+
+    fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek_span();
+        if self.at_keyword("if") {
+            return self.parse_if_stmt().map(Stmt::If);
+        }
+        if self.at_keyword("match") {
+            return self.parse_match_stmt().map(Stmt::Match);
+        }
+        if self.at_keyword("for") {
+            return self.parse_for_stmt().map(Stmt::For);
+        }
+        if self.at_keyword("while") {
+            return self.parse_while_stmt().map(Stmt::While);
+        }
+        if self.at_keyword("with") {
+            return self.parse_with_stmt().map(Stmt::With);
+        }
+        if self.at_keyword("break") {
+            self.bump();
+            self.end_of_simple_stmt()?;
+            return Ok(Stmt::Break(span));
+        }
+        if self.at_keyword("continue") {
+            self.bump();
+            self.end_of_simple_stmt()?;
+            return Ok(Stmt::Continue(span));
+        }
+        if self.at_keyword("pass") {
+            self.bump();
+            self.end_of_simple_stmt()?;
+            return Ok(Stmt::Pass(span));
+        }
+        if self.at_keyword("return") {
+            self.bump();
+            let value = if self.stmt_ends_here() {
+                None
+            } else {
+                Some(self.parse_or()?)
+            };
+            self.end_of_simple_stmt()?;
+            return Ok(Stmt::Return(span, value));
+        }
+        if self.at_keyword("assert") {
+            self.bump();
+            let cond = self.parse_or()?;
+            let message = if self.at_op(",") {
+                self.bump();
+                Some(self.parse_or()?)
+            } else {
+                None
+            };
+            self.end_of_simple_stmt()?;
+            return Ok(Stmt::Assert(AssertStmt {
+                span,
+                cond,
+                message,
+            }));
+        }
+        if self.at_keyword("defer") {
+            self.bump();
+            if self.at_op(":") {
+                self.bump();
+                let body = self.parse_stmt_suite()?;
+                return Ok(Stmt::Defer(DeferStmt {
+                    span,
+                    body: DeferBody::Suite(body),
+                }));
+            }
+            let e = self.parse_or()?;
+            self.end_of_simple_stmt()?;
+            return Ok(Stmt::Defer(DeferStmt {
+                span,
+                body: DeferBody::Expr(Box::new(e)),
+            }));
+        }
+        if self.at_keyword("comptime") {
+            if self.peek_is_keyword_at(1, "if") {
+                return self.parse_comptime_if_stmt().map(Stmt::ComptimeIf);
+            }
+            if self.peek_is_keyword_at(1, "assert") {
+                self.bump();
+                self.bump();
+                let cond = self.parse_or()?;
+                let message = if self.at_op(",") {
+                    self.bump();
+                    Some(self.parse_or()?)
+                } else {
+                    None
+                };
+                self.end_of_simple_stmt()?;
+                return Ok(Stmt::ComptimeAssert(span, cond, message));
+            }
+            return Err(self.error_here("expected `if` or `assert` after `comptime`"));
+        }
+        self.parse_assign_or_expr_stmt(span)
+    }
+
+    fn assign_op_here(&self) -> Option<AssignOp> {
+        const OPS: &[(&str, AssignOp)] = &[
+            ("+=", AssignOp::Add),
+            ("-=", AssignOp::Sub),
+            ("*=", AssignOp::Mul),
+            ("/=", AssignOp::Div),
+            ("%=", AssignOp::Rem),
+            ("&=", AssignOp::BitAnd),
+            ("|=", AssignOp::BitOr),
+            ("^=", AssignOp::BitXor),
+            ("<<=", AssignOp::Shl),
+            (">>=", AssignOp::Shr),
+            ("=", AssignOp::Assign),
+        ];
+        for (text, op) in OPS {
+            if self.at_op(text) {
+                return Some(*op);
+            }
+        }
+        None
+    }
+
+    fn parse_assign_or_expr_stmt(&mut self, span: Span) -> Result<Stmt, ParseError> {
+        let target = self.parse_or()?;
+        let ty = if self.at_op(":") {
+            self.bump();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        if let Some(op) = self.assign_op_here() {
+            self.bump();
+            let value = self.parse_or()?;
+            self.end_of_simple_stmt()?;
+            return Ok(Stmt::Assign(AssignStmt {
+                span,
+                target,
+                ty,
+                op,
+                value,
+            }));
+        }
+        if ty.is_some() {
+            return Err(self.error_here("expected `=` after a type annotation"));
+        }
+        self.end_of_simple_stmt()?;
+        // `send actor.method(...)` parses through the general expression
+        // grammar (parse_unary recognizes the `send` prefix) but is a
+        // named statement form (02-language.md §9.4) — re-tag it here
+        // rather than leaving it as a generic expression statement.
+        if let Expr::Send(s, inner) = target {
+            return Ok(Stmt::Send(s, *inner));
+        }
+        Ok(Stmt::Expr(span, target))
+    }
+
+    fn parse_if_stmt(&mut self) -> Result<IfStmt, ParseError> {
+        let span = self.expect_keyword("if")?;
+        let cond = self.parse_or()?;
+        self.expect_op(":")?;
+        let then_branch = self.parse_stmt_suite()?;
+        let mut elifs = Vec::new();
+        while self.at_keyword("elif") {
+            let espan = self.peek_span();
+            self.bump();
+            let econd = self.parse_or()?;
+            self.expect_op(":")?;
+            let ebody = self.parse_stmt_suite()?;
+            elifs.push(ElifClause {
+                span: espan,
+                cond: econd,
+                body: ebody,
+            });
+        }
+        let else_branch = if self.at_keyword("else") {
+            self.bump();
+            self.expect_op(":")?;
+            Some(self.parse_stmt_suite()?)
+        } else {
+            None
+        };
+        Ok(IfStmt {
+            span,
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        })
+    }
+
+    fn parse_match_arm(&mut self) -> Result<MatchArm, ParseError> {
+        let span = self.expect_keyword("case")?;
+        let pattern = self.parse_pattern()?;
+        let guard = if self.at_keyword("if") {
+            self.bump();
+            Some(self.parse_or()?)
+        } else {
+            None
+        };
+        self.expect_op(":")?;
+        let body = self.parse_stmt_suite()?;
+        Ok(MatchArm {
+            span,
+            pattern,
+            guard,
+            body,
+        })
+    }
+
+    fn parse_match_stmt(&mut self) -> Result<MatchStmt, ParseError> {
+        let span = self.expect_keyword("match")?;
+        let scrutinee = self.parse_or()?;
+        self.expect_op(":")?;
+        self.expect_newline()?;
+        self.expect_indent()?;
+        let mut arms = Vec::new();
+        while !self.at_kind(TokenKind::Dedent) {
+            if self.at_kind(TokenKind::Eof) {
+                return Err(self.error_here("expected a `case` arm, found end of file"));
+            }
+            arms.push(self.parse_match_arm()?);
+        }
+        self.expect_dedent()?;
+        Ok(MatchStmt {
+            span,
+            scrutinee,
+            arms,
+        })
+    }
+
+    fn parse_for_stmt(&mut self) -> Result<ForStmt, ParseError> {
+        let span = self.expect_keyword("for")?;
+        let take_binding = if self.at_keyword("take") {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        let (_, name) = self.expect_ident("a loop variable name")?;
+        self.expect_keyword("in")?;
+        let iterable = self.parse_or()?;
+        self.expect_op(":")?;
+        let body = self.parse_stmt_suite()?;
+        Ok(ForStmt {
+            span,
+            take_binding,
+            name,
+            iterable,
+            body,
+        })
+    }
+
+    fn parse_while_stmt(&mut self) -> Result<WhileStmt, ParseError> {
+        let span = self.expect_keyword("while")?;
+        let cond = self.parse_or()?;
+        self.expect_op(":")?;
+        let body = self.parse_stmt_suite()?;
+        Ok(WhileStmt { span, cond, body })
+    }
+
+    fn parse_with_stmt(&mut self) -> Result<WithStmt, ParseError> {
+        let span = self.expect_keyword("with")?;
+        let expr = self.parse_or()?;
+        let as_name = if self.at_ident_text("as") {
+            self.bump();
+            Some(self.expect_ident("a name")?.1)
+        } else {
+            None
+        };
+        self.expect_op(":")?;
+        let body = self.parse_stmt_suite()?;
+        Ok(WithStmt {
+            span,
+            expr,
+            as_name,
+            body,
+        })
+    }
+
+    fn parse_comptime_if_stmt(&mut self) -> Result<ComptimeIfStmt, ParseError> {
+        let span = self.peek_span();
+        self.expect_keyword("comptime")?;
+        self.expect_keyword("if")?;
+        let cond = self.parse_or()?;
+        self.expect_op(":")?;
+        let then_branch = self.parse_stmt_suite()?;
+        let else_branch = if self.at_keyword("comptime") && self.peek_is_keyword_at(1, "else") {
+            self.bump();
+            self.bump();
+            self.expect_op(":")?;
+            Some(self.parse_stmt_suite()?)
+        } else {
+            None
+        };
+        Ok(ComptimeIfStmt {
+            span,
+            cond,
+            then_branch,
+            else_branch,
+        })
+    }
 }
 
 // --- dump ------------------------------------------------------------------
 //
 // Stable text dump (plans/M1.md decision 5): one node per line, two-space
 // child indent, `Kind @line:col key=value`, string payloads quoted. Source
-// order throughout, so the dump is deterministic by construction. A skipped
-// declaration body dumps as a `Todo @line:col` child so the dump stays
-// honest about what item C did not parse.
+// order throughout, so the dump is deterministic by construction. Every
+// statement-holding construct wraps its branch/body in an explicit `Then` /
+// `Else` / `Body` / `Case` / `Guard` / `Message` node so two adjacent
+// expression children are never ambiguous about which role they play.
 
 pub fn dump(module: &Module) -> String {
     let mut out = String::new();
@@ -626,18 +2513,13 @@ fn dump_attrs(attrs: &[Attr], depth: usize, out: &mut String) {
             out,
             depth,
             &format!(
-                "Attr @{}:{} text={}",
-                attr.span.line,
-                attr.span.col,
-                quote(&attr.text)
+                "Attr @{}:{} name={}",
+                attr.span.line, attr.span.col, attr.name
             ),
         );
-    }
-}
-
-fn dump_todo(todo: &Option<Span>, depth: usize, out: &mut String) {
-    if let Some(span) = todo {
-        push_line(out, depth, &format!("Todo @{}:{}", span.line, span.col));
+        for arg in &attr.args {
+            dump_arg(arg, depth + 1, out);
+        }
     }
 }
 
@@ -684,6 +2566,86 @@ fn dump_import(import: &Import, depth: usize, out: &mut String) {
     }
 }
 
+fn dump_generics(generics: &[GenericParam], depth: usize, out: &mut String) {
+    for g in generics {
+        match g {
+            GenericParam::Type { span, name } => {
+                push_line(
+                    out,
+                    depth,
+                    &format!("GenericType @{}:{} name={}", span.line, span.col, name),
+                );
+            }
+            GenericParam::Const { span, name, ty } => {
+                push_line(
+                    out,
+                    depth,
+                    &format!("GenericConst @{}:{} name={}", span.line, span.col, name),
+                );
+                dump_type(ty, depth + 1, out);
+            }
+        }
+    }
+}
+
+fn dump_receiver(receiver: &Receiver, depth: usize, out: &mut String) {
+    push_line(
+        out,
+        depth,
+        &format!(
+            "Receiver @{}:{} mode={}",
+            receiver.span.line,
+            receiver.span.col,
+            receiver.mode.as_str()
+        ),
+    );
+}
+
+fn dump_param(param: &Param, depth: usize, out: &mut String) {
+    push_line(
+        out,
+        depth,
+        &format!(
+            "Param @{}:{} name={} mode={}",
+            param.span.line,
+            param.span.col,
+            param.name,
+            param.mode.as_str()
+        ),
+    );
+    dump_type(&param.ty, depth + 1, out);
+    if let Some(default) = &param.default {
+        dump_expr(default, depth + 1, out);
+    }
+}
+
+fn dump_fn_common(
+    generics: &[GenericParam],
+    receiver: &Option<Receiver>,
+    params: &[Param],
+    ret: &Option<Type>,
+    body: &Option<Vec<Stmt>>,
+    depth: usize,
+    out: &mut String,
+) {
+    dump_generics(generics, depth, out);
+    if let Some(r) = receiver {
+        dump_receiver(r, depth, out);
+    }
+    for p in params {
+        dump_param(p, depth, out);
+    }
+    if let Some(ret) = ret {
+        dump_type(ret, depth, out);
+    }
+    if let Some(body) = body {
+        push_line(out, depth, "Body");
+        for stmt in body {
+            dump_stmt(stmt, depth + 1, out);
+        }
+    }
+}
+
 fn dump_item(item: &Item, depth: usize, out: &mut String) {
     match item {
         Item::Const(c) => {
@@ -694,7 +2656,10 @@ fn dump_item(item: &Item, depth: usize, out: &mut String) {
             push_line(out, depth, &header);
             dump_doc(&c.doc, depth + 1, out);
             dump_attrs(&c.attrs, depth + 1, out);
-            dump_todo(&c.todo, depth + 1, out);
+            if let Some(ty) = &c.ty {
+                dump_type(ty, depth + 1, out);
+            }
+            dump_expr(&c.value, depth + 1, out);
         }
         Item::Fn(f) => {
             let mut header = format!("Fn @{}:{} name={}", f.span.line, f.span.col, f.name);
@@ -707,7 +2672,15 @@ fn dump_item(item: &Item, depth: usize, out: &mut String) {
             push_line(out, depth, &header);
             dump_doc(&f.doc, depth + 1, out);
             dump_attrs(&f.attrs, depth + 1, out);
-            dump_todo(&f.todo, depth + 1, out);
+            dump_fn_common(
+                &f.generics,
+                &f.receiver,
+                &f.params,
+                &f.ret,
+                &f.body,
+                depth + 1,
+                out,
+            );
         }
         Item::Struct(s) => {
             let mut header = format!("Struct @{}:{} name={}", s.span.line, s.span.col, s.name);
@@ -717,34 +2690,675 @@ fn dump_item(item: &Item, depth: usize, out: &mut String) {
             if s.is_resource {
                 header.push_str(" resource=true");
             }
+            if !s.deriving.is_empty() {
+                header.push_str(&format!(" deriving={}", s.deriving.join(",")));
+            }
             push_line(out, depth, &header);
             dump_doc(&s.doc, depth + 1, out);
             dump_attrs(&s.attrs, depth + 1, out);
-            dump_todo(&s.todo, depth + 1, out);
+            dump_generics(&s.generics, depth + 1, out);
+            for m in &s.members {
+                dump_member(m, depth + 1, out);
+            }
         }
         Item::Enum(e) => {
             let mut header = format!("Enum @{}:{} name={}", e.span.line, e.span.col, e.name);
             if e.is_pub {
                 header.push_str(" pub=true");
             }
+            if !e.deriving.is_empty() {
+                header.push_str(&format!(" deriving={}", e.deriving.join(",")));
+            }
             push_line(out, depth, &header);
             dump_doc(&e.doc, depth + 1, out);
             dump_attrs(&e.attrs, depth + 1, out);
-            dump_todo(&e.todo, depth + 1, out);
+            dump_generics(&e.generics, depth + 1, out);
+            for v in &e.variants {
+                dump_variant(v, depth + 1, out);
+            }
         }
         Item::Pool(p) => {
             let header = format!("Pool @{}:{} name={}", p.span.line, p.span.col, p.name);
             push_line(out, depth, &header);
             dump_doc(&p.doc, depth + 1, out);
             dump_attrs(&p.attrs, depth + 1, out);
-            dump_todo(&p.todo, depth + 1, out);
         }
         Item::ComptimeIf(c) => {
             let header = format!("ComptimeIf @{}:{}", c.span.line, c.span.col);
             push_line(out, depth, &header);
             dump_doc(&c.doc, depth + 1, out);
             dump_attrs(&c.attrs, depth + 1, out);
-            dump_todo(&c.todo, depth + 1, out);
+            dump_expr(&c.cond, depth + 1, out);
+            push_line(out, depth + 1, "Then");
+            for it in &c.then_branch {
+                dump_item(it, depth + 2, out);
+            }
+            if let Some(else_branch) = &c.else_branch {
+                push_line(out, depth + 1, "Else");
+                for it in else_branch {
+                    dump_item(it, depth + 2, out);
+                }
+            }
+        }
+    }
+}
+
+fn dump_member(member: &Member, depth: usize, out: &mut String) {
+    match member {
+        Member::Field(f) => {
+            let mut header = format!("Field @{}:{} name={}", f.span.line, f.span.col, f.name);
+            if f.is_pub {
+                header.push_str(" pub=true");
+            }
+            push_line(out, depth, &header);
+            dump_doc(&f.doc, depth + 1, out);
+            dump_attrs(&f.attrs, depth + 1, out);
+            dump_type(&f.ty, depth + 1, out);
+            if let Some(default) = &f.default {
+                dump_expr(default, depth + 1, out);
+            }
+        }
+        Member::Fn(f) => {
+            let mut header = format!("Fn @{}:{} name={}", f.span.line, f.span.col, f.name);
+            if f.is_pub {
+                header.push_str(" pub=true");
+            }
+            if f.is_async {
+                header.push_str(" async=true");
+            }
+            push_line(out, depth, &header);
+            dump_doc(&f.doc, depth + 1, out);
+            dump_attrs(&f.attrs, depth + 1, out);
+            dump_fn_common(
+                &f.generics,
+                &f.receiver,
+                &f.params,
+                &f.ret,
+                &f.body,
+                depth + 1,
+                out,
+            );
+        }
+        Member::Init(i) => {
+            push_line(out, depth, &format!("Init @{}:{}", i.span.line, i.span.col));
+            dump_doc(&i.doc, depth + 1, out);
+            dump_attrs(&i.attrs, depth + 1, out);
+            dump_fn_common(
+                &[],
+                &Some(i.receiver.clone()),
+                &i.params,
+                &i.ret,
+                &Some(i.body.clone()),
+                depth + 1,
+                out,
+            );
+        }
+        Member::Pool(p) => {
+            let header = format!("Pool @{}:{} name={}", p.span.line, p.span.col, p.name);
+            push_line(out, depth, &header);
+            dump_doc(&p.doc, depth + 1, out);
+            dump_attrs(&p.attrs, depth + 1, out);
+        }
+        Member::ComptimeIf(c) => {
+            let header = format!("ComptimeIf @{}:{}", c.span.line, c.span.col);
+            push_line(out, depth, &header);
+            dump_doc(&c.doc, depth + 1, out);
+            dump_attrs(&c.attrs, depth + 1, out);
+            dump_expr(&c.cond, depth + 1, out);
+            push_line(out, depth + 1, "Then");
+            for m in &c.then_branch {
+                dump_member(m, depth + 2, out);
+            }
+            if let Some(else_branch) = &c.else_branch {
+                push_line(out, depth + 1, "Else");
+                for m in else_branch {
+                    dump_member(m, depth + 2, out);
+                }
+            }
+        }
+    }
+}
+
+fn dump_variant(v: &Variant, depth: usize, out: &mut String) {
+    push_line(
+        out,
+        depth,
+        &format!("Variant @{}:{} name={}", v.span.line, v.span.col, v.name),
+    );
+    match &v.payload {
+        VariantPayload::None => {}
+        VariantPayload::Tuple(types) => {
+            for ty in types {
+                dump_type(ty, depth + 1, out);
+            }
+        }
+        VariantPayload::Named(fields) => {
+            for f in fields {
+                push_line(
+                    out,
+                    depth + 1,
+                    &format!(
+                        "VariantField @{}:{} name={}",
+                        f.span.line, f.span.col, f.name
+                    ),
+                );
+                dump_type(&f.ty, depth + 2, out);
+            }
+        }
+    }
+}
+
+fn dump_type(ty: &Type, depth: usize, out: &mut String) {
+    match ty {
+        Type::Named(t) => {
+            push_line(
+                out,
+                depth,
+                &format!("TypeName @{}:{} name={}", t.span.line, t.span.col, t.name),
+            );
+            for arg in &t.args {
+                dump_generic_arg(arg, depth + 1, out);
+            }
+        }
+        Type::Array(t) => {
+            push_line(
+                out,
+                depth,
+                &format!("ArrayType @{}:{}", t.span.line, t.span.col),
+            );
+            dump_type(&t.elem, depth + 1, out);
+            dump_expr(&t.len, depth + 1, out);
+        }
+        Type::Tuple(t) => {
+            push_line(
+                out,
+                depth,
+                &format!("TupleType @{}:{}", t.span.line, t.span.col),
+            );
+            for elem in &t.elems {
+                dump_type(elem, depth + 1, out);
+            }
+        }
+        Type::Own(t) => {
+            push_line(
+                out,
+                depth,
+                &format!(
+                    "OwnType @{}:{} pool={}",
+                    t.span.line,
+                    t.span.col,
+                    t.pool.join(".")
+                ),
+            );
+            dump_type(&t.inner, depth + 1, out);
+        }
+        Type::Fn(t) => {
+            push_line(
+                out,
+                depth,
+                &format!("FnType @{}:{}", t.span.line, t.span.col),
+            );
+            for p in &t.params {
+                push_line(
+                    out,
+                    depth + 1,
+                    &format!(
+                        "FnTypeParam @{}:{} mode={}",
+                        p.span.line,
+                        p.span.col,
+                        p.mode.as_str()
+                    ),
+                );
+                dump_type(&p.ty, depth + 2, out);
+            }
+            if let Some(ret) = &t.ret {
+                dump_type(ret, depth + 1, out);
+            }
+        }
+    }
+}
+
+fn dump_generic_arg(arg: &GenericArg, depth: usize, out: &mut String) {
+    match arg {
+        GenericArg::Type(t) => dump_type(t, depth, out),
+        GenericArg::Expr(e) => dump_expr(e, depth, out),
+        GenericArg::Bound(e) => {
+            push_line(
+                out,
+                depth,
+                &format!("Bound @{}:{}", e.span().line, e.span().col),
+            );
+            dump_expr(e, depth + 1, out);
+        }
+    }
+}
+
+fn dump_pattern(p: &Pattern, depth: usize, out: &mut String) {
+    match p {
+        Pattern::Wildcard(s) => push_line(out, depth, &format!("Wildcard @{}:{}", s.line, s.col)),
+        Pattern::Literal(s, e) => {
+            push_line(out, depth, &format!("PatternLiteral @{}:{}", s.line, s.col));
+            dump_expr(e, depth + 1, out);
+        }
+        Pattern::Binding(s, name) => {
+            push_line(
+                out,
+                depth,
+                &format!("Binding @{}:{} name={}", s.line, s.col, name),
+            );
+        }
+        Pattern::Take(s, inner) => {
+            push_line(out, depth, &format!("TakePattern @{}:{}", s.line, s.col));
+            dump_pattern(inner, depth + 1, out);
+        }
+        Pattern::Variant {
+            span,
+            enum_name,
+            variant,
+            payload,
+        } => {
+            let mut header = format!(
+                "VariantPattern @{}:{} variant={}",
+                span.line, span.col, variant
+            );
+            if let Some(en) = enum_name {
+                header.push_str(&format!(" enum={en}"));
+            }
+            push_line(out, depth, &header);
+            for pat in payload {
+                dump_pattern(pat, depth + 1, out);
+            }
+        }
+        Pattern::Tuple(s, elems) => {
+            push_line(out, depth, &format!("TuplePattern @{}:{}", s.line, s.col));
+            for e in elems {
+                dump_pattern(e, depth + 1, out);
+            }
+        }
+        Pattern::Array(s, elems) => {
+            push_line(out, depth, &format!("ArrayPattern @{}:{}", s.line, s.col));
+            for e in elems {
+                dump_pattern(e, depth + 1, out);
+            }
+        }
+        Pattern::Or(s, alts) => {
+            push_line(out, depth, &format!("OrPattern @{}:{}", s.line, s.col));
+            for a in alts {
+                dump_pattern(a, depth + 1, out);
+            }
+        }
+    }
+}
+
+fn dump_arg(arg: &Arg, depth: usize, out: &mut String) {
+    let mut header = format!("Arg @{}:{}", arg.span.line, arg.span.col);
+    if let Some(label) = &arg.label {
+        header.push_str(&format!(" label={label}"));
+    }
+    if arg.mode != AccessMode::Read {
+        header.push_str(&format!(" mode={}", arg.mode.as_str()));
+    }
+    push_line(out, depth, &header);
+    dump_expr(&arg.value, depth + 1, out);
+}
+
+fn dump_expr(e: &Expr, depth: usize, out: &mut String) {
+    match e {
+        Expr::Int(s, text) => push_line(
+            out,
+            depth,
+            &format!("Int @{}:{} text={}", s.line, s.col, text),
+        ),
+        Expr::Float(s, text) => push_line(
+            out,
+            depth,
+            &format!("Float @{}:{} text={}", s.line, s.col, text),
+        ),
+        // Str/BStr/Char keep the lexer's raw token text, which already
+        // includes the source's own delimiting quotes (and a `b`/`f`
+        // prefix) — printed as-is rather than double-quoted; the lexer
+        // guarantees no raw newline can appear inside, so this stays a
+        // single dump line.
+        Expr::Str(s, text) => push_line(
+            out,
+            depth,
+            &format!("Str @{}:{} text={}", s.line, s.col, text),
+        ),
+        Expr::BStr(s, text) => push_line(
+            out,
+            depth,
+            &format!("BStr @{}:{} text={}", s.line, s.col, text),
+        ),
+        Expr::Char(s, text) => push_line(
+            out,
+            depth,
+            &format!("Char @{}:{} text={}", s.line, s.col, text),
+        ),
+        Expr::FStr(f) => {
+            push_line(out, depth, &format!("FStr @{}:{}", f.span.line, f.span.col));
+            for part in &f.parts {
+                match part {
+                    FStringPart::Literal(s, text) => push_line(
+                        out,
+                        depth + 1,
+                        &format!("Literal @{}:{} text={}", s.line, s.col, quote(text)),
+                    ),
+                    FStringPart::Interp(s, text) => push_line(
+                        out,
+                        depth + 1,
+                        &format!("Interp @{}:{} text={}", s.line, s.col, quote(text)),
+                    ),
+                }
+            }
+        }
+        Expr::Bool(s, v) => push_line(
+            out,
+            depth,
+            &format!("Bool @{}:{} value={}", s.line, s.col, v),
+        ),
+        Expr::Unit(s) => push_line(out, depth, &format!("Unit @{}:{}", s.line, s.col)),
+        Expr::Name(s, name) => push_line(
+            out,
+            depth,
+            &format!("Name @{}:{} name={}", s.line, s.col, name),
+        ),
+        Expr::Field(base, s, name) => {
+            push_line(
+                out,
+                depth,
+                &format!("Field @{}:{} name={}", s.line, s.col, name),
+            );
+            dump_expr(base, depth + 1, out);
+        }
+        Expr::Index(base, s, args) => {
+            push_line(out, depth, &format!("Index @{}:{}", s.line, s.col));
+            dump_expr(base, depth + 1, out);
+            for a in args {
+                dump_expr(a, depth + 1, out);
+            }
+        }
+        Expr::Call(callee, s, args) => {
+            push_line(out, depth, &format!("Call @{}:{}", s.line, s.col));
+            dump_expr(callee, depth + 1, out);
+            for a in args {
+                dump_arg(a, depth + 1, out);
+            }
+        }
+        Expr::Unary(s, op, inner) => {
+            let name = match op {
+                UnaryOp::Neg => "neg",
+                UnaryOp::BitNot => "bitnot",
+                UnaryOp::Await => "await",
+                UnaryOp::Take => "take",
+            };
+            push_line(
+                out,
+                depth,
+                &format!("Unary @{}:{} op={}", s.line, s.col, name),
+            );
+            dump_expr(inner, depth + 1, out);
+        }
+        Expr::Try(s, inner) => {
+            push_line(out, depth, &format!("Try @{}:{}", s.line, s.col));
+            dump_expr(inner, depth + 1, out);
+        }
+        Expr::Binary(s, op, l, r) => {
+            push_line(
+                out,
+                depth,
+                &format!("Binary @{}:{} op={}", s.line, s.col, op.as_str()),
+            );
+            dump_expr(l, depth + 1, out);
+            dump_expr(r, depth + 1, out);
+        }
+        Expr::Range(s, l, r, inclusive) => {
+            push_line(
+                out,
+                depth,
+                &format!("Range @{}:{} inclusive={}", s.line, s.col, inclusive),
+            );
+            dump_expr(l, depth + 1, out);
+            dump_expr(r, depth + 1, out);
+        }
+        Expr::Is(s, l, pat) => {
+            push_line(out, depth, &format!("Is @{}:{}", s.line, s.col));
+            dump_expr(l, depth + 1, out);
+            dump_pattern(pat, depth + 1, out);
+        }
+        Expr::Not(s, inner) => {
+            push_line(out, depth, &format!("Not @{}:{}", s.line, s.col));
+            dump_expr(inner, depth + 1, out);
+        }
+        Expr::And(s, l, r) => {
+            push_line(out, depth, &format!("And @{}:{}", s.line, s.col));
+            dump_expr(l, depth + 1, out);
+            dump_expr(r, depth + 1, out);
+        }
+        Expr::Or(s, l, r) => {
+            push_line(out, depth, &format!("Or @{}:{}", s.line, s.col));
+            dump_expr(l, depth + 1, out);
+            dump_expr(r, depth + 1, out);
+        }
+        Expr::DotVariant(s, name, args) => {
+            push_line(
+                out,
+                depth,
+                &format!("DotVariant @{}:{} variant={}", s.line, s.col, name),
+            );
+            for a in args {
+                dump_arg(a, depth + 1, out);
+            }
+        }
+        Expr::Closure(c) => {
+            push_line(
+                out,
+                depth,
+                &format!("Closure @{}:{}", c.span.line, c.span.col),
+            );
+            for p in &c.params {
+                let mut header = format!(
+                    "ClosureParam @{}:{} name={} mode={}",
+                    p.span.line,
+                    p.span.col,
+                    p.name,
+                    p.mode.as_str()
+                );
+                if p.ty.is_none() {
+                    header.push_str(" untyped=true");
+                }
+                push_line(out, depth + 1, &header);
+                if let Some(ty) = &p.ty {
+                    dump_type(ty, depth + 2, out);
+                }
+            }
+            match &c.body {
+                ClosureBody::Expr(e) => dump_expr(e, depth + 1, out),
+                ClosureBody::Suite(stmts) => {
+                    push_line(out, depth + 1, "Body");
+                    for st in stmts {
+                        dump_stmt(st, depth + 2, out);
+                    }
+                }
+            }
+        }
+        Expr::Send(s, inner) => {
+            push_line(out, depth, &format!("Send @{}:{}", s.line, s.col));
+            dump_expr(inner, depth + 1, out);
+        }
+        Expr::Tuple(s, elems) => {
+            push_line(out, depth, &format!("Tuple @{}:{}", s.line, s.col));
+            for e in elems {
+                dump_expr(e, depth + 1, out);
+            }
+        }
+        Expr::List(s, elems) => {
+            push_line(out, depth, &format!("List @{}:{}", s.line, s.col));
+            for e in elems {
+                dump_expr(e, depth + 1, out);
+            }
+        }
+    }
+}
+
+fn dump_stmts(stmts: &[Stmt], depth: usize, out: &mut String) {
+    for s in stmts {
+        dump_stmt(s, depth, out);
+    }
+}
+
+fn dump_stmt(stmt: &Stmt, depth: usize, out: &mut String) {
+    match stmt {
+        Stmt::Assign(a) => {
+            push_line(
+                out,
+                depth,
+                &format!(
+                    "Assign @{}:{} op={}",
+                    a.span.line,
+                    a.span.col,
+                    a.op.as_str()
+                ),
+            );
+            dump_expr(&a.target, depth + 1, out);
+            if let Some(ty) = &a.ty {
+                dump_type(ty, depth + 1, out);
+            }
+            dump_expr(&a.value, depth + 1, out);
+        }
+        Stmt::If(i) => {
+            push_line(out, depth, &format!("If @{}:{}", i.span.line, i.span.col));
+            dump_expr(&i.cond, depth + 1, out);
+            push_line(out, depth + 1, "Then");
+            dump_stmts(&i.then_branch, depth + 2, out);
+            for elif in &i.elifs {
+                push_line(
+                    out,
+                    depth + 1,
+                    &format!("Elif @{}:{}", elif.span.line, elif.span.col),
+                );
+                dump_expr(&elif.cond, depth + 2, out);
+                dump_stmts(&elif.body, depth + 2, out);
+            }
+            if let Some(else_branch) = &i.else_branch {
+                push_line(out, depth + 1, "Else");
+                dump_stmts(else_branch, depth + 2, out);
+            }
+        }
+        Stmt::Match(m) => {
+            push_line(
+                out,
+                depth,
+                &format!("Match @{}:{}", m.span.line, m.span.col),
+            );
+            dump_expr(&m.scrutinee, depth + 1, out);
+            for arm in &m.arms {
+                push_line(
+                    out,
+                    depth + 1,
+                    &format!("Case @{}:{}", arm.span.line, arm.span.col),
+                );
+                dump_pattern(&arm.pattern, depth + 2, out);
+                if let Some(guard) = &arm.guard {
+                    push_line(out, depth + 2, "Guard");
+                    dump_expr(guard, depth + 3, out);
+                }
+                dump_stmts(&arm.body, depth + 2, out);
+            }
+        }
+        Stmt::For(f) => {
+            let mut header = format!("For @{}:{} name={}", f.span.line, f.span.col, f.name);
+            if f.take_binding {
+                header.push_str(" take=true");
+            }
+            push_line(out, depth, &header);
+            dump_expr(&f.iterable, depth + 1, out);
+            push_line(out, depth + 1, "Body");
+            dump_stmts(&f.body, depth + 2, out);
+        }
+        Stmt::While(w) => {
+            push_line(
+                out,
+                depth,
+                &format!("While @{}:{}", w.span.line, w.span.col),
+            );
+            dump_expr(&w.cond, depth + 1, out);
+            push_line(out, depth + 1, "Body");
+            dump_stmts(&w.body, depth + 2, out);
+        }
+        Stmt::Break(s) => push_line(out, depth, &format!("Break @{}:{}", s.line, s.col)),
+        Stmt::Continue(s) => push_line(out, depth, &format!("Continue @{}:{}", s.line, s.col)),
+        Stmt::Pass(s) => push_line(out, depth, &format!("Pass @{}:{}", s.line, s.col)),
+        Stmt::Return(s, value) => {
+            push_line(out, depth, &format!("Return @{}:{}", s.line, s.col));
+            if let Some(v) = value {
+                dump_expr(v, depth + 1, out);
+            }
+        }
+        Stmt::Assert(a) => {
+            push_line(
+                out,
+                depth,
+                &format!("Assert @{}:{}", a.span.line, a.span.col),
+            );
+            dump_expr(&a.cond, depth + 1, out);
+            if let Some(msg) = &a.message {
+                push_line(out, depth + 1, "Message");
+                dump_expr(msg, depth + 2, out);
+            }
+        }
+        Stmt::Defer(d) => {
+            push_line(
+                out,
+                depth,
+                &format!("Defer @{}:{}", d.span.line, d.span.col),
+            );
+            match &d.body {
+                DeferBody::Expr(e) => dump_expr(e, depth + 1, out),
+                DeferBody::Suite(stmts) => {
+                    push_line(out, depth + 1, "Body");
+                    dump_stmts(stmts, depth + 2, out);
+                }
+            }
+        }
+        Stmt::With(w) => {
+            let mut header = format!("With @{}:{}", w.span.line, w.span.col);
+            if let Some(name) = &w.as_name {
+                header.push_str(&format!(" as={name}"));
+            }
+            push_line(out, depth, &header);
+            dump_expr(&w.expr, depth + 1, out);
+            push_line(out, depth + 1, "Body");
+            dump_stmts(&w.body, depth + 2, out);
+        }
+        Stmt::Send(s, e) => {
+            push_line(out, depth, &format!("Send @{}:{}", s.line, s.col));
+            dump_expr(e, depth + 1, out);
+        }
+        Stmt::Expr(s, e) => {
+            push_line(out, depth, &format!("ExprStmt @{}:{}", s.line, s.col));
+            dump_expr(e, depth + 1, out);
+        }
+        Stmt::ComptimeIf(c) => {
+            push_line(
+                out,
+                depth,
+                &format!("ComptimeIf @{}:{}", c.span.line, c.span.col),
+            );
+            dump_expr(&c.cond, depth + 1, out);
+            push_line(out, depth + 1, "Then");
+            dump_stmts(&c.then_branch, depth + 2, out);
+            if let Some(else_branch) = &c.else_branch {
+                push_line(out, depth + 1, "Else");
+                dump_stmts(else_branch, depth + 2, out);
+            }
+        }
+        Stmt::ComptimeAssert(s, cond, message) => {
+            push_line(out, depth, &format!("ComptimeAssert @{}:{}", s.line, s.col));
+            dump_expr(cond, depth + 1, out);
+            if let Some(msg) = message {
+                push_line(out, depth + 1, "Message");
+                dump_expr(msg, depth + 2, out);
+            }
         }
     }
 }

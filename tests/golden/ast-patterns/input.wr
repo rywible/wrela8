@@ -1,0 +1,26 @@
+module examples.patterns
+
+fn classify(item: Lookup[u64]) -> u64:
+    match item:
+        case _:
+            pass
+        case -1:
+            pass
+        case .Found(value):
+            return value
+        case Lookup.Absent:
+            return 0
+        case .Failed(take error):
+            return 0
+        case (a, b):
+            return a + b
+        case [first, second]:
+            return first + second
+        case 0 | 1 | 2:
+            return 1
+        case n if n > 10:
+            return n
+
+    if item is .Found(index):
+        return index
+    return 0

@@ -1,0 +1,9 @@
+module examples.fstring
+
+fn describe(name: String, count: u64) -> String:
+    plain = f"hello"
+    escaped = f"{{literal braces}}"
+    one = f"count={count}"
+    mixed = f"{name} has {count} item{{s}} in {{stock}}: {count:spec}"
+    empty = f""
+    return mixed

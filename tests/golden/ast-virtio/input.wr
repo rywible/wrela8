@@ -1,0 +1,646 @@
+# End-to-end design example for revision 0.1 (trimmed language).
+#
+# ASPIRATIONAL — not a boot claim. Imports modules the stdlib does not yet
+# ship. Demonstrates ownership and scheduling shape for a didactic
+# write-back extent filesystem (not crash-consistent).
+#
+# A multi-client Storage should use the service slot idiom (02 §9.7): short
+# admitting turns, a bounded in-flight SlotMap, slot.resolve(take receipt).
+# This single-client sketch forwards to ExtentFs for clarity; do not copy
+# that pattern into a concurrent appliance.
+
+module examples.virtio_storage
+
+from core.bytes import Bytes
+from runtime.actor import Actor
+from runtime.group import group
+from runtime.image import Image, ImageReport, Target
+from runtime.pool import Pool
+from runtime.scheduling import now, seconds, us, ms, wake
+from runtime.supervision import Restart, RestartIntensity, TaskFailure
+from runtime.interrupt import InterruptCell
+from target.dma import DmaPool, DmaPoolSpec
+from target.interrupts import IrqCap
+from target.mmio import Mmio, ReadOnly, WriteOnly
+from drivers.virtio.core import (
+    DeviceCap,
+    DriverMode,
+    Receipt,
+    RunningDevice,
+    VirtQueue,
+    VirtioBlock,
+    VirtioFeature,
+)
+from services.console import Console
+
+
+# ---------------------------------------------------------------------------
+# Constants, pool names, device-visible layouts
+# ---------------------------------------------------------------------------
+
+const INT_VRING: u32 = 1
+const INT_CONFIG: u32 = 2
+const SECTOR: usize = 512
+const QDEPTH: usize = 128
+const CACHE_BLOCKS: usize = 64
+const BLOCK_MODE: DriverMode = DriverMode.Irq
+
+const BLK_T_IN: u32 = 0
+const BLK_T_OUT: u32 = 1
+
+# Pool names. Each is bound to exactly one pool node by the image below;
+# `own[Name] T` handles carry the binding through every signature.
+pool BlockControl
+pool BlockPayloads
+pool AppBuffers
+
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+
+@layout(dma, endian=little, packed=true)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+
+@layout(dma, endian=little, packed=true)
+struct BlkReqStatus:
+    status: u8
+
+
+# A cache block is allocated from image-declared memory reachable by this
+# block device. Storage owns the handle while idle; the driver owns it in
+# flight.
+@layout(dma, alignment=SECTOR)
+struct DmaBlock:
+    bytes: Bytes[SECTOR]
+
+
+# ---------------------------------------------------------------------------
+# Driver actor
+# ---------------------------------------------------------------------------
+
+@driver
+pub struct BlkDriver[const MODE: DriverMode]:
+    device: RunningDevice[VirtioBlock]
+    irq_regs: Mmio[VirtioIrqMmio]
+    queue: VirtQueue[..QDEPTH]
+    capacity_sectors: u64
+    pending: InterruptCell[u32]
+    irq: Option[IrqCap]
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 256.KiB])
+        -> Result[unit, BootError]:
+        # Fields of `self` check exactly like uninitialized locals (02 §7.1).
+        # Each fallible transition consumes its protocol state and, on `?`,
+        # routes the capability to its manifest restart provision (03 §9) —
+        # a straight line with no cleanup choreography.
+        claimed = VirtioBlock.claim(cap=take cap)   # reset + acknowledge
+
+        # The sealed transport owns status, feature selectors, queue
+        # addresses/reset, config generation, and block config. Source maps
+        # only the disjoint ISR partition.
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+
+        negotiated = claimed.negotiate(             # consumes `claimed`
+            required=[VirtioFeature.Flush],
+            optional=[VirtioFeature.RingReset],
+        )?
+
+        # VirtQueue owns DmaShared control memory. Driver source never reads
+        # used.idx with a plain load or places a standalone fence.
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = negotiated.read_capacity_sectors()?
+
+        comptime if MODE == DriverMode.Irq:
+            irq_cap = negotiated.take_irq()
+            # Binding fixes on_queue_irq as this vector's handler; the
+            # compiler restricts its transitive effects to the ISR set.
+            irq_cap.bind(self.on_queue_irq)
+            irq_cap.unmask()
+            self.irq = Some(take irq_cap)
+        comptime else:
+            self.queue.suppress_interrupts()
+            self.irq = None
+
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    comptime if MODE == DriverMode.Irq:
+        # ISR: effect-checked because it is vector-bound in `init`.
+        fn on_queue_irq(self):
+            status = self.irq_regs.interrupt_status.read()
+            handled = status & (INT_VRING | INT_CONFIG)
+            if handled != 0:
+                self.pending.fetch_or_release(handled)
+                self.irq_regs.interrupt_ack.write(handled)
+                wake(BlkDriver[MODE].drain_used)
+
+    # Bottom half. IRQ builds schedule it on wake; poll builds run it once
+    # per event-loop pass. It never stays active while waiting, so
+    # submission turns are not re-entered.
+    @task(
+        trigger=wake,
+        poll=(MODE == DriverMode.Poll),
+        priority=driver,
+        budget=us(200),
+    )
+    fn drain_used(mut self):
+        comptime if MODE == DriverMode.Irq:
+            status = self.pending.swap_acquire(0)
+        comptime else:
+            status = self.queue.poll_sources()
+
+        if status & INT_CONFIG != 0:
+            self.device.handle_config_change()
+
+        # `drain` acquires used-index visibility, validates IDs/generations/
+        # epochs and device lengths, returns payload ownership, and resolves
+        # the matching sealed receipt.
+        self.queue.drain(max=QDEPTH)
+
+        if self.queue.completions_pending():
+            self.pending.fetch_or_release(INT_VRING)
+            wake(BlkDriver[MODE].drain_used)
+
+    # Actor transport is awaitable at the caller; the handler is synchronous
+    # and returns a receipt promptly, so the driver accepts the next bounded
+    # submission before hardware completes. The signature — one `take`
+    # parameter, result Receipt of the same payload — gives this method the
+    # atomic handoff convention (03 §5); no annotation is needed.
+    pub fn submit_read(mut self, lba: u64,
+                       take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
+        if lba >= self.capacity_sectors:
+            # Even pre-publication rejection resolves the receipt so the
+            # payload returns before its error status is exposed.
+            return self.queue.reject(
+                payload=take buffer,
+                error=IoError.OutOfRange,
+            )
+
+        # Whole-image analysis proves this appliance keeps at most 42 direct
+        # requests in flight; reserve_proven is infallible or a build error.
+        permit = self.queue.reserve_proven(descriptors=3)
+
+        operation = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=BLK_T_IN, reserved=0, sector=lba),
+            payload=take buffer,
+            device_writes_payload=true,
+            status=BlkReqStatus(status=0xff),
+        )
+
+        # publish performs descriptor/payload release, available-ring and
+        # index publication, and doorbell ordering. The receipt owns the
+        # device-owned state and reset teardown.
+        return self.queue.publish(operation=take operation)
+
+    pub fn submit_write(mut self, lba: u64,
+                        take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
+        if lba >= self.capacity_sectors:
+            return self.queue.reject(
+                payload=take buffer,
+                error=IoError.OutOfRange,
+            )
+
+        permit = self.queue.reserve_proven(descriptors=3)
+        operation = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=lba),
+            payload=take buffer,
+            device_writes_payload=false,
+            status=BlkReqStatus(status=0xff),
+        )
+        return self.queue.publish(operation=take operation)
+
+
+# ---------------------------------------------------------------------------
+# Cache and filesystem, both owned by one Storage actor
+# ---------------------------------------------------------------------------
+
+enum CacheState:
+    Invalid
+    Clean(lba: u64)
+    Dirty(lba: u64)
+    Replacing
+
+
+struct CacheLine:
+    state: CacheState
+    data: Option[own[BlockPayloads] DmaBlock]
+
+    fn invalid(take block: own[BlockPayloads] DmaBlock) -> CacheLine:
+        return CacheLine(state=CacheState.Invalid, data=Some(take block))
+
+
+# A cache fill describes a line temporarily removed from the cache while its
+# replacement I/O is in flight. It is an ordinary owned value holding an
+# index, a data fallback, and an owned handle — nothing lent — so it lives
+# across any number of awaits, and recovery on failure is the explicit
+# begin_replace / resolve_replace contract.
+struct CacheFill:
+    index: usize
+    fallback: CacheState
+    data: own[BlockPayloads] DmaBlock
+
+    fn invalidate_fallback(mut self):
+        self.fallback = CacheState.Invalid
+
+
+struct BlockCache:
+    lines: [CacheLine; CACHE_BLOCKS]
+
+    init(mut self, take blocks: [own[BlockPayloads] DmaBlock; CACHE_BLOCKS]):
+        self.lines = blocks.map_take(CacheLine.invalid)
+
+    fn lookup(read self, lba: u64) -> Option[usize]:
+        index = (lba % CACHE_BLOCKS.to[u64]()).to[usize]()
+        match self.lines[index].state:
+            case .Clean(found) if found == lba:
+                return Some(index)
+            case .Dirty(found) if found == lba:
+                return Some(index)
+            case _:
+                return None
+
+    # Moves the block out and marks the slot unavailable. The caller owns
+    # the returned CacheFill across awaits and must eventually resolve it.
+    fn begin_replace(mut self, index: usize) -> CacheFill:
+        prior = self.lines[index].state          # CacheState is data: copies
+        match self.lines[index].data.take():
+            case .Some(take block):
+                data = take block
+            case .None:
+                panic("cache line has no payload")
+        self.lines[index].state = CacheState.Replacing
+        return CacheFill(index=index, fallback=prior, data=take data)
+
+    # Restores the payload and sets the resulting state: `next` on success,
+    # or the fill's recorded fallback on failure or cancellation.
+    fn resolve_replace(mut self, take fill: CacheFill, next: Option[CacheState]):
+        self.lines[fill.index].data = Some(take fill.data)
+        self.lines[fill.index].state = next.unwrap_or(fill.fallback)
+
+    # Lending accessors: a non-escaping closure borrows the payload for
+    # exactly one synchronous call. Nothing here can be stored, escape, or
+    # cross an await — the closure rules guarantee it without view types.
+    fn peek[R](read self, index: usize, body: fn(read DmaBlock) -> R) -> R:
+        match self.lines[index].data:
+            case .Some(data):
+                return body(data)
+            case .None:
+                panic("cache read of unavailable line")
+
+    fn edit[R](mut self, index: usize, body: fn(mut DmaBlock) -> R) -> R:
+        match self.lines[index].state:
+            case .Clean(_) | .Dirty(_):
+                pass
+            case .Invalid | .Replacing:
+                panic("cache edit of unavailable line")
+        match self.lines[index].data:
+            case .Some(data):
+                return body(mut data)
+            case .None:
+                panic("cache line has no payload")
+
+    fn mark_dirty(mut self, index: usize, lba: u64):
+        self.lines[index].state = CacheState.Dirty(lba)
+
+    async fn ensure(self, disk: Actor[BlkDriver[BLOCK_MODE]],
+                    lba: u64) -> Result[usize, FsError]:
+        if self.lookup(lba) is .Some(index):
+            return Ok(index)
+
+        index = (lba % CACHE_BLOCKS.to[u64]()).checked_to[usize]()?
+        fill = self.begin_replace(index)
+
+        match fill.fallback:
+            case .Dirty(old_lba):
+                match await disk.submit_write(
+                    lba=old_lba,
+                    buffer=take fill.data,
+                ):
+                    case .Ok(receipt):
+                        write_receipt = take receipt
+                    case .Err(error):
+                        # Cancelled, deadline, or peer failure: the write
+                        # was consumed; restore the line to its fallback.
+                        self.resolve_replace(take fill, next=None)
+                        return Err(FsError.from(error))
+                write_done = await write_receipt
+                fill.data = take write_done.payload
+                match write_done.status:
+                    case .Ok(_):
+                        pass
+                    case .Err(error):
+                        self.resolve_replace(take fill, next=None)
+                        return Err(FsError.from(error))
+            case .Clean(_) | .Invalid:
+                pass
+            case .Replacing:
+                panic("non-reentrant cache entered replacing state")
+
+        # The device may partially overwrite a read payload. From here,
+        # cancellation or failure must leave the line invalid, never stale
+        # metadata for the previous contents.
+        fill.invalidate_fallback()
+        match await disk.submit_read(lba=lba, buffer=take fill.data):
+            case .Ok(receipt):
+                read_receipt = take receipt
+            case .Err(error):
+                self.resolve_replace(take fill, next=None)
+                return Err(FsError.from(error))
+        read_done = await read_receipt
+        fill.data = take read_done.payload
+        match read_done.status:
+            case .Ok(_):
+                pass
+            case .Err(error):
+                self.resolve_replace(take fill, next=None)
+                return Err(FsError.from(error))
+
+        self.resolve_replace(take fill, next=Some(CacheState.Clean(lba)))
+        return Ok(index)
+
+
+const INODE_LBA: u64 = 1
+const MAGIC_FS: u32 = 0x5752_4c41
+
+
+@layout(wire, endian=little, version=1, packed=true)
+struct Inode:
+    magic: u32
+    size_bytes: u32
+    start_lba: u64
+    blocks: u32
+    reserved: u32
+
+
+struct ExtentFs:
+    disk: Actor[BlkDriver[BLOCK_MODE]]
+    cache: BlockCache
+    next_free_lba: u64
+
+    init(mut self, disk: Actor[BlkDriver[BLOCK_MODE]],
+         take blocks: [own[BlockPayloads] DmaBlock; CACHE_BLOCKS]):
+        self.disk = disk
+        self.cache = BlockCache(blocks=take blocks)
+        self.next_free_lba = 64
+
+    async fn read_file(self, ino: u32,
+                       take out: own[AppBuffers] Bytes)
+        -> Result[own[AppBuffers] Bytes, FsError]:
+        inode_lba = INODE_LBA + (ino / 16).to[u64]()
+        inode_index = await self.cache.ensure(self.disk, inode_lba)?
+
+        # The closure lends the block for one synchronous call; `node` is an
+        # owned value decoded from the versioned little-endian wire layout.
+        node = self.cache.peek(inode_index, |block: DmaBlock|
+            block.bytes.read_wire[Inode](offset=((ino % 16) * 32).to[usize]()))?
+        if node.magic != MAGIC_FS:
+            return Err(FsError.BadInode)
+
+        size = node.size_bytes.checked_to[usize]()?
+        if size > out.capacity():
+            return Err(FsError.OutputTooSmall)
+        if node.blocks.checked_to[usize]()? != div_ceil(size, SECTOR):
+            return Err(FsError.BadInode)
+        _end_lba = node.start_lba.checked_add(
+            node.blocks.to[u64](),
+        ).ok_or(FsError.BadInode)?
+
+        written: usize = 0
+        for block_index in 0 .. node.blocks:
+            index = await self.cache.ensure(
+                self.disk,
+                node.start_lba + block_index.to[u64](),
+            )?
+            count = min(SECTOR, size - written)
+            # Lend the cache line, mutate the captured output buffer; both
+            # accesses are disjoint and end when the call returns.
+            self.cache.peek(index, |block: DmaBlock|:
+                out.copy_from_at(
+                    offset=written,
+                    source=block.bytes,
+                    length=count,
+                ))
+            written += count
+
+        out.set_len(written)
+        return Ok(take out)
+
+    async fn write_file(self, ino: u32,
+                        take data: own[AppBuffers] Bytes)
+        -> Result[unit, FsError]:
+        block_count = div_ceil(data.len(), SECTOR)
+        start = self.next_free_lba
+
+        for block_index in 0 .. block_count:
+            lba = start + block_index.to[u64]()
+            index = await self.cache.ensure(self.disk, lba)?
+
+            self.cache.edit(index, |mut block: DmaBlock|:
+                block.bytes.clear()
+                block.bytes.copy_from_range(
+                    source=data,
+                    source_offset=block_index * SECTOR,
+                    length=min(SECTOR, data.len() - block_index * SECTOR),
+                ))
+            self.cache.mark_dirty(index, lba)
+
+        inode_lba = INODE_LBA + (ino / 16).to[u64]()
+        inode_index = await self.cache.ensure(self.disk, inode_lba)?
+
+        # `?` inside a closure would propagate from the closure, so fallible
+        # conversions happen before the lend; the closure returns the wire
+        # writer's Result and `?` applies outside.
+        size_u32 = data.len().checked_to[u32]()?
+        blocks_u32 = block_count.checked_to[u32]()?
+        self.cache.edit(inode_index, |mut block: DmaBlock|
+            block.bytes.write_wire(
+                offset=((ino % 16) * 32).to[usize](),
+                value=Inode(
+                    magic=MAGIC_FS,
+                    size_bytes=size_u32,
+                    start_lba=start,
+                    blocks=blocks_u32,
+                    reserved=0,
+                ),
+            ))?
+        self.cache.mark_dirty(inode_index, inode_lba)
+        self.next_free_lba += block_count.to[u64]()
+        await self.flush()?
+        return Ok(unit)
+
+    async fn flush(self) -> Result[unit, FsError]:
+        for index in 0 .. CACHE_BLOCKS:
+            match self.cache.lines[index].state:
+                case .Dirty(lba):
+                    fill = self.cache.begin_replace(index)
+                    match await self.disk.submit_write(
+                        lba=lba,
+                        buffer=take fill.data,
+                    ):
+                        case .Ok(receipt):
+                            write_receipt = take receipt
+                        case .Err(error):
+                            self.cache.resolve_replace(take fill, next=None)
+                            return Err(FsError.from(error))
+                    done = await write_receipt
+                    fill.data = take done.payload
+                    match done.status:
+                        case .Ok(_):
+                            pass
+                        case .Err(error):
+                            self.cache.resolve_replace(take fill, next=None)
+                            return Err(FsError.from(error))
+                    self.cache.resolve_replace(
+                        take fill,
+                        next=Some(CacheState.Clean(lba)),
+                    )
+                case .Clean(_) | .Invalid:
+                    pass
+                case .Replacing:
+                    panic("non-reentrant flush observed replacing line")
+        return Ok(unit)
+
+
+@actor
+pub struct Storage:
+    fs: ExtentFs
+
+    init(mut self, disk: Actor[BlkDriver[BLOCK_MODE]],
+         take blocks: [own[BlockPayloads] DmaBlock; CACHE_BLOCKS]):
+        self.fs = ExtentFs(disk=disk, blocks=take blocks)
+
+    pub async fn read_file(mut self, ino: u32,
+                           take out: own[AppBuffers] Bytes)
+        -> Result[own[AppBuffers] Bytes, FsError]:
+        return await self.fs.read_file(ino, take out)
+
+    pub async fn write_file(mut self, ino: u32,
+                            take data: own[AppBuffers] Bytes)
+        -> Result[unit, FsError]:
+        return await self.fs.write_file(ino, take data)
+
+
+# ---------------------------------------------------------------------------
+# App actor
+# ---------------------------------------------------------------------------
+
+@actor
+pub struct Notes:
+    storage: Actor[Storage]
+    console: Actor[Console]
+    buffers: Pool[AppBuffers, Bytes, ..2]
+
+    init(mut self, storage: Actor[Storage], console: Actor[Console],
+         take buffers: Pool[AppBuffers, Bytes, ..2]):
+        self.storage = storage
+        self.console = console
+        self.buffers = take buffers
+
+    @task(priority=normal, budget=ms(5), failure=TaskFailure.Escalate)
+    pub async fn run(mut self) -> Result[unit, AppError]:
+        with group(deadline=now() + seconds(1)):
+            body = self.buffers.from_str_proven(
+                "wrela boots to an appliance, not a prompt.\n",
+            )
+            await self.storage.write_file(ino=7, data=take body)?
+
+            output = self.buffers.get_proven(capacity=4096)
+            output = await self.storage.read_file(ino=7, out=take output)?
+
+            # Console is another actor, so ownership moves rather than
+            # lending across the boundary.
+            await self.console.write(data=take output)?
+        return Ok(unit)
+
+
+# ---------------------------------------------------------------------------
+# Image
+# ---------------------------------------------------------------------------
+
+@image
+pub fn build() -> Image:
+    img = Image(
+        name="virtio-storage-example",
+        target=Target.wrela_machine_v1,
+    )
+
+    block_device = img.device(
+        VirtioBlock,
+        transport=VirtioMmioTransport(base=0x0a00_0000, irq=0x30),
+        required_features=[VirtioFeature.Flush],
+        optional_features=[VirtioFeature.RingReset],
+    )
+
+    disk = img.driver(
+        BlkDriver[BLOCK_MODE],
+        device=block_device,
+        queue_depth=QDEPTH,
+        control_dma=DmaPoolSpec[BlockControl](capacity=256.KiB),
+    )
+
+    # Storage-owned but device-reachable payloads: every handle can move
+    # Storage -> BlkDriver -> Storage while its slot stays in this pool.
+    cache_blocks = img.dma_pool[DmaBlock](
+        name=BlockPayloads,
+        device=disk,
+        count=CACHE_BLOCKS,
+    )
+    app_buffers = img.pool[Bytes](
+        name=AppBuffers,
+        slots=2,
+        max_payload=4096,
+    )
+
+    storage = img.actor(
+        Storage,
+        disk=disk.handle(),
+        blocks=take cache_blocks,
+        mailbox=8,
+    )
+    console = img.actor(Console, mailbox=8)
+    notes = img.actor(
+        Notes,
+        storage=storage.handle(),
+        console=console.handle(),
+        buffers=take app_buffers,
+        mailbox=2,
+    )
+
+    img.supervise(
+        children=[disk, storage, console, notes],
+        strategy=Restart.OneForAll,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+
+    # The whole @image body is a comptime context; mkfs runs at build time.
+    img.seed_disk(extentfs_mkfs(
+        files=[SeedFile(ino=7, data=b"hello from comptime\n")],
+    ))
+    img.check_layout(example_limits)
+    return img.seal()
+
+
+@layout_assert
+fn example_limits(report: ImageReport):
+    assert report.peak_memory < 64.MiB
+    assert report.queue("virtio-blk.0").max_direct_requests == 42
+    assert report.region_promotions.len() == 0

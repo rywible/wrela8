@@ -1,0 +1,144 @@
+Module @1:1 path=examples.declarations
+  Const @3:1 name=LIMIT pub=true
+    TypeName @3:18 name=u64
+    Int @3:24 text=0x1000_0000
+  Pool @5:1 name=Widgets
+  Struct @8:1 name=VirtioIrqMmio
+    Attr @7:1 name=layout
+      Arg @7:9
+        Name @7:9 name=mmio
+      Arg @7:15 label=endian
+        Name @7:22 name=little
+    Field @9:20 name=status
+      Attr @9:5 name=offset
+        Arg @9:13
+          Int @9:13 text=0x060
+      TypeName @9:28 name=ReadOnly
+        TypeName @9:37 name=u32
+  Struct @11:1 name=Ring pub=true
+    GenericType @11:17 name=T
+    GenericConst @11:20 name=N
+      TypeName @11:29 name=usize
+    Field @12:5 name=items pub=true
+      ArrayType @12:16
+        TypeName @12:17 name=Option
+          TypeName @12:24 name=T
+        Name @12:28 name=N
+    Field @13:5 name=total
+      TypeName @13:12 name=usize
+      Int @13:20 text=0
+    Pool @15:5 name=Items
+    Init @17:5
+      Receiver @17:10 mode=mut
+      Param @17:20 name=blocks mode=take
+        ArrayType @17:33
+          TypeName @17:34 name=T
+          Name @17:37 name=N
+      Body
+        Assign @18:9 op==
+          Field @18:14 name=total
+            Name @18:9 name=self
+          Name @18:22 name=N
+    Fn @20:5 name=get pub=true
+      Receiver @20:16 mode=read
+      Param @20:27 name=index mode=read
+        TypeName @20:34 name=usize
+      TypeName @20:44 name=Option
+        TypeName @20:51 name=T
+      Body
+        Return @21:9
+          Index @21:26
+            Field @21:21 name=items
+              Name @21:16 name=self
+            Name @21:27 name=index
+    ComptimeIf @23:5
+      Binary @23:19 op===
+        Name @23:17 name=N
+        Int @23:22 text=0
+      Then
+        Fn @24:9 name=empty
+          Receiver @24:18 mode=read
+          TypeName @24:32 name=bool
+          Body
+            Return @25:13
+              Bool @25:20 value=true
+      Else
+        Fn @27:9 name=empty
+          Receiver @27:18 mode=read
+          TypeName @27:32 name=bool
+          Body
+            Return @28:13
+              Bool @28:20 value=false
+  Struct @30:1 name=Ledger resource=true
+    Field @31:5 name=entries
+      TypeName @31:14 name=u64
+  Enum @33:1 name=Lookup deriving=Format
+    GenericType @33:13 name=T
+    Variant @34:5 name=Found
+      TypeName @34:11 name=T
+    Variant @35:5 name=Absent
+    Variant @36:5 name=Failed
+      TypeName @36:12 name=IoError
+  Enum @38:1 name=CacheState
+    Variant @39:5 name=Invalid
+    Variant @40:5 name=Clean
+      VariantField @40:11 name=lba
+        TypeName @40:16 name=u64
+    Variant @41:5 name=Dirty
+      VariantField @41:11 name=lba
+        TypeName @41:16 name=u64
+  Fn @43:1 name=fetch async=true
+    Param @43:16 name=client mode=read
+      TypeName @43:24 name=ClientHandle
+    TypeName @43:41 name=Result
+      OwnType @43:48 pool=NetBufs
+        TypeName @43:61 name=Bytes
+      TypeName @43:68 name=NetError
+    Body
+      Return @44:5
+        Call @44:14
+          Name @44:12 name=Ok
+          Arg @44:15
+            Call @44:28
+              Field @44:22 name=buffer
+                Name @44:15 name=client
+  Fn @46:1 name=hash_pair
+    GenericType @46:14 name=T
+    Param @46:17 name=a mode=read
+      TypeName @46:20 name=T
+    Param @46:23 name=b mode=read
+      TypeName @46:26 name=T
+    TypeName @46:32 name=u64
+    Body
+      Return @47:5
+        Binary @47:21 op=^
+          Call @47:18
+            Field @47:14 name=hash
+              Name @47:12 name=a
+          Call @47:29
+            Field @47:25 name=hash
+              Name @47:23 name=b
+  Fn @49:1 name=identity
+    Param @49:13 name=x mode=read
+      FnType @49:16
+        FnTypeParam @49:19 mode=read
+          TypeName @49:24 name=u64
+        TypeName @49:32 name=u64
+    TypeName @49:40 name=u64
+    Body
+      Return @50:5
+        Call @50:13
+          Name @50:12 name=x
+          Arg @50:14
+            Int @50:14 text=0
+  ComptimeIf @52:1
+    Field @52:20 name=debug
+      Name @52:13 name=target
+    Then
+      Const @53:5 name=TRACE
+        TypeName @53:18 name=bool
+        Bool @53:25 value=true
+    Else
+      Const @55:5 name=TRACE
+        TypeName @55:18 name=bool
+        Bool @55:25 value=false

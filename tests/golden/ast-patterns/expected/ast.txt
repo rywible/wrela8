@@ -1,0 +1,76 @@
+Module @1:1 path=examples.patterns
+  Fn @3:1 name=classify
+    Param @3:13 name=item mode=read
+      TypeName @3:19 name=Lookup
+        TypeName @3:26 name=u64
+    TypeName @3:35 name=u64
+    Body
+      Match @4:5
+        Name @4:11 name=item
+        Case @5:9
+          Wildcard @5:14
+          Pass @6:13
+        Case @7:9
+          PatternLiteral @7:14
+            Unary @7:14 op=neg
+              Int @7:15 text=1
+          Pass @8:13
+        Case @9:9
+          VariantPattern @9:14 variant=Found
+            Binding @9:21 name=value
+          Return @10:13
+            Name @10:20 name=value
+        Case @11:9
+          VariantPattern @11:14 variant=Absent enum=Lookup
+          Return @12:13
+            Int @12:20 text=0
+        Case @13:9
+          VariantPattern @13:14 variant=Failed
+            TakePattern @13:22
+              Binding @13:27 name=error
+          Return @14:13
+            Int @14:20 text=0
+        Case @15:9
+          TuplePattern @15:14
+            Binding @15:15 name=a
+            Binding @15:18 name=b
+          Return @16:13
+            Binary @16:22 op=+
+              Name @16:20 name=a
+              Name @16:24 name=b
+        Case @17:9
+          ArrayPattern @17:14
+            Binding @17:15 name=first
+            Binding @17:22 name=second
+          Return @18:13
+            Binary @18:26 op=+
+              Name @18:20 name=first
+              Name @18:28 name=second
+        Case @19:9
+          OrPattern @19:14
+            PatternLiteral @19:14
+              Int @19:14 text=0
+            PatternLiteral @19:18
+              Int @19:18 text=1
+            PatternLiteral @19:22
+              Int @19:22 text=2
+          Return @20:13
+            Int @20:20 text=1
+        Case @21:9
+          Binding @21:14 name=n
+          Guard
+            Binary @21:21 op=>
+              Name @21:19 name=n
+              Int @21:23 text=10
+          Return @22:13
+            Name @22:20 name=n
+      If @24:5
+        Is @24:13
+          Name @24:8 name=item
+          VariantPattern @24:16 variant=Found
+            Binding @24:23 name=index
+        Then
+          Return @25:9
+            Name @25:16 name=index
+      Return @26:5
+        Int @26:12 text=0
