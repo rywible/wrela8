@@ -1,13 +1,1572 @@
-//! Access-mode checking (plans/M2.md item D): call-site `mut`/`take`
-//! mirroring against signatures, the receiver exception, `pub`-method
-//! receiver-effect spelling with private-method inference, and operator
-//! operands being `read` (02-language.md §3, §5.1, §7.4). Stubbed until
-//! item D lands.
+//! Access-mode checking (plans/M2.md item D): call-site mirroring of
+//! `mut`/`take` markers against declared parameter modes (02-language.md
+//! §5.1), the place-expression requirement on a mirrored operand, `pub`
+//! methods spelling their receiver effect (private plain-`self` methods
+//! get the least effect inferred instead), `read`-parameter loans (a
+//! `read` binding — including `read self` — can never be assigned, have
+//! a field assigned, or be passed onward as `mut`/`take`), and the
+//! "calling through a receiver" rule: a `mut self` method needs a
+//! mutable place, a `take self` method needs an owned one.
+//!
+//! Shape (decision 3/10): this pass runs after `bodies.rs`, which has
+//! already proven the whole (non-generic) module type-checks — arity,
+//! labels, and every expression's type are already known-good. This pass
+//! does **not** re-derive full type inference; it re-walks the same
+//! bodies with a much smaller "which struct/method does this call
+//! resolve to" question, reusing `bodies::build_module_ctx`'s lookup
+//! tables wholesale (widened `pub(crate)` there, plans/M2.md item D's
+//! footprint rule — nothing in `bodies.rs`/`types.rs` is restructured).
+//! Tracking is scoped to what a call target actually needs: every
+//! tracked name (a parameter, `self`, or a closure parameter) keeps its
+//! declared type and mode; a plain local introduced by assignment/
+//! pattern/`for` keeps a best-effort type (propagated from its
+//! initializer through the same lookup) and no mode at all (an ordinary
+//! owned binding is never restricted). A method call whose receiver
+//! expression's type cannot be determined this way (a chain rooted in
+//! something other than a tracked name, e.g. a call whose own callee this
+//! pass cannot resolve) fails closed rather than silently skipping
+//! mirroring; nothing in the M2 sema corpus (goldens in this commit
+//! included) needs more than this.
+//!
+//! Receiver-effect inference (item 3): the AST cannot distinguish a
+//! plain `self` from an explicitly spelled `read self` (types.rs's
+//! `DeclReceiver` doc comment) — so a private method's *inferred* effect
+//! is the only thing ever computed here, and the `pub`-must-spell rule is
+//! checked the only honest way available: a `pub` method with the
+//! ambiguous `Read` receiver mode is an error exactly when its body's
+//! inferred requirement exceeds `read` (it needed `mut`/`take` and didn't
+//! say so); a `pub` method that already spells `mut self`/`take self` is
+//! never second-guessed. Inference itself is a dumb fixpoint over every
+//! private plain-`self` method in the module at once (self-calls are
+//! always same-struct, so a whole-module round-robin is simplest and
+//! correct): start every candidate at `read`, escalate to `mut` (a field
+//! of `self` is assigned; `self` or a field of `self` is passed as a
+//! `mut` argument; a field of `self` is taken, which per 02 §3.2 must be
+//! restorable and so needs `mut` access, not full ownership; a `mut
+//! self`/`take self` method is called directly on `self`) or `take`
+//! (`self` itself, whole, is taken; a `take self` method is called
+//! directly on `self`), to a fixed point. A private method that needs
+//! more than a *direct* `self.method()`/`self.field = ...` pattern to
+//! reach its true requirement (e.g. a nested `self.field.mutate()` call
+//! escalating through a field's own type) is not chased further by
+//! inference — the honest fallback is that such a method must spell its
+//! receiver explicitly, exactly like a `pub` method would; the "calling
+//! through a receiver" check below (which *does* resolve nested field
+//! chains for the mutability question) still enforces it correctly
+//! either way, so this is a documented scope limit, not a soundness gap
+//! (see the session report for the worked-through reasoning).
 
-use crate::sema::SemaError;
-use crate::syntax::ast::Module;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Placeholder for item D's access pass; a no-op until then.
-pub fn check(_module: &Module) -> Result<(), SemaError> {
+use crate::sema::bodies::{self, ModuleCtx, StructInfo};
+use crate::sema::types::{self, DeclFn, DeclItem, DeclMember, DeclParam, Type};
+use crate::sema::{SemaError, unimplemented_at};
+use crate::syntax::ast::{
+    self, AccessMode, Arg, AssignStmt, ClosureBody, ClosureExpr, DeferBody, Expr, ForStmt, IfStmt,
+    Item, MatchStmt, Member, Module, Pattern, Span, Stmt, UnaryOp, WhileStmt,
+};
+
+/// `(struct name, method name) -> inferred receiver effect`, for every
+/// private plain-`self` method in the module — the check dump's own
+/// lookup key (types.rs's `render_member`) and this pass's internal one.
+pub type EffectMap = BTreeMap<(String, String), AccessMode>;
+
+/// Computes the receiver-effect map alone, with no error checking — used
+/// by `check` below and, independently, by `mod.rs`'s `dump` (decision 8:
+/// private methods print their inferred effect once this pass lands).
+pub fn infer_effects(module: &Module, decl_items: &[DeclItem]) -> EffectMap {
+    let mctx = bodies::build_module_ctx(module, decl_items);
+    infer_private_effects(&mctx)
+}
+
+/// The access pass (plans/M2.md item D): fail-fast, source order, same
+/// module-wide traversal shape as `bodies::check`.
+pub fn check(module: &Module, decl_items: &[DeclItem]) -> Result<(), SemaError> {
+    let mctx = bodies::build_module_ctx(module, decl_items);
+    let effects = infer_private_effects(&mctx);
+    let ast_items: Vec<&Item> = module
+        .items
+        .iter()
+        .filter(|i| !matches!(i, Item::ComptimeIf(_)))
+        .collect();
+    for (ai, di) in ast_items.iter().zip(decl_items.iter()) {
+        match (ai, di) {
+            (Item::Const(c), DeclItem::Const(_)) => {
+                let mut actx = ACtx::new(&mctx, &effects, BTreeSet::new());
+                check_expr(&c.value, &mut actx)?;
+            }
+            (Item::Fn(f), DeclItem::Fn(d)) => check_top_fn(f, d, &mctx, &effects)?,
+            (Item::Struct(s), DeclItem::Struct(d)) => check_struct_bodies(s, d, &mctx, &effects)?,
+            _ => {}
+        }
+    }
     Ok(())
+}
+
+// --- receiver-effect inference (item 3) -----------------------------------
+
+fn rank(m: AccessMode) -> u8 {
+    match m {
+        AccessMode::Read => 0,
+        AccessMode::Mut => 1,
+        AccessMode::Take => 2,
+    }
+}
+
+fn escalate(acc: &mut AccessMode, m: AccessMode) {
+    if rank(m) > rank(*acc) {
+        *acc = m;
+    }
+}
+
+/// Every private, plain-`self` (`Read`, not `pub`), non-generic method in
+/// a non-generic struct — the only methods whose printed/effective
+/// receiver this pass ever changes (generic bodies are item H's job,
+/// exactly like `bodies::check` skips them).
+fn private_candidates(mctx: &ModuleCtx) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (sname, s) in &mctx.structs {
+        if !s.decl.generics.is_empty() {
+            continue;
+        }
+        for (am, dm) in s.members() {
+            if let (Member::Fn(f), DeclMember::Fn(d)) = (am, dm) {
+                if f.generics.is_empty() {
+                    if let Some(r) = &d.receiver {
+                        if r.mode == AccessMode::Read && !r.is_pub {
+                            out.push((sname.clone(), f.name.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn infer_private_effects(mctx: &ModuleCtx) -> EffectMap {
+    let candidates = private_candidates(mctx);
+    let mut effects: EffectMap = candidates
+        .iter()
+        .cloned()
+        .map(|k| (k, AccessMode::Read))
+        .collect();
+    loop {
+        let mut changed = false;
+        for key in &candidates {
+            let (sname, mname) = key;
+            let s = &mctx.structs[sname];
+            let (f, _d) = s
+                .method(mname)
+                .expect("private_candidates only names real methods");
+            let body = f
+                .body
+                .as_ref()
+                .expect("a non-generic method always has a body");
+            let required = required_self_effect(body, sname, mctx, &effects);
+            if rank(required) > rank(effects[key]) {
+                effects.insert(key.clone(), required);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    effects
+}
+
+/// What a `self.method()` call's own receiver mode contributes to the
+/// *caller's* required effect: explicit `mut`/`take` are used as-is; an
+/// explicit `pub read self` never escalates (it is exactly what it
+/// says); a private plain-`self` callee defers to its own (possibly
+/// still-being-computed) fixpoint entry.
+fn effective_declared(
+    mode: AccessMode,
+    is_pub: bool,
+    sname: &str,
+    mname: &str,
+    effects: &EffectMap,
+) -> AccessMode {
+    match mode {
+        AccessMode::Mut => AccessMode::Mut,
+        AccessMode::Take => AccessMode::Take,
+        AccessMode::Read => {
+            if is_pub {
+                AccessMode::Read
+            } else {
+                effects
+                    .get(&(sname.to_string(), mname.to_string()))
+                    .copied()
+                    .unwrap_or(AccessMode::Read)
+            }
+        }
+    }
+}
+
+fn required_self_effect(
+    body: &[Stmt],
+    sname: &str,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+) -> AccessMode {
+    let mut acc = AccessMode::Read;
+    scan_stmts_self(body, sname, mctx, effects, &mut acc);
+    acc
+}
+
+/// How an expression refers to `self`, for the escalation rules: exactly
+/// `self` (a whole-value use), a field/index chain rooted at `self` (a
+/// partial reference), or unrelated.
+enum SelfRef {
+    None,
+    Whole,
+    Field,
+}
+
+fn self_ref(e: &Expr) -> SelfRef {
+    match e {
+        Expr::Name(_, n) if n == "self" => SelfRef::Whole,
+        Expr::Field(..) | Expr::Index(..) => {
+            if place_root_name(e) == Some("self") {
+                SelfRef::Field
+            } else {
+                SelfRef::None
+            }
+        }
+        _ => SelfRef::None,
+    }
+}
+
+fn scan_stmts_self(
+    stmts: &[Stmt],
+    sname: &str,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+    acc: &mut AccessMode,
+) {
+    for s in stmts {
+        scan_stmt_self(s, sname, mctx, effects, acc);
+    }
+}
+
+fn scan_stmt_self(
+    stmt: &Stmt,
+    sname: &str,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+    acc: &mut AccessMode,
+) {
+    match stmt {
+        Stmt::Assign(a) => {
+            match self_ref(&a.target) {
+                SelfRef::Whole | SelfRef::Field => escalate(acc, AccessMode::Mut),
+                SelfRef::None => {}
+            }
+            scan_expr_self(&a.target, sname, mctx, effects, acc);
+            scan_expr_self(&a.value, sname, mctx, effects, acc);
+        }
+        Stmt::If(i) => {
+            scan_expr_self(&i.cond, sname, mctx, effects, acc);
+            scan_stmts_self(&i.then_branch, sname, mctx, effects, acc);
+            for elif in &i.elifs {
+                scan_expr_self(&elif.cond, sname, mctx, effects, acc);
+                scan_stmts_self(&elif.body, sname, mctx, effects, acc);
+            }
+            if let Some(b) = &i.else_branch {
+                scan_stmts_self(b, sname, mctx, effects, acc);
+            }
+        }
+        Stmt::Match(m) => {
+            scan_expr_self(&m.scrutinee, sname, mctx, effects, acc);
+            for arm in &m.arms {
+                if let Some(g) = &arm.guard {
+                    scan_expr_self(g, sname, mctx, effects, acc);
+                }
+                scan_stmts_self(&arm.body, sname, mctx, effects, acc);
+            }
+        }
+        Stmt::For(f) => {
+            scan_expr_self(&f.iterable, sname, mctx, effects, acc);
+            scan_stmts_self(&f.body, sname, mctx, effects, acc);
+        }
+        Stmt::While(w) => {
+            scan_expr_self(&w.cond, sname, mctx, effects, acc);
+            scan_stmts_self(&w.body, sname, mctx, effects, acc);
+        }
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => {}
+        Stmt::Return(_, e) => {
+            if let Some(e) = e {
+                scan_expr_self(e, sname, mctx, effects, acc);
+            }
+        }
+        Stmt::Assert(a) => {
+            scan_expr_self(&a.cond, sname, mctx, effects, acc);
+            if let Some(m) = &a.message {
+                scan_expr_self(m, sname, mctx, effects, acc);
+            }
+        }
+        Stmt::Defer(d) => match &d.body {
+            DeferBody::Expr(e) => scan_expr_self(e, sname, mctx, effects, acc),
+            DeferBody::Suite(s) => scan_stmts_self(s, sname, mctx, effects, acc),
+        },
+        Stmt::With(w) => {
+            scan_expr_self(&w.expr, sname, mctx, effects, acc);
+            scan_stmts_self(&w.body, sname, mctx, effects, acc);
+        }
+        Stmt::Send(_, e) => scan_expr_self(e, sname, mctx, effects, acc),
+        Stmt::Expr(_, e) => scan_expr_self(e, sname, mctx, effects, acc),
+        Stmt::ComptimeIf(c) => {
+            scan_expr_self(&c.cond, sname, mctx, effects, acc);
+            scan_stmts_self(&c.then_branch, sname, mctx, effects, acc);
+            if let Some(b) = &c.else_branch {
+                scan_stmts_self(b, sname, mctx, effects, acc);
+            }
+        }
+        Stmt::ComptimeAssert(_, e, m) => {
+            scan_expr_self(e, sname, mctx, effects, acc);
+            if let Some(m) = m {
+                scan_expr_self(m, sname, mctx, effects, acc);
+            }
+        }
+    }
+}
+
+fn scan_expr_self(
+    e: &Expr,
+    sname: &str,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+    acc: &mut AccessMode,
+) {
+    match e {
+        Expr::Unary(_, UnaryOp::Take, inner) => {
+            match self_ref(inner) {
+                SelfRef::Whole => escalate(acc, AccessMode::Take),
+                SelfRef::Field => escalate(acc, AccessMode::Mut),
+                SelfRef::None => {}
+            }
+            scan_expr_self(inner, sname, mctx, effects, acc);
+        }
+        Expr::Unary(_, _, inner) => scan_expr_self(inner, sname, mctx, effects, acc),
+        Expr::Field(base, _, _) => scan_expr_self(base, sname, mctx, effects, acc),
+        Expr::Index(base, _, args) => {
+            scan_expr_self(base, sname, mctx, effects, acc);
+            for a in args {
+                scan_expr_self(a, sname, mctx, effects, acc);
+            }
+        }
+        Expr::Call(callee, _, args) => {
+            for a in args {
+                if a.mode != AccessMode::Read {
+                    match (a.mode, self_ref(&a.value)) {
+                        (AccessMode::Take, SelfRef::Whole) => escalate(acc, AccessMode::Take),
+                        (AccessMode::Take, SelfRef::Field) => escalate(acc, AccessMode::Mut),
+                        (AccessMode::Mut, SelfRef::Whole) | (AccessMode::Mut, SelfRef::Field) => {
+                            escalate(acc, AccessMode::Mut)
+                        }
+                        _ => {}
+                    }
+                }
+                scan_expr_self(&a.value, sname, mctx, effects, acc);
+            }
+            if let Expr::Field(base, _, name) = &**callee {
+                if matches!(self_ref(base), SelfRef::Whole) {
+                    if let Some(s) = mctx.structs.get(sname) {
+                        if let Some((_, d)) = s.method(name) {
+                            if let Some(r) = &d.receiver {
+                                escalate(
+                                    acc,
+                                    effective_declared(r.mode, r.is_pub, sname, name, effects),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            scan_expr_self(callee, sname, mctx, effects, acc);
+        }
+        Expr::Try(_, inner) => scan_expr_self(inner, sname, mctx, effects, acc),
+        Expr::Binary(_, _, l, r) | Expr::Range(_, l, r, _) => {
+            scan_expr_self(l, sname, mctx, effects, acc);
+            scan_expr_self(r, sname, mctx, effects, acc);
+        }
+        Expr::Is(_, scrutinee, _) => scan_expr_self(scrutinee, sname, mctx, effects, acc),
+        Expr::Not(_, inner) => scan_expr_self(inner, sname, mctx, effects, acc),
+        Expr::And(_, l, r) | Expr::Or(_, l, r) => {
+            scan_expr_self(l, sname, mctx, effects, acc);
+            scan_expr_self(r, sname, mctx, effects, acc);
+        }
+        Expr::DotVariant(_, _, args) => {
+            for a in args {
+                scan_expr_self(&a.value, sname, mctx, effects, acc);
+            }
+        }
+        Expr::Closure(c) => match &c.body {
+            ClosureBody::Expr(e) => scan_expr_self(e, sname, mctx, effects, acc),
+            ClosureBody::Suite(s) => scan_stmts_self(s, sname, mctx, effects, acc),
+        },
+        Expr::Send(_, inner) => scan_expr_self(inner, sname, mctx, effects, acc),
+        Expr::Tuple(_, items) | Expr::List(_, items) => {
+            for i in items {
+                scan_expr_self(i, sname, mctx, effects, acc);
+            }
+        }
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Str(..)
+        | Expr::BStr(..)
+        | Expr::Char(..)
+        | Expr::FStr(_)
+        | Expr::Bool(..)
+        | Expr::Unit(_)
+        | Expr::Name(..) => {}
+    }
+}
+
+// --- shared place helpers --------------------------------------------------
+
+/// The name a place expression ultimately roots at — a bare local, or the
+/// base of a field/index chain — `None` for anything else (a call, a
+/// literal, a binary expression, ...).
+fn place_root_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Name(_, n) => Some(n.as_str()),
+        Expr::Field(base, _, _) => place_root_name(base),
+        Expr::Index(base, _, _) => place_root_name(base),
+        _ => None,
+    }
+}
+
+/// Whether `expr` is a full place expression per 02-language.md §3/§5.1:
+/// a name, or a field/index chain rooted at one, all the way down.
+/// Stricter than `ast::is_place_expr` (which only looks at the outermost
+/// node — deliberately shallow so the parser can check it before a
+/// receiver's own type is known), catching the case that shallow check
+/// slips through: an outer `Field`/`Index` whose *base* is not itself a
+/// place (`f().field`, `g()[0]`).
+fn is_full_place(expr: &Expr) -> bool {
+    match expr {
+        Expr::Name(..) => true,
+        Expr::Field(base, _, _) => is_full_place(base),
+        Expr::Index(base, _, _) => is_full_place(base),
+        _ => false,
+    }
+}
+
+fn access_error(message: String, span: Span) -> SemaError {
+    SemaError::at("access", message, span)
+}
+
+// --- the full check pass: mirroring, read loans, receiver mutability -----
+
+/// One tracked name's declared type (best effort — see the module doc
+/// comment) and access mode. `mode: None` marks an ordinary owned local
+/// (introduced by assignment/pattern/`for`): unrestricted, always a legal
+/// mutable/ownable place. `mode: Some(_)` marks a parameter or `self`:
+/// `Read` is a loan (item 4); `Mut`/`Take` carry no restriction of their
+/// own here (moving a borrowed value is item E/F's job) but do matter to
+/// the "calling through a receiver" origin check.
+#[derive(Clone)]
+struct LocalInfo {
+    ty: Option<Type>,
+    mode: Option<AccessMode>,
+}
+
+struct ACtx<'a> {
+    mctx: &'a ModuleCtx,
+    effects: &'a EffectMap,
+    locals: BTreeMap<String, LocalInfo>,
+    local_pools: BTreeSet<String>,
+}
+
+impl<'a> ACtx<'a> {
+    fn new(mctx: &'a ModuleCtx, effects: &'a EffectMap, local_pools: BTreeSet<String>) -> Self {
+        ACtx {
+            mctx,
+            effects,
+            locals: BTreeMap::new(),
+            local_pools,
+        }
+    }
+
+    /// Resolves an explicit local annotation exactly like `bodies.rs`
+    /// did — the module already type-checked, so this can never fail.
+    fn resolve_ann(&self, t: &ast::Type) -> Type {
+        types::resolve_type(
+            t,
+            &self.mctx.shapes,
+            &self.mctx.module_pools,
+            &self.local_pools,
+            &BTreeMap::new(),
+            false,
+        )
+        .expect("annotation already validated by types::declare/bodies::check")
+    }
+}
+
+fn is_image_fn(f: &ast::FnItem) -> bool {
+    f.attrs.iter().any(|a| a.name == "image")
+}
+
+fn local_pool_names(s: &StructInfo) -> BTreeSet<String> {
+    s.ast_members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Pool(p) => Some(p.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn check_top_fn(
+    f: &ast::FnItem,
+    d: &DeclFn,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+) -> Result<(), SemaError> {
+    if is_image_fn(f) || !f.generics.is_empty() {
+        // `@image` bodies already fail closed in `bodies::check` (never
+        // reached from here); a generic body is item H's job, mirroring
+        // `bodies::check_top_fn`'s own skip exactly.
+        return Ok(());
+    }
+    let mut actx = ACtx::new(mctx, effects, mctx.module_pools.clone());
+    for (ap, dp) in f.params.iter().zip(d.params.iter()) {
+        actx.locals.insert(
+            dp.name.clone(),
+            LocalInfo {
+                ty: Some(dp.ty.clone()),
+                mode: Some(dp.mode),
+            },
+        );
+        if let Some(def) = &ap.default {
+            check_expr(def, &mut actx)?;
+        }
+    }
+    if let Some(body) = &f.body {
+        check_stmts(body, &mut actx)?;
+    }
+    Ok(())
+}
+
+/// Resolves a struct method's *effective* receiver mode for this check
+/// pass, raising the `pub`-must-spell error (item 3) the one place it is
+/// honestly checkable: a `pub` method whose receiver mode is the
+/// ambiguous `Read` and whose body needs more.
+fn resolve_receiver_mode(
+    f: &ast::FnItem,
+    fd: &DeclFn,
+    sname: &str,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+) -> Result<AccessMode, SemaError> {
+    let Some(d) = &fd.receiver else {
+        return Ok(AccessMode::Read); // an associated fn: no `self` at all.
+    };
+    match d.mode {
+        AccessMode::Mut => Ok(AccessMode::Mut),
+        AccessMode::Take => Ok(AccessMode::Take),
+        AccessMode::Read => {
+            if d.is_pub {
+                let body = f
+                    .body
+                    .as_ref()
+                    .expect("a real pub method declaration always has a body");
+                let required = required_self_effect(body, sname, mctx, effects);
+                if required != AccessMode::Read {
+                    let span = f
+                        .receiver
+                        .as_ref()
+                        .expect("DeclFn.receiver implies an ast receiver")
+                        .span;
+                    return Err(access_error(
+                        format!(
+                            "pub method `{}` needs an explicit `{} self` receiver",
+                            f.name,
+                            required.as_str()
+                        ),
+                        span,
+                    ));
+                }
+                Ok(AccessMode::Read)
+            } else {
+                Ok(effects
+                    .get(&(sname.to_string(), f.name.clone()))
+                    .copied()
+                    .unwrap_or(AccessMode::Read))
+            }
+        }
+    }
+}
+
+fn check_struct_bodies(
+    s: &ast::StructItem,
+    _d: &types::DeclStruct,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+) -> Result<(), SemaError> {
+    if !s.generics.is_empty() {
+        return Ok(());
+    }
+    let info = mctx.structs.get(&s.name).expect("struct present in mctx");
+    let local_pools = local_pool_names(info);
+    let self_ty = Type::Named(s.name.clone(), vec![]);
+    for (am, dm) in info.members() {
+        match (am, dm) {
+            (Member::Field(af), DeclMember::Field(_)) => {
+                if let Some(def) = &af.default {
+                    let mut actx = ACtx::new(mctx, effects, local_pools.clone());
+                    actx.locals.insert(
+                        "self".to_string(),
+                        LocalInfo {
+                            ty: Some(self_ty.clone()),
+                            mode: Some(AccessMode::Read),
+                        },
+                    );
+                    check_expr(def, &mut actx)?;
+                }
+            }
+            (Member::Fn(f), DeclMember::Fn(fd)) => {
+                if !f.generics.is_empty() {
+                    continue;
+                }
+                let self_mode = resolve_receiver_mode(f, fd, &s.name, mctx, effects)?;
+                let mut actx = ACtx::new(mctx, effects, local_pools.clone());
+                actx.locals.insert(
+                    "self".to_string(),
+                    LocalInfo {
+                        ty: Some(self_ty.clone()),
+                        mode: Some(self_mode),
+                    },
+                );
+                for (ap, dp) in f.params.iter().zip(fd.params.iter()) {
+                    actx.locals.insert(
+                        dp.name.clone(),
+                        LocalInfo {
+                            ty: Some(dp.ty.clone()),
+                            mode: Some(dp.mode),
+                        },
+                    );
+                    if let Some(def) = &ap.default {
+                        check_expr(def, &mut actx)?;
+                    }
+                }
+                if let Some(body) = &f.body {
+                    check_stmts(body, &mut actx)?;
+                }
+            }
+            (Member::Init(i), DeclMember::Init(fd)) => {
+                // `init`'s receiver always prints (and is treated as)
+                // explicit (types.rs's `DeclReceiver` doc comment) — no
+                // pub-spelling question applies (`init` is never `pub`).
+                let self_mode = fd
+                    .receiver
+                    .as_ref()
+                    .map(|r| r.mode)
+                    .unwrap_or(AccessMode::Read);
+                let mut actx = ACtx::new(mctx, effects, local_pools.clone());
+                actx.locals.insert(
+                    "self".to_string(),
+                    LocalInfo {
+                        ty: Some(self_ty.clone()),
+                        mode: Some(self_mode),
+                    },
+                );
+                for (ap, dp) in i.params.iter().zip(fd.params.iter()) {
+                    actx.locals.insert(
+                        dp.name.clone(),
+                        LocalInfo {
+                            ty: Some(dp.ty.clone()),
+                            mode: Some(dp.mode),
+                        },
+                    );
+                    if let Some(def) = &ap.default {
+                        check_expr(def, &mut actx)?;
+                    }
+                }
+                check_stmts(&i.body, &mut actx)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// --- statements --------------------------------------------------------
+
+fn check_stmts(stmts: &[Stmt], actx: &mut ACtx) -> Result<(), SemaError> {
+    for s in stmts {
+        check_stmt(s, actx)?;
+    }
+    Ok(())
+}
+
+fn check_stmt(stmt: &Stmt, actx: &mut ACtx) -> Result<(), SemaError> {
+    match stmt {
+        Stmt::Assign(a) => check_assign(a, actx),
+        Stmt::If(i) => check_if(i, actx),
+        Stmt::Match(m) => check_match(m, actx),
+        Stmt::For(f) => check_for(f, actx),
+        Stmt::While(w) => check_while(w, actx),
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => Ok(()),
+        Stmt::Return(_, e) => {
+            if let Some(e) = e {
+                check_expr(e, actx)?;
+            }
+            Ok(())
+        }
+        Stmt::Assert(a) => {
+            check_expr(&a.cond, actx)?;
+            if let Some(m) = &a.message {
+                check_expr(m, actx)?;
+            }
+            Ok(())
+        }
+        Stmt::Defer(d) => match &d.body {
+            DeferBody::Expr(e) => {
+                check_expr(e, actx)?;
+                Ok(())
+            }
+            DeferBody::Suite(s) => check_stmts(s, actx),
+        },
+        Stmt::With(w) => {
+            check_expr(&w.expr, actx)?;
+            check_stmts(&w.body, actx)
+        }
+        Stmt::Send(_, e) => {
+            check_expr(e, actx)?;
+            Ok(())
+        }
+        Stmt::Expr(_, e) => {
+            check_expr(e, actx)?;
+            Ok(())
+        }
+        Stmt::ComptimeIf(c) => {
+            check_expr(&c.cond, actx)?;
+            check_stmts(&c.then_branch, actx)?;
+            if let Some(b) = &c.else_branch {
+                check_stmts(b, actx)?;
+            }
+            Ok(())
+        }
+        Stmt::ComptimeAssert(_, e, m) => {
+            check_expr(e, actx)?;
+            if let Some(m) = m {
+                check_expr(m, actx)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn check_if(i: &IfStmt, actx: &mut ACtx) -> Result<(), SemaError> {
+    check_expr(&i.cond, actx)?;
+    check_stmts(&i.then_branch, actx)?;
+    for elif in &i.elifs {
+        check_expr(&elif.cond, actx)?;
+        check_stmts(&elif.body, actx)?;
+    }
+    if let Some(b) = &i.else_branch {
+        check_stmts(b, actx)?;
+    }
+    Ok(())
+}
+
+fn check_while(w: &WhileStmt, actx: &mut ACtx) -> Result<(), SemaError> {
+    check_expr(&w.cond, actx)?;
+    check_stmts(&w.body, actx)
+}
+
+fn check_match(m: &MatchStmt, actx: &mut ACtx) -> Result<(), SemaError> {
+    let sty = check_expr(&m.scrutinee, actx)?;
+    for arm in &m.arms {
+        bind_pattern_locals(&arm.pattern, sty.as_ref(), actx);
+        if let Some(g) = &arm.guard {
+            check_expr(g, actx)?;
+        }
+        check_stmts(&arm.body, actx)?;
+    }
+    Ok(())
+}
+
+fn check_for(f: &ForStmt, actx: &mut ACtx) -> Result<(), SemaError> {
+    let raw_iterable: &Expr = match &f.iterable {
+        Expr::Unary(_, UnaryOp::Take, inner) => inner.as_ref(),
+        other => other,
+    };
+    let elem_ty = match raw_iterable {
+        Expr::Range(_, from, to, _incl) => {
+            let t1 = check_expr(from, actx)?;
+            let t2 = check_expr(to, actx)?;
+            t1.or(t2)
+        }
+        other => {
+            let ty = check_expr(other, actx)?;
+            ty.and_then(|t| match unwrap_own(t) {
+                Type::Array(elem, _) => Some(*elem),
+                _ => None,
+            })
+        }
+    };
+    actx.locals.insert(
+        f.name.clone(),
+        LocalInfo {
+            ty: elem_ty,
+            mode: None,
+        },
+    );
+    check_stmts(&f.body, actx)
+}
+
+/// Assignment's own read-loan check (item 4): a `read` binding (a
+/// parameter, or `self` under its effective mode) can never be the
+/// target of an assignment, whole or by field/index path.
+fn check_assign(a: &AssignStmt, actx: &mut ACtx) -> Result<(), SemaError> {
+    if let Some(root) = place_root_name(&a.target) {
+        if actx.locals.get(root).and_then(|li| li.mode) == Some(AccessMode::Read) {
+            return Err(access_error(
+                format!("`{root}` is a `read` parameter; it cannot be assigned"),
+                a.span,
+            ));
+        }
+    }
+    check_expr(&a.target, actx)?;
+    let value_ty = check_expr(&a.value, actx)?;
+    if let Expr::Name(_, name) = &a.target {
+        if !actx.locals.contains_key(name) {
+            let ty = match &a.ty {
+                Some(t) => Some(actx.resolve_ann(t)),
+                None => value_ty,
+            };
+            actx.locals
+                .insert(name.clone(), LocalInfo { ty, mode: None });
+        }
+    }
+    Ok(())
+}
+
+// --- patterns: plain owned bindings, best-effort typed --------------------
+
+fn bind_pattern_locals(p: &Pattern, scrutinee_ty: Option<&Type>, actx: &mut ACtx) {
+    match p {
+        Pattern::Wildcard(_) | Pattern::Literal(..) => {}
+        Pattern::Binding(_, name) => {
+            actx.locals.entry(name.clone()).or_insert(LocalInfo {
+                ty: scrutinee_ty.cloned(),
+                mode: None,
+            });
+        }
+        Pattern::Take(_, inner) => bind_pattern_locals(inner, scrutinee_ty, actx),
+        Pattern::Variant {
+            variant,
+            enum_name,
+            payload,
+            ..
+        } => {
+            let payload_tys = scrutinee_ty
+                .and_then(|t| variant_payload_types(t, enum_name.as_deref(), variant, actx.mctx));
+            match payload_tys {
+                Some(tys) => {
+                    for (sp, ty) in payload.iter().zip(tys.iter()) {
+                        bind_pattern_locals(sp, Some(ty), actx);
+                    }
+                }
+                None => {
+                    for sp in payload {
+                        bind_pattern_locals(sp, None, actx);
+                    }
+                }
+            }
+        }
+        Pattern::Tuple(_, items) => {
+            let elem_tys = scrutinee_ty.and_then(|t| match t {
+                Type::Tuple(e) => Some(e.clone()),
+                _ => None,
+            });
+            match elem_tys {
+                Some(tys) => {
+                    for (sp, ty) in items.iter().zip(tys.iter()) {
+                        bind_pattern_locals(sp, Some(ty), actx);
+                    }
+                }
+                None => {
+                    for sp in items {
+                        bind_pattern_locals(sp, None, actx);
+                    }
+                }
+            }
+        }
+        Pattern::Array(_, items) => {
+            let elem_ty = scrutinee_ty.and_then(|t| match t {
+                Type::Array(e, _) => Some((**e).clone()),
+                _ => None,
+            });
+            for sp in items {
+                bind_pattern_locals(sp, elem_ty.as_ref(), actx);
+            }
+        }
+        Pattern::Or(_, alts) => {
+            for sp in alts {
+                bind_pattern_locals(sp, scrutinee_ty, actx);
+            }
+        }
+    }
+}
+
+/// Mirrors `bodies.rs`'s `variant_payload_types_for`, minus the
+/// diagnostics (this pass only needs the payload types when it has them
+/// on hand; anything else falls back to untyped bindings).
+fn variant_payload_types(
+    scrutinee: &Type,
+    enum_name: Option<&str>,
+    variant: &str,
+    mctx: &ModuleCtx,
+) -> Option<Vec<Type>> {
+    let _ = enum_name;
+    match scrutinee {
+        Type::Option(inner) => Some(match variant {
+            "Some" => vec![(**inner).clone()],
+            _ => vec![],
+        }),
+        Type::Result(ok, err) => match variant {
+            "Ok" => Some(vec![(**ok).clone()]),
+            "Err" => Some(vec![(**err).clone()]),
+            _ => None,
+        },
+        Type::Named(name, targs) if targs.is_empty() => {
+            let e = mctx.enums.get(name)?;
+            let dv = e.variants.iter().find(|v| v.name == variant)?;
+            Some(match &dv.payload {
+                types::DeclVariantPayload::None => vec![],
+                types::DeclVariantPayload::Tuple(ts) => ts.clone(),
+                types::DeclVariantPayload::Named(fs) => fs.iter().map(|(_, t)| t.clone()).collect(),
+            })
+        }
+        _ => None,
+    }
+}
+
+// --- expressions -----------------------------------------------------------
+
+fn fn_value_type(d: &DeclFn) -> Type {
+    let params = d.params.iter().map(|p| (p.mode, p.ty.clone())).collect();
+    Type::Fn(params, Box::new(d.ret.clone()))
+}
+
+fn unwrap_own(ty: Type) -> Type {
+    match ty {
+        Type::Own(_, inner) => *inner,
+        other => other,
+    }
+}
+
+/// Checks `expr` for every access-mode concern reachable inside it and
+/// returns its type when cheaply derivable (`None` otherwise — never an
+/// error on its own; only a *call target* actually needing a type it
+/// cannot get fails closed, in `check_call_by_field`/`check_call`).
+fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
+    match expr {
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Str(..)
+        | Expr::BStr(..)
+        | Expr::Char(..)
+        | Expr::FStr(_)
+        | Expr::Bool(..)
+        | Expr::Unit(_) => Ok(None),
+        Expr::Name(_, name) => Ok(name_ty(name, actx)),
+        Expr::Field(base, span, name) => check_field(base, *span, name, actx),
+        Expr::Index(base, _span, args) => {
+            let base_ty = check_expr(base, actx)?;
+            for a in args {
+                check_expr(a, actx)?;
+            }
+            Ok(base_ty.map(unwrap_own).and_then(|t| match t {
+                Type::Array(elem, _) => Some(*elem),
+                Type::Bytes(_) => Some(Type::U8),
+                _ => None,
+            }))
+        }
+        Expr::Call(callee, span, args) => check_call(callee, *span, args, actx),
+        Expr::Unary(span, UnaryOp::Take, inner) => {
+            // `take` outside a call argument (an assignment source, a
+            // `return`, a tuple/array element, ...) is the same
+            // read-loan question `check_arg` asks of a `take` argument
+            // (02-language.md §3: "an argument, an assignment source, a
+            // literal operand, or a pattern payload" are one rule, not
+            // four) — checked here so every occurrence goes through it,
+            // not just the call-argument shape.
+            if !is_full_place(inner) {
+                return Err(access_error(
+                    "operand of `take` must be a place expression (name, field, index)".to_string(),
+                    *span,
+                ));
+            }
+            if let Some(root) = place_root_name(inner) {
+                if actx.locals.get(root).and_then(|li| li.mode) == Some(AccessMode::Read) {
+                    return Err(access_error(
+                        format!("`{root}` is a `read` parameter; it cannot be taken"),
+                        *span,
+                    ));
+                }
+            }
+            check_expr(inner, actx)
+        }
+        Expr::Unary(_, _, inner) => {
+            check_expr(inner, actx)?;
+            Ok(None)
+        }
+        Expr::Try(_, inner) => {
+            let t = check_expr(inner, actx)?;
+            Ok(t.and_then(|t| match t {
+                Type::Result(ok, _) => Some(*ok),
+                Type::Option(inner) => Some(*inner),
+                _ => None,
+            }))
+        }
+        Expr::Binary(_, _, l, r) => {
+            let lt = check_expr(l, actx)?;
+            let rt = check_expr(r, actx)?;
+            Ok(lt.or(rt))
+        }
+        Expr::Range(_, a, b, _) => {
+            check_expr(a, actx)?;
+            check_expr(b, actx)?;
+            Ok(None)
+        }
+        Expr::Is(_, scrutinee, pattern) => {
+            let sty = check_expr(scrutinee, actx)?;
+            bind_pattern_locals(pattern, sty.as_ref(), actx);
+            Ok(Some(Type::Bool))
+        }
+        Expr::Not(_, inner) => {
+            check_expr(inner, actx)?;
+            Ok(Some(Type::Bool))
+        }
+        Expr::And(_, l, r) | Expr::Or(_, l, r) => {
+            check_expr(l, actx)?;
+            check_expr(r, actx)?;
+            Ok(Some(Type::Bool))
+        }
+        Expr::DotVariant(_, _name, args) => {
+            for a in args {
+                check_arg(a, actx)?;
+            }
+            Ok(None)
+        }
+        Expr::Closure(c) => check_closure(c, actx),
+        Expr::Send(_, inner) => {
+            check_expr(inner, actx)?;
+            Ok(None)
+        }
+        Expr::Tuple(_, items) => {
+            let mut tys = Vec::with_capacity(items.len());
+            for i in items {
+                tys.push(check_expr(i, actx)?);
+            }
+            if tys.iter().all(Option::is_some) {
+                Ok(Some(Type::Tuple(
+                    tys.into_iter().map(|t| t.unwrap()).collect(),
+                )))
+            } else {
+                Ok(None)
+            }
+        }
+        Expr::List(span, items) => {
+            let mut first = None;
+            for i in items {
+                let t = check_expr(i, actx)?;
+                if first.is_none() {
+                    first = t;
+                }
+            }
+            Ok(first.map(|e| {
+                Type::Array(
+                    Box::new(e),
+                    Box::new(Expr::Int(*span, items.len().to_string())),
+                )
+            }))
+        }
+    }
+}
+
+fn name_ty(name: &str, actx: &ACtx) -> Option<Type> {
+    if let Some(li) = actx.locals.get(name) {
+        return li.ty.clone();
+    }
+    if let Some(t) = actx.mctx.consts.get(name) {
+        return Some(t.clone());
+    }
+    if let Some(f) = actx.mctx.fns.get(name) {
+        if f.decl.generics.is_empty() {
+            return Some(fn_value_type(&f.decl));
+        }
+    }
+    None
+}
+
+/// A bare `x.field` (or `Type.assoc_fn`/`Enum.Variant`, used as a value
+/// rather than called) — not a call, so no mirroring/mutability question
+/// arises here; only recursion and best-effort typing.
+fn check_field(
+    base: &Expr,
+    span: Span,
+    name: &str,
+    actx: &mut ACtx,
+) -> Result<Option<Type>, SemaError> {
+    let _ = span;
+    if let Expr::Name(_, bname) = base {
+        if !actx.locals.contains_key(bname) {
+            if let Some(s) = actx.mctx.structs.get(bname.as_str()) {
+                if s.decl.generics.is_empty() {
+                    if let Some((_, d)) = s.assoc_fn(name) {
+                        return Ok(Some(fn_value_type(d)));
+                    }
+                }
+                return Ok(None);
+            }
+            if let Some(e) = actx.mctx.enums.get(bname.as_str()) {
+                if e.generics.is_empty()
+                    && e.variants.iter().any(|v| {
+                        v.name == name && matches!(v.payload, types::DeclVariantPayload::None)
+                    })
+                {
+                    return Ok(Some(Type::Named(e.name.clone(), vec![])));
+                }
+                return Ok(None);
+            }
+        }
+    }
+    let base_ty = check_expr(base, actx)?;
+    let Some(base_ty) = base_ty.map(unwrap_own) else {
+        return Ok(None);
+    };
+    if let Type::Named(sname, targs) = &base_ty {
+        if targs.is_empty() {
+            if let Some(s) = actx.mctx.structs.get(sname.as_str()) {
+                if let Some(ty) = s.field_ty(name) {
+                    return Ok(Some(ty));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn check_closure(c: &ClosureExpr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
+    for p in &c.params {
+        let ty = p.ty.as_ref().map(|t| actx.resolve_ann(t));
+        actx.locals.insert(
+            p.name.clone(),
+            LocalInfo {
+                ty,
+                mode: Some(p.mode),
+            },
+        );
+    }
+    match &c.body {
+        ClosureBody::Expr(e) => {
+            check_expr(e, actx)?;
+        }
+        ClosureBody::Suite(s) => {
+            check_stmts(s, actx)?;
+        }
+    }
+    Ok(None)
+}
+
+// --- the per-argument universal checks (place-ness + read loans) ---------
+
+fn check_arg(a: &Arg, actx: &mut ACtx) -> Result<(), SemaError> {
+    if a.mode != AccessMode::Read {
+        if !is_full_place(&a.value) {
+            return Err(access_error(
+                format!(
+                    "operand of `{}` must be a place expression (name, field, index)",
+                    a.mode.as_str()
+                ),
+                a.span,
+            ));
+        }
+        if let Some(root) = place_root_name(&a.value) {
+            if actx.locals.get(root).and_then(|li| li.mode) == Some(AccessMode::Read) {
+                return Err(access_error(
+                    format!(
+                        "`{root}` is a `read` parameter; it cannot be passed as `{}`",
+                        a.mode.as_str()
+                    ),
+                    a.span,
+                ));
+            }
+        }
+    }
+    check_expr(&a.value, actx)?;
+    Ok(())
+}
+
+// --- call-site mirroring (item 1) ------------------------------------------
+
+fn mirror_message(name: &str, expected: AccessMode, found: AccessMode) -> String {
+    match (expected, found) {
+        (AccessMode::Read, _) => format!(
+            "parameter `{name}` takes an unmarked argument, found `{}`",
+            found.as_str()
+        ),
+        (_, AccessMode::Read) => format!(
+            "parameter `{name}` requires `{}`, found an unmarked argument",
+            expected.as_str()
+        ),
+        _ => format!(
+            "parameter `{name}` requires `{}`, found `{}`",
+            expected.as_str(),
+            found.as_str()
+        ),
+    }
+}
+
+fn mirror_message_positional(expected: AccessMode, found: AccessMode) -> String {
+    match (expected, found) {
+        (AccessMode::Read, _) => {
+            format!("this argument takes no marker, found `{}`", found.as_str())
+        }
+        (_, AccessMode::Read) => format!(
+            "this argument requires `{}`, found an unmarked argument",
+            expected.as_str()
+        ),
+        _ => format!(
+            "this argument requires `{}`, found `{}`",
+            expected.as_str(),
+            found.as_str()
+        ),
+    }
+}
+
+/// Binds `args` to `decl_params` exactly like `bodies::check_call_args`
+/// did (label or positional cursor) and compares each bound argument's
+/// marker against its parameter's declared mode. Binding itself is
+/// assumed valid — arity/labels were already proven by `bodies::check`.
+fn check_mirroring_named(decl_params: &[DeclParam], args: &[Arg]) -> Result<(), SemaError> {
+    let mut bound = vec![false; decl_params.len()];
+    let mut cursor = 0usize;
+    for a in args {
+        let idx = match &a.label {
+            Some(lbl) => match decl_params.iter().position(|p| &p.name == lbl) {
+                Some(i) => i,
+                None => continue, // unreachable on an already-checked call; defensive only.
+            },
+            None => {
+                while cursor < bound.len() && bound[cursor] {
+                    cursor += 1;
+                }
+                if cursor >= decl_params.len() {
+                    continue; // ditto.
+                }
+                let i = cursor;
+                cursor += 1;
+                i
+            }
+        };
+        bound[idx] = true;
+        let expected = decl_params[idx].mode;
+        if a.mode != expected {
+            return Err(access_error(
+                mirror_message(&decl_params[idx].name, expected, a.mode),
+                a.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_mirroring_positional(param_modes: &[AccessMode], args: &[Arg]) -> Result<(), SemaError> {
+    for (a, expected) in args.iter().zip(param_modes.iter()) {
+        if a.mode != *expected {
+            return Err(access_error(
+                mirror_message_positional(*expected, a.mode),
+                a.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+// --- receiver mutability (item 3's "calling through a receiver" rule) ----
+
+fn place_root_mode(expr: &Expr, actx: &ACtx) -> Option<AccessMode> {
+    match expr {
+        Expr::Name(_, n) => actx.locals.get(n).and_then(|li| li.mode),
+        Expr::Field(base, _, _) => place_root_mode(base, actx),
+        Expr::Index(base, _, _) => place_root_mode(base, actx),
+        _ => None,
+    }
+}
+
+fn allows_mut_receiver(mode: Option<AccessMode>) -> bool {
+    !matches!(mode, Some(AccessMode::Read))
+}
+
+fn allows_take_receiver(mode: Option<AccessMode>) -> bool {
+    !matches!(mode, Some(AccessMode::Read) | Some(AccessMode::Mut))
+}
+
+fn receiver_mutability_error(
+    required: AccessMode,
+    root_mode: Option<AccessMode>,
+    root_name: Option<&str>,
+    span: Span,
+) -> SemaError {
+    let noun = match required {
+        AccessMode::Mut => "a mutable place",
+        AccessMode::Take => "an owned place",
+        AccessMode::Read => "any place",
+    };
+    let found = match (root_mode, root_name) {
+        (Some(mode), Some(n)) => format!("`{}` parameter `{n}`", mode.as_str()),
+        _ => "this expression".to_string(),
+    };
+    access_error(
+        format!(
+            "calling a `{} self` method requires {noun}, found {found}",
+            required.as_str()
+        ),
+        span,
+    )
+}
+
+// --- calls: fn/method/associated-fn/init/struct-literal/enum-variant ----
+
+/// Mirrors `bodies.rs`'s `check_call` dispatch (`Expr::Index` for a
+/// scalar conversion or generic bracket, `Expr::Name`, `Expr::Field`,
+/// then a raw callable expression) but resolves a *mirroring target*
+/// instead of a type: every `Arg` reachable from `args` always gets the
+/// universal per-argument checks (`check_arg`) regardless of whether the
+/// callee resolves further.
+fn check_call(
+    callee: &Expr,
+    span: Span,
+    args: &[Arg],
+    actx: &mut ACtx,
+) -> Result<Option<Type>, SemaError> {
+    match callee {
+        Expr::Index(inner, _ispan, _targs) => {
+            // `.to[T]()`/`.checked_to[T]()`/`.truncate_to[T]()` (no
+            // parameters to mirror) or a generic instantiation (already
+            // fails closed upstream in `bodies::check`, so unreachable
+            // here); either way just recurse.
+            check_expr(inner, actx)?;
+            for a in args {
+                check_arg(a, actx)?;
+            }
+            Ok(None)
+        }
+        Expr::Name(nspan, name) => check_call_by_name(name, *nspan, span, args, actx),
+        Expr::Field(base, fspan, name) => check_call_by_field(base, *fspan, name, span, args, actx),
+        other => {
+            let ty = check_expr(other, actx)?;
+            for a in args {
+                check_arg(a, actx)?;
+            }
+            match ty {
+                Some(Type::Fn(params, ret)) => {
+                    let modes: Vec<AccessMode> = params.iter().map(|(m, _)| *m).collect();
+                    check_mirroring_positional(&modes, args)?;
+                    Ok(Some(*ret))
+                }
+                _ => Err(unimplemented_at(
+                    "mirroring a call through this expression is",
+                    span,
+                )),
+            }
+        }
+    }
+}
+
+fn check_call_by_name(
+    name: &str,
+    nspan: Span,
+    call_span: Span,
+    args: &[Arg],
+    actx: &mut ACtx,
+) -> Result<Option<Type>, SemaError> {
+    let _ = nspan;
+    if let Some(li) = actx.locals.get(name).cloned() {
+        for a in args {
+            check_arg(a, actx)?;
+        }
+        return match li.ty {
+            Some(Type::Fn(params, ret)) => {
+                let modes: Vec<AccessMode> = params.iter().map(|(m, _)| *m).collect();
+                check_mirroring_positional(&modes, args)?;
+                Ok(Some(*ret))
+            }
+            _ => Err(unimplemented_at(
+                "mirroring a call through this local's type is",
+                call_span,
+            )),
+        };
+    }
+    if let Some(t) = actx.mctx.consts.get(name).cloned() {
+        for a in args {
+            check_arg(a, actx)?;
+        }
+        return match t {
+            Type::Fn(params, ret) => {
+                let modes: Vec<AccessMode> = params.iter().map(|(m, _)| *m).collect();
+                check_mirroring_positional(&modes, args)?;
+                Ok(Some(*ret))
+            }
+            _ => Ok(None), // calling a non-function const: unreachable (bodies.rs validated).
+        };
+    }
+    if let Some(f) = actx.mctx.fns.get(name) {
+        if !f.decl.generics.is_empty() {
+            return Err(unimplemented_at("generic instantiation is", call_span));
+        }
+        for a in args {
+            check_arg(a, actx)?;
+        }
+        check_mirroring_named(&f.decl.params, args)?;
+        return Ok(Some(f.decl.ret.clone()));
+    }
+    if let Some(s) = actx.mctx.structs.get(name) {
+        if !s.decl.generics.is_empty() {
+            return Err(unimplemented_at("generic instantiation is", call_span));
+        }
+        return check_struct_construction(s, args, actx);
+    }
+    // `Some`/`Ok`/`Err`/`panic`: builtin pseudo-constructors with no
+    // declared parameter modes (they are not real `DeclParam`s).
+    for a in args {
+        check_arg(a, actx)?;
+    }
+    Ok(None)
+}
+
+fn check_struct_construction(
+    s: &StructInfo,
+    args: &[Arg],
+    actx: &mut ACtx,
+) -> Result<Option<Type>, SemaError> {
+    let self_ty = Type::Named(s.decl.name.clone(), vec![]);
+    if let Some((_ia, id)) = s.init() {
+        for a in args {
+            check_arg(a, actx)?;
+        }
+        check_mirroring_named(&id.params, args)?;
+        return Ok(Some(match &id.ret {
+            Type::Unit => self_ty,
+            Type::Result(ok, err) if **ok == Type::Unit => {
+                Type::Result(Box::new(self_ty), err.clone())
+            }
+            _ => self_ty, // a non-standard init return already fails closed in bodies.rs.
+        }));
+    }
+    // A struct literal's fields have no declared parameter mode to
+    // mirror against (`DeclField` carries no `mode`, unlike `DeclParam`)
+    // — only the universal per-argument checks apply.
+    for a in args {
+        check_arg(a, actx)?;
+    }
+    Ok(Some(self_ty))
+}
+
+fn check_call_by_field(
+    base: &Expr,
+    fspan: Span,
+    name: &str,
+    call_span: Span,
+    args: &[Arg],
+    actx: &mut ACtx,
+) -> Result<Option<Type>, SemaError> {
+    if let Expr::Name(_, bname) = base {
+        if !actx.locals.contains_key(bname) {
+            if let Some(s) = actx.mctx.structs.get(bname.as_str()) {
+                if !s.decl.generics.is_empty() {
+                    return Err(unimplemented_at("generic instantiation is", call_span));
+                }
+                if let Some((_af, d)) = s.assoc_fn(name) {
+                    if !d.generics.is_empty() {
+                        return Err(unimplemented_at("generic instantiation is", call_span));
+                    }
+                    for a in args {
+                        check_arg(a, actx)?;
+                    }
+                    check_mirroring_named(&d.params, args)?;
+                    return Ok(Some(d.ret.clone()));
+                }
+                for a in args {
+                    check_arg(a, actx)?;
+                }
+                return Ok(None); // unreachable on an already-checked call.
+            }
+            if let Some(e) = actx.mctx.enums.get(bname.as_str()) {
+                if !e.generics.is_empty() {
+                    return Err(unimplemented_at("generic instantiation is", call_span));
+                }
+                for a in args {
+                    check_arg(a, actx)?;
+                }
+                if e.variants.iter().any(|v| v.name == name) {
+                    return Ok(Some(Type::Named(e.name.clone(), vec![])));
+                }
+                return Ok(None);
+            }
+        }
+    }
+    // General field/method access: `base`'s own type decides. `base` is
+    // checked (recursed into) before `args`, matching source order.
+    let base_ty = check_expr(base, actx)?;
+    let root_mode = place_root_mode(base, actx);
+    let root_name = place_root_name(base).map(str::to_string);
+    for a in args {
+        check_arg(a, actx)?;
+    }
+    let Some(base_ty) = base_ty.map(unwrap_own) else {
+        return Err(unimplemented_at(
+            "mirroring a method call through this base expression is",
+            fspan,
+        ));
+    };
+    let Type::Named(sname, targs) = &base_ty else {
+        return Err(unimplemented_at(
+            "mirroring a method call through this base expression is",
+            fspan,
+        ));
+    };
+    if !targs.is_empty() {
+        return Err(unimplemented_at("generic instantiation is", call_span));
+    }
+    let Some(s) = actx.mctx.structs.get(sname.as_str()) else {
+        return Err(unimplemented_at(
+            "mirroring a method call through this base expression is",
+            fspan,
+        ));
+    };
+    let Some((_mf, d)) = s.method(name) else {
+        return Ok(None); // unreachable on an already-checked call.
+    };
+    if !d.generics.is_empty() {
+        return Err(unimplemented_at("generic instantiation is", call_span));
+    }
+    check_mirroring_named(&d.params, args)?;
+    if let Some(r) = &d.receiver {
+        let effective = effective_declared(r.mode, r.is_pub, sname, name, actx.effects);
+        if effective != AccessMode::Read {
+            let ok = match effective {
+                AccessMode::Mut => allows_mut_receiver(root_mode),
+                AccessMode::Take => allows_take_receiver(root_mode),
+                AccessMode::Read => true,
+            };
+            if !ok {
+                return Err(receiver_mutability_error(
+                    effective,
+                    root_mode,
+                    root_name.as_deref(),
+                    fspan,
+                ));
+            }
+        }
+    }
+    Ok(Some(d.ret.clone()))
 }

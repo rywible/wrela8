@@ -1,0 +1,53 @@
+module examples.access
+
+pool Packets
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+resource struct Handle:
+    size: u64
+
+    fn consume(self) -> u64:
+        v = take self
+        return v.size
+
+    pub fn release(take self) -> u64:
+        return self.consume()
+
+pub struct Counter:
+    value: u64 = 0
+
+    fn bump(self):
+        self.value += 1
+
+    fn peek(self) -> u64:
+        return self.value
+
+    pub fn bump_twice(mut self):
+        self.bump()
+        self.bump()
+
+fn fill(mut data: u64):
+    pass
+
+fn inspect(packet: u64) -> u64:
+    return packet
+
+fn enqueue(take packet: own[Packets] Packet) -> unit:
+    pass
+
+pub fn use_counter(mut c: Counter) -> u64:
+    c.bump_twice()
+    return c.peek()
+
+pub fn use_packet(take packet: own[Packets] Packet) -> unit:
+    enqueue(take packet)
+
+pub fn use_values(x: u64) -> u64:
+    v = x
+    fill(mut v)
+    return inspect(v)

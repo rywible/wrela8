@@ -1,0 +1,20 @@
+Module path=examples.access
+  Pool Packets
+  Struct Packet resource
+    field size: u64
+    init(mut self, size: read u64) -> unit
+  Struct Handle resource
+    field size: u64
+    fn consume(take self) -> u64
+    fn release(take self) -> u64
+  Struct Counter data
+    field value: u64
+    fn bump(mut self) -> unit
+    fn peek(read self) -> u64
+    fn bump_twice(mut self) -> unit
+  Fn fill(data: mut u64) -> unit
+  Fn inspect(packet: read u64) -> u64
+  Fn enqueue(packet: take own[Packets] Packet) -> unit
+  Fn use_counter(c: mut Counter) -> u64
+  Fn use_packet(packet: take own[Packets] Packet) -> unit
+  Fn use_values(x: read u64) -> u64

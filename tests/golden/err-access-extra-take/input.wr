@@ -1,0 +1,8 @@
+module test
+
+fn inspect(packet: u64) -> u64:
+    return packet
+
+fn use_it(x: u64) -> u64:
+    v = x
+    return inspect(take v)
