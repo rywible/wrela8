@@ -1,0 +1,19 @@
+Module path=examples.check_tests_program
+  Struct Counter data
+    field value: u64
+    fn bump(mut self, by: read u64) -> unit
+  Enum Step data
+    variant Add(u64)
+    variant Mul(u64)
+  Fn fib(n: read u64) -> u64
+  Fn gcd(a: read u64, b: read u64) -> u64
+  Fn apply_step(base: read u64, step: read Step) -> u64
+  Fn checksum(values: read [u64; 5]) -> u64
+  Fn identity[T](x: read T) -> T
+  Fn test_fib_10() -> unit
+  Fn test_fib_0_and_1() -> unit
+  Fn test_gcd() -> unit
+  Fn test_counter_bump() -> unit
+  Fn test_match_step() -> unit
+  Fn test_checksum() -> unit
+  Fn test_generic_identity() -> unit

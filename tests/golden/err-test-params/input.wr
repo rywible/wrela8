@@ -1,0 +1,5 @@
+module examples.err_test_params
+
+@test
+pub fn test_bad(x: u64):
+    assert x == x

@@ -1,0 +1,85 @@
+module examples.check_tests_program
+
+# A richer @test acceptance program (plans/M3.md item E): loops, a
+# struct method, `match` over a payload-carrying enum, and a generic fn,
+# each computing something with a hand-computed expected result.
+
+pub struct Counter:
+    value: u64
+
+    pub fn bump(mut self, by: u64):
+        self.value = self.value + by
+
+pub enum Step:
+    Add(u64)
+    Mul(u64)
+
+pub fn fib(n: u64) -> u64:
+    a: u64 = 0
+    b: u64 = 1
+    i: u64 = 0
+    while i < n:
+        next: u64 = a + b
+        a = b
+        b = next
+        i = i + 1
+    return a
+
+pub fn gcd(a: u64, b: u64) -> u64:
+    x: u64 = a
+    y: u64 = b
+    while y != 0:
+        t: u64 = y
+        y = x % y
+        x = t
+    return x
+
+pub fn apply_step(base: u64, step: Step) -> u64:
+    match step:
+        case Step.Add(n):
+            return base + n
+        case Step.Mul(n):
+            return base * n
+
+pub fn checksum(values: [u64; 5]) -> u64:
+    total: u64 = 0
+    for v in values:
+        total = total +% v
+    return total
+
+pub fn identity[T](x: T) -> T:
+    return x
+
+@test
+pub fn test_fib_10():
+    assert fib(10) == 55, "fib(10) is 55"
+
+@test
+pub fn test_fib_0_and_1():
+    assert fib(0) == 0, "fib(0) is 0"
+    assert fib(1) == 1, "fib(1) is 1"
+
+@test
+pub fn test_gcd():
+    assert gcd(48, 18) == 6, "gcd(48, 18) is 6"
+    assert gcd(17, 5) == 1, "gcd of a coprime pair is 1"
+
+@test
+pub fn test_counter_bump():
+    c = Counter(value=10)
+    c.bump(5)
+    assert c.value == 15, "bump(5) on 10 is 15"
+
+@test
+pub fn test_match_step():
+    assert apply_step(10, Step.Add(5)) == 15, "Add(5) on 10 is 15"
+    assert apply_step(10, Step.Mul(5)) == 50, "Mul(5) on 10 is 50"
+
+@test
+pub fn test_checksum():
+    assert checksum([1, 2, 3, 4, 5]) == 15, "1+2+3+4+5 is 15"
+
+@test
+pub fn test_generic_identity():
+    assert identity(42) == 42, "identity(42) is 42"
+    assert identity(identity(7)) == 7, "identity is idempotent"

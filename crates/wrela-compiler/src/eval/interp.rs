@@ -140,6 +140,32 @@ pub fn eval_standalone(
     eval_top(program, expr, context)
 }
 
+/// Runs one `@test` fn's own body (plans/M3.md item E, decision 9): a
+/// fresh `Interp`/`Quota` per call ("each under its own fresh quota"),
+/// zero params/no receiver — `sema::bodies::test_attr_kind` already
+/// guarantees a `@test` fn takes no arguments before this can be
+/// reached, so `bind` is a no-op closure. Mirrors `eval_const`'s own
+/// entry point exactly except for the callee (a whole fn body via
+/// `run_call`, which pushes/pops its own stack frame, rather than a bare
+/// initializer expression `eval_top` enters by hand).
+pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError> {
+    let Some(f) = program.fns.get(name) else {
+        return Err(EvalError {
+            message: format!("internal error: test fn `{name}` not found in the checked program"),
+            stack: vec![],
+        });
+    };
+    let mut ctx = Interp {
+        program,
+        quota: Quota::new(),
+        stack: Vec::new(),
+    };
+    match run_call(f, None, name.to_string(), |_, _| Ok(()), &mut ctx) {
+        Ok((v, _)) => Ok(v),
+        Err(u) => Err(unwind_to_error(u)),
+    }
+}
+
 fn eval_top(program: &TypedProgram, expr: &TypedExpr, context: String) -> Result<Value, EvalError> {
     let mut ctx = Interp {
         program,
@@ -1100,8 +1126,39 @@ fn eval_expr<'a, 'p>(
             value::eval_to_scalar(&expr.ty, &iv).map_err(|m| ctx.abandon(m))
         }
         TypedExprKind::Neg(inner) => {
-            let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;
-            value::eval_neg(&iv).map_err(|m| ctx.abandon(m))
+            // A negated integer literal (`-128`, `-9223372036854775808`,
+            // ...) is sema's own literal-negation shape
+            // (`bodies::check_unary_neg`'s `Expr::Int` arm): the
+            // literal's own text is always the *positive* magnitude,
+            // typed at the outer `Neg`'s own already-validated target
+            // type — sema range-checked the *negated* value against that
+            // type there, never the raw positive one, so the positive
+            // magnitude alone may not fit it (`i8::MIN`'s own magnitude,
+            // 128, does not fit `i8`; `i64::MIN`'s, 2^63, does not fit
+            // `i64`, ...). Evaluating the inner literal node as an
+            // ordinary standalone `Value` first (`value::make_int`
+            // truncating the *positive* magnitude to the target width)
+            // and negating *that* is wrong twice over for exactly these
+            // MIN literals: the truncation itself two's-complement-wraps
+            // the positive magnitude to MIN already, so negating it a
+            // second time abandons an operation sema already proved
+            // legal (M3-E's own `check-tests-arith` acceptance golden
+            // caught this live, evaluating `i64::MIN` for the first time
+            // any comptime program had). Fix: decode the literal's own
+            // signed value directly in `i128` (wide enough for every
+            // scalar width) and negate *before* ever truncating to the
+            // target width, sidestepping the double-truncation entirely
+            // — the ordinary (non-literal) `-x` path below is unaffected
+            // (`x`'s own `Value` was already built correctly by whatever
+            // produced it, so negating it directly is exactly right).
+            if let TypedExprKind::Int(text) = &inner.kind {
+                let raw = value::parse_int_literal(text)
+                    .ok_or_else(|| ctx.abandon("internal error: invalid integer literal text"))?;
+                Ok(value::make_int(&expr.ty, -raw))
+            } else {
+                let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;
+                value::eval_neg(&iv).map_err(|m| ctx.abandon(m))
+            }
         }
         TypedExprKind::BitNot(inner) => {
             let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;

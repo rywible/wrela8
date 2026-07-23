@@ -1,0 +1,27 @@
+module examples.check_tests_mixed
+
+# Pins the non-`ok` report lines (plans/M3.md item E, decision 9/10): a
+# passing test, a failing one (an ordinary `assert`), a quota-exhausted
+# one, and a `@test(runtime)` declaration fail-closed at M5 — all in one
+# file, in declaration order, no fail-fast across them.
+
+pub fn double(n: u64) -> u64:
+    return n * 2
+
+@test
+pub fn test_passes():
+    assert double(21) == 42, "double(21) is 42"
+
+@test
+pub fn test_fails():
+    assert double(21) == 41, "wrong on purpose"
+
+@test
+pub fn test_quota_exceeded():
+    total: u64 = 0
+    while true:
+        total = total + 1
+
+@test(runtime)
+pub fn test_needs_the_machine():
+    assert true

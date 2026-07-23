@@ -1,0 +1,6 @@
+Module path=examples.check_tests_mixed
+  Fn double(n: read u64) -> u64
+  Fn test_passes() -> unit
+  Fn test_fails() -> unit
+  Fn test_quota_exceeded() -> unit
+  Fn test_needs_the_machine() -> unit

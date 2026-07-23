@@ -46,9 +46,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TypedClosureBody, TypedClosureParam, TypedConst, TypedDeferBody, TypedElif,
-    TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedMatchArm, TypedParam, TypedPattern,
-    TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind, TypedStruct,
+    CalleeKey, TestDecl, TestKind, TypedClosureBody, TypedClosureParam, TypedConst, TypedDeferBody,
+    TypedElif, TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedMatchArm, TypedParam,
+    TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::{
     self, Classification, DeclMember, DeclParam, DeclVariantPayload, Type, TypeArg,
@@ -500,8 +500,23 @@ pub(crate) fn check(
                 );
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
+                // plans/M3.md item E: `@test`'s own shape validation runs
+                // whether or not the fn is generic (a generic `@test` fn
+                // fails closed below, symmetric with `@image`'s own
+                // whole-declaration fail-closed a few lines up) — done
+                // *before* `check_top_fn` so the diagnostic fires even
+                // when the body itself would otherwise check cleanly.
+                let test_kind = test_attr_kind(f)?;
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
                     program.fns.insert(f.name.clone(), tf);
+                    if let Some(kind) = test_kind {
+                        program.tests.push(TestDecl {
+                            name: f.name.clone(),
+                            kind,
+                        });
+                    }
+                } else if test_kind.is_some() {
+                    return Err(unimplemented_at("`@test` on a generic fn is", f.span));
                 }
             }
             (Item::Struct(s), types::DeclItem::Struct(_)) => {
@@ -530,6 +545,49 @@ pub(crate) fn check(
 
 pub(crate) fn is_image_fn(f: &ast::FnItem) -> bool {
     f.attrs.iter().any(|a| a.name == "image")
+}
+
+/// `@test`/`@test(runtime)` recognition (plans/M3.md item E,
+/// 02-language.md §12.2). This is the *only* attribute-shape validation
+/// this milestone adds — every attribute besides `@image` (whole-body
+/// fail-closed, above) and `@test` (here) still goes entirely
+/// unvalidated by sema, exactly as it did before this item (13's own
+/// "unknown attributes are errors" rule is not yet enforced anywhere;
+/// see the session report). Returns `Ok(None)` when `f` carries no
+/// `@test` attribute at all (the overwhelmingly common case, so callers
+/// never need to special-case "not a test"); `Ok(Some(kind))` for a
+/// validated one; `Err` for a malformed one — a `@test` fn declared with
+/// parameters (decision 9's own "@test fns with parameters: diagnose"),
+/// or an attribute argument that is not the bare name `runtime`.
+/// Category `type`, `arity_error`'s own neighbor — a bad declaration
+/// shape, not a new diagnostic category (`xtask`'s `SEMA_CATEGORIES` is
+/// a fixed set, plans/M2.md decision 1; this item does not extend it).
+pub(crate) fn test_attr_kind(f: &ast::FnItem) -> Result<Option<TestKind>, SemaError> {
+    let Some(attr) = f.attrs.iter().find(|a| a.name == "test") else {
+        return Ok(None);
+    };
+    if !f.params.is_empty() {
+        return Err(type_error(
+            format!("`@test` fn `{}` takes no arguments", f.name),
+            f.span,
+        ));
+    }
+    match attr.args.as_slice() {
+        [] => Ok(Some(TestKind::Comptime)),
+        [arg] => match &arg.value {
+            Expr::Name(_, name) if name == "runtime" && arg.label.is_none() => {
+                Ok(Some(TestKind::Runtime))
+            }
+            _ => Err(type_error(
+                "`@test`'s only argument is the bare name `runtime`".to_string(),
+                attr.span,
+            )),
+        },
+        _ => Err(type_error(
+            "`@test` takes at most one argument (`runtime`)".to_string(),
+            attr.span,
+        )),
+    }
 }
 
 pub(crate) fn local_pool_names(info: &StructInfo) -> BTreeSet<String> {

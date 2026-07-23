@@ -365,6 +365,35 @@ pub enum TypedInstantiation {
     Enum,
 }
 
+/// `@test` attribute kind (plans/M3.md item E, decision 9): `Comptime`
+/// for a bare `@test` — `wrela test`'s own job, run in the build
+/// evaluator under a fresh quota; `Runtime` for `@test(runtime)`
+/// (02-language.md §12.2: booted on the wrela machine runner, a
+/// generated image test — M5, fail-closed here, decision 10's own named
+/// gap).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestKind {
+    Comptime,
+    Runtime,
+}
+
+/// One `@test`-attributed module-level fn (`sema::bodies::test_attr_kind`
+/// validates the attribute's own shape — zero params, its lone optional
+/// argument the bare name `runtime`), recorded in declaration order
+/// (`TypedProgram::tests`'s own doc comment — the typed tree's `fns` map
+/// is `BTreeMap`-keyed for determinism everywhere else, decision 1's own
+/// convention, but `wrela test` (decision 9) must run tests in source
+/// order, not name order, so this is a second, order-preserving record
+/// of the exact same fns, not a replacement for the map). Not rendered
+/// by `dump` below — same reasoning as `TypedStruct::fields`/
+/// `TypedProgram::enums`: `wrela test`'s own report is the pinned
+/// surface for this data, not `--stage=typed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestDecl {
+    pub name: String,
+    pub kind: TestKind,
+}
+
 /// Sema's product (plans/M3.md decision 1): every top-level `const`/
 /// non-generic `fn`/non-generic `struct`'s checked body, plus every
 /// concrete generic instantiation any of them (or `access`/`flow`/
@@ -375,6 +404,10 @@ pub struct TypedProgram {
     pub consts: BTreeMap<String, TypedConst>,
     pub fns: BTreeMap<String, TypedFn>,
     pub structs: BTreeMap<String, TypedStruct>,
+    /// Every `@test`-attributed module-level fn, in declaration order
+    /// (plans/M3.md item E's own producer addition — `TestDecl`'s own
+    /// doc comment).
+    pub tests: Vec<TestDecl>,
     /// Every top-level (non-generic) user enum's own variant names, in
     /// declaration order (plans/M3.md item B's own addition — the same
     /// producer gap as `TypedStruct::fields`: an enum has no body to

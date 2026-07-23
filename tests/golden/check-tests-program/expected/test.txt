@@ -1,0 +1,8 @@
+test test_fib_10: ok
+test test_fib_0_and_1: ok
+test test_gcd: ok
+test test_counter_bump: ok
+test test_match_step: ok
+test test_checksum: ok
+test test_generic_identity: ok
+7 passed, 0 failed
