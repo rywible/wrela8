@@ -502,8 +502,13 @@ pub(crate) fn check_top_fn(
     }
     let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
     check_params_with_defaults(&f.params, &d.params, &mut fctx, mctx)?;
-    if let Some(body) = &f.body {
-        check_stmts(body, &mut fctx, mctx)?;
+    match &f.body {
+        Some(body) => check_stmts(body, &mut fctx, mctx)?,
+        // The parser accepts the bodyless signature shorthand a few doc
+        // tables use; whether a real declaration may be bodyless is a
+        // later milestone's question (see parse_fn_tail), so sema fails
+        // closed rather than treating it as an empty body.
+        None => return Err(unimplemented_at("bodyless functions are", f.span)),
     }
     Ok(())
 }
@@ -574,8 +579,14 @@ pub(crate) fn check_struct_members(
                 let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
                 fctx.insert_local("self".to_string(), self_ty.clone());
                 check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
-                if let Some(body) = &f.body {
-                    check_stmts(body, &mut fctx, mctx)?;
+                match &f.body {
+                    Some(body) => check_stmts(body, &mut fctx, mctx)?,
+                    // Same fail-closed rule as top-level fns: the
+                    // bodyless shorthand is doc-table syntax, not a
+                    // checked declaration (this shape also panicked
+                    // access.rs's effect inference before b78b95e — the
+                    // golden err-unimplemented-bodyless pins it).
+                    None => return Err(unimplemented_at("bodyless functions are", f.span)),
                 }
             }
             (Member::Init(i), DeclMember::Init(fd)) => {

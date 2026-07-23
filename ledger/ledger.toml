@@ -187,7 +187,7 @@ note = "`check` operates on one file (plans/M2.md decision 6); resolving an impo
 id = "sema.unimplemented.fail-closed"
 doc = "02-language.md#2"
 status = "test"
-tests = ["golden/err-unimplemented-import", "golden/err-unimplemented-await", "golden/err-generic-const-arg"]
+tests = ["golden/err-unimplemented-import", "golden/err-unimplemented-await", "golden/err-generic-const-arg", "golden/err-unimplemented-bodyless"]
 note = "the shared `error[unimplemented]: <subject> not checked yet at L:C` helper (plans/M2.md decision 7); item A's only user is `from ... import ...` (sema.names.imports); item C adds `await`/`send`/`with`/f-strings/`comptime if`/`comptime assert`/`@image` bodies/`checked_to`/`truncate_to` in bodies.rs (golden/err-unimplemented-await pins `await`); item H narrows \"generic instantiation\" from a blanket fail-closed subject to the specific residual gaps it still owns — a generic *method*'s own type/const parameters (never instantiated), a nested/deep generic-argument shape at a call site, and a non-literal const generic argument (golden/err-generic-const-arg: `Ring[u64, 4 + 4](...)`, decision 4 — arithmetic/calls are not evaluated); later items reuse the same helper for their own fail-closed constructs"
 
 [[clause]]
