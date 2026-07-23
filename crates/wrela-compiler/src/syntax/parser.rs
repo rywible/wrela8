@@ -869,6 +869,22 @@ impl Parser {
     /// is a deliberately narrow, fail-open-on-syntax/fail-closed-on-
     /// semantics allowance (a bodyless `fn` is syntactically well formed;
     /// whether one may exist for real is a later milestone's question).
+    ///
+    /// Narrow fix (found by `xtask fuzz sema`'s sema-roundtrip oracle,
+    /// ledger clause sema.check.roundtrip-stable; golden/err-empty-body-
+    /// continuation): this branch's continuation line shares its one
+    /// INDENT with the body itself (see the doc comment above), so the
+    /// body never gets a fresh INDENT token the way `parse_stmt_suite`'s
+    /// ordinary path always does. A comment-only (or otherwise token-free)
+    /// body is invisible to the lexer's indentation tracking, so
+    /// `parse_stmts_until_dedent` below can land on an immediate `Dedent`
+    /// with zero statements collected -- its own end-of-file check does
+    /// not catch that, since this is a `Dedent`, not `Eof`. The ordinary
+    /// (non-continuation) path never has this hole: a body with no real
+    /// statement line never produces an INDENT at all, so its own
+    /// `expect_indent()` already fails closed. 02-language.md section 1's
+    /// `pass` statement exists exactly because every real body needs
+    /// explicit content, so an empty body here is rejected the same way.
     fn parse_fn_tail(&mut self) -> Result<(Option<Type>, Option<Vec<Stmt>>), ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
@@ -882,6 +898,12 @@ impl Parser {
             self.expect_op(":")?;
             self.expect_newline()?;
             let body = self.parse_stmts_until_dedent()?;
+            if body.is_empty() {
+                return Err(self.error_here(format!(
+                    "expected a statement, found `{}`",
+                    self.peek_display()
+                )));
+            }
             self.expect_dedent()?;
             Ok((ret, Some(body)))
         } else {

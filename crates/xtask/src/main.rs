@@ -11,11 +11,20 @@
 //!              `fuzz` runs `lexer` at the deep default budget); each has
 //!              its own smoke budget wired into `check`. `sema` runs
 //!              lex -> parse -> `sema::check` over corpus/golden-input
-//!              mutations and token-soup, same shape as `parser`.
-//!   roundtrip  pretty-print every parseable corpus entry and ast-* golden
-//!              input, reparse it, and compare the two AST dumps (spans
-//!              stripped) — the parser's `diff-eval` (plans/M1.md item E).
-//!              Wired into `check`, after `corpus`.
+//!              mutations and token-soup, same shape as `parser`, plus (on
+//!              every iteration whose input parses, ledger clause
+//!              sema.check.roundtrip-stable) two more invariants: sema
+//!              roundtrip stability (pretty-print, reparse, recheck — the
+//!              two sema outcomes must agree) and item-rotation acceptance
+//!              invariance (rotating the module's top-level items by one
+//!              must not flip Ok/Err either way).
+//!   roundtrip  pretty-print every parseable corpus entry and golden input,
+//!              reparse it, and compare the two AST dumps (spans stripped)
+//!              — the parser's `diff-eval` (plans/M1.md item E). Also runs
+//!              the same sema-roundtrip oracle as `fuzz sema` above,
+//!              whenever the entry parses as a whole `Module` (ledger
+//!              clause sema.check.roundtrip-stable). Wired into `check`,
+//!              after `corpus`.
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
 //!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
@@ -51,6 +60,7 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use wrela_compiler::sema;
+use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
 use wrela_compiler::syntax::parser::{self, Parsed};
 use wrela_compiler::syntax::printer;
@@ -929,14 +939,40 @@ fn fuzz_parser_smoke() -> Result<(), String> {
 // writes to `target/fuzz/sema-crash-<n>.wr` and reports the seed +
 // iteration so it reproduces; every find is minimized by hand into a
 // `tests/golden/sema-fuzz-*` case before the underlying bug is fixed.
+//
+// Two more invariants (ledger clause sema.check.roundtrip-stable,
+// `check_sema_roundtrip_and_rotation`/`_guarded`, defined further down
+// this file next to the shared `sema_outcome_summary`/
+// `sema_outcomes_agree` comparison machinery `xtask roundtrip` also
+// uses), checked once more per iteration whenever the input lexes and
+// parses (regardless of whether sema then accepts or rejects it): sema
+// roundtrip stability (pretty-print the parsed module, reparse it, recheck
+// — the two sema outcomes must agree, per that machinery's comparison
+// rule) and item-rotation acceptance invariance (module-scope
+// declarations are order-independent by construction — collect-then-
+// resolve — so rotating the top-level items by one and rechecking must
+// not flip Ok to Err or vice versa, even though the dump/diagnostic
+// content is allowed to change). Findings from either reuse the same
+// `target/fuzz/sema-crash-<n>.wr` reporting path.
 
-// Measured on the authoring machine (debug build): ~38-39us/iteration
-// (500_000 iters in ~19.4s, 2_000_000 in ~78s) — sema's extra lex+parse+
-// three-pass-pipeline+dump work per iteration over the parser fuzzer's
-// lex+parse is real but not dramatic, since most mutated/soup inputs fail
-// out at lex or parse and never reach a pass. 2_000_000 lands a bare
-// `cargo xtask fuzz sema` at roughly a minute and a quarter — "very
-// roughly a minute or two" per plans/M2.md item I.
+// Measured on the authoring machine (debug build), before the roundtrip +
+// item-rotation invariants below existed: ~38-39us/iteration (500_000
+// iters in ~19.4s, 2_000_000 in ~78s) — sema's extra lex+parse+three-pass-
+// pipeline+dump work per iteration over the parser fuzzer's lex+parse is
+// real but not dramatic, since most mutated/soup inputs fail out at lex or
+// parse and never reach a pass.
+//
+// Re-measured after adding `check_sema_roundtrip_and_rotation_guarded`
+// (ledger clause sema.check.roundtrip-stable — a second lex+parse+check
+// pass to recover the parsed module, a pretty-print+reparse+recheck for
+// the roundtrip oracle, and a clone+recheck for the item-rotation oracle,
+// on every iteration whose input parses): ~61us/iteration (500_000 iters
+// in ~31.0s, 2_000_000 in ~125.3s) — roughly 1.6x the old per-iteration
+// cost, not the full 2x a naive doubling would predict, again because
+// most iterations never reach a parseable module at all. 2_000_000 still
+// lands a bare `cargo xtask fuzz sema` at a bit over two minutes, inside
+// the "roughly a minute or two"/1-3 minute band plans/M2.md item I and
+// this ledger clause both target, so the deep default is unchanged.
 const FUZZ_SEMA_DEEP_ITERS: u64 = 2_000_000;
 const FUZZ_SEMA_DEEP_SEED: u64 = 1;
 const FUZZ_SEMA_SMOKE_SEEDS: &[u64] = &[1, 2];
@@ -1119,6 +1155,226 @@ fn check_sema_invariants(input: &str) -> Result<(), String> {
     }
 }
 
+// --- fuzz: sema roundtrip stability + item-rotation invariance ----------
+//
+// ledger clause sema.check.roundtrip-stable. Two more invariants, checked
+// whenever an input parses (regardless of whether sema accepts or rejects
+// it) — shared by `fuzz sema` (below) and `xtask roundtrip`
+// (`sema_roundtrip_check`, further down this file), since both boil down
+// to the same question: do two sema outcomes on what should be an
+// equivalent module agree?
+//
+//  1. Sema roundtrip: A = sema outcome of the parsed module, B = sema
+//     outcome of parse(pretty(A's module)). A and B must agree.
+//  2. Item-rotation acceptance invariance: module-scope declarations are
+//     order-independent (collect-then-resolve). Rotating the module's
+//     top-level items by one (first item moved to the end; `imports` is a
+//     separate `Module` field and is left untouched) and re-checking must
+//     preserve *acceptance* (Ok stays Ok, Err stays Err) even though the
+//     dump/diagnostic content may differ.
+//
+// Comparison rule for "agree" (both here and in the roundtrip oracle): two
+// `Ok` outcomes must produce a byte-identical `sema::dump` (decision 8: the
+// check dump carries no spans, so this is exact, not approximate); two
+// `Err` outcomes must carry the same `category` and `message`. `line`/`col`
+// are deliberately never compared — the printer relayouts source
+// positions, so they are expected to move. `extra_lines` (item H's
+// `required by`/`instantiated at` chain) legitimately carries a position
+// too (`" at <path>:<line>"`); since both sides of every comparison here
+// are checked with the *same* fixed placeholder path, that suffix is
+// stripped before comparing (honestly position-independent: only the
+// trailing line number is dropped, everything else in the chain — the
+// requirement, the expression rendered, the file path itself — still has
+// to match). This is the stricter of the two options the plan allows
+// (strip-then-compare vs. drop `extra_lines` from the comparison
+// entirely).
+enum SemaOutcomeSummary {
+    /// A successful check, reduced to its dump.
+    Ok(String),
+    Err {
+        category: &'static str,
+        message: String,
+        /// `extra_lines` with each line's trailing `" at <path>:<line>"`
+        /// stripped (see the module comment above).
+        extra_lines: Vec<String>,
+        omit_location: bool,
+    },
+}
+
+/// Runs `sema::check`/`sema::dump` on `module` and reduces the result to
+/// the fields `sema_outcomes_agree` compares.
+fn sema_outcome_summary(module: &Module, path: &str) -> SemaOutcomeSummary {
+    match sema::check(module, path) {
+        Ok(()) => SemaOutcomeSummary::Ok(sema::dump(module)),
+        Err(e) => SemaOutcomeSummary::Err {
+            category: e.category,
+            message: e.message,
+            extra_lines: strip_position_tails(&e.extra_lines, path),
+            omit_location: e.omit_location,
+        },
+    }
+}
+
+/// Strips each line's trailing `" at <path>:<line>"` (item H's chain
+/// format, sema/generics.rs), leaving everything before it untouched. A
+/// line without that exact marker (any ordinary diagnostic — `extra_lines`
+/// is empty for those) is returned unchanged.
+fn strip_position_tails(lines: &[String], path: &str) -> Vec<String> {
+    let marker = format!(" at {path}:");
+    lines
+        .iter()
+        .map(|l| match l.find(&marker) {
+            Some(idx) => l[..idx].to_string(),
+            None => l.clone(),
+        })
+        .collect()
+}
+
+fn describe_sema_outcome(o: &SemaOutcomeSummary) -> String {
+    match o {
+        SemaOutcomeSummary::Ok(d) => format!("accepted\n{d}"),
+        SemaOutcomeSummary::Err {
+            category,
+            message,
+            extra_lines,
+            omit_location,
+        } => format!(
+            "rejected: [{category}] {message} (extra_lines={extra_lines:?}, omit_location={omit_location})"
+        ),
+    }
+}
+
+/// The comparison rule described in the module comment above. `Ok(())` on
+/// agreement; `Err(reason)` describing the disagreement otherwise.
+fn sema_outcomes_agree(a: &SemaOutcomeSummary, b: &SemaOutcomeSummary) -> Result<(), String> {
+    match (a, b) {
+        (SemaOutcomeSummary::Ok(d1), SemaOutcomeSummary::Ok(d2)) => {
+            if d1 == d2 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "both accept but produced different dumps\n--- a ---\n{d1}\n--- b ---\n{d2}"
+                ))
+            }
+        }
+        (
+            SemaOutcomeSummary::Err {
+                category: c1,
+                message: m1,
+                extra_lines: e1,
+                omit_location: o1,
+            },
+            SemaOutcomeSummary::Err {
+                category: c2,
+                message: m2,
+                extra_lines: e2,
+                omit_location: o2,
+            },
+        ) => {
+            if c1 == c2 && m1 == m2 && e1 == e2 && o1 == o2 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "both reject but disagree\n  a: [{c1}] {m1} extra_lines={e1:?} omit_location={o1}\n  b: [{c2}] {m2} extra_lines={e2:?} omit_location={o2}"
+                ))
+            }
+        }
+        _ => Err(format!(
+            "one run accepted, the other rejected\n  a: {}\n  b: {}",
+            describe_sema_outcome(a),
+            describe_sema_outcome(b)
+        )),
+    }
+}
+
+/// Item 2 (item-rotation acceptance invariance): clones `module` and moves
+/// its first top-level item to the end (`imports` untouched). `None` when
+/// there are fewer than two items — rotation is a no-op, so there is
+/// nothing to check.
+fn rotate_first_item_to_end(module: &Module) -> Option<Module> {
+    if module.items.len() < 2 {
+        return None;
+    }
+    let mut rotated = module.clone();
+    rotated.items.rotate_left(1);
+    Some(rotated)
+}
+
+/// The two invariants above, run once per fuzz iteration on an input that
+/// lexed and parsed (a lex/parse failure means there is no module to
+/// re-check — `Ok(())`, nothing to do; `check_sema_invariants` already
+/// covers the lex/parse-error determinism invariants). Uses the same fixed
+/// placeholder path both `run_sema_pipeline_once` uses, for the same
+/// reason (see its own doc comment): the comparison is between two runs of
+/// this fuzzer's own pipeline, never against a golden file, so any fixed
+/// string works, and using the same one on every call is what makes
+/// `strip_position_tails` honest.
+fn check_sema_roundtrip_and_rotation(input: &str) -> Result<(), String> {
+    const PATH: &str = "<fuzz>";
+    let tokens = match lexer::lex(input) {
+        Ok(t) => t,
+        Err(_) => return Ok(()),
+    };
+    let module = match parser::parse(tokens) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+
+    // 1. Sema roundtrip.
+    let original = sema_outcome_summary(&module, PATH);
+    let pretty = printer::pretty(&module);
+    let tokens2 = match lexer::lex(&pretty) {
+        Ok(t) => t,
+        Err(e) => {
+            return Err(format!(
+                "sema-roundtrip: pretty-printed output failed to lex: {} at {}:{}\n--- pretty ---\n{pretty}",
+                e.message, e.line, e.col
+            ));
+        }
+    };
+    let reprinted = match parser::parse(tokens2) {
+        Ok(m) => m,
+        Err(e) => {
+            return Err(format!(
+                "sema-roundtrip: pretty-printed output failed to reparse: {} at {}:{}\n--- pretty ---\n{pretty}",
+                e.message, e.line, e.col
+            ));
+        }
+    };
+    let roundtripped = sema_outcome_summary(&reprinted, PATH);
+    sema_outcomes_agree(&original, &roundtripped)
+        .map_err(|reason| format!("sema-roundtrip: {reason}"))?;
+
+    // 2. Item-rotation acceptance invariance.
+    if let Some(rotated) = rotate_first_item_to_end(&module) {
+        let orig_ok = matches!(original, SemaOutcomeSummary::Ok(_));
+        let rotated_ok = sema::check(&rotated, PATH).is_ok();
+        if orig_ok != rotated_ok {
+            return Err(format!(
+                "item-rotation: sema {} the original but {} it after rotating module items \
+                 by one (order-dependence bug)",
+                if orig_ok { "accepted" } else { "rejected" },
+                if rotated_ok { "accepted" } else { "rejected" },
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// `check_sema_roundtrip_and_rotation` under `catch_unwind`, mirroring
+/// every other fuzz invariant in this file: a panic here is a finding, not
+/// a crash.
+fn check_sema_roundtrip_and_rotation_guarded(input: &str) -> Result<(), String> {
+    match std::panic::catch_unwind(|| check_sema_roundtrip_and_rotation(input)) {
+        Ok(result) => result,
+        Err(p) => Err(format!(
+            "sema panicked (roundtrip/rotation invariants): {}",
+            panic_message(&p)
+        )),
+    }
+}
+
 fn run_sema_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
     for i in 0..iters {
@@ -1128,6 +1384,9 @@ fn run_sema_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), St
             token_soup(&mut rng)
         };
         if let Err(reason) = check_sema_invariants(&input) {
+            return report_fuzz_failure("sema", "sema-crash-", seed, i, &input, &reason);
+        }
+        if let Err(reason) = check_sema_roundtrip_and_rotation_guarded(&input) {
             return report_fuzz_failure("sema", "sema-crash-", seed, i, &input, &reason);
         }
     }
@@ -1233,12 +1492,26 @@ fn golden(update: bool) -> Result<(), String> {
 //
 // plans/M1.md item E's second oracle, the parser's `diff-eval`: for every
 // corpus entry that parses (same `...`-fragment skip rule as `corpus`)
-// and every `ast-*` golden's `input.wr`, parse -> pretty-print -> reparse
-// -> compare the two AST dumps with spans stripped (spans necessarily
+// and every golden's `input.wr`, parse -> pretty-print -> reparse ->
+// compare the two AST dumps with spans stripped (spans necessarily
 // differ: the pretty-printed text is laid out differently from the
 // original source, so only the tree shape is being compared). Any
 // mismatch prints both dumps' first divergence plus the pretty-printed
 // text that produced it, for direct debugging.
+//
+// ledger clause sema.check.roundtrip-stable adds a second oracle riding
+// the same parse -> pretty -> reparse cycle, on the same entries, whenever
+// the entry parses as a whole `Module` (sema has no fragment entry point):
+// A = sema outcome of the original module, B = sema outcome of the
+// reparsed one; `sema_roundtrip_check` (shared comparison machinery in
+// the "fuzz: sema roundtrip stability + item-rotation invariance" section
+// above) demands they agree. This is why the golden half of `roundtrip`
+// below no longer filters to `ast-*` only: `check-*`/`err-type-*`/etc.
+// golden inputs are exactly the sema-*meaningful* corpus (valid syntax,
+// sema accepts or rejects) the sema oracle needs, and the existing AST
+// oracle running on them too is a free, expected-to-pass bonus check
+// (any AST mismatch it turned up would itself be a printer bug worth
+// fixing, same as on `ast-*`).
 
 enum RoundtripResult {
     Checked,
@@ -1254,6 +1527,7 @@ fn roundtrip() -> Result<(), String> {
     let examples = extract_example_files()?;
     let mut checked = 0usize;
     let mut skipped = 0usize;
+    let mut sema_checked = 0usize;
     let mut mismatches = Vec::new();
 
     for b in blocks.into_iter().chain(examples) {
@@ -1261,20 +1535,21 @@ fn roundtrip() -> Result<(), String> {
             skipped += 1;
             continue;
         }
-        match roundtrip_one(&b.name, &b.body) {
+        let (result, sema) = roundtrip_one(&b.name, &b.body);
+        match result {
             RoundtripResult::Checked => checked += 1,
             RoundtripResult::Skipped => skipped += 1,
             RoundtripResult::Mismatch(msg) => mismatches.push(msg),
         }
+        match sema {
+            None => {}
+            Some(Ok(())) => sema_checked += 1,
+            Some(Err(msg)) => mismatches.push(msg),
+        }
     }
 
     let golden_dir = root().join("tests/golden");
-    let ast_dirs = golden_case_dirs(&golden_dir)?.into_iter().filter(|p| {
-        p.file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("ast-"))
-    });
-    for dir in ast_dirs {
+    for dir in golden_case_dirs(&golden_dir)? {
         let input = dir.join("input.wr");
         if !input.exists() {
             continue;
@@ -1282,19 +1557,28 @@ fn roundtrip() -> Result<(), String> {
         let name = dir
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("ast-golden")
+            .unwrap_or("golden")
             .to_string();
         let body = std::fs::read_to_string(&input)
             .map_err(|e| format!("read {}: {e}", input.display()))?;
-        match roundtrip_one(&name, &body) {
+        let (result, sema) = roundtrip_one(&name, &body);
+        match result {
             RoundtripResult::Checked => checked += 1,
             RoundtripResult::Skipped => skipped += 1,
             RoundtripResult::Mismatch(msg) => mismatches.push(msg),
         }
+        match sema {
+            None => {}
+            Some(Ok(())) => sema_checked += 1,
+            Some(Err(msg)) => mismatches.push(msg),
+        }
     }
 
     if mismatches.is_empty() {
-        println!("roundtrip: {checked} entry(ies) ok, {skipped} skipped (fragment or parse error)");
+        println!(
+            "roundtrip: {checked} entry(ies) ok, {skipped} skipped (fragment or parse error), \
+             {sema_checked} sema-roundtrip-checked"
+        );
         Ok(())
     } else {
         for m in &mismatches {
@@ -1304,13 +1588,19 @@ fn roundtrip() -> Result<(), String> {
     }
 }
 
-/// One entry's parse -> pretty -> reparse -> compare cycle. Entries that
-/// don't lex/parse at all are `Skipped` (that's `corpus`'s job to catch,
-/// not roundtrip's) rather than treated as a failure here.
-fn roundtrip_one(name: &str, body: &str) -> RoundtripResult {
+/// One entry's parse -> pretty -> reparse -> compare cycle, plus (whenever
+/// the entry parses as a whole `Module`) the sema-roundtrip oracle over
+/// the same original/reparsed pair. Entries that don't lex/parse at all
+/// are `Skipped` (that's `corpus`'s job to catch, not roundtrip's) rather
+/// than treated as a failure here; the second return value is the
+/// sema-roundtrip oracle's own result — `None` when the entry isn't a
+/// `Module` (a fragment, or the AST cycle itself already failed before a
+/// reparsed module ever existed to check), `Some(Ok(()))` when it agreed,
+/// `Some(Err(reason))` on a genuine sema-roundtrip disagreement.
+fn roundtrip_one(name: &str, body: &str) -> (RoundtripResult, Option<Result<(), String>>) {
     let tokens = match lexer::lex(body) {
         Ok(t) => t,
-        Err(_) => return RoundtripResult::Skipped,
+        Err(_) => return (RoundtripResult::Skipped, None),
     };
     match parser::parse_any(tokens) {
         Ok(Parsed::Module(m)) => {
@@ -1319,23 +1609,31 @@ fn roundtrip_one(name: &str, body: &str) -> RoundtripResult {
             let tokens2 = match lexer::lex(&pretty) {
                 Ok(t) => t,
                 Err(e) => {
-                    return RoundtripResult::Mismatch(format!(
-                        "{name}: pretty-printed output failed to lex: {} at {}:{}\n--- pretty ---\n{pretty}",
-                        e.message, e.line, e.col
-                    ));
+                    return (
+                        RoundtripResult::Mismatch(format!(
+                            "{name}: pretty-printed output failed to lex: {} at {}:{}\n--- pretty ---\n{pretty}",
+                            e.message, e.line, e.col
+                        )),
+                        None,
+                    );
                 }
             };
             let reparsed = match parser::parse(tokens2) {
                 Ok(m2) => m2,
                 Err(e) => {
-                    return RoundtripResult::Mismatch(format!(
-                        "{name}: pretty-printed output failed to reparse: {} at {}:{}\n--- pretty ---\n{pretty}",
-                        e.message, e.line, e.col
-                    ));
+                    return (
+                        RoundtripResult::Mismatch(format!(
+                            "{name}: pretty-printed output failed to reparse: {} at {}:{}\n--- pretty ---\n{pretty}",
+                            e.message, e.line, e.col
+                        )),
+                        None,
+                    );
                 }
             };
             let dump2 = parser::dump_no_spans(&reparsed);
-            compare_dumps(name, &dump1, &dump2, &pretty)
+            let ast_result = compare_dumps(name, &dump1, &dump2, &pretty);
+            let sema = Some(sema_roundtrip_check(name, &m, &reparsed));
+            (ast_result, sema)
         }
         Ok(Parsed::Fragment(entries)) => {
             let dump1 = parser::dump_fragment_no_spans(&entries);
@@ -1343,30 +1641,54 @@ fn roundtrip_one(name: &str, body: &str) -> RoundtripResult {
             let tokens2 = match lexer::lex(&pretty) {
                 Ok(t) => t,
                 Err(e) => {
-                    return RoundtripResult::Mismatch(format!(
-                        "{name}: pretty-printed fragment failed to lex: {} at {}:{}\n--- pretty ---\n{pretty}",
-                        e.message, e.line, e.col
-                    ));
+                    return (
+                        RoundtripResult::Mismatch(format!(
+                            "{name}: pretty-printed fragment failed to lex: {} at {}:{}\n--- pretty ---\n{pretty}",
+                            e.message, e.line, e.col
+                        )),
+                        None,
+                    );
                 }
             };
             let dump2 = match parser::parse_any(tokens2) {
                 Ok(Parsed::Fragment(entries2)) => parser::dump_fragment_no_spans(&entries2),
                 Ok(Parsed::Module(_)) => {
-                    return RoundtripResult::Mismatch(format!(
-                        "{name}: pretty-printed fragment reparsed as a module\n--- pretty ---\n{pretty}"
-                    ));
+                    return (
+                        RoundtripResult::Mismatch(format!(
+                            "{name}: pretty-printed fragment reparsed as a module\n--- pretty ---\n{pretty}"
+                        )),
+                        None,
+                    );
                 }
                 Err(e) => {
-                    return RoundtripResult::Mismatch(format!(
-                        "{name}: pretty-printed fragment failed to reparse: {} at {}:{}\n--- pretty ---\n{pretty}",
-                        e.message, e.line, e.col
-                    ));
+                    return (
+                        RoundtripResult::Mismatch(format!(
+                            "{name}: pretty-printed fragment failed to reparse: {} at {}:{}\n--- pretty ---\n{pretty}",
+                            e.message, e.line, e.col
+                        )),
+                        None,
+                    );
                 }
             };
-            compare_dumps(name, &dump1, &dump2, &pretty)
+            // Sema has no fragment entry point (it operates on a whole
+            // `Module` — mod.rs's own doc comment); the sema-roundtrip
+            // oracle only applies to the `Parsed::Module` arm above.
+            (compare_dumps(name, &dump1, &dump2, &pretty), None)
         }
-        Err(_) => RoundtripResult::Skipped,
+        Err(_) => (RoundtripResult::Skipped, None),
     }
+}
+
+/// The sema-roundtrip oracle (ledger clause sema.check.roundtrip-stable),
+/// applied to one entry's original and reparsed modules — the same
+/// `sema_outcome_summary`/`sema_outcomes_agree` machinery `fuzz sema`
+/// uses. `Ok(())` on agreement.
+fn sema_roundtrip_check(name: &str, original: &Module, reparsed: &Module) -> Result<(), String> {
+    const PATH: &str = "<roundtrip>";
+    let a = sema_outcome_summary(original, PATH);
+    let b = sema_outcome_summary(reparsed, PATH);
+    sema_outcomes_agree(&a, &b)
+        .map_err(|reason| format!("{name}: sema-roundtrip mismatch: {reason}"))
 }
 
 fn compare_dumps(name: &str, dump1: &str, dump2: &str, pretty: &str) -> RoundtripResult {
