@@ -1,0 +1,48 @@
+Program
+  Fn name=consume ret=u64
+    Param name=p mode=take ty=Packet
+    Body
+      Return
+        Field name=size ty=u64
+          Local name=p ty=Packet
+  Fn name=consume_all ret=u64
+    Param name=arr mode=take ty=[Packet; 2]
+    Body
+      Let name=total ty=u64
+        Int text=0 ty=u64
+      For name=p elem_ty=Packet take=true
+        Local name=arr ty=[Packet; 2]
+        Body
+          Assign
+            Local name=total ty=u64
+            Binary op=+ ty=u64
+              Local name=total ty=u64
+              Call key=consume ty=u64
+                Local name=p ty=Packet
+      Return
+        Local name=total ty=u64
+  Fn name=peek_all ret=u64
+    Param name=arr mode=read ty=[Packet; 2]
+    Body
+      Let name=total ty=u64
+        Int text=0 ty=u64
+      For name=p elem_ty=Packet
+        Local name=arr ty=[Packet; 2]
+        Body
+          Assign
+            Local name=total ty=u64
+            Binary op=+ ty=u64
+              Local name=total ty=u64
+              Field name=size ty=u64
+                Local name=p ty=Packet
+      Return
+        Local name=total ty=u64
+  Struct name=Packet
+    Init ret=unit
+      Receiver mode=mut ty=Packet
+      Param name=size mode=read ty=u64
+      Body
+        Assign
+          Field name=size ty=u64
+            Local name=self ty=Packet
+          Local name=size ty=u64

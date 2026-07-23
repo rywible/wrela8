@@ -1,0 +1,90 @@
+Program
+  Fn name=defer_after_conditional_restore ret=u64
+    Param name=p mode=take ty=Packet
+    Param name=cond mode=read ty=bool
+    Body
+      If
+        Local name=cond ty=bool
+        Then
+          Let name=x ty=Packet
+            Take ty=Packet
+              Local name=p ty=Packet
+          Assign
+            Local name=p ty=Packet
+            Call key=refill ty=Packet
+              Field name=size ty=u64
+                Local name=x ty=Packet
+      Defer
+        Body
+          Let name=v ty=u64
+            Field name=size ty=u64
+              Local name=p ty=Packet
+      Return
+        Field name=size ty=u64
+          Local name=p ty=Packet
+  Fn name=refill ret=Packet
+    Param name=size mode=read ty=u64
+    Body
+      Return
+        Call key=Packet.init ty=Packet
+          Local name=size ty=u64
+  Fn name=restore_before_any_exit ret=u64
+    Param name=p mode=take ty=Packet
+    Param name=cond mode=read ty=bool
+    Body
+      Let name=x ty=Packet
+        Take ty=Packet
+          Local name=p ty=Packet
+      Assign
+        Local name=p ty=Packet
+        Call key=refill ty=Packet
+          Field name=size ty=u64
+            Local name=x ty=Packet
+      Defer
+        Body
+          Let name=v ty=u64
+            Field name=size ty=u64
+              Local name=p ty=Packet
+      If
+        Local name=cond ty=bool
+        Then
+          Return
+            Field name=size ty=u64
+              Local name=p ty=Packet
+      Return
+        Int text=0 ty=u64
+  Fn name=take_and_restore ret=u64
+    Param name=p mode=take ty=Packet
+    Param name=cond mode=read ty=bool
+    Body
+      Defer
+        Body
+          Let name=v ty=u64
+            Field name=size ty=u64
+              Local name=p ty=Packet
+      If
+        Local name=cond ty=bool
+        Then
+          Let name=x ty=Packet
+            Take ty=Packet
+              Local name=p ty=Packet
+          Assign
+            Local name=p ty=Packet
+            Call key=refill ty=Packet
+              Field name=size ty=u64
+                Local name=x ty=Packet
+          Return
+            Field name=size ty=u64
+              Local name=p ty=Packet
+      Return
+        Field name=size ty=u64
+          Local name=p ty=Packet
+  Struct name=Packet
+    Init ret=unit
+      Receiver mode=mut ty=Packet
+      Param name=size mode=read ty=u64
+      Body
+        Assign
+          Field name=size ty=u64
+            Local name=self ty=Packet
+          Local name=size ty=u64

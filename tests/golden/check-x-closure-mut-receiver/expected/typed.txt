@@ -1,0 +1,26 @@
+Program
+  Fn name=use_table ret=u64
+    Param name=t mode=mut ty=Table
+    Body
+      Return
+        Call key=Table.entry ty=u64
+          Receiver
+            Local name=t ty=Table
+          Closure ty=fn(mut Item) -> u64
+            ClosureParam name=item mode=mut ty=Item
+            Binary op=+ ty=u64
+              Field name=count ty=u64
+                Local name=item ty=Item
+              Int text=1 ty=u64
+  Struct name=Item
+  Struct name=Table
+    Method name=entry ret=u64
+      Receiver mode=mut ty=Table
+      Param name=body mode=read ty=fn(mut Item) -> u64
+      Body
+        Return
+          CallValue ty=u64
+            Callee
+              Local name=body ty=fn(mut Item) -> u64
+            Field name=slot ty=Item
+              Local name=self ty=Table

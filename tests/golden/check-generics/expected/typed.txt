@@ -1,0 +1,83 @@
+Program
+  Fn name=use_first ret=u64
+    Param name=x mode=read ty=u64
+    Param name=y mode=read ty=u64
+    Body
+      Return
+        Call key=fn:first[u64] ty=u64
+          Local name=x ty=u64
+          Local name=y ty=u64
+  Fn name=use_hash_pair ret=u64
+    Param name=a mode=read ty=Sample
+    Param name=b mode=read ty=Sample
+    Body
+      Let name=explicit ty=u64
+        Call key=fn:hash_pair[Sample] ty=u64
+          Local name=a ty=Sample
+          Local name=b ty=Sample
+      Let name=inferred ty=u64
+        Call key=fn:hash_pair[Sample] ty=u64
+          Local name=a ty=Sample
+          Local name=b ty=Sample
+      Return
+        Binary op=+ ty=u64
+          Local name=explicit ty=u64
+          Local name=inferred ty=u64
+  Fn name=use_ring ret=u64
+    Body
+      Let name=small ty=Ring[u64, 4]
+        StructLiteral name=Ring ty=Ring[u64, 4]
+          Field name=items
+            List ty=[Option[u64]; 4]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+      Let name=flags ty=Ring[bool, 2]
+        StructLiteral name=Ring ty=Ring[bool, 2]
+          Field name=items
+            List ty=[Option[bool]; 2]
+              EnumConstruct enum=Option variant=None ty=Option[bool]
+              EnumConstruct enum=Option variant=None ty=Option[bool]
+      Let name=blocks ty=Ring[DmaBlock, 2]
+        StructLiteral name=Ring ty=Ring[DmaBlock, 2]
+          Field name=items
+            List ty=[Option[DmaBlock]; 2]
+              EnumConstruct enum=Option variant=None ty=Option[DmaBlock]
+              EnumConstruct enum=Option variant=None ty=Option[DmaBlock]
+      Return
+        Int text=0 ty=u64
+  Struct name=DmaBlock
+  Struct name=Sample
+    Method name=hash ret=u64
+      Receiver mode=read ty=Sample
+      Body
+        Return
+          Field name=id ty=u64
+            Local name=self ty=Sample
+  Instantiation key=fn:first[u64]
+    Fn ret=u64
+      Param name=a mode=read ty=u64
+      Param name=b mode=read ty=u64
+      Body
+        Return
+          Local name=a ty=u64
+  Instantiation key=fn:hash_pair[Sample]
+    Fn ret=u64
+      Param name=a mode=read ty=Sample
+      Param name=b mode=read ty=Sample
+      Body
+        Return
+          Binary op=^ ty=u64
+            Call key=Sample.hash ty=u64
+              Receiver
+                Local name=a ty=Sample
+            Call key=Sample.hash ty=u64
+              Receiver
+                Local name=b ty=Sample
+  Instantiation key=struct:Ring[DmaBlock, 2]
+    Struct
+  Instantiation key=struct:Ring[bool, 2]
+    Struct
+  Instantiation key=struct:Ring[u64, 4]
+    Struct

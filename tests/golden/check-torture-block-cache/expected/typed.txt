@@ -1,0 +1,448 @@
+Program
+  Fn name=close_cache ret=unit
+    Param name=cache mode=take ty=BlockCache
+    Body
+      Pass
+  Fn name=evict_index ret=own[BlockPayloads] DmaBlock
+    Param name=cache mode=mut ty=BlockCache
+    Param name=index mode=read ty=usize
+    Param name=fresh mode=take ty=own[BlockPayloads] DmaBlock
+    Body
+      Defer
+        Call key=log_evicted ty=unit
+      Return
+        Call key=BlockCache.swap ty=own[BlockPayloads] DmaBlock
+          Receiver
+            Local name=cache ty=BlockCache
+          Local name=index ty=usize
+          Local name=fresh ty=own[BlockPayloads] DmaBlock
+  Fn name=flush_dirty ret=u64
+    Param name=cache mode=mut ty=BlockCache
+    Body
+      Defer
+        Call key=log_flushed ty=unit
+      Let name=dirty ty=u64
+        Int text=0 ty=u64
+      Let name=i ty=usize
+        Int text=0 ty=usize
+      While
+        Binary op=< ty=bool
+          Local name=i ty=usize
+          Int text=4 ty=usize
+        Body
+          If
+            Call key=BlockCache.is_dirty ty=bool
+              Receiver
+                Local name=cache ty=BlockCache
+              Local name=i ty=usize
+            Then
+              Assign
+                Local name=dirty ty=u64
+                Binary op=+ ty=u64
+                  Local name=dirty ty=u64
+                  Int text=1 ty=u64
+              Call key=BlockCache.mark_clean ty=unit
+                Receiver
+                  Local name=cache ty=BlockCache
+                Local name=i ty=usize
+                Call key=BlockCache.lookup ty=u64
+                  Receiver
+                    Local name=cache ty=BlockCache
+                  Local name=i ty=usize
+          Assign
+            Local name=i ty=usize
+            Binary op=+ ty=usize
+              Local name=i ty=usize
+              Int text=1 ty=usize
+      Return
+        Local name=dirty ty=u64
+  Fn name=log_evicted ret=unit
+    Body
+      Pass
+  Fn name=log_flushed ret=unit
+    Body
+      Pass
+  Fn name=make_cache ret=BlockCache
+    Param name=b0 mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=b1 mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=b2 mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=b3 mode=take ty=own[BlockPayloads] DmaBlock
+    Body
+      Return
+        Call key=BlockCache.init ty=BlockCache
+          Local name=b0 ty=own[BlockPayloads] DmaBlock
+          Local name=b1 ty=own[BlockPayloads] DmaBlock
+          Local name=b2 ty=own[BlockPayloads] DmaBlock
+          Local name=b3 ty=own[BlockPayloads] DmaBlock
+  Fn name=run_cycle ret=u64
+    Param name=b0 mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=b1 mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=b2 mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=b3 mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=spare mode=take ty=own[BlockPayloads] DmaBlock
+    Body
+      Let name=cache ty=BlockCache
+        Call key=make_cache ty=BlockCache
+          Local name=b0 ty=own[BlockPayloads] DmaBlock
+          Local name=b1 ty=own[BlockPayloads] DmaBlock
+          Local name=b2 ty=own[BlockPayloads] DmaBlock
+          Local name=b3 ty=own[BlockPayloads] DmaBlock
+      Call key=BlockCache.mark_dirty ty=unit
+        Receiver
+          Local name=cache ty=BlockCache
+        Int text=0 ty=usize
+        Int text=100 ty=u64
+      Call key=BlockCache.mark_dirty ty=unit
+        Receiver
+          Local name=cache ty=BlockCache
+        Int text=2 ty=usize
+        Int text=300 ty=u64
+      Call key=BlockCache.touch_all ty=unit
+        Receiver
+          Local name=cache ty=BlockCache
+      Let name=flushed ty=u64
+        Call key=flush_dirty ty=u64
+          Local name=cache ty=BlockCache
+      Let name=old ty=own[BlockPayloads] DmaBlock
+        Call key=evict_index ty=own[BlockPayloads] DmaBlock
+          Local name=cache ty=BlockCache
+          Int text=1 ty=usize
+          Local name=spare ty=own[BlockPayloads] DmaBlock
+      Call key=close_cache ty=unit
+        Local name=cache ty=BlockCache
+      Return
+        Binary op=+ ty=u64
+          Local name=flushed ty=u64
+          Call key=DmaBlock.identity ty=u64
+            Receiver
+              Local name=old ty=own[BlockPayloads] DmaBlock
+  Fn name=use_data_slots ret=unit
+    Body
+      Let name=slots ty=Slot[u64, 2]
+        StructLiteral name=Slot ty=Slot[u64, 2]
+          Field name=items
+            List ty=[Option[u64]; 2]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+      Pass
+  Fn name=use_resource_slots ret=unit
+    Param name=a mode=take ty=own[BlockPayloads] DmaBlock
+    Param name=b mode=take ty=own[BlockPayloads] DmaBlock
+    Body
+      Let name=slots ty=Slot[Handle, 2]
+        StructLiteral name=Slot ty=Slot[Handle, 2]
+          Field name=items
+            List ty=[Option[Handle]; 2]
+              EnumConstruct enum=Option variant=Some ty=Option[Handle]
+                StructLiteral name=Handle ty=Handle
+                  Field name=block
+                    Local name=a ty=own[BlockPayloads] DmaBlock
+              EnumConstruct enum=Option variant=Some ty=Option[Handle]
+                StructLiteral name=Handle ty=Handle
+                  Field name=block
+                    Local name=b ty=own[BlockPayloads] DmaBlock
+      Pass
+  Struct name=BlockCache
+    Method name=is_dirty ret=bool
+      Receiver mode=read ty=BlockCache
+      Param name=index mode=read ty=usize
+      Body
+        Return
+          Call key=CacheLine.is_dirty ty=bool
+            Receiver
+              Index ty=CacheLine
+                Field name=lines ty=[CacheLine; 4]
+                  Local name=self ty=BlockCache
+                Local name=index ty=usize
+    Method name=lookup ret=u64
+      Receiver mode=read ty=BlockCache
+      Param name=index mode=read ty=usize
+      Body
+        Return
+          Call key=CacheLine.lba ty=u64
+            Receiver
+              Index ty=CacheLine
+                Field name=lines ty=[CacheLine; 4]
+                  Local name=self ty=BlockCache
+                Local name=index ty=usize
+    Method name=mark_clean ret=unit
+      Receiver mode=mut ty=BlockCache
+      Param name=index mode=read ty=usize
+      Param name=lba mode=read ty=u64
+      Body
+        Call key=CacheLine.mark_clean ty=unit
+          Receiver
+            Index ty=CacheLine
+              Field name=lines ty=[CacheLine; 4]
+                Local name=self ty=BlockCache
+              Local name=index ty=usize
+          Local name=lba ty=u64
+    Method name=mark_dirty ret=unit
+      Receiver mode=mut ty=BlockCache
+      Param name=index mode=read ty=usize
+      Param name=lba mode=read ty=u64
+      Body
+        Call key=CacheLine.mark_dirty ty=unit
+          Receiver
+            Index ty=CacheLine
+              Field name=lines ty=[CacheLine; 4]
+                Local name=self ty=BlockCache
+              Local name=index ty=usize
+          Local name=lba ty=u64
+    Method name=swap ret=own[BlockPayloads] DmaBlock
+      Receiver mode=mut ty=BlockCache
+      Param name=index mode=read ty=usize
+      Param name=fresh mode=take ty=own[BlockPayloads] DmaBlock
+      Body
+        Return
+          Call key=CacheLine.swap_block ty=own[BlockPayloads] DmaBlock
+            Receiver
+              Index ty=CacheLine
+                Field name=lines ty=[CacheLine; 4]
+                  Local name=self ty=BlockCache
+                Local name=index ty=usize
+            Local name=fresh ty=own[BlockPayloads] DmaBlock
+    Method name=touch_all ret=unit
+      Receiver mode=mut ty=BlockCache
+      Body
+        Let name=i ty=usize
+          Int text=0 ty=usize
+        While
+          Binary op=< ty=bool
+            Local name=i ty=usize
+            Int text=4 ty=usize
+          Body
+            Call key=CacheLine.touch ty=unit
+              Receiver
+                Index ty=CacheLine
+                  Field name=lines ty=[CacheLine; 4]
+                    Local name=self ty=BlockCache
+                  Local name=i ty=usize
+            Assign
+              Local name=i ty=usize
+              Binary op=+ ty=usize
+                Local name=i ty=usize
+                Int text=1 ty=usize
+    Init ret=unit
+      Receiver mode=mut ty=BlockCache
+      Param name=b0 mode=take ty=own[BlockPayloads] DmaBlock
+      Param name=b1 mode=take ty=own[BlockPayloads] DmaBlock
+      Param name=b2 mode=take ty=own[BlockPayloads] DmaBlock
+      Param name=b3 mode=take ty=own[BlockPayloads] DmaBlock
+      Body
+        Assign
+          Field name=lines ty=[CacheLine; 4]
+            Local name=self ty=BlockCache
+          List ty=[CacheLine; 4]
+            Call key=CacheLine.init ty=CacheLine
+              Local name=b0 ty=own[BlockPayloads] DmaBlock
+            Call key=CacheLine.init ty=CacheLine
+              Local name=b1 ty=own[BlockPayloads] DmaBlock
+            Call key=CacheLine.init ty=CacheLine
+              Local name=b2 ty=own[BlockPayloads] DmaBlock
+            Call key=CacheLine.init ty=CacheLine
+              Local name=b3 ty=own[BlockPayloads] DmaBlock
+  Struct name=CacheLine
+    Method name=evict ret=own[BlockPayloads] DmaBlock
+      Receiver mode=take ty=CacheLine
+      Body
+        Return
+          Take ty=own[BlockPayloads] DmaBlock
+            Field name=block ty=own[BlockPayloads] DmaBlock
+              Local name=self ty=CacheLine
+    Method name=is_dirty ret=bool
+      Receiver mode=read ty=CacheLine
+      Body
+        Match
+          Field name=state ty=CacheState
+            Local name=self ty=CacheLine
+          Case
+            VariantPattern enum=CacheState variant=Dirty ty=CacheState
+              Wildcard ty=u64
+            Return
+              Bool value=true ty=bool
+          Case
+            OrPattern ty=CacheState
+              VariantPattern enum=CacheState variant=Invalid ty=CacheState
+              VariantPattern enum=CacheState variant=Clean ty=CacheState
+                Wildcard ty=u64
+            Return
+              Bool value=false ty=bool
+    Method name=lba ret=u64
+      Receiver mode=read ty=CacheLine
+      Body
+        Match
+          Field name=state ty=CacheState
+            Local name=self ty=CacheLine
+          Case
+            VariantPattern enum=CacheState variant=Invalid ty=CacheState
+            Return
+              Int text=0 ty=u64
+          Case
+            VariantPattern enum=CacheState variant=Clean ty=CacheState
+              Binding name=lba ty=u64
+            Return
+              Local name=lba ty=u64
+          Case
+            VariantPattern enum=CacheState variant=Dirty ty=CacheState
+              Binding name=lba ty=u64
+            Return
+              Local name=lba ty=u64
+    Method name=mark_clean ret=unit
+      Receiver mode=mut ty=CacheLine
+      Param name=lba mode=read ty=u64
+      Body
+        Assign
+          Field name=state ty=CacheState
+            Local name=self ty=CacheLine
+          EnumConstruct enum=CacheState variant=Clean ty=CacheState
+            Local name=lba ty=u64
+    Method name=mark_dirty ret=unit
+      Receiver mode=mut ty=CacheLine
+      Param name=lba mode=read ty=u64
+      Body
+        Assign
+          Field name=state ty=CacheState
+            Local name=self ty=CacheLine
+          EnumConstruct enum=CacheState variant=Dirty ty=CacheState
+            Local name=lba ty=u64
+    Method name=swap_block ret=own[BlockPayloads] DmaBlock
+      Receiver mode=mut ty=CacheLine
+      Param name=fresh mode=take ty=own[BlockPayloads] DmaBlock
+      Body
+        Let name=old ty=own[BlockPayloads] DmaBlock
+          Take ty=own[BlockPayloads] DmaBlock
+            Field name=block ty=own[BlockPayloads] DmaBlock
+              Local name=self ty=CacheLine
+        Assign
+          Field name=block ty=own[BlockPayloads] DmaBlock
+            Local name=self ty=CacheLine
+          Take ty=own[BlockPayloads] DmaBlock
+            Local name=fresh ty=own[BlockPayloads] DmaBlock
+        Assign
+          Field name=state ty=CacheState
+            Local name=self ty=CacheLine
+          EnumConstruct enum=CacheState variant=Invalid ty=CacheState
+        Return
+          Take ty=own[BlockPayloads] DmaBlock
+            Local name=old ty=own[BlockPayloads] DmaBlock
+    Method name=touch ret=unit
+      Receiver mode=mut ty=CacheLine
+      Body
+        Match
+          Field name=state ty=CacheState
+            Local name=self ty=CacheLine
+          Case
+            VariantPattern enum=CacheState variant=Invalid ty=CacheState
+            Let name=block ty=own[BlockPayloads] DmaBlock
+              Take ty=own[BlockPayloads] DmaBlock
+                Field name=block ty=own[BlockPayloads] DmaBlock
+                  Local name=self ty=CacheLine
+            Assign
+              Field name=block ty=own[BlockPayloads] DmaBlock
+                Local name=self ty=CacheLine
+              Take ty=own[BlockPayloads] DmaBlock
+                Local name=block ty=own[BlockPayloads] DmaBlock
+          Case
+            VariantPattern enum=CacheState variant=Clean ty=CacheState
+              Binding name=lba ty=u64
+            Assign
+              Local name=block ty=own[BlockPayloads] DmaBlock
+              Take ty=own[BlockPayloads] DmaBlock
+                Field name=block ty=own[BlockPayloads] DmaBlock
+                  Local name=self ty=CacheLine
+            Assign
+              Field name=block ty=own[BlockPayloads] DmaBlock
+                Local name=self ty=CacheLine
+              Take ty=own[BlockPayloads] DmaBlock
+                Local name=block ty=own[BlockPayloads] DmaBlock
+            Assign
+              Field name=state ty=CacheState
+                Local name=self ty=CacheLine
+              EnumConstruct enum=CacheState variant=Clean ty=CacheState
+                Local name=lba ty=u64
+          Case
+            VariantPattern enum=CacheState variant=Dirty ty=CacheState
+              Binding name=lba ty=u64
+            Assign
+              Local name=block ty=own[BlockPayloads] DmaBlock
+              Take ty=own[BlockPayloads] DmaBlock
+                Field name=block ty=own[BlockPayloads] DmaBlock
+                  Local name=self ty=CacheLine
+            Assign
+              Field name=block ty=own[BlockPayloads] DmaBlock
+                Local name=self ty=CacheLine
+              Take ty=own[BlockPayloads] DmaBlock
+                Local name=block ty=own[BlockPayloads] DmaBlock
+            Assign
+              Field name=state ty=CacheState
+                Local name=self ty=CacheLine
+              EnumConstruct enum=CacheState variant=Dirty ty=CacheState
+                Local name=lba ty=u64
+    Init ret=unit
+      Receiver mode=mut ty=CacheLine
+      Param name=block mode=take ty=own[BlockPayloads] DmaBlock
+      Body
+        Assign
+          Field name=state ty=CacheState
+            Local name=self ty=CacheLine
+          EnumConstruct enum=CacheState variant=Invalid ty=CacheState
+        Assign
+          Field name=block ty=own[BlockPayloads] DmaBlock
+            Local name=self ty=CacheLine
+          Take ty=own[BlockPayloads] DmaBlock
+            Local name=block ty=own[BlockPayloads] DmaBlock
+  Struct name=DmaBlock
+    Method name=identity ret=u64
+      Receiver mode=read ty=DmaBlock
+      Body
+        Return
+          Field name=id ty=u64
+            Local name=self ty=DmaBlock
+    Init ret=unit
+      Receiver mode=mut ty=DmaBlock
+      Param name=id mode=read ty=u64
+      Body
+        Assign
+          Field name=id ty=u64
+            Local name=self ty=DmaBlock
+          Local name=id ty=u64
+  Struct name=Handle
+  Instantiation key=struct:Slot[Handle, 2]
+    Struct
+      Method name=occupied ret=bool
+        Receiver mode=read ty=Slot[Handle, 2]
+        Param name=index mode=read ty=usize
+        Body
+          If
+            Is ty=bool
+              Index ty=Option[Handle]
+                Field name=items ty=[Option[Handle]; 2]
+                  Local name=self ty=Slot[Handle, 2]
+                Local name=index ty=usize
+              VariantPattern enum=Option variant=Some ty=Option[Handle]
+                Wildcard ty=Handle
+            Then
+              Return
+                Bool value=true ty=bool
+          Return
+            Bool value=false ty=bool
+  Instantiation key=struct:Slot[u64, 2]
+    Struct
+      Method name=occupied ret=bool
+        Receiver mode=read ty=Slot[u64, 2]
+        Param name=index mode=read ty=usize
+        Body
+          If
+            Is ty=bool
+              Index ty=Option[u64]
+                Field name=items ty=[Option[u64]; 2]
+                  Local name=self ty=Slot[u64, 2]
+                Local name=index ty=usize
+              VariantPattern enum=Option variant=Some ty=Option[u64]
+                Wildcard ty=u64
+            Then
+              Return
+                Bool value=true ty=bool
+          Return
+            Bool value=false ty=bool

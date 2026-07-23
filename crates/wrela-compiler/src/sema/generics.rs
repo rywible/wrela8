@@ -36,6 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::bodies::{self, FnInfo, InstKind, ModuleCtx, QueuedInstantiation, StructInfo};
+use crate::sema::typed::TypedInstantiation;
 use crate::sema::types::{
     self, Classification, DeclEnum, DeclField, DeclFn, DeclGenericKind, DeclGenericParam,
     DeclMember, DeclParam, DeclStruct, DeclVariant, DeclVariantPayload, Type, TypeArg,
@@ -592,7 +593,7 @@ pub(crate) fn infer_fn_targs(
         let Some(arg_expr) = bound[i] else {
             continue; // a default-valued, unbound parameter: nothing to infer from.
         };
-        let synthesized = bodies::check_expr(arg_expr, None, fctx, mctx)?;
+        let synthesized = bodies::check_expr(arg_expr, None, fctx, mctx)?.ty;
         if let Some(existing) = inferred.get(gname) {
             if !bodies::types_eq(existing, &synthesized) {
                 return Err(SemaError::at(
@@ -681,13 +682,19 @@ fn bind_args_positionally<'a>(decl_params: &[DeclParam], args: &'a [Arg]) -> Vec
 /// passes (`bodies`/`access`/`matches`) `check` already ran, concretely,
 /// against each substituted declaration. `path` is cited verbatim in the
 /// chain diagnostic (decision 2; see `mod.rs::check`'s own doc comment).
+/// plans/M3.md item A: also returns every drained instantiation's typed
+/// body (`typed::TypedInstantiation`), keyed by this file's own
+/// canonical spelling — the identical string a `Call`/`OpCall` node's
+/// `CalleeKey::FnInstance`/`MethodInstance` carries for the same
+/// instantiation (`typed.rs`'s own doc comment).
 pub(crate) fn check(
     _module: &Module,
     _decl_items: &[types::DeclItem],
     mctx: &ModuleCtx,
     path: &str,
-) -> Result<(), SemaError> {
+) -> Result<BTreeMap<String, TypedInstantiation>, SemaError> {
     let mut processed: BTreeSet<String> = BTreeSet::new();
+    let mut typed_instantiations: BTreeMap<String, TypedInstantiation> = BTreeMap::new();
     loop {
         let next = {
             let q = mctx.generics_queue.borrow();
@@ -698,18 +705,24 @@ pub(crate) fn check(
         let Some((key, entry)) = next else {
             break;
         };
-        processed.insert(key);
+        processed.insert(key.clone());
         *mctx.current_chain.borrow_mut() = entry.chain.clone();
         let result = check_one_instantiation(mctx, &entry);
         *mctx.current_chain.borrow_mut() = Vec::new();
-        if let Err(e) = result {
-            return Err(finalize_diagnostic(e, &entry, mctx, path));
+        match result {
+            Ok(typed_inst) => {
+                typed_instantiations.insert(key, typed_inst);
+            }
+            Err(e) => return Err(finalize_diagnostic(e, &entry, mctx, path)),
         }
     }
-    Ok(())
+    Ok(typed_instantiations)
 }
 
-fn check_one_instantiation(mctx: &ModuleCtx, entry: &QueuedInstantiation) -> Result<(), SemaError> {
+fn check_one_instantiation(
+    mctx: &ModuleCtx,
+    entry: &QueuedInstantiation,
+) -> Result<TypedInstantiation, SemaError> {
     let call_span = *entry
         .chain
         .last()
@@ -717,29 +730,30 @@ fn check_one_instantiation(mctx: &ModuleCtx, entry: &QueuedInstantiation) -> Res
     match entry.kind {
         InstKind::Fn => {
             let fi = instantiate_fn(mctx, &entry.name, &entry.args, call_span)?;
-            bodies::check_top_fn(&fi.ast, &fi.decl, mctx)?;
+            let tf = bodies::check_top_fn(&fi.ast, &fi.decl, mctx)?
+                .expect("an instantiated fn is always concrete, never itself generic");
             let empty_effects = access::EffectMap::new();
             access::check_top_fn(&fi.ast, &fi.decl, mctx, &empty_effects)?;
             flow::check_top_fn(&fi.ast, &fi.decl, mctx, &empty_effects)?;
             matches::check_top_fn(&fi.ast, &fi.decl, mctx)?;
-            Ok(())
+            Ok(TypedInstantiation::Fn(tf))
         }
         InstKind::Struct => {
             let si = instantiate_struct(mctx, &entry.name, &entry.args, call_span)?;
             let self_ty = Type::Named(entry.name.clone(), entry.args.clone());
-            bodies::check_struct_members(&si, self_ty.clone(), mctx)?;
+            let ts = bodies::check_struct_members(&si, self_ty.clone(), mctx)?;
             let effects = access::infer_effects_over(mctx);
             access::check_struct_members(&si, self_ty.clone(), mctx, &effects)?;
             flow::check_struct_members(&si, self_ty.clone(), mctx, &effects)?;
             matches::check_struct_members(&si, self_ty, mctx)?;
-            Ok(())
+            Ok(TypedInstantiation::Struct(ts))
         }
         InstKind::Enum => {
             // Enums carry no bodies/methods (02-language.md §7.2):
             // substitution + reclassification (already run by
             // `instantiate_enum`) is the whole of "checking" one.
             instantiate_enum(mctx, &entry.name, &entry.args, call_span)?;
-            Ok(())
+            Ok(TypedInstantiation::Enum)
         }
     }
 }

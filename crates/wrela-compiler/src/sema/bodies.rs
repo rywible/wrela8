@@ -16,6 +16,15 @@
 //! plain copies of every declared item's ast + resolved-type pair
 //! instead of borrowing, so no lifetime threads through the whole file.
 //!
+//! plans/M3.md item A: `check_expr`/`check_stmt` now return a typed node
+//! (`typed::TypedExpr`/`typed::TypedStmt`) instead of a bare `Type`/`()` —
+//! see `typed.rs`'s own module doc comment for the tree's shape. This
+//! file is still the one place that *produces* the typed tree;
+//! `access.rs`/`flow.rs`/`matches.rs` call `check_expr`/`check_pattern`
+//! exactly as before and only ever read `.ty` off the result where they
+//! previously got a bare `Type` back (a recorded non-goal: those three
+//! passes are not retrofitted onto the typed tree in M3).
+//!
 //! A generic declaration's *own* body is still not type-checked here: a
 //! generic struct/enum's members, and a generic fn/method's body, are
 //! skipped entirely (no error — just not visited) by `check_top_fn`/
@@ -36,6 +45,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::generics;
+use crate::sema::typed::{
+    CalleeKey, TypedClosureBody, TypedClosureParam, TypedConst, TypedDeferBody, TypedElif,
+    TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedMatchArm, TypedParam, TypedPattern,
+    TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind, TypedStruct,
+};
 use crate::sema::types::{
     self, Classification, DeclMember, DeclParam, DeclVariantPayload, Type, TypeArg,
 };
@@ -453,28 +467,52 @@ fn bind_local(fctx: &mut FnCtx, name: &str, ty: Type, span: Span) -> Result<(), 
 /// `access::check`/`matches::check`/`generics::check` so item H's
 /// instantiation queue accumulates across all of them (see the doc
 /// comment on `InstKind` above).
+///
+/// plans/M3.md item A: also returns the typed program (decision 1) for
+/// every plain (non-generic) top-level `const`/`fn`/`struct` this walk
+/// checks; `mod.rs::check_typed` fills in `instantiations` afterward
+/// (`generics::check` drains the queue this — and `access`/`flow`/
+/// `matches`'s own re-derivation — populates). The plain `check` stage
+/// (`mod.rs::check`) discards this return value; the pass's own
+/// diagnostics/behavior are unchanged either way.
 pub(crate) fn check(
     module: &Module,
     decl_items: &[types::DeclItem],
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<TypedProgram, SemaError> {
     let ast_items: Vec<&Item> = module
         .items
         .iter()
         .filter(|i| !matches!(i, Item::ComptimeIf(_)))
         .collect();
+    let mut program = TypedProgram::default();
     for (ai, di) in ast_items.iter().zip(decl_items.iter()) {
         match (ai, di) {
             (Item::Const(c), types::DeclItem::Const(d)) => {
                 let mut fctx = FnCtx::new(Type::Unit, mctx.module_pools.clone());
-                check_expr(&c.value, Some(&d.ty), &mut fctx, mctx)?;
+                let value = check_expr(&c.value, Some(&d.ty), &mut fctx, mctx)?;
+                program.consts.insert(
+                    c.name.clone(),
+                    TypedConst {
+                        ty: d.ty.clone(),
+                        value,
+                    },
+                );
             }
-            (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, mctx)?,
-            (Item::Struct(s), types::DeclItem::Struct(_)) => check_struct_bodies(s, mctx)?,
+            (Item::Fn(f), types::DeclItem::Fn(d)) => {
+                if let Some(tf) = check_top_fn(f, d, mctx)? {
+                    program.fns.insert(f.name.clone(), tf);
+                }
+            }
+            (Item::Struct(s), types::DeclItem::Struct(_)) => {
+                if let Some(ts) = check_struct_bodies(s, mctx)? {
+                    program.structs.insert(s.name.clone(), ts);
+                }
+            }
             _ => {}
         }
     }
-    Ok(())
+    Ok(program)
 }
 
 pub(crate) fn is_image_fn(f: &ast::FnItem) -> bool {
@@ -498,30 +536,41 @@ pub(crate) fn local_pool_names(info: &StructInfo) -> BTreeSet<String> {
 /// this guard, so a cleared copy behaves exactly like a real non-generic
 /// declaration; every type it needs instead comes from `d`, which the
 /// caller has already substituted.
+///
+/// Returns `Ok(None)` for a generic fn's own (unchecked) body — item H's
+/// job elsewhere — and `Ok(Some(typed_fn))` for every concrete body this
+/// checks (plans/M3.md item A): a plain top-level fn here, or (via
+/// `generics::check_one_instantiation`) an instantiated generic fn, which
+/// is always concrete by the time it reaches this function.
 pub(crate) fn check_top_fn(
     f: &ast::FnItem,
     d: &types::DeclFn,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<Option<TypedFn>, SemaError> {
     if is_image_fn(f) {
         // The whole declaration is unchecked (decision 7): the image
         // constructor's semantics (device/actor/pool wiring) are M4's.
         return Err(unimplemented_at("@image bodies are", f.span));
     }
     if !f.generics.is_empty() {
-        return Ok(()); // generic body: item H's job, not checked here.
+        return Ok(None); // generic body: item H's job, not checked here.
     }
     let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
-    check_params_with_defaults(&f.params, &d.params, &mut fctx, mctx)?;
-    match &f.body {
+    let params = check_params_with_defaults(&f.params, &d.params, &mut fctx, mctx)?;
+    let body = match &f.body {
         Some(body) => check_stmts(body, &mut fctx, mctx)?,
         // The parser accepts the bodyless signature shorthand a few doc
         // tables use; whether a real declaration may be bodyless is a
         // later milestone's question (see parse_fn_tail), so sema fails
         // closed rather than treating it as an empty body.
         None => return Err(unimplemented_at("bodyless functions are", f.span)),
-    }
-    Ok(())
+    };
+    Ok(Some(TypedFn {
+        receiver: None,
+        params,
+        ret: d.ret.clone(),
+        body,
+    }))
 }
 
 pub(crate) fn check_params_with_defaults(
@@ -529,23 +578,34 @@ pub(crate) fn check_params_with_defaults(
     decl_params: &[DeclParam],
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<Vec<TypedParam>, SemaError> {
+    let mut out = Vec::with_capacity(decl_params.len());
     for (ap, dp) in ast_params.iter().zip(decl_params.iter()) {
         fctx.insert_local(dp.name.clone(), dp.ty.clone());
-        if let Some(def) = &ap.default {
-            check_expr(def, Some(&dp.ty), fctx, mctx)?;
-        }
+        let default = match &ap.default {
+            Some(def) => Some(check_expr(def, Some(&dp.ty), fctx, mctx)?),
+            None => None,
+        };
+        out.push(TypedParam {
+            mode: dp.mode,
+            name: dp.name.clone(),
+            ty: dp.ty.clone(),
+            default,
+        });
     }
-    Ok(())
+    Ok(out)
 }
 
-fn check_struct_bodies(s: &ast::StructItem, mctx: &ModuleCtx) -> Result<(), SemaError> {
+fn check_struct_bodies(
+    s: &ast::StructItem,
+    mctx: &ModuleCtx,
+) -> Result<Option<TypedStruct>, SemaError> {
     if !s.generics.is_empty() {
-        return Ok(()); // generic struct: item H's job, not checked here.
+        return Ok(None); // generic struct: item H's job, not checked here.
     }
     let info = mctx.structs.get(&s.name).expect("struct present in mctx");
     let self_ty = Type::Named(s.name.clone(), vec![]);
-    check_struct_members(info, self_ty, mctx)
+    Ok(Some(check_struct_members(info, self_ty, mctx)?))
 }
 
 /// `pub(crate)` (item H, generics.rs): the guts of `check_struct_bodies`,
@@ -556,20 +616,32 @@ fn check_struct_bodies(s: &ast::StructItem, mctx: &ModuleCtx) -> Result<(), Sema
 /// its already-substituted `StructInfo` straight through rather than
 /// stashing it under a name this function would then have to re-look-up.
 /// `check_struct_bodies` above is now just this with the ordinary
-/// (non-generic, `self_ty = Type::Named(name, [])`) case wired in.
+/// (non-generic, `self_ty = Type::Named(name, [])`) case wired in. Always
+/// concrete (unlike `check_top_fn`): both callers only ever reach this
+/// with a non-generic struct/instantiation, so it always returns a real
+/// `TypedStruct` (plans/M3.md item A).
 pub(crate) fn check_struct_members(
     info: &StructInfo,
     self_ty: Type,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<TypedStruct, SemaError> {
+    let struct_name = match &self_ty {
+        Type::Named(name, _) => name.clone(),
+        other => unreachable!("check_struct_members: self_ty `{other:?}` is not Type::Named"),
+    };
     let local_pools = local_pool_names(info);
+    let mut field_defaults = BTreeMap::new();
+    let mut methods = BTreeMap::new();
+    let mut assoc_fns = BTreeMap::new();
+    let mut init = None;
     for (am, dm) in info.members() {
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(df)) => {
                 if let Some(def) = &af.default {
                     let mut fctx = FnCtx::new(Type::Unit, local_pools.clone());
                     fctx.insert_local("self".to_string(), self_ty.clone());
-                    check_expr(def, Some(&df.ty), &mut fctx, mctx)?;
+                    let typed_def = check_expr(def, Some(&df.ty), &mut fctx, mctx)?;
+                    field_defaults.insert(af.name.clone(), typed_def);
                 }
             }
             (Member::Fn(f), DeclMember::Fn(fd)) => {
@@ -578,8 +650,8 @@ pub(crate) fn check_struct_members(
                 }
                 let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
                 fctx.insert_local("self".to_string(), self_ty.clone());
-                check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
-                match &f.body {
+                let params = check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
+                let body = match &f.body {
                     Some(body) => check_stmts(body, &mut fctx, mctx)?,
                     // Same fail-closed rule as top-level fns: the
                     // bodyless shorthand is doc-table syntax, not a
@@ -587,79 +659,138 @@ pub(crate) fn check_struct_members(
                     // access.rs's effect inference before b78b95e — the
                     // golden err-unimplemented-bodyless pins it).
                     None => return Err(unimplemented_at("bodyless functions are", f.span)),
+                };
+                let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
+                let tf = TypedFn {
+                    receiver,
+                    params,
+                    ret: fd.ret.clone(),
+                    body,
+                };
+                if f.receiver.is_some() {
+                    methods.insert(f.name.clone(), tf);
+                } else {
+                    assoc_fns.insert(f.name.clone(), tf);
                 }
             }
             (Member::Init(i), DeclMember::Init(fd)) => {
                 let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
                 fctx.insert_local("self".to_string(), self_ty.clone());
-                check_params_with_defaults(&i.params, &fd.params, &mut fctx, mctx)?;
-                check_stmts(&i.body, &mut fctx, mctx)?;
+                let params = check_params_with_defaults(&i.params, &fd.params, &mut fctx, mctx)?;
+                let body = check_stmts(&i.body, &mut fctx, mctx)?;
+                init = Some(TypedFn {
+                    receiver: Some((i.receiver.mode, self_ty.clone())),
+                    params,
+                    ret: fd.ret.clone(),
+                    body,
+                });
             }
             _ => {}
         }
     }
-    Ok(())
+    Ok(TypedStruct {
+        name: struct_name,
+        field_defaults,
+        methods,
+        assoc_fns,
+        init,
+    })
 }
 
 // --- statements --------------------------------------------------------
 
-fn check_stmts(stmts: &[Stmt], fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
+fn check_stmts(
+    stmts: &[Stmt],
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<Vec<TypedStmt>, SemaError> {
+    let mut out = Vec::with_capacity(stmts.len());
     for s in stmts {
-        check_stmt(s, fctx, mctx)?;
+        out.push(check_stmt(s, fctx, mctx)?);
     }
-    Ok(())
+    Ok(out)
 }
 
-fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
+fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     match stmt {
         Stmt::Assign(a) => check_assign(a, fctx, mctx),
         Stmt::If(i) => check_if(i, fctx, mctx),
         Stmt::Match(m) => check_match(m, fctx, mctx),
         Stmt::For(f) => check_for(f, fctx, mctx),
         Stmt::While(w) => check_while(w, fctx, mctx),
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => Ok(()),
+        Stmt::Break(_) => Ok(TypedStmt {
+            kind: TypedStmtKind::Break,
+        }),
+        Stmt::Continue(_) => Ok(TypedStmt {
+            kind: TypedStmtKind::Continue,
+        }),
+        Stmt::Pass(_) => Ok(TypedStmt {
+            kind: TypedStmtKind::Pass,
+        }),
         Stmt::Return(span, e) => check_return(*span, e, fctx, mctx),
         Stmt::Assert(a) => check_assert(a, fctx, mctx),
         Stmt::Defer(d) => check_defer(d, fctx, mctx),
         Stmt::With(w) => Err(unimplemented_at("`with` is", w.span)),
         Stmt::Send(span, _e) => Err(unimplemented_at("`send` is", *span)),
-        Stmt::Expr(_span, e) => {
-            check_expr(e, None, fctx, mctx)?;
-            Ok(())
-        }
+        Stmt::Expr(_span, e) => Ok(TypedStmt {
+            kind: TypedStmtKind::ExprStmt(check_expr(e, None, fctx, mctx)?),
+        }),
         Stmt::ComptimeIf(c) => Err(unimplemented_at("`comptime if` is", c.span)),
         Stmt::ComptimeAssert(span, _, _) => Err(unimplemented_at("`comptime assert` is", *span)),
     }
 }
 
-fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
-    check_expr(&i.cond, Some(&Type::Bool), fctx, mctx)?;
-    check_stmts(&i.then_branch, fctx, mctx)?;
+fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    let cond = check_expr(&i.cond, Some(&Type::Bool), fctx, mctx)?;
+    let then_branch = check_stmts(&i.then_branch, fctx, mctx)?;
+    let mut elifs = Vec::with_capacity(i.elifs.len());
     for elif in &i.elifs {
-        check_expr(&elif.cond, Some(&Type::Bool), fctx, mctx)?;
-        check_stmts(&elif.body, fctx, mctx)?;
+        let ec = check_expr(&elif.cond, Some(&Type::Bool), fctx, mctx)?;
+        let eb = check_stmts(&elif.body, fctx, mctx)?;
+        elifs.push(TypedElif { cond: ec, body: eb });
     }
-    if let Some(b) = &i.else_branch {
-        check_stmts(b, fctx, mctx)?;
-    }
-    Ok(())
+    let else_branch = match &i.else_branch {
+        Some(b) => Some(check_stmts(b, fctx, mctx)?),
+        None => None,
+    };
+    Ok(TypedStmt {
+        kind: TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        },
+    })
 }
 
-fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
-    check_expr(&w.cond, Some(&Type::Bool), fctx, mctx)?;
-    check_stmts(&w.body, fctx, mctx)
+fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    let cond = check_expr(&w.cond, Some(&Type::Bool), fctx, mctx)?;
+    let body = check_stmts(&w.body, fctx, mctx)?;
+    Ok(TypedStmt {
+        kind: TypedStmtKind::While { cond, body },
+    })
 }
 
-fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
+fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let scrutinee = check_expr(&m.scrutinee, None, fctx, mctx)?;
+    let sty = scrutinee.ty.clone();
+    let mut arms = Vec::with_capacity(m.arms.len());
     for arm in &m.arms {
-        check_pattern(&arm.pattern, &scrutinee, fctx, mctx)?;
-        if let Some(g) = &arm.guard {
-            check_expr(g, Some(&Type::Bool), fctx, mctx)?;
-        }
-        check_stmts(&arm.body, fctx, mctx)?;
+        let pattern = check_pattern(&arm.pattern, &sty, fctx, mctx)?;
+        let guard = match &arm.guard {
+            Some(g) => Some(check_expr(g, Some(&Type::Bool), fctx, mctx)?),
+            None => None,
+        };
+        let body = check_stmts(&arm.body, fctx, mctx)?;
+        arms.push(TypedMatchArm {
+            pattern,
+            guard,
+            body,
+        });
     }
-    Ok(())
+    Ok(TypedStmt {
+        kind: TypedStmtKind::Match { scrutinee, arms },
+    })
 }
 
 fn check_return(
@@ -667,12 +798,14 @@ fn check_return(
     e: &Option<Expr>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<TypedStmt, SemaError> {
     match e {
         Some(expr) => {
             let ret_ty = fctx.ret_ty.clone();
-            check_expr(expr, Some(&ret_ty), fctx, mctx)?;
-            Ok(())
+            let te = check_expr(expr, Some(&ret_ty), fctx, mctx)?;
+            Ok(TypedStmt {
+                kind: TypedStmtKind::Return(Some(te)),
+            })
         }
         None => {
             if !types_eq(&fctx.ret_ty, &Type::Unit) {
@@ -684,18 +817,22 @@ fn check_return(
                     span,
                 ));
             }
-            Ok(())
+            Ok(TypedStmt {
+                kind: TypedStmtKind::Return(None),
+            })
         }
     }
 }
 
-fn check_assert(a: &AssertStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
-    check_expr(&a.cond, Some(&Type::Bool), fctx, mctx)?;
-    if let Some(msg) = &a.message {
-        match msg {
-            Expr::Str(..) => {
-                check_expr(msg, None, fctx, mctx)?;
-            }
+fn check_assert(
+    a: &AssertStmt,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedStmt, SemaError> {
+    let cond = check_expr(&a.cond, Some(&Type::Bool), fctx, mctx)?;
+    let message = match &a.message {
+        Some(msg) => match msg {
+            Expr::Str(..) => Some(check_expr(msg, None, fctx, mctx)?),
             Expr::FStr(_) => return Err(unimplemented_at("f-strings are", msg.span())),
             other => {
                 return Err(type_error(
@@ -703,39 +840,46 @@ fn check_assert(a: &AssertStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<()
                     other.span(),
                 ));
             }
-        }
-    }
-    Ok(())
+        },
+        None => None,
+    };
+    Ok(TypedStmt {
+        kind: TypedStmtKind::Assert { cond, message },
+    })
 }
 
-fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
+fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let raw_iterable: &Expr = match &f.iterable {
         Expr::Unary(_, UnaryOp::Take, inner) => inner.as_ref(),
         other => other,
     };
-    let elem_ty = match raw_iterable {
-        Expr::Range(rspan, from, to, _incl) => {
-            let fty = check_same_type_operands(from, to, fctx, mctx)?;
-            if !is_integer_scalar(&fty) {
+    let (elem_ty, iter) = match raw_iterable {
+        Expr::Range(rspan, from, to, incl) => {
+            let (ft, tt) = check_same_type_operands(from, to, fctx, mctx)?;
+            if !is_integer_scalar(&ft.ty) {
                 return Err(type_error(
                     format!(
                         "range endpoints must be an integer type, found `{}`",
-                        types::render_type(&fty)
+                        types::render_type(&ft.ty)
                     ),
                     *rspan,
                 ));
             }
-            fty
+            let ety = ft.ty.clone();
+            (ety, TypedForIter::Range(ft, tt, *incl))
         }
         other => {
-            let ty = check_expr(other, None, fctx, mctx)?;
-            match ty {
-                Type::Array(elem, _) => *elem,
+            let te = check_expr(other, None, fctx, mctx)?;
+            match &te.ty {
+                Type::Array(elem, _) => {
+                    let ety = (**elem).clone();
+                    (ety, TypedForIter::Expr(te))
+                }
                 _ => {
                     return Err(type_error(
                         format!(
                             "`for` requires a range or fixed array, found `{}`",
-                            types::render_type(&ty)
+                            types::render_type(&te.ty)
                         ),
                         other.span(),
                     ));
@@ -743,35 +887,54 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sema
             }
         }
     };
-    bind_local(fctx, &f.name, elem_ty, f.span)?;
-    check_stmts(&f.body, fctx, mctx)
+    bind_local(fctx, &f.name, elem_ty.clone(), f.span)?;
+    let body = check_stmts(&f.body, fctx, mctx)?;
+    Ok(TypedStmt {
+        kind: TypedStmtKind::For {
+            name: f.name.clone(),
+            elem_ty,
+            take_binding: f.take_binding,
+            iter,
+            body,
+        },
+    })
 }
 
-fn check_defer(d: &DeferStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
+fn check_defer(d: &DeferStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     if let Some((what, span)) = scan_defer_forbidden(&d.body) {
         return Err(type_error(format!("defer body cannot {what}"), span));
     }
-    match &d.body {
-        DeferBody::Expr(e) => {
-            check_expr(e, None, fctx, mctx)?;
-            Ok(())
-        }
-        DeferBody::Suite(stmts) => check_stmts(stmts, fctx, mctx),
-    }
+    let body = match &d.body {
+        DeferBody::Expr(e) => TypedDeferBody::Expr(Box::new(check_expr(e, None, fctx, mctx)?)),
+        DeferBody::Suite(stmts) => TypedDeferBody::Suite(check_stmts(stmts, fctx, mctx)?),
+    };
+    Ok(TypedStmt {
+        kind: TypedStmtKind::Defer(body),
+    })
 }
 
-fn check_assign(a: &AssignStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
+fn check_assign(
+    a: &AssignStmt,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedStmt, SemaError> {
     if matches!(a.value, Expr::Closure(_)) {
         return Err(type_error("closures cannot be stored".to_string(), a.span));
     }
     if let Expr::Name(_, name) = &a.target {
-        if let Some(existing) = fctx.lookup_innermost(name) {
-            if a.op == AssignOp::Assign {
-                check_expr(&a.value, Some(&existing), fctx, mctx)?;
+        if fctx.lookup_innermost(name).is_some() {
+            let target_t = check_expr(&a.target, None, fctx, mctx)?;
+            let value_t = if a.op == AssignOp::Assign {
+                check_expr(&a.value, Some(&target_t.ty), fctx, mctx)?
             } else {
-                check_compound_assign(a.op, &existing, &a.value, a.span, fctx, mctx)?;
-            }
-            return Ok(());
+                check_compound_assign(a.op, &target_t, &a.value, a.span, fctx, mctx)?
+            };
+            return Ok(TypedStmt {
+                kind: TypedStmtKind::Assign {
+                    target: target_t,
+                    value: value_t,
+                },
+            });
         }
         if a.op != AssignOp::Assign {
             return Err(type_error(
@@ -779,26 +942,41 @@ fn check_assign(a: &AssignStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<()
                 a.span,
             ));
         }
-        let ty = match &a.ty {
+        let (ty, value_t) = match &a.ty {
             Some(ann) => {
                 let resolved = mctx.resolve_type(ann, &fctx.local_pools)?;
-                check_expr(&a.value, Some(&resolved), fctx, mctx)?;
-                resolved
+                let vt = check_expr(&a.value, Some(&resolved), fctx, mctx)?;
+                (resolved, vt)
             }
-            None => check_expr(&a.value, None, fctx, mctx)?,
+            None => {
+                let vt = check_expr(&a.value, None, fctx, mctx)?;
+                let t = vt.ty.clone();
+                (t, vt)
+            }
         };
-        bind_local(fctx, name, ty, a.span)?;
-        return Ok(());
+        bind_local(fctx, name, ty.clone(), a.span)?;
+        return Ok(TypedStmt {
+            kind: TypedStmtKind::Let {
+                name: name.clone(),
+                ty,
+                value: value_t,
+            },
+        });
     }
     // A non-name target (field, index) already exists; its type comes
     // from evaluating the place itself.
-    let place_ty = check_expr(&a.target, None, fctx, mctx)?;
-    if a.op == AssignOp::Assign {
-        check_expr(&a.value, Some(&place_ty), fctx, mctx)?;
+    let target_t = check_expr(&a.target, None, fctx, mctx)?;
+    let value_t = if a.op == AssignOp::Assign {
+        check_expr(&a.value, Some(&target_t.ty), fctx, mctx)?
     } else {
-        check_compound_assign(a.op, &place_ty, &a.value, a.span, fctx, mctx)?;
-    }
-    Ok(())
+        check_compound_assign(a.op, &target_t, &a.value, a.span, fctx, mctx)?
+    };
+    Ok(TypedStmt {
+        kind: TypedStmtKind::Assign {
+            target: target_t,
+            value: value_t,
+        },
+    })
 }
 
 /// `a += b` desugars to `a = a.add(b)` (02-language.md §7.4): compute
@@ -807,15 +985,18 @@ fn check_assign(a: &AssignStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<()
 /// and require the result still fit back into `a`'s type (true
 /// automatically for every builtin scalar op; for a user-type operator
 /// method it holds exactly when the method's declared return type is the
-/// operand type, the 05§8 shape).
+/// operand type, the 05§8 shape). The returned `TypedExpr` is the fully
+/// desugared `target op value` computation — the typed tree's own
+/// `Assign` node has no separate "compound" shape (`typed.rs`'s own doc
+/// comment).
 fn check_compound_assign(
     op: AssignOp,
-    target_ty: &Type,
+    target: &TypedExpr,
     value: &Expr,
     span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<TypedExpr, SemaError> {
     let binop = match op {
         AssignOp::Add => BinOp::Add,
         AssignOp::Sub => BinOp::Sub,
@@ -829,20 +1010,20 @@ fn check_compound_assign(
         AssignOp::Shr => BinOp::Shr,
         AssignOp::Assign => unreachable!("Assign never reaches check_compound_assign"),
     };
-    check_expr(value, Some(target_ty), fctx, mctx)?;
-    let result_ty = check_binop_types(binop, target_ty.clone(), span, mctx)?;
-    if !types_eq(&result_ty, target_ty) {
+    let value_t = check_expr(value, Some(&target.ty), fctx, mctx)?;
+    let result = build_binop_expr(binop, target.clone(), value_t, span, mctx)?;
+    if !types_eq(&result.ty, &target.ty) {
         return Err(type_error(
             format!(
                 "`{}` would change the type of the target from `{}` to `{}`",
                 op.as_str(),
-                types::render_type(target_ty),
-                types::render_type(&result_ty)
+                types::render_type(&target.ty),
+                types::render_type(&result.ty)
             ),
             span,
         ));
     }
-    Ok(())
+    Ok(result)
 }
 
 // --- patterns (02-language.md §7.2) --------------------------------------
@@ -850,21 +1031,41 @@ fn check_compound_assign(
 /// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
 /// reuses this verbatim to bind a match arm's/`is`'s pattern names into
 /// the re-walked `FnCtx` exactly as this pass does, rather than
-/// reimplementing pattern-binding.
+/// reimplementing pattern-binding. Its `Ok` payload (plans/M3.md item A)
+/// is the typed pattern; every existing caller outside this file
+/// discards it via `?;` unbound, so nothing there changes.
 pub(crate) fn check_pattern(
     p: &Pattern,
     scrutinee: &Type,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<TypedPattern, SemaError> {
     match p {
-        Pattern::Wildcard(_) => Ok(()),
+        Pattern::Wildcard(_) => Ok(TypedPattern {
+            ty: scrutinee.clone(),
+            kind: TypedPatternKind::Wildcard,
+        }),
         Pattern::Literal(_span, expr) => {
-            check_expr(expr, Some(scrutinee), fctx, mctx)?;
-            Ok(())
+            let te = check_expr(expr, Some(scrutinee), fctx, mctx)?;
+            Ok(TypedPattern {
+                ty: scrutinee.clone(),
+                kind: TypedPatternKind::Literal(Box::new(te)),
+            })
         }
-        Pattern::Binding(span, name) => bind_local(fctx, name, scrutinee.clone(), *span),
-        Pattern::Take(_span, inner) => check_pattern(inner, scrutinee, fctx, mctx),
+        Pattern::Binding(span, name) => {
+            bind_local(fctx, name, scrutinee.clone(), *span)?;
+            Ok(TypedPattern {
+                ty: scrutinee.clone(),
+                kind: TypedPatternKind::Binding(name.clone()),
+            })
+        }
+        Pattern::Take(_span, inner) => {
+            let tp = check_pattern(inner, scrutinee, fctx, mctx)?;
+            Ok(TypedPattern {
+                ty: scrutinee.clone(),
+                kind: TypedPatternKind::Take(Box::new(tp)),
+            })
+        }
         Pattern::Variant {
             span,
             enum_name,
@@ -883,10 +1084,18 @@ pub(crate) fn check_pattern(
                     *span,
                 ));
             }
+            let mut typed_payload = Vec::with_capacity(payload.len());
             for (sp, ty) in payload.iter().zip(payload_types.iter()) {
-                check_pattern(sp, ty, fctx, mctx)?;
+                typed_payload.push(check_pattern(sp, ty, fctx, mctx)?);
             }
-            Ok(())
+            Ok(TypedPattern {
+                ty: scrutinee.clone(),
+                kind: TypedPatternKind::Variant {
+                    enum_name: resolved_enum_name(scrutinee),
+                    variant: variant.clone(),
+                    payload: typed_payload,
+                },
+            })
         }
         Pattern::Tuple(span, items) => {
             let Type::Tuple(elems) = scrutinee else {
@@ -908,10 +1117,14 @@ pub(crate) fn check_pattern(
                     *span,
                 ));
             }
+            let mut typed_items = Vec::with_capacity(items.len());
             for (sp, ty) in items.iter().zip(elems.iter()) {
-                check_pattern(sp, ty, fctx, mctx)?;
+                typed_items.push(check_pattern(sp, ty, fctx, mctx)?);
             }
-            Ok(())
+            Ok(TypedPattern {
+                ty: scrutinee.clone(),
+                kind: TypedPatternKind::Tuple(typed_items),
+            })
         }
         Pattern::Array(span, items) => {
             let Type::Array(elem, len_expr) = scrutinee else {
@@ -934,20 +1147,46 @@ pub(crate) fn check_pattern(
                     ));
                 }
             }
+            let mut typed_items = Vec::with_capacity(items.len());
             for sp in items {
-                check_pattern(sp, elem, fctx, mctx)?;
+                typed_items.push(check_pattern(sp, elem, fctx, mctx)?);
             }
-            Ok(())
+            Ok(TypedPattern {
+                ty: scrutinee.clone(),
+                kind: TypedPatternKind::Array(typed_items),
+            })
         }
         Pattern::Or(_span, alts) => {
             // Same-bindings-same-types across alternatives is item G's
             // job (exhaustiveness); each alternative is independently
             // well-formed against the scrutinee here.
+            let mut typed_alts = Vec::with_capacity(alts.len());
             for alt in alts {
-                check_pattern(alt, scrutinee, fctx, mctx)?;
+                typed_alts.push(check_pattern(alt, scrutinee, fctx, mctx)?);
             }
-            Ok(())
+            Ok(TypedPattern {
+                ty: scrutinee.clone(),
+                kind: TypedPatternKind::Or(typed_alts),
+            })
         }
+    }
+}
+
+/// Resolves a scrutinee's own enum name for the typed tree (`typed.rs`'s
+/// `EnumConstruct`/`Variant` payload): `"Option"`/`"Result"` for the two
+/// builtin sums, else a user enum's bare name. Only ever called after
+/// `variant_payload_types_for` has already restricted `ty` to one of
+/// these three shapes (or returned an error), so the fallthrough is
+/// unreachable, not a fail-closed case.
+fn resolved_enum_name(ty: &Type) -> String {
+    match ty {
+        Type::Option(_) => "Option".to_string(),
+        Type::Result(_, _) => "Result".to_string(),
+        Type::Named(name, _) => name.clone(),
+        other => unreachable!(
+            "resolved_enum_name: `{}` is not an enum-shaped type",
+            types::render_type(other)
+        ),
     }
 }
 
@@ -1067,9 +1306,10 @@ pub(crate) fn decl_variant_payload_types(dv: &types::DeclVariant) -> Vec<Type> {
 /// (`synth_expr`, which uses `expected` internally wherever the grammar
 /// needs it — literal defaulting, closures, `Some`/`Ok`/`Err`/leading-dot
 /// construction, array/tuple literals), then gates the result against
-/// `expected` when one was supplied. Always returns the actual type, so
-/// callers that need it (call-argument checking, `for`'s range endpoints,
-/// ...) get it back either way.
+/// `expected` when one was supplied. Always returns the typed node (which
+/// embeds the actual type, plans/M3.md item A), so callers that need just
+/// the type (call-argument checking, `for`'s range endpoints, ...) read
+/// `.ty` off it.
 /// Widened to `pub(crate)` (item G, matches.rs): this is the one function
 /// that pass reuses to synthesize an expression's type in a local
 /// context — the "dumbest workable route" plans/M2.md item G calls for,
@@ -1080,15 +1320,15 @@ pub(crate) fn check_expr(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     let actual = synth_expr(expr, expected, fctx, mctx)?;
     if let Some(exp) = expected {
-        if !types_eq(&actual, exp) {
+        if !types_eq(&actual.ty, exp) {
             return Err(type_error(
                 format!(
                     "expected `{}`, found `{}`",
                     types::render_type(exp),
-                    types::render_type(&actual)
+                    types::render_type(&actual.ty)
                 ),
                 expr.span(),
             ));
@@ -1102,21 +1342,38 @@ fn synth_expr(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     match expr {
         Expr::Int(span, text) => synth_int_literal(*span, text, expected),
-        Expr::Float(span, _text) => synth_float_literal(*span, expected),
-        Expr::Str(_span, _text) => Ok(Type::Static(Box::new(Type::Str))),
+        Expr::Float(span, text) => synth_float_literal(*span, text, expected),
+        Expr::Str(_span, text) => Ok(TypedExpr {
+            ty: Type::Static(Box::new(Type::Str)),
+            kind: TypedExprKind::Str(text.clone()),
+        }),
         Expr::BStr(span, text) => {
             let len = bstr_byte_len(text);
-            Ok(Type::Static(Box::new(Type::Bytes(Some(Box::new(
-                Expr::Int(*span, len.to_string()),
-            ))))))
+            let ty = Type::Static(Box::new(Type::Bytes(Some(Box::new(Expr::Int(
+                *span,
+                len.to_string(),
+            ))))));
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::BStr(text.clone()),
+            })
         }
-        Expr::Char(_span, _) => Ok(Type::Char),
+        Expr::Char(_span, text) => Ok(TypedExpr {
+            ty: Type::Char,
+            kind: TypedExprKind::Char(text.clone()),
+        }),
         Expr::FStr(f) => Err(unimplemented_at("f-strings are", f.span)),
-        Expr::Bool(_span, _) => Ok(Type::Bool),
-        Expr::Unit(_span) => Ok(Type::Unit),
+        Expr::Bool(_span, v) => Ok(TypedExpr {
+            ty: Type::Bool,
+            kind: TypedExprKind::Bool(*v),
+        }),
+        Expr::Unit(_span) => Ok(TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Unit,
+        }),
         Expr::Name(span, name) => synth_name(*span, name, expected, fctx, mctx),
         Expr::Field(base, span, name) => check_field_expr(base, *span, name, fctx, mctx),
         Expr::Index(base, span, args) => synth_index(base, *span, args, fctx, mctx),
@@ -1125,20 +1382,31 @@ fn synth_expr(
             check_unary_neg(inner, expected, *span, fctx, mctx)
         }
         Expr::Unary(span, UnaryOp::BitNot, inner) => {
-            let ty = check_expr(inner, expected, fctx, mctx)?;
-            if !is_integer_scalar(&ty) {
+            let it = check_expr(inner, expected, fctx, mctx)?;
+            if !is_integer_scalar(&it.ty) {
                 return Err(type_error(
                     format!(
                         "`~` requires an integer type, found `{}`",
-                        types::render_type(&ty)
+                        types::render_type(&it.ty)
                     ),
                     *span,
                 ));
             }
-            Ok(ty)
+            let ty = it.ty.clone();
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::BitNot(Box::new(it)),
+            })
         }
         Expr::Unary(span, UnaryOp::Await, _inner) => Err(unimplemented_at("await is", *span)),
-        Expr::Unary(_span, UnaryOp::Take, inner) => check_expr(inner, expected, fctx, mctx),
+        Expr::Unary(_span, UnaryOp::Take, inner) => {
+            let it = check_expr(inner, expected, fctx, mctx)?;
+            let ty = it.ty.clone();
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::Take(Box::new(it)),
+            })
+        }
         Expr::Try(span, inner) => check_try(*span, inner, fctx, mctx),
         Expr::Binary(span, op, l, r) => check_binary(*op, l, r, *span, fctx, mctx),
         Expr::Range(span, _from, _to, _incl) => Err(type_error(
@@ -1146,18 +1414,36 @@ fn synth_expr(
             *span,
         )),
         Expr::Is(_span, scrutinee, pattern) => {
-            let sty = check_expr(scrutinee, None, fctx, mctx)?;
-            check_pattern(pattern, &sty, fctx, mctx)?;
-            Ok(Type::Bool)
+            let st = check_expr(scrutinee, None, fctx, mctx)?;
+            let sty = st.ty.clone();
+            let pt = check_pattern(pattern, &sty, fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Bool,
+                kind: TypedExprKind::Is(Box::new(st), Box::new(pt)),
+            })
         }
         Expr::Not(_span, inner) => {
-            check_expr(inner, Some(&Type::Bool), fctx, mctx)?;
-            Ok(Type::Bool)
+            let it = check_expr(inner, Some(&Type::Bool), fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Bool,
+                kind: TypedExprKind::Not(Box::new(it)),
+            })
         }
-        Expr::And(_span, l, r) | Expr::Or(_span, l, r) => {
-            check_expr(l, Some(&Type::Bool), fctx, mctx)?;
-            check_expr(r, Some(&Type::Bool), fctx, mctx)?;
-            Ok(Type::Bool)
+        Expr::And(_span, l, r) => {
+            let lt = check_expr(l, Some(&Type::Bool), fctx, mctx)?;
+            let rt = check_expr(r, Some(&Type::Bool), fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Bool,
+                kind: TypedExprKind::And(Box::new(lt), Box::new(rt)),
+            })
+        }
+        Expr::Or(_span, l, r) => {
+            let lt = check_expr(l, Some(&Type::Bool), fctx, mctx)?;
+            let rt = check_expr(r, Some(&Type::Bool), fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Bool,
+                kind: TypedExprKind::Or(Box::new(lt), Box::new(rt)),
+            })
         }
         Expr::DotVariant(span, name, args) => {
             let Some(exp) = expected else {
@@ -1168,8 +1454,16 @@ fn synth_expr(
             };
             let exp = exp.clone();
             let payload_types = variant_payload_types_for(&exp, None, name, *span, mctx)?;
-            check_variant_args(&payload_types, args, *span, fctx, mctx)?;
-            Ok(exp)
+            let typed_args = check_variant_args(&payload_types, args, *span, fctx, mctx)?;
+            let enum_name = resolved_enum_name(&exp);
+            Ok(TypedExpr {
+                ty: exp,
+                kind: TypedExprKind::EnumConstruct {
+                    enum_name,
+                    variant: name.clone(),
+                    args: typed_args,
+                },
+            })
         }
         Expr::Closure(c) => check_closure(c, expected, fctx, mctx),
         Expr::Send(span, _inner) => Err(unimplemented_at("send is", *span)),
@@ -1178,45 +1472,65 @@ fn synth_expr(
     }
 }
 
-fn synth_int_literal(span: Span, text: &str, expected: Option<&Type>) -> Result<Type, SemaError> {
+fn synth_int_literal(
+    span: Span,
+    text: &str,
+    expected: Option<&Type>,
+) -> Result<TypedExpr, SemaError> {
     let value = parse_int_literal(text)
         .ok_or_else(|| type_error("invalid integer literal".to_string(), span))?;
-    match expected {
+    let ty = match expected {
         Some(t) if is_integer_scalar(t) => {
             check_int_range(value, t, span)?;
-            Ok(t.clone())
+            t.clone()
         }
-        Some(t) => Err(type_error(
-            format!(
-                "expected `{}`, found an integer literal",
-                types::render_type(t)
-            ),
-            span,
-        )),
+        Some(t) => {
+            return Err(type_error(
+                format!(
+                    "expected `{}`, found an integer literal",
+                    types::render_type(t)
+                ),
+                span,
+            ));
+        }
         None => {
             if value <= i64::MAX as i128 {
-                Ok(Type::I64)
+                Type::I64
             } else if value <= u64::MAX as i128 {
-                Ok(Type::U64)
+                Type::U64
             } else {
-                Err(type_error("integer literal out of range".to_string(), span))
+                return Err(type_error("integer literal out of range".to_string(), span));
             }
         }
-    }
+    };
+    Ok(TypedExpr {
+        ty,
+        kind: TypedExprKind::Int(text.to_string()),
+    })
 }
 
-fn synth_float_literal(span: Span, expected: Option<&Type>) -> Result<Type, SemaError> {
-    match expected {
-        Some(t) if is_float_scalar(t) => Ok(t.clone()),
-        Some(t) => Err(type_error(
-            format!(
-                "expected `{}`, found a float literal",
-                types::render_type(t)
-            ),
-            span,
-        )),
-        None => Ok(Type::F64),
-    }
+fn synth_float_literal(
+    span: Span,
+    text: &str,
+    expected: Option<&Type>,
+) -> Result<TypedExpr, SemaError> {
+    let ty = match expected {
+        Some(t) if is_float_scalar(t) => t.clone(),
+        Some(t) => {
+            return Err(type_error(
+                format!(
+                    "expected `{}`, found a float literal",
+                    types::render_type(t)
+                ),
+                span,
+            ));
+        }
+        None => Type::F64,
+    };
+    Ok(TypedExpr {
+        ty,
+        kind: TypedExprKind::Float(text.to_string()),
+    })
 }
 
 fn synth_name(
@@ -1225,25 +1539,41 @@ fn synth_name(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Some(ty) = fctx.lookup_local(name) {
-        return Ok(ty);
+        return Ok(TypedExpr {
+            ty,
+            kind: TypedExprKind::Local(name.to_string()),
+        });
     }
     if let Some(ty) = mctx.consts.get(name) {
-        return Ok(ty.clone());
+        return Ok(TypedExpr {
+            ty: ty.clone(),
+            kind: TypedExprKind::Const(name.to_string()),
+        });
     }
     if let Some(f) = mctx.fns.get(name) {
         if !f.decl.generics.is_empty() {
             return Err(unimplemented_at("generic instantiation is", span));
         }
-        return Ok(fn_value_type(&f.decl));
+        return Ok(TypedExpr {
+            ty: fn_value_type(&f.decl),
+            kind: TypedExprKind::FnRef(CalleeKey::Fn(name.to_string())),
+        });
     }
     if mctx.structs.contains_key(name) || mctx.enums.contains_key(name) {
         return Err(type_error(format!("`{name}` is a type, not a value"), span));
     }
     match name {
         "None" => match expected {
-            Some(t @ Type::Option(_)) => Ok(t.clone()),
+            Some(t @ Type::Option(_)) => Ok(TypedExpr {
+                ty: t.clone(),
+                kind: TypedExprKind::EnumConstruct {
+                    enum_name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    args: vec![],
+                },
+            }),
             _ => Err(type_error(
                 "cannot infer the type of `None` without context".to_string(),
                 span,
@@ -1278,7 +1608,7 @@ fn check_field_expr(
     name: &str,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Expr::Name(_, bname) = base {
         if fctx.lookup_local(bname).is_none() {
             if let Some(s) = mctx.structs.get(bname.as_str()) {
@@ -1286,7 +1616,11 @@ fn check_field_expr(
                     return Err(unimplemented_at("generic instantiation is", span));
                 }
                 if let Some((_, d)) = s.assoc_fn(name) {
-                    return Ok(fn_value_type(d));
+                    let key = CalleeKey::Method(bname.clone(), name.to_string());
+                    return Ok(TypedExpr {
+                        ty: fn_value_type(d),
+                        kind: TypedExprKind::FnRef(key),
+                    });
                 }
                 if s.has_member_named(name) {
                     return Err(type_error(
@@ -1305,7 +1639,14 @@ fn check_field_expr(
                 }
                 if let Some(dv) = e.variants.iter().find(|v| v.name == name) {
                     if matches!(dv.payload, DeclVariantPayload::None) {
-                        return Ok(Type::Named(e.name.clone(), vec![]));
+                        return Ok(TypedExpr {
+                            ty: Type::Named(e.name.clone(), vec![]),
+                            kind: TypedExprKind::EnumConstruct {
+                                enum_name: e.name.clone(),
+                                variant: name.to_string(),
+                                args: vec![],
+                            },
+                        });
                     }
                     return Err(type_error(
                         format!("variant `{name}` requires a payload"),
@@ -1319,7 +1660,8 @@ fn check_field_expr(
             }
         }
     }
-    let base_ty = unwrap_own(check_expr(base, None, fctx, mctx)?);
+    let base_t = check_expr(base, None, fctx, mctx)?;
+    let base_ty = unwrap_own(base_t.ty.clone());
     match &base_ty {
         Type::Named(sname, targs) => {
             // A generic instantiation's field (item H): substitute +
@@ -1339,7 +1681,10 @@ fn check_field_expr(
                 std::borrow::Cow::Owned(generics::instantiate_struct(mctx, sname, targs, span)?)
             };
             if let Some(ty) = s.field_ty(name) {
-                return Ok(ty);
+                return Ok(TypedExpr {
+                    ty,
+                    kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
+                });
             }
             if s.has_member_named(name) {
                 return Err(type_error(
@@ -1365,13 +1710,14 @@ fn synth_index(
     args: &[Expr],
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Expr::Name(_, n) = base {
         if mctx.structs.contains_key(n) || mctx.enums.contains_key(n) || mctx.fns.contains_key(n) {
             return Err(unimplemented_at("generic instantiation is", span));
         }
     }
-    let base_ty = unwrap_own(check_expr(base, None, fctx, mctx)?);
+    let base_t = check_expr(base, None, fctx, mctx)?;
+    let base_ty = unwrap_own(base_t.ty.clone());
     if args.len() != 1 {
         return Err(type_error(
             format!("indexing takes exactly one argument, found {}", args.len()),
@@ -1380,12 +1726,18 @@ fn synth_index(
     }
     match &base_ty {
         Type::Array(elem, _) => {
-            check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?;
-            Ok((**elem).clone())
+            let idx_t = check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: (**elem).clone(),
+                kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
+            })
         }
         Type::Bytes(_) => {
-            check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?;
-            Ok(Type::U8)
+            let idx_t = check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::U8,
+                kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
+            })
         }
         other => Err(type_error(
             format!("type `{}` cannot be indexed", types::render_type(other)),
@@ -1400,7 +1752,7 @@ fn synth_tuple(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Some(Type::Tuple(exp_elems)) = expected {
         if exp_elems.len() != items.len() {
             return Err(type_error(
@@ -1413,16 +1765,24 @@ fn synth_tuple(
             ));
         }
         let exp_elems = exp_elems.clone();
+        let mut typed_items = Vec::with_capacity(items.len());
         for (item, ety) in items.iter().zip(exp_elems.iter()) {
-            check_expr(item, Some(ety), fctx, mctx)?;
+            typed_items.push(check_expr(item, Some(ety), fctx, mctx)?);
         }
-        return Ok(Type::Tuple(exp_elems));
+        return Ok(TypedExpr {
+            ty: Type::Tuple(exp_elems),
+            kind: TypedExprKind::Tuple(typed_items),
+        });
     }
-    let mut elems = Vec::with_capacity(items.len());
+    let mut typed_items = Vec::with_capacity(items.len());
     for item in items {
-        elems.push(check_expr(item, None, fctx, mctx)?);
+        typed_items.push(check_expr(item, None, fctx, mctx)?);
     }
-    Ok(Type::Tuple(elems))
+    let elems = typed_items.iter().map(|t| t.ty.clone()).collect();
+    Ok(TypedExpr {
+        ty: Type::Tuple(elems),
+        kind: TypedExprKind::Tuple(typed_items),
+    })
 }
 
 fn synth_list(
@@ -1431,7 +1791,7 @@ fn synth_list(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Some(Type::Array(elem, len_expr)) = expected {
         let elem = (**elem).clone();
         let len_expr = len_expr.clone();
@@ -1443,10 +1803,14 @@ fn synth_list(
                 ));
             }
         }
+        let mut typed_items = Vec::with_capacity(items.len());
         for item in items {
-            check_expr(item, Some(&elem), fctx, mctx)?;
+            typed_items.push(check_expr(item, Some(&elem), fctx, mctx)?);
         }
-        return Ok(Type::Array(Box::new(elem), len_expr));
+        return Ok(TypedExpr {
+            ty: Type::Array(Box::new(elem), len_expr),
+            kind: TypedExprKind::List(typed_items),
+        });
     }
     if items.is_empty() {
         return Err(type_error(
@@ -1455,11 +1819,17 @@ fn synth_list(
         ));
     }
     let first = check_expr(&items[0], None, fctx, mctx)?;
+    let elem_ty = first.ty.clone();
+    let mut typed_items = Vec::with_capacity(items.len());
+    typed_items.push(first);
     for item in &items[1..] {
-        check_expr(item, Some(&first), fctx, mctx)?;
+        typed_items.push(check_expr(item, Some(&elem_ty), fctx, mctx)?);
     }
     let len = Expr::Int(span, items.len().to_string());
-    Ok(Type::Array(Box::new(first), Box::new(len)))
+    Ok(TypedExpr {
+        ty: Type::Array(Box::new(elem_ty), Box::new(len)),
+        kind: TypedExprKind::List(typed_items),
+    })
 }
 
 // --- unary `-`, binary operators (02-language.md §7.4, §8.2; 05-library.md §8) --
@@ -1657,40 +2027,61 @@ fn check_unary_neg(
     span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     match inner {
         Expr::Int(ispan, text) => {
             let raw = parse_int_literal(text)
                 .ok_or_else(|| type_error("invalid integer literal".to_string(), *ispan))?;
             let value = -raw;
-            match expected {
+            let ty = match expected {
                 Some(t) if is_integer_scalar(t) => {
                     check_int_range(value, t, *ispan)?;
-                    Ok(t.clone())
+                    t.clone()
                 }
-                Some(t) => Err(type_error(
-                    format!(
-                        "expected `{}`, found an integer literal",
-                        types::render_type(t)
-                    ),
-                    *ispan,
-                )),
+                Some(t) => {
+                    return Err(type_error(
+                        format!(
+                            "expected `{}`, found an integer literal",
+                            types::render_type(t)
+                        ),
+                        *ispan,
+                    ));
+                }
                 None => {
                     check_int_range(value, &Type::I64, *ispan)?;
-                    Ok(Type::I64)
+                    Type::I64
                 }
-            }
+            };
+            let literal = TypedExpr {
+                ty: ty.clone(),
+                kind: TypedExprKind::Int(text.clone()),
+            };
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::Neg(Box::new(literal)),
+            })
         }
-        Expr::Float(_, _) => synth_float_literal(inner.span(), expected),
+        Expr::Float(_, text) => {
+            let te = synth_float_literal(inner.span(), text, expected)?;
+            let ty = te.ty.clone();
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::Neg(Box::new(te)),
+            })
+        }
         _ => {
-            let ty = check_expr(inner, expected, fctx, mctx)?;
-            if (is_integer_scalar(&ty) && is_signed_scalar(&ty)) || is_float_scalar(&ty) {
-                Ok(ty)
+            let it = check_expr(inner, expected, fctx, mctx)?;
+            if (is_integer_scalar(&it.ty) && is_signed_scalar(&it.ty)) || is_float_scalar(&it.ty) {
+                let ty = it.ty.clone();
+                Ok(TypedExpr {
+                    ty,
+                    kind: TypedExprKind::Neg(Box::new(it)),
+                })
             } else {
                 Err(type_error(
                     format!(
                         "unary `-` requires a signed integer or float type, found `{}`",
-                        types::render_type(&ty)
+                        types::render_type(&it.ty)
                     ),
                     span,
                 ))
@@ -1706,9 +2097,9 @@ fn check_binary(
     span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
-    let ty = check_same_type_operands(l, r, fctx, mctx)?;
-    check_binop_types(op, ty, span, mctx)
+) -> Result<TypedExpr, SemaError> {
+    let (lt, rt) = check_same_type_operands(l, r, fctx, mctx)?;
+    build_binop_expr(op, lt, rt, span, mctx)
 }
 
 /// Checks two operands that must share one type (a binary operator's
@@ -1720,39 +2111,53 @@ fn check_binary(
 /// — so ordinary code with the literal on either side works the same
 /// way; only two bare literals together fall back to plain left-to-right
 /// (both then default identically, so it never matters which is first).
+/// Returns the typed pair in the *original* `(a, b)` order regardless of
+/// which side was synthesized first internally.
 fn check_same_type_operands(
     a: &Expr,
     b: &Expr,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
-    let (first, second) = if is_bare_numeric_literal(a) && !is_bare_numeric_literal(b) {
-        (b, a)
+) -> Result<(TypedExpr, TypedExpr), SemaError> {
+    if is_bare_numeric_literal(a) && !is_bare_numeric_literal(b) {
+        let bt = check_expr(b, None, fctx, mctx)?;
+        let at = check_expr(a, Some(&bt.ty), fctx, mctx)?;
+        Ok((at, bt))
     } else {
-        (a, b)
-    };
-    let ty = check_expr(first, None, fctx, mctx)?;
-    check_expr(second, Some(&ty), fctx, mctx)?;
-    Ok(ty)
+        let at = check_expr(a, None, fctx, mctx)?;
+        let bt = check_expr(b, Some(&at.ty), fctx, mctx)?;
+        Ok((at, bt))
+    }
 }
 
 pub(crate) fn is_bare_numeric_literal(e: &Expr) -> bool {
     matches!(e, Expr::Int(..) | Expr::Float(..))
 }
 
-/// Both operands already share `ty` by the time this runs
+/// Both operands already share a type by the time this runs
 /// (`check_binary` calls `check_same_type_operands`;
 /// `check_compound_assign` checks the value against the target's type).
-/// Builtin scalar ops never desugar (02-language.md §7.4); a user
+/// Builtin scalar ops never desugar (02-language.md §7.4): a user
 /// (`Named`) type's `+ - * / %` and `<` resolve to the matching 05§8
-/// method; everything else in the table (wrapping, shifts, bitwise) is
-/// core-scalar-only.
-fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Result<Type, SemaError> {
+/// method (`OpCall`, decision 1); everything else in the table
+/// (wrapping, shifts, bitwise, `==`/`!=`) is core-scalar-only and stays
+/// the primitive `Binary` node.
+fn build_binop_expr(
+    op: BinOp,
+    l: TypedExpr,
+    r: TypedExpr,
+    span: Span,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
     use BinOp::*;
+    let ty = l.ty.clone();
     match op {
         Add | Sub | Mul | Div | Rem => {
             if is_numeric_scalar(&ty) {
-                return Ok(ty);
+                return Ok(TypedExpr {
+                    ty,
+                    kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
+                });
             }
             if let Type::Named(name, targs) = &ty {
                 let method = match op {
@@ -1763,7 +2168,11 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
                     Rem => "remainder",
                     _ => unreachable!(),
                 };
-                return resolve_operator_method(name, targs, method, &ty, mctx, span);
+                let (ret_ty, key) = resolve_operator_method(name, targs, method, &ty, mctx, span)?;
+                return Ok(TypedExpr {
+                    ty: ret_ty,
+                    kind: TypedExprKind::OpCall(key, Box::new(l), Box::new(r)),
+                });
             }
             Err(type_error(
                 format!(
@@ -1776,7 +2185,10 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
         }
         AddW | SubW | MulW => {
             if is_integer_scalar(&ty) {
-                Ok(ty)
+                Ok(TypedExpr {
+                    ty,
+                    kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
+                })
             } else {
                 Err(type_error(
                     format!(
@@ -1789,7 +2201,10 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
         }
         Shl | Shr | BitAnd | BitOr | BitXor => {
             if is_integer_scalar(&ty) {
-                Ok(ty)
+                Ok(TypedExpr {
+                    ty,
+                    kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
+                })
             } else {
                 Err(type_error(
                     format!(
@@ -1803,18 +2218,25 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
         }
         Lt | Le | Gt | Ge => {
             if is_numeric_scalar(&ty) || matches!(ty, Type::Char) {
-                return Ok(Type::Bool);
+                return Ok(TypedExpr {
+                    ty: Type::Bool,
+                    kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
+                });
             }
             if let Type::Named(name, targs) = &ty {
                 if op == Lt {
-                    let ret = resolve_operator_method(name, targs, "less_than", &ty, mctx, span)?;
+                    let (ret, key) =
+                        resolve_operator_method(name, targs, "less_than", &ty, mctx, span)?;
                     if ret != Type::Bool {
                         return Err(type_error(
                             format!("`{name}.less_than` must return `bool`"),
                             span,
                         ));
                     }
-                    return Ok(Type::Bool);
+                    return Ok(TypedExpr {
+                        ty: Type::Bool,
+                        kind: TypedExprKind::OpCall(key, Box::new(l), Box::new(r)),
+                    });
                 }
                 return Err(unimplemented_at(
                     "derived comparisons (`<=`, `>`, `>=`) on a user type are",
@@ -1839,7 +2261,10 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
                     span,
                 ));
             }
-            Ok(Type::Bool)
+            Ok(TypedExpr {
+                ty: Type::Bool,
+                kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
+            })
         }
     }
 }
@@ -1870,12 +2295,13 @@ pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
 
 /// Resolves `<type-name>.<method>` as an operator-desugar target
 /// (05-library.md §8 shape: `fn <method>(read self, right: <Self>) ->
-/// R`), returning the method's declared result type `R`. `targs` is the
-/// operand's own (possibly empty) generic argument list (item H): a
-/// non-empty one substitutes + enqueues the concrete instantiation first
-/// (`generics::instantiate_struct`), so the shape check below runs
-/// against the concrete method exactly like it does for a non-generic
-/// operand.
+/// R`), returning the method's declared result type `R` and the callee
+/// key the typed tree's `OpCall` node carries (plans/M3.md item A):
+/// `targs` is the operand's own (possibly empty) generic argument list
+/// (item H): a non-empty one substitutes + enqueues the concrete
+/// instantiation first (`generics::instantiate_struct`), so the shape
+/// check below runs against the concrete method exactly like it does for
+/// a non-generic operand, and the key names that instantiation.
 fn resolve_operator_method(
     name: &str,
     targs: &[TypeArg],
@@ -1883,7 +2309,7 @@ fn resolve_operator_method(
     self_ty: &Type,
     mctx: &ModuleCtx,
     span: Span,
-) -> Result<Type, SemaError> {
+) -> Result<(Type, CalleeKey), SemaError> {
     let s = if targs.is_empty() {
         match mctx.structs.get(name) {
             Some(s) => std::borrow::Cow::Borrowed(s),
@@ -1924,7 +2350,15 @@ fn resolve_operator_method(
             span,
         ));
     }
-    Ok(d.ret.clone())
+    let key = if targs.is_empty() {
+        CalleeKey::Method(name.to_string(), method.to_string())
+    } else {
+        CalleeKey::MethodInstance(
+            generics::canonical_key(InstKind::Struct, name, targs),
+            method.to_string(),
+        )
+    };
+    Ok((d.ret.clone(), key))
 }
 
 // --- `?` (02-language.md §7.4, §8.2; 05-library.md §1) --------------------
@@ -1934,16 +2368,22 @@ fn check_try(
     inner: &Expr,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
-    let inner_ty = check_expr(inner, None, fctx, mctx)?;
-    match inner_ty {
+) -> Result<TypedExpr, SemaError> {
+    let inner_t = check_expr(inner, None, fctx, mctx)?;
+    match inner_t.ty.clone() {
         Type::Result(t_ok, t_err) => match fctx.ret_ty.clone() {
             Type::Result(_, ret_err) => {
                 if types_eq(&t_err, &ret_err) {
-                    Ok(*t_ok)
-                } else if let Some(conv_ret) = try_from_conversion(&t_err, &ret_err, mctx) {
+                    Ok(TypedExpr {
+                        ty: *t_ok,
+                        kind: TypedExprKind::Try(Box::new(inner_t), None),
+                    })
+                } else if let Some((conv_ret, key)) = try_from_conversion(&t_err, &ret_err, mctx) {
                     if types_eq(&conv_ret, &ret_err) {
-                        Ok(*t_ok)
+                        Ok(TypedExpr {
+                            ty: *t_ok,
+                            kind: TypedExprKind::Try(Box::new(inner_t), Some(key)),
+                        })
                     } else {
                         Err(type_error(
                             format!(
@@ -1971,7 +2411,10 @@ fn check_try(
             )),
         },
         Type::Option(t_inner) => match &fctx.ret_ty {
-            Type::Option(_) => Ok(*t_inner),
+            Type::Option(_) => Ok(TypedExpr {
+                ty: *t_inner,
+                kind: TypedExprKind::Try(Box::new(inner_t), None),
+            }),
             _ => Err(type_error(
                 "`?` on an `Option` requires an enclosing function returning `Option`".to_string(),
                 span,
@@ -1992,8 +2435,17 @@ fn check_try(
 /// (checked by the caller before this runs) or names a struct/enum
 /// declaring the conversion — a user-written associated `from(take
 /// source: E) -> Self`, or the equivalent `deriving(From)` generates
-/// (05-library.md §8) from its single field/payload.
-fn try_from_conversion(err_ty: &Type, target_ty: &Type, mctx: &ModuleCtx) -> Option<Type> {
+/// (05-library.md §8) from its single field/payload. Returns the
+/// conversion's return type plus the `<Target>.from`-shaped callee key
+/// (plans/M3.md item A) — the same key regardless of which of the two
+/// shapes produced it, since both desugar identically for a consumer of
+/// the typed tree (the evaluator, item B, special-cases the
+/// `deriving(From)` body's own synthesis, not this key).
+fn try_from_conversion(
+    err_ty: &Type,
+    target_ty: &Type,
+    mctx: &ModuleCtx,
+) -> Option<(Type, CalleeKey)> {
     let Type::Named(name, targs) = target_ty else {
         return None;
     };
@@ -2008,7 +2460,10 @@ fn try_from_conversion(err_ty: &Type, target_ty: &Type, mctx: &ModuleCtx) -> Opt
             });
             if let Some(ft) = field_ty {
                 if types_eq(&ft, err_ty) {
-                    return Some(target_ty.clone());
+                    return Some((
+                        target_ty.clone(),
+                        CalleeKey::Method(name.clone(), "from".to_string()),
+                    ));
                 }
             }
         }
@@ -2018,7 +2473,10 @@ fn try_from_conversion(err_ty: &Type, target_ty: &Type, mctx: &ModuleCtx) -> Opt
                 && d.params[0].mode == AccessMode::Take
                 && types_eq(&d.params[0].ty, err_ty);
             if shape_ok {
-                return Some(d.ret.clone());
+                return Some((
+                    d.ret.clone(),
+                    CalleeKey::Method(name.clone(), "from".to_string()),
+                ));
             }
         }
     }
@@ -2027,7 +2485,10 @@ fn try_from_conversion(err_ty: &Type, target_ty: &Type, mctx: &ModuleCtx) -> Opt
             if let Some(dv) = e.variants.first() {
                 if let Some(pt) = decl_variant_payload_types(dv).into_iter().next() {
                     if types_eq(&pt, err_ty) {
-                        return Some(target_ty.clone());
+                        return Some((
+                            target_ty.clone(),
+                            CalleeKey::Method(name.clone(), "from".to_string()),
+                        ));
                     }
                 }
             }
@@ -2043,7 +2504,7 @@ fn check_closure(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     let Some(Type::Fn(exp_params, exp_ret)) = expected.cloned() else {
         return Err(type_error(
             "a closure needs a known function type from its call-site context".to_string(),
@@ -2056,8 +2517,11 @@ fn check_closure(
     fctx.push_scope();
     let result = check_closure_body(c, &exp_params, &exp_ret, fctx, mctx);
     fctx.pop_scope();
-    result?;
-    Ok(Type::Fn(exp_params, exp_ret))
+    let (params, body) = result?;
+    Ok(TypedExpr {
+        ty: Type::Fn(exp_params, exp_ret),
+        kind: TypedExprKind::Closure { params, body },
+    })
 }
 
 fn check_closure_body(
@@ -2066,8 +2530,9 @@ fn check_closure_body(
     exp_ret: &Type,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
-    for (cp, (_mode, ety)) in c.params.iter().zip(exp_params.iter()) {
+) -> Result<(Vec<TypedClosureParam>, TypedClosureBody), SemaError> {
+    let mut typed_params = Vec::with_capacity(c.params.len());
+    for (cp, (mode, ety)) in c.params.iter().zip(exp_params.iter()) {
         let pty = match &cp.ty {
             Some(t) => {
                 let resolved = mctx.resolve_type(t, &fctx.local_pools)?;
@@ -2086,35 +2551,44 @@ fn check_closure_body(
             }
             None => ety.clone(),
         };
-        fctx.insert_local(cp.name.clone(), pty);
+        fctx.insert_local(cp.name.clone(), pty.clone());
+        typed_params.push(TypedClosureParam {
+            mode: *mode,
+            name: cp.name.clone(),
+            ty: pty,
+        });
     }
-    match &c.body {
+    let body = match &c.body {
         ClosureBody::Expr(e) => {
-            check_expr(e, Some(exp_ret), fctx, mctx)?;
+            let te = check_expr(e, Some(exp_ret), fctx, mctx)?;
+            TypedClosureBody::Expr(Box::new(te))
         }
         ClosureBody::Suite(stmts) => {
             let saved_ret = std::mem::replace(&mut fctx.ret_ty, exp_ret.clone());
             let r = check_stmts(stmts, fctx, mctx);
             fctx.ret_ty = saved_ret;
-            r?;
+            TypedClosureBody::Suite(r?)
         }
-    }
-    Ok(())
+    };
+    Ok((typed_params, body))
 }
 
 // --- calls: fn/method/associated-fn/init/struct-literal/enum-variant ----
 
 fn call_fn_value(
-    ty: Type,
+    callee: TypedExpr,
     args: &[Arg],
     span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
-    match ty {
+) -> Result<TypedExpr, SemaError> {
+    match callee.ty.clone() {
         Type::Fn(params, ret) => {
-            check_positional_args(&params, args, span, fctx, mctx)?;
-            Ok(*ret)
+            let typed_args = check_positional_args(&params, args, span, fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: *ret,
+                kind: TypedExprKind::CallValue(Box::new(callee), typed_args),
+            })
         }
         other => Err(type_error(
             format!("type `{}` is not callable", types::render_type(&other)),
@@ -2130,7 +2604,7 @@ fn check_call(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     match callee {
         Expr::Index(inner, ispan, targs) => {
             check_call_index(inner, *ispan, targs, args, span, fctx, mctx)
@@ -2140,8 +2614,8 @@ fn check_call(
             check_call_by_field(base, *fspan, name, span, args, fctx, mctx)
         }
         other => {
-            let ty = check_expr(other, None, fctx, mctx)?;
-            call_fn_value(ty, args, span, fctx, mctx)
+            let callee_t = check_expr(other, None, fctx, mctx)?;
+            call_fn_value(callee_t, args, span, fctx, mctx)
         }
     }
 }
@@ -2163,7 +2637,7 @@ fn check_call_index(
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Expr::Field(base, fspan, mname) = inner {
         if mname == "to" || mname == "checked_to" || mname == "truncate_to" {
             if targs.len() != 1 {
@@ -2172,12 +2646,12 @@ fn check_call_index(
                     ispan,
                 ));
             }
-            let base_ty = check_expr(base, None, fctx, mctx)?;
-            if !is_scalar(&base_ty) {
+            let base_t = check_expr(base, None, fctx, mctx)?;
+            if !is_scalar(&base_t.ty) {
                 return Err(type_error(
                     format!(
                         "`.{mname}` is only defined for scalar types, found `{}`",
-                        types::render_type(&base_ty)
+                        types::render_type(&base_t.ty)
                     ),
                     *fspan,
                 ));
@@ -2197,7 +2671,10 @@ fn check_call_index(
             let target = scalar_type_by_name_expr(&targs[0]).ok_or_else(|| {
                 type_error("`.to` target must be a scalar type".to_string(), ispan)
             })?;
-            return Ok(target);
+            return Ok(TypedExpr {
+                ty: target,
+                kind: TypedExprKind::ToScalar(Box::new(base_t)),
+            });
         }
         // `x.method[Args](...)`: a generic method call — item H's scope
         // boundary, documented above.
@@ -2209,8 +2686,27 @@ fn check_call_index(
                 if !fi.decl.generics.is_empty() {
                     let type_args = generics::resolve_call_targs(targs, mctx)?;
                     let fi = generics::instantiate_fn(mctx, name, &type_args, call_span)?;
-                    check_call_args(&fi.ast.params, &fi.decl.params, args, call_span, fctx, mctx)?;
-                    return Ok(fi.decl.ret);
+                    let typed_args = check_call_args(
+                        &fi.ast.params,
+                        &fi.decl.params,
+                        args,
+                        call_span,
+                        fctx,
+                        mctx,
+                    )?;
+                    let key = CalleeKey::FnInstance(generics::canonical_key(
+                        InstKind::Fn,
+                        name,
+                        &type_args,
+                    ));
+                    return Ok(TypedExpr {
+                        ty: fi.decl.ret,
+                        kind: TypedExprKind::Call {
+                            callee: key,
+                            receiver: None,
+                            args: typed_args,
+                        },
+                    });
                 }
             } else if let Some(si) = mctx.structs.get(name) {
                 if !si.decl.generics.is_empty() {
@@ -2262,13 +2758,20 @@ fn check_call_by_name(
     expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Some(ty) = fctx.lookup_local(name) {
-        return call_fn_value(ty, args, call_span, fctx, mctx);
+        let callee_t = TypedExpr {
+            ty,
+            kind: TypedExprKind::Local(name.to_string()),
+        };
+        return call_fn_value(callee_t, args, call_span, fctx, mctx);
     }
     if let Some(c) = mctx.consts.get(name) {
-        let ty = c.clone();
-        return call_fn_value(ty, args, call_span, fctx, mctx);
+        let callee_t = TypedExpr {
+            ty: c.clone(),
+            kind: TypedExprKind::Const(name.to_string()),
+        };
+        return call_fn_value(callee_t, args, call_span, fctx, mctx);
     }
     if let Some(f) = mctx.fns.get(name) {
         if !f.decl.generics.is_empty() {
@@ -2280,11 +2783,29 @@ fn check_call_by_name(
             // the parameter, per item 2.
             let type_args = generics::infer_fn_targs(f, args, fctx, mctx, call_span)?;
             let fi = generics::instantiate_fn(mctx, name, &type_args, call_span)?;
-            check_call_args(&fi.ast.params, &fi.decl.params, args, call_span, fctx, mctx)?;
-            return Ok(fi.decl.ret);
+            let typed_args =
+                check_call_args(&fi.ast.params, &fi.decl.params, args, call_span, fctx, mctx)?;
+            let key =
+                CalleeKey::FnInstance(generics::canonical_key(InstKind::Fn, name, &type_args));
+            return Ok(TypedExpr {
+                ty: fi.decl.ret,
+                kind: TypedExprKind::Call {
+                    callee: key,
+                    receiver: None,
+                    args: typed_args,
+                },
+            });
         }
-        check_call_args(&f.ast.params, &f.decl.params, args, call_span, fctx, mctx)?;
-        return Ok(f.decl.ret.clone());
+        let typed_args =
+            check_call_args(&f.ast.params, &f.decl.params, args, call_span, fctx, mctx)?;
+        return Ok(TypedExpr {
+            ty: f.decl.ret.clone(),
+            kind: TypedExprKind::Call {
+                callee: CalleeKey::Fn(name.to_string()),
+                receiver: None,
+                args: typed_args,
+            },
+        });
     }
     if let Some(s) = mctx.structs.get(name) {
         if !s.decl.generics.is_empty() {
@@ -2308,8 +2829,16 @@ fn check_call_by_name(
                 Some(Type::Option(inner)) => Some((**inner).clone()),
                 _ => None,
             };
-            let ity = check_expr(&args[0].value, inner_expected.as_ref(), fctx, mctx)?;
-            Ok(Type::Option(Box::new(ity)))
+            let it = check_expr(&args[0].value, inner_expected.as_ref(), fctx, mctx)?;
+            let ty = Type::Option(Box::new(it.ty.clone()));
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::EnumConstruct {
+                    enum_name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    args: vec![it],
+                },
+            })
         }
         "Ok" => {
             if args.len() != 1 {
@@ -2319,14 +2848,22 @@ fn check_call_by_name(
                 Some(Type::Result(t, e)) => (Some((**t).clone()), Some((**e).clone())),
                 _ => (None, None),
             };
-            let t_ty = check_expr(&args[0].value, t_expected.as_ref(), fctx, mctx)?;
+            let t_typed = check_expr(&args[0].value, t_expected.as_ref(), fctx, mctx)?;
             let e_ty = e_ty.ok_or_else(|| {
                 type_error(
                     "cannot infer the error type of `Ok(...)` without context".to_string(),
                     call_span,
                 )
             })?;
-            Ok(Type::Result(Box::new(t_ty), Box::new(e_ty)))
+            let ty = Type::Result(Box::new(t_typed.ty.clone()), Box::new(e_ty));
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::EnumConstruct {
+                    enum_name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    args: vec![t_typed],
+                },
+            })
         }
         "Err" => {
             if args.len() != 1 {
@@ -2336,26 +2873,37 @@ fn check_call_by_name(
                 Some(Type::Result(t, e)) => (Some((**t).clone()), Some((**e).clone())),
                 _ => (None, None),
             };
-            let e_ty = check_expr(&args[0].value, e_expected.as_ref(), fctx, mctx)?;
+            let e_typed = check_expr(&args[0].value, e_expected.as_ref(), fctx, mctx)?;
             let t_ty = t_ty_opt.ok_or_else(|| {
                 type_error(
                     "cannot infer the ok type of `Err(...)` without context".to_string(),
                     call_span,
                 )
             })?;
-            Ok(Type::Result(Box::new(t_ty), Box::new(e_ty)))
+            let ty = Type::Result(Box::new(t_ty), Box::new(e_typed.ty.clone()));
+            Ok(TypedExpr {
+                ty,
+                kind: TypedExprKind::EnumConstruct {
+                    enum_name: "Result".to_string(),
+                    variant: "Err".to_string(),
+                    args: vec![e_typed],
+                },
+            })
         }
         "panic" => {
             if args.len() != 1 {
                 return Err(arity_error(1, args.len(), call_span));
             }
-            check_expr(
+            let mt = check_expr(
                 &args[0].value,
                 Some(&Type::Static(Box::new(Type::Str))),
                 fctx,
                 mctx,
             )?;
-            Ok(Type::Never)
+            Ok(TypedExpr {
+                ty: Type::Never,
+                kind: TypedExprKind::Panic(Box::new(mt)),
+            })
         }
         _ => Err(type_error(format!("`{name}` is not callable"), call_span)),
     }
@@ -2369,7 +2917,7 @@ fn check_call_by_field(
     args: &[Arg],
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     if let Expr::Name(_, bname) = base {
         if fctx.lookup_local(bname).is_none() {
             if let Some(s) = mctx.structs.get(bname.as_str()) {
@@ -2380,8 +2928,17 @@ fn check_call_by_field(
                     if !d.generics.is_empty() {
                         return Err(unimplemented_at("generic instantiation is", call_span));
                     }
-                    check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
-                    return Ok(d.ret.clone());
+                    let typed_args =
+                        check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
+                    let key = CalleeKey::Method(bname.clone(), name.to_string());
+                    return Ok(TypedExpr {
+                        ty: d.ret.clone(),
+                        kind: TypedExprKind::Call {
+                            callee: key,
+                            receiver: None,
+                            args: typed_args,
+                        },
+                    });
                 }
                 return Err(type_error(
                     format!("type `{bname}` has no associated function `{name}`"),
@@ -2394,8 +2951,16 @@ fn check_call_by_field(
                 }
                 if let Some(dv) = e.variants.iter().find(|v| v.name == name) {
                     let payload_types = decl_variant_payload_types(dv);
-                    check_variant_args(&payload_types, args, call_span, fctx, mctx)?;
-                    return Ok(Type::Named(e.name.clone(), vec![]));
+                    let typed_args =
+                        check_variant_args(&payload_types, args, call_span, fctx, mctx)?;
+                    return Ok(TypedExpr {
+                        ty: Type::Named(e.name.clone(), vec![]),
+                        kind: TypedExprKind::EnumConstruct {
+                            enum_name: e.name.clone(),
+                            variant: name.to_string(),
+                            args: typed_args,
+                        },
+                    });
                 }
                 return Err(type_error(
                     format!("enum `{bname}` has no variant `{name}`"),
@@ -2404,7 +2969,8 @@ fn check_call_by_field(
             }
         }
     }
-    let base_ty = unwrap_own(check_expr(base, None, fctx, mctx)?);
+    let base_t = check_expr(base, None, fctx, mctx)?;
+    let base_ty = unwrap_own(base_t.ty.clone());
     match &base_ty {
         Type::Named(sname, targs) => {
             // A method call through a generic instantiation (item H):
@@ -2441,8 +3007,23 @@ fn check_call_by_field(
                 // boundary.
                 return Err(unimplemented_at("generic instantiation is", call_span));
             }
-            check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
-            Ok(d.ret.clone())
+            let typed_args = check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+            let key = if targs.is_empty() {
+                CalleeKey::Method(sname.clone(), name.to_string())
+            } else {
+                CalleeKey::MethodInstance(
+                    generics::canonical_key(InstKind::Struct, sname, targs),
+                    name.to_string(),
+                )
+            };
+            Ok(TypedExpr {
+                ty: d.ret.clone(),
+                kind: TypedExprKind::Call {
+                    callee: key,
+                    receiver: Some(Box::new(base_t)),
+                    args: typed_args,
+                },
+            })
         }
         other => {
             let type_name = types::render_type(other);
@@ -2463,7 +3044,7 @@ fn check_struct_construction(
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Type, SemaError> {
+) -> Result<TypedExpr, SemaError> {
     // Bug 1(b) fix: a construction's synthesized type must carry the
     // instantiation's own args (`Slot[u64, 2](...)` synthesizes
     // `Type::Named("Slot", [u64, 2])`, not a bare `Type::Named("Slot",
@@ -2475,32 +3056,65 @@ fn check_struct_construction(
     // the *result* type dropped the args.
     let self_ty = Type::Named(s.decl.name.clone(), targs.to_vec());
     if let Some((ia, id)) = s.init() {
-        check_call_args(&ia.params, &id.params, args, call_span, fctx, mctx)?;
-        return match &id.ret {
-            Type::Unit => Ok(self_ty),
-            Type::Result(ok, err) if **ok == Type::Unit => {
-                Ok(Type::Result(Box::new(self_ty), err.clone()))
-            }
-            _ => Err(unimplemented_at(
-                "a non-standard init return type is",
-                call_span,
-            )),
+        let typed_args = check_call_args(&ia.params, &id.params, args, call_span, fctx, mctx)?;
+        let key = if targs.is_empty() {
+            CalleeKey::Method(s.decl.name.clone(), "init".to_string())
+        } else {
+            CalleeKey::MethodInstance(
+                generics::canonical_key(InstKind::Struct, &s.decl.name, targs),
+                "init".to_string(),
+            )
         };
+        let ret_ty = match &id.ret {
+            Type::Unit => self_ty.clone(),
+            Type::Result(ok, err) if **ok == Type::Unit => {
+                Type::Result(Box::new(self_ty.clone()), err.clone())
+            }
+            _ => {
+                return Err(unimplemented_at(
+                    "a non-standard init return type is",
+                    call_span,
+                ));
+            }
+        };
+        // `init` has no receiver expression at the *call* site (there is
+        // no existing value to read `self` from yet — construction is
+        // what produces it), so the receiver slot stays empty; the
+        // callee key alone (`...".init"`) is what the evaluator (item B)
+        // will recognize as "allocate `Self`, then run this with the
+        // fresh value as `self`".
+        return Ok(TypedExpr {
+            ty: ret_ty,
+            kind: TypedExprKind::Call {
+                callee: key,
+                receiver: None,
+                args: typed_args,
+            },
+        });
     }
-    check_struct_literal(s, args, call_span, fctx, mctx)?;
-    Ok(self_ty)
+    let fields = check_struct_literal(s, args, call_span, fctx, mctx)?;
+    Ok(TypedExpr {
+        ty: self_ty,
+        kind: TypedExprKind::StructLiteral {
+            name: s.decl.name.clone(),
+            fields,
+        },
+    })
 }
 
 /// A struct without `init` builds from its named-field literal
 /// (02-language.md §7.1): every field exactly once unless defaulted,
-/// positional only for a one-field struct.
+/// positional only for a one-field struct. Returns only the explicitly
+/// supplied fields, declaration order (plans/M3.md item A) — an omitted,
+/// defaulted field is elided; its default lives once on
+/// `typed::TypedStruct::field_defaults`.
 fn check_struct_literal(
     s: &StructInfo,
     args: &[Arg],
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<Vec<(String, TypedExpr)>, SemaError> {
     let fields: Vec<(String, Type, bool)> = s
         .members()
         .filter_map(|(am, dm)| match (am, dm) {
@@ -2511,10 +3125,11 @@ fn check_struct_literal(
         })
         .collect();
     if fields.len() == 1 && args.len() == 1 && args[0].label.is_none() {
-        check_expr(&args[0].value, Some(&fields[0].1), fctx, mctx)?;
-        return Ok(());
+        let vt = check_expr(&args[0].value, Some(&fields[0].1), fctx, mctx)?;
+        return Ok(vec![(fields[0].0.clone(), vt)]);
     }
     let mut bound = vec![false; fields.len()];
+    let mut slots: Vec<Option<TypedExpr>> = (0..fields.len()).map(|_| None).collect();
     for a in args {
         let Some(label) = &a.label else {
             return Err(type_error(
@@ -2533,14 +3148,20 @@ fn check_struct_literal(
         }
         bound[idx] = true;
         let fty = fields[idx].1.clone();
-        check_expr(&a.value, Some(&fty), fctx, mctx)?;
+        let vt = check_expr(&a.value, Some(&fty), fctx, mctx)?;
+        slots[idx] = Some(vt);
     }
     for (i, (name, _, has_default)) in fields.iter().enumerate() {
         if !bound[i] && !has_default {
             return Err(type_error(format!("missing field `{name}`"), call_span));
         }
     }
-    Ok(())
+    let out = fields
+        .iter()
+        .zip(slots.into_iter())
+        .filter_map(|((name, _, _), v)| v.map(|vt| (name.clone(), vt)))
+        .collect();
+    Ok(out)
 }
 
 /// Arity + label checking shared by fn/method/init calls
@@ -2548,7 +3169,12 @@ fn check_struct_literal(
 /// label (looked up by name) or positionally (the next not-yet-bound
 /// parameter, left to right); every parameter must end up bound exactly
 /// once, unless it has a default. Access-mode markers on `args` are
-/// parsed but not validated here (item D's job).
+/// parsed but not validated here (item D's job). Returns one slot per
+/// declared parameter, in declaration order (plans/M3.md item A): `None`
+/// for a parameter this call left to its own stored default
+/// (`typed::TypedParam::default`, typed once on the callee's own
+/// declaration — never re-typed per call site, since a default may
+/// reference the callee's own `self`).
 fn check_call_args(
     ast_params: &[ast::Param],
     decl_params: &[DeclParam],
@@ -2556,8 +3182,9 @@ fn check_call_args(
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<Vec<Option<TypedExpr>>, SemaError> {
     let mut bound = vec![false; decl_params.len()];
+    let mut slots: Vec<Option<TypedExpr>> = (0..decl_params.len()).map(|_| None).collect();
     let mut cursor = 0usize;
     for a in args {
         let idx = match &a.label {
@@ -2590,7 +3217,8 @@ fn check_call_args(
         }
         bound[idx] = true;
         let pty = decl_params[idx].ty.clone();
-        check_expr(&a.value, Some(&pty), fctx, mctx)?;
+        let vt = check_expr(&a.value, Some(&pty), fctx, mctx)?;
+        slots[idx] = Some(vt);
     }
     for (i, p) in decl_params.iter().enumerate() {
         if !bound[i] && ast_params[i].default.is_none() {
@@ -2600,22 +3228,24 @@ fn check_call_args(
             ));
         }
     }
-    Ok(())
+    Ok(slots)
 }
 
 /// Positional-only arg checking against a raw `fn(...)`-typed value
 /// (a closure/named-function reference): unlike a real call, there are
-/// no parameter names to label against.
+/// no parameter names to label against, and a raw `fn` type carries no
+/// defaults — every slot is always explicit.
 fn check_positional_args(
     params: &[(AccessMode, Type)],
     args: &[Arg],
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<Vec<TypedExpr>, SemaError> {
     if args.len() != params.len() {
         return Err(arity_error(params.len(), args.len(), call_span));
     }
+    let mut out = Vec::with_capacity(args.len());
     for (a, (_mode, ty)) in args.iter().zip(params.iter()) {
         if a.label.is_some() {
             return Err(type_error(
@@ -2623,29 +3253,31 @@ fn check_positional_args(
                 a.span,
             ));
         }
-        check_expr(&a.value, Some(ty), fctx, mctx)?;
+        out.push(check_expr(&a.value, Some(ty), fctx, mctx)?);
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Enum variant construction (`Enum.Variant(...)`, leading-dot
 /// `.Variant(...)`): positional only, mirroring the ast's own note that
 /// pattern payloads "bind positionally regardless of whether the variant
-/// was declared with named fields" (02-language.md §7.2).
+/// was declared with named fields" (02-language.md §7.2). A variant's
+/// payload never has defaults, so every slot is always explicit.
 fn check_variant_args(
     payload: &[Type],
     args: &[Arg],
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+) -> Result<Vec<TypedExpr>, SemaError> {
     if args.len() != payload.len() {
         return Err(arity_error(payload.len(), args.len(), call_span));
     }
+    let mut out = Vec::with_capacity(args.len());
     for (a, ty) in args.iter().zip(payload.iter()) {
-        check_expr(&a.value, Some(ty), fctx, mctx)?;
+        out.push(check_expr(&a.value, Some(ty), fctx, mctx)?);
     }
-    Ok(())
+    Ok(out)
 }
 
 // --- the fail-closed set: defer's own `await`/`?` scan --------------------
@@ -2829,15 +3461,17 @@ mod tests {
         let span = Span::default();
         let small = synth_int_literal(span, "100", None).expect("fits i64");
         assert!(
-            matches!(small, Type::I64),
-            "a small unconstrained literal defaults to i64, found {small:?}"
+            matches!(small.ty, Type::I64),
+            "a small unconstrained literal defaults to i64, found {:?}",
+            small.ty
         );
 
         let only_u64 = (i64::MAX as i128 + 1).to_string();
         let ty = synth_int_literal(span, &only_u64, None).expect("fits u64 only");
         assert!(
-            matches!(ty, Type::U64),
-            "a literal beyond i64::MAX but within u64::MAX defaults to u64, found {ty:?}"
+            matches!(ty.ty, Type::U64),
+            "a literal beyond i64::MAX but within u64::MAX defaults to u64, found {:?}",
+            ty.ty
         );
 
         let too_big = (u64::MAX as i128 + 1).to_string();
@@ -2870,18 +3504,21 @@ mod tests {
     fn synth_float_literal_cases() {
         let span = Span::default();
         assert!(matches!(
-            synth_float_literal(span, Some(&Type::F32)),
-            Ok(Type::F32)
+            synth_float_literal(span, "1.0", Some(&Type::F32)),
+            Ok(TypedExpr { ty: Type::F32, .. })
         ));
         assert!(matches!(
-            synth_float_literal(span, Some(&Type::F64)),
-            Ok(Type::F64)
+            synth_float_literal(span, "1.0", Some(&Type::F64)),
+            Ok(TypedExpr { ty: Type::F64, .. })
         ));
         assert!(
-            synth_float_literal(span, Some(&Type::U8)).is_err(),
+            synth_float_literal(span, "1.0", Some(&Type::U8)).is_err(),
             "a float literal cannot check against a non-float expected type"
         );
-        assert!(matches!(synth_float_literal(span, None), Ok(Type::F64)));
+        assert!(matches!(
+            synth_float_literal(span, "1.0", None),
+            Ok(TypedExpr { ty: Type::F64, .. })
+        ));
     }
 
     /// The real M2 bug `types_eq`'s own doc comment describes: two

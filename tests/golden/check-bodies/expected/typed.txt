@@ -1,0 +1,328 @@
+Program
+  Fn name=apply_twice ret=u64
+    Param name=f mode=read ty=fn(read u64) -> u64
+    Param name=x mode=read ty=u64
+    Body
+      Return
+        CallValue ty=u64
+          Callee
+            Local name=f ty=fn(read u64) -> u64
+          CallValue ty=u64
+            Callee
+              Local name=f ty=fn(read u64) -> u64
+            Local name=x ty=u64
+  Fn name=build_one ret=Line
+    Param name=f mode=read ty=fn() -> Line
+    Body
+      Return
+        CallValue ty=Line
+          Callee
+            Local name=f ty=fn() -> Line
+  Fn name=checked ret=unit
+    Param name=x mode=read ty=u64
+    Body
+      Assert
+        Binary op=> ty=bool
+          Local name=x ty=u64
+          Int text=0 ty=u64
+      Assert
+        Binary op=< ty=bool
+          Local name=x ty=u64
+          Int text=1000 ty=u64
+        Str text="bounded" ty=Static[Str]
+  Fn name=classify ret=u64
+    Param name=x mode=read ty=Lookup
+    Body
+      If
+        Is ty=bool
+          Local name=x ty=Lookup
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+        Then
+          Return
+            Local name=value ty=u64
+      Return
+        Int text=0 ty=u64
+  Fn name=consume_array ret=u64
+    Param name=xs mode=take ty=[u64; 3]
+    Body
+      Let name=total ty=u64
+        Int text=0 ty=u64
+      For name=x elem_ty=u64 take=true
+        Local name=xs ty=[u64; 3]
+        Body
+          Assign
+            Local name=total ty=u64
+            Binary op=+ ty=u64
+              Local name=total ty=u64
+              Local name=x ty=u64
+      Return
+        Local name=total ty=u64
+  Fn name=convert ret=Result[u64, LoadError]
+    Param name=raw mode=read ty=u64
+    Body
+      Let name=value ty=u64
+        Try ty=u64
+          Call key=parse ty=Result[u64, LoadError]
+            Local name=raw ty=u64
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u64, LoadError]
+          Local name=value ty=u64
+  Fn name=convert_wrapped ret=Result[u64, WrapError]
+    Param name=raw mode=read ty=u64
+    Body
+      Let name=value ty=u64
+        Try ty=u64 conv=WrapError.from
+          Call key=parse ty=Result[u64, LoadError]
+            Local name=raw ty=u64
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u64, WrapError]
+          Local name=value ty=u64
+  Fn name=describe ret=u64
+    Param name=x mode=read ty=Lookup
+    Body
+      Match
+        Local name=x ty=Lookup
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+          Return
+            Local name=value ty=u64
+        Case
+          VariantPattern enum=Lookup variant=Absent ty=Lookup
+          Return
+            Int text=0 ty=u64
+  Fn name=double ret=u64
+    Param name=v mode=read ty=u64
+    Body
+      Return
+        Binary op=* ty=u64
+          Local name=v ty=u64
+          Int text=2 ty=u64
+  Fn name=double_positive ret=Option[i64]
+    Param name=xs mode=read ty=[i64; 3]
+    Body
+      Let name=value ty=i64
+        Try ty=i64
+          Call key=first_positive ty=Option[i64]
+            Local name=xs ty=[i64; 3]
+      Return
+        EnumConstruct enum=Option variant=Some ty=Option[i64]
+          Binary op=* ty=i64
+            Local name=value ty=i64
+            Int text=2 ty=i64
+  Fn name=first_positive ret=Option[i64]
+    Param name=xs mode=read ty=[i64; 3]
+    Body
+      For name=x elem_ty=i64
+        Local name=xs ty=[i64; 3]
+        Body
+          If
+            Binary op=> ty=bool
+              Local name=x ty=i64
+              Int text=0 ty=i64
+            Then
+              Return
+                EnumConstruct enum=Option variant=Some ty=Option[i64]
+                  Local name=x ty=i64
+      Return
+        EnumConstruct enum=Option variant=None ty=Option[i64]
+  Fn name=literal_defaults ret=i64
+    Body
+      Let name=small ty=i64
+        Int text=5 ty=i64
+      Let name=huge ty=u64
+        Int text=18446744073709551615 ty=u64
+      Return
+        Local name=small ty=i64
+  Fn name=make_found ret=Lookup
+    Param name=v mode=read ty=u64
+    Body
+      Return
+        EnumConstruct enum=Lookup variant=Found ty=Lookup
+          Local name=v ty=u64
+  Fn name=make_id ret=Id
+    Param name=v mode=read ty=u64
+    Body
+      Return
+        StructLiteral name=Id ty=Id
+          Field name=value
+            Local name=v ty=u64
+  Fn name=make_list ret=[u64; 3]
+    Param name=a mode=read ty=u64
+    Param name=b mode=read ty=u64
+    Param name=c mode=read ty=u64
+    Body
+      Return
+        List ty=[u64; 3]
+          Local name=a ty=u64
+          Local name=b ty=u64
+          Local name=c ty=u64
+  Fn name=make_meter ret=Meter
+    Param name=v mode=read ty=u64
+    Body
+      Return
+        Call key=Meter.init ty=Meter
+          Local name=v ty=u64
+  Fn name=make_pair ret=(u64, u64)
+    Param name=a mode=read ty=u64
+    Param name=b mode=read ty=u64
+    Body
+      Return
+        Tuple ty=(u64, u64)
+          Local name=a ty=u64
+          Local name=b ty=u64
+  Fn name=make_safe_meter ret=Result[SafeMeter, MeterError]
+    Param name=v mode=read ty=u64
+    Body
+      Return
+        Call key=SafeMeter.init ty=Result[SafeMeter, MeterError]
+          Local name=v ty=u64
+  Fn name=negative_defaults ret=i32
+    Body
+      Let name=neg ty=i8
+        Neg ty=i8
+          Int text=128 ty=i8
+      Return
+        Neg ty=i32
+          Int text=5 ty=i32
+  Fn name=parse ret=Result[u64, LoadError]
+    Param name=raw mode=read ty=u64
+    Body
+      If
+        Binary op=== ty=bool
+          Local name=raw ty=u64
+          Int text=0 ty=u64
+        Then
+          Return
+            EnumConstruct enum=Result variant=Err ty=Result[u64, LoadError]
+              EnumConstruct enum=LoadError variant=Bad ty=LoadError
+                Local name=raw ty=u64
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u64, LoadError]
+          Local name=raw ty=u64
+  Fn name=sum_array ret=u64
+    Param name=xs mode=read ty=[u64; 3]
+    Body
+      Let name=total ty=u64
+        Int text=0 ty=u64
+      For name=x elem_ty=u64
+        Local name=xs ty=[u64; 3]
+        Body
+          Assign
+            Local name=total ty=u64
+            Binary op=+ ty=u64
+              Local name=total ty=u64
+              Local name=x ty=u64
+      Return
+        Local name=total ty=u64
+  Fn name=sum_range ret=u64
+    Param name=n mode=read ty=u64
+    Body
+      Let name=total ty=u64
+        Int text=0 ty=u64
+      For name=i elem_ty=u64
+        Range inclusive=false
+          Int text=0 ty=u64
+          Local name=n ty=u64
+        Body
+          Assign
+            Local name=total ty=u64
+            Binary op=+ ty=u64
+              Local name=total ty=u64
+              Local name=i ty=u64
+      Return
+        Local name=total ty=u64
+  Fn name=use_associated_fn ret=Line
+    Body
+      Return
+        Call key=build_one ty=Line
+          FnRef key=Line.make_default ty=fn() -> Line
+  Fn name=use_closure ret=u64
+    Param name=x mode=read ty=u64
+    Body
+      Return
+        Call key=apply_twice ty=u64
+          Closure ty=fn(read u64) -> u64
+            ClosureParam name=v mode=read ty=u64
+            Binary op=* ty=u64
+              Local name=v ty=u64
+              Int text=2 ty=u64
+          Local name=x ty=u64
+  Fn name=use_named_fn ret=u64
+    Param name=x mode=read ty=u64
+    Body
+      Return
+        Call key=apply_twice ty=u64
+          FnRef key=double ty=fn(read u64) -> u64
+          Local name=x ty=u64
+  Fn name=with_cleanup ret=unit
+    Param name=c mode=mut ty=Counter
+    Body
+      Defer
+        Call key=Counter.increment ty=unit
+          Receiver
+            Local name=c ty=Counter
+          Int text=1 ty=u64
+      Call key=Counter.increment ty=unit
+        Receiver
+          Local name=c ty=Counter
+        Int text=2 ty=u64
+  Struct name=Counter
+    FieldDefault name=value
+      Int text=0 ty=u64
+    Method name=get ret=u64
+      Receiver mode=read ty=Counter
+      Body
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Counter
+    Method name=increment ret=unit
+      Receiver mode=mut ty=Counter
+      Param name=by mode=read ty=u64
+      Body
+        Assign
+          Field name=value ty=u64
+            Local name=self ty=Counter
+          Binary op=+ ty=u64
+            Field name=value ty=u64
+              Local name=self ty=Counter
+            Local name=by ty=u64
+  Struct name=Id
+  Struct name=Line
+    AssocFn name=make_default ret=Line
+      Body
+        Return
+          StructLiteral name=Line ty=Line
+            Field name=length
+              Int text=0 ty=u64
+  Struct name=Meter
+    Init ret=unit
+      Receiver mode=mut ty=Meter
+      Param name=value mode=read ty=u64
+      Body
+        Assign
+          Field name=value ty=u64
+            Local name=self ty=Meter
+          Local name=value ty=u64
+  Struct name=SafeMeter
+    Init ret=Result[unit, MeterError]
+      Receiver mode=mut ty=SafeMeter
+      Param name=value mode=read ty=u64
+      Body
+        If
+          Binary op=== ty=bool
+            Local name=value ty=u64
+            Int text=0 ty=u64
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[unit, MeterError]
+                EnumConstruct enum=MeterError variant=Invalid ty=MeterError
+                  Local name=value ty=u64
+        Assign
+          Field name=value ty=u64
+            Local name=self ty=SafeMeter
+          Local name=value ty=u64
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[unit, MeterError]
+            Unit ty=unit

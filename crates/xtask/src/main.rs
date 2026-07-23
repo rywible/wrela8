@@ -1201,11 +1201,18 @@ enum SemaOutcomeSummary {
     },
 }
 
-/// Runs `sema::check`/`sema::dump` on `module` and reduces the result to
-/// the fields `sema_outcomes_agree` compares.
+/// Runs `sema::check_typed`/`sema::dump_typed` on `module` and reduces the
+/// result to the fields `sema_outcomes_agree` compares. plans/M3.md
+/// decision 3: the typed-roundtrip oracle (`typed(x) == typed(pretty(parse(x)))`
+/// byte-for-byte) replaces the check-dump comparison this used to run —
+/// strictly stronger, same machinery (`check_typed` runs the identical
+/// pass pipeline `check` does, in the same order, so any `Err` it
+/// produces is byte-identical to what plain `check` would have; the `Ok`
+/// case now compares the full typed program instead of just the
+/// declaration-signature dump).
 fn sema_outcome_summary(module: &Module, path: &str) -> SemaOutcomeSummary {
-    match sema::check(module, path) {
-        Ok(()) => SemaOutcomeSummary::Ok(sema::dump(module)),
+    match sema::check_typed(module, path) {
+        Ok(program) => SemaOutcomeSummary::Ok(sema::dump_typed(&program)),
         Err(e) => SemaOutcomeSummary::Err {
             category: e.category,
             message: e.message,

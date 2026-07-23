@@ -254,9 +254,9 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sema
                 } else {
                     from.as_ref()
                 };
-            bodies::check_expr(first, None, fctx, mctx)?
+            bodies::check_expr(first, None, fctx, mctx)?.ty
         }
-        other => match bodies::check_expr(other, None, fctx, mctx)? {
+        other => match bodies::check_expr(other, None, fctx, mctx)?.ty {
             Type::Array(elem, _) => *elem,
             other_ty => other_ty, // unreachable given bodies already validated `for`.
         },
@@ -275,7 +275,7 @@ fn check_assign(a: &AssignStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<()
         // plain `=`, never a compound assign).
         let ty = match &a.ty {
             Some(ann) => mctx.resolve_type(ann, &fctx.local_pools)?,
-            None => bodies::check_expr(&a.value, None, fctx, mctx)?,
+            None => bodies::check_expr(&a.value, None, fctx, mctx)?.ty,
         };
         fctx.insert_local(name.clone(), ty);
         Ok(())
@@ -795,7 +795,7 @@ fn check_or_consistency(p: &Pattern, ty: &Type, mctx: &ModuleCtx) -> Result<(), 
 
 fn check_match_stmt(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
     walk_expr(&m.scrutinee, fctx, mctx)?;
-    let sty = bodies::check_expr(&m.scrutinee, None, fctx, mctx)?;
+    let sty = bodies::check_expr(&m.scrutinee, None, fctx, mctx)?.ty;
     let mut covered: Vec<RPat> = Vec::new();
     for arm in &m.arms {
         // Bind (and re-validate, harmlessly) the pattern first, exactly
@@ -893,7 +893,7 @@ fn walk_expr(e: &Expr, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaErr
         }
         Expr::Is(_, scrutinee, pattern) => {
             walk_expr(scrutinee, fctx, mctx)?;
-            let sty = bodies::check_expr(scrutinee, None, fctx, mctx)?;
+            let sty = bodies::check_expr(scrutinee, None, fctx, mctx)?.ty;
             bodies::check_pattern(pattern, &sty, fctx, mctx)?;
             check_is_pattern(pattern, &sty, mctx)
         }

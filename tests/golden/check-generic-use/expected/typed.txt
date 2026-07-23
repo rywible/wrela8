@@ -1,0 +1,46 @@
+Program
+  Fn name=construction_expected_type ret=Slot[u64, 2]
+    Body
+      Return
+        StructLiteral name=Slot ty=Slot[u64, 2]
+          Field name=items
+            List ty=[Option[u64]; 2]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+  Fn name=field_through_instance ret=Option[u64]
+    Body
+      Let name=slots ty=Slot[u64, 2]
+        StructLiteral name=Slot ty=Slot[u64, 2]
+          Field name=items
+            List ty=[Option[u64]; 2]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+      Let name=v ty=Option[u64]
+        Index ty=Option[u64]
+          Field name=items ty=[Option[u64]; 2]
+            Local name=slots ty=Slot[u64, 2]
+          Int text=0 ty=usize
+      Return
+        Local name=v ty=Option[u64]
+  Fn name=method_through_instance ret=Option[u64]
+    Body
+      Let name=slots ty=Slot[u64, 2]
+        StructLiteral name=Slot ty=Slot[u64, 2]
+          Field name=items
+            List ty=[Option[u64]; 2]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+      Return
+        Call key=struct:Slot[u64, 2].first ty=Option[u64]
+          Receiver
+            Local name=slots ty=Slot[u64, 2]
+  Instantiation key=struct:Slot[u64, 2]
+    Struct
+      Method name=first ret=Option[u64]
+        Receiver mode=read ty=Slot[u64, 2]
+        Body
+          Return
+            Index ty=Option[u64]
+              Field name=items ty=[Option[u64]; 2]
+                Local name=self ty=Slot[u64, 2]
+              Int text=0 ty=usize

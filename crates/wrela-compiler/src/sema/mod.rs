@@ -28,6 +28,7 @@ pub mod matches;
 pub mod paths;
 pub mod prelude;
 pub mod symbols;
+pub mod typed;
 pub mod types;
 
 use crate::syntax::ast::{Module, Span};
@@ -119,6 +120,35 @@ pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
     matches::check(module, &decl_items, &mctx)?;
     generics::check(module, &decl_items, &mctx, path)?;
     Ok(())
+}
+
+/// The `typed` stage's pipeline (plans/M3.md item A): the same frozen
+/// pass order `check` above runs, but this keeps `bodies::check`'s own
+/// typed-program output (decision 1) instead of discarding it, and folds
+/// in `generics::check`'s drained instantiation map afterward — every
+/// generic use *any* pass (`bodies`/`access`/`flow`/`matches`, each
+/// enqueuing into the same shared `mctx`) discovered ends up checked and
+/// typed exactly once. Diagnostics/behavior are identical to `check`
+/// above; this only additionally captures the checked program.
+pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, SemaError> {
+    let symtab = symbols::collect(module)?;
+    symbols::resolve(module, &symtab)?;
+    let decl_items = types::declare(module)?;
+    let mctx = bodies::build_module_ctx(module, &decl_items);
+    let mut program = bodies::check(module, &decl_items, &mctx)?;
+    access::check(module, &decl_items, &mctx)?;
+    flow::check(module, &decl_items, &mctx)?;
+    matches::check(module, &decl_items, &mctx)?;
+    program.instantiations = generics::check(module, &decl_items, &mctx, path)?;
+    Ok(program)
+}
+
+/// The `--stage=typed` dump (decision 2): delegates entirely to
+/// `typed::dump` — `mod.rs` only ever owns the stage wiring, never the
+/// dump's own text (mirrors how `dump` above delegates every declaration
+/// line to `types::render_items`).
+pub fn dump_typed(program: &typed::TypedProgram) -> String {
+    typed::dump(program)
 }
 
 /// The `check` stage's dump (decision 8): on success, `Module path=...`

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use wrela_compiler::sema;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check> [--timings] <file.wr>\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed> [--timings] <file.wr>\n       wrela version";
 
 /// Prints one `sema::SemaError` (decision 1's one-line diagnostic, or
 /// item H's one multi-line exception, decision 2): `extra_lines` is
@@ -185,6 +185,30 @@ fn dump(args: &[String]) -> ExitCode {
                 match parsed {
                     Ok(module) => match sema::check(&module, &path) {
                         Ok(()) => print!("{}", sema::dump(&module)),
+                        Err(e) => print_sema_error(&e),
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        "typed" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                // Sema (typed production included) has no phase timer of
+                // its own yet, exactly like the `check` stage above; its
+                // time folds into "dump".
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match sema::check_typed(&module, &path) {
+                        Ok(program) => print!("{}", sema::dump_typed(&program)),
                         Err(e) => print_sema_error(&e),
                     },
                     Err(e) => print_parse_error(&e),

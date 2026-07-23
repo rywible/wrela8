@@ -1,0 +1,161 @@
+Program
+  Fn name=scalars ret=u64
+    Param name=a mode=read ty=u64
+    Param name=b mode=read ty=u64
+    Param name=c mode=read ty=i32
+    Body
+      Let name=total ty=u64
+        Binary op=+ ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=- ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=* ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=/ ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=% ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=+% ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=-% ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=*% ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=<< ty=u64
+          Local name=a ty=u64
+          Int text=1 ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=>> ty=u64
+          Local name=a ty=u64
+          Int text=1 ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=& ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=| ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Assign
+        Local name=total ty=u64
+        Binary op=^ ty=u64
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Let name=flag ty=bool
+        Or ty=bool
+          Or ty=bool
+            And ty=bool
+              Binary op=< ty=bool
+                Local name=a ty=u64
+                Local name=b ty=u64
+              Binary op=<= ty=bool
+                Local name=b ty=u64
+                Local name=a ty=u64
+            Binary op=> ty=bool
+              Local name=a ty=u64
+              Local name=b ty=u64
+          Binary op=>= ty=bool
+            Local name=a ty=u64
+            Local name=b ty=u64
+      Let name=same ty=bool
+        Binary op=== ty=bool
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Let name=diff ty=bool
+        Binary op=!= ty=bool
+          Local name=a ty=u64
+          Local name=b ty=u64
+      Let name=neg ty=i32
+        Neg ty=i32
+          Local name=c ty=i32
+      Let name=inv ty=i32
+        BitNot ty=i32
+          Local name=c ty=i32
+      Return
+        Local name=total ty=u64
+  Fn name=vectors ret=Vector
+    Param name=v mode=read ty=Vector
+    Param name=w mode=read ty=Vector
+    Body
+      Let name=sum ty=Vector
+        Call key=Vector.add ty=Vector
+          Receiver
+            Local name=v ty=Vector
+          Local name=w ty=Vector
+      Assign
+        Local name=sum ty=Vector
+        OpCall key=Vector.add ty=Vector
+          Local name=v ty=Vector
+          Local name=w ty=Vector
+      Let name=less ty=bool
+        Call key=Vector.less_than ty=bool
+          Receiver
+            Local name=v ty=Vector
+          Local name=w ty=Vector
+      Assign
+        Local name=less ty=bool
+        OpCall key=Vector.less_than ty=bool
+          Local name=v ty=Vector
+          Local name=w ty=Vector
+      Let name=same ty=bool
+        Binary op=== ty=bool
+          Local name=v ty=Vector
+          Local name=w ty=Vector
+      Return
+        Local name=sum ty=Vector
+  Struct name=Vector
+    Method name=add ret=Vector
+      Receiver mode=read ty=Vector
+      Param name=right mode=read ty=Vector
+      Body
+        Return
+          StructLiteral name=Vector ty=Vector
+            Field name=x
+              Binary op=+ ty=i64
+                Field name=x ty=i64
+                  Local name=self ty=Vector
+                Field name=x ty=i64
+                  Local name=right ty=Vector
+            Field name=y
+              Binary op=+ ty=i64
+                Field name=y ty=i64
+                  Local name=self ty=Vector
+                Field name=y ty=i64
+                  Local name=right ty=Vector
+    Method name=less_than ret=bool
+      Receiver mode=read ty=Vector
+      Param name=right mode=read ty=Vector
+      Body
+        Return
+          Binary op=< ty=bool
+            Field name=x ty=i64
+              Local name=self ty=Vector
+            Field name=x ty=i64
+              Local name=right ty=Vector

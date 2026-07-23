@@ -1,0 +1,175 @@
+Program
+  Fn name=classify ret=u64
+    Param name=x mode=read ty=Lookup
+    Body
+      Match
+        Local name=x ty=Lookup
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+          Return
+            Local name=value ty=u64
+        Case
+          VariantPattern enum=Lookup variant=Absent ty=Lookup
+          Return
+            Int text=0 ty=u64
+        Case
+          VariantPattern enum=Lookup variant=Failed ty=Lookup
+            Binding name=code ty=u64
+          Return
+            Local name=code ty=u64
+  Fn name=classify_alt ret=u64
+    Param name=x mode=read ty=Lookup
+    Body
+      Match
+        Local name=x ty=Lookup
+        Case
+          OrPattern ty=Lookup
+            VariantPattern enum=Lookup variant=Absent ty=Lookup
+            VariantPattern enum=Lookup variant=Failed ty=Lookup
+              Wildcard ty=u64
+          Return
+            Int text=0 ty=u64
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+          Return
+            Local name=value ty=u64
+  Fn name=classify_bool ret=u64
+    Param name=b mode=read ty=bool
+    Body
+      Match
+        Local name=b ty=bool
+        Case
+          PatternLiteral ty=bool
+            Bool value=true ty=bool
+          Return
+            Int text=1 ty=u64
+        Case
+          PatternLiteral ty=bool
+            Bool value=false ty=bool
+          Return
+            Int text=0 ty=u64
+  Fn name=classify_guarded ret=u64
+    Param name=x mode=read ty=Lookup
+    Body
+      Match
+        Local name=x ty=Lookup
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+          Guard
+            Binary op=> ty=bool
+              Local name=value ty=u64
+              Int text=100 ty=u64
+          Return
+            Local name=value ty=u64
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+          Return
+            Binary op=* ty=u64
+              Local name=value ty=u64
+              Int text=2 ty=u64
+        Case
+          VariantPattern enum=Lookup variant=Absent ty=Lookup
+          Return
+            Int text=0 ty=u64
+        Case
+          VariantPattern enum=Lookup variant=Failed ty=Lookup
+            Wildcard ty=u64
+          Return
+            Int text=0 ty=u64
+  Fn name=classify_pair ret=u64
+    Param name=x mode=read ty=Lookup
+    Param name=y mode=read ty=bool
+    Body
+      Match
+        Tuple ty=(Lookup, bool)
+          Local name=x ty=Lookup
+          Local name=y ty=bool
+        Case
+          TuplePattern ty=(Lookup, bool)
+            VariantPattern enum=Lookup variant=Found ty=Lookup
+              Binding name=value ty=u64
+            PatternLiteral ty=bool
+              Bool value=true ty=bool
+          Return
+            Local name=value ty=u64
+        Case
+          TuplePattern ty=(Lookup, bool)
+            VariantPattern enum=Lookup variant=Found ty=Lookup
+              Binding name=value ty=u64
+            PatternLiteral ty=bool
+              Bool value=false ty=bool
+          Return
+            Binary op=* ty=u64
+              Local name=value ty=u64
+              Int text=2 ty=u64
+        Case
+          TuplePattern ty=(Lookup, bool)
+            VariantPattern enum=Lookup variant=Absent ty=Lookup
+            Wildcard ty=bool
+          Return
+            Int text=0 ty=u64
+        Case
+          TuplePattern ty=(Lookup, bool)
+            VariantPattern enum=Lookup variant=Failed ty=Lookup
+              Wildcard ty=u64
+            Wildcard ty=bool
+          Return
+            Int text=0 ty=u64
+  Fn name=classify_wildcard ret=u64
+    Param name=x mode=read ty=Lookup
+    Body
+      Match
+        Local name=x ty=Lookup
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+          Return
+            Local name=value ty=u64
+        Case
+          Wildcard ty=Lookup
+          Return
+            Int text=0 ty=u64
+  Fn name=describe_option ret=u64
+    Param name=x mode=read ty=Option[u64]
+    Body
+      Match
+        Local name=x ty=Option[u64]
+        Case
+          VariantPattern enum=Option variant=Some ty=Option[u64]
+            Binding name=value ty=u64
+          Return
+            Local name=value ty=u64
+        Case
+          VariantPattern enum=Option variant=None ty=Option[u64]
+          Return
+            Int text=0 ty=u64
+  Fn name=is_found ret=bool
+    Param name=x mode=read ty=Lookup
+    Body
+      If
+        Is ty=bool
+          Local name=x ty=Lookup
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Wildcard ty=u64
+        Then
+          Return
+            Bool value=true ty=bool
+      Return
+        Bool value=false ty=bool
+  Fn name=take_found ret=u64
+    Param name=x mode=read ty=Lookup
+    Body
+      If
+        Is ty=bool
+          Local name=x ty=Lookup
+          VariantPattern enum=Lookup variant=Found ty=Lookup
+            Binding name=value ty=u64
+        Then
+          Return
+            Local name=value ty=u64
+      Return
+        Int text=0 ty=u64

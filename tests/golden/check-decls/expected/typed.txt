@@ -1,0 +1,51 @@
+Program
+  Fn name=enqueue ret=unit
+    Param name=packet mode=read ty=own[Packets] Packet
+    Body
+      Pass
+  Fn name=fetch ret=Result[u64, ConfigError]
+    Param name=client mode=read ty=u64
+    Body
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u64, ConfigError]
+          Local name=client ty=u64
+  Fn name=hash ret=u64
+    Param name=data mode=read ty=Bytes
+    Body
+      Return
+        Int text=0 ty=u64
+  Struct name=Counter
+    FieldDefault name=value
+      Int text=0 ty=u64
+    Method name=get ret=u64
+      Receiver mode=read ty=Counter
+      Body
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Counter
+    Method name=increment ret=unit
+      Receiver mode=mut ty=Counter
+      Param name=by mode=read ty=u64
+      Body
+        Assign
+          Field name=value ty=u64
+            Local name=self ty=Counter
+          Binary op=+ ty=u64
+            Field name=value ty=u64
+              Local name=self ty=Counter
+            Local name=by ty=u64
+    Method name=peek ret=u64
+      Receiver mode=read ty=Counter
+      Body
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Counter
+  Struct name=Packet
+    Init ret=unit
+      Receiver mode=mut ty=Packet
+      Param name=size mode=read ty=u64
+      Body
+        Assign
+          Field name=size ty=u64
+            Local name=self ty=Packet
+          Local name=size ty=u64

@@ -809,7 +809,7 @@ fn walk_expr<'a>(
         }
         Expr::Is(_, scrutinee, pattern) => {
             walk_expr(scrutinee, state, fctx, wctx, dstack, loop_marker)?;
-            let sty = bodies::check_expr(scrutinee, None, fctx, wctx.mctx)?;
+            let sty = bodies::check_expr(scrutinee, None, fctx, wctx.mctx)?.ty;
             apply_pattern_move(scrutinee, pattern, state, fctx, wctx, scrutinee.span())?;
             bodies::check_pattern(pattern, &sty, fctx, wctx.mctx)?;
             seed_pattern_bindings(pattern, state);
@@ -1115,7 +1115,7 @@ fn walk_assign<'a>(
         if fctx.lookup_innermost(name).is_none() {
             let ty = match &a.ty {
                 Some(ann) => wctx.mctx.resolve_type(ann, &fctx.local_pools)?,
-                None => bodies::check_expr(&a.value, None, fctx, wctx.mctx)?,
+                None => bodies::check_expr(&a.value, None, fctx, wctx.mctx)?.ty,
             };
             fctx.insert_local(name.clone(), ty);
         }
@@ -1372,7 +1372,7 @@ fn walk_match<'a>(
 ) -> Result<Outcome, SemaError> {
     let mut entry = state.clone();
     walk_expr(&m.scrutinee, &mut entry, fctx, wctx, dstack, loop_marker)?;
-    let sty = bodies::check_expr(&m.scrutinee, None, fctx, wctx.mctx)?;
+    let sty = bodies::check_expr(&m.scrutinee, None, fctx, wctx.mctx)?.ty;
 
     let mut outcomes = Vec::new();
     for arm in &m.arms {
@@ -1492,9 +1492,9 @@ fn for_elem_type(f: &ForStmt, fctx: &mut FnCtx, wctx: &WCtx) -> Result<Type, Sem
                 } else {
                     (from.as_ref(), to.as_ref())
                 };
-            bodies::check_expr(first, None, fctx, wctx.mctx)
+            bodies::check_expr(first, None, fctx, wctx.mctx).map(|te| te.ty)
         }
-        other => match bodies::check_expr(other, None, fctx, wctx.mctx)? {
+        other => match bodies::check_expr(other, None, fctx, wctx.mctx)?.ty {
             Type::Array(elem, _) => Ok(*elem),
             other_ty => Ok(other_ty),
         },
