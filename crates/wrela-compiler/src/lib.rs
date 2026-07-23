@@ -24,5 +24,6 @@
 //! differential oracle (`cargo xtask diff-eval`): compiled code must agree
 //! with it on every pure program.
 
+pub mod eval;
 pub mod sema;
 pub mod syntax;
