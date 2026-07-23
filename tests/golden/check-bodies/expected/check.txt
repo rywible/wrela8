@@ -1,0 +1,51 @@
+Module path=examples.bodies
+  Enum Lookup data
+    variant Found(u64)
+    variant Absent
+  Struct Counter data
+    field value: u64
+    fn get(read self) -> u64
+    fn increment(mut self, by: read u64) -> unit
+  Enum LoadError data deriving(From)
+    variant Bad(u64)
+  Enum WrapError data deriving(From)
+    variant Inner(LoadError)
+  Fn parse(raw: read u64) -> Result[u64, LoadError]
+  Fn convert(raw: read u64) -> Result[u64, LoadError]
+  Fn convert_wrapped(raw: read u64) -> Result[u64, WrapError]
+  Fn first_positive(xs: read [i64; 3]) -> Option[i64]
+  Fn double_positive(xs: read [i64; 3]) -> Option[i64]
+  Fn classify(x: read Lookup) -> u64
+  Fn describe(x: read Lookup) -> u64
+  Fn make_found(v: read u64) -> Lookup
+  Fn sum_range(n: read u64) -> u64
+  Fn sum_array(xs: read [u64; 3]) -> u64
+  Fn consume_array(xs: take [u64; 3]) -> u64
+  Fn apply_twice(f: read fn(read u64) -> u64, x: read u64) -> u64
+  Fn use_closure(x: read u64) -> u64
+  Fn double(v: read u64) -> u64
+  Fn use_named_fn(x: read u64) -> u64
+  Struct Line data
+    field length: u64
+    fn make_default() -> Line
+  Fn build_one(f: read fn() -> Line) -> Line
+  Fn use_associated_fn() -> Line
+  Struct Id data
+    field value: u64
+  Fn make_id(v: read u64) -> Id
+  Struct Meter data
+    field value: u64
+    init(mut self, value: read u64) -> unit
+  Fn make_meter(v: read u64) -> Meter
+  Enum MeterError data deriving(From)
+    variant Invalid(u64)
+  Struct SafeMeter data
+    field value: u64
+    init(mut self, value: read u64) -> Result[unit, MeterError]
+  Fn make_safe_meter(v: read u64) -> Result[SafeMeter, MeterError]
+  Fn make_pair(a: read u64, b: read u64) -> (u64, u64)
+  Fn make_list(a: read u64, b: read u64, c: read u64) -> [u64; 3]
+  Fn literal_defaults() -> i64
+  Fn negative_defaults() -> i32
+  Fn checked(x: read u64) -> unit
+  Fn with_cleanup(c: mut Counter) -> unit

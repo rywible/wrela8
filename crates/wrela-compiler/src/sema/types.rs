@@ -233,7 +233,7 @@ pub enum DeclItem {
 /// see `resolve_type_arg`/`resolve_bytes_arg`) the identifier the grammar
 /// hands back for it.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum GenericKind {
+pub(crate) enum GenericKind {
     Type,
     Const,
 }
@@ -664,7 +664,7 @@ fn declare_enum(
 /// returns, array elements, tuple elements, generic arguments, `own`'s
 /// payload, a `fn(...)` type's own parameter types) resolves with it
 /// false, so elision cannot smuggle itself in one level down.
-fn resolve_type(
+pub(crate) fn resolve_type(
     ty: &ast::Type,
     shapes: &BTreeMap<String, usize>,
     module_pools: &BTreeSet<String>,

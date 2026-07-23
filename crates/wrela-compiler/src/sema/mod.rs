@@ -79,7 +79,8 @@ pub fn unimplemented_at(subject: &str, span: Span) -> SemaError {
 pub fn check(module: &Module) -> Result<(), SemaError> {
     let symtab = symbols::collect(module)?;
     symbols::resolve(module, &symtab)?;
-    types::declare(module)?;
+    let decl_items = types::declare(module)?;
+    bodies::check(module, &decl_items)?;
     Ok(())
 }
 

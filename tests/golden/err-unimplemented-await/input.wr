@@ -1,0 +1,8 @@
+module examples.err_unimplemented_await
+
+async fn fetch() -> u64:
+    return 1
+
+async fn broken() -> u64:
+    value = await fetch()
+    return value

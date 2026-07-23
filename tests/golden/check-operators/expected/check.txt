@@ -1,0 +1,8 @@
+Module path=examples.operators
+  Struct Vector data
+    field x: i64
+    field y: i64
+    fn add(read self, right: read Vector) -> Vector
+    fn less_than(read self, right: read Vector) -> bool
+  Fn scalars(a: read u64, b: read u64, c: read i32) -> u64
+  Fn vectors(v: read Vector, w: read Vector) -> Vector

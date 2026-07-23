@@ -1,0 +1,11 @@
+module examples.err_type_question
+
+enum FooError:
+    Bad
+
+fn inner() -> Result[u64, FooError]:
+    return Ok(1)
+
+fn broken() -> Result[u64, u64]:
+    value = inner()?
+    return Ok(value)

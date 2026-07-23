@@ -187,8 +187,22 @@ note = "`check` operates on one file (plans/M2.md decision 6); resolving an impo
 id = "sema.unimplemented.fail-closed"
 doc = "02-language.md#2"
 status = "test"
-tests = ["golden/err-unimplemented-import"]
-note = "the shared `error[unimplemented]: <subject> not checked yet at L:C` helper (plans/M2.md decision 7); item A's only user is `from ... import ...` (sema.names.imports); later items reuse the same helper for their own fail-closed constructs (comptime if/assert, f-strings, await/send/actor calls/with group/pool, @image bodies)"
+tests = ["golden/err-unimplemented-import", "golden/err-unimplemented-await"]
+note = "the shared `error[unimplemented]: <subject> not checked yet at L:C` helper (plans/M2.md decision 7); item A's only user is `from ... import ...` (sema.names.imports); item C adds `await`/`send`/`with`/f-strings/`comptime if`/`comptime assert`/`@image` bodies/generic instantiation/`checked_to`/`truncate_to` in bodies.rs (golden/err-unimplemented-await pins `await`); later items reuse the same helper for their own fail-closed constructs"
+
+[[clause]]
+id = "sema.types.bodies"
+doc = "02-language.md#8"
+status = "test"
+tests = ["golden/check-bodies", "golden/err-type-mismatch", "golden/err-type-cond", "golden/err-type-question", "golden/err-type-resource-eq"]
+note = "the body-typing pass (plans/M2.md item C, sema/bodies.rs): assignment introduction/reassignment (same type — `error[type]: expected \\`T\\`, found \\`U\\` at L:C`), unconstrained-literal defaulting (`i64` unless only `u64` fits, `f64`) with range-checking against an expected scalar type (including the combined-sign reading of a negated literal), `if`/`elif`/`while`/`assert` conditions typed as `bool`, `for` over ranges (equal integer endpoint types, a bare literal endpoint deferring to its concrete sibling) and fixed arrays (`take`-consuming form types the same as the lending form — move legality is items E/F), `return` checked against the declared return type (unit fns may fall off the end; exhaustive-return checking is item G's — not checked here), `assert`'s message required to be a text literal, struct/enum construction (named-field literal with defaults, positional one-field shorthand, `init`-bearing types, `Enum.Variant`/leading-dot construction, both fed by the same `types::declare` signatures), field access and calls (arity/label checking shared by fn/method/init/struct-literal/variant construction), closures typed structurally from their call-site's expected `fn` type only (never storable — assigning one to a local is `error[type]`), `?` on `Result`/`Option` with the one-hop `from` conversion (user-written or `deriving(From)`-generated), `match`/`is` pattern typing against the scrutinee (exhaustiveness is item G's), and the fail-closed set beyond imports (`await`, `send`, `with`, f-strings, `comptime if`/`comptime assert`, `@image` bodies, generic instantiation, `checked_to`/`truncate_to` — sema.unimplemented.fail-closed). A generic declaration's own body (struct, enum has none, fn/method) is skipped, not type-checked (item H); `Type`'s derived `PartialEq` compares the unevaluated length `Expr` array/`Bytes` embed span-and-all, so bodies.rs uses its own span-insensitive `types_eq` throughout instead (comparing a literal length by value, a bare name by name) — pinned by every array-parameter case in golden/check-bodies rather than a dedicated golden, since without it almost any array-typed call would spuriously mismatch"
+
+[[clause]]
+id = "sema.types.calls"
+doc = "02-language.md#5.1"
+status = "test"
+tests = ["golden/check-bodies", "golden/check-operators", "golden/err-type-arity", "golden/err-type-label"]
+note = "call checking (plans/M2.md item C): arity, each argument bound at most once — by label (looked up against the callee's parameter names) or positionally (the next not-yet-bound parameter) — a parameter with a default may be omitted, argument types checked against parameter types; access-mode markers on arguments are parsed but not validated (mirroring call-site markers against signatures is item D). Operator desugar (02-language.md §7.4, 05-library.md §8): builtin scalar `+ - * / %`, wrapping `+% -% *%`, shifts, bitwise, and comparisons never desugar (same-type operands; wrapping/shifts/bitwise integers only); a user (`Named`) type's `+ - * / %` and `<` resolve to the matching method, shape-checked (`read self`, one same-type param, `<`'s method must return `bool`); structural `==`/`!=` are generated for every data type — comparing a resource-classified type is `error[type]` (golden/err-type-resource-eq). Named functions and no-receiver associated functions are typed as `fn(...)` values so they can be passed where a matching function type is expected."
 
 # --- actors ---------------------------------------------------------------
 

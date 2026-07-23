@@ -1,0 +1,153 @@
+module examples.bodies
+
+pub enum Lookup:
+    Found(u64)
+    Absent
+
+pub struct Counter:
+    value: u64 = 0
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+    pub fn increment(mut self, by: u64):
+        self.value += by
+
+pub enum LoadError deriving(From):
+    Bad(u64)
+
+pub enum WrapError deriving(From):
+    Inner(LoadError)
+
+pub fn parse(raw: u64) -> Result[u64, LoadError]:
+    if raw == 0:
+        return Err(LoadError.Bad(raw))
+    return Ok(raw)
+
+pub fn convert(raw: u64) -> Result[u64, LoadError]:
+    value = parse(raw)?
+    return Ok(value)
+
+pub fn convert_wrapped(raw: u64) -> Result[u64, WrapError]:
+    value = parse(raw)?
+    return Ok(value)
+
+pub fn first_positive(xs: [i64; 3]) -> Option[i64]:
+    for x in xs:
+        if x > 0:
+            return Some(x)
+    return None
+
+pub fn double_positive(xs: [i64; 3]) -> Option[i64]:
+    value = first_positive(xs)?
+    return Some(value * 2)
+
+pub fn classify(x: Lookup) -> u64:
+    if x is .Found(value):
+        return value
+    return 0
+
+pub fn describe(x: Lookup) -> u64:
+    match x:
+        case .Found(value):
+            return value
+        case .Absent:
+            return 0
+
+pub fn make_found(v: u64) -> Lookup:
+    return .Found(v)
+
+pub fn sum_range(n: u64) -> u64:
+    total: u64 = 0
+    for i in 0 .. n:
+        total += i
+    return total
+
+pub fn sum_array(xs: [u64; 3]) -> u64:
+    total: u64 = 0
+    for x in xs:
+        total += x
+    return total
+
+pub fn consume_array(take xs: [u64; 3]) -> u64:
+    total: u64 = 0
+    for take x in take xs:
+        total += x
+    return total
+
+pub fn apply_twice(f: fn(u64) -> u64, x: u64) -> u64:
+    return f(f(x))
+
+pub fn use_closure(x: u64) -> u64:
+    return apply_twice(|v: u64| v * 2, x)
+
+pub fn double(v: u64) -> u64:
+    return v * 2
+
+pub fn use_named_fn(x: u64) -> u64:
+    return apply_twice(double, x)
+
+pub struct Line:
+    length: u64
+
+    pub fn make_default() -> Line:
+        return Line(length=0)
+
+pub fn build_one(f: fn() -> Line) -> Line:
+    return f()
+
+pub fn use_associated_fn() -> Line:
+    return build_one(Line.make_default)
+
+pub struct Id:
+    value: u64
+
+pub fn make_id(v: u64) -> Id:
+    return Id(v)
+
+pub struct Meter:
+    value: u64
+
+    init(mut self, value: u64):
+        self.value = value
+
+pub fn make_meter(v: u64) -> Meter:
+    return Meter(value=v)
+
+pub enum MeterError deriving(From):
+    Invalid(u64)
+
+pub struct SafeMeter:
+    value: u64
+
+    init(mut self, value: u64) -> Result[unit, MeterError]:
+        if value == 0:
+            return Err(MeterError.Invalid(value))
+        self.value = value
+        return Ok(unit)
+
+pub fn make_safe_meter(v: u64) -> Result[SafeMeter, MeterError]:
+    return SafeMeter(value=v)
+
+pub fn make_pair(a: u64, b: u64) -> (u64, u64):
+    return (a, b)
+
+pub fn make_list(a: u64, b: u64, c: u64) -> [u64; 3]:
+    return [a, b, c]
+
+pub fn literal_defaults() -> i64:
+    small = 5
+    huge = 18446744073709551615
+    return small
+
+pub fn negative_defaults() -> i32:
+    neg: i8 = -128
+    return -5
+
+pub fn checked(x: u64):
+    assert x > 0
+    assert x < 1000, "bounded"
+
+pub fn with_cleanup(mut c: Counter):
+    defer c.increment(1)
+    c.increment(2)

@@ -1,0 +1,6 @@
+module examples.err_type_mismatch
+
+fn broken() -> u64:
+    x = 1
+    x = true
+    return x

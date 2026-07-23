@@ -1,0 +1,1 @@
+error[type]: `?` cannot convert error type `FooError` to `u64` at 10:20

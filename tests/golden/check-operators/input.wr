@@ -1,0 +1,40 @@
+module examples.operators
+
+pub struct Vector:
+    x: i64
+    y: i64
+
+    pub fn add(read self, right: Vector) -> Vector:
+        return Vector(x=self.x + right.x, y=self.y + right.y)
+
+    pub fn less_than(read self, right: Vector) -> bool:
+        return self.x < right.x
+
+pub fn scalars(a: u64, b: u64, c: i32) -> u64:
+    total = a + b
+    total = a - b
+    total = a * b
+    total = a / b
+    total = a % b
+    total = a +% b
+    total = a -% b
+    total = a *% b
+    total = a << 1
+    total = a >> 1
+    total = a & b
+    total = a | b
+    total = a ^ b
+    flag = a < b and b <= a or a > b or a >= b
+    same = a == b
+    diff = a != b
+    neg = -c
+    inv = ~c
+    return total
+
+pub fn vectors(v: Vector, w: Vector) -> Vector:
+    sum = v.add(w)
+    sum = v + w
+    less = v.less_than(w)
+    less = v < w
+    same = v == w
+    return sum

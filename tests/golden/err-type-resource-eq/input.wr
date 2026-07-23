@@ -1,0 +1,7 @@
+module examples.err_type_resource_eq
+
+resource struct Token:
+    id: u64
+
+fn broken(a: Token, b: Token) -> bool:
+    return a == b
