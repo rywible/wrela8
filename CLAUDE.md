@@ -29,6 +29,12 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
   the commit.
 - `cargo xtask corpus` — every ```wrela block in the docs must lex (and,
   from M1, parse). The docs are test inputs; drift is a failure.
+- `cargo xtask fuzz [lexer|parser] [--iters N] [--seed S]` — deterministic
+  in-tree fuzzer (plans/M1.md items B/E), no external engine. `lexer` is
+  live: seeded splitmix64, random bytes + corpus mutation, checked for
+  panics/invariants every iteration; bare `fuzz` runs it at the deep
+  default (200_000 iterations); a smoke budget is wired into `check`.
+  `parser` fails closed until item E.
 - `cargo xtask ledger` — validate spec coverage, list gaps.
 - `cargo xtask repro` / `cargo xtask diff-eval` — determinism and
   evaluator-vs-backend oracles; they fail closed until implemented and

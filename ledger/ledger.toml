@@ -67,6 +67,13 @@ status = "test"
 tests = ["golden/lex-fstring"]
 note = "{{ and }} are literal braces; a single { opens an interpolation extent with balanced braces; interior expression is not lexed"
 
+[[clause]]
+id = "syntax.lexer.no-panics"
+doc = "02-language.md#1"
+status = "test"
+tests = ["xtask:fuzz"]
+note = "cargo xtask fuzz lexer: seeded deterministic byte-fuzzing + corpus mutation; never panics, INDENT/DEDENT balance, Eof-terminated, monotonic lines, deterministic; 200_000-iteration deep run clean across 12 seeds, smoke budget wired into xtask check"
+
 # --- value model ----------------------------------------------------------
 
 [[clause]]
