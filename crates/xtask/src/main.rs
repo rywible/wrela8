@@ -12,8 +12,8 @@
 //!              `check`.
 //!   roundtrip  pretty-print every parseable corpus entry and ast-* golden
 //!              input, reparse it, and compare the two AST dumps (spans
-//!              stripped) — the parser's `diff-eval` (plans/M1.md item E);
-//!              fails closed until the pretty-printer lands.
+//!              stripped) — the parser's `diff-eval` (plans/M1.md item E).
+//!              Wired into `check`, after `corpus`.
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
 //!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
@@ -33,6 +33,7 @@ use std::process::{Command, ExitCode};
 
 use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
 use wrela_compiler::syntax::parser::{self, Parsed};
+use wrela_compiler::syntax::printer;
 
 fn root() -> PathBuf {
     // crates/xtask -> repo root
@@ -113,6 +114,7 @@ fn check() -> Result<(), String> {
     corpus()?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
+    roundtrip()?;
     ledger()?;
     println!("xtask check: ok");
     Ok(())
@@ -972,14 +974,178 @@ fn golden(update: bool) -> Result<(), String> {
 
 // --- roundtrip --------------------------------------------------------
 //
-// plans/M1.md item E's second oracle: TODO (Part 2) — pretty-printer not
-// implemented yet.
+// plans/M1.md item E's second oracle, the parser's `diff-eval`: for every
+// corpus entry that parses (same `...`-fragment skip rule as `corpus`)
+// and every `ast-*` golden's `input.wr`, parse -> pretty-print -> reparse
+// -> compare the two AST dumps with spans stripped (spans necessarily
+// differ: the pretty-printed text is laid out differently from the
+// original source, so only the tree shape is being compared). Any
+// mismatch prints both dumps' first divergence plus the pretty-printed
+// text that produced it, for direct debugging.
+
+enum RoundtripResult {
+    Checked,
+    Skipped,
+    Mismatch(String),
+}
 
 fn roundtrip() -> Result<(), String> {
-    fail_closed(
-        "roundtrip",
-        "requires the pretty-printer (plans/M1.md item E, Part 2 — not implemented yet)",
-    )
+    let (blocks, failures) = extract_doc_blocks()?;
+    if let Some(f) = failures.first() {
+        return Err(format!("roundtrip: corpus is broken, fix it first: {f}"));
+    }
+    let examples = extract_example_files()?;
+    let mut checked = 0usize;
+    let mut skipped = 0usize;
+    let mut mismatches = Vec::new();
+
+    for b in blocks.into_iter().chain(examples) {
+        if b.body.contains("...") {
+            skipped += 1;
+            continue;
+        }
+        match roundtrip_one(&b.name, &b.body) {
+            RoundtripResult::Checked => checked += 1,
+            RoundtripResult::Skipped => skipped += 1,
+            RoundtripResult::Mismatch(msg) => mismatches.push(msg),
+        }
+    }
+
+    let golden_dir = root().join("tests/golden");
+    let mut ast_dirs: Vec<_> = std::fs::read_dir(&golden_dir)
+        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("ast-"))
+        })
+        .collect();
+    ast_dirs.sort();
+    for dir in ast_dirs {
+        let input = dir.join("input.wr");
+        if !input.exists() {
+            continue;
+        }
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("ast-golden")
+            .to_string();
+        let body = std::fs::read_to_string(&input)
+            .map_err(|e| format!("read {}: {e}", input.display()))?;
+        match roundtrip_one(&name, &body) {
+            RoundtripResult::Checked => checked += 1,
+            RoundtripResult::Skipped => skipped += 1,
+            RoundtripResult::Mismatch(msg) => mismatches.push(msg),
+        }
+    }
+
+    if mismatches.is_empty() {
+        println!("roundtrip: {checked} entry(ies) ok, {skipped} skipped (fragment or parse error)");
+        Ok(())
+    } else {
+        for m in &mismatches {
+            eprintln!("{m}\n");
+        }
+        Err(format!("roundtrip: {} mismatch(es)", mismatches.len()))
+    }
+}
+
+/// One entry's parse -> pretty -> reparse -> compare cycle. Entries that
+/// don't lex/parse at all are `Skipped` (that's `corpus`'s job to catch,
+/// not roundtrip's) rather than treated as a failure here.
+fn roundtrip_one(name: &str, body: &str) -> RoundtripResult {
+    let tokens = match lexer::lex(body) {
+        Ok(t) => t,
+        Err(_) => return RoundtripResult::Skipped,
+    };
+    match parser::parse_any(tokens) {
+        Ok(Parsed::Module(m)) => {
+            let dump1 = parser::dump_no_spans(&m);
+            let pretty = printer::pretty(&m);
+            let tokens2 = match lexer::lex(&pretty) {
+                Ok(t) => t,
+                Err(e) => {
+                    return RoundtripResult::Mismatch(format!(
+                        "{name}: pretty-printed output failed to lex: {} at {}:{}\n--- pretty ---\n{pretty}",
+                        e.message, e.line, e.col
+                    ));
+                }
+            };
+            let reparsed = match parser::parse(tokens2) {
+                Ok(m2) => m2,
+                Err(e) => {
+                    return RoundtripResult::Mismatch(format!(
+                        "{name}: pretty-printed output failed to reparse: {} at {}:{}\n--- pretty ---\n{pretty}",
+                        e.message, e.line, e.col
+                    ));
+                }
+            };
+            let dump2 = parser::dump_no_spans(&reparsed);
+            compare_dumps(name, &dump1, &dump2, &pretty)
+        }
+        Ok(Parsed::Fragment(entries)) => {
+            let dump1 = parser::dump_fragment_no_spans(&entries);
+            let pretty = printer::pretty_fragment(&entries);
+            let tokens2 = match lexer::lex(&pretty) {
+                Ok(t) => t,
+                Err(e) => {
+                    return RoundtripResult::Mismatch(format!(
+                        "{name}: pretty-printed fragment failed to lex: {} at {}:{}\n--- pretty ---\n{pretty}",
+                        e.message, e.line, e.col
+                    ));
+                }
+            };
+            let dump2 = match parser::parse_any(tokens2) {
+                Ok(Parsed::Fragment(entries2)) => parser::dump_fragment_no_spans(&entries2),
+                Ok(Parsed::Module(_)) => {
+                    return RoundtripResult::Mismatch(format!(
+                        "{name}: pretty-printed fragment reparsed as a module\n--- pretty ---\n{pretty}"
+                    ));
+                }
+                Err(e) => {
+                    return RoundtripResult::Mismatch(format!(
+                        "{name}: pretty-printed fragment failed to reparse: {} at {}:{}\n--- pretty ---\n{pretty}",
+                        e.message, e.line, e.col
+                    ));
+                }
+            };
+            compare_dumps(name, &dump1, &dump2, &pretty)
+        }
+        Err(_) => RoundtripResult::Skipped,
+    }
+}
+
+fn compare_dumps(name: &str, dump1: &str, dump2: &str, pretty: &str) -> RoundtripResult {
+    if dump1 == dump2 {
+        return RoundtripResult::Checked;
+    }
+    let (line1, line2) = first_divergence(dump1, dump2);
+    RoundtripResult::Mismatch(format!(
+        "{name}: roundtrip mismatch (first divergence)\n--- original dump ---\n{line1}\n--- reparsed dump ---\n{line2}\n--- pretty-printed ---\n{pretty}"
+    ))
+}
+
+/// The first line at which two dumps differ, each labeled with its line
+/// number (1-based); `<end of output>` stands in when one dump is shorter.
+fn first_divergence(a: &str, b: &str) -> (String, String) {
+    let a_lines: Vec<&str> = a.lines().collect();
+    let b_lines: Vec<&str> = b.lines().collect();
+    let n = a_lines.len().max(b_lines.len());
+    for i in 0..n {
+        let la = a_lines.get(i).copied().unwrap_or("<end of output>");
+        let lb = b_lines.get(i).copied().unwrap_or("<end of output>");
+        if la != lb {
+            return (
+                format!("line {}: {la}", i + 1),
+                format!("line {}: {lb}", i + 1),
+            );
+        }
+    }
+    ("<identical>".to_string(), "<identical>".to_string())
 }
 
 // --- ledger ---------------------------------------------------------------
@@ -1040,7 +1206,13 @@ fn ledger() -> Result<(), String> {
                     if let Some(cmd) = t.strip_prefix("xtask:") {
                         if !matches!(
                             cmd,
-                            "corpus" | "repro" | "diff-eval" | "profile" | "bench" | "fuzz"
+                            "corpus"
+                                | "repro"
+                                | "diff-eval"
+                                | "profile"
+                                | "bench"
+                                | "fuzz"
+                                | "roundtrip"
                         ) {
                             return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
                         }

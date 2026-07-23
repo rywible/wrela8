@@ -117,6 +117,13 @@ tests = ["xtask:fuzz"]
 note = "cargo xtask fuzz parser: seeded deterministic corpus-mutation + token-soup fuzzing through the lex-then-parse pipeline; never panics, result is a successful parse or exactly one error, deterministic across repeat runs; 100_000-iteration deep run clean across 15+ seeds (2.1M+ total iterations, no finds), smoke budget wired into xtask check"
 
 [[clause]]
+id = "syntax.parser.roundtrip"
+doc = "02-language.md#8"
+status = "test"
+tests = ["xtask:roundtrip"]
+note = "cargo xtask roundtrip: parse -> pretty-print (wrela dump --stage=pretty) -> reparse -> compare span-stripped AST dumps, for every corpus entry that parses and every ast-* golden input; the pretty-printer over-parenthesizes non-atomic expression children rather than computing precedence, per plans/M1.md item E"
+
+[[clause]]
 id = "docs.examples.wrela-blocks-parse"
 doc = "02-language.md#1"
 status = "test"
