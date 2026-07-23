@@ -94,7 +94,7 @@ changing the (currently simple, single-state) `walk_defer` contract other
 code may rely on. Flagged for M3 (or a dedicated `defer`-hardening item)
 to design properly rather than patch under time pressure.
 
-## 2. `for`/`while`'s `take_binding` (`for take x in ...`) is parsed but never checked — loop bindings can `take` from an array the function doesn't own
+## 2. `for`/`while`'s `take_binding` (`for take x in ...`) is parsed but never checked — loop bindings can `take` from an array the function doesn't own — **FIXED**
 
 **Where:** `crates/wrela-compiler/src/syntax/ast.rs`'s `ForStmt::take_binding`
 is set by the parser (`crates/wrela-compiler/src/syntax/parser.rs`) and
@@ -157,17 +157,153 @@ appears to be an intentional M2 scope boundary rather than a violation of
 awareness rather than classified as a wrong-accept, but M3's evaluator
 work should be aware the checker provides no guarantee here.
 
-**Why this wasn't fixed here:** correctly modeling this needs (a) an
-explicit legality rule for the four `take_binding` × iterable-`take`
-combinations (only `for take x in take array` should license moving `x`
-out; the other three combinations need their own — currently entirely
-unspecified in code — treatment), (b) tying a loop binding's storage back
-to "does this function own the array" the same way a pattern payload's
-`take` now correctly checks the scrutinee's root mode (this session's fix
-#2), and (c) deciding what "the array is now (partially) consumed" means
-for definite-init purposes after the loop, since per-element moves through
-a runtime index are otherwise forbidden. That's a small design decision
-plus new state, not a local patch — recorded for M3 rather than rushed.
+**Fixed** (a later session, pre-M3 shoring continuation): `access::check_for`
+now requires `take_binding` and the iterable expression's own `take` to
+agree — 02-language.md §3.2 names exactly one sanctioned combination
+(`for take x in take array`); a `take` binding over a non-`take` iterable
+is `error[access]` (this section's own minimized repro is now rejected;
+pinned as `golden/err-x-for-take-element-borrowed`), as is the syntactic
+mismatch of a `take`-marked for-loop head whose iterable itself isn't
+`take`n (`golden/err-x-for-take-borrowed`) and the mirror-image mismatch,
+a `take`n iterable with a plain binding (`golden/err-x-for-take-mismatch`).
+A *plain* (non-`take`) binding over a resource-typed element is now bound
+as a `read`-mode loan rather than an unrestricted owned local, closing
+exactly the gap this repro exercised. `flow.rs`'s `walk_for` already
+deinitialized a `take`n iterable correctly via the ordinary take-expression
+path (item (c) below turned out to already be handled, verified rather
+than built) — the sanctioned consuming form and its post-loop `Moved`
+state are pinned by `golden/check-x-for-take-consume` and
+`golden/err-x-for-take-reuse`. See `ledger/ledger.toml`'s
+`values.resource.move-spells-take` clause for the full accounting.
+
+The closely-related, lower-severity exclusivity gap noted just above
+(mutating the iterable from inside the loop body, e.g. `for x in arr:
+fill(mut arr)`) is **not** addressed by this fix and remains exactly the
+documented M2 scope boundary — `flow.rs`'s `walk_storing_expr` still scopes
+exclusivity to call-expression argument lists/receivers only, not "the
+iterable is exclusively held for the loop's duration." M3's evaluator work
+should still be aware the checker provides no guarantee there.
+
+Superseded design notes (kept for the record): correctly modeling this
+needed (a) an explicit legality rule for the four `take_binding` ×
+iterable-`take` combinations (only `for take x in take array` should
+license moving `x` out; the other three combinations needed their own —
+previously entirely unspecified in code — treatment: implemented as the
+agreement check above), (b) tying a loop binding's storage back to "does
+this function own the array" the same way a pattern payload's `take`
+correctly checks the scrutinee's root mode (implemented as the
+resource-element read-loan rule above), and (c) deciding what "the array
+is now (partially) consumed" means for definite-init purposes after the
+loop, since per-element moves through a runtime index are otherwise
+forbidden (turned out to already be handled by the existing take-expression
+path, per the paragraph above).
+
+## 3. A place-postfix ambiguity inside an embedded (bracket-suppressed) suite lets a `take`/`mut` place silently swallow the *next*, unrelated statement's leading token
+
+**Where:** `crates/wrela-compiler/src/syntax/parser.rs`, `parse_unary`'s
+`take` case and `parse_call_args`'s mode-marked argument parsing, both of
+which parse a `mut`/`take` operand through the general expression grammar
+(`parse_unary` -> `parse_postfix`, which accepts a trailing `(args)` as a
+call) and only check `ast::is_place_expr` — a *shallow*, non-recursive
+match on `Name`/`Field`/`Index` — after the fact. This is deliberate and
+correct on its own: it is what lets `mut make_pair().a`/`take foo().field`
+parse successfully as a syntactically call-shaped "place" and be rejected
+later, with a better diagnostic, by `access.rs`'s own *recursive*
+`is_full_place` (golden/err-access-nonplace pins exactly this).
+
+**Not a sema bug — found by this session's own required deep-fuzz gate,
+not by the two bugs this session was scoped to fix.** Recorded here
+(structural, not patched) rather than in the ledger, per this file's own
+convention.
+
+**Why it's wrong:** `crates/wrela-compiler/src/syntax/parser.rs`'s own
+module doc comment documents that `()[]{}` fully suppress
+`NEWLINE`/`INDENT`/`DEDENT` in the lexer, so a suite embedded inside an
+enclosing call's argument list has *no separator token at all* between
+its statements — `parse_inline_stmt_seq` relies entirely on "the previous
+statement's expression grammar naturally stops here" to find each
+boundary. That assumption breaks when one statement ends in a bare place
+(a `Name`) immediately followed — with nothing between them but
+whitespace the lexer has no reason to treat specially inside a suppressed
+region — by a wholly separate *next* statement that happens to start with
+`(`: the general postfix parser (used for `take`'s/`mut`'s operand,
+exactly the same as any other expression) cannot tell "the next
+statement's own leading paren" apart from "a call on this place," and
+greedily consumes it as one, silently absorbing tokens that belong to an
+entirely different statement.
+
+**Minimized repro** (found via `cargo xtask fuzz sema` deep, seed=1,
+iteration=76076, mutating golden/err-x-closure-take-twice; confirmed
+reproducible identically on the pre-session base commit, i.e. **not**
+introduced by either sema fix in this session):
+
+```wrela
+module examples.err_x_closure_take_twice
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn run(body: fn() -> u64) -> u64:
+    return body()
+
+pub fn use_it(take p: Packet) -> u64:
+    a = run(||:
+        x = take p
+        (((((((((eg + inv) + call_result) + f) + g) + closure(1)) + block_closure(1)) + pair.len()) + one.len()) + items.len()) + gu
+        x.size)
+    b = run(||:
+        y = take p
+        y.size)
+    return a + b
+```
+
+This parses fine as written (three back-to-back closure-body statements:
+`x = take p`, the huge `+`-chain ending in a bare `gu`, then `x.size`).
+Pretty-printing it and reparsing (the sema-roundtrip oracle,
+sema.check.roundtrip-stable) fails: `error[parse]: operand of \`take\`
+must be a place expression (name, field, index) at 14:129`. Root cause
+verified by inspecting the reparsed token stream: the pretty-printer
+re-renders the long `+`-chain with explicit (redundant, but harmless on
+their own) grouping parens around it, purely cosmetic; on reparse, the
+first closure's `take p` — with no separator token between `p` and what
+follows, since the whole closure sits inside `run(`'s open paren, which
+suppresses layout entirely per the module doc comment — sees `p`
+immediately followed by that next statement's own leading `(`.
+`parse_postfix` (used for `take`'s operand, same as any other expression)
+reads `p(` as a call and consumes the *entire* parenthesized chain up to
+its own matching `)` as that call's single argument; only then does
+`take`'s `is_place_expr` check see the result (`Call(p, [...])`) and
+correctly reject it — but at the wrong place, having already eaten tokens
+that belonged to a separate statement, which is why the diagnostic cites
+a position deep inside what was meant to be the *next* statement's own
+expression.
+
+**Why this wasn't fixed here:** a first attempt — restricting `take`'s
+(and the mode-marked call-argument's) operand to a dedicated
+call-free postfix parser (place = name + any depth of `.field`/`[index]`,
+no `(args)`) — regressed golden/err-access-nonplace: `fill(mut
+make_pair().a)` relies on parsing *through* the call syntactically (so
+`access.rs`'s richer, recursive `is_full_place` check can reject it with
+a clearer diagnostic later) rather than failing at the parser level; a
+call-free operand grammar breaks that entirely, since it stops parsing at
+`make_pair` and leaves `().a` as unconsumed trailing tokens, turning a
+clean `error[access]` into a garbled `error[parse]: expected \`)\`, found
+\`(\`` for a program the checker is *supposed* to accept as far as
+parsing goes. Reverted rather than shipped once this regression surfaced
+in `cargo xtask golden`. The underlying tension — a `mut`/`take` operand
+must still parse *through* a non-place call so semantic passes can give
+the better diagnostic, yet a bare place immediately before an unrelated
+next statement's leading `(` must *not* swallow it — cannot be resolved by
+locally restricting one call site's grammar; it needs either a real
+statement separator survivable inside a bracket-suppressed suite (the
+grammar has none today — no semicolon or equivalent exists anywhere in
+02-language.md) or a redesign of how `parse_inline_stmt_seq` finds
+boundaries in that context. That is new grammar design, not a local
+patch — recorded for a dedicated session rather than rushed, exactly the
+reasoning finding #1 above already used for `defer`.
 
 ## Other intersections probed, judged correct (no finding)
 

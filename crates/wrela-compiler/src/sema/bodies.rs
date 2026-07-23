@@ -2216,7 +2216,7 @@ fn check_call_index(
                 if !si.decl.generics.is_empty() {
                     let type_args = generics::resolve_call_targs(targs, mctx)?;
                     let si = generics::instantiate_struct(mctx, name, &type_args, call_span)?;
-                    return check_struct_construction(&si, args, call_span, fctx, mctx);
+                    return check_struct_construction(&si, &type_args, args, call_span, fctx, mctx);
                 }
             }
         }
@@ -2297,7 +2297,7 @@ fn check_call_by_name(
                 call_span,
             ));
         }
-        return check_struct_construction(s, args, call_span, fctx, mctx);
+        return check_struct_construction(s, &[], args, call_span, fctx, mctx);
     }
     match name {
         "Some" => {
@@ -2458,12 +2458,22 @@ fn check_call_by_field(
 
 fn check_struct_construction(
     s: &StructInfo,
+    targs: &[TypeArg],
     args: &[Arg],
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<Type, SemaError> {
-    let self_ty = Type::Named(s.decl.name.clone(), vec![]);
+    // Bug 1(b) fix: a construction's synthesized type must carry the
+    // instantiation's own args (`Slot[u64, 2](...)` synthesizes
+    // `Type::Named("Slot", [u64, 2])`, not a bare `Type::Named("Slot",
+    // [])`) — `s`'s own members are already substituted (`s.decl` here is
+    // always the already-instantiated `StructInfo` when `targs` is
+    // non-empty, per every caller below), so construction-argument
+    // checking below (`s.init()`/`check_struct_literal`, which read field/
+    // init-param types straight off `s.decl`) was already correct; only
+    // the *result* type dropped the args.
+    let self_ty = Type::Named(s.decl.name.clone(), targs.to_vec());
     if let Some((ia, id)) = s.init() {
         check_call_args(&ia.params, &id.params, args, call_span, fctx, mctx)?;
         return match &id.ret {

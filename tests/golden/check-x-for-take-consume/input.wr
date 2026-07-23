@@ -1,0 +1,26 @@
+module examples.check_x_for_take_consume
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn consume(take p: Packet) -> u64:
+    return p.size
+
+# A plain (non-`take`) binding over a resource-typed array is a per-element
+# read loan (02-language.md §3.2): legal, and the array is untouched.
+pub fn peek_all(arr: [Packet; 2]) -> u64:
+    total: u64 = 0
+    for p in arr:
+        total += p.size
+    return total
+
+# The sanctioned way to consume an array whole (02-language.md §3.2):
+# `for take x in take array`. The array is Moved after the loop.
+pub fn consume_all(take arr: [Packet; 2]) -> u64:
+    total: u64 = 0
+    for take p in take arr:
+        total += consume(take p)
+    return total

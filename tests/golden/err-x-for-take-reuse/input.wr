@@ -1,0 +1,17 @@
+module examples.err_x_for_take_reuse
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn consume(take p: Packet) -> u64:
+    return p.size
+
+pub fn use_it(take arr: [Packet; 2]) -> u64:
+    total: u64 = 0
+    for take p in take arr:
+        total += consume(take p)
+    x = arr
+    return total

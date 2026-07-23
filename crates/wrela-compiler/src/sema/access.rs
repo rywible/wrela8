@@ -59,6 +59,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::bodies::{self, ModuleCtx, StructInfo};
+use crate::sema::generics;
 use crate::sema::types::{self, DeclFn, DeclItem, DeclMember, DeclParam, Type};
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
@@ -845,7 +846,36 @@ fn check_match(m: &MatchStmt, actx: &mut ACtx) -> Result<(), SemaError> {
     Ok(())
 }
 
+/// Bug 2 fix (plans/pre-M3-findings.md #2, values.resource.move-spells-take):
+/// `take_binding`/the iterable's own `take` must agree — 02-language.md
+/// §3.2's "Consume an array whole with `for take x in take array`" names
+/// exactly one sanctioned combination; the other three (a `take` binding
+/// over a non-`take` iterable, or a `take`n iterable with a plain
+/// binding) are rejected here, before either side is even typed, so the
+/// message always names the actual mismatch rather than surfacing as some
+/// other, less legible failure downstream. A `take` binding whose
+/// iterable is *not* itself `take`n would otherwise let the loop move
+/// elements out through a runtime index — forbidden regardless of who
+/// owns the array (02 §3.2's own reasoning: "the analysis would depend on
+/// runtime history") — while a `take`n iterable with a plain binding
+/// throws its consumed elements away unused, never the sanctioned shape.
 fn check_for(f: &ForStmt, actx: &mut ACtx) -> Result<(), SemaError> {
+    let iterable_is_take = matches!(f.iterable, Expr::Unary(_, UnaryOp::Take, _));
+    if f.take_binding && !iterable_is_take {
+        return Err(access_error(
+            "`for take` requires the iterable itself be `take`n: write `for take x in take array` \
+             — elements cannot be taken one at a time out of an array through a runtime index"
+                .to_string(),
+            f.span,
+        ));
+    }
+    if !f.take_binding && iterable_is_take {
+        return Err(access_error(
+            "a `take`n iterable requires a `take` binding: write `for take x in take array`"
+                .to_string(),
+            f.span,
+        ));
+    }
     let raw_iterable: &Expr = match &f.iterable {
         Expr::Unary(_, UnaryOp::Take, inner) => inner.as_ref(),
         other => other,
@@ -856,21 +886,37 @@ fn check_for(f: &ForStmt, actx: &mut ACtx) -> Result<(), SemaError> {
             let t2 = check_expr(to, actx)?;
             t1.or(t2)
         }
-        other => {
-            let ty = check_expr(other, actx)?;
+        _ => {
+            // Checked through the *whole* iterable expression (including
+            // its own `take`, when present) rather than the manually
+            // unwrapped inner place, so a `take`n iterable still goes
+            // through this pass's own `Expr::Unary(_, Take, ...)` arm
+            // (the ordinary `read`-parameter/place-expression legality
+            // check every other `take` gets) instead of relying solely
+            // on `flow.rs`'s own re-derivation of the same rule.
+            let ty = check_expr(&f.iterable, actx)?;
             ty.and_then(|t| match bodies::unwrap_own(t) {
                 Type::Array(elem, _) => Some(*elem),
                 _ => None,
             })
         }
     };
-    actx.locals.insert(
-        f.name.clone(),
-        LocalInfo {
-            ty: elem_ty,
-            mode: None,
-        },
-    );
+    // 02-language.md §3.2: a plain (non-`take`) binding over a *resource*
+    // element type is a read loan of each element, not an owned value —
+    // only `for take x in take array` (agreement already enforced above)
+    // licenses moving `x` further. A data element is an ordinary,
+    // independent copy each iteration and stays unrestricted (`mode:
+    // None`), matching every other fresh-value binding.
+    let mode = if !f.take_binding {
+        match &elem_ty {
+            Some(t) if bodies::is_resource_type(t, actx.mctx) => Some(AccessMode::Read),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    actx.locals
+        .insert(f.name.clone(), LocalInfo { ty: elem_ty, mode });
     check_stmts(&f.body, actx)
 }
 
@@ -1171,11 +1217,23 @@ fn check_field(base: &Expr, name: &str, actx: &mut ACtx) -> Result<Option<Type>,
         return Ok(None);
     };
     if let Type::Named(sname, targs) = &base_ty {
-        if targs.is_empty() {
-            if let Some(s) = actx.mctx.structs.get(sname.as_str()) {
-                if let Some(ty) = s.field_ty(name) {
-                    return Ok(Some(ty));
-                }
+        // Bug 1 fix (access.rs's own best-effort type tracker): a field
+        // reached through an *instantiated* generic struct's value
+        // (non-empty `targs`) must substitute the struct's own generics
+        // with `targs` in the field's declared type before handing it
+        // back — otherwise a further chained method call through this
+        // field (`p.items[0].get()`, item H) sees an untyped base and
+        // wrongly fails closed (`check_call_by_field`'s "mirroring...
+        // is not checked yet"). `subst_field_type` (generics.rs,
+        // `pub(crate)`) is a no-op when `targs` is empty, so this
+        // subsumes the old `targs.is_empty()`-only path.
+        if let Some(s) = actx.mctx.structs.get(sname.as_str()) {
+            if let Some(ty) = s.field_ty(name) {
+                return Ok(Some(generics::subst_field_type(
+                    &ty,
+                    &s.decl.generics,
+                    targs,
+                )));
             }
         }
     }
@@ -1406,7 +1464,7 @@ fn check_call(
     actx: &mut ACtx,
 ) -> Result<Option<Type>, SemaError> {
     match callee {
-        Expr::Index(inner, _ispan, _targs) => {
+        Expr::Index(inner, _ispan, targs) => {
             // `.to[T]()`/`.checked_to[T]()`/`.truncate_to[T]()` (no
             // parameters to mirror) or `Name[Args](...)` — a generic
             // struct construction or fn call (item H). Mirroring
@@ -1415,7 +1473,12 @@ fn check_call(
             // *declared* (unsubstituted) params directly rather than
             // resolving which concrete instantiation `bodies::check`
             // enqueued for this exact call — same simplification as
-            // `check_call_by_name`/`check_call_by_field` below.
+            // `check_call_by_name`/`check_call_by_field` below. The
+            // *result* type still needs the resolved `targs` (Bug 1(b)'s
+            // fix, mirrored from `bodies.rs`): a bare, un-instantiated
+            // `Type::Named` here would make this pass's own best-effort
+            // tracker just as blind to a chained field/method access as
+            // `bodies.rs`'s construction path was.
             if let Expr::Name(_, name) = inner.as_ref() {
                 if !actx.locals.contains_key(name) {
                     if let Some(f) = actx.mctx.fns.get(name) {
@@ -1428,7 +1491,8 @@ fn check_call(
                         }
                     } else if let Some(s) = actx.mctx.structs.get(name) {
                         if !s.decl.generics.is_empty() {
-                            return check_struct_construction(s, args, actx);
+                            let type_args = generics::resolve_call_targs(targs, actx.mctx)?;
+                            return check_struct_construction(s, &type_args, args, actx);
                         }
                     }
                 }
@@ -1512,7 +1576,7 @@ fn check_call_by_name(
         return Ok(Some(f.decl.ret.clone()));
     }
     if let Some(s) = actx.mctx.structs.get(name) {
-        return check_struct_construction(s, args, actx);
+        return check_struct_construction(s, &[], args, actx);
     }
     // `Some`/`Ok`/`Err`/`panic`: builtin pseudo-constructors with no
     // declared parameter modes (they are not real `DeclParam`s).
@@ -1524,10 +1588,15 @@ fn check_call_by_name(
 
 fn check_struct_construction(
     s: &StructInfo,
+    targs: &[types::TypeArg],
     args: &[Arg],
     actx: &mut ACtx,
 ) -> Result<Option<Type>, SemaError> {
-    let self_ty = Type::Named(s.decl.name.clone(), vec![]);
+    // Bug 1(b) fix, mirrored from `bodies.rs`'s own `check_struct_construction`:
+    // carry the instantiation's own args into the synthesized type so
+    // this pass's best-effort tracker can keep answering field/method
+    // questions through it (`check_field`'s `subst_field_type` above).
+    let self_ty = Type::Named(s.decl.name.clone(), targs.to_vec());
     if let Some((_ia, id)) = s.init() {
         for a in args {
             check_arg(a, actx)?;

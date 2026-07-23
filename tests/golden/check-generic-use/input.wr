@@ -1,0 +1,19 @@
+module examples.check_generic_use
+
+struct Slot[T, const N: usize]:
+    items: [Option[T]; N]
+
+    fn first(read self) -> Option[T]:
+        return self.items[0]
+
+pub fn field_through_instance() -> Option[u64]:
+    slots = Slot[u64, 2](items=[None, None])
+    v = slots.items[0]
+    return v
+
+pub fn construction_expected_type() -> Slot[u64, 2]:
+    return Slot[u64, 2](items=[None, None])
+
+pub fn method_through_instance() -> Option[u64]:
+    slots = Slot[u64, 2](items=[None, None])
+    return slots.first()

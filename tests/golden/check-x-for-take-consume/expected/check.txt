@@ -1,0 +1,7 @@
+Module path=examples.check_x_for_take_consume
+  Struct Packet resource
+    field size: u64
+    init(mut self, size: read u64) -> unit
+  Fn consume(p: take Packet) -> u64
+  Fn peek_all(arr: read [Packet; 2]) -> u64
+  Fn consume_all(arr: take [Packet; 2]) -> u64

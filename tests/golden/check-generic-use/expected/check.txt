@@ -1,0 +1,7 @@
+Module path=examples.check_generic_use
+  Struct Slot[T, const N: usize] data
+    field items: [Option[T]; N]
+    fn first(read self) -> Option[T]
+  Fn field_through_instance() -> Option[u64]
+  Fn construction_expected_type() -> Slot[u64, 2]
+  Fn method_through_instance() -> Option[u64]

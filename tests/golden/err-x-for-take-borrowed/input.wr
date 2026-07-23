@@ -1,0 +1,13 @@
+module examples.err_x_for_take_borrowed
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn use_it(arr: [Packet; 2]) -> u64:
+    total: u64 = 0
+    for take p in arr:
+        total += p.size
+    return total
