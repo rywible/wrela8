@@ -1,0 +1,15 @@
+module test
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn use_it(take p: Packet, cond: bool) -> u64:
+    defer:
+        v = p.size
+    if cond:
+        x = take p
+        return x.size
+    return 0

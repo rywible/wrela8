@@ -1,0 +1,45 @@
+module examples.defer_exits
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn refill(size: u64) -> Packet:
+    return Packet(size=size)
+
+# (a) take-then-restore on every path before each exit: whichever branch
+# runs, `p` is fully restored before its own `return` — the `defer`
+# registered ahead of the `if` sees a valid `p` at both real exits.
+pub fn take_and_restore(take p: Packet, cond: bool) -> u64:
+    defer:
+        v = p.size
+    if cond:
+        x = take p
+        p = refill(x.size)
+        return p.size
+    return p.size
+
+# (b) a defer whose place is restored by the time every exit runs: the
+# restore happens unconditionally, right after the take, before the
+# `defer` is even registered.
+pub fn restore_before_any_exit(take p: Packet, cond: bool) -> u64:
+    x = take p
+    p = refill(x.size)
+    defer:
+        v = p.size
+    if cond:
+        return p.size
+    return 0
+
+# (c) defer registered after a conditional take+restore: by the time the
+# `defer` is registered, every path (taken or not) already has `p`
+# restored/untouched.
+pub fn defer_after_conditional_restore(take p: Packet, cond: bool) -> u64:
+    if cond:
+        x = take p
+        p = refill(x.size)
+    defer:
+        v = p.size
+    return p.size

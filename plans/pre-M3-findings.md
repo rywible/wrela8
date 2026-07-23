@@ -34,9 +34,42 @@ Two further findings below were judged **structural** (would need new
 bookkeeping across a function boundary, not a missed condition) and are
 recorded here instead of patched, per the session's own instructions.
 
-## 1. `defer`'s body is checked once, at registration state — not against every real exit
+## 1. `defer`'s body is checked once, at registration state — not against every real exit — **FIXED**
 
-**Where:** `crates/wrela-compiler/src/sema/flow.rs`, `walk_defer`. The
+**Fixed** (a later session, pre-M3 shoring continuation): `sema/flow.rs`
+now threads a per-body `DStack` — a true call stack of registered
+`&DeferStmt`, in registration order — through the whole CFG walk.
+`Stmt::Defer` only pushes onto it (no check at registration anymore);
+`walk_block` checks and pops the defers it registered directly against
+its own normal-completion state right before returning, and every
+`return`/`?`/`break`/`continue` reached after a defer's registration
+re-validates the currently active defers in place, via a new
+`check_active_defers`, which reuses the same `walk_expr`/`walk_block`
+machinery an ordinary statement is checked with (no separate
+place-collection pass). Defers active at one exit are walked in
+*reverse* registration order (02-language.md §10), threading one running
+state clone through each one's own body-walk in turn, so a
+later-registered/earlier-run defer's own effects (a `take`) are visible
+to whichever earlier-registered/later-run defer is checked next.
+`return`/`?` check the whole active stack (they exit the entire
+function); `break`/`continue` check only the slice registered since the
+nearest enclosing loop was entered — a defer outside the loop stays
+pending for a later real exit. A defer inside a `for`/`while` body
+registers/checks/pops fresh on every fixed-point re-walk of that body,
+matching how the fixed point already re-walks every other statement.
+This session's own minimized repro below is now rejected (pinned as
+`golden/err-defer-moved-at-exit`); the reverse-order-sequencing case
+(`golden/err-defer-taken-by-defer`) and the legal twins
+(`golden/check-defer-exits`) are pinned alongside it. See
+`ledger/ledger.toml`'s `values.teardown.defer-valid-at-exit` clause for
+the full accounting, including the one wrong-reject question checked
+against 02-language.md §10's own "a deferred action that needs a
+moved-and-returning resource simply waits for it" sentence (none found —
+that sentence is runtime cleanup-graph scheduling, 04-compiler.md §4,
+not a static legality question, and doesn't collide with the dumb static
+rule implemented here for anything the M2 corpus expresses).
+
+**Where (historical, pre-fix):** `crates/wrela-compiler/src/sema/flow.rs`, `walk_defer`. The
 function's own doc comment already flags this as a deliberate
 simplification:
 

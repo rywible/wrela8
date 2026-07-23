@@ -73,6 +73,73 @@ enum PathState {
     Moved,
 }
 
+/// One `defer`'s registration stack, shared for the whole function/
+/// method/`init` body walk (deliverable: 02-language.md §10's "verifies
+/// the places it names are valid at every exit"): a true call stack —
+/// `walk_block` pushes each `Stmt::Defer` it meets onto this as it
+/// processes the block's own statements in order, and pops back to its
+/// own entry length before returning, so a nested block's own defers
+/// never leak past that block's own exit (the docs' "against the
+/// enclosing block"). `return`/`?` check against the *whole* stack (they
+/// exit the entire function); `break`/`continue` check only the slice
+/// registered since the nearest enclosing loop was entered (`loop_marker`
+/// below) — defers registered outside the loop stay pending for a later,
+/// real exit.
+type DStack<'a> = Vec<&'a DeferStmt>;
+
+/// Re-validates every currently active `defer` at one real exit — a
+/// block's own normal completion, a `return`, a `?`, or a `break`/
+/// `continue` crossing the enclosing loop (02-language.md §10: "its
+/// accesses activate when it *runs*, not when it is registered ... the
+/// compiler verifies the places it names are valid at every exit").
+/// `active` is already sliced to exactly the defers live at this exit,
+/// oldest-registered first (registration order); they run in *reverse*
+/// registration order at cleanup, so this walks them back-to-front,
+/// threading one running clone of `exit_state` through each one's own
+/// body-walk in turn — reusing the very same `walk_expr`/`walk_block`
+/// machinery that checks an ordinary statement, exactly like the
+/// snapshot this replaces used to at registration time only. Threading
+/// (rather than re-cloning `exit_state` for each) means a later-
+/// registered/earlier-run defer's own effects (a `take`, say) are visible
+/// to whichever earlier-registered defer is checked next
+/// (`err-defer-taken-by-defer`). Never mutates the real, still-
+/// propagating state passed by the caller — the deferred action doesn't
+/// actually run here, only its accesses are validated against a
+/// hypothetical replay of cleanup order.
+fn check_active_defers<'a>(
+    active: &[&'a DeferStmt],
+    exit_desc: &str,
+    exit_state: &StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx,
+) -> Result<(), SemaError> {
+    let mut cur = exit_state.clone();
+    for d in active.iter().rev() {
+        let mut scratch: DStack<'a> = Vec::new();
+        let result = match &d.body {
+            DeferBody::Expr(e) => walk_expr(e, &mut cur, fctx, wctx, &mut scratch, 0),
+            DeferBody::Suite(stmts) => {
+                walk_block(stmts, &mut cur, fctx, wctx, &mut scratch, 0).map(|_| ())
+            }
+        };
+        result.map_err(|mut err| {
+            // No raw `line:col` text here (unlike the primary message):
+            // `sema.check.roundtrip-stable`'s oracle compares diagnostics
+            // with spans erased (reformatting shifts every span), and
+            // this extra line isn't one of the ` at <path>:<line>` tails
+            // that oracle already knows to strip (sema/generics.rs's
+            // chain format) — embedding a bare `L:C` here would make an
+            // otherwise identical diagnostic disagree after a pretty/
+            // reparse round trip.
+            err.extra_lines.push(format!(
+                "  this `defer` must be valid at every exit, including {exit_desc}"
+            ));
+            err
+        })?;
+    }
+    Ok(())
+}
+
 /// The state map a walk threads through one function/method/init body:
 /// sparse — a path absent from the map inherits its closest recorded
 /// ancestor's state (`state_of`), or `Uninit` if no ancestor was ever
@@ -201,18 +268,22 @@ fn as_path(expr: &Expr, fctx: &FnCtx) -> Option<StoragePath> {
 /// need checking (an index argument's own expression — `arr[compute()]`
 /// — everything else in a place chain is just names/field labels with
 /// nothing further to walk).
-fn walk_place_subexprs(
-    expr: &Expr,
+fn walk_place_subexprs<'a>(
+    expr: &'a Expr,
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     match expr {
-        Expr::Field(base, _, _) => walk_place_subexprs(base, state, fctx, wctx),
+        Expr::Field(base, _, _) => {
+            walk_place_subexprs(base, state, fctx, wctx, dstack, loop_marker)
+        }
         Expr::Index(base, _, args) => {
-            walk_place_subexprs(base, state, fctx, wctx)?;
+            walk_place_subexprs(base, state, fctx, wctx, dstack, loop_marker)?;
             for a in args {
-                walk_expr(a, state, fctx, wctx)?;
+                walk_expr(a, state, fctx, wctx, dstack, loop_marker)?;
             }
             Ok(())
         }
@@ -512,8 +583,8 @@ fn check_exit_obligations(state: &StateMap, wctx: &WCtx, span: Span) -> Result<(
 /// position (a struct-literal/enum-variant/pseudo-constructor field) —
 /// the implicit-copy check only ever applies there; a real declared
 /// parameter's `Read`/`Mut` mode is a loan, never a copy.
-fn process_operand(
-    expr: &Expr,
+fn process_operand<'a>(
+    expr: &'a Expr,
     mode: AccessMode,
     activated: &mut Vec<StoragePath>,
     state: &mut StateMap,
@@ -521,11 +592,13 @@ fn process_operand(
     wctx: &WCtx,
     synthetic: bool,
     span: Span,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     let Some(path) = as_path(expr, fctx) else {
-        return walk_expr(expr, state, fctx, wctx);
+        return walk_expr(expr, state, fctx, wctx, dstack, loop_marker);
     };
-    walk_place_subexprs(expr, state, fctx, wctx)?;
+    walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
     match mode {
         AccessMode::Take => {
             check_no_overlap(&path, activated, span)?;
@@ -553,11 +626,13 @@ fn process_operand(
 /// list is correct: exclusivity is scoped to call-expression argument
 /// lists/receivers only (deliverable 4's "keep it to the documented
 /// rule").
-fn walk_storing_expr(
-    value: &Expr,
+fn walk_storing_expr<'a>(
+    value: &'a Expr,
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     let mut activated = Vec::new();
     process_operand(
@@ -569,6 +644,8 @@ fn walk_storing_expr(
         wctx,
         true,
         value.span(),
+        dstack,
+        loop_marker,
     )
 }
 
@@ -645,11 +722,13 @@ fn seed_pattern_bindings(p: &Pattern, state: &mut StateMap) {
 
 // --- the general expression walk -------------------------------------------
 
-fn walk_expr(
-    expr: &Expr,
+fn walk_expr<'a>(
+    expr: &'a Expr,
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     match expr {
         Expr::Int(..)
@@ -671,25 +750,27 @@ fn walk_expr(
         }
         Expr::Field(base, _, _) => match as_path(expr, fctx) {
             Some(path) => {
-                walk_place_subexprs(expr, state, fctx, wctx)?;
+                walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
                 check_readable(&path, state, wctx, expr.span())
             }
-            None => walk_expr(base, state, fctx, wctx),
+            None => walk_expr(base, state, fctx, wctx, dstack, loop_marker),
         },
         Expr::Index(base, ispan, args) => match as_path(expr, fctx) {
             Some(path) => {
-                walk_place_subexprs(expr, state, fctx, wctx)?;
+                walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
                 check_readable(&path, state, wctx, *ispan)
             }
             None => {
-                walk_expr(base, state, fctx, wctx)?;
+                walk_expr(base, state, fctx, wctx, dstack, loop_marker)?;
                 for a in args {
-                    walk_expr(a, state, fctx, wctx)?;
+                    walk_expr(a, state, fctx, wctx, dstack, loop_marker)?;
                 }
                 Ok(())
             }
         },
-        Expr::Call(callee, span, args) => walk_call(callee, *span, args, state, fctx, wctx),
+        Expr::Call(callee, span, args) => {
+            walk_call(callee, *span, args, state, fctx, wctx, dstack, loop_marker)
+        }
         Expr::Unary(span, UnaryOp::Take, inner) => {
             let Some(path) = as_path(inner, fctx) else {
                 // access.rs already requires `take`'s operand to be a
@@ -701,33 +782,43 @@ fn walk_expr(
                     *span,
                 ));
             };
-            walk_place_subexprs(inner, state, fctx, wctx)?;
+            walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
             check_takeable(&path, state, wctx, *span)?;
             set_state(&path, state, PathState::Moved);
             Ok(())
         }
-        Expr::Unary(_, _, inner) => walk_expr(inner, state, fctx, wctx),
-        Expr::Try(_, inner) => walk_expr(inner, state, fctx, wctx),
+        Expr::Unary(_, _, inner) => walk_expr(inner, state, fctx, wctx, dstack, loop_marker),
+        Expr::Try(_, inner) => {
+            // `?` returns from the enclosing function on `Err` (02-
+            // language.md §8.2/§10): the same real, unforked `state`
+            // this pass already uses for both continuations (see the
+            // module doc comment on `?`'s own move semantics) means every
+            // currently active defer — the *whole* stack, not sliced by
+            // `loop_marker`, since `?` exits the function, not merely a
+            // loop — must be re-validated here, exactly like a `return`.
+            walk_expr(inner, state, fctx, wctx, dstack, loop_marker)?;
+            check_active_defers(dstack, "a `?` exit", state, fctx, wctx)
+        }
         Expr::Binary(_, _, l, r) => {
-            walk_expr(l, state, fctx, wctx)?;
-            walk_expr(r, state, fctx, wctx)
+            walk_expr(l, state, fctx, wctx, dstack, loop_marker)?;
+            walk_expr(r, state, fctx, wctx, dstack, loop_marker)
         }
         Expr::Range(_, a, b, _) => {
-            walk_expr(a, state, fctx, wctx)?;
-            walk_expr(b, state, fctx, wctx)
+            walk_expr(a, state, fctx, wctx, dstack, loop_marker)?;
+            walk_expr(b, state, fctx, wctx, dstack, loop_marker)
         }
         Expr::Is(_, scrutinee, pattern) => {
-            walk_expr(scrutinee, state, fctx, wctx)?;
+            walk_expr(scrutinee, state, fctx, wctx, dstack, loop_marker)?;
             let sty = bodies::check_expr(scrutinee, None, fctx, wctx.mctx)?;
             apply_pattern_move(scrutinee, pattern, state, fctx, wctx, scrutinee.span())?;
             bodies::check_pattern(pattern, &sty, fctx, wctx.mctx)?;
             seed_pattern_bindings(pattern, state);
             Ok(())
         }
-        Expr::Not(_, inner) => walk_expr(inner, state, fctx, wctx),
+        Expr::Not(_, inner) => walk_expr(inner, state, fctx, wctx, dstack, loop_marker),
         Expr::And(_, l, r) | Expr::Or(_, l, r) => {
-            walk_expr(l, state, fctx, wctx)?;
-            walk_expr(r, state, fctx, wctx)
+            walk_expr(l, state, fctx, wctx, dstack, loop_marker)?;
+            walk_expr(r, state, fctx, wctx, dstack, loop_marker)
         }
         Expr::DotVariant(_, _, args) => {
             let mut activated = Vec::new();
@@ -741,11 +832,13 @@ fn walk_expr(
                     wctx,
                     true,
                     a.span,
+                    dstack,
+                    loop_marker,
                 )?;
             }
             Ok(())
         }
-        Expr::Closure(c) => walk_closure(c, state, fctx, wctx),
+        Expr::Closure(c) => walk_closure(c, state, fctx, wctx, dstack, loop_marker),
         Expr::Send(span, _) => Err(bodies_send_unreachable(*span)),
         Expr::Tuple(_, items) | Expr::List(_, items) => {
             let mut activated = Vec::new();
@@ -759,6 +852,8 @@ fn walk_expr(
                     wctx,
                     true,
                     i.span(),
+                    dstack,
+                    loop_marker,
                 )?;
             }
             Ok(())
@@ -774,11 +869,13 @@ fn bodies_send_unreachable(span: Span) -> SemaError {
     crate::sema::unimplemented_at("`send` is", span)
 }
 
-fn walk_closure(
-    c: &ClosureExpr,
+fn walk_closure<'a>(
+    c: &'a ClosureExpr,
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     fctx.push_scope();
     for p in &c.params {
@@ -789,9 +886,9 @@ fn walk_closure(
         state.insert(StoragePath::root(p.name.clone()), PathState::Init);
     }
     match &c.body {
-        ClosureBody::Expr(e) => walk_expr(e, state, fctx, wctx)?,
+        ClosureBody::Expr(e) => walk_expr(e, state, fctx, wctx, dstack, loop_marker)?,
         ClosureBody::Suite(stmts) => {
-            walk_block(stmts, state, fctx, wctx)?;
+            walk_block(stmts, state, fctx, wctx, dstack, loop_marker)?;
         }
     }
     fctx.pop_scope();
@@ -876,16 +973,18 @@ fn receiver_of<'e>(callee: &'e Expr, fctx: &FnCtx, wctx: &WCtx) -> Option<(&'e E
 /// receiver — a plain type/fn name contributes nothing to check (no
 /// value read); a real value (a local holding a `fn`, or a scalar
 /// conversion's `x` in `x.to[T]()`) still needs its own validity check.
-fn walk_callee_base(
-    callee: &Expr,
+fn walk_callee_base<'a>(
+    callee: &'a Expr,
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     match callee {
         Expr::Name(_, name) => {
             if fctx.lookup_local(name).is_some() || wctx.mctx.consts.contains_key(name) {
-                walk_expr(callee, state, fctx, wctx)
+                walk_expr(callee, state, fctx, wctx, dstack, loop_marker)
             } else {
                 Ok(())
             }
@@ -899,20 +998,22 @@ fn walk_callee_base(
                     return Ok(());
                 }
             }
-            walk_expr(base, state, fctx, wctx)
+            walk_expr(base, state, fctx, wctx, dstack, loop_marker)
         }
-        Expr::Index(inner, _, _) => walk_callee_base(inner, state, fctx, wctx),
-        other => walk_expr(other, state, fctx, wctx),
+        Expr::Index(inner, _, _) => walk_callee_base(inner, state, fctx, wctx, dstack, loop_marker),
+        other => walk_expr(other, state, fctx, wctx, dstack, loop_marker),
     }
 }
 
-fn walk_call(
-    callee: &Expr,
+fn walk_call<'a>(
+    callee: &'a Expr,
     _span: Span,
-    args: &[Arg],
+    args: &'a [Arg],
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     let synthetic = is_synthetic_call(callee, fctx, wctx);
     let mut activated: Vec<StoragePath> = Vec::new();
@@ -929,9 +1030,11 @@ fn walk_call(
                 wctx,
                 false,
                 span,
+                dstack,
+                loop_marker,
             )?;
         }
-        None => walk_callee_base(callee, state, fctx, wctx)?,
+        None => walk_callee_base(callee, state, fctx, wctx, dstack, loop_marker)?,
     }
 
     for a in args {
@@ -944,6 +1047,8 @@ fn walk_call(
             wctx,
             synthetic,
             a.span,
+            dstack,
+            loop_marker,
         )?;
     }
     Ok(())
@@ -992,16 +1097,18 @@ fn merge_outcomes(outcomes: Vec<Outcome>) -> Outcome {
     }
 }
 
-fn walk_assign(
-    a: &AssignStmt,
+fn walk_assign<'a>(
+    a: &'a AssignStmt,
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     if a.op == AssignOp::Assign {
-        walk_storing_expr(&a.value, state, fctx, wctx)?;
+        walk_storing_expr(&a.value, state, fctx, wctx, dstack, loop_marker)?;
     } else {
-        walk_expr(&a.value, state, fctx, wctx)?;
+        walk_expr(&a.value, state, fctx, wctx, dstack, loop_marker)?;
     }
 
     if let Expr::Name(_, name) = &a.target {
@@ -1013,7 +1120,7 @@ fn walk_assign(
             fctx.insert_local(name.clone(), ty);
         }
     } else {
-        walk_place_subexprs(&a.target, state, fctx, wctx)?;
+        walk_place_subexprs(&a.target, state, fctx, wctx, dstack, loop_marker)?;
     }
 
     let Some(path) = as_path(&a.target, fctx) else {
@@ -1037,74 +1144,79 @@ fn is_err_return(e: &Expr) -> bool {
     matches!(e, Expr::Call(callee, _, _) if matches!(callee.as_ref(), Expr::Name(_, name) if name == "Err"))
 }
 
-fn walk_return(
+fn walk_return<'a>(
     span: Span,
-    e: &Option<Expr>,
+    e: &'a Option<Expr>,
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
     if let Some(expr) = e {
-        walk_storing_expr(expr, state, fctx, wctx)?;
+        walk_storing_expr(expr, state, fctx, wctx, dstack, loop_marker)?;
     }
+    // `return` exits the entire function: every currently active defer —
+    // the whole stack, from every enclosing block, not sliced by
+    // `loop_marker` — runs here, in reverse registration order
+    // (02-language.md §10). Checked unconditionally, including an
+    // `init`'s own `return Err(...)` (the ordinary local-cleanup rule
+    // for that path per §7.1 still includes any covering `defer`).
+    check_active_defers(dstack, "a `return` exit", state, fctx, wctx)?;
     if wctx.is_init && e.as_ref().is_some_and(is_err_return) {
         return Ok(());
     }
     check_exit_obligations(state, wctx, span)
 }
 
-fn walk_defer(
-    d: &DeferStmt,
+fn walk_stmt<'a>(
+    stmt: &'a Stmt,
     state: &StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
-) -> Result<(), SemaError> {
-    // Simplification (flagged in the session report): a `defer` body's
-    // named places are validated once, at registration, using the state
-    // at that point — not re-validated at every later exit the docs (§10)
-    // describe. A snapshot clone means this check never mutates the real
-    // state (the deferred action doesn't run here).
-    let mut snapshot = state.clone();
-    match &d.body {
-        DeferBody::Expr(e) => {
-            walk_expr(e, &mut snapshot, fctx, wctx)?;
-        }
-        DeferBody::Suite(stmts) => {
-            walk_block(stmts, &mut snapshot, fctx, wctx)?;
-        }
-    }
-    Ok(())
-}
-
-fn walk_stmt(
-    stmt: &Stmt,
-    state: &StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<Outcome, SemaError> {
     match stmt {
         Stmt::Assign(a) => {
             let mut st = state.clone();
-            walk_assign(a, &mut st, fctx, wctx)?;
+            walk_assign(a, &mut st, fctx, wctx, dstack, loop_marker)?;
             Ok(fallthrough(st))
         }
-        Stmt::If(i) => walk_if(i, state, fctx, wctx),
-        Stmt::Match(m) => walk_match(m, state, fctx, wctx),
-        Stmt::For(f) => walk_for(f, state, fctx, wctx),
-        Stmt::While(w) => walk_while(w, state, fctx, wctx),
-        Stmt::Break(_) => Ok(Outcome {
-            fallthrough: None,
-            breaks: vec![state.clone()],
-            continues: Vec::new(),
-        }),
-        Stmt::Continue(_) => Ok(Outcome {
-            fallthrough: None,
-            breaks: Vec::new(),
-            continues: vec![state.clone()],
-        }),
+        Stmt::If(i) => walk_if(i, state, fctx, wctx, dstack, loop_marker),
+        Stmt::Match(m) => walk_match(m, state, fctx, wctx, dstack, loop_marker),
+        Stmt::For(f) => walk_for(f, state, fctx, wctx, dstack, loop_marker),
+        Stmt::While(w) => walk_while(w, state, fctx, wctx, dstack, loop_marker),
+        Stmt::Break(_) => {
+            // `break` exits only the nearest enclosing loop, not the
+            // whole function: only defers registered since that loop was
+            // entered (`loop_marker`) run here — a defer registered in an
+            // enclosing block outside the loop stays pending for a later,
+            // real exit (02-language.md §10).
+            check_active_defers(&dstack[loop_marker..], "a `break` exit", state, fctx, wctx)?;
+            Ok(Outcome {
+                fallthrough: None,
+                breaks: vec![state.clone()],
+                continues: Vec::new(),
+            })
+        }
+        Stmt::Continue(_) => {
+            check_active_defers(
+                &dstack[loop_marker..],
+                "a `continue` exit",
+                state,
+                fctx,
+                wctx,
+            )?;
+            Ok(Outcome {
+                fallthrough: None,
+                breaks: Vec::new(),
+                continues: vec![state.clone()],
+            })
+        }
         Stmt::Return(span, e) => {
             let mut st = state.clone();
-            walk_return(*span, e, &mut st, fctx, wctx)?;
+            walk_return(*span, e, &mut st, fctx, wctx, dstack, loop_marker)?;
             Ok(Outcome {
                 fallthrough: None,
                 breaks: Vec::new(),
@@ -1114,14 +1226,21 @@ fn walk_stmt(
         Stmt::Pass(_) => Ok(fallthrough(state.clone())),
         Stmt::Assert(a) => {
             let mut st = state.clone();
-            walk_expr(&a.cond, &mut st, fctx, wctx)?;
+            walk_expr(&a.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
             if let Some(msg) = &a.message {
-                walk_expr(msg, &mut st, fctx, wctx)?;
+                walk_expr(msg, &mut st, fctx, wctx, dstack, loop_marker)?;
             }
             Ok(fallthrough(st))
         }
         Stmt::Defer(d) => {
-            walk_defer(d, state, fctx, wctx)?;
+            // Registration only (deliverable: 02-language.md §10's
+            // "verifies the places it names are valid at every exit," not
+            // at registration) — pushed onto the block-scoped stack;
+            // `walk_block` (this statement's own enclosing block) checks
+            // and pops it, and every real exit reached before that check
+            // (`return`/`?`/`break`/`continue`) re-validates it too, via
+            // `check_active_defers`.
+            dstack.push(d);
             Ok(fallthrough(state.clone()))
         }
         Stmt::With(_) | Stmt::Send(..) | Stmt::ComptimeIf(_) | Stmt::ComptimeAssert(..) => {
@@ -1132,27 +1251,42 @@ fn walk_stmt(
         }
         Stmt::Expr(_, e) => {
             let mut st = state.clone();
-            walk_expr(e, &mut st, fctx, wctx)?;
+            walk_expr(e, &mut st, fctx, wctx, dstack, loop_marker)?;
             Ok(fallthrough(st))
         }
     }
 }
 
-fn walk_block(
-    stmts: &[Stmt],
+/// Walks one block's own statements, threading `dstack` as a true call
+/// stack (02-language.md §10's "registers ... against the enclosing
+/// block"): defers registered directly by this block's own statements
+/// (not ones already popped by a nested block's own call) are, if this
+/// block completes normally, re-validated against exactly that
+/// completion state — the block's own fallthrough exit — in reverse
+/// registration order, then popped, so they stop being visible to
+/// whatever code follows this block once it returns (an early exit
+/// reached *during* this block's own walk was already checked in place,
+/// by `walk_stmt`'s `Return`/`Break`/`Continue` handling or `walk_expr`'s
+/// `?` handling, using `dstack` as it stood at that point).
+fn walk_block<'a>(
+    stmts: &'a [Stmt],
     state: &mut StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<Outcome, SemaError> {
+    let start = dstack.len();
     let mut breaks = Vec::new();
     let mut continues = Vec::new();
     for s in stmts {
-        let outcome = walk_stmt(s, state, fctx, wctx)?;
+        let outcome = walk_stmt(s, state, fctx, wctx, dstack, loop_marker)?;
         breaks.extend(outcome.breaks);
         continues.extend(outcome.continues);
         match outcome.fallthrough {
             Some(new_state) => *state = new_state,
             None => {
+                dstack.truncate(start);
                 return Ok(Outcome {
                     fallthrough: None,
                     breaks,
@@ -1161,6 +1295,14 @@ fn walk_block(
             }
         }
     }
+    check_active_defers(
+        &dstack[start..],
+        "this block's own normal completion",
+        state,
+        fctx,
+        wctx,
+    )?;
+    dstack.truncate(start);
     Ok(Outcome {
         fallthrough: Some(state.clone()),
         breaks,
@@ -1168,28 +1310,44 @@ fn walk_block(
     })
 }
 
-fn walk_if(
-    i: &IfStmt,
+fn walk_if<'a>(
+    i: &'a IfStmt,
     state: &StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<Outcome, SemaError> {
     let mut outcomes = Vec::new();
 
     let mut st = state.clone();
-    walk_expr(&i.cond, &mut st, fctx, wctx)?;
-    outcomes.push(walk_block(&i.then_branch, &mut st, fctx, wctx)?);
+    walk_expr(&i.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
+    outcomes.push(walk_block(
+        &i.then_branch,
+        &mut st,
+        fctx,
+        wctx,
+        dstack,
+        loop_marker,
+    )?);
 
     for elif in &i.elifs {
         let mut st = state.clone();
-        walk_expr(&elif.cond, &mut st, fctx, wctx)?;
-        outcomes.push(walk_block(&elif.body, &mut st, fctx, wctx)?);
+        walk_expr(&elif.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
+        outcomes.push(walk_block(
+            &elif.body,
+            &mut st,
+            fctx,
+            wctx,
+            dstack,
+            loop_marker,
+        )?);
     }
 
     match &i.else_branch {
         Some(body) => {
             let mut st = state.clone();
-            outcomes.push(walk_block(body, &mut st, fctx, wctx)?);
+            outcomes.push(walk_block(body, &mut st, fctx, wctx, dstack, loop_marker)?);
         }
         None => outcomes.push(fallthrough(state.clone())),
     }
@@ -1204,14 +1362,16 @@ fn walk_if(
 /// still gets rejected, just by `matches.rs`'s own diagnostic once flow
 /// finishes; flow merely doesn't manufacture a spurious extra edge for a
 /// case that (if real) is caught downstream anyway.
-fn walk_match(
-    m: &MatchStmt,
+fn walk_match<'a>(
+    m: &'a MatchStmt,
     state: &StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
 ) -> Result<Outcome, SemaError> {
     let mut entry = state.clone();
-    walk_expr(&m.scrutinee, &mut entry, fctx, wctx)?;
+    walk_expr(&m.scrutinee, &mut entry, fctx, wctx, dstack, loop_marker)?;
     let sty = bodies::check_expr(&m.scrutinee, None, fctx, wctx.mctx)?;
 
     let mut outcomes = Vec::new();
@@ -1221,9 +1381,16 @@ fn walk_match(
         bodies::check_pattern(&arm.pattern, &sty, fctx, wctx.mctx)?;
         seed_pattern_bindings(&arm.pattern, &mut st);
         if let Some(g) = &arm.guard {
-            walk_expr(g, &mut st, fctx, wctx)?;
+            walk_expr(g, &mut st, fctx, wctx, dstack, loop_marker)?;
         }
-        outcomes.push(walk_block(&arm.body, &mut st, fctx, wctx)?);
+        outcomes.push(walk_block(
+            &arm.body,
+            &mut st,
+            fctx,
+            wctx,
+            dstack,
+            loop_marker,
+        )?);
     }
     Ok(merge_outcomes(outcomes))
 }
@@ -1266,20 +1433,28 @@ fn prune_loop_locals(st: &mut StateMap, baseline_roots: &BTreeSet<String>) {
     st.retain(|p, _| baseline_roots.contains(&p.root));
 }
 
-fn walk_while(
-    w: &WhileStmt,
+fn walk_while<'a>(
+    w: &'a WhileStmt,
     state: &StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    _loop_marker: usize,
 ) -> Result<Outcome, SemaError> {
+    // A fresh loop boundary for `break`/`continue` inside this loop's own
+    // body: only defers registered from here on (this loop's own body,
+    // per iteration — see the module doc comment's "Loops" note) are
+    // theirs to run; a defer registered by an enclosing block stays
+    // pending for whatever real exit eventually reaches it.
+    let body_marker = dstack.len();
     let baseline_roots: BTreeSet<String> = state.keys().map(|p| p.root.clone()).collect();
     let mut candidate = state.clone();
     let mut out = fallthrough(state.clone());
     for _ in 0..LOOP_FIXED_POINT_CAP {
         let mut st = candidate.clone();
         prune_loop_locals(&mut st, &baseline_roots);
-        walk_expr(&w.cond, &mut st, fctx, wctx)?;
-        let o = walk_block(&w.body, &mut st, fctx, wctx)?;
+        walk_expr(&w.cond, &mut st, fctx, wctx, dstack, body_marker)?;
+        let o = walk_block(&w.body, &mut st, fctx, wctx, dstack, body_marker)?;
         let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
         let converged = next == candidate;
         candidate = next;
@@ -1326,11 +1501,13 @@ fn for_elem_type(f: &ForStmt, fctx: &mut FnCtx, wctx: &WCtx) -> Result<Type, Sem
     }
 }
 
-fn walk_for(
-    f: &ForStmt,
+fn walk_for<'a>(
+    f: &'a ForStmt,
     state: &StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    _loop_marker: usize,
 ) -> Result<Outcome, SemaError> {
     let mut entry = state.clone();
     let elem_ty = for_elem_type(f, fctx, wctx)?;
@@ -1338,18 +1515,20 @@ fn walk_for(
 
     // The iterable is evaluated exactly once (02-language.md §8.1),
     // before the loop; `for take x in take arr` consumes the array
-    // (decision 9).
+    // (decision 9). A fresh loop boundary for `break`/`continue` inside
+    // the body, same reasoning as `walk_while`.
+    let body_marker = dstack.len();
     if let Expr::Unary(span, UnaryOp::Take, inner) = &f.iterable {
         match as_path(inner, fctx) {
             Some(path) => {
-                walk_place_subexprs(inner, &mut entry, fctx, wctx)?;
+                walk_place_subexprs(inner, &mut entry, fctx, wctx, dstack, body_marker)?;
                 check_takeable(&path, &entry, wctx, *span)?;
                 set_state(&path, &mut entry, PathState::Moved);
             }
-            None => walk_expr(inner, &mut entry, fctx, wctx)?,
+            None => walk_expr(inner, &mut entry, fctx, wctx, dstack, body_marker)?,
         }
     } else {
-        walk_expr(&f.iterable, &mut entry, fctx, wctx)?;
+        walk_expr(&f.iterable, &mut entry, fctx, wctx, dstack, body_marker)?;
     }
 
     let baseline_roots: BTreeSet<String> = entry.keys().map(|p| p.root.clone()).collect();
@@ -1359,7 +1538,7 @@ fn walk_for(
         let mut st = candidate.clone();
         prune_loop_locals(&mut st, &baseline_roots);
         st.insert(StoragePath::root(f.name.clone()), PathState::Init);
-        let o = walk_block(&f.body, &mut st, fctx, wctx)?;
+        let o = walk_block(&f.body, &mut st, fctx, wctx, dstack, body_marker)?;
         let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
         let converged = next == candidate;
         candidate = next;
@@ -1463,7 +1642,8 @@ pub(crate) fn check_top_fn(
         is_init: false,
     };
 
-    let outcome = walk_block(body, &mut state, &mut fctx, &wctx)?;
+    let mut dstack: DStack = Vec::new();
+    let outcome = walk_block(body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
     check_body_exit(&outcome, &fctx, &wctx, f.span)
 }
 
@@ -1521,7 +1701,8 @@ pub(crate) fn check_struct_members(
                     is_init: false,
                 };
 
-                let outcome = walk_block(body, &mut state, &mut fctx, &wctx)?;
+                let mut dstack: DStack = Vec::new();
+                let outcome = walk_block(body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
                 check_body_exit(&outcome, &fctx, &wctx, f.span)?;
             }
             (Member::Init(i), types::DeclMember::Init(fd)) => {
@@ -1564,7 +1745,8 @@ pub(crate) fn check_struct_members(
                     is_init: true,
                 };
 
-                let outcome = walk_block(&i.body, &mut state, &mut fctx, &wctx)?;
+                let mut dstack: DStack = Vec::new();
+                let outcome = walk_block(&i.body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
                 check_body_exit(&outcome, &fctx, &wctx, i.span)?;
             }
             _ => {}

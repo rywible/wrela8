@@ -1,0 +1,8 @@
+Module path=examples.defer_exits
+  Struct Packet resource
+    field size: u64
+    init(mut self, size: read u64) -> unit
+  Fn refill(size: read u64) -> Packet
+  Fn take_and_restore(p: take Packet, cond: read bool) -> u64
+  Fn restore_before_any_exit(p: take Packet, cond: read bool) -> u64
+  Fn defer_after_conditional_restore(p: take Packet, cond: read bool) -> u64

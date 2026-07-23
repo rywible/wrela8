@@ -1,0 +1,2 @@
+error[move]: `p.size` was already taken at 11:15
+  this `defer` must be valid at every exit, including a `return` exit
