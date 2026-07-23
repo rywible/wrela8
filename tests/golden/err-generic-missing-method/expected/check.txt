@@ -1,0 +1,3 @@
+error[generic]: `hash_pair[Sector]` requires `Sector.hash(read self) -> u64`
+  required by `a.hash()` at /Users/ryanwible/projects/wrela8/tests/golden/err-generic-missing-method/input.wr:7
+  instantiated at /Users/ryanwible/projects/wrela8/tests/golden/err-generic-missing-method/input.wr:10

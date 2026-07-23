@@ -1,0 +1,8 @@
+module examples.err_generic_const_arg
+
+pub struct Ring[T, const N: usize]:
+    items: [Option[T]; N]
+
+pub fn make() -> u64:
+    r = Ring[u64, 4 + 4]([None, None])
+    return 0

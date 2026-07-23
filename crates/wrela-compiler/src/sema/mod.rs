@@ -38,12 +38,26 @@ use crate::syntax::ast::{Module, Span};
 /// `access`, `move`, `init`, `overlap`, `match`, `generic`,
 /// `unimplemented` — so a `&'static str` is enough; no enum is needed
 /// (decision 4: dumb, no seams for their own sake).
+///
+/// The one multi-line exception (decision 2, item H): a generic
+/// instantiation's requirement-chain diagnostic needs more than one line.
+/// Rather than growing a second error type, this struct carries two extra
+/// fields that stay empty/false for every other diagnostic in the
+/// compiler: `extra_lines` (already-rendered, already-indented lines
+/// appended after the primary line — the `required by`/`instantiated at`
+/// chain) and `omit_location` (true only for the chain's own primary
+/// line, which carries no ` at L:C` suffix at all — its location is the
+/// `required by` line instead). The CLI (`wrela.rs`) and the fuzzer/bench
+/// harness (`xtask`) both print through these two fields so a plain
+/// one-line diagnostic renders exactly as before.
 #[derive(Debug)]
 pub struct SemaError {
     pub category: &'static str,
     pub message: String,
     pub line: u32,
     pub col: u32,
+    pub extra_lines: Vec<String>,
+    pub omit_location: bool,
 }
 
 impl SemaError {
@@ -53,6 +67,8 @@ impl SemaError {
             message,
             line: span.line,
             col: span.col,
+            extra_lines: Vec::new(),
+            omit_location: false,
         }
     }
 }
@@ -73,16 +89,25 @@ pub fn unimplemented_at(subject: &str, span: Span) -> SemaError {
 /// Runs the sema pipeline in frozen pass order (decision 3) and returns
 /// the first diagnostic, if any. Item A lands collect + resolve; item B
 /// adds declare (types.rs: every signature's types, data-vs-resource
-/// classification, `deriving` validation). `bodies`/`access`/`flow`/
-/// `matches`/`generics` all land as later items wire their stub into
-/// this pipeline.
-pub fn check(module: &Module) -> Result<(), SemaError> {
+/// classification, `deriving` validation). `bodies`/`access`/`matches`
+/// all share one `ModuleCtx` (built once here) so item H's instantiation
+/// queue (`bodies::ModuleCtx::generics_queue`) accumulates every generic
+/// use discovered by any of them; `generics::check` (item H) then drains
+/// it. `flow` (items E/F) is still a stub.
+///
+/// `path` is the file path exactly as given to `wrela dump` — item H's
+/// requirement-chain diagnostic cites it verbatim for both its `required
+/// by`/`instantiated at` locations (decision 2; the M2 CLI checks one
+/// file, so every location in a chain is in the same file).
+pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
     let symtab = symbols::collect(module)?;
     symbols::resolve(module, &symtab)?;
     let decl_items = types::declare(module)?;
-    bodies::check(module, &decl_items)?;
-    access::check(module, &decl_items)?;
-    matches::check(module, &decl_items)?;
+    let mctx = bodies::build_module_ctx(module, &decl_items);
+    bodies::check(module, &decl_items, &mctx)?;
+    access::check(module, &decl_items, &mctx)?;
+    matches::check(module, &decl_items, &mctx)?;
+    generics::check(module, &decl_items, &mctx, path)?;
     Ok(())
 }
 

@@ -16,22 +16,88 @@
 //! plain copies of every declared item's ast + resolved-type pair
 //! instead of borrowing, so no lifetime threads through the whole file.
 //!
-//! Generic declarations (item H's territory) are not type-checked here:
-//! a generic struct/enum's members, and a generic fn/method's body, are
-//! skipped entirely (no error — just not visited); a *use* of a generic
-//! type/fn from a non-generic body that needs anything beyond structural
-//! equality (field/method/variant lookup, a call) fails closed via
-//! `unimplemented_at("generic instantiation is", ...)`.
+//! A generic declaration's *own* body is still not type-checked here: a
+//! generic struct/enum's members, and a generic fn/method's body, are
+//! skipped entirely (no error — just not visited) by `check_top_fn`/
+//! `check_struct_bodies` below. A *use* of a generic type/fn from a
+//! non-generic body (a construction, a call — explicit `[Args]` or, for
+//! a top-level generic `fn`, inferred — a field/method/variant lookup
+//! through an already-typed value) now resolves the concrete
+//! instantiation and enqueues it (item H, `generics.rs` owns
+//! substitution + the queue + the actual per-instantiation checking,
+//! `mod.rs::check` runs it last). What still fails closed via
+//! `unimplemented_at("generic instantiation is", ...)` is item H's own
+//! documented scope boundary: a generic *method* (its own `[...]`,
+//! beyond its struct's, if any — never instantiated), a bare reference to
+//! a generic type/fn as a first-class value without calling it, and a
+//! generic-argument shape deeper than this item resolves.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::sema::types::{self, Classification, DeclMember, DeclParam, DeclVariantPayload, Type};
+use crate::sema::generics;
+use crate::sema::types::{
+    self, Classification, DeclMember, DeclParam, DeclVariantPayload, Type, TypeArg,
+};
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
     ComptimeIfStmt, DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module,
     Pattern, Span, Stmt, UnaryOp, WhileStmt, WithStmt,
 };
+
+// --- item H: the generic-instantiation queue ------------------------------
+//
+// "Typing a `Generic[Args]` use enqueues the concrete instantiation"
+// (plans/M2.md item H): every fail-closed generic-instantiation point this
+// pass used to have now instead resolves the concrete use (`generics.rs`
+// owns substitution) and registers it here, keyed by a canonical
+// `"<kind>:<name>[<args>]"` string (decision 1's "BTreeSet-keyed by name +
+// resolved args", realized as a `BTreeMap` so the first discovery's call
+// site — the one used for the "instantiated at" chain — is kept rather
+// than overwritten by a later, redundant use of the same instantiation).
+// `current_chain` is the "instantiated at" stack this exact walk is
+// running under: empty for the module's own (non-generic) bodies, and set
+// by `generics::check` (via `with_chain`, below) while it re-runs this
+// same pass over one instantiation's substituted declaration — so a
+// generic use *discovered while checking an instantiation* enqueues with
+// that instantiation's own chain plus one more frame, which is exactly
+// how a nested instantiation's diagnostic gets one `instantiated at` line
+// per level (decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum InstKind {
+    Struct,
+    Enum,
+    Fn,
+}
+
+impl InstKind {
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            InstKind::Struct => "struct",
+            InstKind::Enum => "enum",
+            InstKind::Fn => "fn",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueuedInstantiation {
+    pub(crate) kind: InstKind,
+    pub(crate) name: String,
+    pub(crate) args: Vec<types::TypeArg>,
+    /// The instantiation chain leading to this one, outermost first,
+    /// this instantiation's own triggering call site last (decision 2:
+    /// "one `instantiated at` line per level, innermost first" — printed
+    /// by reversing this).
+    pub(crate) chain: Vec<Span>,
+}
+
+/// Fixed recursion cap on the instantiation chain (item H): a cycle or a
+/// genuinely unbounded generic recursion both hit this before the process
+/// stack would. Deliberately small and fixed — no measurement, no
+/// configuration (ROADMAP.md's "dumbness is permanent").
+pub(crate) const MAX_GENERIC_DEPTH: usize = 64;
 
 // --- module-wide lookup context ------------------------------------------
 
@@ -46,7 +112,11 @@ use crate::syntax::ast::{
 // bodies with the declared signatures exactly like this pass does, so it
 // reuses this same lookup context wholesale (`build_module_ctx`) rather
 // than duplicating struct/enum/fn table construction — nothing here is
-// restructured, only exposed.
+// restructured, only exposed. `Clone` (item H, generics.rs): a generic
+// instantiation's substituted `StructInfo` is built fresh (owned) per
+// use, so callers that also handle the plain (borrowed, from `mctx`)
+// case need both to fit one `Cow`-typed local.
+#[derive(Clone)]
 pub(crate) struct StructInfo {
     pub(crate) decl: types::DeclStruct,
     pub(crate) ast_members: Vec<Member>,
@@ -119,6 +189,23 @@ pub(crate) struct ModuleCtx {
     pub(crate) enums: BTreeMap<String, types::DeclEnum>,
     pub(crate) fns: BTreeMap<String, FnInfo>,
     pub(crate) consts: BTreeMap<String, Type>,
+    /// Every module-level `const`'s own initializer expression, by name
+    /// (item H, generics.rs): a const generic argument may spell a bare
+    /// `const` name (decision 4), so evaluating it needs the *value*, not
+    /// just the type `consts` above already carries.
+    pub(crate) const_values: BTreeMap<String, Expr>,
+    /// Item H's instantiation worklist — see the module-level doc comment
+    /// above `InstKind`. Interior mutability (`RefCell`) is deliberate: it
+    /// lets every existing check function go on taking `&ModuleCtx`
+    /// unchanged (decision 10's minimal-footprint rule) while still
+    /// accumulating instantiation requests discovered arbitrarily deep in
+    /// the walk.
+    pub(crate) generics_queue: RefCell<BTreeMap<String, QueuedInstantiation>>,
+    /// The instantiation chain the *current* walk over this `ModuleCtx`
+    /// is running under — empty for the module's own bodies, set by
+    /// `generics::check` while re-running this pass over a substituted
+    /// declaration. See the module-level doc comment above `InstKind`.
+    pub(crate) current_chain: RefCell<Vec<Span>>,
 }
 
 impl ModuleCtx {
@@ -153,6 +240,7 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
     let mut enums = BTreeMap::new();
     let mut fns = BTreeMap::new();
     let mut consts = BTreeMap::new();
+    let mut const_values = BTreeMap::new();
 
     let ast_items: Vec<&Item> = module
         .items
@@ -193,6 +281,7 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
             }
             (Item::Const(c), types::DeclItem::Const(d)) => {
                 consts.insert(c.name.clone(), d.ty.clone());
+                const_values.insert(c.name.clone(), c.value.clone());
             }
             (Item::Pool(p), types::DeclItem::Pool(_)) => {
                 module_pools.insert(p.name.clone());
@@ -208,7 +297,51 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
         enums,
         fns,
         consts,
+        const_values,
+        generics_queue: RefCell::new(BTreeMap::new()),
+        current_chain: RefCell::new(Vec::new()),
     }
+}
+
+/// Registers one concrete instantiation (item H): builds the canonical
+/// key (decision 1), checks the recursion depth cap against `mctx`'s
+/// *current* chain (the instantiation(s) already being checked when this
+/// use was discovered — empty for an ordinary module-level use), and
+/// inserts it if this exact `(kind, name, args)` has not been seen yet —
+/// first discovery wins the recorded call site, which is what makes the
+/// eventual "instantiated at" chain deterministic when the same
+/// instantiation is used from more than one place. Returns the canonical
+/// key either way, so a caller that only needs "has this been queued"
+/// doesn't have to re-render it.
+pub(crate) fn enqueue_instantiation(
+    mctx: &ModuleCtx,
+    kind: InstKind,
+    name: &str,
+    args: &[types::TypeArg],
+    call_span: Span,
+) -> Result<String, SemaError> {
+    let key = generics::canonical_key(kind, name, args);
+    let mut chain = mctx.current_chain.borrow().clone();
+    chain.push(call_span);
+    if chain.len() > MAX_GENERIC_DEPTH {
+        return Err(SemaError::at(
+            "generic",
+            format!(
+                "instantiation depth exceeded {MAX_GENERIC_DEPTH} while instantiating `{name}`"
+            ),
+            call_span,
+        ));
+    }
+    mctx.generics_queue
+        .borrow_mut()
+        .entry(key.clone())
+        .or_insert_with(|| QueuedInstantiation {
+            kind,
+            name: name.to_string(),
+            args: args.to_vec(),
+            chain,
+        });
+    Ok(key)
 }
 
 // --- per-body checking context -------------------------------------------
@@ -310,9 +443,20 @@ fn bind_local(fctx: &mut FnCtx, name: &str, ty: Type, span: Span) -> Result<(), 
 /// each top-level `const`/`fn`/`struct`, checks its body/bodies; `enum`
 /// and `pool` items have none. A generic declaration's own body (or a
 /// generic member's, inside an otherwise-concrete struct) is skipped —
-/// not an error, just unchecked (item H's job).
-pub fn check(module: &Module, decl_items: &[types::DeclItem]) -> Result<(), SemaError> {
-    let mctx = build_module_ctx(module, decl_items);
+/// not an error, just unchecked; item H (`generics::check`, run by
+/// `mod.rs::check` right after `matches::check`) checks each one exactly
+/// once, concretely, for every instantiation this walk (or item D's/G's
+/// re-walks of the same module) discovers and enqueues into `mctx`.
+///
+/// `mctx` is built once by the caller (`mod.rs::check`) and shared with
+/// `access::check`/`matches::check`/`generics::check` so item H's
+/// instantiation queue accumulates across all of them (see the doc
+/// comment on `InstKind` above).
+pub(crate) fn check(
+    module: &Module,
+    decl_items: &[types::DeclItem],
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
     let ast_items: Vec<&Item> = module
         .items
         .iter()
@@ -322,10 +466,10 @@ pub fn check(module: &Module, decl_items: &[types::DeclItem]) -> Result<(), Sema
         match (ai, di) {
             (Item::Const(c), types::DeclItem::Const(d)) => {
                 let mut fctx = FnCtx::new(Type::Unit, mctx.module_pools.clone());
-                check_expr(&c.value, Some(&d.ty), &mut fctx, &mctx)?;
+                check_expr(&c.value, Some(&d.ty), &mut fctx, mctx)?;
             }
-            (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, &mctx)?,
-            (Item::Struct(s), types::DeclItem::Struct(d)) => check_struct_bodies(s, d, &mctx)?,
+            (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, mctx)?,
+            (Item::Struct(s), types::DeclItem::Struct(d)) => check_struct_bodies(s, d, mctx)?,
             _ => {}
         }
     }
@@ -336,7 +480,18 @@ fn is_image_fn(f: &ast::FnItem) -> bool {
     f.attrs.iter().any(|a| a.name == "image")
 }
 
-fn check_top_fn(f: &ast::FnItem, d: &types::DeclFn, mctx: &ModuleCtx) -> Result<(), SemaError> {
+/// `pub(crate)` (item H, generics.rs): re-run verbatim over a
+/// substituted, generics-cleared copy of a generic fn/method's own ast
+/// (`generics::instantiate_fn`) — the "dumbest workable shape" plans/M2.md
+/// item H asks for. Nothing below reads `f.generics` for anything but
+/// this guard, so a cleared copy behaves exactly like a real non-generic
+/// declaration; every type it needs instead comes from `d`, which the
+/// caller has already substituted.
+pub(crate) fn check_top_fn(
+    f: &ast::FnItem,
+    d: &types::DeclFn,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
     if is_image_fn(f) {
         // The whole declaration is unchecked (decision 7): the image
         // constructor's semantics (device/actor/pool wiring) are M4's.
@@ -353,7 +508,7 @@ fn check_top_fn(f: &ast::FnItem, d: &types::DeclFn, mctx: &ModuleCtx) -> Result<
     Ok(())
 }
 
-fn check_params_with_defaults(
+pub(crate) fn check_params_with_defaults(
     ast_params: &[ast::Param],
     decl_params: &[DeclParam],
     fctx: &mut FnCtx,
@@ -376,16 +531,33 @@ fn check_struct_bodies(
     if !s.generics.is_empty() {
         return Ok(()); // generic struct: item H's job, not checked here.
     }
+    let info = mctx.structs.get(&s.name).expect("struct present in mctx");
     let self_ty = Type::Named(s.name.clone(), vec![]);
-    let local_pools: BTreeSet<String> = s
-        .members
+    check_struct_members(info, self_ty, mctx)
+}
+
+/// `pub(crate)` (item H, generics.rs): the guts of `check_struct_bodies`,
+/// pulled out to take a `StructInfo` (and its `self_ty`) directly instead
+/// of looking either up by name in `mctx` — `mctx.structs` only ever
+/// holds each struct's *declared* (unsubstituted) shape, never a
+/// substituted instantiation's, so item H's own re-run needs to hand this
+/// its already-substituted `StructInfo` straight through rather than
+/// stashing it under a name this function would then have to re-look-up.
+/// `check_struct_bodies` above is now just this with the ordinary
+/// (non-generic, `self_ty = Type::Named(name, [])`) case wired in.
+pub(crate) fn check_struct_members(
+    info: &StructInfo,
+    self_ty: Type,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    let local_pools: BTreeSet<String> = info
+        .ast_members
         .iter()
         .filter_map(|m| match m {
             Member::Pool(p) => Some(p.name.clone()),
             _ => None,
         })
         .collect();
-    let info = mctx.structs.get(&s.name).expect("struct present in mctx");
     for (am, dm) in info.members() {
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(df)) => {
@@ -836,9 +1008,6 @@ fn variant_payload_types_for(
             }
         }
         Type::Named(name, targs) => {
-            if !targs.is_empty() {
-                return Err(unimplemented_at("generic instantiation is", span));
-            }
             if let Some(n) = enum_name {
                 if n != name {
                     return Err(type_error(
@@ -847,8 +1016,16 @@ fn variant_payload_types_for(
                     ));
                 }
             }
-            let Some(e) = mctx.enums.get(name) else {
-                return Err(type_error(format!("`{name}` is not an enum"), span));
+            // A generic enum instantiation (item H): substitute + enqueue
+            // it, then read the (now concrete) variant off the
+            // substituted declaration instead of the declared one.
+            let e = if targs.is_empty() {
+                match mctx.enums.get(name) {
+                    Some(e) => e.clone(),
+                    None => return Err(type_error(format!("`{name}` is not an enum"), span)),
+                }
+            } else {
+                generics::instantiate_enum(mctx, name, targs, span)?
             };
             let Some(dv) = e.variants.iter().find(|v| v.name == variant) else {
                 return Err(type_error(
@@ -1079,7 +1256,7 @@ fn synth_name(
     }
 }
 
-fn fn_value_type(d: &types::DeclFn) -> Type {
+pub(crate) fn fn_value_type(d: &types::DeclFn) -> Type {
     let params = d.params.iter().map(|p| (p.mode, p.ty.clone())).collect();
     Type::Fn(params, Box::new(d.ret.clone()))
 }
@@ -1141,14 +1318,21 @@ fn check_field_expr(
     let base_ty = unwrap_own(check_expr(base, None, fctx, mctx)?);
     match &base_ty {
         Type::Named(sname, targs) => {
-            if !targs.is_empty() {
-                return Err(unimplemented_at("generic instantiation is", span));
-            }
-            let Some(s) = mctx.structs.get(sname.as_str()) else {
-                return Err(type_error(
-                    format!("type `{sname}` has no field `{name}`"),
-                    span,
-                ));
+            // A generic instantiation's field (item H): substitute +
+            // enqueue it, then read the field's (now concrete) type off
+            // the substituted declaration instead of the declared one.
+            let s = if targs.is_empty() {
+                match mctx.structs.get(sname.as_str()) {
+                    Some(s) => std::borrow::Cow::Borrowed(s),
+                    None => {
+                        return Err(type_error(
+                            format!("type `{sname}` has no field `{name}`"),
+                            span,
+                        ));
+                    }
+                }
+            } else {
+                std::borrow::Cow::Owned(generics::instantiate_struct(mctx, sname, targs, span)?)
             };
             if let Some(ty) = s.field_ty(name) {
                 return Ok(ty);
@@ -1414,7 +1598,7 @@ fn check_int_range(value: i128, ty: &Type, span: Span) -> Result<(), SemaError> 
     Ok(())
 }
 
-fn parse_int_literal(text: &str) -> Option<i128> {
+pub(crate) fn parse_int_literal(text: &str) -> Option<i128> {
     let cleaned: String = text.chars().filter(|c| *c != '_').collect();
     let (radix, digits): (u32, &str) = if let Some(d) = cleaned
         .strip_prefix("0x")
@@ -1567,9 +1751,6 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
                 return Ok(ty);
             }
             if let Type::Named(name, targs) = &ty {
-                if !targs.is_empty() {
-                    return Err(unimplemented_at("generic instantiation is", span));
-                }
                 let method = match op {
                     Add => "add",
                     Sub => "subtract",
@@ -1578,7 +1759,7 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
                     Rem => "remainder",
                     _ => unreachable!(),
                 };
-                return resolve_operator_method(name, method, &ty, mctx, span);
+                return resolve_operator_method(name, targs, method, &ty, mctx, span);
             }
             Err(type_error(
                 format!(
@@ -1621,11 +1802,8 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
                 return Ok(Type::Bool);
             }
             if let Type::Named(name, targs) = &ty {
-                if !targs.is_empty() {
-                    return Err(unimplemented_at("generic instantiation is", span));
-                }
                 if op == Lt {
-                    let ret = resolve_operator_method(name, "less_than", &ty, mctx, span)?;
+                    let ret = resolve_operator_method(name, targs, "less_than", &ty, mctx, span)?;
                     if ret != Type::Bool {
                         return Err(type_error(
                             format!("`{name}.less_than` must return `bool`"),
@@ -1666,7 +1844,7 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
 /// struct/enum in `mctx`) to answer the one question the operator pass
 /// needs: is this composite type's structural `==` forbidden because it
 /// (transitively) contains a resource?
-fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
+pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
     match ty {
         Type::Own(..) => true,
         Type::Static(_) => false,
@@ -1690,19 +1868,32 @@ fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
 
 /// Resolves `<type-name>.<method>` as an operator-desugar target
 /// (05-library.md §8 shape: `fn <method>(read self, right: <Self>) ->
-/// R`), returning the method's declared result type `R`.
+/// R`), returning the method's declared result type `R`. `targs` is the
+/// operand's own (possibly empty) generic argument list (item H): a
+/// non-empty one substitutes + enqueues the concrete instantiation first
+/// (`generics::instantiate_struct`), so the shape check below runs
+/// against the concrete method exactly like it does for a non-generic
+/// operand.
 fn resolve_operator_method(
     name: &str,
+    targs: &[TypeArg],
     method: &str,
     self_ty: &Type,
     mctx: &ModuleCtx,
     span: Span,
 ) -> Result<Type, SemaError> {
-    let Some(s) = mctx.structs.get(name) else {
-        return Err(type_error(
-            format!("type `{name}` has no operator method `{method}`"),
-            span,
-        ));
+    let s = if targs.is_empty() {
+        match mctx.structs.get(name) {
+            Some(s) => std::borrow::Cow::Borrowed(s),
+            None => {
+                return Err(type_error(
+                    format!("type `{name}` has no operator method `{method}`"),
+                    span,
+                ));
+            }
+        }
+    } else {
+        std::borrow::Cow::Owned(generics::instantiate_struct(mctx, name, targs, span)?)
     };
     let Some((_, d)) = s.method(method) else {
         return Err(type_error(
@@ -1953,8 +2144,13 @@ fn check_call(
 
 /// Callee shaped `expr[targs](args)` — either a scalar conversion
 /// (`x.to[T]()`, `x.checked_to[T]()`, `x.truncate_to[T]()`) or a generic
-/// instantiation (`Ring[Sector, 4](...)`, `hash_pair[Sector](...)`); the
-/// latter always fails closed (item H).
+/// instantiation with explicit arguments (`Ring[Sector, 4](...)`,
+/// `hash_pair[Sector](...)`, item H): the latter resolves `targs` (raw
+/// `Expr`s — `generics::resolve_call_targs`), substitutes + enqueues the
+/// concrete instantiation, and checks the call against the substituted
+/// signature exactly like the non-generic path does. A generic *method*
+/// called this way (`x.method[Args](...)`) is item H's documented scope
+/// boundary and still fails closed.
 fn check_call_index(
     inner: &Expr,
     ispan: Span,
@@ -1999,6 +2195,27 @@ fn check_call_index(
             })?;
             return Ok(target);
         }
+        // `x.method[Args](...)`: a generic method call — item H's scope
+        // boundary, documented above.
+        return Err(unimplemented_at("generic instantiation is", call_span));
+    }
+    if let Expr::Name(_, name) = inner {
+        if fctx.lookup_local(name).is_none() {
+            if let Some(fi) = mctx.fns.get(name) {
+                if !fi.decl.generics.is_empty() {
+                    let type_args = generics::resolve_call_targs(targs, mctx)?;
+                    let fi = generics::instantiate_fn(mctx, name, &type_args, call_span)?;
+                    check_call_args(&fi.ast.params, &fi.decl.params, args, call_span, fctx, mctx)?;
+                    return Ok(fi.decl.ret);
+                }
+            } else if let Some(si) = mctx.structs.get(name) {
+                if !si.decl.generics.is_empty() {
+                    let type_args = generics::resolve_call_targs(targs, mctx)?;
+                    let si = generics::instantiate_struct(mctx, name, &type_args, call_span)?;
+                    return check_struct_construction(&si, args, call_span, fctx, mctx);
+                }
+            }
+        }
     }
     Err(unimplemented_at("generic instantiation is", call_span))
 }
@@ -2010,7 +2227,7 @@ fn scalar_type_by_name_expr(e: &Expr) -> Option<Type> {
     }
 }
 
-fn scalar_type_by_name(name: &str) -> Option<Type> {
+pub(crate) fn scalar_type_by_name(name: &str) -> Option<Type> {
     Some(match name {
         "bool" => Type::Bool,
         "u8" => Type::U8,
@@ -2052,14 +2269,30 @@ fn check_call_by_name(
     }
     if let Some(f) = mctx.fns.get(name) {
         if !f.decl.generics.is_empty() {
-            return Err(unimplemented_at("generic instantiation is", call_span));
+            // `name(args)`, no explicit `[Args]` — item H/item 2's
+            // inference: a type parameter used directly as a parameter's
+            // own type is inferred from that argument's synthesized
+            // type; anything else (a const parameter, an uninferable or
+            // mismatched type parameter) reports `error[generic]` naming
+            // the parameter, per item 2.
+            let type_args = generics::infer_fn_targs(f, args, fctx, mctx, call_span)?;
+            let fi = generics::instantiate_fn(mctx, name, &type_args, call_span)?;
+            check_call_args(&fi.ast.params, &fi.decl.params, args, call_span, fctx, mctx)?;
+            return Ok(fi.decl.ret);
         }
         check_call_args(&f.ast.params, &f.decl.params, args, call_span, fctx, mctx)?;
         return Ok(f.decl.ret.clone());
     }
     if let Some(s) = mctx.structs.get(name) {
         if !s.decl.generics.is_empty() {
-            return Err(unimplemented_at("generic instantiation is", call_span));
+            // Struct construction has no inference (only `fn` calls do,
+            // 02-language.md §6.3/§7.3) — explicit `Name[Args](...)` is
+            // always required.
+            return Err(SemaError::at(
+                "generic",
+                format!("`{name}` requires explicit `[Args]`"),
+                call_span,
+            ));
         }
         return check_struct_construction(s, args, call_span, fctx, mctx);
     }
@@ -2174,14 +2407,23 @@ fn check_call_by_field(
     let base_ty = unwrap_own(check_expr(base, None, fctx, mctx)?);
     match &base_ty {
         Type::Named(sname, targs) => {
-            if !targs.is_empty() {
-                return Err(unimplemented_at("generic instantiation is", call_span));
-            }
-            let Some(s) = mctx.structs.get(sname.as_str()) else {
-                return Err(type_error(
-                    format!("type `{sname}` has no method `{name}`"),
-                    fspan,
-                ));
+            // A method call through a generic instantiation (item H):
+            // substitute + enqueue it, then check the call against the
+            // substituted method's (now concrete) signature.
+            let s = if targs.is_empty() {
+                match mctx.structs.get(sname.as_str()) {
+                    Some(s) => std::borrow::Cow::Borrowed(s),
+                    None => {
+                        return Err(type_error(
+                            format!("type `{sname}` has no method `{name}`"),
+                            fspan,
+                        ));
+                    }
+                }
+            } else {
+                std::borrow::Cow::Owned(generics::instantiate_struct(
+                    mctx, sname, targs, call_span,
+                )?)
             };
             let Some((mf, d)) = s.method(name) else {
                 return Err(type_error(
@@ -2190,6 +2432,9 @@ fn check_call_by_field(
                 ));
             };
             if !d.generics.is_empty() {
+                // A generic *method* (its own `[...]`, beyond the
+                // struct's, if any) is item H's documented scope
+                // boundary.
                 return Err(unimplemented_at("generic instantiation is", call_span));
             }
             check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;

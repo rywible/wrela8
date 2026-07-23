@@ -1,0 +1,13 @@
+Module path=examples.check_generics
+  Struct Sample data
+    field id: u64
+    fn hash(read self) -> u64
+  Struct DmaBlock resource
+    field id: u64
+  Struct Ring[T, const N: usize] data
+    field items: [Option[T]; N]
+  Fn hash_pair[T](a: read T, b: read T) -> u64
+  Fn first[T](a: read T, b: read T) -> T
+  Fn use_ring() -> u64
+  Fn use_hash_pair(a: read Sample, b: read Sample) -> u64
+  Fn use_first(x: read u64, y: read u64) -> u64

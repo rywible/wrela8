@@ -1,0 +1,1 @@
+error[generic]: `make_default` requires explicit `[Args]`: parameter `T` cannot be inferred at 7:21

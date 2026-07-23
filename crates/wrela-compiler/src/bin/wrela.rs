@@ -20,6 +20,26 @@ use wrela_compiler::syntax::{lexer, parser, printer};
 
 const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check> [--timings] <file.wr>\n       wrela version";
 
+/// Prints one `sema::SemaError` (decision 1's one-line diagnostic, or
+/// item H's one multi-line exception, decision 2): `extra_lines` is
+/// empty and `omit_location` is `false` for every ordinary diagnostic, so
+/// this reduces to the plain `error[cat]: msg at L:C` line unchanged;
+/// the generic-instantiation chain sets both, printing its own already-
+/// indented `required by`/`instantiated at` lines below the primary one.
+fn print_sema_error(e: &sema::SemaError) {
+    if e.omit_location {
+        println!("error[{}]: {}", e.category, e.message);
+    } else {
+        println!(
+            "error[{}]: {} at {}:{}",
+            e.category, e.message, e.line, e.col
+        );
+    }
+    for line in &e.extra_lines {
+        println!("{line}");
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -153,14 +173,9 @@ fn dump(args: &[String]) -> ExitCode {
                 // artifact-production step.
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) => match sema::check(&module) {
+                    Ok(module) => match sema::check(&module, &path) {
                         Ok(()) => print!("{}", sema::dump(&module)),
-                        Err(e) => {
-                            println!(
-                                "error[{}]: {} at {}:{}",
-                                e.category, e.message, e.line, e.col
-                            )
-                        }
+                        Err(e) => print_sema_error(&e),
                     },
                     Err(e) => println!("error[parse]: {} at {}:{}", e.message, e.line, e.col),
                 }

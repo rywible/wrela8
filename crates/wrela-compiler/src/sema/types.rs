@@ -178,12 +178,18 @@ pub struct DeclStruct {
     /// `resource struct`, or `@actor`/`@driver` (02-language.md §7.1) —
     /// resource by fiat, independent of field composition. Classification
     /// bookkeeping only; not rendered directly (`classification` is).
-    is_resource_fiat: bool,
+    /// `pub(crate)` (item H, generics.rs): reclassifying a generic
+    /// struct's *instantiation* needs this fiat bit alongside its
+    /// substituted `component_types` — the same two inputs
+    /// `classify_named` below uses, just recomputed once per concrete
+    /// instantiation instead of once per declaration.
+    pub(crate) is_resource_fiat: bool,
     /// Every field's resolved type + the field's own span, for the
     /// classification/infinite-size pass below — methods/init/pool
-    /// members carry no data and do not contribute.
-    component_types: Vec<(Type, Span)>,
-    span: Span,
+    /// members carry no data and do not contribute. `pub(crate)`: see
+    /// `is_resource_fiat`.
+    pub(crate) component_types: Vec<(Type, Span)>,
+    pub(crate) span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -206,8 +212,9 @@ pub struct DeclEnum {
     pub deriving: Vec<String>,
     pub classification: Classification,
     pub variants: Vec<DeclVariant>,
-    component_types: Vec<(Type, Span)>,
-    span: Span,
+    /// `pub(crate)` (item H): see `DeclStruct::component_types`.
+    pub(crate) component_types: Vec<(Type, Span)>,
+    pub(crate) span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -1262,7 +1269,12 @@ pub fn render_type(ty: &Type) -> String {
     }
 }
 
-fn render_type_arg(arg: &TypeArg) -> String {
+/// `pub(crate)` (item H, generics.rs): the canonical-argument renderer
+/// generics.rs needs both for the check dump's own `Type::Named`
+/// rendering (via `render_type`, unchanged) and for its own instantiation
+/// keys/diagnostics — same span-insensitive text, reused rather than
+/// duplicated.
+pub(crate) fn render_type_arg(arg: &TypeArg) -> String {
     match arg {
         TypeArg::Type(t) => render_type(t),
         TypeArg::Const(e) => printer::print_expr_bare(e),

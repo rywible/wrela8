@@ -54,6 +54,8 @@ fn match_error(message: String, span: Span) -> SemaError {
         message,
         line: span.line,
         col: span.col,
+        extra_lines: Vec::new(),
+        omit_location: false,
     }
 }
 
@@ -61,10 +63,14 @@ fn match_error(message: String, span: Span) -> SemaError {
 
 /// The exhaustiveness pass (plans/M2.md item G): runs after `bodies`
 /// (mod.rs's `check`), one module-wide re-walk exactly like `bodies::check`
-/// itself — `ModuleCtx` is rebuilt from scratch here too (dumb, no state
-/// threaded between passes, same as every other pass in this pipeline).
-pub fn check(module: &Module, decl_items: &[types::DeclItem]) -> Result<(), SemaError> {
-    let mctx = bodies::build_module_ctx(module, decl_items);
+/// itself. `mctx` is shared with every other pass (built once by
+/// `mod.rs::check`) so item H's instantiation queue accumulates across
+/// all of them (see `bodies.rs`'s doc comment on `InstKind`).
+pub(crate) fn check(
+    module: &Module,
+    decl_items: &[types::DeclItem],
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
     let ast_items: Vec<&Item> = module
         .items
         .iter()
@@ -74,17 +80,24 @@ pub fn check(module: &Module, decl_items: &[types::DeclItem]) -> Result<(), Sema
         match (ai, di) {
             (Item::Const(c), types::DeclItem::Const(_)) => {
                 let mut fctx = FnCtx::new(Type::Unit, mctx.module_pools.clone());
-                walk_expr(&c.value, &mut fctx, &mctx)?;
+                walk_expr(&c.value, &mut fctx, mctx)?;
             }
-            (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, &mctx)?,
-            (Item::Struct(s), types::DeclItem::Struct(_)) => check_struct_bodies(s, &mctx)?,
+            (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, mctx)?,
+            (Item::Struct(s), types::DeclItem::Struct(_)) => check_struct_bodies(s, mctx)?,
             _ => {}
         }
     }
     Ok(())
 }
 
-fn check_top_fn(f: &ast::FnItem, d: &types::DeclFn, mctx: &ModuleCtx) -> Result<(), SemaError> {
+/// `pub(crate)` (item H, generics.rs): re-run over a substituted,
+/// generics-cleared copy of a generic fn's own ast+decl, mirroring
+/// `bodies::check_top_fn`'s own widening.
+pub(crate) fn check_top_fn(
+    f: &ast::FnItem,
+    d: &types::DeclFn,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
     // A generic fn's body is item H's territory, unchecked here exactly
     // like bodies.rs skips it; an `@image` fn always fails closed in the
     // bodies pass, so this point is never reached for one (mod.rs's
@@ -120,16 +133,27 @@ fn check_struct_bodies(s: &ast::StructItem, mctx: &ModuleCtx) -> Result<(), Sema
     if !s.generics.is_empty() {
         return Ok(()); // generic struct: item H's job, not checked here.
     }
+    let info = mctx.structs.get(&s.name).expect("struct present in mctx");
     let self_ty = Type::Named(s.name.clone(), vec![]);
-    let local_pools: std::collections::BTreeSet<String> = s
-        .members
+    check_struct_members(info, self_ty, mctx)
+}
+
+/// `pub(crate)` (item H, generics.rs): the guts of `check_struct_bodies`,
+/// pulled out to take a `StructInfo` (and its `self_ty`) directly — see
+/// `bodies::check_struct_members`'s own doc comment.
+pub(crate) fn check_struct_members(
+    info: &bodies::StructInfo,
+    self_ty: Type,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    let local_pools: std::collections::BTreeSet<String> = info
+        .ast_members
         .iter()
         .filter_map(|m| match m {
             Member::Pool(p) => Some(p.name.clone()),
             _ => None,
         })
         .collect();
-    let info = mctx.structs.get(&s.name).expect("struct present in mctx");
     for (am, dm) in info.members() {
         match (am, dm) {
             (Member::Field(af), types::DeclMember::Field(df)) => {

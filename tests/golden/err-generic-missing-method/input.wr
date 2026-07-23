@@ -1,0 +1,10 @@
+module examples.err_generic_missing_method
+
+struct Sector:
+    id: u64
+
+pub fn hash_pair[T](a: T, b: T) -> u64:
+    return a.hash() ^ b.hash()
+
+pub fn use_it(a: Sector, b: Sector) -> u64:
+    return hash_pair[Sector](a, b)

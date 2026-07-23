@@ -1,0 +1,8 @@
+module examples.err_generic_uninferable
+
+pub fn make_default[T]() -> T:
+    panic("unreachable")
+
+pub fn use_it() -> u64:
+    x = make_default()
+    return 0

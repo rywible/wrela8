@@ -79,11 +79,27 @@ pub fn infer_effects(module: &Module, decl_items: &[DeclItem]) -> EffectMap {
     infer_private_effects(&mctx)
 }
 
+/// `pub(crate)` (item H, generics.rs): the same computation as
+/// `infer_effects` above, but from an already-built `ModuleCtx` — the
+/// shared one every pass now uses (see `check`'s own doc comment) — since
+/// `generics::check` only ever has that, never a fresh `module`+
+/// `decl_items` pair to rebuild one from.
+pub(crate) fn infer_effects_over(mctx: &ModuleCtx) -> EffectMap {
+    infer_private_effects(mctx)
+}
+
 /// The access pass (plans/M2.md item D): fail-fast, source order, same
-/// module-wide traversal shape as `bodies::check`.
-pub fn check(module: &Module, decl_items: &[DeclItem]) -> Result<(), SemaError> {
-    let mctx = bodies::build_module_ctx(module, decl_items);
-    let effects = infer_private_effects(&mctx);
+/// module-wide traversal shape as `bodies::check`. `mctx` is shared with
+/// `bodies::check`/`matches::check`/`generics::check` (built once by
+/// `mod.rs::check`) so item H's instantiation queue accumulates across
+/// every pass that discovers a generic use (see `bodies.rs`'s doc comment
+/// on `InstKind`).
+pub(crate) fn check(
+    module: &Module,
+    decl_items: &[DeclItem],
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    let effects = infer_private_effects(mctx);
     let ast_items: Vec<&Item> = module
         .items
         .iter()
@@ -92,11 +108,11 @@ pub fn check(module: &Module, decl_items: &[DeclItem]) -> Result<(), SemaError> 
     for (ai, di) in ast_items.iter().zip(decl_items.iter()) {
         match (ai, di) {
             (Item::Const(c), DeclItem::Const(_)) => {
-                let mut actx = ACtx::new(&mctx, &effects, BTreeSet::new());
+                let mut actx = ACtx::new(mctx, &effects, BTreeSet::new());
                 check_expr(&c.value, &mut actx)?;
             }
-            (Item::Fn(f), DeclItem::Fn(d)) => check_top_fn(f, d, &mctx, &effects)?,
-            (Item::Struct(s), DeclItem::Struct(d)) => check_struct_bodies(s, d, &mctx, &effects)?,
+            (Item::Fn(f), DeclItem::Fn(d)) => check_top_fn(f, d, mctx, &effects)?,
+            (Item::Struct(s), DeclItem::Struct(d)) => check_struct_bodies(s, d, mctx, &effects)?,
             _ => {}
         }
     }
@@ -120,15 +136,21 @@ fn escalate(acc: &mut AccessMode, m: AccessMode) {
 }
 
 /// Every private, plain-`self` (`Read`, not `pub`), non-generic method in
-/// a non-generic struct — the only methods whose printed/effective
-/// receiver this pass ever changes (generic bodies are item H's job,
-/// exactly like `bodies::check` skips them).
+/// a struct — generic or not. Receiver-effect inference is purely
+/// structural (self-calls always resolve within the same struct; nothing
+/// below reads a field's or parameter's *type*, only `self`/marker/call
+/// shapes), so a generic struct's own declared methods get exactly one
+/// inferred effect apiece, computed once here from the *declaration*
+/// (unsubstituted `T`s and all) and reused unchanged by every concrete
+/// instantiation item H later checks — recomputing it per instantiation
+/// would ask the exact same structural question of the exact same body
+/// every time. A method that is itself separately generic (its own
+/// `[...]`, beyond the struct's) is still skipped: item H's own scope
+/// boundary (a generic method is never instantiated, so it is never
+/// checked, so there is nothing to infer an effect *for*).
 fn private_candidates(mctx: &ModuleCtx) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (sname, s) in &mctx.structs {
-        if !s.decl.generics.is_empty() {
-            continue;
-        }
         for (am, dm) in s.members() {
             if let (Member::Fn(f), DeclMember::Fn(d)) = (am, dm) {
                 if f.generics.is_empty() {
@@ -159,10 +181,13 @@ fn infer_private_effects(mctx: &ModuleCtx) -> EffectMap {
             let (f, _d) = s
                 .method(mname)
                 .expect("private_candidates only names real methods");
-            let body = f
-                .body
-                .as_ref()
-                .expect("a non-generic method always has a body");
+            // A bodyless declaration (the grammar's own "bodyless
+            // forms") has nothing to infer from — it stays at the
+            // fixpoint's own initial `read` default, mirroring
+            // `bodies::check`'s vacuous acceptance of a missing body.
+            let Some(body) = &f.body else {
+                continue;
+            };
             let required = required_self_effect(body, sname, mctx, &effects);
             if rank(required) > rank(effects[key]) {
                 effects.insert(key.clone(), required);
@@ -519,7 +544,11 @@ fn local_pool_names(s: &StructInfo) -> BTreeSet<String> {
         .collect()
 }
 
-fn check_top_fn(
+/// `pub(crate)` (item H, generics.rs): re-run over a substituted,
+/// generics-cleared copy of a generic fn's own ast+decl
+/// (`generics::instantiate_fn`) — mirrors `bodies::check_top_fn`'s own
+/// widening exactly, same reasoning.
+pub(crate) fn check_top_fn(
     f: &ast::FnItem,
     d: &DeclFn,
     mctx: &ModuleCtx,
@@ -569,10 +598,15 @@ fn resolve_receiver_mode(
         AccessMode::Take => Ok(AccessMode::Take),
         AccessMode::Read => {
             if d.is_pub {
-                let body = f
-                    .body
-                    .as_ref()
-                    .expect("a real pub method declaration always has a body");
+                // A bodyless declaration (the grammar's own "bodyless
+                // forms", ledger `docs.examples.wrela-blocks-lex`) has
+                // nothing to infer a requirement from — `bodies::check`
+                // already accepts one vacuously (`if let Some(body) =
+                // &f.body`), so this mirrors that instead of assuming a
+                // real body always exists.
+                let Some(body) = &f.body else {
+                    return Ok(AccessMode::Read);
+                };
                 let required = required_self_effect(body, sname, mctx, effects);
                 if required != AccessMode::Read {
                     let span = f
@@ -610,8 +644,23 @@ fn check_struct_bodies(
         return Ok(());
     }
     let info = mctx.structs.get(&s.name).expect("struct present in mctx");
-    let local_pools = local_pool_names(info);
     let self_ty = Type::Named(s.name.clone(), vec![]);
+    check_struct_members(info, self_ty, mctx, effects)
+}
+
+/// `pub(crate)` (item H, generics.rs): the guts of `check_struct_bodies`,
+/// pulled out to take a `StructInfo` (and its `self_ty`) directly — see
+/// `bodies::check_struct_members`'s own doc comment for why (`mctx`
+/// always holds each struct's *declared* shape, never a substituted
+/// instantiation's).
+pub(crate) fn check_struct_members(
+    info: &StructInfo,
+    self_ty: Type,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+) -> Result<(), SemaError> {
+    let local_pools = local_pool_names(info);
+    let sname = info.decl.name.clone();
     for (am, dm) in info.members() {
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(_)) => {
@@ -631,7 +680,7 @@ fn check_struct_bodies(
                 if !f.generics.is_empty() {
                     continue;
                 }
-                let self_mode = resolve_receiver_mode(f, fd, &s.name, mctx, effects)?;
+                let self_mode = resolve_receiver_mode(f, fd, &sname, mctx, effects)?;
                 let mut actx = ACtx::new(mctx, effects, local_pools.clone());
                 actx.locals.insert(
                     "self".to_string(),
@@ -1099,9 +1148,12 @@ fn name_ty(name: &str, actx: &ACtx) -> Option<Type> {
         return Some(t.clone());
     }
     if let Some(f) = actx.mctx.fns.get(name) {
-        if f.decl.generics.is_empty() {
-            return Some(fn_value_type(&f.decl));
-        }
+        // A generic fn's own (unsubstituted) value type is best-effort
+        // only (it may carry a bare `Type::Generic` in a param/return
+        // position) — fine here: `name_ty` only ever feeds mirroring
+        // (arity/label/mode, type-independent) and receiver-mutability
+        // (mode-only), never a type comparison.
+        return Some(fn_value_type(&f.decl));
     }
     None
 }
@@ -1119,18 +1171,15 @@ fn check_field(
     if let Expr::Name(_, bname) = base {
         if !actx.locals.contains_key(bname) {
             if let Some(s) = actx.mctx.structs.get(bname.as_str()) {
-                if s.decl.generics.is_empty() {
-                    if let Some((_, d)) = s.assoc_fn(name) {
-                        return Ok(Some(fn_value_type(d)));
-                    }
+                if let Some((_, d)) = s.assoc_fn(name) {
+                    return Ok(Some(fn_value_type(d)));
                 }
                 return Ok(None);
             }
             if let Some(e) = actx.mctx.enums.get(bname.as_str()) {
-                if e.generics.is_empty()
-                    && e.variants.iter().any(|v| {
-                        v.name == name && matches!(v.payload, types::DeclVariantPayload::None)
-                    })
+                if e.variants
+                    .iter()
+                    .any(|v| v.name == name && matches!(v.payload, types::DeclVariantPayload::None))
                 {
                     return Ok(Some(Type::Named(e.name.clone(), vec![])));
                 }
@@ -1351,9 +1400,33 @@ fn check_call(
     match callee {
         Expr::Index(inner, _ispan, _targs) => {
             // `.to[T]()`/`.checked_to[T]()`/`.truncate_to[T]()` (no
-            // parameters to mirror) or a generic instantiation (already
-            // fails closed upstream in `bodies::check`, so unreachable
-            // here); either way just recurse.
+            // parameters to mirror) or `Name[Args](...)` — a generic
+            // struct construction or fn call (item H). Mirroring
+            // (arity/label/mode) is structural, identical across every
+            // instantiation of the same declaration, so this uses the
+            // *declared* (unsubstituted) params directly rather than
+            // resolving which concrete instantiation `bodies::check`
+            // enqueued for this exact call — same simplification as
+            // `check_call_by_name`/`check_call_by_field` below.
+            if let Expr::Name(_, name) = inner.as_ref() {
+                if !actx.locals.contains_key(name) {
+                    if let Some(f) = actx.mctx.fns.get(name) {
+                        if !f.decl.generics.is_empty() {
+                            for a in args {
+                                check_arg(a, actx)?;
+                            }
+                            check_mirroring_named(&f.decl.params, args)?;
+                            return Ok(Some(f.decl.ret.clone()));
+                        }
+                    } else if let Some(s) = actx.mctx.structs.get(name) {
+                        if !s.decl.generics.is_empty() {
+                            return check_struct_construction(s, args, actx);
+                        }
+                    }
+                }
+            }
+            // A scalar conversion (`.to[T]()`, ...): no parameters to
+            // mirror, just recurse.
             check_expr(inner, actx)?;
             for a in args {
                 check_arg(a, actx)?;
@@ -1420,9 +1493,12 @@ fn check_call_by_name(
         };
     }
     if let Some(f) = actx.mctx.fns.get(name) {
-        if !f.decl.generics.is_empty() {
-            return Err(unimplemented_at("generic instantiation is", call_span));
-        }
+        // A generic fn called without explicit `[Args]` (item H's
+        // inference, decision 2/item 2): mirroring only needs the
+        // *declared* params (arity/label/mode, type-independent), so
+        // this proceeds identically whether `f` is generic or not —
+        // `bodies::check` (which runs first) is what actually resolves
+        // and enqueues the concrete instantiation.
         for a in args {
             check_arg(a, actx)?;
         }
@@ -1430,9 +1506,6 @@ fn check_call_by_name(
         return Ok(Some(f.decl.ret.clone()));
     }
     if let Some(s) = actx.mctx.structs.get(name) {
-        if !s.decl.generics.is_empty() {
-            return Err(unimplemented_at("generic instantiation is", call_span));
-        }
         return check_struct_construction(s, args, actx);
     }
     // `Some`/`Ok`/`Err`/`panic`: builtin pseudo-constructors with no
@@ -1475,20 +1548,14 @@ fn check_call_by_field(
     base: &Expr,
     fspan: Span,
     name: &str,
-    call_span: Span,
+    _call_span: Span,
     args: &[Arg],
     actx: &mut ACtx,
 ) -> Result<Option<Type>, SemaError> {
     if let Expr::Name(_, bname) = base {
         if !actx.locals.contains_key(bname) {
             if let Some(s) = actx.mctx.structs.get(bname.as_str()) {
-                if !s.decl.generics.is_empty() {
-                    return Err(unimplemented_at("generic instantiation is", call_span));
-                }
                 if let Some((_af, d)) = s.assoc_fn(name) {
-                    if !d.generics.is_empty() {
-                        return Err(unimplemented_at("generic instantiation is", call_span));
-                    }
                     for a in args {
                         check_arg(a, actx)?;
                     }
@@ -1501,9 +1568,6 @@ fn check_call_by_field(
                 return Ok(None); // unreachable on an already-checked call.
             }
             if let Some(e) = actx.mctx.enums.get(bname.as_str()) {
-                if !e.generics.is_empty() {
-                    return Err(unimplemented_at("generic instantiation is", call_span));
-                }
                 for a in args {
                     check_arg(a, actx)?;
                 }
@@ -1528,15 +1592,15 @@ fn check_call_by_field(
             fspan,
         ));
     };
-    let Type::Named(sname, targs) = &base_ty else {
+    let Type::Named(sname, _targs) = &base_ty else {
         return Err(unimplemented_at(
             "mirroring a method call through this base expression is",
             fspan,
         ));
     };
-    if !targs.is_empty() {
-        return Err(unimplemented_at("generic instantiation is", call_span));
-    }
+    // `sname` alone decides the target struct regardless of `_targs`
+    // (item H): mirroring/receiver-mutability are structural, unaffected
+    // by which concrete instantiation this value came from.
     let Some(s) = actx.mctx.structs.get(sname.as_str()) else {
         return Err(unimplemented_at(
             "mirroring a method call through this base expression is",
@@ -1546,9 +1610,11 @@ fn check_call_by_field(
     let Some((_mf, d)) = s.method(name) else {
         return Ok(None); // unreachable on an already-checked call.
     };
-    if !d.generics.is_empty() {
-        return Err(unimplemented_at("generic instantiation is", call_span));
-    }
+    // A generic method's own `[...]` (beyond the struct's, if any) is
+    // item H's documented boundary — `bodies::check` (which runs first)
+    // fails closed on such a call before this pass ever sees it, so
+    // mirroring here proceeds unconditionally: it is either a concrete
+    // method or unreachable.
     check_mirroring_named(&d.params, args)?;
     if let Some(r) = &d.receiver {
         let effective = effective_declared(r.mode, r.is_pub, sname, name, actx.effects);

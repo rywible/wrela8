@@ -988,6 +988,12 @@ enum SemaPipelineOutcome {
         message: String,
         line: u32,
         col: u32,
+        /// Item H's one multi-line exception (decision 2): empty/`false`
+        /// for every ordinary diagnostic, so this adds no new invariant
+        /// shape, only extends the existing determinism check to also
+        /// cover the generic-instantiation chain's extra lines.
+        extra_lines: Vec<String>,
+        omit_location: bool,
     },
 }
 
@@ -1004,13 +1010,19 @@ fn run_sema_pipeline_once(input: &str) -> SemaPipelineOutcome {
                 line: e.line,
                 col: e.col,
             },
-            Ok(module) => match sema::check(&module) {
+            // "<fuzz>" is not a real file path: item H's chain diagnostic
+            // cites the path verbatim (decision 2), but the fuzzer's
+            // determinism check only compares two runs of the *same*
+            // input against each other, so any fixed placeholder works.
+            Ok(module) => match sema::check(&module, "<fuzz>") {
                 Ok(()) => SemaPipelineOutcome::Ok(sema::dump(&module)),
                 Err(e) => SemaPipelineOutcome::SemaErr {
                     category: e.category,
                     message: e.message,
                     line: e.line,
                     col: e.col,
+                    extra_lines: e.extra_lines,
+                    omit_location: e.omit_location,
                 },
             },
         },
@@ -1088,15 +1100,19 @@ fn check_sema_invariants(input: &str) -> Result<(), String> {
                 message: m1,
                 line: l1,
                 col: c1,
+                extra_lines: e1,
+                omit_location: o1,
             },
             SemaPipelineOutcome::SemaErr {
                 category: cat2,
                 message: m2,
                 line: l2,
                 col: c2,
+                extra_lines: e2,
+                omit_location: o2,
             },
         ) => {
-            if cat1 != cat2 || m1 != m2 || l1 != l2 || c1 != c2 {
+            if cat1 != cat2 || m1 != m2 || l1 != l2 || c1 != c2 || e1 != e2 || o1 != o2 {
                 return Err(
                     "sema is not deterministic: two runs produced different diagnostics".into(),
                 );
@@ -1584,7 +1600,7 @@ fn run_check_bench_workload(entries: &[CheckBenchEntry]) -> Duration {
     for e in entries {
         if let Ok(tokens) = lexer::lex(&e.body) {
             if let Ok(module) = parser::parse(tokens) {
-                let _ = sema::check(&module);
+                let _ = sema::check(&module, "<bench>");
             }
         }
     }

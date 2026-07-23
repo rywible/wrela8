@@ -1,0 +1,33 @@
+module examples.check_generics
+
+pub struct Sample:
+    id: u64
+
+    pub fn hash(read self) -> u64:
+        return self.id
+
+resource struct DmaBlock:
+    id: u64
+
+pub struct Ring[T, const N: usize]:
+    items: [Option[T]; N]
+
+pub fn hash_pair[T](a: T, b: T) -> u64:
+    return a.hash() ^ b.hash()
+
+pub fn first[T](a: T, b: T) -> T:
+    return a
+
+pub fn use_ring() -> u64:
+    small = Ring[u64, 4]([None, None, None, None])
+    flags = Ring[bool, 2]([None, None])
+    blocks = Ring[DmaBlock, 2]([None, None])
+    return 0
+
+pub fn use_hash_pair(a: Sample, b: Sample) -> u64:
+    explicit = hash_pair[Sample](a, b)
+    inferred = hash_pair(a, b)
+    return explicit + inferred
+
+pub fn use_first(x: u64, y: u64) -> u64:
+    return first(x, y)
