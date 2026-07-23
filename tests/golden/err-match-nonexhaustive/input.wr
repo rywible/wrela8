@@ -1,0 +1,10 @@
+module examples.err_match_nonexhaustive
+
+pub enum Lookup:
+    Found(u64)
+    Absent
+
+pub fn classify(x: Lookup) -> u64:
+    match x:
+        case .Found(value):
+            return value

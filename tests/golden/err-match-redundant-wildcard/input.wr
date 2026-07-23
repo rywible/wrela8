@@ -1,0 +1,14 @@
+module examples.err_match_redundant_wildcard
+
+pub enum Lookup:
+    Found(u64)
+    Absent
+
+pub fn classify(x: Lookup) -> u64:
+    match x:
+        case .Found(value):
+            return value
+        case .Absent:
+            return 0
+        case _:
+            return 0

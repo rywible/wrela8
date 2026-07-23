@@ -1,0 +1,14 @@
+Module path=examples.matches
+  Enum Lookup data
+    variant Found(u64)
+    variant Absent
+    variant Failed(u64)
+  Fn classify(x: read Lookup) -> u64
+  Fn classify_guarded(x: read Lookup) -> u64
+  Fn classify_alt(x: read Lookup) -> u64
+  Fn classify_bool(b: read bool) -> u64
+  Fn classify_pair(x: read Lookup, y: read bool) -> u64
+  Fn classify_wildcard(x: read Lookup) -> u64
+  Fn describe_option(x: read Option[u64]) -> u64
+  Fn is_found(x: read Lookup) -> bool
+  Fn take_found(x: read Lookup) -> u64
