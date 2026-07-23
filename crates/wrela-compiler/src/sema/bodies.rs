@@ -41,27 +41,30 @@ use crate::syntax::ast::{
 /// out — mirrors exactly what `types::declare_struct` iterated) so field
 /// defaults, method/init bodies, param defaults, and per-member generics
 /// are all available without re-walking the module.
+// `pub(crate)` throughout `StructInfo`/`FnInfo`/`ModuleCtx` (plans/M2.md
+// item D, decision 10's minimal-footprint rule): access.rs re-walks
+// bodies with the declared signatures exactly like this pass does, so it
+// reuses this same lookup context wholesale (`build_module_ctx`) rather
+// than duplicating struct/enum/fn table construction — nothing here is
+// restructured, only exposed.
 pub(crate) struct StructInfo {
     pub(crate) decl: types::DeclStruct,
-    ast_members: Vec<Member>,
+    pub(crate) ast_members: Vec<Member>,
 }
 
 impl StructInfo {
-    /// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness
-    /// pass re-walks struct bodies the same way `check_struct_bodies`
-    /// below does, and needs this same member iteration.
     pub(crate) fn members(&self) -> impl Iterator<Item = (&Member, &DeclMember)> {
         self.ast_members.iter().zip(self.decl.members.iter())
     }
 
-    fn field_ty(&self, name: &str) -> Option<Type> {
+    pub(crate) fn field_ty(&self, name: &str) -> Option<Type> {
         self.members().find_map(|(am, dm)| match (am, dm) {
             (Member::Field(f), DeclMember::Field(d)) if f.name == name => Some(d.ty.clone()),
             _ => None,
         })
     }
 
-    fn has_member_named(&self, name: &str) -> bool {
+    pub(crate) fn has_member_named(&self, name: &str) -> bool {
         self.ast_members.iter().any(|m| match m {
             Member::Fn(f) => f.name == name,
             Member::Field(f) => f.name == name,
@@ -69,7 +72,7 @@ impl StructInfo {
         })
     }
 
-    fn assoc_fn(&self, name: &str) -> Option<(&ast::FnItem, &types::DeclFn)> {
+    pub(crate) fn assoc_fn(&self, name: &str) -> Option<(&ast::FnItem, &types::DeclFn)> {
         self.members().find_map(|(am, dm)| match (am, dm) {
             (Member::Fn(f), DeclMember::Fn(d)) if f.name == name && f.receiver.is_none() => {
                 Some((f, d))
@@ -78,7 +81,7 @@ impl StructInfo {
         })
     }
 
-    fn method(&self, name: &str) -> Option<(&ast::FnItem, &types::DeclFn)> {
+    pub(crate) fn method(&self, name: &str) -> Option<(&ast::FnItem, &types::DeclFn)> {
         self.members().find_map(|(am, dm)| match (am, dm) {
             (Member::Fn(f), DeclMember::Fn(d)) if f.name == name && f.receiver.is_some() => {
                 Some((f, d))
@@ -87,7 +90,7 @@ impl StructInfo {
         })
     }
 
-    fn init(&self) -> Option<(&ast::InitItem, &types::DeclFn)> {
+    pub(crate) fn init(&self) -> Option<(&ast::InitItem, &types::DeclFn)> {
         self.members().find_map(|(am, dm)| match (am, dm) {
             (Member::Init(i), DeclMember::Init(d)) => Some((i, d)),
             _ => None,
@@ -97,9 +100,9 @@ impl StructInfo {
 
 /// One top-level fn's ast (params/defaults/generics/attrs/body) plus its
 /// resolved declaration.
-struct FnInfo {
-    ast: ast::FnItem,
-    decl: types::DeclFn,
+pub(crate) struct FnInfo {
+    pub(crate) ast: ast::FnItem,
+    pub(crate) decl: types::DeclFn,
 }
 
 /// Everything body-typing needs to resolve names beyond the current
@@ -109,19 +112,13 @@ struct FnInfo {
 /// `module` + `declare`'s already-resolved `decl_items`; nothing here
 /// borrows either, so no lifetime parameter is needed anywhere in this
 /// file (decision 4: clone freely).
-/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
-/// re-walks every body exactly like this one does, and needs the same
-/// struct/enum/pool lookup context to re-derive scrutinee types via
-/// `check_expr` below (only `structs`/`enums`/`module_pools` are actually
-/// read from outside this file; `shapes`/`fns`/`consts` stay private —
-/// nothing else needs them yet).
 pub(crate) struct ModuleCtx {
-    shapes: BTreeMap<String, usize>,
+    pub(crate) shapes: BTreeMap<String, usize>,
     pub(crate) module_pools: BTreeSet<String>,
     pub(crate) structs: BTreeMap<String, StructInfo>,
     pub(crate) enums: BTreeMap<String, types::DeclEnum>,
-    fns: BTreeMap<String, FnInfo>,
-    consts: BTreeMap<String, Type>,
+    pub(crate) fns: BTreeMap<String, FnInfo>,
+    pub(crate) consts: BTreeMap<String, Type>,
 }
 
 impl ModuleCtx {

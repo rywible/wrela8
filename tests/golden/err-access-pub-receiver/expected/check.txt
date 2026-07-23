@@ -1,0 +1,1 @@
+error[access]: pub method `bump` needs an explicit `mut self` receiver at 6:17

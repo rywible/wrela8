@@ -1,0 +1,8 @@
+module test
+
+fn fill(mut data: u64):
+    pass
+
+fn use_it(x: u64):
+    v = x
+    fill(take v)

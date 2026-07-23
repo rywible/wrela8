@@ -81,6 +81,7 @@ pub fn check(module: &Module) -> Result<(), SemaError> {
     symbols::resolve(module, &symtab)?;
     let decl_items = types::declare(module)?;
     bodies::check(module, &decl_items)?;
+    access::check(module, &decl_items)?;
     matches::check(module, &decl_items)?;
     Ok(())
 }
@@ -95,7 +96,8 @@ pub fn check(module: &Module) -> Result<(), SemaError> {
 /// is already guaranteed by the caller's contract.
 pub fn dump(module: &Module) -> String {
     let decl_items = types::declare(module).expect("dump is only called after check returns Ok");
+    let effects = access::infer_effects(module, &decl_items);
     let mut out = format!("Module path={}\n", module.path.join("."));
-    types::render_items(&decl_items, &mut out);
+    types::render_items(&decl_items, &effects, &mut out);
     out
 }

@@ -1106,9 +1106,19 @@ fn classify_type(
 
 // --- the check dump (decision 8) ------------------------------------------
 
-pub fn render_items(items: &[DeclItem], out: &mut String) {
+/// `effects` is the access pass's (plans/M2.md item D) inferred receiver
+/// effect for every private plain-`self` method, keyed `(struct name,
+/// method name)` — threaded in as one extra parameter rather than
+/// restructuring this module around it (decision 10's minimal-footprint
+/// rule): `mod.rs`'s `dump` computes it via `access::infer_effects` and
+/// hands it straight through.
+pub fn render_items(
+    items: &[DeclItem],
+    effects: &BTreeMap<(String, String), AccessMode>,
+    out: &mut String,
+) {
     for item in items {
-        render_item(item, 1, out);
+        render_item(item, 1, effects, out);
     }
 }
 
@@ -1155,19 +1165,32 @@ fn mode_str(mode: AccessMode) -> &'static str {
     }
 }
 
-fn render_receiver(r: &DeclReceiver) -> String {
+/// `override_mode` is the access pass's inferred effect for a private
+/// plain-`self` receiver (`None` when the mode is already unambiguous:
+/// `mut`/`take` are always explicit in source, and `init`/`pub` always
+/// print `read self` outright per the doc comment on `DeclReceiver`).
+fn render_receiver(r: &DeclReceiver, override_mode: Option<AccessMode>) -> String {
     match r.mode {
         AccessMode::Mut => "mut self".to_string(),
         AccessMode::Take => "take self".to_string(),
         AccessMode::Read if r.is_init || r.is_pub => "read self".to_string(),
-        AccessMode::Read => "self".to_string(),
+        // A private plain-`self` method prints bare `self` only when it
+        // was never a candidate for inference at all (a generic method,
+        // item H's job) — once the access pass actually computed an
+        // effect for it, even `read`, that computed effect is what
+        // prints (plans/M2.md item D, decision 8): "inferred private
+        // receiver effects shown", not just the escalated ones.
+        AccessMode::Read => match override_mode {
+            Some(m) => format!("{} self", m.as_str()),
+            None => "self".to_string(),
+        },
     }
 }
 
-fn render_fn_signature(f: &DeclFn) -> String {
+fn render_fn_signature(f: &DeclFn, receiver_override: Option<AccessMode>) -> String {
     let mut parts = Vec::with_capacity(f.params.len() + 1);
     if let Some(r) = &f.receiver {
-        parts.push(render_receiver(r));
+        parts.push(render_receiver(r, receiver_override));
     }
     for p in &f.params {
         parts.push(format!(
@@ -1247,7 +1270,12 @@ fn render_type_arg(arg: &TypeArg) -> String {
     }
 }
 
-fn render_item(item: &DeclItem, depth: usize, out: &mut String) {
+fn render_item(
+    item: &DeclItem,
+    depth: usize,
+    effects: &BTreeMap<(String, String), AccessMode>,
+    out: &mut String,
+) {
     match item {
         DeclItem::Const(c) => push_line(
             out,
@@ -1256,7 +1284,11 @@ fn render_item(item: &DeclItem, depth: usize, out: &mut String) {
         ),
         DeclItem::Fn(f) => {
             let label = if f.is_async { "AsyncFn" } else { "Fn" };
-            push_line(out, depth, &format!("{label} {}", render_fn_signature(f)));
+            push_line(
+                out,
+                depth,
+                &format!("{label} {}", render_fn_signature(f, None)),
+            );
         }
         DeclItem::Struct(s) => {
             push_line(
@@ -1271,7 +1303,7 @@ fn render_item(item: &DeclItem, depth: usize, out: &mut String) {
                 ),
             );
             for m in &s.members {
-                render_member(m, depth + 1, out);
+                render_member(m, depth + 1, &s.name, effects, out);
             }
         }
         DeclItem::Enum(e) => {
@@ -1294,7 +1326,13 @@ fn render_item(item: &DeclItem, depth: usize, out: &mut String) {
     }
 }
 
-fn render_member(m: &DeclMember, depth: usize, out: &mut String) {
+fn render_member(
+    m: &DeclMember,
+    depth: usize,
+    struct_name: &str,
+    effects: &BTreeMap<(String, String), AccessMode>,
+    out: &mut String,
+) {
     match m {
         DeclMember::Field(f) => push_line(
             out,
@@ -1303,9 +1341,27 @@ fn render_member(m: &DeclMember, depth: usize, out: &mut String) {
         ),
         DeclMember::Fn(f) => {
             let prefix = if f.is_async { "async fn " } else { "fn " };
-            push_line(out, depth, &format!("{prefix}{}", render_fn_signature(f)));
+            // Only a private (`!is_pub`) plain-`self` (`Read`, not `init`)
+            // receiver is ambiguous enough to need the access pass's
+            // inferred effect (types.rs's own `render_receiver` doc
+            // comment); every other shape is already unambiguous in
+            // source and needs no lookup.
+            let override_mode = f.receiver.as_ref().and_then(|r| {
+                if r.mode == AccessMode::Read && !r.is_pub && !r.is_init {
+                    effects
+                        .get(&(struct_name.to_string(), f.name.clone()))
+                        .copied()
+                } else {
+                    None
+                }
+            });
+            push_line(
+                out,
+                depth,
+                &format!("{prefix}{}", render_fn_signature(f, override_mode)),
+            );
         }
-        DeclMember::Init(f) => push_line(out, depth, &render_fn_signature(f)),
+        DeclMember::Init(f) => push_line(out, depth, &render_fn_signature(f, None)),
         DeclMember::Pool(name) => push_line(out, depth, &format!("pool {name}")),
     }
 }

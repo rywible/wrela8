@@ -2,7 +2,7 @@ Module path=examples.decls
   Struct Counter data
     field value: u64
     fn get(read self) -> u64
-    fn peek(self) -> u64
+    fn peek(read self) -> u64
     fn increment(mut self, by: read u64) -> unit
   Pool Packets
   Struct Packet resource

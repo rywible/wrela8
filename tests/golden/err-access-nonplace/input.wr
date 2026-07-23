@@ -1,0 +1,14 @@
+module test
+
+pub struct Pair:
+    a: u64
+    b: u64
+
+fn make_pair() -> Pair:
+    return Pair(a=1, b=2)
+
+fn fill(mut data: u64):
+    pass
+
+fn use_it():
+    fill(mut make_pair().a)
