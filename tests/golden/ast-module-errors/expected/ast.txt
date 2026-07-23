@@ -1,0 +1,1 @@
+error[parse]: expected `module`, found `const` at 1:1

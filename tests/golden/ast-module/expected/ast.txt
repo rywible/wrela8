@@ -1,0 +1,20 @@
+Module @2:1 path=examples.catalogue
+  Doc @1:1 text="Widget catalogue: counters and lookup tables."
+  Import @4:1 from=core.bytes
+    ImportName @4:24 name=Bytes
+  Import @5:1 from=core.time
+    ImportName @5:23 name=now
+    ImportName @5:28 name=ms alias=Millis
+  Import @6:1 from=core.result pub=true
+    ImportName @7:5 name=Result
+    ImportName @8:5 name=Err alias=ResultErr
+  Const @11:1 name=LIMIT
+    Todo @11:12
+  Pool @13:1 name=Widgets
+  Fn @16:1 name=increment pub=true
+    Doc @15:1 text="Increments the shared counter by one."
+    Todo @16:17
+  Struct @19:1 name=Ledger resource=true
+    Todo @19:23
+  ComptimeIf @22:1
+    Todo @22:13

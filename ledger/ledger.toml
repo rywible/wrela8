@@ -68,6 +68,13 @@ tests = ["golden/lex-fstring"]
 note = "{{ and }} are literal braces; a single { opens an interpolation extent with balanced braces; interior expression is not lexed"
 
 [[clause]]
+id = "syntax.ast.dump-stable"
+doc = "02-language.md#2"
+status = "test"
+tests = ["golden/ast-module", "golden/ast-module-errors"]
+note = "parser skeleton (plans/M1.md item C): module header + imports fully parsed, one item recognized per top-level declaration form with its body skipped and recorded as a Todo node; wrela dump --stage=ast pins the one-node-per-line dump format (plans/M1.md decision 5)"
+
+[[clause]]
 id = "syntax.lexer.no-panics"
 doc = "02-language.md#1"
 status = "test"
