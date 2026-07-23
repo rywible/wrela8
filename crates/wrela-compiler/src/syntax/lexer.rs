@@ -624,3 +624,121 @@ pub fn dump(tokens: &[Token]) -> String {
     }
     out
 }
+
+// --- tests --------------------------------------------------------------
+//
+// 02-language.md §1: "Blocks use a trailing `:` and significant
+// indentation, exactly four spaces per level; tabs in leading whitespace
+// are errors." These pin the indentation-stack unit behavior directly
+// (INDENT/DEDENT balance, the exact-four-spaces rule, tab rejection, and
+// blank/comment-only lines being layout-transparent) — the corpus/fuzz
+// lanes only check "lexes without panic" and golden dumps pin one fixed
+// snippet's exact rendering, neither of which independently confirms
+// these structural invariants across arbitrary nesting.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(src: &str) -> Vec<TokenKind> {
+        lex(src)
+            .unwrap_or_else(|e| panic!("expected `{src:?}` to lex, got {e:?}"))
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
+    }
+
+    #[test]
+    fn four_space_indent_opens_and_closes_one_level() {
+        let toks = kinds("a\n    b\n");
+        assert_eq!(
+            toks.iter().filter(|k| **k == TokenKind::Indent).count(),
+            1,
+            "found {toks:?}"
+        );
+        assert_eq!(
+            toks.iter().filter(|k| **k == TokenKind::Dedent).count(),
+            1,
+            "found {toks:?}"
+        );
+    }
+
+    /// A nested snippet's INDENT/DEDENT tokens balance: every INDENT is
+    /// matched by exactly one DEDENT by EOF, and the running nesting depth
+    /// (INDENT +1, DEDENT -1) never goes negative.
+    #[test]
+    fn nested_indent_dedent_counts_balance() {
+        let toks = kinds("a\n    b\n        c\n    d\ne\n");
+        let indents = toks.iter().filter(|k| **k == TokenKind::Indent).count();
+        let dedents = toks.iter().filter(|k| **k == TokenKind::Dedent).count();
+        assert_eq!(indents, 2, "two nested levels open two INDENTs: {toks:?}");
+        assert_eq!(
+            dedents, 2,
+            "two nested levels close with two DEDENTs: {toks:?}"
+        );
+        let mut depth = 0i32;
+        for k in &toks {
+            match k {
+                TokenKind::Indent => depth += 1,
+                TokenKind::Dedent => depth -= 1,
+                _ => {}
+            }
+            assert!(depth >= 0, "nesting depth must never go negative: {toks:?}");
+        }
+        assert_eq!(depth, 0, "every INDENT must be matched by EOF: {toks:?}");
+    }
+
+    #[test]
+    fn tab_in_leading_indentation_rejected() {
+        assert!(
+            lex("a\n\tb\n").is_err(),
+            "a tab in leading indentation must be rejected"
+        );
+    }
+
+    #[test]
+    fn tab_anywhere_in_source_rejected() {
+        assert!(
+            lex("a\tb\n").is_err(),
+            "a tab anywhere in source is rejected outright, not only in indentation"
+        );
+    }
+
+    #[test]
+    fn five_space_indent_rejected() {
+        assert!(
+            lex("a\n     b\n").is_err(),
+            "indentation must deepen by exactly four spaces, not five"
+        );
+    }
+
+    #[test]
+    fn three_space_indent_rejected() {
+        assert!(
+            lex("a\n   b\n").is_err(),
+            "indentation must deepen by exactly four spaces, not three"
+        );
+    }
+
+    /// Blank lines and comment-only lines are layout-transparent: they
+    /// emit no INDENT/DEDENT/NEWLINE of their own and do not perturb the
+    /// indentation stack, even when their own leading whitespace would
+    /// otherwise mismatch the current level.
+    #[test]
+    fn blank_and_comment_only_lines_emit_no_layout_tokens() {
+        let toks = kinds("a\n    b\n\n    # comment\n    c\nd\n");
+        assert_eq!(
+            toks.iter().filter(|k| **k == TokenKind::Indent).count(),
+            1,
+            "the blank line and the comment-only line must not open a new INDENT: {toks:?}"
+        );
+        assert_eq!(
+            toks.iter().filter(|k| **k == TokenKind::Dedent).count(),
+            1,
+            "the blank line and the comment-only line must not close the block early: {toks:?}"
+        );
+        assert!(
+            !toks.contains(&TokenKind::DocComment),
+            "a plain `#` comment is not a doc comment: {toks:?}"
+        );
+    }
+}

@@ -2753,3 +2753,164 @@ fn arity_error(expected: usize, found: usize, span: Span) -> SemaError {
         span,
     )
 }
+
+// --- tests --------------------------------------------------------------
+//
+// 02-language.md §1.1: "Type comes from context; an unconstrained literal
+// defaults to `i64` (or `u64` when only that fits). Float literals
+// require a fractional part or exponent and default to `f64`." These
+// pin `check_int_range`'s per-scalar boundaries and `synth_int_literal`'s
+// defaulting directly (the narrowest callable units), rather than via a
+// full `check()` run. `types_eq`'s span-insensitivity is pinned
+// separately: a real M2 bug was two structurally identical types (same
+// array length, different source spans) comparing unequal under derived
+// `PartialEq`, which is exactly why this pass carries its own `types_eq`
+// instead (see the doc comment above it).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_int_range_boundaries() {
+        let span = Span::default();
+        // (type, value, expect_ok)
+        let cases: Vec<(&str, Type, i128, bool)> = vec![
+            ("u8 min", Type::U8, 0, true),
+            ("u8 max", Type::U8, 255, true),
+            ("u8 above max", Type::U8, 256, false),
+            ("u8 below min", Type::U8, -1, false),
+            ("i8 min", Type::I8, -128, true),
+            ("i8 max", Type::I8, 127, true),
+            ("i8 above max", Type::I8, 128, false),
+            ("i8 below min", Type::I8, -129, false),
+            ("u64 min", Type::U64, 0, true),
+            ("u64 max", Type::U64, u64::MAX as i128, true),
+            ("u64 below min", Type::U64, -1, false),
+            ("u64 above max", Type::U64, u64::MAX as i128 + 1, false),
+            (
+                "usize behaves like u64",
+                Type::Usize,
+                u64::MAX as i128,
+                true,
+            ),
+            ("i64 min", Type::I64, i64::MIN as i128, true),
+            ("i64 max", Type::I64, i64::MAX as i128, true),
+            ("i64 above max", Type::I64, i64::MAX as i128 + 1, false),
+            ("i64 below min", Type::I64, i64::MIN as i128 - 1, false),
+            (
+                "isize behaves like i64",
+                Type::Isize,
+                i64::MIN as i128,
+                true,
+            ),
+        ];
+        for (msg, ty, value, expect_ok) in cases {
+            let result = check_int_range(value, &ty, span);
+            assert_eq!(result.is_ok(), expect_ok, "{msg}: value {value}");
+        }
+    }
+
+    /// An unconstrained integer literal (02-language.md §1.1: "an
+    /// unconstrained literal defaults to `i64` (or `u64` when only that
+    /// fits)"), exercised through `synth_int_literal` (the function that
+    /// actually implements the defaulting) with `expected: None`.
+    #[test]
+    fn synth_int_literal_unconstrained_defaulting() {
+        let span = Span::default();
+        let small = synth_int_literal(span, "100", None).expect("fits i64");
+        assert!(
+            matches!(small, Type::I64),
+            "a small unconstrained literal defaults to i64, found {small:?}"
+        );
+
+        let only_u64 = (i64::MAX as i128 + 1).to_string();
+        let ty = synth_int_literal(span, &only_u64, None).expect("fits u64 only");
+        assert!(
+            matches!(ty, Type::U64),
+            "a literal beyond i64::MAX but within u64::MAX defaults to u64, found {ty:?}"
+        );
+
+        let too_big = (u64::MAX as i128 + 1).to_string();
+        assert!(
+            synth_int_literal(span, &too_big, None).is_err(),
+            "a literal beyond u64::MAX has no default type"
+        );
+    }
+
+    /// `synth_int_literal` against an explicit expected integer type
+    /// round-trips `check_int_range`'s verdict; against a non-integer
+    /// expected type it is always rejected regardless of value.
+    #[test]
+    fn synth_int_literal_expected_type_cases() {
+        let span = Span::default();
+        assert!(synth_int_literal(span, "255", Some(&Type::U8)).is_ok());
+        assert!(synth_int_literal(span, "256", Some(&Type::U8)).is_err());
+        assert!(
+            synth_int_literal(span, "0", Some(&Type::Bool)).is_err(),
+            "an integer literal cannot check against a non-integer expected type"
+        );
+    }
+
+    /// Float literals accept either float scalar and default to `f64`
+    /// when unconstrained (02-language.md §1.1); no range check exists
+    /// for floats (unlike integers) since `synth_float_literal` never
+    /// calls anything like `check_int_range` — only the scalar kind is
+    /// checked.
+    #[test]
+    fn synth_float_literal_cases() {
+        let span = Span::default();
+        assert!(matches!(
+            synth_float_literal(span, Some(&Type::F32)),
+            Ok(Type::F32)
+        ));
+        assert!(matches!(
+            synth_float_literal(span, Some(&Type::F64)),
+            Ok(Type::F64)
+        ));
+        assert!(
+            synth_float_literal(span, Some(&Type::U8)).is_err(),
+            "a float literal cannot check against a non-float expected type"
+        );
+        assert!(matches!(synth_float_literal(span, None), Ok(Type::F64)));
+    }
+
+    /// The real M2 bug `types_eq`'s own doc comment describes: two
+    /// structurally identical types differing only in an embedded span
+    /// (here, `[u8; 3]` written at two different source locations) must
+    /// still compare equal — derived `PartialEq` on `Type`/`Expr` would
+    /// not, since `Expr::Int`'s span is part of its derived equality.
+    #[test]
+    fn types_eq_is_span_insensitive() {
+        let len_a = Expr::Int(Span { line: 1, col: 1 }, "3".to_string());
+        let len_b = Expr::Int(Span { line: 42, col: 7 }, "3".to_string());
+        let a = Type::Array(Box::new(Type::U8), Box::new(len_a.clone()));
+        let b = Type::Array(Box::new(Type::U8), Box::new(len_b.clone()));
+        assert!(
+            types_eq(&a, &b),
+            "[u8; 3] at two different spans must compare equal under types_eq"
+        );
+        // Sanity: derived (span-sensitive) equality does NOT consider
+        // these equal, which is exactly why types_eq exists.
+        assert_ne!(
+            len_a, len_b,
+            "the two length exprs differ by span under derived PartialEq"
+        );
+
+        // A different length is genuinely a different type.
+        let len_c = Expr::Int(Span { line: 1, col: 1 }, "4".to_string());
+        let c = Type::Array(Box::new(Type::U8), Box::new(len_c));
+        assert!(
+            !types_eq(&a, &c),
+            "[u8; 3] and [u8; 4] must not compare equal"
+        );
+
+        // The same span-insensitivity applies to a Named type's generic
+        // const argument.
+        let named_a = Type::Named("Ring".to_string(), vec![types::TypeArg::Const(len_a)]);
+        let named_b = Type::Named("Ring".to_string(), vec![types::TypeArg::Const(len_b)]);
+        assert!(
+            types_eq(&named_a, &named_b),
+            "Ring[3] at two different spans must compare equal under types_eq"
+        );
+    }
+}

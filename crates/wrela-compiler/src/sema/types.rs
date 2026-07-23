@@ -1437,3 +1437,173 @@ fn render_variant(v: &DeclVariant, depth: usize, out: &mut String) {
     };
     push_line(out, depth, &line);
 }
+
+// --- tests --------------------------------------------------------------
+//
+// 02-language.md §7.1: "`struct` is a product value — data if every field
+// is data; `resource struct` makes it a resource by fiat"; §6.2: "own[P]
+// T — pool handle" and "Static[T] ... a copyable read-only handle ... it
+// exposes no address and no mutation" (always data, regardless of the
+// payload). `resource_propagates`'s own doc comment above states the rule
+// this pins: a resource propagates through `own[..]`, arrays, tuples,
+// `Option`, `Result`; every scalar/`Fn`/`Generic`/`Static` variant is
+// always data; a `Named` type's own resource-ness is answered by the
+// caller-supplied closure (memoized recursive classification in
+// `classify_type`, a plain lookup in `bodies::is_resource_type`) — neither
+// goldens nor the fuzzer check this per-variant table directly.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_len() -> Box<Expr> {
+        Box::new(Expr::Int(Span::default(), "0".to_string()))
+    }
+
+    #[test]
+    fn resource_propagates_table() {
+        let mut always_resource = |_: &str, _: &[TypeArg]| true;
+        let mut never_resource = |_: &str, _: &[TypeArg]| false;
+
+        // Scalars, unit/never, Str, Bytes, Fn, Generic: always data, even
+        // when the named-type answer would say otherwise (it is never
+        // consulted for these variants).
+        let always_data_cases: Vec<(&str, Type)> = vec![
+            ("bool", Type::Bool),
+            ("u8", Type::U8),
+            ("u16", Type::U16),
+            ("u32", Type::U32),
+            ("u64", Type::U64),
+            ("usize", Type::Usize),
+            ("i8", Type::I8),
+            ("i16", Type::I16),
+            ("i32", Type::I32),
+            ("i64", Type::I64),
+            ("isize", Type::Isize),
+            ("f32", Type::F32),
+            ("f64", Type::F64),
+            ("char", Type::Char),
+            ("unit", Type::Unit),
+            ("never", Type::Never),
+            ("Str", Type::Str),
+            ("Bytes[N]", Type::Bytes(Some(dummy_len()))),
+            ("bare Bytes", Type::Bytes(None)),
+            (
+                "fn(read u8) -> u8",
+                Type::Fn(vec![(AccessMode::Read, Type::U8)], Box::new(Type::U8)),
+            ),
+            ("a generic type parameter", Type::Generic("T".to_string())),
+        ];
+        for (msg, ty) in &always_data_cases {
+            assert!(
+                !resource_propagates(ty, &mut always_resource),
+                "`{msg}` should be data even though the named-type answer is `resource`"
+            );
+        }
+
+        // own[P] T is always a resource, regardless of T (§6.2; the
+        // payload is never even visited).
+        assert!(
+            resource_propagates(
+                &Type::Own("P".to_string(), Box::new(Type::U8)),
+                &mut never_resource
+            ),
+            "own[P] T is always a resource regardless of T"
+        );
+
+        // Static[T] is always data, regardless of T (§6.2's "regardless
+        // of T" applies even when T is itself a resource-shaped type).
+        assert!(
+            !resource_propagates(
+                &Type::Static(Box::new(Type::Own("P".to_string(), Box::new(Type::U8)))),
+                &mut always_resource
+            ),
+            "Static[T] is always data regardless of T"
+        );
+
+        // Array/Tuple/Option/Result propagate: resource exactly when some
+        // component is (§7.1's rule, extended to every composite `Type`
+        // this pass resolves).
+        let resource_elem = Type::Own("P".to_string(), Box::new(Type::U8));
+        let data_elem = Type::U8;
+
+        assert!(
+            resource_propagates(
+                &Type::Array(Box::new(resource_elem.clone()), dummy_len()),
+                &mut never_resource
+            ),
+            "[own[P] u8; N] is a resource"
+        );
+        assert!(
+            !resource_propagates(
+                &Type::Array(Box::new(data_elem.clone()), dummy_len()),
+                &mut never_resource
+            ),
+            "[u8; N] is data"
+        );
+
+        assert!(
+            resource_propagates(
+                &Type::Tuple(vec![data_elem.clone(), resource_elem.clone()]),
+                &mut never_resource
+            ),
+            "a tuple with one resource element is a resource"
+        );
+        assert!(
+            !resource_propagates(
+                &Type::Tuple(vec![data_elem.clone(), data_elem.clone()]),
+                &mut never_resource
+            ),
+            "a tuple of only data elements is data"
+        );
+
+        assert!(
+            resource_propagates(
+                &Type::Option(Box::new(resource_elem.clone())),
+                &mut never_resource
+            ),
+            "Option[own[P] u8] is a resource"
+        );
+        assert!(
+            !resource_propagates(
+                &Type::Option(Box::new(data_elem.clone())),
+                &mut never_resource
+            ),
+            "Option[u8] is data"
+        );
+
+        assert!(
+            resource_propagates(
+                &Type::Result(Box::new(data_elem.clone()), Box::new(resource_elem.clone())),
+                &mut never_resource
+            ),
+            "Result[u8, own[P] u8] is a resource (Err side)"
+        );
+        assert!(
+            resource_propagates(
+                &Type::Result(Box::new(resource_elem.clone()), Box::new(data_elem.clone())),
+                &mut never_resource
+            ),
+            "Result[own[P] u8, u8] is a resource (Ok side)"
+        );
+        assert!(
+            !resource_propagates(
+                &Type::Result(Box::new(data_elem.clone()), Box::new(data_elem.clone())),
+                &mut never_resource
+            ),
+            "Result[u8, u8] is data"
+        );
+
+        // A bare Named type resolves through the closure argument — both
+        // answers are exercised (§7.1: "resource struct makes it a
+        // resource by fiat", decided by the caller, not by this function).
+        let named = Type::Named("Foo".to_string(), vec![]);
+        assert!(
+            resource_propagates(&named, &mut always_resource),
+            "Named delegates to the closure: a `resource` answer propagates"
+        );
+        assert!(
+            !resource_propagates(&named, &mut never_resource),
+            "Named delegates to the closure: a `data` answer propagates"
+        );
+    }
+}
