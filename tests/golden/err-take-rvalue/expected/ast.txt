@@ -1,0 +1,1 @@
+error[parse]: operand of `take` must be a place expression (name, field, index) at 4:13

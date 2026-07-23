@@ -1,0 +1,6 @@
+module test
+
+fn f():
+    if true:
+        x = 1
+  y = 2

@@ -1,0 +1,4 @@
+module test
+
+fn f():
+    g(take 5)

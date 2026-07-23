@@ -1,0 +1,4 @@
+module test
+
+fn return():
+    pass

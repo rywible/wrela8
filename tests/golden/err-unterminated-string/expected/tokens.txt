@@ -1,0 +1,1 @@
+error[lex]: string literal contains a raw newline at 4:15

@@ -130,6 +130,13 @@ status = "test"
 tests = ["xtask:corpus", "golden/ast-virtio"]
 note = "every docs/language ```wrela block and every docs/language/examples/*.wr file parses (xtask corpus reports lexed/parsed/fragments-skipped counts) except a block whose body contains the literal substring `...` (a doc fragment, lex-only); the virtio-storage.wr worked example parses in full and its exact ast dump is pinned by golden/ast-virtio (an intentional duplicate of the example file — the corpus covers the original)"
 
+[[clause]]
+id = "syntax.diagnostics.parse-errors"
+doc = "02-language.md#8"
+status = "test"
+tests = ["golden/err-bad-dedent", "golden/err-five-space-indent", "golden/err-unterminated-string", "golden/err-unterminated-paren", "golden/err-missing-colon", "golden/err-take-rvalue", "golden/err-lone-else", "golden/err-stray-ellipsis", "golden/err-unmatched-close"]
+note = "nine representative syntax errors (bad dedent, five-space indent, unterminated string/paren, missing colon, take rvalue, lone else, stray ellipsis, unmatched close); err-keyword-as-name not included (parser bug: keywords accepted as identifiers)"
+
 # --- value model ----------------------------------------------------------
 
 [[clause]]
