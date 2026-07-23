@@ -1,0 +1,43 @@
+Module path=examples.command_parser
+  Enum Opcode data
+    variant Ping
+    variant Get
+    variant Set
+    variant Delete
+  Enum ParseError data deriving(From)
+    variant BadOpcode(u8)
+  Enum CommandError data deriving(From)
+    variant Invalid(ParseError)
+  Struct Header data
+    field opcode: Opcode
+    field length: u8
+    init(mut self, code: read u8, length: read u8) -> Result[unit, ParseError]
+    fn payload_len(read self) -> u8
+  Enum Command data
+    variant Ping
+    variant Get(key: u8)
+    variant Set(key: u8, value: u8)
+    variant Delete(key: u8)
+  Fn parse_command(raw: read [u8; 4]) -> Result[Command, CommandError]
+  Fn describe(cmd: read Command) -> u8
+  Struct Reply resource
+    field code: u64
+    init(mut self, code: read u64) -> unit
+    fn is_ok(read self) -> bool
+  Fn execute(cmd: read Command) -> Reply
+  Fn log_dispatch() -> unit
+  Fn dispatch(raw: read [u8; 4]) -> Result[Reply, CommandError]
+  Fn bundle(a: take Reply, b: take Reply) -> (Reply, Reply)
+  Fn first_of(pair: take (Reply, Reply)) -> Reply
+  Fn dispatch_pair(raw_a: read [u8; 4], raw_b: read [u8; 4]) -> Result[(Reply, Reply), CommandError]
+  Fn stash_reply(reply: take Reply) -> Option[Reply]
+  Fn unwrap_reply(slot: take Option[Reply], fallback: read u64) -> u64
+  Fn first_matching[T](items: read [T; 3], target: read T) -> Option[usize]
+  Fn use_first_matching_u8() -> Option[usize]
+  Fn use_first_matching_bool() -> Option[usize]
+  Fn count_gets(cmds: read [Command; 3]) -> u64
+  Fn make_ping() -> Command
+  Fn make_get(key: read u8) -> Command
+  Fn make_set(key: read u8, value: read u8) -> Command
+  Fn all_pings() -> u64
+  Fn checked_reply(count: mut u64, raw: read [u8; 4]) -> u64

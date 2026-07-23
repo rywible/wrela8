@@ -1,0 +1,44 @@
+Module path=examples.block_cache
+  Pool BlockPayloads
+  Struct DmaBlock resource
+    field id: u64
+    init(mut self, id: read u64) -> unit
+    fn identity(read self) -> u64
+  Enum CacheState data
+    variant Invalid
+    variant Clean(u64)
+    variant Dirty(u64)
+  Struct CacheLine resource
+    field state: CacheState
+    field block: own[BlockPayloads] DmaBlock
+    init(mut self, block: take own[BlockPayloads] DmaBlock) -> unit
+    fn lba(read self) -> u64
+    fn is_dirty(read self) -> bool
+    fn mark_clean(mut self, lba: read u64) -> unit
+    fn mark_dirty(mut self, lba: read u64) -> unit
+    fn touch(mut self) -> unit
+    fn swap_block(mut self, fresh: take own[BlockPayloads] DmaBlock) -> own[BlockPayloads] DmaBlock
+    fn evict(take self) -> own[BlockPayloads] DmaBlock
+  Struct BlockCache resource
+    field lines: [CacheLine; 4]
+    init(mut self, b0: take own[BlockPayloads] DmaBlock, b1: take own[BlockPayloads] DmaBlock, b2: take own[BlockPayloads] DmaBlock, b3: take own[BlockPayloads] DmaBlock) -> unit
+    fn lookup(read self, index: read usize) -> u64
+    fn is_dirty(read self, index: read usize) -> bool
+    fn mark_dirty(mut self, index: read usize, lba: read u64) -> unit
+    fn mark_clean(mut self, index: read usize, lba: read u64) -> unit
+    fn touch_all(mut self) -> unit
+    fn swap(mut self, index: read usize, fresh: take own[BlockPayloads] DmaBlock) -> own[BlockPayloads] DmaBlock
+  Fn make_cache(b0: take own[BlockPayloads] DmaBlock, b1: take own[BlockPayloads] DmaBlock, b2: take own[BlockPayloads] DmaBlock, b3: take own[BlockPayloads] DmaBlock) -> BlockCache
+  Fn log_flushed() -> unit
+  Fn log_evicted() -> unit
+  Fn flush_dirty(cache: mut BlockCache) -> u64
+  Fn evict_index(cache: mut BlockCache, index: read usize, fresh: take own[BlockPayloads] DmaBlock) -> own[BlockPayloads] DmaBlock
+  Fn close_cache(cache: take BlockCache) -> unit
+  Struct Slot[T, const N: usize] data
+    field items: [Option[T]; N]
+    fn get(read self, index: read usize) -> Option[T]
+  Fn use_data_slots() -> unit
+  Struct Handle resource
+    field block: own[BlockPayloads] DmaBlock
+  Fn use_resource_slots(a: take own[BlockPayloads] DmaBlock, b: take own[BlockPayloads] DmaBlock) -> unit
+  Fn run_cycle(b0: take own[BlockPayloads] DmaBlock, b1: take own[BlockPayloads] DmaBlock, b2: take own[BlockPayloads] DmaBlock, b3: take own[BlockPayloads] DmaBlock, spare: take own[BlockPayloads] DmaBlock) -> u64

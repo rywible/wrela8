@@ -1,0 +1,47 @@
+Module path=examples.frame_ledger
+  Pool FramePayloads
+  Struct FrameBuf resource
+    field id: u64
+    init(mut self, id: read u64) -> unit
+    fn identity(read self) -> u64
+  Enum FrameState data
+    variant Empty
+    variant Filled(u64)
+    variant Presented(u64)
+  Struct FrameSlot resource
+    field state: FrameState
+    field handle: own[FramePayloads] FrameBuf
+    init(mut self, handle: take own[FramePayloads] FrameBuf) -> unit
+    fn fill(mut self, id: read u64) -> unit
+    fn present(mut self) -> unit
+    fn refresh(mut self, valid: read bool) -> unit
+    fn swap_handle(mut self, fresh: take own[FramePayloads] FrameBuf) -> own[FramePayloads] FrameBuf
+    fn into_handle(take self) -> own[FramePayloads] FrameBuf
+    fn slot_id(read self) -> u64
+  Struct DoubleBuffer resource
+    field front: FrameSlot
+    field back: FrameSlot
+    init(mut self, front: take own[FramePayloads] FrameBuf, back: take own[FramePayloads] FrameBuf) -> unit
+    fn flip(mut self) -> unit
+    fn fill_back(mut self, id: read u64) -> unit
+    fn present_front(mut self) -> unit
+    fn front_id(read self) -> u64
+    fn back_id(read self) -> u64
+  Fn touch_front_repeatedly(buf: mut DoubleBuffer, times: read u64) -> unit
+  Fn cycle_frames(buf: mut DoubleBuffer, times: read u64) -> unit
+  Fn stash_slot(slot: take FrameSlot, keep: read bool) -> Option[FrameSlot]
+  Fn stash_handle(handle: take own[FramePayloads] FrameBuf, keep: read bool) -> Option[own[FramePayloads] FrameBuf]
+  Enum PresentOutcome resource
+    variant Delivered(FrameSlot)
+    variant Rejected(u64)
+  Fn present_or_reject(slot: take FrameSlot, ok: read bool) -> PresentOutcome
+  Fn unwrap_outcome(outcome: take PresentOutcome) -> u64
+  Struct Cell[T, const N: usize] data
+    field slots: [Option[T]; N]
+  Fn use_data_cell() -> unit
+  Struct FrameHandle resource
+    field buf: own[FramePayloads] FrameBuf
+  Fn use_resource_cell(a: take own[FramePayloads] FrameBuf, b: take own[FramePayloads] FrameBuf) -> unit
+  Fn log_close() -> unit
+  Fn close_buffer(buf: take DoubleBuffer) -> u64
+  Fn run_ledger(front: take own[FramePayloads] FrameBuf, back: take own[FramePayloads] FrameBuf, spare: take own[FramePayloads] FrameBuf) -> u64

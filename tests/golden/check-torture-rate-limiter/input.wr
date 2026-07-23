@@ -1,0 +1,172 @@
+module examples.rate_limiter
+
+pub struct Ticks:
+    value: u64
+
+    pub fn add(read self, right: Ticks) -> Ticks:
+        return Ticks(value=self.value + right.value)
+
+    pub fn subtract(read self, right: Ticks) -> Ticks:
+        return Ticks(value=self.value - right.value)
+
+    pub fn less_than(read self, right: Ticks) -> bool:
+        return self.value < right.value
+
+pub struct Priority:
+    value: u64
+
+    pub fn less_than(read self, right: Priority) -> bool:
+        return self.value < right.value
+
+pub fn earlier[T](a: T, b: T) -> T:
+    if a.less_than(b):
+        return a
+    return b
+
+pub fn use_earlier_ticks(a: Ticks, b: Ticks) -> Ticks:
+    return earlier(a, b)
+
+pub fn use_earlier_priority(a: Priority, b: Priority) -> Priority:
+    return earlier[Priority](a, b)
+
+pub struct TokenBucket:
+    capacity: u64
+    tokens: u64
+    refill_rate: u64
+
+    init(mut self, capacity: u64, refill_rate: u64):
+        self.capacity = capacity
+        self.tokens = capacity
+        self.refill_rate = refill_rate
+
+    pub fn try_take(mut self, amount: u64) -> bool:
+        if self.tokens >= amount:
+            self.tokens -= amount
+            return true
+        return false
+
+    pub fn refill(mut self, elapsed: Ticks):
+        grown = elapsed.value * self.refill_rate
+        total = self.tokens + grown
+        if total > self.capacity:
+            self.tokens = self.capacity
+        else:
+            self.tokens = total
+
+    fn level(self) -> u64:
+        return self.tokens
+
+pub enum ConfigError deriving(From):
+    BadRate(u64)
+
+pub struct BucketConfig:
+    capacity: u64
+    refill_rate: u64
+
+    init(mut self, capacity: u64, refill_rate: u64) -> Result[unit, ConfigError]:
+        if refill_rate == 0:
+            return Err(ConfigError.BadRate(refill_rate))
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        return Ok(unit)
+
+pub fn make_bucket(capacity: u64, refill_rate: u64) -> Result[TokenBucket, ConfigError]:
+    cfg = BucketConfig(capacity=capacity, refill_rate=refill_rate)?
+    return Ok(TokenBucket(capacity=cfg.capacity, refill_rate=cfg.refill_rate))
+
+resource struct Ticket:
+    cost: u64
+
+    init(mut self, cost: u64):
+        self.cost = cost
+
+pub enum GateState:
+    Closed
+    Open(Ticks)
+    Cooldown(Ticks)
+
+pub enum GateError deriving(From):
+    Denied(u64)
+
+pub enum LimiterError deriving(From):
+    Blocked(GateError)
+
+pub struct Gate:
+    state: GateState
+    bucket: TokenBucket
+
+    init(mut self, take bucket: TokenBucket):
+        self.state = GateState.Closed
+        self.bucket = take bucket
+
+    pub fn with_bucket_bool(mut self, body: fn(mut TokenBucket) -> bool) -> bool:
+        return body(mut self.bucket)
+
+    pub fn with_bucket_unit(mut self, body: fn(mut TokenBucket) -> unit) -> unit:
+        body(mut self.bucket)
+
+    pub fn admit(mut self, cost: u64, now: Ticks) -> Result[Option[Ticket], GateError]:
+        match self.state:
+            case .Cooldown(until) if now.less_than(until):
+                return Err(GateError.Denied(cost))
+            case .Closed | .Open(_):
+                pass
+            case .Cooldown(_):
+                self.state = GateState.Closed
+        granted = self.with_bucket_bool(|mut b: TokenBucket| b.try_take(cost))
+        if granted:
+            self.state = GateState.Open(now)
+            return Ok(Some(Ticket(cost=cost)))
+        self.state = GateState.Cooldown(now)
+        return Ok(None)
+
+    pub fn admit_checked(mut self, cost: u64, now: Ticks) -> Result[Option[Ticket], LimiterError]:
+        result = self.admit(cost, now)?
+        return Ok(take result)
+
+    pub fn tick(mut self, elapsed: Ticks) -> unit:
+        self.with_bucket_unit(|mut b: TokenBucket| b.refill(elapsed))
+
+    fn describe(self) -> u64:
+        match self.state:
+            case .Closed:
+                return 0
+            case .Open(opened) | .Cooldown(opened):
+                return opened.value
+
+pub fn spend_ticket(take ticket: Ticket) -> u64:
+    return ticket.cost
+
+pub fn maybe_spend(take slot: Option[Ticket]) -> u64:
+    match slot:
+        case .Some(ticket):
+            return spend_ticket(take ticket)
+        case .None:
+            return 0
+
+pub fn pair_of_tickets(take a: Ticket, take b: Ticket) -> (u64, u64):
+    return (spend_ticket(take a), spend_ticket(take b))
+
+fn log_reset():
+    pass
+
+pub fn run_gate(take bucket: TokenBucket, first_cost: u64, second_cost: u64, now: Ticks) -> u64:
+    defer log_reset()
+    gate = Gate(bucket=take bucket)
+    total: u64 = 0
+    outcome = gate.admit_checked(first_cost, now)
+    match outcome:
+        case .Ok(slot):
+            total += maybe_spend(take slot)
+        case .Err(_):
+            pass
+    later = now.add(Ticks(value=10))
+    gate.tick(Ticks(value=5))
+    outcome2 = gate.admit_checked(second_cost, later)
+    match outcome2:
+        case .Ok(slot):
+            total += maybe_spend(take slot)
+        case .Err(_):
+            pass
+    total += gate.describe()
+    return total
