@@ -137,6 +137,12 @@ status = "test"
 tests = ["golden/err-bad-dedent", "golden/err-five-space-indent", "golden/err-unterminated-string", "golden/err-unterminated-paren", "golden/err-missing-colon", "golden/err-take-rvalue", "golden/err-lone-else", "golden/err-stray-ellipsis", "golden/err-unmatched-close", "golden/err-keyword-as-name"]
 note = "ten representative syntax errors (bad dedent, five-space indent, unterminated string/paren, missing colon, take rvalue, lone else, stray ellipsis, unmatched close, keyword as a declared name); a Keyword token is rejected wherever a fresh name is declared or a type is named (fn/method/struct/enum/pool/const/variant/field names, parameters, local assignment targets, closure params, generic params, import aliases), message `keyword <kw> cannot be used as a name`, with three narrow exceptions: after `.` (member access/call, Enum.Variant paths), argument labels (`name=`), and `pool` as a callable in primary-expression position (the `with pool(...)` intrinsic); dotted import paths keep accepting keyword segments"
 
+[[clause]]
+id = "sema.bounds.loops"
+doc = "02-language.md#8.1"
+status = "gap"
+note = "every loop in a synchronous fn needs a provable finite bound and async loops checkpoint unless @budget-proven (02 \u00a78.1, 04 \u00a72); proving needs the comptime engine and cost model \u2014 M3+ (plans/M2.md decision 7 opened this as an explicit gap; M2 sema does not check loop bounds)"
+
 # --- value model ----------------------------------------------------------
 
 [[clause]]
