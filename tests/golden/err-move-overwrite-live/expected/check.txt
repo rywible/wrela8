@@ -1,0 +1,1 @@
+error[move]: `current` still holds a live resource; move it or finish it before overwriting at 11:5

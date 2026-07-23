@@ -89,11 +89,13 @@ pub fn unimplemented_at(subject: &str, span: Span) -> SemaError {
 /// Runs the sema pipeline in frozen pass order (decision 3) and returns
 /// the first diagnostic, if any. Item A lands collect + resolve; item B
 /// adds declare (types.rs: every signature's types, data-vs-resource
-/// classification, `deriving` validation). `bodies`/`access`/`matches`
-/// all share one `ModuleCtx` (built once here) so item H's instantiation
-/// queue (`bodies::ModuleCtx::generics_queue`) accumulates every generic
-/// use discovered by any of them; `generics::check` (item H) then drains
-/// it. `flow` (items E/F) is still a stub.
+/// classification, `deriving` validation). `bodies`/`access`/`flow`/
+/// `matches` all share one `ModuleCtx` (built once here) so item H's
+/// instantiation queue (`bodies::ModuleCtx::generics_queue`) accumulates
+/// every generic use discovered by any of them; `generics::check` (item
+/// H) then drains it. `flow` (items E/F) runs its one CFG pass —
+/// definite init, moves, exclusivity (02-language.md §3) — between
+/// `access` and `matches`, the frozen pass order (decision 3).
 ///
 /// `path` is the file path exactly as given to `wrela dump` — item H's
 /// requirement-chain diagnostic cites it verbatim for both its `required
@@ -106,6 +108,7 @@ pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
     let mctx = bodies::build_module_ctx(module, &decl_items);
     bodies::check(module, &decl_items, &mctx)?;
     access::check(module, &decl_items, &mctx)?;
+    flow::check(module, &decl_items, &mctx)?;
     matches::check(module, &decl_items, &mctx)?;
     generics::check(module, &decl_items, &mctx, path)?;
     Ok(())

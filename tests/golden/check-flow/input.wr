@@ -1,0 +1,53 @@
+module examples.flow
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+resource struct Handle:
+    packet: Packet
+
+    init(mut self, take packet: Packet):
+        self.packet = take packet
+
+pub fn conditional_init(cond: bool) -> u64:
+    if cond:
+        value: u64 = 1
+    else:
+        value: u64 = 2
+    return value
+
+pub fn inspect_packet(p: Packet) -> u64:
+    return p.size
+
+pub fn take_and_restore_field(mut h: Handle, take fresh: Packet) -> unit:
+    old = take h.packet
+    h.packet = take fresh
+    inspect_packet(old)
+
+pub fn move_then_fresh(take current: Packet) -> Packet:
+    next = take current
+    current = Packet(size=0)
+    return take next
+
+pub fn restore_in_loop(mut h: Handle, n: u64) -> unit:
+    i: u64 = 0
+    while i < n:
+        p = take h.packet
+        h.packet = take p
+        i += 1
+
+pub fn const_index_move(take arr: [Packet; 2]) -> Packet:
+    return take arr[0]
+
+pub fn copy_data_freely(x: u64) -> u64:
+    y = x
+    z = x
+    return y + z
+
+pub fn take_data_too(x: u64) -> u64:
+    local = x
+    y = take local
+    return y

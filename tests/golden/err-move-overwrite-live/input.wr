@@ -1,0 +1,11 @@
+module test
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn overwrite_live() -> unit:
+    current = Packet(size=1)
+    current = Packet(size=2)

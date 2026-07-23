@@ -1,0 +1,10 @@
+module test
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn copy_resource(take p: Packet) -> unit:
+    q = p

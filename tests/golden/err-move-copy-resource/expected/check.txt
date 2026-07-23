@@ -1,0 +1,1 @@
+error[move]: `p` is a resource; use `take` to move it here (an implicit copy is not allowed) at 10:9

@@ -583,7 +583,19 @@ pub(crate) fn check_top_fn(
 /// pass, raising the `pub`-must-spell error (item 3) the one place it is
 /// honestly checkable: a `pub` method whose receiver mode is the
 /// ambiguous `Read` and whose body needs more.
-fn resolve_receiver_mode(
+///
+/// `pub(crate)` (items E/F, flow.rs): the flow pass needs this exact
+/// effective mode too (a private plain-`self` method's *inferred* mode
+/// decides whether `take self`/a field-take-and-restore is legal inside
+/// it, and a receiver's effective mode at a call site decides what the
+/// receiver operand's own access is) — re-deriving the same inference
+/// would duplicate this pass wholesale, so flow.rs calls this verbatim
+/// exactly like it reuses `bodies.rs`'s own machinery. Since `access::check`
+/// always runs (and returns `Ok`) before `flow::check` in the frozen pass
+/// order, the one error this can raise (a `pub` method's own missing
+/// receiver spelling) can never actually fire when flow.rs calls it —
+/// dumb re-derivation, not a new check.
+pub(crate) fn resolve_receiver_mode(
     f: &ast::FnItem,
     fd: &DeclFn,
     sname: &str,

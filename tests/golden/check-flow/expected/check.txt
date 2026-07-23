@@ -1,0 +1,15 @@
+Module path=examples.flow
+  Struct Packet resource
+    field size: u64
+    init(mut self, size: read u64) -> unit
+  Struct Handle resource
+    field packet: Packet
+    init(mut self, packet: take Packet) -> unit
+  Fn conditional_init(cond: read bool) -> u64
+  Fn inspect_packet(p: read Packet) -> u64
+  Fn take_and_restore_field(h: mut Handle, fresh: take Packet) -> unit
+  Fn move_then_fresh(current: take Packet) -> Packet
+  Fn restore_in_loop(h: mut Handle, n: read u64) -> unit
+  Fn const_index_move(arr: take [Packet; 2]) -> Packet
+  Fn copy_data_freely(x: read u64) -> u64
+  Fn take_data_too(x: read u64) -> u64

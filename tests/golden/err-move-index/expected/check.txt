@@ -1,0 +1,1 @@
+error[move]: moving `arr[_]` out of an array through a runtime index is forbidden at 10:12

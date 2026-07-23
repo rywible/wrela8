@@ -1,0 +1,11 @@
+module test
+
+pub struct Pair:
+    a: u64
+    b: u64
+
+pub fn combine(mut x: Pair, mut y: Pair) -> unit:
+    pass
+
+pub fn two_muts(mut p: Pair) -> unit:
+    combine(mut p, mut p)

@@ -40,7 +40,7 @@ use crate::sema::types::{
     self, Classification, DeclEnum, DeclField, DeclFn, DeclGenericKind, DeclGenericParam,
     DeclMember, DeclParam, DeclStruct, DeclVariant, DeclVariantPayload, Type, TypeArg,
 };
-use crate::sema::{SemaError, access, matches, unimplemented_at};
+use crate::sema::{SemaError, access, flow, matches, unimplemented_at};
 use crate::syntax::ast::{Arg, BinOp, Expr, Module, Span, Stmt};
 use crate::syntax::printer;
 
@@ -695,6 +695,7 @@ fn check_one_instantiation(mctx: &ModuleCtx, entry: &QueuedInstantiation) -> Res
             bodies::check_top_fn(&fi.ast, &fi.decl, mctx)?;
             let empty_effects = access::EffectMap::new();
             access::check_top_fn(&fi.ast, &fi.decl, mctx, &empty_effects)?;
+            flow::check_top_fn(&fi.ast, &fi.decl, mctx, &empty_effects)?;
             matches::check_top_fn(&fi.ast, &fi.decl, mctx)?;
             Ok(())
         }
@@ -704,6 +705,7 @@ fn check_one_instantiation(mctx: &ModuleCtx, entry: &QueuedInstantiation) -> Res
             bodies::check_struct_members(&si, self_ty.clone(), mctx)?;
             let effects = access::infer_effects_over(mctx);
             access::check_struct_members(&si, self_ty.clone(), mctx, &effects)?;
+            flow::check_struct_members(&si, self_ty.clone(), mctx, &effects)?;
             matches::check_struct_members(&si, self_ty, mctx)?;
             Ok(())
         }

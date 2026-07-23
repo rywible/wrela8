@@ -1,0 +1,6 @@
+module test
+
+pub fn one_arm_only(cond: bool) -> u64:
+    if cond:
+        value: u64 = 1
+    return value

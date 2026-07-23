@@ -1,0 +1,4 @@
+module test
+
+pub fn compute() -> u64:
+    pass

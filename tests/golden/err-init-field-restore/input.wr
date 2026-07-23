@@ -1,0 +1,16 @@
+module test
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+resource struct Handle:
+    packet: Packet
+
+    init(mut self, take packet: Packet):
+        self.packet = take packet
+
+    pub fn leak(mut self):
+        old = take self.packet

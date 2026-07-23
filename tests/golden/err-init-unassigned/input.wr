@@ -1,0 +1,6 @@
+module test
+
+pub fn maybe_never(cond: bool) -> u64:
+    while cond:
+        x: u64 = 1
+    return x

@@ -1,0 +1,1 @@
+error[move]: `p.size` was already taken at 11:14
