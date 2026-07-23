@@ -1,0 +1,7 @@
+module examples.err_comptime_assert_in_const
+
+pub fn check_range(n: i64) -> i64:
+    assert n >= 0, "must be non-negative"
+    return n
+
+const RESULT: i64 = check_range(-1)

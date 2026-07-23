@@ -1,0 +1,6 @@
+Module path=examples.check_const_eval
+  Const BASE: u64
+  Const DOUBLED: u64
+  Const FACTORIAL5: u64
+  Fn factorial(n: read u64) -> u64
+  Fn use_consts() -> u64

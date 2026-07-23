@@ -509,6 +509,19 @@ pub(crate) fn check(
                     program.structs.insert(s.name.clone(), ts);
                 }
             }
+            (Item::Enum(e), types::DeclItem::Enum(d)) => {
+                // A generic enum's own variant order is recorded once it
+                // is instantiated (item H's job); a plain enum's is
+                // recorded here, alongside every other plain top-level
+                // declaration this pass checks (`typed::TypedProgram::enums`'s
+                // own doc comment).
+                if e.generics.is_empty() {
+                    program.enums.insert(
+                        e.name.clone(),
+                        d.variants.iter().map(|v| v.name.clone()).collect(),
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -630,6 +643,7 @@ pub(crate) fn check_struct_members(
         other => unreachable!("check_struct_members: self_ty `{other:?}` is not Type::Named"),
     };
     let local_pools = local_pool_names(info);
+    let mut fields = Vec::new();
     let mut field_defaults = BTreeMap::new();
     let mut methods = BTreeMap::new();
     let mut assoc_fns = BTreeMap::new();
@@ -637,6 +651,7 @@ pub(crate) fn check_struct_members(
     for (am, dm) in info.members() {
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(df)) => {
+                fields.push(af.name.clone());
                 if let Some(def) = &af.default {
                     let mut fctx = FnCtx::new(Type::Unit, local_pools.clone());
                     fctx.insert_local("self".to_string(), self_ty.clone());
@@ -690,6 +705,7 @@ pub(crate) fn check_struct_members(
     }
     Ok(TypedStruct {
         name: struct_name,
+        fields,
         field_defaults,
         methods,
         assoc_fns,

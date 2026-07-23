@@ -1,0 +1,5 @@
+module examples.err_comptime_overflow
+
+const BIG: u8 = 250
+
+const OVERFLOWED: u8 = BIG + 10

@@ -1,0 +1,33 @@
+Program
+  Const name=BASE ty=u64
+    Int text=10 ty=u64
+  Const name=DOUBLED ty=u64
+    Binary op=* ty=u64
+      Const name=BASE ty=u64
+      Int text=2 ty=u64
+  Const name=FACTORIAL5 ty=u64
+    Call key=factorial ty=u64
+      Int text=5 ty=u64
+  Fn name=factorial ret=u64
+    Param name=n mode=read ty=u64
+    Body
+      If
+        Binary op=== ty=bool
+          Local name=n ty=u64
+          Int text=0 ty=u64
+        Then
+          Return
+            Int text=1 ty=u64
+      Return
+        Binary op=* ty=u64
+          Local name=n ty=u64
+          Call key=factorial ty=u64
+            Binary op=- ty=u64
+              Local name=n ty=u64
+              Int text=1 ty=u64
+  Fn name=use_consts ret=u64
+    Body
+      Return
+        Binary op=+ ty=u64
+          Const name=DOUBLED ty=u64
+          Const name=FACTORIAL5 ty=u64
