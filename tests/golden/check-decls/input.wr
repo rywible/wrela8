@@ -1,0 +1,41 @@
+module examples.decls
+
+pub struct Counter:
+    value: u64 = 0
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+    fn peek(self) -> u64:
+        return self.value
+
+    pub fn increment(mut self, by: u64):
+        self.value += by
+
+pool Packets
+
+pub resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub struct Ring[T, const N: usize]:
+    items: [Option[T]; N]
+
+pub enum Lookup[T]:
+    Found(T)
+    Absent
+    Failed(ConfigError)
+
+pub enum ConfigError deriving(From):
+    Invalid(Str)
+
+pub async fn fetch(client: u64) -> Result[u64, ConfigError]:
+    return Ok(client)
+
+pub fn hash(data: Bytes) -> u64:
+    return 0
+
+pub fn enqueue(packet: own[Packets] Packet) -> unit:
+    pass

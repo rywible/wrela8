@@ -1,0 +1,5 @@
+module examples.err_type_deriving
+
+pub struct Point deriving(Clone):
+    x: i32
+    y: i32

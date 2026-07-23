@@ -1,0 +1,21 @@
+Module path=examples.decls
+  Struct Counter data
+    field value: u64
+    fn get(read self) -> u64
+    fn peek(self) -> u64
+    fn increment(mut self, by: read u64) -> unit
+  Pool Packets
+  Struct Packet resource
+    field size: u64
+    init(mut self, size: read u64) -> unit
+  Struct Ring[T, const N: usize] data
+    field items: [Option[T]; N]
+  Enum Lookup[T] data
+    variant Found(T)
+    variant Absent
+    variant Failed(ConfigError)
+  Enum ConfigError data deriving(From)
+    variant Invalid(Str)
+  AsyncFn fetch(client: read u64) -> Result[u64, ConfigError]
+  Fn hash(data: read Bytes) -> u64
+  Fn enqueue(packet: read own[Packets] Packet) -> unit

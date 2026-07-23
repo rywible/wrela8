@@ -15,6 +15,15 @@
 //! time using the lexer's brace-balance scan, but interpolation contents are
 //! **not** recursively parsed in M1 — each `Interp` keeps its raw source text
 //! and span only; a later milestone parses it as an expression.
+//!
+//! plans/M2.md item B adds `PartialEq, Eq` throughout (every shape above is
+//! unchanged; nothing here stops being "plain"): sema's `Type` (decision 4 —
+//! `derive(PartialEq, Eq, Clone, Debug)`, structural, no interning) keeps
+//! array lengths, `Bytes[N]`'s length, and generic const arguments as
+//! unevaluated `Expr`s embedded directly in itself rather than evaluating
+//! them early (item H evaluates the literal subset), so `Expr` — and
+//! everything it recursively reaches, `Stmt`/`Pattern` included, via
+//! `Closure`/`Is` — needs the same derives for `Type`'s own to compile.
 
 /// A source position, `(line, col)`, both 1-based — matches lexer::Token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -26,7 +35,7 @@ pub struct Span {
 /// A `##` doc comment attached to the declaration (or module) immediately
 /// following it. Consecutive `##` lines join with `\n`; `text` has the one
 /// conventional leading space (`## text`) stripped, if present.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Doc {
     pub span: Span,
     pub text: String,
@@ -35,7 +44,7 @@ pub struct Doc {
 /// `@name` or `@name(arg, key=value, ...)` (02-language.md §13). Arguments
 /// share the call-argument shape (`Arg`) minus the `mut`/`take` mirroring,
 /// which is meaningless for comptime attribute arguments.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attr {
     pub span: Span,
     pub name: String,
@@ -43,7 +52,7 @@ pub struct Attr {
 }
 
 /// One `module path.name` file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub span: Span,
     /// Dotted path segments, e.g. `["examples", "tokens"]`.
@@ -55,7 +64,7 @@ pub struct Module {
 }
 
 /// One imported name, with its optional `as Alias`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportName {
     pub span: Span,
     pub name: String,
@@ -64,7 +73,7 @@ pub struct ImportName {
 
 /// `[pub] from path.to.module import Name [as Alias][, ...]`, including the
 /// parenthesized multi-line list form (02-language.md §2).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Import {
     pub span: Span,
     pub is_pub: bool,
@@ -74,7 +83,7 @@ pub struct Import {
 }
 
 /// One top-level declaration (02-language.md §§4-7, §12).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Const(ConstItem),
     Fn(FnItem),
@@ -86,7 +95,7 @@ pub enum Item {
 
 /// `[pub] const NAME [: Type] = expr` (02-language.md §12: a `const`
 /// initializer is a comptime context).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstItem {
     pub span: Span,
     pub name: String,
@@ -98,7 +107,7 @@ pub struct ConstItem {
 }
 
 /// A compile-time generic parameter: `T` (type) or `const N: usize` (value).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenericParam {
     Type { span: Span, name: String },
     Const { span: Span, name: String, ty: Type },
@@ -125,14 +134,14 @@ impl AccessMode {
 /// The receiver parameter of a method: `read self` / `mut self` / `take
 /// self`, or bare `self` (read, the unwritten default — 02-language.md
 /// §5.1).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receiver {
     pub span: Span,
     pub mode: AccessMode,
 }
 
 /// One non-receiver parameter: `[mode] name: Type [= default]`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub span: Span,
     pub mode: AccessMode,
@@ -146,7 +155,7 @@ pub struct Param {
 /// few doc tables use to describe a desugar target (05-language.md §8) —
 /// see the parser's `parse_fn_common` doc comment for the fail-closed
 /// reasoning; every real declaration has a body.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnItem {
     pub span: Span,
     pub name: String,
@@ -163,7 +172,7 @@ pub struct FnItem {
 
 /// `init(mut self, ...) [-> Result[unit, E]]: body` (02-language.md §7.1).
 /// Never `pub`, never generic — deliberate, per the docs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitItem {
     pub span: Span,
     pub doc: Option<Doc>,
@@ -177,7 +186,7 @@ pub struct InitItem {
 /// `[pub] name: Type [= default]` struct field, with its own attrs (field-
 /// position attributes like `@offset(0x060)` land here, 02-language.md
 /// §13/03-hardware.md).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldItem {
     pub span: Span,
     pub name: String,
@@ -189,7 +198,7 @@ pub struct FieldItem {
 }
 
 /// One member of a `struct`/`resource struct` body.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Member {
     Field(FieldItem),
     Fn(FnItem),
@@ -200,7 +209,7 @@ pub enum Member {
 
 /// `[pub] [resource] struct NAME[generics] [deriving(...)]:` body
 /// (02-language.md §7.1, §7.5).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructItem {
     pub span: Span,
     pub name: String,
@@ -215,21 +224,21 @@ pub struct StructItem {
 
 /// A closed-sum variant payload: none, a positional tuple, or named fields
 /// (both forms bind positionally in match patterns — 02-language.md §7.2).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantPayload {
     None,
     Tuple(Vec<Type>),
     Named(Vec<VariantField>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariantField {
     pub span: Span,
     pub name: String,
     pub ty: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variant {
     pub span: Span,
     pub name: String,
@@ -238,7 +247,7 @@ pub struct Variant {
 
 /// `[pub] enum NAME[generics] [deriving(...)]:` body (02-language.md §7.2,
 /// §7.5).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumItem {
     pub span: Span,
     pub name: String,
@@ -253,7 +262,7 @@ pub struct EnumItem {
 /// `pool NAME` (02-language.md §4) — an image- or actor-scoped pool name
 /// binding. Grammatically `pub`-less (the pool name's visibility follows its
 /// owner), so there is no `is_pub` here.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolItem {
     pub span: Span,
     pub name: String,
@@ -266,7 +275,7 @@ pub struct PoolItem {
 /// `ComptimeIfStmt` at statement scope — three near-identical shapes over
 /// three different content types, per decision 4 (nothing generic in the
 /// AST).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComptimeIfItem {
     pub span: Span,
     pub doc: Option<Doc>,
@@ -276,7 +285,7 @@ pub struct ComptimeIfItem {
     pub else_branch: Option<Vec<Item>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComptimeIfMember {
     pub span: Span,
     pub doc: Option<Doc>,
@@ -291,7 +300,7 @@ pub struct ComptimeIfMember {
 /// A generic argument at a type's use site: a type, a bounded-occupancy
 /// marker (`..N`), or a plain comptime expression (an integer/const-name
 /// argument, or a data-carrying expression like `256.KiB`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenericArg {
     Type(Type),
     Bound(Expr),
@@ -300,7 +309,7 @@ pub enum GenericArg {
 
 /// `Name[args...]` — a named type, possibly with generic arguments
 /// (`u64`, `never`, `unit`, `BootError`, `Option[T]`, `Bytes[..N]`, ...).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedType {
     pub span: Span,
     pub name: String,
@@ -308,7 +317,7 @@ pub struct NamedType {
 }
 
 /// `[T; N]` — fixed array type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayType {
     pub span: Span,
     pub elem: Type,
@@ -316,7 +325,7 @@ pub struct ArrayType {
 }
 
 /// `(A, B)` / one-element `(T,)` — tuple type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TupleType {
     pub span: Span,
     pub elems: Vec<Type>,
@@ -324,14 +333,14 @@ pub struct TupleType {
 
 /// `own[P] T` — pool handle (02-language.md §4). `pool` is the dotted pool
 /// path (`Name` or `Owner.Name`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnType {
     pub span: Span,
     pub pool: Vec<String>,
     pub inner: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnTypeParam {
     pub span: Span,
     pub mode: AccessMode,
@@ -339,14 +348,14 @@ pub struct FnTypeParam {
 }
 
 /// `fn(read T, mut U) -> R` — function type (02-language.md §8.3).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnType {
     pub span: Span,
     pub params: Vec<FnTypeParam>,
     pub ret: Option<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Named(NamedType),
     Array(Box<ArrayType>),
@@ -369,7 +378,7 @@ impl Type {
 
 // --- patterns (02-language.md §7.2) -----------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pattern {
     Wildcard(Span),
     /// A literal pattern, including a unary-negated numeric literal.
@@ -469,7 +478,7 @@ impl BinOp {
 /// `mut`/`take` marker's operand must be a place expression (name, field,
 /// index, or a parenthesized place — parens are transparent, dropped at
 /// parse time) — checked where the argument is parsed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Arg {
     pub span: Span,
     pub label: Option<String>,
@@ -477,7 +486,7 @@ pub struct Arg {
     pub value: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosureParam {
     pub span: Span,
     pub mode: AccessMode,
@@ -485,13 +494,13 @@ pub struct ClosureParam {
     pub ty: Option<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClosureBody {
     Expr(Box<Expr>),
     Suite(Vec<Stmt>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosureExpr {
     pub span: Span,
     pub params: Vec<ClosureParam>,
@@ -501,19 +510,19 @@ pub struct ClosureExpr {
 /// One segment of an interpolated string literal. `Interp` deliberately
 /// keeps the interior expression as raw, unparsed text (plans/M1.md item D,
 /// area 3): parsing it recursively is left to a later milestone.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FStringPart {
     Literal(Span, String),
     Interp(Span, String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FStringLit {
     pub span: Span,
     pub parts: Vec<FStringPart>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Int(Span, String),
     Float(Span, String),
@@ -631,7 +640,7 @@ impl AssignOp {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignStmt {
     pub span: Span,
     pub target: Expr,
@@ -640,14 +649,14 @@ pub struct AssignStmt {
     pub value: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElifClause {
     pub span: Span,
     pub cond: Expr,
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfStmt {
     pub span: Span,
     pub cond: Expr,
@@ -656,7 +665,7 @@ pub struct IfStmt {
     pub else_branch: Option<Vec<Stmt>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
     pub span: Span,
     pub pattern: Pattern,
@@ -664,7 +673,7 @@ pub struct MatchArm {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchStmt {
     pub span: Span,
     pub scrutinee: Expr,
@@ -672,7 +681,7 @@ pub struct MatchStmt {
 }
 
 /// `for [take] name in iterable: body` (02-language.md §8.1).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForStmt {
     pub span: Span,
     pub take_binding: bool,
@@ -681,33 +690,33 @@ pub struct ForStmt {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhileStmt {
     pub span: Span,
     pub cond: Expr,
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssertStmt {
     pub span: Span,
     pub cond: Expr,
     pub message: Option<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeferBody {
     Expr(Box<Expr>),
     Suite(Vec<Stmt>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeferStmt {
     pub span: Span,
     pub body: DeferBody,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WithStmt {
     pub span: Span,
     pub expr: Expr,
@@ -715,7 +724,7 @@ pub struct WithStmt {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComptimeIfStmt {
     pub span: Span,
     pub cond: Expr,
@@ -723,7 +732,7 @@ pub struct ComptimeIfStmt {
     pub else_branch: Option<Vec<Stmt>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Assign(AssignStmt),
     If(IfStmt),

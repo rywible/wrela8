@@ -30,7 +30,7 @@ pub mod prelude;
 pub mod symbols;
 pub mod types;
 
-use crate::syntax::ast::{Item, Module, Span};
+use crate::syntax::ast::{Module, Span};
 
 /// One sema diagnostic, printed by the CLI exactly like a lex/parse
 /// error: `error[<category>]: <message> at <line>:<col>` (decision 1).
@@ -71,39 +71,29 @@ pub fn unimplemented_at(subject: &str, span: Span) -> SemaError {
 }
 
 /// Runs the sema pipeline in frozen pass order (decision 3) and returns
-/// the first diagnostic, if any. Only collect + resolve exist in item A;
-/// `declare`/`bodies`/`access`/`flow`/`matches`/`generics` all land as
-/// later items wire their stub into this pipeline.
+/// the first diagnostic, if any. Item A lands collect + resolve; item B
+/// adds declare (types.rs: every signature's types, data-vs-resource
+/// classification, `deriving` validation). `bodies`/`access`/`flow`/
+/// `matches`/`generics` all land as later items wire their stub into
+/// this pipeline.
 pub fn check(module: &Module) -> Result<(), SemaError> {
     let symtab = symbols::collect(module)?;
     symbols::resolve(module, &symtab)?;
+    types::declare(module)?;
     Ok(())
 }
 
-/// The `check` stage's dump (decision 8): on success, one line per
-/// module-level declaration, two-space indented, `<Kind> <name>` — no
-/// spans, no resolved types yet (that's item B's job, which extends this
-/// grammar with a ledger clause citing the extension). Only call this
-/// after `check` returns `Ok`.
+/// The `check` stage's dump (decision 8): on success, `Module path=...`
+/// then one two-space-indented line per module-level declaration, no
+/// spans, resolved types spelled fully (types.rs's `render_items` owns
+/// every declaration's exact grammar — item A's dump was names only;
+/// item B graduates it to full resolved signatures). Only call this
+/// after `check` returns `Ok` — `declare` is re-run here (dumb, no
+/// state threaded from `check`) and its result unwrapped, since success
+/// is already guaranteed by the caller's contract.
 pub fn dump(module: &Module) -> String {
+    let decl_items = types::declare(module).expect("dump is only called after check returns Ok");
     let mut out = format!("Module path={}\n", module.path.join("."));
-    for item in &module.items {
-        if let Some((kind, name)) = item_dump(item) {
-            out.push_str(&format!("  {kind} {name}\n"));
-        }
-    }
+    types::render_items(&decl_items, &mut out);
     out
-}
-
-/// `comptime if` items are not expanded yet (comptime evaluation is item
-/// C's job — 02-language.md §12), so they contribute no dump line.
-fn item_dump(item: &Item) -> Option<(&'static str, &str)> {
-    match item {
-        Item::Const(c) => Some(("Const", c.name.as_str())),
-        Item::Fn(f) => Some(("Fn", f.name.as_str())),
-        Item::Struct(s) => Some(("Struct", s.name.as_str())),
-        Item::Enum(e) => Some(("Enum", e.name.as_str())),
-        Item::Pool(p) => Some(("Pool", p.name.as_str())),
-        Item::ComptimeIf(_) => None,
-    }
 }

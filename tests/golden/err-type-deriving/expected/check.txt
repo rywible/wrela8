@@ -1,0 +1,1 @@
+error[type]: unknown deriving `Clone` at 3:1

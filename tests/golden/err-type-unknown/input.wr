@@ -1,0 +1,6 @@
+module examples.err_type_unknown
+
+const LIMIT: u64 = 8
+
+fn broken(x: LIMIT) -> u64:
+    return x

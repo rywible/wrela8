@@ -39,6 +39,18 @@ pub fn pretty(module: &Module) -> String {
     print_module(module)
 }
 
+/// Bare textual rendering of one expression, reusing the pretty-printer's
+/// own (dumb, always-safe-to-over-parenthesize) expression logic. sema's
+/// resolved `Type` (types.rs) embeds unevaluated `Expr`s for array
+/// lengths, `Bytes[N]`, and generic const arguments (plans/M2.md item B
+/// decision 4: const arguments stay unevaluated until item H); this is
+/// its one rendering primitive, so the check dump's spelling of those
+/// stays byte-identical to the pretty-printer's rather than duplicating
+/// the expression-printing rules.
+pub(crate) fn print_expr_bare(e: &Expr) -> String {
+    print_expr(e, 0)
+}
+
 /// Pretty-prints a bare fragment (`parse_fragment`'s result): each
 /// top-level item or statement in source order, blank-line separated.
 pub fn pretty_fragment(entries: &[FragmentEntry]) -> String {

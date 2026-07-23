@@ -1,6 +1,12 @@
 Module path=examples.catalogue
-  Struct Counter
-  Enum Lookup
-  Const LIMIT
+  Struct Counter data
+    field value: u64
+    fn get(read self) -> u64
+    fn increment(mut self, by: read u64) -> unit
+  Enum Lookup data
+    variant Found(u64)
+    variant Absent
+    variant Failed
+  Const LIMIT: u64
   Pool Packets
-  Fn checksum
+  Fn checksum(data: read u64) -> u64

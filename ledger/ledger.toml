@@ -161,7 +161,7 @@ id = "sema.check.dump-stable"
 doc = "02-language.md#2"
 status = "test"
 tests = ["golden/check-module"]
-note = "wrela dump --stage=check pins the check dump format (plans/M2.md decision 8): `Module path=<dotted.path>` then one two-space-indented `<Kind> <name>` line per module-level item, source order, no spans; item A's dump is names only (Const/Fn/Struct/Enum/Pool) — item B extends the grammar to full resolved signatures"
+note = "wrela dump --stage=check pins the check dump format (plans/M2.md decision 8): `Module path=<dotted.path>` then one two-space-indented `<Kind> <name>` line per module-level item, source order, no spans; item A's dump was names only (Const/Fn/Struct/Enum/Pool) — item B graduates it to full resolved signatures (sema.types.declarations): `data`/`resource` on Struct/Enum (+ `deriving(...)` when present), every field/variant/param/return type spelled fully with every access mode explicit (including the default `read`), receiver first (`mut self`/`take self` always explicit; a `pub` method's or `init`'s `read self` is explicit too — the one case the AST cannot tell apart from a private method's plain `self`, which prints bare `self` until item D infers its real effect), generics as `[T, const N: usize]`, `init`/methods nested two more spaces under their struct/enum"
 
 [[clause]]
 id = "sema.names.resolution"
@@ -169,6 +169,13 @@ doc = "02-language.md#3.2"
 status = "test"
 tests = ["golden/check-module", "golden/err-name-unknown", "golden/err-name-duplicate", "golden/err-name-shadow"]
 note = "collect + resolve (plans/M2.md item A): every module-scope const/fn/struct/enum/pool name is unique (duplicate is an error at the second declaration); every identifier in every body binds to the prelude, a module declaration, or a local introduced by assignment/parameter/pattern binding/for binding/closure param, or is `error[name]: unknown name \\`x\\` at L:C`; shadowing an outer local (only a closure introduces a new scope) is `error[name]: \\`x\\` shadows an outer local at L:C`; type names in annotations resolve the same way. Member/method names after `.` and leading-dot enum variant refs do not resolve yet (need type information, item B)"
+
+[[clause]]
+id = "sema.types.declarations"
+doc = "02-language.md#6"
+status = "test"
+tests = ["golden/check-decls", "golden/err-type-unknown", "golden/err-type-deriving"]
+note = "the `Type` enum (plans/M2.md decision 4: one plain enum, structural `derive(PartialEq, Eq, Clone, Debug)`, no interning — `syntax::ast` now derives `PartialEq, Eq` throughout so `Expr` can sit unevaluated inside `Type` for array lengths/`Bytes[N]`/generic const args, item H evaluates the literal subset) and the declare pass (types.rs): every fn/async fn/init/method signature, struct field, enum variant payload, and const's declared type resolves against the M2 prelude (scalars, `[T; N]`, tuples, `Option`/`Result`, `own[P] T` with `P` resolved to a declared pool, `Static[T]`, `Str`, `Bytes[N]`/bound-elided bare `Bytes` in parameter position only) or a user struct/enum name, with generic-argument-list arity checked against the declared generic parameter count; an unresolvable name is `error[type]: unknown type \\`X\\` at L:C`. Data-vs-resource classification is transitive and memoized: `resource struct`/`@actor`/`@driver` is a resource by fiat, `own[P] T` is always a resource, `Static[T]` is always data, and any struct/enum/array/tuple/`Option`/`Result` containing a resource is a resource; direct or mutual by-value recursion (no indirection exists in M2 besides `own`/`Static`, which are handles and do not recurse) is `error[type]: \\`X\\` is infinitely sized (recursive by value) at L:C`, reported at the back-edge field. `deriving(...)` validates against the closed list (`Format`; `From` requiring exactly one variant with exactly one field/payload, or a one-field struct) — any other name is `error[type]: unknown deriving \\`X\\` at L:C`. A dotted `own[Owner.Name]` pool path fails closed (`error[unimplemented]`, actor scoping is M6+); everything else unresolvable at this stage (bodies, generic instantiation correctness) is out of scope for this item"
 
 [[clause]]
 id = "sema.names.imports"
