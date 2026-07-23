@@ -109,27 +109,33 @@ pub fn unimplemented_at(subject: &str, span: Span) -> SemaError {
 /// requirement-chain diagnostic cites it verbatim for both its `required
 /// by`/`instantiated at` locations (decision 2; the M2 CLI checks one
 /// file, so every location in a chain is in the same file).
+///
+/// plans/M3.md item B: delegates to `check_typed` and discards the
+/// checked program — `check_typed`'s own doc comment already promised
+/// identical diagnostics/behavior either way, so this stays a plain
+/// wrapper instead of re-running the same pipeline a second time (and
+/// picks up const-initializer comptime evaluation for free: a `const`
+/// whose initializer abandons is a build error at the `check` stage
+/// exactly like it is at `typed`).
 pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
-    let symtab = symbols::collect(module)?;
-    symbols::resolve(module, &symtab)?;
-    let decl_items = types::declare(module)?;
-    let mctx = bodies::build_module_ctx(module, &decl_items);
-    bodies::check(module, &decl_items, &mctx)?;
-    access::check(module, &decl_items, &mctx)?;
-    flow::check(module, &decl_items, &mctx)?;
-    matches::check(module, &decl_items, &mctx)?;
-    generics::check(module, &decl_items, &mctx, path)?;
-    Ok(())
+    check_typed(module, path).map(|_| ())
 }
 
 /// The `typed` stage's pipeline (plans/M3.md item A): the same frozen
-/// pass order `check` above runs, but this keeps `bodies::check`'s own
-/// typed-program output (decision 1) instead of discarding it, and folds
-/// in `generics::check`'s drained instantiation map afterward — every
+/// pass order runs, keeping `bodies::check`'s own typed-program output
+/// (decision 1) instead of discarding it, and folding in
+/// `generics::check`'s drained instantiation map afterward — every
 /// generic use *any* pass (`bodies`/`access`/`flow`/`matches`, each
 /// enqueuing into the same shared `mctx`) discovered ends up checked and
-/// typed exactly once. Diagnostics/behavior are identical to `check`
-/// above; this only additionally captures the checked program.
+/// typed exactly once.
+///
+/// plans/M3.md item B: once the program is fully assembled (past
+/// `generics::check`, so a const initializer calling into a generic-fn
+/// instantiation can resolve it), every module-level `const`'s own
+/// initializer runs through the real evaluator (`eval::check_consts`) —
+/// the integration surface replacing M2-H's literal-only const-argument
+/// subset; abandonment (overflow, a failed `assert`, an explicit
+/// `panic`, a blown quota) is a build error here, `error[comptime]`.
 pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, SemaError> {
     let symtab = symbols::collect(module)?;
     symbols::resolve(module, &symtab)?;
@@ -140,6 +146,7 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     flow::check(module, &decl_items, &mctx)?;
     matches::check(module, &decl_items, &mctx)?;
     program.instantiations = generics::check(module, &decl_items, &mctx, path)?;
+    crate::eval::check_consts(&program)?;
     Ok(program)
 }
 

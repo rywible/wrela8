@@ -332,6 +332,16 @@ pub struct TypedConst {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypedStruct {
     pub name: String,
+    /// Declared field order (plans/M3.md item B's own addition — a
+    /// producer gap found evaluating struct construction/field access:
+    /// decision 5 stores a struct value as a field-ordered `Vec<Value>`,
+    /// but nothing before this recorded that order anywhere in the typed
+    /// tree; `bodies::check_struct_members` already walks the fields in
+    /// declaration order to build `field_defaults`, so this is that same
+    /// walk's field names, kept). Not rendered by `dump` below — it is
+    /// evaluator-only bookkeeping, not part of the pinned dump grammar,
+    /// so no existing golden's text changes.
+    pub fields: Vec<String>,
     /// Every field that declared a default, typed once (with `self`
     /// bound, since a default may reference it) — a struct literal that
     /// omits the field elides it from its own `fields` list instead of
@@ -365,6 +375,15 @@ pub struct TypedProgram {
     pub consts: BTreeMap<String, TypedConst>,
     pub fns: BTreeMap<String, TypedFn>,
     pub structs: BTreeMap<String, TypedStruct>,
+    /// Every top-level (non-generic) user enum's own variant names, in
+    /// declaration order (plans/M3.md item B's own addition — the same
+    /// producer gap as `TypedStruct::fields`: an enum has no body to
+    /// check, so nothing before this recorded its declaration anywhere
+    /// in the typed tree, yet decision 5's `Value::Enum(variant index,
+    /// payload)` representation needs exactly this order to construct or
+    /// match a user enum's value). Not rendered by `dump` below — same
+    /// reasoning as `TypedStruct::fields`.
+    pub enums: BTreeMap<String, Vec<String>>,
     pub instantiations: BTreeMap<String, TypedInstantiation>,
 }
 

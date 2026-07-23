@@ -1,0 +1,21 @@
+Program
+  Const name=FOUR ty=usize
+    Binary op=+ ty=usize
+      Const name=TWO ty=usize
+      Const name=TWO ty=usize
+  Const name=TWO ty=usize
+    Int text=2 ty=usize
+  Fn name=use_slot ret=u64
+    Body
+      Let name=s ty=Slot[u64, FOUR]
+        StructLiteral name=Slot ty=Slot[u64, FOUR]
+          Field name=items
+            List ty=[Option[u64]; 4]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+              EnumConstruct enum=Option variant=None ty=Option[u64]
+      Return
+        Int text=0 ty=u64
+  Instantiation key=struct:Slot[u64, FOUR]
+    Struct

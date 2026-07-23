@@ -1,0 +1,12 @@
+module examples.check_const_arg_eval
+
+const TWO: usize = 2
+
+const FOUR: usize = TWO + TWO
+
+pub struct Slot[T, const N: usize]:
+    items: [Option[T]; N]
+
+pub fn use_slot() -> u64:
+    s = Slot[u64, FOUR]([None, None, None, None])
+    return 0

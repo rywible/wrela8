@@ -1,0 +1,9 @@
+module examples.err_comptime_quota
+
+pub fn spin() -> u64:
+    total: u64 = 0
+    while true:
+        total = total + 1
+    return total
+
+const RESULT: u64 = spin()

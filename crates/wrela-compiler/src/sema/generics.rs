@@ -156,78 +156,159 @@ pub(crate) fn subst_field_type(
     subst_type(field_ty, &subst)
 }
 
-// --- const argument evaluation (decision 4) -----------------------------
+// --- const argument evaluation (plans/M3.md item B) ---------------------
+//
+// M2-H's own literal/const-name/fieldless-variant-only subset (decision
+// 4 of that plan) is replaced here by the real evaluator: a const
+// generic argument may now be any comptime-evaluable expression
+// (arithmetic, a reference to another `const`, a fieldless-enum
+// variant) — `eval::interp::eval_standalone` is the same tree-walking
+// interpreter `eval::check_consts` runs a plain module-level `const`
+// through. It is *not* threaded the fully assembled `TypedProgram`
+// (`mod.rs::check_typed`'s own `program` local): half of this file's
+// callers (`bodies.rs`'s own call/construction checking) run *during*
+// that program's own assembly, before it exists — so a const-generic
+// argument's evaluation is scoped to what a bare `const`'s own
+// initializer can already see standalone: `mctx`'s plain top-level
+// `const`s, freshly type-checked here into a small ad-hoc consts-only
+// `TypedProgram` (`build_consts_program` below). A const argument
+// expression that calls a plain `fn` is therefore not yet supported
+// (documented scope limit, not silently approximated: the evaluator
+// itself fails closed, naming the missing callee, exactly like any
+// other unimplemented construct) — 02-language.md §6.3's own value
+// vocabulary (`bool`/`char`/an integer/a fieldless enum) never needed a
+// function call to produce one in the first place.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ConstVal {
-    Int(i128),
-    Bool(bool),
-    /// Raw lexed char text (the lexer's own escape-validated spelling) —
-    /// M2 never needs the decoded codepoint, only to carry the value
-    /// through substitution/rendering unchanged.
-    Char(String),
-    Variant(String, String),
+/// A throwaway `TypedProgram` carrying only `mctx`'s plain top-level
+/// `const`s (freshly type-checked, independent of whatever point in the
+/// main `bodies::check` pass this file's own caller is running from —
+/// cheap and safe to rebuild per call, decision 4: dumb, no state
+/// threaded across calls). A const whose own initializer does not type-
+/// check here is simply omitted — unreachable in practice, since every
+/// `const` in a module that passed `mod.rs::check`'s earlier passes
+/// already type-checks; this function only ever runs *during* that same
+/// module's own checking.
+fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
+    let mut program = crate::sema::typed::TypedProgram::default();
+    for (name, ty) in &mctx.consts {
+        let Some(raw) = mctx.const_values.get(name) else {
+            continue;
+        };
+        let mut fctx = bodies::FnCtx::new(Type::Unit, mctx.module_pools.clone());
+        if let Ok(value) = bodies::check_expr(raw, Some(ty), &mut fctx, mctx) {
+            program.consts.insert(
+                name.clone(),
+                crate::sema::typed::TypedConst {
+                    ty: ty.clone(),
+                    value,
+                },
+            );
+        }
+    }
+    // A fieldless-enum-variant const argument needs its own enum's
+    // variant order (`interp::variant_index`) exactly like a plain
+    // module-level `const` does (`typed::TypedProgram::enums`'s own doc
+    // comment) — a generic enum's is never needed here (constructing a
+    // generic enum's variant already fails closed in `bodies.rs` before
+    // producing a typed node at all).
+    for (name, en) in &mctx.enums {
+        if en.generics.is_empty() {
+            program.enums.insert(
+                name.clone(),
+                en.variants.iter().map(|v| v.name.clone()).collect(),
+            );
+        }
+    }
+    program
 }
 
-impl ConstVal {
-    fn to_expr(&self, span: Span) -> Expr {
-        match self {
-            ConstVal::Int(n) => Expr::Int(span, n.to_string()),
-            ConstVal::Bool(b) => Expr::Bool(span, *b),
-            ConstVal::Char(text) => Expr::Char(span, text.clone()),
-            ConstVal::Variant(enum_name, variant) => Expr::Field(
-                Box::new(Expr::Name(span, enum_name.clone())),
+/// Encodes a decoded char back into lexable char-literal token text
+/// (quotes included — `ConstVal`'s old doc comment's own "raw lexed char
+/// text" shape, unchanged by item B): the common printable-ASCII case
+/// spells itself; `'`/`\`/the fixed named escapes/anything else use the
+/// matching escape (`\u{...}` covers every remaining codepoint, always
+/// lexable).
+fn encode_char_literal(ch: char) -> String {
+    match ch {
+        '\'' => "'\\''".to_string(),
+        '\\' => "'\\\\'".to_string(),
+        '\n' => "'\\n'".to_string(),
+        '\r' => "'\\r'".to_string(),
+        '\t' => "'\\t'".to_string(),
+        '\0' => "'\\0'".to_string(),
+        c if !c.is_control() => format!("'{c}'"),
+        c => format!("'\\u{{{:x}}}'", c as u32),
+    }
+}
+
+/// The `Value` a const-generic argument's real evaluation produced,
+/// translated back into the `Expr` shape `subst.consts` still carries
+/// (decision 1's array-length/const-parameter substitution keeps
+/// substituted `const`s as `Expr`s — `subst_expr` rewrites a bare
+/// `Expr::Name` to one of these, unchanged by item B): 02-language.md
+/// §6.3 bounds the *value* a const argument may hold to `bool`/`char`/an
+/// integer/a fieldless enum, regardless of how comptime-rich the
+/// expression that computed it was.
+fn value_to_const_arg_expr(
+    v: &crate::eval::Value,
+    enum_name: Option<&str>,
+    mctx: &ModuleCtx,
+    span: Span,
+) -> Result<Expr, SemaError> {
+    use crate::eval::value;
+    match v {
+        crate::eval::Value::Bool(b) => Ok(Expr::Bool(span, *b)),
+        crate::eval::Value::Char(c) => Ok(Expr::Char(span, encode_char_literal(*c))),
+        crate::eval::Value::Enum(idx, payload) if payload.is_empty() => {
+            let Some(enum_name) = enum_name else {
+                return Err(unimplemented_at("this const generic argument is", span));
+            };
+            let variant = match enum_name {
+                "Option" => match *idx {
+                    value::OPTION_NONE => "None".to_string(),
+                    value::OPTION_SOME => "Some".to_string(),
+                    _ => return Err(unimplemented_at("this const generic argument is", span)),
+                },
+                "Result" => match *idx {
+                    value::RESULT_OK => "Ok".to_string(),
+                    value::RESULT_ERR => "Err".to_string(),
+                    _ => return Err(unimplemented_at("this const generic argument is", span)),
+                },
+                _ => {
+                    let Some(en) = mctx.enums.get(enum_name) else {
+                        return Err(unimplemented_at("this const generic argument is", span));
+                    };
+                    let Some(dv) = en.variants.get(*idx) else {
+                        return Err(unimplemented_at("this const generic argument is", span));
+                    };
+                    dv.name.clone()
+                }
+            };
+            Ok(Expr::Field(
+                Box::new(Expr::Name(span, enum_name.to_string())),
                 span,
-                variant.clone(),
-            ),
+                variant,
+            ))
         }
+        other => value::as_i128(other)
+            .map(|n| Expr::Int(span, n.to_string()))
+            .ok_or_else(|| unimplemented_at("this const generic argument is", span)),
     }
 }
 
-/// A bare `const` reference is resolved by looking its own initializer
-/// back up in `mctx.const_values` and evaluating *that* — bounded so a
-/// `const` cycle (which nothing before item H rejects, since M2 has no
-/// comptime evaluator to notice one) cannot loop forever; hitting the
-/// cap just falls to the same fail-closed outcome as any other
-/// unsupported shape.
-const MAX_CONST_LOOKUP_DEPTH: u32 = 8;
-
-fn eval_const_expr(e: &Expr, mctx: &ModuleCtx, depth: u32) -> Result<ConstVal, SemaError> {
-    match e {
-        Expr::Int(span, text) => bodies::parse_int_literal(text)
-            .map(ConstVal::Int)
-            .ok_or_else(|| SemaError::at("type", "invalid integer literal".to_string(), *span)),
-        Expr::Bool(_, b) => Ok(ConstVal::Bool(*b)),
-        Expr::Char(_, text) => Ok(ConstVal::Char(text.clone())),
-        Expr::Name(span, name) => {
-            if depth >= MAX_CONST_LOOKUP_DEPTH {
-                return Err(unimplemented_at("this const generic argument is", *span));
-            }
-            let Some(value) = mctx.const_values.get(name) else {
-                return Err(unimplemented_at("this const generic argument is", *span));
-            };
-            eval_const_expr(value, mctx, depth + 1)
-        }
-        Expr::Field(base, span, variant) => {
-            let Expr::Name(_, enum_name) = base.as_ref() else {
-                return Err(unimplemented_at("this const generic argument is", *span));
-            };
-            let Some(en) = mctx.enums.get(enum_name) else {
-                return Err(unimplemented_at("this const generic argument is", *span));
-            };
-            let Some(dv) = en.variants.iter().find(|v| &v.name == variant) else {
-                return Err(unimplemented_at("this const generic argument is", *span));
-            };
-            if !matches!(dv.payload, DeclVariantPayload::None) {
-                return Err(unimplemented_at("this const generic argument is", *span));
-            }
-            Ok(ConstVal::Variant(enum_name.clone(), variant.clone()))
-        }
-        other => Err(unimplemented_at(
-            "this const generic argument is",
-            other.span(),
-        )),
-    }
+fn eval_const_expr(e: &Expr, expected: Option<&Type>, mctx: &ModuleCtx) -> Result<Expr, SemaError> {
+    let span = e.span();
+    let mut fctx = bodies::FnCtx::new(Type::Unit, mctx.module_pools.clone());
+    let typed = bodies::check_expr(e, expected, &mut fctx, mctx)?;
+    let enum_name = match &typed.ty {
+        Type::Named(name, _) => Some(name.clone()),
+        _ => None,
+    };
+    let program = build_consts_program(mctx);
+    let value =
+        crate::eval::interp::eval_standalone(&program, &typed, "<generic argument>".to_string())
+            .map_err(crate::eval::to_sema_error)?;
+    value_to_const_arg_expr(&value, enum_name.as_deref(), mctx, span)
 }
 
 // --- resolving raw call-site brackets into `TypeArg`s -------------------
@@ -312,9 +393,9 @@ fn build_subst(
             (DeclGenericKind::Type, TypeArg::Type(t)) => {
                 subst.types.insert(g.name.clone(), t.clone());
             }
-            (DeclGenericKind::Const(_), TypeArg::Const(e)) => {
-                let v = eval_const_expr(e, mctx, 0)?;
-                subst.consts.insert(g.name.clone(), v.to_expr(e.span()));
+            (DeclGenericKind::Const(cty), TypeArg::Const(e)) => {
+                let v = eval_const_expr(e, Some(cty), mctx)?;
+                subst.consts.insert(g.name.clone(), v);
             }
             (DeclGenericKind::Type, _) => {
                 return Err(SemaError::at(
@@ -955,12 +1036,11 @@ fn direct_method_call(
 // --- tests --------------------------------------------------------------
 //
 // 02-language.md §6.3: "A const argument is `bool`, `char`, an integer, or
-// a fieldless enum, evaluated by the comptime engine." plans/M2.md item H
-// narrows this for M2: "Const arguments evaluate only as literals,
-// fieldless-enum variants, and direct `const` references (the comptime
-// engine is M3); anything else fails closed." These pin `eval_const_expr`
-// directly against each of those four shapes plus the arithmetic-rejection
-// case, rather than only through a full generic-instantiation golden.
+// a fieldless enum, evaluated by the comptime engine." plans/M3.md item B
+// lifts M2-H's literal-only subset: `eval_const_expr` now runs the real
+// evaluator, so arithmetic and const-name chains both evaluate (rather
+// than failing closed) — these pin that directly, rather than only
+// through a full generic-instantiation golden.
 //
 // `eval_const_expr` takes a `&ModuleCtx` (for const-name/enum-variant
 // lookup), so the tests build one the same way `sema::mod::check` does —
@@ -996,31 +1076,41 @@ pub fn use_const() -> u64:
         let mctx = build_mctx(SRC);
         let span = Span::default();
         assert_eq!(
-            eval_const_expr(&Expr::Int(span, "42".to_string()), &mctx, 0).unwrap(),
-            ConstVal::Int(42)
+            eval_const_expr(&Expr::Int(span, "42".to_string()), Some(&Type::U64), &mctx).unwrap(),
+            Expr::Int(span, "42".to_string())
         );
         assert_eq!(
-            eval_const_expr(&Expr::Bool(span, true), &mctx, 0).unwrap(),
-            ConstVal::Bool(true)
+            eval_const_expr(&Expr::Bool(span, true), Some(&Type::Bool), &mctx).unwrap(),
+            Expr::Bool(span, true)
         );
         assert_eq!(
-            eval_const_expr(&Expr::Char(span, "x".to_string()), &mctx, 0).unwrap(),
-            ConstVal::Char("x".to_string())
+            eval_const_expr(
+                &Expr::Char(span, "'x'".to_string()),
+                Some(&Type::Char),
+                &mctx
+            )
+            .unwrap(),
+            Expr::Char(span, "'x'".to_string())
         );
     }
 
-    /// A bare `const` reference resolves by looking its initializer back
-    /// up and evaluating that (here, `LIMIT`'s own `4` literal).
+    /// A bare `const` reference resolves by evaluating its own
+    /// initializer with the real evaluator (here, `LIMIT`'s own `4`
+    /// literal).
     #[test]
     fn eval_const_expr_resolves_a_const_name() {
         let mctx = build_mctx(SRC);
         let span = Span::default();
-        let result = eval_const_expr(&Expr::Name(span, "LIMIT".to_string()), &mctx, 0);
-        assert_eq!(result.unwrap(), ConstVal::Int(4));
+        let result = eval_const_expr(
+            &Expr::Name(span, "LIMIT".to_string()),
+            Some(&Type::U64),
+            &mctx,
+        );
+        assert_eq!(result.unwrap(), Expr::Int(span, "4".to_string()));
     }
 
     /// A fieldless enum variant path (`Color.Red`) evaluates to its own
-    /// `(enum name, variant name)` pair.
+    /// `Enum.Variant` shape unchanged.
     #[test]
     fn eval_const_expr_fieldless_enum_variant() {
         let mctx = build_mctx(SRC);
@@ -1030,10 +1120,15 @@ pub fn use_const() -> u64:
             span,
             "Red".to_string(),
         );
-        let result = eval_const_expr(&expr, &mctx, 0);
+        let expected_ty = Type::Named("Color".to_string(), vec![]);
+        let result = eval_const_expr(&expr, Some(&expected_ty), &mctx);
         assert_eq!(
             result.unwrap(),
-            ConstVal::Variant("Color".to_string(), "Red".to_string())
+            Expr::Field(
+                Box::new(Expr::Name(span, "Color".to_string())),
+                span,
+                "Red".to_string()
+            )
         );
     }
 
@@ -1042,14 +1137,23 @@ pub fn use_const() -> u64:
     fn eval_const_expr_unknown_const_name_fails_closed() {
         let mctx = build_mctx(SRC);
         let span = Span::default();
-        assert!(eval_const_expr(&Expr::Name(span, "NOPE".to_string()), &mctx, 0).is_err());
+        assert!(
+            eval_const_expr(
+                &Expr::Name(span, "NOPE".to_string()),
+                Some(&Type::U64),
+                &mctx
+            )
+            .is_err()
+        );
     }
 
-    /// Arithmetic is explicitly out of scope for M2's const-argument
-    /// evaluator (plans/M2.md item H: "anything else fails closed") — a
-    /// binary expression is rejected, not folded.
+    /// Arithmetic is no longer out of scope (plans/M3.md item B lifts
+    /// M2-H's own literal-only limit): `1 + 1` evaluates to `2`. Neither
+    /// literal has a concrete sibling, so both default to `i64`
+    /// (`check_same_type_operands`'s own rule) — the expected type here
+    /// matches that default rather than forcing a mismatch.
     #[test]
-    fn eval_const_expr_rejects_arithmetic() {
+    fn eval_const_expr_evaluates_arithmetic() {
         let mctx = build_mctx(SRC);
         let span = Span::default();
         let expr = Expr::Binary(
@@ -1058,9 +1162,9 @@ pub fn use_const() -> u64:
             Box::new(Expr::Int(span, "1".to_string())),
             Box::new(Expr::Int(span, "1".to_string())),
         );
-        assert!(
-            eval_const_expr(&expr, &mctx, 0).is_err(),
-            "arithmetic in a const argument must fail closed, not evaluate"
+        assert_eq!(
+            eval_const_expr(&expr, Some(&Type::I64), &mctx).unwrap(),
+            Expr::Int(span, "2".to_string())
         );
     }
 }

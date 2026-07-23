@@ -978,9 +978,12 @@ const FUZZ_SEMA_DEEP_SEED: u64 = 1;
 const FUZZ_SEMA_SMOKE_SEEDS: &[u64] = &[1, 2];
 const FUZZ_SEMA_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// The fixed diagnostic-category set plans/M2.md decision 1 names. Any
-/// `SemaError` whose category is not in this list is itself an
-/// invariant violation, not a legitimate rejection.
+/// The fixed diagnostic-category set plans/M2.md decision 1 names, plus
+/// `comptime` (plans/M3.md item B: the evaluator's own abandonment/quota
+/// build errors, surfaced through `sema::check` since it now runs const
+/// initializers through the real evaluator). Any `SemaError` whose
+/// category is not in this list is itself an invariant violation, not a
+/// legitimate rejection.
 const SEMA_CATEGORIES: &[&str] = &[
     "name",
     "type",
@@ -991,6 +994,7 @@ const SEMA_CATEGORIES: &[&str] = &[
     "match",
     "generic",
     "unimplemented",
+    "comptime",
 ];
 
 /// One full run of the pipeline the sema fuzzer exercises: lex, then (on
