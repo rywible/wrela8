@@ -31,7 +31,8 @@ pub mod quota;
 pub mod value;
 
 use crate::sema::SemaError;
-use crate::sema::typed::TypedProgram;
+use crate::sema::typed::{TestKind, TypedProgram};
+use crate::syntax::ast::Span;
 
 pub use interp::EvalError;
 pub use value::Value;
@@ -72,4 +73,80 @@ pub fn check_consts(program: &TypedProgram) -> Result<(), SemaError> {
         interp::eval_const(program, name).map_err(to_sema_error)?;
     }
     Ok(())
+}
+
+/// `wrela test`'s own report (plans/M3.md item E, decision 9): every
+/// `@test` fn's own verdict, one line apiece, in declaration order
+/// (`program.tests`, `sema::typed::TypedProgram::tests`'s own doc
+/// comment — source order, never `BTreeMap` order), followed by one
+/// pinned summary line. Never fail-fasts across tests (decision 9: "the
+/// report is still the complete stable dump" even when some test
+/// failed) — every declared test always gets its own line and its own
+/// fresh quota, regardless of how any other test came out. Returns the
+/// full report text plus whether the caller's own exit code should be
+/// nonzero (`true` iff at least one test's line is `FAILED`).
+///
+/// Line format, pinned by golden coverage (`comptime.tests.build-tier`),
+/// chosen once and never varied:
+///   `test <name>: ok`
+///   `test <name>: FAILED <first line of the diagnostic>`
+///   `<N> passed, <M> failed`
+/// A file with no `@test` fns at all still prints the summary line alone
+/// (`0 passed, 0 failed`) — the dumbest honest "ran zero tests" report,
+/// not a special-cased error.
+///
+/// Fail-closed per decision 9/10: `@test(runtime)` is a *legal*
+/// declaration (02-language.md §12.2 — it just names a different, not-
+/// yet-built execution path, a generated image test on the wrela
+/// machine runner, M5), so sema accepts its body like any other fn's;
+/// this is the one place that refuses to *run* it, printing a FAILED
+/// line naming M5 rather than silently skipping it or attempting
+/// something M5 alone can build. A comptime-illegal `@test` closure
+/// (decision 7's `legal::classify`) gets the identical fail-closed
+/// treatment — today unreachable (no illegal operation is representable
+/// in the typed tree yet, `eval::legal`'s own module doc), but wired
+/// through so the day one becomes representable, its own `@test` fails
+/// exactly this way rather than panicking or silently passing.
+pub fn run_tests(program: &TypedProgram) -> (String, bool) {
+    let legality = legal::classify(program);
+    let mut out = String::new();
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    for test in &program.tests {
+        let line = match test.kind {
+            TestKind::Runtime => {
+                failed += 1;
+                format!(
+                    "test {}: FAILED `@test(runtime)` is not run yet (M5: generated image tests)",
+                    test.name
+                )
+            }
+            TestKind::Comptime => {
+                match legal::require_legal(&legality, &test.name, "@test", Span::default()) {
+                    Err(e) => {
+                        failed += 1;
+                        format!(
+                            "test {}: FAILED {} (M5: illegal-closure tests run as image tests)",
+                            test.name, e.message
+                        )
+                    }
+                    Ok(()) => match interp::eval_test(program, &test.name) {
+                        Ok(_) => {
+                            passed += 1;
+                            format!("test {}: ok", test.name)
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            let first_line = e.message.lines().next().unwrap_or("");
+                            format!("test {}: FAILED {first_line}", test.name)
+                        }
+                    },
+                }
+            }
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push_str(&format!("{passed} passed, {failed} failed\n"));
+    (out, failed > 0)
 }

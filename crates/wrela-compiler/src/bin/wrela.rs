@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use wrela_compiler::sema;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed> [--timings] <file.wr>\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela version";
 
 /// Prints one `sema::SemaError` (decision 1's one-line diagnostic, or
 /// item H's one multi-line exception, decision 2): `extra_lines` is
@@ -62,6 +62,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("dump") => dump(&args[1..]),
+        Some("test") => test_cmd(&args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::FAILURE
@@ -246,4 +247,56 @@ fn dump(args: &[String]) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// `wrela test <file.wr>` (plans/M3.md item E, decision 9): runs sema
+/// (`check_typed`) then every `@test` fn's own report line
+/// (`eval::run_tests`, which owns the whole pinned report format).
+/// A lex/parse/sema failure prints that stage's own diagnostic — exactly
+/// the `dump --stage=check`/`--stage=typed` house style — and exits
+/// nonzero without ever printing a test report at all: there is no
+/// checked program yet to run `@test` fns out of. `ExitCode::FAILURE`
+/// whenever any test's own line is `FAILED` (`run_tests`'s own second
+/// return value) — the report itself is still the complete, stable dump
+/// either way (decision 9: never fail-fast across tests).
+fn test_cmd(args: &[String]) -> ExitCode {
+    let (Some(path), true) = (args.first(), args.len() == 1) else {
+        eprintln!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let tokens = match lexer::lex(&source) {
+        Ok(t) => t,
+        Err(e) => {
+            print_lex_error(&e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let module = match parser::parse(tokens) {
+        Ok(m) => m,
+        Err(e) => {
+            print_parse_error(&e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let program = match sema::check_typed(&module, path) {
+        Ok(p) => p,
+        Err(e) => {
+            print_sema_error(&e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let (report, any_failed) = wrela_compiler::eval::run_tests(&program);
+    print!("{report}");
+    if any_failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }

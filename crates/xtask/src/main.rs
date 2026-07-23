@@ -1460,14 +1460,34 @@ fn golden(update: bool) -> Result<(), String> {
             // into the pinned expectation — failing in any worktree or
             // clone.
             let rel_input = input.strip_prefix(root()).unwrap_or(&input);
-            let out = Command::new(&wrela)
-                .current_dir(root())
-                .arg("dump")
-                .arg(format!("--stage={stage}"))
-                .arg(rel_input)
-                .output()
-                .map_err(|e| format!("run wrela: {e}"))?;
-            if !out.status.success() {
+            // `test.txt` means "run `wrela test <input.wr>`, compare its
+            // stdout" (plans/M3.md item E) rather than the ordinary
+            // `wrela dump --stage=<stage>` every other expectation file
+            // pins — the touch convention extended one file name beyond
+            // `--stage=<name>`, the dumbest integration (M3.md item E's
+            // own wording). `wrela test` exits nonzero exactly when any
+            // `@test` failed (decision 9) — a normal, expected outcome
+            // some goldens deliberately pin (a mixed pass/fail report),
+            // not a runner malfunction, so unlike every `dump` stage
+            // below, a nonzero exit here is not itself a failure; only
+            // stdout is ever compared, exactly like every other stage.
+            let out = if stage == "test" {
+                Command::new(&wrela)
+                    .current_dir(root())
+                    .arg("test")
+                    .arg(rel_input)
+                    .output()
+                    .map_err(|e| format!("run wrela: {e}"))?
+            } else {
+                Command::new(&wrela)
+                    .current_dir(root())
+                    .arg("dump")
+                    .arg(format!("--stage={stage}"))
+                    .arg(rel_input)
+                    .output()
+                    .map_err(|e| format!("run wrela: {e}"))?
+            };
+            if stage != "test" && !out.status.success() {
                 failures.push(format!(
                     "{} [{stage}]: wrela exited with failure:\n{}",
                     case.display(),

@@ -1,0 +1,45 @@
+module examples.check_tests_arith
+
+# Hand-computed arithmetic identities (02-language.md §6.1), plans/M3.md
+# item E's own acceptance suite: the evaluator proves these, not a
+# comment. Every value below was worked out by hand against §6.1's own
+# rule table before this file was written (session report carries the
+# worked table); `wrela test` is what checks the arithmetic agrees.
+
+@test
+pub fn test_u8_wraps_past_max():
+    x: u8 = 255
+    assert x +% 1 == 0, "u8::MAX +% 1 wraps to 0"
+
+@test
+pub fn test_u8_wraps_past_zero():
+    x: u8 = 0
+    assert x -% 1 == 255, "u8 0 -% 1 wraps to u8::MAX"
+
+@test
+pub fn test_i64_max_wraps_to_min():
+    x: i64 = 9223372036854775807
+    y: i64 = -9223372036854775808
+    assert x +% 1 == y, "i64::MAX +% 1 wraps to i64::MIN"
+
+@test
+pub fn test_i64_min_wraps_to_max():
+    x: i64 = -9223372036854775808
+    y: i64 = 9223372036854775807
+    assert x -% 1 == y, "i64::MIN -% 1 wraps to i64::MAX"
+
+@test
+pub fn test_i8_min_wraps_to_max():
+    x: i8 = -128
+    assert x -% 1 == 127, "i8::MIN -% 1 wraps to i8::MAX"
+
+@test
+pub fn test_division_truncates_toward_zero():
+    assert -7 / 2 == -3, "negative dividend: -7 / 2 truncates to -3, not floors to -4"
+    assert 7 / -2 == -3, "negative divisor: 7 / -2 truncates to -3, not floors to -4"
+
+@test
+pub fn test_modulo_sign_follows_dividend():
+    assert -7 % 2 == -1, "-7 % 2 takes the dividend's sign: -1"
+    assert 7 % -2 == 1, "7 % -2 takes the dividend's sign: 1"
+    assert -7 / 2 * 2 + -7 % 2 == -7, "truncating div/rem identity holds at a negative dividend"

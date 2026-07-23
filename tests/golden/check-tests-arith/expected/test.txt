@@ -1,0 +1,8 @@
+test test_u8_wraps_past_max: ok
+test test_u8_wraps_past_zero: ok
+test test_i64_max_wraps_to_min: ok
+test test_i64_min_wraps_to_max: ok
+test test_i8_min_wraps_to_max: ok
+test test_division_truncates_toward_zero: ok
+test test_modulo_sign_follows_dividend: ok
+7 passed, 0 failed

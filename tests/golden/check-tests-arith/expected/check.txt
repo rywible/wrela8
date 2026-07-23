@@ -1,0 +1,8 @@
+Module path=examples.check_tests_arith
+  Fn test_u8_wraps_past_max() -> unit
+  Fn test_u8_wraps_past_zero() -> unit
+  Fn test_i64_max_wraps_to_min() -> unit
+  Fn test_i64_min_wraps_to_max() -> unit
+  Fn test_i8_min_wraps_to_max() -> unit
+  Fn test_division_truncates_toward_zero() -> unit
+  Fn test_modulo_sign_follows_dividend() -> unit
