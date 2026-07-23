@@ -49,7 +49,8 @@ fn main() -> ExitCode {
         ),
         Some("bench") => fail_closed(
             "bench",
-            "requires `profile`; a threshold without a measurement is a lie",
+            "compiler lane lands at M1 (times the pipeline over the corpus), guest lane at M5; \
+             a threshold without a measurement is a lie",
         ),
         _ => {
             eprintln!(

@@ -31,8 +31,10 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
 - `cargo xtask repro` / `cargo xtask diff-eval` — determinism and
   evaluator-vs-backend oracles; they fail closed until implemented and
   must never fake a pass.
-- `cargo xtask profile` / `cargo xtask bench` — replay-based measurement
-  (alive at M5). The only path to cleverness runs through them.
+- `cargo xtask profile` / `cargo xtask bench` — measurement, two lanes:
+  compiler speed (alive at M1: `wrela --timings`, corpus bench, locked
+  thresholds) and guest speed (alive at M5, replay-based). The only path
+  to cleverness — in the compiler too — runs through them.
 
 ## Layout
 

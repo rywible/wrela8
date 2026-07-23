@@ -52,6 +52,13 @@ green. Each milestone names the clauses it flips (existing ids) or opens
 Full grammar → stable AST dumps (`wrela dump --stage=ast`).
 The spec corpus (`cargo xtask corpus`) is the test suite: every ```wrela
 block in docs/language/ must lex and — except `...` fragments — parse.
+The **compiler lane of `bench` comes alive here**: `wrela --timings`
+reports per-phase wall time and peak RSS (trivial in a batch pipeline —
+each phase boundary is a timestamp), and `xtask bench compiler` times the
+pipeline over the corpus and the virtio example, then locks a threshold so
+compile speed cannot creep. Compile time is a product number, not dev
+comfort: sealed images mean every app update is a full rebuild, and
+`xtask check` latency is the inner loop of all agent work.
 Flips: `docs.examples.wrela-blocks-lex`. Opens: `syntax.*` clauses per
 grammar rule as they land.
 
@@ -114,6 +121,17 @@ lands only with all three, no matter how obviously fast it is:
 2. a before/after measurement on that same recording; and
 3. a **lock** — a bench threshold or `@budget`/layout assertion — so the
    win cannot silently regress.
+
+Measurement has two lanes, and the budget governs both equally. The
+**guest lane** — how fast wrela code runs — needs the VMM and
+record/replay, so it lands at M5. The **compiler lane** — how fast wrela
+code *compiles* — needs nothing but the compiler and a clock, so it lands
+at M1 (`wrela --timings`, `xtask bench compiler` over the corpus, locked
+thresholds). No interning, arenas, parallelism, or incrementality in the
+compiler until its own bench shows the hot spot. Working hypothesis, made
+falsifiable by the lock: the dumb compiler is already fast, because the
+things that make compilers slow — LLVM, incremental machinery, heavy
+optimization passes — are exactly the things this one does not have.
 
 Rules that follow:
 
