@@ -40,6 +40,16 @@ fn print_sema_error(e: &sema::SemaError) {
     }
 }
 
+/// Prints one `lexer::LexError`: `error[lex]: <message> at <line>:<col>`.
+fn print_lex_error(e: &lexer::LexError) {
+    println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+}
+
+/// Prints one `parser::ParseError`: `error[parse]: <message> at <line>:<col>`.
+fn print_parse_error(e: &parser::ParseError) {
+    println!("error[parse]: {} at {}:{}", e.message, e.line, e.col);
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -122,7 +132,7 @@ fn dump(args: &[String]) -> ExitCode {
             }
             Err(e) => {
                 let dump_start = Instant::now();
-                println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+                print_lex_error(&e);
                 dump_time = dump_start.elapsed();
             }
         },
@@ -134,13 +144,13 @@ fn dump(args: &[String]) -> ExitCode {
                 let dump_start = Instant::now();
                 match parsed {
                     Ok(module) => print!("{}", parser::dump(&module)),
-                    Err(e) => println!("error[parse]: {} at {}:{}", e.message, e.line, e.col),
+                    Err(e) => print_parse_error(&e),
                 }
                 dump_time = dump_start.elapsed();
             }
             Err(e) => {
                 let dump_start = Instant::now();
-                println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+                print_lex_error(&e);
                 dump_time = dump_start.elapsed();
             }
         },
@@ -152,13 +162,13 @@ fn dump(args: &[String]) -> ExitCode {
                 let dump_start = Instant::now();
                 match parsed {
                     Ok(module) => print!("{}", printer::pretty(&module)),
-                    Err(e) => println!("error[parse]: {} at {}:{}", e.message, e.line, e.col),
+                    Err(e) => print_parse_error(&e),
                 }
                 dump_time = dump_start.elapsed();
             }
             Err(e) => {
                 let dump_start = Instant::now();
-                println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+                print_lex_error(&e);
                 dump_time = dump_start.elapsed();
             }
         },
@@ -177,13 +187,13 @@ fn dump(args: &[String]) -> ExitCode {
                         Ok(()) => print!("{}", sema::dump(&module)),
                         Err(e) => print_sema_error(&e),
                     },
-                    Err(e) => println!("error[parse]: {} at {}:{}", e.message, e.line, e.col),
+                    Err(e) => print_parse_error(&e),
                 }
                 dump_time = dump_start.elapsed();
             }
             Err(e) => {
                 let dump_start = Instant::now();
-                println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+                print_lex_error(&e);
                 dump_time = dump_start.elapsed();
             }
         },

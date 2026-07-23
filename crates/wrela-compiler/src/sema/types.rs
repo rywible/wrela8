@@ -1054,41 +1054,49 @@ fn classify_named(
     Ok(result)
 }
 
-fn classify_type(
+/// The one exhaustive (no wildcard) compound-propagation rule shared by
+/// `classify_type` below and `bodies::is_resource_type`: a resource
+/// propagates through `own[..]`, arrays, tuples, `Option`, and `Result`;
+/// every scalar/`Fn`/`Generic`/`Static` variant is always data. The only
+/// thing that differs between the two callers is how a *named* type's own
+/// resource-ness is determined, so that single question is the seam
+/// (`named_is_resource`) — `classify_type` answers it with a memoized,
+/// cycle-checked recursive classification (`classify_named`, which can
+/// fail on a genuinely infinite-by-value type); `is_resource_type` answers
+/// it with a plain lookup against already-classified structs/enums in
+/// `mctx` and can never fail. Being exhaustive here (not `_ => false`)
+/// means a newly added `Type` variant forces a decision at this one triage
+/// point instead of both callers silently (and possibly divergently)
+/// defaulting it to data. Every subtree is always visited, never
+/// short-circuited, so `classify_type`'s cycle detection/memoization (which
+/// needs every referenced type visited, not just enough to answer `bool`)
+/// gets it for free; `is_resource_type`'s `named_is_resource` has no side
+/// effects to lose by the same non-short-circuit traversal.
+pub(crate) fn resource_propagates(
     ty: &Type,
-    span: Span,
-    structs: &BTreeMap<String, &DeclStruct>,
-    enums: &BTreeMap<String, &DeclEnum>,
-    memo: &mut BTreeMap<String, Classification>,
-    in_progress: &mut BTreeSet<String>,
-) -> Result<Classification, SemaError> {
-    Ok(match ty {
-        Type::Own(..) => Classification::Resource,
-        Type::Static(_) => Classification::Data,
-        Type::Named(name, _args) => classify_named(name, span, structs, enums, memo, in_progress)?,
-        Type::Array(elem, _) => classify_type(elem, span, structs, enums, memo, in_progress)?,
+    named_is_resource: &mut dyn FnMut(&str, &[TypeArg]) -> bool,
+) -> bool {
+    match ty {
+        Type::Own(..) => true,
+        Type::Static(_) => false,
+        Type::Named(name, args) => named_is_resource(name, args),
+        Type::Array(elem, _) => resource_propagates(elem, named_is_resource),
         Type::Tuple(elems) => {
-            let mut r = Classification::Data;
+            let mut r = false;
             for e in elems {
-                if classify_type(e, span, structs, enums, memo, in_progress)?
-                    == Classification::Resource
-                {
-                    r = Classification::Resource;
+                if resource_propagates(e, named_is_resource) {
+                    r = true;
                 }
             }
             r
         }
-        Type::Option(inner) => classify_type(inner, span, structs, enums, memo, in_progress)?,
+        Type::Option(inner) => resource_propagates(inner, named_is_resource),
         Type::Result(ok, err) => {
-            let a = classify_type(ok, span, structs, enums, memo, in_progress)?;
-            let b = classify_type(err, span, structs, enums, memo, in_progress)?;
-            if a == Classification::Resource || b == Classification::Resource {
-                Classification::Resource
-            } else {
-                Classification::Data
-            }
+            let a = resource_propagates(ok, named_is_resource);
+            let b = resource_propagates(err, named_is_resource);
+            a || b
         }
-        Type::Generic(_) => Classification::Data,
+        Type::Generic(_) => false,
         Type::Fn(..)
         | Type::Bytes(_)
         | Type::Str
@@ -1107,7 +1115,38 @@ fn classify_type(
         | Type::F64
         | Type::Char
         | Type::Unit
-        | Type::Never => Classification::Data,
+        | Type::Never => false,
+    }
+}
+
+fn classify_type(
+    ty: &Type,
+    span: Span,
+    structs: &BTreeMap<String, &DeclStruct>,
+    enums: &BTreeMap<String, &DeclEnum>,
+    memo: &mut BTreeMap<String, Classification>,
+    in_progress: &mut BTreeSet<String>,
+) -> Result<Classification, SemaError> {
+    let mut error: Option<SemaError> = None;
+    let is_resource = resource_propagates(ty, &mut |name, _args| {
+        if error.is_some() {
+            return false;
+        }
+        match classify_named(name, span, structs, enums, memo, in_progress) {
+            Ok(c) => c == Classification::Resource,
+            Err(e) => {
+                error = Some(e);
+                false
+            }
+        }
+    });
+    if let Some(e) = error {
+        return Err(e);
+    }
+    Ok(if is_resource {
+        Classification::Resource
+    } else {
+        Classification::Data
     })
 }
 

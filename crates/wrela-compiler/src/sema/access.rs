@@ -112,7 +112,7 @@ pub(crate) fn check(
                 check_expr(&c.value, &mut actx)?;
             }
             (Item::Fn(f), DeclItem::Fn(d)) => check_top_fn(f, d, mctx, &effects)?,
-            (Item::Struct(s), DeclItem::Struct(d)) => check_struct_bodies(s, d, mctx, &effects)?,
+            (Item::Struct(s), DeclItem::Struct(_)) => check_struct_bodies(s, mctx, &effects)?,
             _ => {}
         }
     }
@@ -183,8 +183,13 @@ fn infer_private_effects(mctx: &ModuleCtx) -> EffectMap {
                 .expect("private_candidates only names real methods");
             // A bodyless declaration (the grammar's own "bodyless
             // forms") has nothing to infer from — it stays at the
-            // fixpoint's own initial `read` default, mirroring
-            // `bodies::check`'s vacuous acceptance of a missing body.
+            // fixpoint's own initial `read` default. This is load-bearing,
+            // not vacuous: `private_candidates` names methods of every
+            // struct, generic or not, but `bodies::check` never body-checks
+            // (and so never fails closed on) an *uninstantiated* generic
+            // struct's methods (`check_struct_bodies` skips generic
+            // structs entirely) — so a generic struct's bodyless method
+            // really can reach this skip.
             let Some(body) = &f.body else {
                 continue;
             };
@@ -530,20 +535,6 @@ impl<'a> ACtx<'a> {
     }
 }
 
-fn is_image_fn(f: &ast::FnItem) -> bool {
-    f.attrs.iter().any(|a| a.name == "image")
-}
-
-fn local_pool_names(s: &StructInfo) -> BTreeSet<String> {
-    s.ast_members
-        .iter()
-        .filter_map(|m| match m {
-            Member::Pool(p) => Some(p.name.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
 /// `pub(crate)` (item H, generics.rs): re-run over a substituted,
 /// generics-cleared copy of a generic fn's own ast+decl
 /// (`generics::instantiate_fn`) — mirrors `bodies::check_top_fn`'s own
@@ -554,7 +545,7 @@ pub(crate) fn check_top_fn(
     mctx: &ModuleCtx,
     effects: &EffectMap,
 ) -> Result<(), SemaError> {
-    if is_image_fn(f) || !f.generics.is_empty() {
+    if bodies::is_image_fn(f) || !f.generics.is_empty() {
         // `@image` bodies already fail closed in `bodies::check` (never
         // reached from here); a generic body is item H's job, mirroring
         // `bodies::check_top_fn`'s own skip exactly.
@@ -612,10 +603,14 @@ pub(crate) fn resolve_receiver_mode(
             if d.is_pub {
                 // A bodyless declaration (the grammar's own "bodyless
                 // forms", ledger `docs.examples.wrela-blocks-lex`) has
-                // nothing to infer a requirement from — `bodies::check`
-                // already accepts one vacuously (`if let Some(body) =
-                // &f.body`), so this mirrors that instead of assuming a
-                // real body always exists.
+                // nothing to infer a requirement from. This path is
+                // actually unreachable for a real bodyless fn, not a
+                // vacuous acceptance: `resolve_receiver_mode` only ever
+                // runs (via `check_struct_members`) on a non-generic
+                // struct's methods, and `bodies::check` (frozen pass order,
+                // `mod.rs::check`) always runs first and fails closed on a
+                // bodyless one before this pass is ever reached — the
+                // `Some(body) =` skip below is defensive, not load-bearing.
                 let Some(body) = &f.body else {
                     return Ok(AccessMode::Read);
                 };
@@ -648,7 +643,6 @@ pub(crate) fn resolve_receiver_mode(
 
 fn check_struct_bodies(
     s: &ast::StructItem,
-    _d: &types::DeclStruct,
     mctx: &ModuleCtx,
     effects: &EffectMap,
 ) -> Result<(), SemaError> {
@@ -671,7 +665,7 @@ pub(crate) fn check_struct_members(
     mctx: &ModuleCtx,
     effects: &EffectMap,
 ) -> Result<(), SemaError> {
-    let local_pools = local_pool_names(info);
+    let local_pools = bodies::local_pool_names(info);
     let sname = info.decl.name.clone();
     for (am, dm) in info.members() {
         match (am, dm) {
@@ -864,7 +858,7 @@ fn check_for(f: &ForStmt, actx: &mut ACtx) -> Result<(), SemaError> {
         }
         other => {
             let ty = check_expr(other, actx)?;
-            ty.and_then(|t| match unwrap_own(t) {
+            ty.and_then(|t| match bodies::unwrap_own(t) {
                 Type::Array(elem, _) => Some(*elem),
                 _ => None,
             })
@@ -920,13 +914,10 @@ fn bind_pattern_locals(p: &Pattern, scrutinee_ty: Option<&Type>, actx: &mut ACtx
         }
         Pattern::Take(_, inner) => bind_pattern_locals(inner, scrutinee_ty, actx),
         Pattern::Variant {
-            variant,
-            enum_name,
-            payload,
-            ..
+            variant, payload, ..
         } => {
-            let payload_tys = scrutinee_ty
-                .and_then(|t| variant_payload_types(t, enum_name.as_deref(), variant, actx.mctx));
+            let payload_tys =
+                scrutinee_ty.and_then(|t| variant_payload_types(t, variant, actx.mctx));
             match payload_tys {
                 Some(tys) => {
                     for (sp, ty) in payload.iter().zip(tys.iter()) {
@@ -978,13 +969,7 @@ fn bind_pattern_locals(p: &Pattern, scrutinee_ty: Option<&Type>, actx: &mut ACtx
 /// Mirrors `bodies.rs`'s `variant_payload_types_for`, minus the
 /// diagnostics (this pass only needs the payload types when it has them
 /// on hand; anything else falls back to untyped bindings).
-fn variant_payload_types(
-    scrutinee: &Type,
-    enum_name: Option<&str>,
-    variant: &str,
-    mctx: &ModuleCtx,
-) -> Option<Vec<Type>> {
-    let _ = enum_name;
+fn variant_payload_types(scrutinee: &Type, variant: &str, mctx: &ModuleCtx) -> Option<Vec<Type>> {
     match scrutinee {
         Type::Option(inner) => Some(match variant {
             "Some" => vec![(**inner).clone()],
@@ -1010,18 +995,6 @@ fn variant_payload_types(
 
 // --- expressions -----------------------------------------------------------
 
-fn fn_value_type(d: &DeclFn) -> Type {
-    let params = d.params.iter().map(|p| (p.mode, p.ty.clone())).collect();
-    Type::Fn(params, Box::new(d.ret.clone()))
-}
-
-fn unwrap_own(ty: Type) -> Type {
-    match ty {
-        Type::Own(_, inner) => *inner,
-        other => other,
-    }
-}
-
 /// Checks `expr` for every access-mode concern reachable inside it and
 /// returns its type when cheaply derivable (`None` otherwise — never an
 /// error on its own; only a *call target* actually needing a type it
@@ -1037,13 +1010,13 @@ fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
         | Expr::Bool(..)
         | Expr::Unit(_) => Ok(None),
         Expr::Name(_, name) => Ok(name_ty(name, actx)),
-        Expr::Field(base, span, name) => check_field(base, *span, name, actx),
+        Expr::Field(base, _span, name) => check_field(base, name, actx),
         Expr::Index(base, _span, args) => {
             let base_ty = check_expr(base, actx)?;
             for a in args {
                 check_expr(a, actx)?;
             }
-            Ok(base_ty.map(unwrap_own).and_then(|t| match t {
+            Ok(base_ty.map(bodies::unwrap_own).and_then(|t| match t {
                 Type::Array(elem, _) => Some(*elem),
                 Type::Bytes(_) => Some(Type::U8),
                 _ => None,
@@ -1165,7 +1138,7 @@ fn name_ty(name: &str, actx: &ACtx) -> Option<Type> {
         // position) — fine here: `name_ty` only ever feeds mirroring
         // (arity/label/mode, type-independent) and receiver-mutability
         // (mode-only), never a type comparison.
-        return Some(fn_value_type(&f.decl));
+        return Some(bodies::fn_value_type(&f.decl));
     }
     None
 }
@@ -1173,18 +1146,12 @@ fn name_ty(name: &str, actx: &ACtx) -> Option<Type> {
 /// A bare `x.field` (or `Type.assoc_fn`/`Enum.Variant`, used as a value
 /// rather than called) — not a call, so no mirroring/mutability question
 /// arises here; only recursion and best-effort typing.
-fn check_field(
-    base: &Expr,
-    span: Span,
-    name: &str,
-    actx: &mut ACtx,
-) -> Result<Option<Type>, SemaError> {
-    let _ = span;
+fn check_field(base: &Expr, name: &str, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
     if let Expr::Name(_, bname) = base {
         if !actx.locals.contains_key(bname) {
             if let Some(s) = actx.mctx.structs.get(bname.as_str()) {
                 if let Some((_, d)) = s.assoc_fn(name) {
-                    return Ok(Some(fn_value_type(d)));
+                    return Ok(Some(bodies::fn_value_type(d)));
                 }
                 return Ok(None);
             }
@@ -1200,7 +1167,7 @@ fn check_field(
         }
     }
     let base_ty = check_expr(base, actx)?;
-    let Some(base_ty) = base_ty.map(unwrap_own) else {
+    let Some(base_ty) = base_ty.map(bodies::unwrap_own) else {
         return Ok(None);
     };
     if let Type::Named(sname, targs) = &base_ty {
@@ -1445,7 +1412,7 @@ fn check_call(
             }
             Ok(None)
         }
-        Expr::Name(nspan, name) => check_call_by_name(name, *nspan, span, args, actx),
+        Expr::Name(_, name) => check_call_by_name(name, span, args, actx),
         Expr::Field(base, fspan, name) => check_call_by_field(base, *fspan, name, span, args, actx),
         other => {
             let ty = check_expr(other, actx)?;
@@ -1469,12 +1436,10 @@ fn check_call(
 
 fn check_call_by_name(
     name: &str,
-    nspan: Span,
     call_span: Span,
     args: &[Arg],
     actx: &mut ACtx,
 ) -> Result<Option<Type>, SemaError> {
-    let _ = nspan;
     if let Some(li) = actx.locals.get(name).cloned() {
         for a in args {
             check_arg(a, actx)?;
@@ -1598,7 +1563,7 @@ fn check_call_by_field(
     for a in args {
         check_arg(a, actx)?;
     }
-    let Some(base_ty) = base_ty.map(unwrap_own) else {
+    let Some(base_ty) = base_ty.map(bodies::unwrap_own) else {
         return Err(unimplemented_at(
             "mirroring a method call through this base expression is",
             fspan,

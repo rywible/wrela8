@@ -553,7 +553,7 @@ pub(crate) fn infer_fn_targs(
     mctx: &ModuleCtx,
     call_span: Span,
 ) -> Result<Vec<TypeArg>, SemaError> {
-    let bound = bind_args_positionally(&fi.decl.params, args, call_span)?;
+    let bound = bind_args_positionally(&fi.decl.params, args);
     let mut inferred: BTreeMap<String, Type> = BTreeMap::new();
     for (i, p) in fi.decl.params.iter().enumerate() {
         let Type::Generic(gname) = &p.ty else {
@@ -618,11 +618,7 @@ pub(crate) fn infer_fn_targs(
 /// `check_call_args` call `bodies.rs` makes once the instantiation is
 /// resolved, so this binder is deliberately permissive (out-of-range or
 /// duplicate binds are simply ignored here rather than reported twice).
-fn bind_args_positionally<'a>(
-    decl_params: &[DeclParam],
-    args: &'a [Arg],
-    call_span: Span,
-) -> Result<Vec<Option<&'a Expr>>, SemaError> {
+fn bind_args_positionally<'a>(decl_params: &[DeclParam], args: &'a [Arg]) -> Vec<Option<&'a Expr>> {
     let mut bound: Vec<Option<&'a Expr>> = vec![None; decl_params.len()];
     let mut cursor = 0usize;
     for a in args {
@@ -643,8 +639,7 @@ fn bind_args_positionally<'a>(
         // An unresolvable label/arity mismatch is left for the real
         // `check_call_args` to report properly; inference just skips it.
     }
-    let _ = call_span;
-    Ok(bound)
+    bound
 }
 
 // --- draining the queue: the actual per-instantiation checking ----------
@@ -657,7 +652,7 @@ fn bind_args_positionally<'a>(
 /// against each substituted declaration. `path` is cited verbatim in the
 /// chain diagnostic (decision 2; see `mod.rs::check`'s own doc comment).
 pub(crate) fn check(
-    module: &Module,
+    _module: &Module,
     _decl_items: &[types::DeclItem],
     mctx: &ModuleCtx,
     path: &str,
@@ -678,7 +673,7 @@ pub(crate) fn check(
         let result = check_one_instantiation(mctx, &entry);
         *mctx.current_chain.borrow_mut() = Vec::new();
         if let Err(e) = result {
-            return Err(finalize_diagnostic(e, &entry, module, mctx, path));
+            return Err(finalize_diagnostic(e, &entry, mctx, path));
         }
     }
     Ok(())
@@ -748,12 +743,11 @@ fn check_one_instantiation(mctx: &ModuleCtx, entry: &QueuedInstantiation) -> Res
 fn finalize_diagnostic(
     e: SemaError,
     entry: &QueuedInstantiation,
-    _module: &Module,
     mctx: &ModuleCtx,
     path: &str,
 ) -> SemaError {
     if e.category == "type" && e.extra_lines.is_empty() {
-        if let Some((type_name, method_name)) = parse_missing_method(&e.message) {
+        if let Some((type_name, method_name)) = e.missing_method.clone() {
             if let Some((call_expr, ret_ty)) =
                 find_requirement(mctx, entry, &type_name, &method_name)
             {
@@ -777,6 +771,7 @@ fn finalize_diagnostic(
                     col: 0,
                     extra_lines,
                     omit_location: true,
+                    missing_method: None,
                 };
             }
         }
@@ -787,21 +782,6 @@ fn finalize_diagnostic(
             .push(format!("  instantiated at {path}:{}", span.line));
     }
     e
-}
-
-/// Matches `bodies.rs`'s own two fixed "missing method" message shapes —
-/// deliberately coupled to that exact text (documented here and there):
-/// if either message ever changes, this match needs to change with it.
-fn parse_missing_method(msg: &str) -> Option<(String, String)> {
-    let rest = msg.strip_prefix("type `")?;
-    for sep in ["` has no method `", "` has no operator method `"] {
-        if let Some((name, rest2)) = rest.split_once(sep) {
-            if let Some(method) = rest2.strip_suffix('`') {
-                return Some((name.to_string(), method.to_string()));
-            }
-        }
-    }
-    None
 }
 
 /// Only ever recognizes a top-level generic `fn` (`InstKind::Fn`) — the

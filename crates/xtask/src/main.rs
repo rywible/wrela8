@@ -64,6 +64,21 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Every subdirectory of `golden_dir` (one golden case apiece), in
+/// deterministic (sorted) order — the scan `corpus_seed_inputs`/`golden`/
+/// `roundtrip`/`bench_corpus_entries`/`bench_check_entries` all repeat
+/// verbatim before doing their own per-case work.
+fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut dirs: Vec<_> = std::fs::read_dir(golden_dir)
+        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    Ok(dirs)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
@@ -417,14 +432,7 @@ fn corpus_seed_inputs() -> Result<Vec<String>, String> {
     }
     let mut inputs: Vec<String> = blocks.into_iter().map(|b| b.body).collect();
     let golden_dir = root().join("tests/golden");
-    let mut dirs: Vec<_> = std::fs::read_dir(&golden_dir)
-        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    dirs.sort();
-    for dir in dirs {
+    for dir in golden_case_dirs(&golden_dir)? {
         let input = dir.join("input.wr");
         if input.exists() {
             inputs.push(
@@ -616,19 +624,26 @@ fn run_lexer_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), S
         };
         let input = String::from_utf8_lossy(&bytes).into_owned();
         if let Err(reason) = check_lex_invariants(&input) {
-            return report_fuzz_failure(seed, i, &input, &reason);
+            return report_fuzz_failure("lexer", "crash-", seed, i, &input, &reason);
         }
     }
     println!("fuzz lexer: {iters} iteration(s) clean (seed={seed})");
     Ok(())
 }
 
-fn report_fuzz_failure(seed: u64, iter: u64, input: &str, reason: &str) -> Result<(), String> {
+fn report_fuzz_failure(
+    label: &str,
+    prefix: &str,
+    seed: u64,
+    iter: u64,
+    input: &str,
+    reason: &str,
+) -> Result<(), String> {
     let dir = root().join("target/fuzz");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let mut n = 0usize;
     let path = loop {
-        let p = dir.join(format!("crash-{n}.wr"));
+        let p = dir.join(format!("{prefix}{n}.wr"));
         if !p.exists() {
             break p;
         }
@@ -636,7 +651,7 @@ fn report_fuzz_failure(seed: u64, iter: u64, input: &str, reason: &str) -> Resul
     };
     std::fs::write(&path, input).map_err(|e| format!("write {}: {e}", path.display()))?;
     Err(format!(
-        "fuzz lexer: seed={seed} iteration={iter}: {reason}\n  input written to {}",
+        "fuzz {label}: seed={seed} iteration={iter}: {reason}\n  input written to {}",
         path.display()
     ))
 }
@@ -864,34 +879,11 @@ fn run_parser_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), 
             token_soup(&mut rng)
         };
         if let Err(reason) = check_parse_invariants(&input) {
-            return report_parser_fuzz_failure(seed, i, &input, &reason);
+            return report_fuzz_failure("parser", "parse-crash-", seed, i, &input, &reason);
         }
     }
     println!("fuzz parser: {iters} iteration(s) clean (seed={seed})");
     Ok(())
-}
-
-fn report_parser_fuzz_failure(
-    seed: u64,
-    iter: u64,
-    input: &str,
-    reason: &str,
-) -> Result<(), String> {
-    let dir = root().join("target/fuzz");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let mut n = 0usize;
-    let path = loop {
-        let p = dir.join(format!("parse-crash-{n}.wr"));
-        if !p.exists() {
-            break p;
-        }
-        n += 1;
-    };
-    std::fs::write(&path, input).map_err(|e| format!("write {}: {e}", path.display()))?;
-    Err(format!(
-        "fuzz parser: seed={seed} iteration={iter}: {reason}\n  input written to {}",
-        path.display()
-    ))
 }
 
 fn fuzz_parser(iters: u64, seed: u64) -> Result<(), String> {
@@ -1136,29 +1128,11 @@ fn run_sema_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), St
             token_soup(&mut rng)
         };
         if let Err(reason) = check_sema_invariants(&input) {
-            return report_sema_fuzz_failure(seed, i, &input, &reason);
+            return report_fuzz_failure("sema", "sema-crash-", seed, i, &input, &reason);
         }
     }
     println!("fuzz sema: {iters} iteration(s) clean (seed={seed})");
     Ok(())
-}
-
-fn report_sema_fuzz_failure(seed: u64, iter: u64, input: &str, reason: &str) -> Result<(), String> {
-    let dir = root().join("target/fuzz");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let mut n = 0usize;
-    let path = loop {
-        let p = dir.join(format!("sema-crash-{n}.wr"));
-        if !p.exists() {
-            break p;
-        }
-        n += 1;
-    };
-    std::fs::write(&path, input).map_err(|e| format!("write {}: {e}", path.display()))?;
-    Err(format!(
-        "fuzz sema: seed={seed} iteration={iter}: {reason}\n  input written to {}",
-        path.display()
-    ))
 }
 
 fn fuzz_sema(iters: u64, seed: u64) -> Result<(), String> {
@@ -1190,14 +1164,7 @@ fn golden(update: bool) -> Result<(), String> {
     let golden_dir = root().join("tests/golden");
     let mut cases = 0usize;
     let mut failures = Vec::new();
-    let mut entries: Vec<_> = std::fs::read_dir(&golden_dir)
-        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    entries.sort();
-    for case in entries {
+    for case in golden_case_dirs(&golden_dir)? {
         let input = case.join("input.wr");
         let expected_dir = case.join("expected");
         if !input.exists() || !expected_dir.is_dir() {
@@ -1302,18 +1269,11 @@ fn roundtrip() -> Result<(), String> {
     }
 
     let golden_dir = root().join("tests/golden");
-    let mut ast_dirs: Vec<_> = std::fs::read_dir(&golden_dir)
-        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_dir()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("ast-"))
-        })
-        .collect();
-    ast_dirs.sort();
+    let ast_dirs = golden_case_dirs(&golden_dir)?.into_iter().filter(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("ast-"))
+    });
     for dir in ast_dirs {
         let input = dir.join("input.wr");
         if !input.exists() {
@@ -1473,6 +1433,10 @@ const BENCH_TIMED_ITERS: usize = 15;
 struct BenchEntry {
     name: String,
     body: String,
+    /// Whether `body` contains the `...`-fragment marker (entry-invariant,
+    /// computed once here rather than re-scanned by `run_bench_workload`
+    /// on every timed iteration).
+    has_dots: bool,
 }
 
 fn bench_corpus_entries() -> Result<Vec<BenchEntry>, String> {
@@ -1485,20 +1449,14 @@ fn bench_corpus_entries() -> Result<Vec<BenchEntry>, String> {
         .into_iter()
         .chain(examples)
         .map(|b| BenchEntry {
+            has_dots: b.body.contains("..."),
             name: b.name,
             body: b.body,
         })
         .collect();
 
     let golden_dir = root().join("tests/golden");
-    let mut dirs: Vec<_> = std::fs::read_dir(&golden_dir)
-        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    dirs.sort();
-    for dir in dirs {
+    for dir in golden_case_dirs(&golden_dir)? {
         let input = dir.join("input.wr");
         if !input.exists() {
             continue;
@@ -1511,6 +1469,7 @@ fn bench_corpus_entries() -> Result<Vec<BenchEntry>, String> {
         let body = std::fs::read_to_string(&input)
             .map_err(|e| format!("read {}: {e}", input.display()))?;
         entries.push(BenchEntry {
+            has_dots: body.contains("..."),
             name: format!("golden/{case}/input.wr"),
             body,
         });
@@ -1533,7 +1492,7 @@ fn run_bench_workload(entries: &[BenchEntry], track_index: usize) -> (Duration, 
     for (i, e) in entries.iter().enumerate() {
         let entry_start = Instant::now();
         if let Ok(tokens) = lexer::lex(&e.body) {
-            if !e.body.contains("...") {
+            if !e.has_dots {
                 let _ = parser::parse_any(tokens);
             }
         }
@@ -1560,15 +1519,8 @@ struct CheckBenchEntry {
 /// `err-bad-dedent`/`err-unterminated-string`/etc. must not).
 fn bench_check_entries() -> Result<Vec<CheckBenchEntry>, String> {
     let golden_dir = root().join("tests/golden");
-    let mut dirs: Vec<_> = std::fs::read_dir(&golden_dir)
-        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    dirs.sort();
     let mut entries = Vec::new();
-    for dir in dirs {
+    for dir in golden_case_dirs(&golden_dir)? {
         let input = dir.join("input.wr");
         if !input.exists() {
             continue;

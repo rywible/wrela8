@@ -231,7 +231,7 @@ fn place_type(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Option<Type> {
             .lookup_local(name)
             .or_else(|| mctx.consts.get(name).cloned()),
         Expr::Field(base, _, name) => {
-            let base_ty = unwrap_own_ty(place_type(base, fctx, mctx)?);
+            let base_ty = bodies::unwrap_own(place_type(base, fctx, mctx)?);
             if let Type::Named(sname, targs) = &base_ty {
                 if targs.is_empty() {
                     return mctx.structs.get(sname)?.field_ty(name);
@@ -243,20 +243,13 @@ fn place_type(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Option<Type> {
             if args.len() != 1 {
                 return None;
             }
-            match unwrap_own_ty(place_type(base, fctx, mctx)?) {
+            match bodies::unwrap_own(place_type(base, fctx, mctx)?) {
                 Type::Array(elem, _) => Some(*elem),
                 Type::Bytes(_) => Some(Type::U8),
                 _ => None,
             }
         }
         _ => None,
-    }
-}
-
-fn unwrap_own_ty(t: Type) -> Type {
-    match t {
-        Type::Own(_, inner) => *inner,
-        other => other,
     }
 }
 
@@ -830,7 +823,7 @@ fn receiver_of<'e>(callee: &'e Expr, fctx: &FnCtx, wctx: &WCtx) -> Option<(&'e E
                     return None;
                 }
             }
-            let base_ty = unwrap_own_ty(place_type(base, fctx, wctx.mctx)?);
+            let base_ty = bodies::unwrap_own(place_type(base, fctx, wctx.mctx)?);
             let Type::Named(sname, _) = &base_ty else {
                 return None;
             };
@@ -1249,10 +1242,6 @@ fn walk_while(
     })
 }
 
-fn is_bare_numeric_literal(e: &Expr) -> bool {
-    matches!(e, Expr::Int(..) | Expr::Float(..))
-}
-
 /// Mirrors `matches::check_for`'s own elem-type derivation exactly
 /// (range vs fixed array, `take`-consumed iterable unwrapped the same
 /// way) purely to keep `fctx`'s locals accurate; typing itself is
@@ -1264,12 +1253,12 @@ fn for_elem_type(f: &ForStmt, fctx: &mut FnCtx, wctx: &WCtx) -> Result<Type, Sem
     };
     match raw_iterable {
         Expr::Range(_, from, to, _incl) => {
-            let (first, _second) = if is_bare_numeric_literal(from) && !is_bare_numeric_literal(to)
-            {
-                (to.as_ref(), from.as_ref())
-            } else {
-                (from.as_ref(), to.as_ref())
-            };
+            let (first, _second) =
+                if bodies::is_bare_numeric_literal(from) && !bodies::is_bare_numeric_literal(to) {
+                    (to.as_ref(), from.as_ref())
+                } else {
+                    (from.as_ref(), to.as_ref())
+                };
             bodies::check_expr(first, None, fctx, wctx.mctx)
         }
         other => match bodies::check_expr(other, None, fctx, wctx.mctx)? {
@@ -1356,20 +1345,6 @@ struct WCtx<'a> {
     is_init: bool,
 }
 
-fn is_image_fn(f: &ast::FnItem) -> bool {
-    f.attrs.iter().any(|a| a.name == "image")
-}
-
-fn local_pool_names(info: &StructInfo) -> BTreeSet<String> {
-    info.ast_members
-        .iter()
-        .filter_map(|m| match m {
-            Member::Pool(p) => Some(p.name.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
 /// The two checks that only make sense at a function's own boundary
 /// (deliverable 2's "value-returning body must return on every path",
 /// and the field-restore obligation applied to the implicit end-of-body
@@ -1406,7 +1381,7 @@ pub(crate) fn check_top_fn(
     mctx: &ModuleCtx,
     effects: &EffectMap,
 ) -> Result<(), SemaError> {
-    if is_image_fn(f) || !f.generics.is_empty() {
+    if bodies::is_image_fn(f) || !f.generics.is_empty() {
         return Ok(());
     }
     let Some(body) = &f.body else {
@@ -1434,7 +1409,6 @@ pub(crate) fn check_top_fn(
 
 fn check_struct_bodies(
     s: &ast::StructItem,
-    _d: &types::DeclStruct,
     mctx: &ModuleCtx,
     effects: &EffectMap,
 ) -> Result<(), SemaError> {
@@ -1456,7 +1430,7 @@ pub(crate) fn check_struct_members(
     effects: &EffectMap,
 ) -> Result<(), SemaError> {
     let sname = info.decl.name.clone();
-    let local_pools = local_pool_names(info);
+    let local_pools = bodies::local_pool_names(info);
 
     for (am, dm) in info.members() {
         match (am, dm) {
@@ -1557,8 +1531,8 @@ pub(crate) fn check(
     for (ai, di) in ast_items.iter().zip(decl_items.iter()) {
         match (ai, di) {
             (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, mctx, &effects)?,
-            (Item::Struct(s), types::DeclItem::Struct(d)) => {
-                check_struct_bodies(s, d, mctx, &effects)?
+            (Item::Struct(s), types::DeclItem::Struct(_)) => {
+                check_struct_bodies(s, mctx, &effects)?
             }
             _ => {}
         }

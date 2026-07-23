@@ -42,8 +42,8 @@ use crate::sema::types::{
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
-    ComptimeIfStmt, DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module,
-    Pattern, Span, Stmt, UnaryOp, WhileStmt, WithStmt,
+    DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, Pattern, Span,
+    Stmt, UnaryOp, WhileStmt,
 };
 
 // --- item H: the generic-instantiation queue ------------------------------
@@ -58,8 +58,9 @@ use crate::syntax::ast::{
 // than overwritten by a later, redundant use of the same instantiation).
 // `current_chain` is the "instantiated at" stack this exact walk is
 // running under: empty for the module's own (non-generic) bodies, and set
-// by `generics::check` (via `with_chain`, below) while it re-runs this
-// same pass over one instantiation's substituted declaration — so a
+// by `generics::check`, which assigns `current_chain` directly around each
+// instantiation while it re-runs this same pass over one instantiation's
+// substituted declaration — so a
 // generic use *discovered while checking an instantiation* enqueues with
 // that instantiation's own chain plus one more frame, which is exactly
 // how a nested instantiation's diagnostic gets one `instantiated at` line
@@ -469,15 +470,25 @@ pub(crate) fn check(
                 check_expr(&c.value, Some(&d.ty), &mut fctx, mctx)?;
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, mctx)?,
-            (Item::Struct(s), types::DeclItem::Struct(d)) => check_struct_bodies(s, d, mctx)?,
+            (Item::Struct(s), types::DeclItem::Struct(_)) => check_struct_bodies(s, mctx)?,
             _ => {}
         }
     }
     Ok(())
 }
 
-fn is_image_fn(f: &ast::FnItem) -> bool {
+pub(crate) fn is_image_fn(f: &ast::FnItem) -> bool {
     f.attrs.iter().any(|a| a.name == "image")
+}
+
+pub(crate) fn local_pool_names(info: &StructInfo) -> BTreeSet<String> {
+    info.ast_members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Pool(p) => Some(p.name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `pub(crate)` (item H, generics.rs): re-run verbatim over a
@@ -528,11 +539,7 @@ pub(crate) fn check_params_with_defaults(
     Ok(())
 }
 
-fn check_struct_bodies(
-    s: &ast::StructItem,
-    _d: &types::DeclStruct,
-    mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
+fn check_struct_bodies(s: &ast::StructItem, mctx: &ModuleCtx) -> Result<(), SemaError> {
     if !s.generics.is_empty() {
         return Ok(()); // generic struct: item H's job, not checked here.
     }
@@ -555,14 +562,7 @@ pub(crate) fn check_struct_members(
     self_ty: Type,
     mctx: &ModuleCtx,
 ) -> Result<(), SemaError> {
-    let local_pools: BTreeSet<String> = info
-        .ast_members
-        .iter()
-        .filter_map(|m| match m {
-            Member::Pool(p) => Some(p.name.clone()),
-            _ => None,
-        })
-        .collect();
+    let local_pools = local_pool_names(info);
     for (am, dm) in info.members() {
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(df)) => {
@@ -621,22 +621,15 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sem
         Stmt::Return(span, e) => check_return(*span, e, fctx, mctx),
         Stmt::Assert(a) => check_assert(a, fctx, mctx),
         Stmt::Defer(d) => check_defer(d, fctx, mctx),
-        Stmt::With(w) => Err(unimplemented_at("`with` is", with_span(w))),
+        Stmt::With(w) => Err(unimplemented_at("`with` is", w.span)),
         Stmt::Send(span, _e) => Err(unimplemented_at("`send` is", *span)),
         Stmt::Expr(_span, e) => {
             check_expr(e, None, fctx, mctx)?;
             Ok(())
         }
-        Stmt::ComptimeIf(c) => Err(unimplemented_at("`comptime if` is", comptime_if_span(c))),
+        Stmt::ComptimeIf(c) => Err(unimplemented_at("`comptime if` is", c.span)),
         Stmt::ComptimeAssert(span, _, _) => Err(unimplemented_at("`comptime assert` is", *span)),
     }
-}
-
-fn with_span(w: &WithStmt) -> Span {
-    w.span
-}
-fn comptime_if_span(c: &ComptimeIfStmt) -> Span {
-    c.span
 }
 
 fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
@@ -1272,7 +1265,7 @@ pub(crate) fn fn_value_type(d: &types::DeclFn) -> Type {
     Type::Fn(params, Box::new(d.ret.clone()))
 }
 
-fn unwrap_own(ty: Type) -> Type {
+pub(crate) fn unwrap_own(ty: Type) -> Type {
     match ty {
         Type::Own(_, inner) => *inner,
         other => other,
@@ -1743,7 +1736,7 @@ fn check_same_type_operands(
     Ok(ty)
 }
 
-fn is_bare_numeric_literal(e: &Expr) -> bool {
+pub(crate) fn is_bare_numeric_literal(e: &Expr) -> bool {
     matches!(e, Expr::Int(..) | Expr::Float(..))
 }
 
@@ -1854,13 +1847,16 @@ fn check_binop_types(op: BinOp, ty: Type, span: Span, mctx: &ModuleCtx) -> Resul
 /// Mirrors `types::classify_type` (already computed, memoized, per
 /// struct/enum in `mctx`) to answer the one question the operator pass
 /// needs: is this composite type's structural `==` forbidden because it
-/// (transitively) contains a resource?
+/// (transitively) contains a resource? The compound-propagation rule
+/// itself (own/array/tuple/Option/Result propagate, everything else is
+/// data) is `types::resource_propagates`'s one exhaustive triage point,
+/// shared with `classify_type`; the only thing supplied here is the leaf
+/// question — a named type's resource-ness, read straight from `mctx`'s
+/// already-computed classifications rather than recursively re-deriving
+/// them.
 pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
-    match ty {
-        Type::Own(..) => true,
-        Type::Static(_) => false,
-        Type::Named(name, _) => mctx
-            .structs
+    types::resource_propagates(ty, &mut |name, _args| {
+        mctx.structs
             .get(name)
             .map(|s| s.decl.classification == Classification::Resource)
             .or_else(|| {
@@ -1868,13 +1864,8 @@ pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
                     .get(name)
                     .map(|e| e.classification == Classification::Resource)
             })
-            .unwrap_or(false),
-        Type::Array(elem, _) => is_resource_type(elem, mctx),
-        Type::Tuple(elems) => elems.iter().any(|e| is_resource_type(e, mctx)),
-        Type::Option(inner) => is_resource_type(inner, mctx),
-        Type::Result(ok, err) => is_resource_type(ok, mctx) || is_resource_type(err, mctx),
-        _ => false,
-    }
+            .unwrap_or(false)
+    })
 }
 
 /// Resolves `<type-name>.<method>` as an operator-desugar target
@@ -1897,8 +1888,10 @@ fn resolve_operator_method(
         match mctx.structs.get(name) {
             Some(s) => std::borrow::Cow::Borrowed(s),
             None => {
-                return Err(type_error(
+                return Err(missing_method_error(
                     format!("type `{name}` has no operator method `{method}`"),
+                    name,
+                    method,
                     span,
                 ));
             }
@@ -1907,8 +1900,10 @@ fn resolve_operator_method(
         std::borrow::Cow::Owned(generics::instantiate_struct(mctx, name, targs, span)?)
     };
     let Some((_, d)) = s.method(method) else {
-        return Err(type_error(
+        return Err(missing_method_error(
             format!("type `{name}` has no operator method `{method}`"),
+            name,
+            method,
             span,
         ));
     };
@@ -2140,9 +2135,7 @@ fn check_call(
         Expr::Index(inner, ispan, targs) => {
             check_call_index(inner, *ispan, targs, args, span, fctx, mctx)
         }
-        Expr::Name(nspan, name) => {
-            check_call_by_name(name, *nspan, span, args, expected, fctx, mctx)
-        }
+        Expr::Name(_, name) => check_call_by_name(name, span, args, expected, fctx, mctx),
         Expr::Field(base, fspan, name) => {
             check_call_by_field(base, *fspan, name, span, args, fctx, mctx)
         }
@@ -2264,7 +2257,6 @@ fn is_scalar(t: &Type) -> bool {
 
 fn check_call_by_name(
     name: &str,
-    nspan: Span,
     call_span: Span,
     args: &[Arg],
     expected: Option<&Type>,
@@ -2365,10 +2357,7 @@ fn check_call_by_name(
             )?;
             Ok(Type::Never)
         }
-        _ => {
-            let _ = nspan;
-            Err(type_error(format!("`{name}` is not callable"), call_span))
-        }
+        _ => Err(type_error(format!("`{name}` is not callable"), call_span)),
     }
 }
 
@@ -2425,8 +2414,10 @@ fn check_call_by_field(
                 match mctx.structs.get(sname.as_str()) {
                     Some(s) => std::borrow::Cow::Borrowed(s),
                     None => {
-                        return Err(type_error(
+                        return Err(missing_method_error(
                             format!("type `{sname}` has no method `{name}`"),
+                            sname,
+                            name,
                             fspan,
                         ));
                     }
@@ -2437,8 +2428,10 @@ fn check_call_by_field(
                 )?)
             };
             let Some((mf, d)) = s.method(name) else {
-                return Err(type_error(
+                return Err(missing_method_error(
                     format!("type `{sname}` has no method `{name}`"),
+                    sname,
+                    name,
                     fspan,
                 ));
             };
@@ -2451,13 +2444,15 @@ fn check_call_by_field(
             check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
             Ok(d.ret.clone())
         }
-        other => Err(type_error(
-            format!(
-                "type `{}` has no method `{name}`",
-                types::render_type(other)
-            ),
-            fspan,
-        )),
+        other => {
+            let type_name = types::render_type(other);
+            Err(missing_method_error(
+                format!("type `{type_name}` has no method `{name}`"),
+                &type_name,
+                name,
+                fspan,
+            ))
+        }
     }
 }
 
@@ -2733,6 +2728,23 @@ fn scan_expr_forbidden(e: &Expr) -> Option<(&'static str, Span)> {
 
 fn type_error(message: String, span: Span) -> SemaError {
     SemaError::at("type", message, span)
+}
+
+/// The `type` diagnostic for a missing method/operator method, tagged with
+/// structured `(type_name, method_name)` metadata (`SemaError::missing_method`)
+/// so `generics.rs`'s requirement-chain diagnostic (item H, decision 2) can
+/// recognize this exact shape without parsing `message` back apart. The
+/// rendered `message`/category/span are unaffected — the field is metadata
+/// only, never printed.
+fn missing_method_error(
+    message: String,
+    type_name: &str,
+    method_name: &str,
+    span: Span,
+) -> SemaError {
+    let mut e = type_error(message, span);
+    e.missing_method = Some((type_name.to_string(), method_name.to_string()));
+    e
 }
 
 fn arity_error(expected: usize, found: usize, span: Span) -> SemaError {

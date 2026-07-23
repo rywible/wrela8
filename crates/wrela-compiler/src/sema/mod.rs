@@ -58,6 +58,12 @@ pub struct SemaError {
     pub col: u32,
     pub extra_lines: Vec<String>,
     pub omit_location: bool,
+    /// Diagnostic metadata only — never rendered. Set exactly at
+    /// `bodies.rs`'s five "no method"/"no operator method" sites
+    /// (`(type name, method name)`) so `generics.rs`'s requirement-chain
+    /// diagnostic (item H, decision 2) can recognize that shape from
+    /// structured data instead of parsing the rendered message text.
+    pub missing_method: Option<(String, String)>,
 }
 
 impl SemaError {
@@ -69,6 +75,7 @@ impl SemaError {
             col: span.col,
             extra_lines: Vec::new(),
             omit_location: false,
+            missing_method: None,
         }
     }
 }

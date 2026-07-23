@@ -49,14 +49,7 @@ use crate::syntax::ast::{
 };
 
 fn match_error(message: String, span: Span) -> SemaError {
-    SemaError {
-        category: "match",
-        message,
-        line: span.line,
-        col: span.col,
-        extra_lines: Vec::new(),
-        omit_location: false,
-    }
+    SemaError::at("match", message, span)
 }
 
 // --- entry point: mirrors bodies::check's own top-level walk -------------
@@ -146,22 +139,14 @@ pub(crate) fn check_struct_members(
     self_ty: Type,
     mctx: &ModuleCtx,
 ) -> Result<(), SemaError> {
-    let local_pools: std::collections::BTreeSet<String> = info
-        .ast_members
-        .iter()
-        .filter_map(|m| match m {
-            Member::Pool(p) => Some(p.name.clone()),
-            _ => None,
-        })
-        .collect();
+    let local_pools = bodies::local_pool_names(info);
     for (am, dm) in info.members() {
         match (am, dm) {
-            (Member::Field(af), types::DeclMember::Field(df)) => {
+            (Member::Field(af), types::DeclMember::Field(_)) => {
                 if let Some(def) = &af.default {
                     let mut fctx = FnCtx::new(Type::Unit, local_pools.clone());
                     fctx.insert_local("self".to_string(), self_ty.clone());
                     walk_expr(def, &mut fctx, mctx)?;
-                    let _ = &df.ty; // the expected type; not needed for this pass.
                 }
             }
             (Member::Fn(f), types::DeclMember::Fn(fd)) => {
@@ -249,10 +234,6 @@ fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), 
     check_stmts(&w.body, fctx, mctx)
 }
 
-fn is_bare_numeric_literal(e: &Expr) -> bool {
-    matches!(e, Expr::Int(..) | Expr::Float(..))
-}
-
 /// Mirrors `bodies::check_for`'s own elem-type derivation (range vs fixed
 /// array, `take`-consumed iterable unwrapped the same way, a bare numeric
 /// literal endpoint deferring to its concrete sibling) purely to keep
@@ -267,14 +248,13 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sema
     };
     let elem_ty = match raw_iterable {
         Expr::Range(_, from, to, _incl) => {
-            let (first, second) = if is_bare_numeric_literal(from) && !is_bare_numeric_literal(to) {
-                (to.as_ref(), from.as_ref())
-            } else {
-                (from.as_ref(), to.as_ref())
-            };
-            let ty = bodies::check_expr(first, None, fctx, mctx)?;
-            let _ = second;
-            ty
+            let first =
+                if bodies::is_bare_numeric_literal(from) && !bodies::is_bare_numeric_literal(to) {
+                    to.as_ref()
+                } else {
+                    from.as_ref()
+                };
+            bodies::check_expr(first, None, fctx, mctx)?
         }
         other => match bodies::check_expr(other, None, fctx, mctx)? {
             Type::Array(elem, _) => *elem,
