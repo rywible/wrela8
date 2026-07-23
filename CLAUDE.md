@@ -40,9 +40,12 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
   evaluator-vs-backend oracles; they fail closed until implemented and
   must never fake a pass.
 - `cargo xtask profile` / `cargo xtask bench` — measurement, two lanes:
-  compiler speed (alive at M1: `wrela --timings`, corpus bench, locked
-  thresholds) and guest speed (alive at M5, replay-based). The only path
-  to cleverness — in the compiler too — runs through them.
+  compiler speed (**live**: `wrela --timings` prints per-phase wall time
+  to stderr; `xtask bench compiler` times lex+parse over the full corpus
+  in-process and locks the median against `bench/thresholds.toml`, wired
+  into `check`) and guest speed (`bench guest`, replay-based, alive at
+  M5 — still fails closed, like bare `bench` and `profile`). The only
+  path to cleverness — in the compiler too — runs through them.
 
 ## Layout
 

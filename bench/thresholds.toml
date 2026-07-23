@@ -1,0 +1,20 @@
+# Locked bench thresholds (ROADMAP.md "cleverness budget": a threshold is
+# a regression *lock*, not a performance target). Each is set once, by
+# measuring on a real machine and rounding up generously — 10x the
+# measured median — so the lock catches an algorithmic blowup (e.g. an
+# accidental O(n^2) creeping into the lexer or parser) and never a false
+# alarm from ordinary machine noise (thermal throttling, a busy laptop,
+# a slower CI box). If the corpus grows enormously and legitimately needs
+# more time, re-measure and re-lock deliberately, in its own commit, citing
+# why — never widen this file to make a regression quietly pass.
+
+[compiler]
+# `cargo xtask bench compiler`: median wall time (microseconds) for one
+# full pass — lex, then parse where the corpus rules call for it — over
+# every doc/example corpus entry plus every tests/golden/*/input.wr (58
+# entries as of this lock). Measured median on the locking machine, across
+# several runs of 15 timed iterations each: ~5.5-5.7ms (5500-5700us). This
+# threshold is 10x that, rounded up to a clean number — loose on purpose,
+# so it catches an algorithmic blowup (e.g. an accidental O(n^2)) and never
+# a false alarm from ordinary machine noise.
+full_corpus_median_us = 60000

@@ -191,6 +191,13 @@ doc = "04-compiler.md#7"
 status = "gap"
 note = "xtask profile diffs the report's predicted costs against replayed measurements (M5)"
 
+[[clause]]
+id = "compiler.bench.compiler-lane-locked"
+doc = "04-compiler.md#7"
+status = "test"
+tests = ["xtask:bench"]
+note = "cargo xtask bench compiler: in-process lex+parse over every doc/example corpus entry plus every tests/golden/*/input.wr (3 warmup + 15 timed iterations), reporting min/median/max total and the median for the largest single entry (the virtio worked example), compared against the locked threshold in bench/thresholds.toml; wired into xtask check after roundtrip. wrela --timings reports the same per-phase wall clock (read/lex/parse/dump/total) to stderr only, so goldens comparing stdout are unaffected. The guest lane (bench guest) and bare bench still fail closed until M5."
+
 # --- machine --------------------------------------------------------------
 
 [[clause]]

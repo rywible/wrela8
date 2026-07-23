@@ -18,18 +18,30 @@
 //!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
 //!   profile    replay a recorded workload under counters (fails closed today)
-//!   bench      thresholds over profiled workloads        (fails closed today)
+//!   bench      cargo xtask bench compiler|guest; the compiler lane is
+//!              live (plans/M1.md, ROADMAP.md "cleverness budget"): lex +
+//!              parse, in-process, over every doc/example corpus entry
+//!              plus every tests/golden/*/input.wr (3 warmup + 15 timed
+//!              iterations), reporting min/median/max total wall time and
+//!              the median for the single largest entry, then comparing
+//!              the median against the locked threshold in
+//!              bench/thresholds.toml. Wired into `check`, after
+//!              roundtrip. `bench guest` and bare `bench` still fail
+//!              closed — the guest lane needs the VMM and record/replay,
+//!              which land at M5.
 //!
 //! The cleverness budget (ROADMAP.md): optimizations land only with a
-//! profile, a before/after on the same recording, and a lock. `profile`
-//! and `bench` exist now so that rule has a place to point; they refuse to
-//! fake results until M5 gives them a machine to measure.
+//! profile, a before/after on the same recording, and a lock. `bench
+//! compiler` is that lock for the compiler's own speed; the guest lane
+//! (`bench guest`) and `profile` still refuse to fake results until M5
+//! gives them a machine to measure.
 //!
 //! Golden discipline: an expectation file changes only together with a
 //! ledger clause that justifies it. The golden diff is the review surface.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::time::{Duration, Instant};
 
 use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
 use wrela_compiler::syntax::parser::{self, Parsed};
@@ -62,14 +74,10 @@ fn main() -> ExitCode {
             "requires record/replay on the VMM (lands at M5); no profile may be faked",
         ),
         Some("fuzz") => fuzz(&args[1..]),
-        Some("bench") => fail_closed(
-            "bench",
-            "compiler lane lands at M1 (times the pipeline over the corpus), guest lane at M5; \
-             a threshold without a measurement is a lie",
-        ),
+        Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser] [--iters N] [--seed S]|roundtrip|ledger|repro|diff-eval|profile|bench>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser] [--iters N] [--seed S]|roundtrip|ledger|repro|diff-eval|profile|bench <compiler|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -115,6 +123,7 @@ fn check() -> Result<(), String> {
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
     roundtrip()?;
+    bench_compiler()?;
     ledger()?;
     println!("xtask check: ok");
     Ok(())
@@ -1146,6 +1155,216 @@ fn first_divergence(a: &str, b: &str) -> (String, String) {
         }
     }
     ("<identical>".to_string(), "<identical>".to_string())
+}
+
+// --- bench ------------------------------------------------------------
+//
+// ROADMAP.md's "cleverness budget": the compiler lane lands at M1 because
+// it needs nothing but the compiler and a clock (the guest lane needs the
+// VMM and record/replay, so it waits for M5 — `bench guest` and bare
+// `bench` still fail closed below). `cargo xtask bench compiler` times the
+// whole front end — lex, then (per the same "..." fragment rule `corpus`
+// uses) parse — over every corpus entry `xtask corpus` already covers
+// (doc blocks + docs/language/examples/*.wr) plus every
+// tests/golden/*/input.wr, in-process (no subprocess per iteration: the
+// lexer/parser are called directly as library functions). One workload
+// iteration is one pass over every entry; 3 untimed warmup iterations
+// settle caches/allocator state, then 15 timed iterations are measured.
+// Reported: min/median/max of the full-corpus total, plus the median for
+// the single largest entry by source length (today, the virtio worked
+// example) so a regression in the one input most likely to expose
+// quadratic behavior is visible on its own. The median is then compared
+// against the locked threshold in `bench/thresholds.toml` — exceeding it
+// is a bench failure with both numbers printed. Wired into `check` (after
+// roundtrip, before ledger): the corpus is small enough today that 18
+// full passes run in milliseconds, well under `check`'s budget, and the
+// median prints on every gate run so a creeping trend is visible long
+// before it trips the (deliberately loose, 10x) lock.
+
+const BENCH_WARMUP_ITERS: usize = 3;
+const BENCH_TIMED_ITERS: usize = 15;
+
+/// One corpus entry for the compiler bench: a name (for reporting) and its
+/// full source text. Reuses exactly the entries `xtask corpus` walks
+/// (`extract_doc_blocks` + `extract_example_files`), plus every golden
+/// `input.wr` (the error-case corpus, which `corpus`/`roundtrip` don't
+/// otherwise exercise as a lex+parse workload).
+struct BenchEntry {
+    name: String,
+    body: String,
+}
+
+fn bench_corpus_entries() -> Result<Vec<BenchEntry>, String> {
+    let (blocks, failures) = extract_doc_blocks()?;
+    if let Some(f) = failures.first() {
+        return Err(format!("bench: corpus is broken, fix it first: {f}"));
+    }
+    let examples = extract_example_files()?;
+    let mut entries: Vec<BenchEntry> = blocks
+        .into_iter()
+        .chain(examples)
+        .map(|b| BenchEntry {
+            name: b.name,
+            body: b.body,
+        })
+        .collect();
+
+    let golden_dir = root().join("tests/golden");
+    let mut dirs: Vec<_> = std::fs::read_dir(&golden_dir)
+        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let input = dir.join("input.wr");
+        if !input.exists() {
+            continue;
+        }
+        let case = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("golden")
+            .to_string();
+        let body = std::fs::read_to_string(&input)
+            .map_err(|e| format!("read {}: {e}", input.display()))?;
+        entries.push(BenchEntry {
+            name: format!("golden/{case}/input.wr"),
+            body,
+        });
+    }
+    if entries.is_empty() {
+        return Err("bench compiler: no corpus entries found".into());
+    }
+    Ok(entries)
+}
+
+/// One full workload iteration: lex every entry, and — following the same
+/// `...`-fragment rule `corpus` uses — parse the ones that aren't doc
+/// fragments. Outcomes (lex/parse errors, e.g. the syntax-error goldens)
+/// are discarded; only wall time is measured. Also returns how long the
+/// entry at `track_index` took on its own, so the caller can track one
+/// entry's time across iterations without a second pass over the corpus.
+fn run_bench_workload(entries: &[BenchEntry], track_index: usize) -> (Duration, Duration) {
+    let mut tracked = Duration::ZERO;
+    let start = Instant::now();
+    for (i, e) in entries.iter().enumerate() {
+        let entry_start = Instant::now();
+        if let Ok(tokens) = lexer::lex(&e.body) {
+            if !e.body.contains("...") {
+                let _ = parser::parse_any(tokens);
+            }
+        }
+        if i == track_index {
+            tracked = entry_start.elapsed();
+        }
+    }
+    (start.elapsed(), tracked)
+}
+
+/// The locked threshold from `bench/thresholds.toml`, in microseconds.
+/// Committed, not generated: it exists to catch algorithmic blowups, not
+/// to track machine noise, so it is set deliberately (see the file's own
+/// comment) rather than recomputed on every run.
+fn compiler_bench_threshold_us() -> Result<u128, String> {
+    let path = root().join("bench/thresholds.toml");
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let value: toml::Value = text
+        .parse()
+        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    value
+        .get("compiler")
+        .and_then(|c| c.get("full_corpus_median_us"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u128)
+        .ok_or_else(|| {
+            format!(
+                "{}: missing [compiler] full_corpus_median_us",
+                path.display()
+            )
+        })
+}
+
+fn median(sorted: &[Duration]) -> Duration {
+    sorted[sorted.len() / 2]
+}
+
+fn bench_compiler() -> Result<(), String> {
+    let entries = bench_corpus_entries()?;
+    let (track_index, largest_name, largest_len) = entries
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, e)| e.body.len())
+        .map(|(i, e)| (i, e.name.clone(), e.body.len()))
+        .expect("bench_corpus_entries never returns empty");
+
+    for _ in 0..BENCH_WARMUP_ITERS {
+        run_bench_workload(&entries, track_index);
+    }
+
+    let mut totals = Vec::with_capacity(BENCH_TIMED_ITERS);
+    let mut tracked = Vec::with_capacity(BENCH_TIMED_ITERS);
+    for _ in 0..BENCH_TIMED_ITERS {
+        let (total, entry) = run_bench_workload(&entries, track_index);
+        totals.push(total);
+        tracked.push(entry);
+    }
+    totals.sort();
+    tracked.sort();
+
+    let min = totals[0];
+    let max = totals[totals.len() - 1];
+    let med = median(&totals);
+    let tracked_med = median(&tracked);
+    let median_us = med.as_micros();
+
+    println!(
+        "bench compiler: {} corpus entries, {BENCH_WARMUP_ITERS} warmup + {BENCH_TIMED_ITERS} timed iteration(s)",
+        entries.len()
+    );
+    println!(
+        "bench compiler: full corpus total: min={}us median={}us max={}us",
+        min.as_micros(),
+        median_us,
+        max.as_micros()
+    );
+    println!(
+        "bench compiler: largest entry `{largest_name}` ({largest_len} bytes): median={}us",
+        tracked_med.as_micros()
+    );
+
+    let threshold_us = compiler_bench_threshold_us()?;
+    if median_us > threshold_us {
+        return Err(format!(
+            "bench compiler: FAIL: measured median {median_us}us exceeds locked threshold \
+             {threshold_us}us (bench/thresholds.toml) — an algorithmic blowup, not machine \
+             noise, is what this lock exists to catch"
+        ));
+    }
+    println!(
+        "bench compiler: median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
+    );
+    Ok(())
+}
+
+fn bench(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("compiler") => bench_compiler(),
+        Some("guest") => fail_closed(
+            "bench guest",
+            "the guest lane needs the VMM and record/replay and lands at M5; a threshold \
+             without a measurement is a lie",
+        ),
+        None => fail_closed(
+            "bench",
+            "bare `bench` fails closed; run `bench compiler` (live) or `bench guest` (M5)",
+        ),
+        Some(other) => Err(format!(
+            "bench: unknown lane `{other}` (expected `compiler` or `guest`)"
+        )),
+    }
 }
 
 // --- ledger ---------------------------------------------------------------
