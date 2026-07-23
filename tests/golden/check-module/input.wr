@@ -1,0 +1,24 @@
+module examples.catalogue
+
+pub struct Counter:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+    pub fn increment(mut self, by: u64):
+        self.value += by
+
+enum Lookup:
+    Found(u64)
+    Absent
+    Failed
+
+const LIMIT: u64 = 0x1000_0000
+
+pool Packets
+
+fn checksum(data: u64) -> u64:
+    total = data
+    total += 1
+    return total

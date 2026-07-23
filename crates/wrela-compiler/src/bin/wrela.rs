@@ -15,10 +15,10 @@
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use wrela_compiler::sema;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str =
-    "usage: wrela dump --stage=<tokens|ast|pretty> [--timings] <file.wr>\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check> [--timings] <file.wr>\n       wrela version";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -132,6 +132,36 @@ fn dump(args: &[String]) -> ExitCode {
                 let dump_start = Instant::now();
                 match parsed {
                     Ok(module) => print!("{}", printer::pretty(&module)),
+                    Err(e) => println!("error[parse]: {} at {}:{}", e.message, e.line, e.col),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        "check" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                // Sema has no phase timer of its own yet (ROADMAP.md:
+                // measurement only lands with a profile); its time folds
+                // into "dump" here, exactly like every other stage's
+                // artifact-production step.
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match sema::check(&module) {
+                        Ok(()) => print!("{}", sema::dump(&module)),
+                        Err(e) => {
+                            println!(
+                                "error[{}]: {} at {}:{}",
+                                e.category, e.message, e.line, e.col
+                            )
+                        }
+                    },
                     Err(e) => println!("error[parse]: {} at {}:{}", e.message, e.line, e.col),
                 }
                 dump_time = dump_start.elapsed();

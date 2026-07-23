@@ -1,0 +1,5 @@
+module examples.err_shadow
+
+fn process(x: u64) -> u64:
+    add_one = |x: u64| x + 1
+    return add_one(x)

@@ -1,0 +1,6 @@
+Module path=examples.catalogue
+  Struct Counter
+  Enum Lookup
+  Const LIMIT
+  Pool Packets
+  Fn checksum

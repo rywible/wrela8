@@ -10,7 +10,12 @@
 //! fail closed rather than pretend):
 //!
 //!   source --lex/parse--> syntax tree      [syntax]
-//!   syntax --resolve/check--> SemanticWir  [sema]     (unimplemented)
+//!   syntax --resolve/check--> SemanticWir  [sema]     (item A: collect +
+//!                                                      resolve land;
+//!                                                      declare/bodies/
+//!                                                      access/flow/
+//!                                                      matches/generics
+//!                                                      stubbed, plans/M2.md)
 //!   comptime evaluation                    [eval]     (unimplemented)
 //!   SemanticWir --lower--> FlowWir         [flow]     (unimplemented)
 //!   FlowWir --backend--> MachineWir/image  [backend]  (unimplemented)
@@ -19,4 +24,5 @@
 //! differential oracle (`cargo xtask diff-eval`): compiled code must agree
 //! with it on every pure program.
 
+pub mod sema;
 pub mod syntax;

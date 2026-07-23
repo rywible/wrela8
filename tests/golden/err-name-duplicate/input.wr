@@ -1,0 +1,5 @@
+module examples.err_duplicate
+
+const LIMIT: u64 = 1
+
+const LIMIT: u64 = 2

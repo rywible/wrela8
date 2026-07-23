@@ -1,0 +1,1 @@
+error[name]: `x` shadows an outer local at 4:16

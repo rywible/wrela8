@@ -154,6 +154,35 @@ id = "values.exclusivity.no-overlap"
 doc = "02-language.md#3"
 status = "gap"
 
+# --- sema -------------------------------------------------------------
+
+[[clause]]
+id = "sema.check.dump-stable"
+doc = "02-language.md#2"
+status = "test"
+tests = ["golden/check-module"]
+note = "wrela dump --stage=check pins the check dump format (plans/M2.md decision 8): `Module path=<dotted.path>` then one two-space-indented `<Kind> <name>` line per module-level item, source order, no spans; item A's dump is names only (Const/Fn/Struct/Enum/Pool) — item B extends the grammar to full resolved signatures"
+
+[[clause]]
+id = "sema.names.resolution"
+doc = "02-language.md#3.2"
+status = "test"
+tests = ["golden/check-module", "golden/err-name-unknown", "golden/err-name-duplicate", "golden/err-name-shadow"]
+note = "collect + resolve (plans/M2.md item A): every module-scope const/fn/struct/enum/pool name is unique (duplicate is an error at the second declaration); every identifier in every body binds to the prelude, a module declaration, or a local introduced by assignment/parameter/pattern binding/for binding/closure param, or is `error[name]: unknown name \\`x\\` at L:C`; shadowing an outer local (only a closure introduces a new scope) is `error[name]: \\`x\\` shadows an outer local at L:C`; type names in annotations resolve the same way. Member/method names after `.` and leading-dot enum variant refs do not resolve yet (need type information, item B)"
+
+[[clause]]
+id = "sema.names.imports"
+doc = "02-language.md#2"
+status = "gap"
+note = "`check` operates on one file (plans/M2.md decision 6); resolving an import's target needs the manifest walk and package loading (a later milestone) — until then every `from ... import ...` fails closed (sema.unimplemented.fail-closed)"
+
+[[clause]]
+id = "sema.unimplemented.fail-closed"
+doc = "02-language.md#2"
+status = "test"
+tests = ["golden/err-unimplemented-import"]
+note = "the shared `error[unimplemented]: <subject> not checked yet at L:C` helper (plans/M2.md decision 7); item A's only user is `from ... import ...` (sema.names.imports); later items reuse the same helper for their own fail-closed constructs (comptime if/assert, f-strings, await/send/actor calls/with group/pool, @image bodies)"
+
 # --- actors ---------------------------------------------------------------
 
 [[clause]]
