@@ -1,0 +1,13 @@
+module examples.err_x_generic_flow_overwrite
+
+resource struct DmaBlock:
+    id: u64
+
+pub struct Box[T]:
+    item: T
+
+pub fn refill[T](mut b: Box[T], take fresh: T) -> unit:
+    b.item = take fresh
+
+pub fn use_refill(mut bx: Box[DmaBlock], take y: DmaBlock) -> unit:
+    refill(mut bx, take y)

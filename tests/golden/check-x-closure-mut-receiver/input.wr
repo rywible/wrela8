@@ -1,0 +1,13 @@
+module examples.check_x_closure_mut_receiver
+
+pub struct Item:
+    count: u64
+
+pub struct Table:
+    slot: Item
+
+    fn entry(mut self, body: fn(mut Item) -> u64) -> u64:
+        return body(mut self.slot)
+
+pub fn use_table(mut t: Table) -> u64:
+    return t.entry(|mut item: Item| item.count + 1)

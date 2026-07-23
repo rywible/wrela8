@@ -1,0 +1,7 @@
+Module path=examples.check_x_closure_mut_receiver
+  Struct Item data
+    field count: u64
+  Struct Table data
+    field slot: Item
+    fn entry(mut self, body: read fn(mut Item) -> u64) -> u64
+  Fn use_table(t: mut Table) -> u64

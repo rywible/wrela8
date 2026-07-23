@@ -233,9 +233,27 @@ fn place_type(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Option<Type> {
         Expr::Field(base, _, name) => {
             let base_ty = bodies::unwrap_own(place_type(base, fctx, mctx)?);
             if let Type::Named(sname, targs) = &base_ty {
+                let s = mctx.structs.get(sname)?;
+                let field_ty = s.field_ty(name)?;
                 if targs.is_empty() {
-                    return mctx.structs.get(sname)?.field_ty(name);
+                    return Some(field_ty);
                 }
+                // A field accessed through an instantiated generic
+                // struct (`Box[DmaBlock].item`): the struct table only
+                // ever holds the *unsubstituted* declaration, so the
+                // field's own type must be substituted here using this
+                // use site's concrete type arguments — otherwise a
+                // resource classification hiding behind a generic field
+                // (the implicit-copy and overwrite-live checks below,
+                // both keyed on `place_type`) would silently see `None`
+                // and never fire (crate::sema::generics's own
+                // `subst_field_type`, widened `pub(crate)` for exactly
+                // this reuse, decision 10).
+                return Some(crate::sema::generics::subst_field_type(
+                    &field_ty,
+                    &s.decl.generics,
+                    targs,
+                ));
             }
             None
         }
@@ -310,8 +328,20 @@ fn check_readable(
 /// root is owned by this function (an ordinary local, or a `take`-mode
 /// parameter/`self`) — taking a *borrowed* (`mut`-mode) root whole would
 /// move a value this function does not own (access.rs's own doc comment
-/// on `Mut`/`Take`: "moving a borrowed value is item E/F's job"). A
-/// `read`-mode root is already rejected earlier, by `access.rs`.
+/// on `Mut`/`Take`: "moving a borrowed value is item E/F's job").
+///
+/// A `read`-mode root is rejected here too, for *any* take under it (not
+/// only a whole-root one): `access.rs`'s own `Expr::Unary(Take, ...)`
+/// check already rejects an ordinary `take place`/`take place.field`
+/// expression against a `read` root earlier in the frozen pass order, but
+/// a `take` written inside a `match`/`is` *pattern* payload never passes
+/// through that expression-level check at all (`Pattern::Take` is a
+/// different AST node, walked by `access.rs`'s `bind_pattern_locals`,
+/// which only binds names — it never re-derives the scrutinee's root
+/// mode) — so this pass is the only one that ever sees it. Checked on
+/// every path depth (not gated behind `path.is_root()` the way the
+/// `mut`-root case below is) to mirror `access.rs`'s own field-inclusive
+/// `place_root_name` reach.
 fn check_takeable(
     path: &StoragePath,
     state: &StateMap,
@@ -343,6 +373,12 @@ fn check_takeable(
                 "moving `{}` out of an array through a runtime index is forbidden",
                 render_path(path)
             ),
+            span,
+        ));
+    }
+    if let Some(AccessMode::Read) = wctx.modes.get(&path.root) {
+        return Err(move_error(
+            format!("`{}` is a `read` parameter; it cannot be taken", path.root),
             span,
         ));
     }
@@ -1210,16 +1246,38 @@ fn loop_backedge(out: &Outcome) -> Option<StateMap> {
     }
 }
 
+/// Loop-local freshness: a path whose root never appeared in the state
+/// *entering* the loop is, by construction, first bound somewhere inside
+/// the loop's own body — and 02-language.md §3.2's "the first assignment
+/// to a name introduces it" applies anew on every real iteration, not
+/// only the textual first time this analysis's fixed-point re-walk
+/// visits that statement. Without this, a resource-typed local first
+/// bound inside a loop body (`q = make(i)`) would spuriously fail
+/// `check_overwrite_live` starting on the *second* fixed-point pass: nothing
+/// about `q`'s value actually carries across a real iteration boundary
+/// (unlike a `mut` parameter/field, whose root is already present in
+/// `baseline_roots` and so is correctly left to flow through the fixed
+/// point), but the fixed point's own carried-forward `candidate` would
+/// otherwise still show it `Init` going into the next pass's re-walk of
+/// its own introducing assignment. Pruning every non-baseline path out of
+/// the candidate before each pass keeps the fixed point meaningful only
+/// for paths that genuinely persist across the loop's back edge.
+fn prune_loop_locals(st: &mut StateMap, baseline_roots: &BTreeSet<String>) {
+    st.retain(|p, _| baseline_roots.contains(&p.root));
+}
+
 fn walk_while(
     w: &WhileStmt,
     state: &StateMap,
     fctx: &mut FnCtx,
     wctx: &WCtx,
 ) -> Result<Outcome, SemaError> {
+    let baseline_roots: BTreeSet<String> = state.keys().map(|p| p.root.clone()).collect();
     let mut candidate = state.clone();
     let mut out = fallthrough(state.clone());
     for _ in 0..LOOP_FIXED_POINT_CAP {
         let mut st = candidate.clone();
+        prune_loop_locals(&mut st, &baseline_roots);
         walk_expr(&w.cond, &mut st, fctx, wctx)?;
         let o = walk_block(&w.body, &mut st, fctx, wctx)?;
         let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
@@ -1294,10 +1352,12 @@ fn walk_for(
         walk_expr(&f.iterable, &mut entry, fctx, wctx)?;
     }
 
+    let baseline_roots: BTreeSet<String> = entry.keys().map(|p| p.root.clone()).collect();
     let mut candidate = entry.clone();
     let mut out = fallthrough(entry.clone());
     for _ in 0..LOOP_FIXED_POINT_CAP {
         let mut st = candidate.clone();
+        prune_loop_locals(&mut st, &baseline_roots);
         st.insert(StoragePath::root(f.name.clone()), PathState::Init);
         let o = walk_block(&f.body, &mut st, fctx, wctx)?;
         let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());

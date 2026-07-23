@@ -1,0 +1,15 @@
+module examples.check_x_generic_flow_restore
+
+resource struct DmaBlock:
+    id: u64
+
+pub struct Box[T]:
+    item: T
+
+    fn set(mut self, take v: T) -> T:
+        old = take self.item
+        self.item = take v
+        return take old
+
+pub fn use_box(mut b: Box[DmaBlock], take v: DmaBlock) -> DmaBlock:
+    return b.set(take v)

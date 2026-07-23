@@ -1,0 +1,13 @@
+module examples.err_x_generic_access_mirror
+
+resource struct DmaBlock:
+    id: u64
+
+pub struct Box[T]:
+    item: T
+
+    fn set(mut self, take v: T) -> unit:
+        self.item = take v
+
+pub fn use_box(mut b: Box[DmaBlock], take v: DmaBlock) -> unit:
+    b.set(v)

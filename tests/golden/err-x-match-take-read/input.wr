@@ -1,0 +1,19 @@
+module examples.err_x_match_take_read
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub enum Wrapper:
+    Has(Packet)
+    None
+
+pub fn use_it(x: Wrapper) -> u64:
+    match x:
+        case .Has(take p):
+            v = p.size
+        case .None:
+            v = 0
+    return v

@@ -1,0 +1,7 @@
+Module path=examples.check_x_generic_flow_restore
+  Struct DmaBlock resource
+    field id: u64
+  Struct Box[T] data
+    field item: T
+    fn set(mut self, v: take T) -> T
+  Fn use_box(b: mut Box[DmaBlock], v: take DmaBlock) -> DmaBlock

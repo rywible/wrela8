@@ -324,3 +324,24 @@ status = "gap"
 id = "machine.display.golden-frames"
 doc = "06-machine.md#7"
 status = "gap"
+
+# --- pre-M3 hardening ------------------------------------------------------
+
+[[clause]]
+id = "sema.coverage.interactions"
+doc = "02-language.md#3"
+status = "test"
+tests = [
+  "golden/err-x-generic-flow-overwrite",
+  "golden/err-x-generic-flow-copy",
+  "golden/check-x-generic-flow-restore",
+  "golden/err-x-generic-access-mirror",
+  "golden/err-x-generic-access-receiver",
+  "golden/err-x-match-take-read",
+  "golden/check-x-loop-fresh-resource",
+  "golden/err-x-payload-mut-marker",
+  "golden/err-x-closure-take-twice",
+  "golden/check-x-closure-mut-receiver",
+  "golden/err-x-init-flow-selfmethod",
+]
+note = "Pre-M3 adversarial sweep of feature *intersections* (M2's own goldens each test one feature singly; wrong-accepts live where passes hand off) across generics×flow, generics×access, closures×moves/exclusivity, defer×flow, match/patterns×moves, init×flow, `?`×moves, for/while×exclusivity, receiver-inference×generics, and struct-literal/enum-payload×access — roughly 30 probes plus their legal twins, classified CORRECT/WRONG-ACCEPT/WRONG-REJECT/PANIC. Four real bugs found and fixed narrowly (no existing golden's expectation changed): (1) `flow.rs`'s `place_type` returned `None` for any field reached through an *instantiated* generic struct (non-empty type args), silently skipping the resource overwrite-live and implicit-copy checks for e.g. `Box[DmaBlock].item` — fixed by substituting the field's type through the struct's own generics via a new `generics::subst_field_type`, widened `pub(crate)` for the reuse (golden/err-x-generic-flow-overwrite, golden/err-x-generic-flow-copy, golden/check-x-generic-flow-restore). (2) `check_takeable` only forbade a whole/field `take` when the underlying root was `mut`-mode, never `read`-mode; ordinary `take place` expressions are already rejected against a `read` root by `access.rs`, but a `take` written inside a `match`/`is` *pattern* payload (`Pattern::Take`, a different AST node `access.rs` never re-derives root mode for) bypassed that check entirely, letting a resource be stolen out of a merely-borrowed scrutinee — fixed by extending the same root-mode check in `check_takeable` to also reject `read` (golden/err-x-match-take-read). (3) the loop fixed-point re-walk (`walk_while`/`walk_for`) carried a resource local first bound *inside* the loop body forward across fixed-point passes as if it were live cross-iteration state, so `q = make(i)` inside any loop body spuriously failed `check_overwrite_live` starting on the second pass — fixed by pruning every path whose root wasn't present in the pre-loop state from the candidate before each pass (`prune_loop_locals`), since such a root is, semantically, reintroduced fresh every real iteration (golden/check-x-loop-fresh-resource). (4) a `mut` marker was accepted on a struct-literal field / enum payload / builtin pseudo-constructor argument — positions plan item D deliberately never mirrors against a declared parameter — which bypassed both the implicit-copy check (only checked for the unmarked/`Read` shape) and `take`'s own deinitialization, letting a resource end up with two simultaneously live owners; fixed by a new `access::check_payload_arg` (rejects `mut` outright; `take`/unmarked still legal per §3's \"a literal operand\") swapped in at the four synthetic/payload call sites (golden/err-x-payload-mut-marker). Two more intersections were judged correct-but-newly-covered and pinned without any fix: instantiated-generic-method call-site mirroring/receiver-mutability (golden/err-x-generic-access-mirror, golden/err-x-generic-access-receiver), a closure capturing a moved-from local and the same resource taken by two closures across separate calls (golden/err-x-closure-take-twice), a closure `mut` parameter that does not overlap its call's own lent place (golden/check-x-closure-mut-receiver), and `init`'s whole-`self` check firing even when the use is indirect, through a method call on `self` before every field is assigned (golden/err-x-init-flow-selfmethod). Two further findings were judged structural (new cross-exit or new ownership-tracking bookkeeping, not a missed condition) and are recorded, minimized, in plans/pre-M3-findings.md rather than patched: `defer`'s body is validated once at registration state, not re-checked against every real exit, so a place taken after registration on one path but not another is not caught; and `for`/`while`'s `take_binding` AST field (`for take x in ...`) is parsed and pretty-printed but never checked by any sema pass, so a plain `for x in arr` loop binding can still be `take`n out of an array the function only borrows, with no tie back to the array's own ownership."

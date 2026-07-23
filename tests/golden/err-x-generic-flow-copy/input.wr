@@ -1,0 +1,14 @@
+module examples.err_x_generic_flow_copy
+
+resource struct DmaBlock:
+    id: u64
+
+pub struct Box[T]:
+    item: T
+
+pub fn read_out[T](b: Box[T]) -> T:
+    x = b.item
+    return x
+
+pub fn use_read_out(bx: Box[DmaBlock]) -> DmaBlock:
+    return read_out[DmaBlock](bx)

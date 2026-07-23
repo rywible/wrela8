@@ -1,0 +1,21 @@
+module examples.err_x_closure_take_twice
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn run(body: fn() -> u64) -> u64:
+    return body()
+
+pub fn use_it(take p: Packet) -> u64:
+    a = run(||:
+        x = take p
+        x.size
+    )
+    b = run(||:
+        y = take p
+        y.size
+    )
+    return a + b

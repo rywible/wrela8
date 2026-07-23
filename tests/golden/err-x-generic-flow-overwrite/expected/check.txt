@@ -1,0 +1,2 @@
+error[move]: `b.item` still holds a live resource; move it or finish it before overwriting at 10:5
+  instantiated at /Users/ryanwible/projects/wrela8/.claude/worktrees/agent-a6d07181800e4caa0/tests/golden/err-x-generic-flow-overwrite/input.wr:13

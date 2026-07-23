@@ -1085,7 +1085,7 @@ fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
         }
         Expr::DotVariant(_, _name, args) => {
             for a in args {
-                check_arg(a, actx)?;
+                check_payload_arg(a, actx)?;
             }
             Ok(None)
         }
@@ -1231,6 +1231,35 @@ fn check_arg(a: &Arg, actx: &mut ACtx) -> Result<(), SemaError> {
     }
     check_expr(&a.value, actx)?;
     Ok(())
+}
+
+/// A payload/literal-operand argument's own checks (a struct literal
+/// field, an enum variant's payload, a builtin pseudo-constructor's
+/// argument — every position plan item D calls out as "never mirrored",
+/// since there is no declared parameter to mirror against at all): every
+/// `check_arg` universal check still applies, plus one more that only
+/// makes sense here. 02-language.md §3 spells exactly two legal shapes
+/// for a value reaching one of these positions — an unmarked value
+/// (data copies; a resource must already be owned, i.e. this is a fresh
+/// value, not a borrowed place) or an explicit `take` ("a literal
+/// operand" is one of the four `take`-legal shapes it names verbatim) —
+/// `mut` is neither: there is no receiving parameter for a "loan for the
+/// call's duration" to end at, and unlike a real `mut` parameter (mode-
+/// mirrored, exclusivity-tracked, and always read back by the callee)
+/// a `mut`-marked payload value would otherwise slip past
+/// `flow.rs`'s own implicit-copy-of-a-resource check (which only ever
+/// fires for the unmarked/`Read` shape) while never deinitializing its
+/// source the way `take` does — a live resource would end up with two
+/// simultaneously valid owners, violating the "exactly one owner" rule.
+fn check_payload_arg(a: &Arg, actx: &mut ACtx) -> Result<(), SemaError> {
+    if a.mode == AccessMode::Mut {
+        return Err(access_error(
+            "`mut` is not a legal marker here; a payload value is either unmarked or `take`"
+                .to_string(),
+            a.span,
+        ));
+    }
+    check_arg(a, actx)
 }
 
 // --- call-site mirroring (item 1) ------------------------------------------
@@ -1488,7 +1517,7 @@ fn check_call_by_name(
     // `Some`/`Ok`/`Err`/`panic`: builtin pseudo-constructors with no
     // declared parameter modes (they are not real `DeclParam`s).
     for a in args {
-        check_arg(a, actx)?;
+        check_payload_arg(a, actx)?;
     }
     Ok(None)
 }
@@ -1514,9 +1543,9 @@ fn check_struct_construction(
     }
     // A struct literal's fields have no declared parameter mode to
     // mirror against (`DeclField` carries no `mode`, unlike `DeclParam`)
-    // — only the universal per-argument checks apply.
+    // — only the universal per-argument (plus payload-only) checks apply.
     for a in args {
-        check_arg(a, actx)?;
+        check_payload_arg(a, actx)?;
     }
     Ok(Some(self_ty))
 }
@@ -1546,7 +1575,7 @@ fn check_call_by_field(
             }
             if let Some(e) = actx.mctx.enums.get(bname.as_str()) {
                 for a in args {
-                    check_arg(a, actx)?;
+                    check_payload_arg(a, actx)?;
                 }
                 if e.variants.iter().any(|v| v.name == name) {
                     return Ok(Some(Type::Named(e.name.clone(), vec![])));

@@ -1,0 +1,10 @@
+module examples.err_x_payload_mut_marker
+
+resource struct DmaBlock:
+    id: u64
+
+pub struct Box1:
+    item: DmaBlock
+
+pub fn make(mut b: DmaBlock) -> Box1:
+    return Box1(item=mut b)
