@@ -31,6 +31,8 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
 - `cargo xtask repro` / `cargo xtask diff-eval` — determinism and
   evaluator-vs-backend oracles; they fail closed until implemented and
   must never fake a pass.
+- `cargo xtask profile` / `cargo xtask bench` — replay-based measurement
+  (alive at M5). The only path to cleverness runs through them.
 
 ## Layout
 
@@ -50,6 +52,10 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
   not in architecture. Do not add: traits with one implementation,
   generic-over-backend seams, plugin systems, or layers for their own
   sake. There is one machine and one backend — hardcode them.
+- Dumbness is permanent, not v0-only. Cleverness is bought with a profile:
+  an optimization needs a replayable workload's flame graph, a
+  before/after on that same recording, and a regression lock — or it does
+  not land, however obviously fast (ROADMAP.md, "cleverness budget").
 - Every pipeline stage gets a stable text dump and golden coverage before
   it gets features.
 - Fail closed: an unimplemented path errors loudly; it never approximates.

@@ -8,6 +8,13 @@
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
 //!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
+//!   profile    replay a recorded workload under counters (fails closed today)
+//!   bench      thresholds over profiled workloads        (fails closed today)
+//!
+//! The cleverness budget (ROADMAP.md): optimizations land only with a
+//! profile, a before/after on the same recording, and a lock. `profile`
+//! and `bench` exist now so that rule has a place to point; they refuse to
+//! fake results until M5 gives them a machine to measure.
 //!
 //! Golden discipline: an expectation file changes only together with a
 //! ledger clause that justifies it. The golden diff is the review surface.
@@ -36,8 +43,18 @@ fn main() -> ExitCode {
             "diff-eval",
             "requires the evaluator and backend (not implemented)",
         ),
+        Some("profile") => fail_closed(
+            "profile",
+            "requires record/replay on the VMM (lands at M5); no profile may be faked",
+        ),
+        Some("bench") => fail_closed(
+            "bench",
+            "requires `profile`; a threshold without a measurement is a lie",
+        ),
         _ => {
-            eprintln!("usage: cargo xtask <check|golden [--update]|corpus|ledger|repro|diff-eval>");
+            eprintln!(
+                "usage: cargo xtask <check|golden [--update]|corpus|ledger|repro|diff-eval|profile|bench>"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -300,7 +317,7 @@ fn ledger() -> Result<(), String> {
                     // `xtask:<command>` names a harness check instead of a
                     // tests/ path (e.g. the doc corpus).
                     if let Some(cmd) = t.strip_prefix("xtask:") {
-                        if !matches!(cmd, "corpus" | "repro" | "diff-eval") {
+                        if !matches!(cmd, "corpus" | "repro" | "diff-eval" | "profile" | "bench") {
                             return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
                         }
                         continue;

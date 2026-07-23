@@ -81,6 +81,12 @@ doc = "04-compiler.md#6"
 status = "gap"
 note = "cargo xtask diff-eval fails closed until both sides exist"
 
+[[clause]]
+id = "compiler.costs.predicted-vs-measured"
+doc = "04-compiler.md#7"
+status = "gap"
+note = "xtask profile diffs the report's predicted costs against replayed measurements (M5)"
+
 # --- machine --------------------------------------------------------------
 
 [[clause]]

@@ -1,10 +1,20 @@
-# Roadmap: v0, the dumb-and-correct build
+# Roadmap: the dumb-and-correct build
 
-"Dumb" is the velocity strategy, not a compromise. Runtime speed is a
-non-goal for v0; work speed and correctness are the only goals. The as-if
-architecture (WIRs, verifiers, the report — [04](docs/language/04-compiler.md))
-guarantees that every naive choice below can be replaced later by a
-provably equivalent one, so nothing here is a dead end.
+Dumbness is a **permanent guiding principle**, not a v0 tactic. Work speed
+and correctness are the goals; runtime speed is purchased later, and only
+with evidence. Two structural facts make this safe here when it is risky
+everywhere else:
+
+- the as-if architecture (WIRs, verifiers, the report —
+  [04](docs/language/04-compiler.md)) means every naive choice can be
+  replaced by a provably equivalent one — dumb code is not debt, it is a
+  reference implementation waiting to be beaten; and
+- deterministic record/replay makes profiling exact: one recorded workload
+  replays identically under instrumentation, so attribution is
+  cycle-precise, regressions bisect like correctness bugs, and the
+  compiler's *predicted* costs (budgets, copy prices, exit rates) can be
+  diffed against *measured* ones — the profile is itself an oracle on the
+  cost model.
 
 ## Doctrine (decided once; sessions do not relitigate)
 
@@ -67,8 +77,12 @@ provisions), and the image report as a golden artifact. The virtio example
 Naive A76 backend for synchronous code, minimal runtime, minimal VMM
 (console + clock, hvf first) → a wrela program prints over virtio-console
 on a Mac; pinned as a boot golden. `repro` and `diff-eval` stop failing
-closed here. Flips: `compiler.repro.byte-identical`,
-`compiler.eval.matches-backend`, `machine.boot.no-discovery`.
+closed here — and so do `profile` and `bench`: record a workload once,
+replay it under counters, and diff the report's predicted costs against
+measured ones. Measurement is a deliverable, because the cleverness budget
+(below) cannot be spent without it. Flips:
+`compiler.repro.byte-identical`, `compiler.eval.matches-backend`,
+`machine.boot.no-discovery`. Opens: `compiler.costs.predicted-vs-measured`.
 
 ### M6 — Actors on one core
 Turns, mailboxes, `send`, groups, deadlines, cancellation, checkpoint
@@ -91,9 +105,32 @@ Display + input devices, a dumb scalar tile compositor, golden frame
 digests. SIMD/NEON tuning only after a frame exists to measure. Flips:
 `machine.display.golden-frames`.
 
-## Banned in v0
+## The cleverness budget (permanent)
 
-Performance work without a measurement (`xtask bench` deliberately does
-not exist yet); abstractions serving futures that are not ledger clauses;
-incremental/parallel/cached anything in the compiler; second ways to do
-things that have one way; "temporary" relaxations of fail-closed.
+Cleverness is a resource, acquired only through a profile. An optimization
+lands only with all three, no matter how obviously fast it is:
+
+1. a flame graph / counter profile from a named, replayable workload;
+2. a before/after measurement on that same recording; and
+3. a **lock** — a bench threshold or `@budget`/layout assertion — so the
+   win cannot silently regress.
+
+Rules that follow:
+
+- Dumb ≠ sloppy. Fail-closed, checked-everything, and pinned diagnostics
+  are correctness, not performance; they are never traded away.
+- The regeneration test is the complexity budget: after any clever change,
+  the module must still be rewritable from docs + contracts + tests. If a
+  fast path breaks that, it first gets its own contract and verifier (the
+  WIR discipline), then it may land.
+- Contracts cannot be profiled into existence after the fact: checkpoint
+  density, the doorbell ABI, and image/frame layout rules bake into the
+  machine spec and are revised deliberately, not patched.
+- Known future hot spots (compositor inner loop, naive codegen quality)
+  wait their turn like everything else: the profile says when, and until
+  then dumb code calling stdlib SIMD ops is the answer.
+
+Also permanently out: abstractions serving futures that are not ledger
+clauses; incremental/parallel/cached anything in the compiler until a
+profile of the *compiler* demands it; second ways to do things that have
+one way; "temporary" relaxations of fail-closed.
