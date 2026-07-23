@@ -11,6 +11,9 @@
 //! statements with no `module` header) — most illustrative code blocks in
 //! docs/language/*.md are not full modules, so the corpus driver
 //! (xtask's `corpus` command) needs a lenient top-level entry point too.
+//! `parse_fragment` returns the parsed `FragmentEntry` sequence (not just a
+//! yes/no) because item E's oracles (xtask's `fuzz parser`/`roundtrip`)
+//! need real content to dump and pretty-print, exactly like a module's.
 //!
 //! Suite parsing note: `()[]{}` suppress NEWLINE/INDENT/DEDENT in the
 //! lexer (02-language.md §1), so a suite-form closure body embedded inside
@@ -37,28 +40,45 @@ pub fn parse(tokens: Vec<Token>) -> Result<Module, ParseError> {
     Parser::new(tokens).parse_module()
 }
 
+/// One top-level construct accepted outside a `module` header: a
+/// declaration or a bare statement, interleaved freely (see
+/// `parse_fragment`'s doc comment). Corpus doc-blocks and the parser
+/// fuzzer's token-soup strategy (plans/M1.md item E) both need the actual
+/// parsed content — not just a yes/no — so it can be dumped and
+/// pretty-printed like a real module's contents.
+#[derive(Debug, Clone)]
+pub enum FragmentEntry {
+    Item(Item),
+    Stmt(Stmt),
+}
+
+/// The result of `parse_any`: a complete module, or a bare fragment.
+#[derive(Debug, Clone)]
+pub enum Parsed {
+    Module(Module),
+    Fragment(Vec<FragmentEntry>),
+}
+
 /// Parses a bare sequence of items and/or statements with no `module`
 /// header — used for corpus doc-blocks that are illustrative fragments
-/// rather than complete files. Discards the result: callers only care
-/// whether the fragment parses.
-pub fn parse_fragment(tokens: Vec<Token>) -> Result<(), ParseError> {
+/// rather than complete files.
+pub fn parse_fragment(tokens: Vec<Token>) -> Result<Vec<FragmentEntry>, ParseError> {
     Parser::new(tokens).parse_fragment_body()
 }
 
 /// Picks `parse` or `parse_fragment` based on whether the token stream's
 /// first substantive token is the `module` keyword.
-pub fn parse_any(tokens: Vec<Token>) -> Result<(), ParseError> {
+pub fn parse_any(tokens: Vec<Token>) -> Result<Parsed, ParseError> {
     let is_module = tokens
         .iter()
         .find(|t| t.kind != TokenKind::DocComment)
         .map(|t| t.kind == TokenKind::Keyword && t.text == "module")
         .unwrap_or(false);
     if is_module {
-        parse(tokens)?;
+        Ok(Parsed::Module(parse(tokens)?))
     } else {
-        parse_fragment(tokens)?;
+        Ok(Parsed::Fragment(parse_fragment(tokens)?))
     }
-    Ok(())
 }
 
 struct Parser {
@@ -639,7 +659,8 @@ impl Parser {
 // --- fragments (corpus doc blocks with no `module` header) -------------
 
 impl Parser {
-    fn parse_fragment_body(&mut self) -> Result<(), ParseError> {
+    fn parse_fragment_body(&mut self) -> Result<Vec<FragmentEntry>, ParseError> {
+        let mut entries = Vec::new();
         loop {
             if self.at_kind(TokenKind::Eof) {
                 break;
@@ -654,17 +675,17 @@ impl Parser {
                 break;
             }
             if self.looks_like_item_start() {
-                self.parse_item(doc, attrs)?;
+                entries.push(FragmentEntry::Item(self.parse_item(doc, attrs)?));
             } else {
                 if doc.is_some() || !attrs.is_empty() {
                     return Err(
                         self.error_here("doc comments/attributes may only precede a declaration")
                     );
                 }
-                self.parse_stmt()?;
+                entries.push(FragmentEntry::Stmt(self.parse_stmt()?));
             }
         }
-        Ok(())
+        Ok(entries)
     }
 
     fn looks_like_item_start(&self) -> bool {
@@ -2460,11 +2481,54 @@ impl Parser {
 // statement-holding construct wraps its branch/body in an explicit `Then` /
 // `Else` / `Body` / `Case` / `Guard` / `Message` node so two adjacent
 // expression children are never ambiguous about which role they play.
+//
+// Every helper below threads a `strip: bool` flag alongside `depth`: when
+// true, the `@line:col` part of every node header is omitted entirely
+// (`hdr` below is the single place that decides). This is plumbing for the
+// roundtrip oracle (plans/M1.md item E, `xtask roundtrip`), which compares
+// a dump of the original parse against a dump of the pretty-printed-then-
+// reparsed result — the two ASTs are structurally identical but their
+// spans necessarily differ, since the pretty-printed text is laid out
+// differently from the original source. Adding the mode here (rather than
+// stripping spans out of the rendered text after the fact) keeps the
+// stripped dump an actual property of the AST, not a text-hack.
 
 pub fn dump(module: &Module) -> String {
     let mut out = String::new();
-    dump_module(module, 0, &mut out);
+    dump_module(module, 0, false, &mut out);
     out
+}
+
+/// Same as `dump`, but every `@line:col` span is omitted.
+pub fn dump_no_spans(module: &Module) -> String {
+    let mut out = String::new();
+    dump_module(module, 0, true, &mut out);
+    out
+}
+
+/// Dumps a bare fragment (`parse_fragment`'s result): each top-level item
+/// or statement in source order, same node format as `dump`, but with no
+/// enclosing `Module` header (a fragment has no module path).
+pub fn dump_fragment(entries: &[FragmentEntry]) -> String {
+    let mut out = String::new();
+    dump_fragment_entries(entries, 0, false, &mut out);
+    out
+}
+
+/// Same as `dump_fragment`, but every `@line:col` span is omitted.
+pub fn dump_fragment_no_spans(entries: &[FragmentEntry]) -> String {
+    let mut out = String::new();
+    dump_fragment_entries(entries, 0, true, &mut out);
+    out
+}
+
+fn dump_fragment_entries(entries: &[FragmentEntry], depth: usize, strip: bool, out: &mut String) {
+    for entry in entries {
+        match entry {
+            FragmentEntry::Item(item) => dump_item(item, depth, strip, out),
+            FragmentEntry::Stmt(stmt) => dump_stmt(stmt, depth, strip, out),
+        }
+    }
 }
 
 fn push_line(out: &mut String, depth: usize, line: &str) {
@@ -2492,62 +2556,58 @@ fn quote(s: &str) -> String {
     out
 }
 
-fn dump_doc(doc: &Option<Doc>, depth: usize, out: &mut String) {
+/// A dump line's `Kind` (spans stripped) or `Kind @line:col` (spans kept)
+/// header — the one place that decides, per `strip`.
+fn hdr(strip: bool, kind: &str, span: Span) -> String {
+    if strip {
+        kind.to_string()
+    } else {
+        format!("{kind} @{}:{}", span.line, span.col)
+    }
+}
+
+fn dump_doc(doc: &Option<Doc>, depth: usize, strip: bool, out: &mut String) {
     if let Some(doc) = doc {
         push_line(
             out,
             depth,
-            &format!(
-                "Doc @{}:{} text={}",
-                doc.span.line,
-                doc.span.col,
-                quote(&doc.text)
-            ),
+            &format!("{} text={}", hdr(strip, "Doc", doc.span), quote(&doc.text)),
         );
     }
 }
 
-fn dump_attrs(attrs: &[Attr], depth: usize, out: &mut String) {
+fn dump_attrs(attrs: &[Attr], depth: usize, strip: bool, out: &mut String) {
     for attr in attrs {
         push_line(
             out,
             depth,
-            &format!(
-                "Attr @{}:{} name={}",
-                attr.span.line, attr.span.col, attr.name
-            ),
+            &format!("{} name={}", hdr(strip, "Attr", attr.span), attr.name),
         );
         for arg in &attr.args {
-            dump_arg(arg, depth + 1, out);
+            dump_arg(arg, depth + 1, strip, out);
         }
     }
 }
 
-fn dump_module(m: &Module, depth: usize, out: &mut String) {
+fn dump_module(m: &Module, depth: usize, strip: bool, out: &mut String) {
     push_line(
         out,
         depth,
-        &format!(
-            "Module @{}:{} path={}",
-            m.span.line,
-            m.span.col,
-            m.path.join(".")
-        ),
+        &format!("{} path={}", hdr(strip, "Module", m.span), m.path.join(".")),
     );
-    dump_doc(&m.doc, depth + 1, out);
+    dump_doc(&m.doc, depth + 1, strip, out);
     for import in &m.imports {
-        dump_import(import, depth + 1, out);
+        dump_import(import, depth + 1, strip, out);
     }
     for item in &m.items {
-        dump_item(item, depth + 1, out);
+        dump_item(item, depth + 1, strip, out);
     }
 }
 
-fn dump_import(import: &Import, depth: usize, out: &mut String) {
+fn dump_import(import: &Import, depth: usize, strip: bool, out: &mut String) {
     let mut header = format!(
-        "Import @{}:{} from={}",
-        import.span.line,
-        import.span.col,
+        "{} from={}",
+        hdr(strip, "Import", import.span),
         import.path.join(".")
     );
     if import.is_pub {
@@ -2555,10 +2615,7 @@ fn dump_import(import: &Import, depth: usize, out: &mut String) {
     }
     push_line(out, depth, &header);
     for name in &import.names {
-        let mut line = format!(
-            "ImportName @{}:{} name={}",
-            name.span.line, name.span.col, name.name
-        );
+        let mut line = format!("{} name={}", hdr(strip, "ImportName", name.span), name.name);
         if let Some(alias) = &name.alias {
             line.push_str(&format!(" alias={alias}"));
         }
@@ -2566,59 +2623,58 @@ fn dump_import(import: &Import, depth: usize, out: &mut String) {
     }
 }
 
-fn dump_generics(generics: &[GenericParam], depth: usize, out: &mut String) {
+fn dump_generics(generics: &[GenericParam], depth: usize, strip: bool, out: &mut String) {
     for g in generics {
         match g {
             GenericParam::Type { span, name } => {
                 push_line(
                     out,
                     depth,
-                    &format!("GenericType @{}:{} name={}", span.line, span.col, name),
+                    &format!("{} name={}", hdr(strip, "GenericType", *span), name),
                 );
             }
             GenericParam::Const { span, name, ty } => {
                 push_line(
                     out,
                     depth,
-                    &format!("GenericConst @{}:{} name={}", span.line, span.col, name),
+                    &format!("{} name={}", hdr(strip, "GenericConst", *span), name),
                 );
-                dump_type(ty, depth + 1, out);
+                dump_type(ty, depth + 1, strip, out);
             }
         }
     }
 }
 
-fn dump_receiver(receiver: &Receiver, depth: usize, out: &mut String) {
+fn dump_receiver(receiver: &Receiver, depth: usize, strip: bool, out: &mut String) {
     push_line(
         out,
         depth,
         &format!(
-            "Receiver @{}:{} mode={}",
-            receiver.span.line,
-            receiver.span.col,
+            "{} mode={}",
+            hdr(strip, "Receiver", receiver.span),
             receiver.mode.as_str()
         ),
     );
 }
 
-fn dump_param(param: &Param, depth: usize, out: &mut String) {
+fn dump_param(param: &Param, depth: usize, strip: bool, out: &mut String) {
     push_line(
         out,
         depth,
         &format!(
-            "Param @{}:{} name={} mode={}",
-            param.span.line,
-            param.span.col,
+            "{} name={} mode={}",
+            hdr(strip, "Param", param.span),
             param.name,
             param.mode.as_str()
         ),
     );
-    dump_type(&param.ty, depth + 1, out);
+    dump_type(&param.ty, depth + 1, strip, out);
     if let Some(default) = &param.default {
-        dump_expr(default, depth + 1, out);
+        dump_expr(default, depth + 1, strip, out);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dump_fn_common(
     generics: &[GenericParam],
     receiver: &Option<Receiver>,
@@ -2626,43 +2682,44 @@ fn dump_fn_common(
     ret: &Option<Type>,
     body: &Option<Vec<Stmt>>,
     depth: usize,
+    strip: bool,
     out: &mut String,
 ) {
-    dump_generics(generics, depth, out);
+    dump_generics(generics, depth, strip, out);
     if let Some(r) = receiver {
-        dump_receiver(r, depth, out);
+        dump_receiver(r, depth, strip, out);
     }
     for p in params {
-        dump_param(p, depth, out);
+        dump_param(p, depth, strip, out);
     }
     if let Some(ret) = ret {
-        dump_type(ret, depth, out);
+        dump_type(ret, depth, strip, out);
     }
     if let Some(body) = body {
         push_line(out, depth, "Body");
         for stmt in body {
-            dump_stmt(stmt, depth + 1, out);
+            dump_stmt(stmt, depth + 1, strip, out);
         }
     }
 }
 
-fn dump_item(item: &Item, depth: usize, out: &mut String) {
+fn dump_item(item: &Item, depth: usize, strip: bool, out: &mut String) {
     match item {
         Item::Const(c) => {
-            let mut header = format!("Const @{}:{} name={}", c.span.line, c.span.col, c.name);
+            let mut header = format!("{} name={}", hdr(strip, "Const", c.span), c.name);
             if c.is_pub {
                 header.push_str(" pub=true");
             }
             push_line(out, depth, &header);
-            dump_doc(&c.doc, depth + 1, out);
-            dump_attrs(&c.attrs, depth + 1, out);
+            dump_doc(&c.doc, depth + 1, strip, out);
+            dump_attrs(&c.attrs, depth + 1, strip, out);
             if let Some(ty) = &c.ty {
-                dump_type(ty, depth + 1, out);
+                dump_type(ty, depth + 1, strip, out);
             }
-            dump_expr(&c.value, depth + 1, out);
+            dump_expr(&c.value, depth + 1, strip, out);
         }
         Item::Fn(f) => {
-            let mut header = format!("Fn @{}:{} name={}", f.span.line, f.span.col, f.name);
+            let mut header = format!("{} name={}", hdr(strip, "Fn", f.span), f.name);
             if f.is_pub {
                 header.push_str(" pub=true");
             }
@@ -2670,8 +2727,8 @@ fn dump_item(item: &Item, depth: usize, out: &mut String) {
                 header.push_str(" async=true");
             }
             push_line(out, depth, &header);
-            dump_doc(&f.doc, depth + 1, out);
-            dump_attrs(&f.attrs, depth + 1, out);
+            dump_doc(&f.doc, depth + 1, strip, out);
+            dump_attrs(&f.attrs, depth + 1, strip, out);
             dump_fn_common(
                 &f.generics,
                 &f.receiver,
@@ -2679,11 +2736,12 @@ fn dump_item(item: &Item, depth: usize, out: &mut String) {
                 &f.ret,
                 &f.body,
                 depth + 1,
+                strip,
                 out,
             );
         }
         Item::Struct(s) => {
-            let mut header = format!("Struct @{}:{} name={}", s.span.line, s.span.col, s.name);
+            let mut header = format!("{} name={}", hdr(strip, "Struct", s.span), s.name);
             if s.is_pub {
                 header.push_str(" pub=true");
             }
@@ -2694,15 +2752,15 @@ fn dump_item(item: &Item, depth: usize, out: &mut String) {
                 header.push_str(&format!(" deriving={}", s.deriving.join(",")));
             }
             push_line(out, depth, &header);
-            dump_doc(&s.doc, depth + 1, out);
-            dump_attrs(&s.attrs, depth + 1, out);
-            dump_generics(&s.generics, depth + 1, out);
+            dump_doc(&s.doc, depth + 1, strip, out);
+            dump_attrs(&s.attrs, depth + 1, strip, out);
+            dump_generics(&s.generics, depth + 1, strip, out);
             for m in &s.members {
-                dump_member(m, depth + 1, out);
+                dump_member(m, depth + 1, strip, out);
             }
         }
         Item::Enum(e) => {
-            let mut header = format!("Enum @{}:{} name={}", e.span.line, e.span.col, e.name);
+            let mut header = format!("{} name={}", hdr(strip, "Enum", e.span), e.name);
             if e.is_pub {
                 header.push_str(" pub=true");
             }
@@ -2710,56 +2768,56 @@ fn dump_item(item: &Item, depth: usize, out: &mut String) {
                 header.push_str(&format!(" deriving={}", e.deriving.join(",")));
             }
             push_line(out, depth, &header);
-            dump_doc(&e.doc, depth + 1, out);
-            dump_attrs(&e.attrs, depth + 1, out);
-            dump_generics(&e.generics, depth + 1, out);
+            dump_doc(&e.doc, depth + 1, strip, out);
+            dump_attrs(&e.attrs, depth + 1, strip, out);
+            dump_generics(&e.generics, depth + 1, strip, out);
             for v in &e.variants {
-                dump_variant(v, depth + 1, out);
+                dump_variant(v, depth + 1, strip, out);
             }
         }
         Item::Pool(p) => {
-            let header = format!("Pool @{}:{} name={}", p.span.line, p.span.col, p.name);
+            let header = format!("{} name={}", hdr(strip, "Pool", p.span), p.name);
             push_line(out, depth, &header);
-            dump_doc(&p.doc, depth + 1, out);
-            dump_attrs(&p.attrs, depth + 1, out);
+            dump_doc(&p.doc, depth + 1, strip, out);
+            dump_attrs(&p.attrs, depth + 1, strip, out);
         }
         Item::ComptimeIf(c) => {
-            let header = format!("ComptimeIf @{}:{}", c.span.line, c.span.col);
+            let header = hdr(strip, "ComptimeIf", c.span);
             push_line(out, depth, &header);
-            dump_doc(&c.doc, depth + 1, out);
-            dump_attrs(&c.attrs, depth + 1, out);
-            dump_expr(&c.cond, depth + 1, out);
+            dump_doc(&c.doc, depth + 1, strip, out);
+            dump_attrs(&c.attrs, depth + 1, strip, out);
+            dump_expr(&c.cond, depth + 1, strip, out);
             push_line(out, depth + 1, "Then");
             for it in &c.then_branch {
-                dump_item(it, depth + 2, out);
+                dump_item(it, depth + 2, strip, out);
             }
             if let Some(else_branch) = &c.else_branch {
                 push_line(out, depth + 1, "Else");
                 for it in else_branch {
-                    dump_item(it, depth + 2, out);
+                    dump_item(it, depth + 2, strip, out);
                 }
             }
         }
     }
 }
 
-fn dump_member(member: &Member, depth: usize, out: &mut String) {
+fn dump_member(member: &Member, depth: usize, strip: bool, out: &mut String) {
     match member {
         Member::Field(f) => {
-            let mut header = format!("Field @{}:{} name={}", f.span.line, f.span.col, f.name);
+            let mut header = format!("{} name={}", hdr(strip, "Field", f.span), f.name);
             if f.is_pub {
                 header.push_str(" pub=true");
             }
             push_line(out, depth, &header);
-            dump_doc(&f.doc, depth + 1, out);
-            dump_attrs(&f.attrs, depth + 1, out);
-            dump_type(&f.ty, depth + 1, out);
+            dump_doc(&f.doc, depth + 1, strip, out);
+            dump_attrs(&f.attrs, depth + 1, strip, out);
+            dump_type(&f.ty, depth + 1, strip, out);
             if let Some(default) = &f.default {
-                dump_expr(default, depth + 1, out);
+                dump_expr(default, depth + 1, strip, out);
             }
         }
         Member::Fn(f) => {
-            let mut header = format!("Fn @{}:{} name={}", f.span.line, f.span.col, f.name);
+            let mut header = format!("{} name={}", hdr(strip, "Fn", f.span), f.name);
             if f.is_pub {
                 header.push_str(" pub=true");
             }
@@ -2767,8 +2825,8 @@ fn dump_member(member: &Member, depth: usize, out: &mut String) {
                 header.push_str(" async=true");
             }
             push_line(out, depth, &header);
-            dump_doc(&f.doc, depth + 1, out);
-            dump_attrs(&f.attrs, depth + 1, out);
+            dump_doc(&f.doc, depth + 1, strip, out);
+            dump_attrs(&f.attrs, depth + 1, strip, out);
             dump_fn_common(
                 &f.generics,
                 &f.receiver,
@@ -2776,13 +2834,14 @@ fn dump_member(member: &Member, depth: usize, out: &mut String) {
                 &f.ret,
                 &f.body,
                 depth + 1,
+                strip,
                 out,
             );
         }
         Member::Init(i) => {
-            push_line(out, depth, &format!("Init @{}:{}", i.span.line, i.span.col));
-            dump_doc(&i.doc, depth + 1, out);
-            dump_attrs(&i.attrs, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Init", i.span));
+            dump_doc(&i.doc, depth + 1, strip, out);
+            dump_attrs(&i.attrs, depth + 1, strip, out);
             dump_fn_common(
                 &[],
                 &Some(i.receiver.clone()),
@@ -2790,46 +2849,47 @@ fn dump_member(member: &Member, depth: usize, out: &mut String) {
                 &i.ret,
                 &Some(i.body.clone()),
                 depth + 1,
+                strip,
                 out,
             );
         }
         Member::Pool(p) => {
-            let header = format!("Pool @{}:{} name={}", p.span.line, p.span.col, p.name);
+            let header = format!("{} name={}", hdr(strip, "Pool", p.span), p.name);
             push_line(out, depth, &header);
-            dump_doc(&p.doc, depth + 1, out);
-            dump_attrs(&p.attrs, depth + 1, out);
+            dump_doc(&p.doc, depth + 1, strip, out);
+            dump_attrs(&p.attrs, depth + 1, strip, out);
         }
         Member::ComptimeIf(c) => {
-            let header = format!("ComptimeIf @{}:{}", c.span.line, c.span.col);
+            let header = hdr(strip, "ComptimeIf", c.span);
             push_line(out, depth, &header);
-            dump_doc(&c.doc, depth + 1, out);
-            dump_attrs(&c.attrs, depth + 1, out);
-            dump_expr(&c.cond, depth + 1, out);
+            dump_doc(&c.doc, depth + 1, strip, out);
+            dump_attrs(&c.attrs, depth + 1, strip, out);
+            dump_expr(&c.cond, depth + 1, strip, out);
             push_line(out, depth + 1, "Then");
             for m in &c.then_branch {
-                dump_member(m, depth + 2, out);
+                dump_member(m, depth + 2, strip, out);
             }
             if let Some(else_branch) = &c.else_branch {
                 push_line(out, depth + 1, "Else");
                 for m in else_branch {
-                    dump_member(m, depth + 2, out);
+                    dump_member(m, depth + 2, strip, out);
                 }
             }
         }
     }
 }
 
-fn dump_variant(v: &Variant, depth: usize, out: &mut String) {
+fn dump_variant(v: &Variant, depth: usize, strip: bool, out: &mut String) {
     push_line(
         out,
         depth,
-        &format!("Variant @{}:{} name={}", v.span.line, v.span.col, v.name),
+        &format!("{} name={}", hdr(strip, "Variant", v.span), v.name),
     );
     match &v.payload {
         VariantPayload::None => {}
         VariantPayload::Tuple(types) => {
             for ty in types {
-                dump_type(ty, depth + 1, out);
+                dump_type(ty, depth + 1, strip, out);
             }
         }
         VariantPayload::Named(fields) => {
@@ -2837,46 +2897,35 @@ fn dump_variant(v: &Variant, depth: usize, out: &mut String) {
                 push_line(
                     out,
                     depth + 1,
-                    &format!(
-                        "VariantField @{}:{} name={}",
-                        f.span.line, f.span.col, f.name
-                    ),
+                    &format!("{} name={}", hdr(strip, "VariantField", f.span), f.name),
                 );
-                dump_type(&f.ty, depth + 2, out);
+                dump_type(&f.ty, depth + 2, strip, out);
             }
         }
     }
 }
 
-fn dump_type(ty: &Type, depth: usize, out: &mut String) {
+fn dump_type(ty: &Type, depth: usize, strip: bool, out: &mut String) {
     match ty {
         Type::Named(t) => {
             push_line(
                 out,
                 depth,
-                &format!("TypeName @{}:{} name={}", t.span.line, t.span.col, t.name),
+                &format!("{} name={}", hdr(strip, "TypeName", t.span), t.name),
             );
             for arg in &t.args {
-                dump_generic_arg(arg, depth + 1, out);
+                dump_generic_arg(arg, depth + 1, strip, out);
             }
         }
         Type::Array(t) => {
-            push_line(
-                out,
-                depth,
-                &format!("ArrayType @{}:{}", t.span.line, t.span.col),
-            );
-            dump_type(&t.elem, depth + 1, out);
-            dump_expr(&t.len, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "ArrayType", t.span));
+            dump_type(&t.elem, depth + 1, strip, out);
+            dump_expr(&t.len, depth + 1, strip, out);
         }
         Type::Tuple(t) => {
-            push_line(
-                out,
-                depth,
-                &format!("TupleType @{}:{}", t.span.line, t.span.col),
-            );
+            push_line(out, depth, &hdr(strip, "TupleType", t.span));
             for elem in &t.elems {
-                dump_type(elem, depth + 1, out);
+                dump_type(elem, depth + 1, strip, out);
             }
         }
         Type::Own(t) => {
@@ -2884,72 +2933,62 @@ fn dump_type(ty: &Type, depth: usize, out: &mut String) {
                 out,
                 depth,
                 &format!(
-                    "OwnType @{}:{} pool={}",
-                    t.span.line,
-                    t.span.col,
+                    "{} pool={}",
+                    hdr(strip, "OwnType", t.span),
                     t.pool.join(".")
                 ),
             );
-            dump_type(&t.inner, depth + 1, out);
+            dump_type(&t.inner, depth + 1, strip, out);
         }
         Type::Fn(t) => {
-            push_line(
-                out,
-                depth,
-                &format!("FnType @{}:{}", t.span.line, t.span.col),
-            );
+            push_line(out, depth, &hdr(strip, "FnType", t.span));
             for p in &t.params {
                 push_line(
                     out,
                     depth + 1,
                     &format!(
-                        "FnTypeParam @{}:{} mode={}",
-                        p.span.line,
-                        p.span.col,
+                        "{} mode={}",
+                        hdr(strip, "FnTypeParam", p.span),
                         p.mode.as_str()
                     ),
                 );
-                dump_type(&p.ty, depth + 2, out);
+                dump_type(&p.ty, depth + 2, strip, out);
             }
             if let Some(ret) = &t.ret {
-                dump_type(ret, depth + 1, out);
+                dump_type(ret, depth + 1, strip, out);
             }
         }
     }
 }
 
-fn dump_generic_arg(arg: &GenericArg, depth: usize, out: &mut String) {
+fn dump_generic_arg(arg: &GenericArg, depth: usize, strip: bool, out: &mut String) {
     match arg {
-        GenericArg::Type(t) => dump_type(t, depth, out),
-        GenericArg::Expr(e) => dump_expr(e, depth, out),
+        GenericArg::Type(t) => dump_type(t, depth, strip, out),
+        GenericArg::Expr(e) => dump_expr(e, depth, strip, out),
         GenericArg::Bound(e) => {
-            push_line(
-                out,
-                depth,
-                &format!("Bound @{}:{}", e.span().line, e.span().col),
-            );
-            dump_expr(e, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Bound", e.span()));
+            dump_expr(e, depth + 1, strip, out);
         }
     }
 }
 
-fn dump_pattern(p: &Pattern, depth: usize, out: &mut String) {
+fn dump_pattern(p: &Pattern, depth: usize, strip: bool, out: &mut String) {
     match p {
-        Pattern::Wildcard(s) => push_line(out, depth, &format!("Wildcard @{}:{}", s.line, s.col)),
+        Pattern::Wildcard(s) => push_line(out, depth, &hdr(strip, "Wildcard", *s)),
         Pattern::Literal(s, e) => {
-            push_line(out, depth, &format!("PatternLiteral @{}:{}", s.line, s.col));
-            dump_expr(e, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "PatternLiteral", *s));
+            dump_expr(e, depth + 1, strip, out);
         }
         Pattern::Binding(s, name) => {
             push_line(
                 out,
                 depth,
-                &format!("Binding @{}:{} name={}", s.line, s.col, name),
+                &format!("{} name={}", hdr(strip, "Binding", *s), name),
             );
         }
         Pattern::Take(s, inner) => {
-            push_line(out, depth, &format!("TakePattern @{}:{}", s.line, s.col));
-            dump_pattern(inner, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "TakePattern", *s));
+            dump_pattern(inner, depth + 1, strip, out);
         }
         Pattern::Variant {
             span,
@@ -2958,40 +2997,41 @@ fn dump_pattern(p: &Pattern, depth: usize, out: &mut String) {
             payload,
         } => {
             let mut header = format!(
-                "VariantPattern @{}:{} variant={}",
-                span.line, span.col, variant
+                "{} variant={}",
+                hdr(strip, "VariantPattern", *span),
+                variant
             );
             if let Some(en) = enum_name {
                 header.push_str(&format!(" enum={en}"));
             }
             push_line(out, depth, &header);
             for pat in payload {
-                dump_pattern(pat, depth + 1, out);
+                dump_pattern(pat, depth + 1, strip, out);
             }
         }
         Pattern::Tuple(s, elems) => {
-            push_line(out, depth, &format!("TuplePattern @{}:{}", s.line, s.col));
+            push_line(out, depth, &hdr(strip, "TuplePattern", *s));
             for e in elems {
-                dump_pattern(e, depth + 1, out);
+                dump_pattern(e, depth + 1, strip, out);
             }
         }
         Pattern::Array(s, elems) => {
-            push_line(out, depth, &format!("ArrayPattern @{}:{}", s.line, s.col));
+            push_line(out, depth, &hdr(strip, "ArrayPattern", *s));
             for e in elems {
-                dump_pattern(e, depth + 1, out);
+                dump_pattern(e, depth + 1, strip, out);
             }
         }
         Pattern::Or(s, alts) => {
-            push_line(out, depth, &format!("OrPattern @{}:{}", s.line, s.col));
+            push_line(out, depth, &hdr(strip, "OrPattern", *s));
             for a in alts {
-                dump_pattern(a, depth + 1, out);
+                dump_pattern(a, depth + 1, strip, out);
             }
         }
     }
 }
 
-fn dump_arg(arg: &Arg, depth: usize, out: &mut String) {
-    let mut header = format!("Arg @{}:{}", arg.span.line, arg.span.col);
+fn dump_arg(arg: &Arg, depth: usize, strip: bool, out: &mut String) {
+    let mut header = hdr(strip, "Arg", arg.span);
     if let Some(label) = &arg.label {
         header.push_str(&format!(" label={label}"));
     }
@@ -2999,20 +3039,20 @@ fn dump_arg(arg: &Arg, depth: usize, out: &mut String) {
         header.push_str(&format!(" mode={}", arg.mode.as_str()));
     }
     push_line(out, depth, &header);
-    dump_expr(&arg.value, depth + 1, out);
+    dump_expr(&arg.value, depth + 1, strip, out);
 }
 
-fn dump_expr(e: &Expr, depth: usize, out: &mut String) {
+fn dump_expr(e: &Expr, depth: usize, strip: bool, out: &mut String) {
     match e {
         Expr::Int(s, text) => push_line(
             out,
             depth,
-            &format!("Int @{}:{} text={}", s.line, s.col, text),
+            &format!("{} text={}", hdr(strip, "Int", *s), text),
         ),
         Expr::Float(s, text) => push_line(
             out,
             depth,
-            &format!("Float @{}:{} text={}", s.line, s.col, text),
+            &format!("{} text={}", hdr(strip, "Float", *s), text),
         ),
         // Str/BStr/Char keep the lexer's raw token text, which already
         // includes the source's own delimiting quotes (and a `b`/`f`
@@ -3022,31 +3062,31 @@ fn dump_expr(e: &Expr, depth: usize, out: &mut String) {
         Expr::Str(s, text) => push_line(
             out,
             depth,
-            &format!("Str @{}:{} text={}", s.line, s.col, text),
+            &format!("{} text={}", hdr(strip, "Str", *s), text),
         ),
         Expr::BStr(s, text) => push_line(
             out,
             depth,
-            &format!("BStr @{}:{} text={}", s.line, s.col, text),
+            &format!("{} text={}", hdr(strip, "BStr", *s), text),
         ),
         Expr::Char(s, text) => push_line(
             out,
             depth,
-            &format!("Char @{}:{} text={}", s.line, s.col, text),
+            &format!("{} text={}", hdr(strip, "Char", *s), text),
         ),
         Expr::FStr(f) => {
-            push_line(out, depth, &format!("FStr @{}:{}", f.span.line, f.span.col));
+            push_line(out, depth, &hdr(strip, "FStr", f.span));
             for part in &f.parts {
                 match part {
                     FStringPart::Literal(s, text) => push_line(
                         out,
                         depth + 1,
-                        &format!("Literal @{}:{} text={}", s.line, s.col, quote(text)),
+                        &format!("{} text={}", hdr(strip, "Literal", *s), quote(text)),
                     ),
                     FStringPart::Interp(s, text) => push_line(
                         out,
                         depth + 1,
-                        &format!("Interp @{}:{} text={}", s.line, s.col, quote(text)),
+                        &format!("{} text={}", hdr(strip, "Interp", *s), quote(text)),
                     ),
                 }
             }
@@ -3054,34 +3094,34 @@ fn dump_expr(e: &Expr, depth: usize, out: &mut String) {
         Expr::Bool(s, v) => push_line(
             out,
             depth,
-            &format!("Bool @{}:{} value={}", s.line, s.col, v),
+            &format!("{} value={}", hdr(strip, "Bool", *s), v),
         ),
-        Expr::Unit(s) => push_line(out, depth, &format!("Unit @{}:{}", s.line, s.col)),
+        Expr::Unit(s) => push_line(out, depth, &hdr(strip, "Unit", *s)),
         Expr::Name(s, name) => push_line(
             out,
             depth,
-            &format!("Name @{}:{} name={}", s.line, s.col, name),
+            &format!("{} name={}", hdr(strip, "Name", *s), name),
         ),
         Expr::Field(base, s, name) => {
             push_line(
                 out,
                 depth,
-                &format!("Field @{}:{} name={}", s.line, s.col, name),
+                &format!("{} name={}", hdr(strip, "Field", *s), name),
             );
-            dump_expr(base, depth + 1, out);
+            dump_expr(base, depth + 1, strip, out);
         }
         Expr::Index(base, s, args) => {
-            push_line(out, depth, &format!("Index @{}:{}", s.line, s.col));
-            dump_expr(base, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Index", *s));
+            dump_expr(base, depth + 1, strip, out);
             for a in args {
-                dump_expr(a, depth + 1, out);
+                dump_expr(a, depth + 1, strip, out);
             }
         }
         Expr::Call(callee, s, args) => {
-            push_line(out, depth, &format!("Call @{}:{}", s.line, s.col));
-            dump_expr(callee, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Call", *s));
+            dump_expr(callee, depth + 1, strip, out);
             for a in args {
-                dump_arg(a, depth + 1, out);
+                dump_arg(a, depth + 1, strip, out);
             }
         }
         Expr::Unary(s, op, inner) => {
@@ -3094,72 +3134,67 @@ fn dump_expr(e: &Expr, depth: usize, out: &mut String) {
             push_line(
                 out,
                 depth,
-                &format!("Unary @{}:{} op={}", s.line, s.col, name),
+                &format!("{} op={}", hdr(strip, "Unary", *s), name),
             );
-            dump_expr(inner, depth + 1, out);
+            dump_expr(inner, depth + 1, strip, out);
         }
         Expr::Try(s, inner) => {
-            push_line(out, depth, &format!("Try @{}:{}", s.line, s.col));
-            dump_expr(inner, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Try", *s));
+            dump_expr(inner, depth + 1, strip, out);
         }
         Expr::Binary(s, op, l, r) => {
             push_line(
                 out,
                 depth,
-                &format!("Binary @{}:{} op={}", s.line, s.col, op.as_str()),
+                &format!("{} op={}", hdr(strip, "Binary", *s), op.as_str()),
             );
-            dump_expr(l, depth + 1, out);
-            dump_expr(r, depth + 1, out);
+            dump_expr(l, depth + 1, strip, out);
+            dump_expr(r, depth + 1, strip, out);
         }
         Expr::Range(s, l, r, inclusive) => {
             push_line(
                 out,
                 depth,
-                &format!("Range @{}:{} inclusive={}", s.line, s.col, inclusive),
+                &format!("{} inclusive={}", hdr(strip, "Range", *s), inclusive),
             );
-            dump_expr(l, depth + 1, out);
-            dump_expr(r, depth + 1, out);
+            dump_expr(l, depth + 1, strip, out);
+            dump_expr(r, depth + 1, strip, out);
         }
         Expr::Is(s, l, pat) => {
-            push_line(out, depth, &format!("Is @{}:{}", s.line, s.col));
-            dump_expr(l, depth + 1, out);
-            dump_pattern(pat, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Is", *s));
+            dump_expr(l, depth + 1, strip, out);
+            dump_pattern(pat, depth + 1, strip, out);
         }
         Expr::Not(s, inner) => {
-            push_line(out, depth, &format!("Not @{}:{}", s.line, s.col));
-            dump_expr(inner, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Not", *s));
+            dump_expr(inner, depth + 1, strip, out);
         }
         Expr::And(s, l, r) => {
-            push_line(out, depth, &format!("And @{}:{}", s.line, s.col));
-            dump_expr(l, depth + 1, out);
-            dump_expr(r, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "And", *s));
+            dump_expr(l, depth + 1, strip, out);
+            dump_expr(r, depth + 1, strip, out);
         }
         Expr::Or(s, l, r) => {
-            push_line(out, depth, &format!("Or @{}:{}", s.line, s.col));
-            dump_expr(l, depth + 1, out);
-            dump_expr(r, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Or", *s));
+            dump_expr(l, depth + 1, strip, out);
+            dump_expr(r, depth + 1, strip, out);
         }
         Expr::DotVariant(s, name, args) => {
             push_line(
                 out,
                 depth,
-                &format!("DotVariant @{}:{} variant={}", s.line, s.col, name),
+                &format!("{} variant={}", hdr(strip, "DotVariant", *s), name),
             );
             for a in args {
-                dump_arg(a, depth + 1, out);
+                dump_arg(a, depth + 1, strip, out);
             }
         }
         Expr::Closure(c) => {
-            push_line(
-                out,
-                depth,
-                &format!("Closure @{}:{}", c.span.line, c.span.col),
-            );
+            push_line(out, depth, &hdr(strip, "Closure", c.span));
             for p in &c.params {
                 let mut header = format!(
-                    "ClosureParam @{}:{} name={} mode={}",
-                    p.span.line,
-                    p.span.col,
+                    "{} name={} mode={}",
+                    hdr(strip, "ClosureParam", p.span),
                     p.name,
                     p.mode.as_str()
                 );
@@ -3168,196 +3203,163 @@ fn dump_expr(e: &Expr, depth: usize, out: &mut String) {
                 }
                 push_line(out, depth + 1, &header);
                 if let Some(ty) = &p.ty {
-                    dump_type(ty, depth + 2, out);
+                    dump_type(ty, depth + 2, strip, out);
                 }
             }
             match &c.body {
-                ClosureBody::Expr(e) => dump_expr(e, depth + 1, out),
+                ClosureBody::Expr(e) => dump_expr(e, depth + 1, strip, out),
                 ClosureBody::Suite(stmts) => {
                     push_line(out, depth + 1, "Body");
                     for st in stmts {
-                        dump_stmt(st, depth + 2, out);
+                        dump_stmt(st, depth + 2, strip, out);
                     }
                 }
             }
         }
         Expr::Send(s, inner) => {
-            push_line(out, depth, &format!("Send @{}:{}", s.line, s.col));
-            dump_expr(inner, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Send", *s));
+            dump_expr(inner, depth + 1, strip, out);
         }
         Expr::Tuple(s, elems) => {
-            push_line(out, depth, &format!("Tuple @{}:{}", s.line, s.col));
+            push_line(out, depth, &hdr(strip, "Tuple", *s));
             for e in elems {
-                dump_expr(e, depth + 1, out);
+                dump_expr(e, depth + 1, strip, out);
             }
         }
         Expr::List(s, elems) => {
-            push_line(out, depth, &format!("List @{}:{}", s.line, s.col));
+            push_line(out, depth, &hdr(strip, "List", *s));
             for e in elems {
-                dump_expr(e, depth + 1, out);
+                dump_expr(e, depth + 1, strip, out);
             }
         }
     }
 }
 
-fn dump_stmts(stmts: &[Stmt], depth: usize, out: &mut String) {
+fn dump_stmts(stmts: &[Stmt], depth: usize, strip: bool, out: &mut String) {
     for s in stmts {
-        dump_stmt(s, depth, out);
+        dump_stmt(s, depth, strip, out);
     }
 }
 
-fn dump_stmt(stmt: &Stmt, depth: usize, out: &mut String) {
+fn dump_stmt(stmt: &Stmt, depth: usize, strip: bool, out: &mut String) {
     match stmt {
         Stmt::Assign(a) => {
             push_line(
                 out,
                 depth,
-                &format!(
-                    "Assign @{}:{} op={}",
-                    a.span.line,
-                    a.span.col,
-                    a.op.as_str()
-                ),
+                &format!("{} op={}", hdr(strip, "Assign", a.span), a.op.as_str()),
             );
-            dump_expr(&a.target, depth + 1, out);
+            dump_expr(&a.target, depth + 1, strip, out);
             if let Some(ty) = &a.ty {
-                dump_type(ty, depth + 1, out);
+                dump_type(ty, depth + 1, strip, out);
             }
-            dump_expr(&a.value, depth + 1, out);
+            dump_expr(&a.value, depth + 1, strip, out);
         }
         Stmt::If(i) => {
-            push_line(out, depth, &format!("If @{}:{}", i.span.line, i.span.col));
-            dump_expr(&i.cond, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "If", i.span));
+            dump_expr(&i.cond, depth + 1, strip, out);
             push_line(out, depth + 1, "Then");
-            dump_stmts(&i.then_branch, depth + 2, out);
+            dump_stmts(&i.then_branch, depth + 2, strip, out);
             for elif in &i.elifs {
-                push_line(
-                    out,
-                    depth + 1,
-                    &format!("Elif @{}:{}", elif.span.line, elif.span.col),
-                );
-                dump_expr(&elif.cond, depth + 2, out);
-                dump_stmts(&elif.body, depth + 2, out);
+                push_line(out, depth + 1, &hdr(strip, "Elif", elif.span));
+                dump_expr(&elif.cond, depth + 2, strip, out);
+                dump_stmts(&elif.body, depth + 2, strip, out);
             }
             if let Some(else_branch) = &i.else_branch {
                 push_line(out, depth + 1, "Else");
-                dump_stmts(else_branch, depth + 2, out);
+                dump_stmts(else_branch, depth + 2, strip, out);
             }
         }
         Stmt::Match(m) => {
-            push_line(
-                out,
-                depth,
-                &format!("Match @{}:{}", m.span.line, m.span.col),
-            );
-            dump_expr(&m.scrutinee, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Match", m.span));
+            dump_expr(&m.scrutinee, depth + 1, strip, out);
             for arm in &m.arms {
-                push_line(
-                    out,
-                    depth + 1,
-                    &format!("Case @{}:{}", arm.span.line, arm.span.col),
-                );
-                dump_pattern(&arm.pattern, depth + 2, out);
+                push_line(out, depth + 1, &hdr(strip, "Case", arm.span));
+                dump_pattern(&arm.pattern, depth + 2, strip, out);
                 if let Some(guard) = &arm.guard {
                     push_line(out, depth + 2, "Guard");
-                    dump_expr(guard, depth + 3, out);
+                    dump_expr(guard, depth + 3, strip, out);
                 }
-                dump_stmts(&arm.body, depth + 2, out);
+                dump_stmts(&arm.body, depth + 2, strip, out);
             }
         }
         Stmt::For(f) => {
-            let mut header = format!("For @{}:{} name={}", f.span.line, f.span.col, f.name);
+            let mut header = format!("{} name={}", hdr(strip, "For", f.span), f.name);
             if f.take_binding {
                 header.push_str(" take=true");
             }
             push_line(out, depth, &header);
-            dump_expr(&f.iterable, depth + 1, out);
+            dump_expr(&f.iterable, depth + 1, strip, out);
             push_line(out, depth + 1, "Body");
-            dump_stmts(&f.body, depth + 2, out);
+            dump_stmts(&f.body, depth + 2, strip, out);
         }
         Stmt::While(w) => {
-            push_line(
-                out,
-                depth,
-                &format!("While @{}:{}", w.span.line, w.span.col),
-            );
-            dump_expr(&w.cond, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "While", w.span));
+            dump_expr(&w.cond, depth + 1, strip, out);
             push_line(out, depth + 1, "Body");
-            dump_stmts(&w.body, depth + 2, out);
+            dump_stmts(&w.body, depth + 2, strip, out);
         }
-        Stmt::Break(s) => push_line(out, depth, &format!("Break @{}:{}", s.line, s.col)),
-        Stmt::Continue(s) => push_line(out, depth, &format!("Continue @{}:{}", s.line, s.col)),
-        Stmt::Pass(s) => push_line(out, depth, &format!("Pass @{}:{}", s.line, s.col)),
+        Stmt::Break(s) => push_line(out, depth, &hdr(strip, "Break", *s)),
+        Stmt::Continue(s) => push_line(out, depth, &hdr(strip, "Continue", *s)),
+        Stmt::Pass(s) => push_line(out, depth, &hdr(strip, "Pass", *s)),
         Stmt::Return(s, value) => {
-            push_line(out, depth, &format!("Return @{}:{}", s.line, s.col));
+            push_line(out, depth, &hdr(strip, "Return", *s));
             if let Some(v) = value {
-                dump_expr(v, depth + 1, out);
+                dump_expr(v, depth + 1, strip, out);
             }
         }
         Stmt::Assert(a) => {
-            push_line(
-                out,
-                depth,
-                &format!("Assert @{}:{}", a.span.line, a.span.col),
-            );
-            dump_expr(&a.cond, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Assert", a.span));
+            dump_expr(&a.cond, depth + 1, strip, out);
             if let Some(msg) = &a.message {
                 push_line(out, depth + 1, "Message");
-                dump_expr(msg, depth + 2, out);
+                dump_expr(msg, depth + 2, strip, out);
             }
         }
         Stmt::Defer(d) => {
-            push_line(
-                out,
-                depth,
-                &format!("Defer @{}:{}", d.span.line, d.span.col),
-            );
+            push_line(out, depth, &hdr(strip, "Defer", d.span));
             match &d.body {
-                DeferBody::Expr(e) => dump_expr(e, depth + 1, out),
+                DeferBody::Expr(e) => dump_expr(e, depth + 1, strip, out),
                 DeferBody::Suite(stmts) => {
                     push_line(out, depth + 1, "Body");
-                    dump_stmts(stmts, depth + 2, out);
+                    dump_stmts(stmts, depth + 2, strip, out);
                 }
             }
         }
         Stmt::With(w) => {
-            let mut header = format!("With @{}:{}", w.span.line, w.span.col);
+            let mut header = hdr(strip, "With", w.span);
             if let Some(name) = &w.as_name {
                 header.push_str(&format!(" as={name}"));
             }
             push_line(out, depth, &header);
-            dump_expr(&w.expr, depth + 1, out);
+            dump_expr(&w.expr, depth + 1, strip, out);
             push_line(out, depth + 1, "Body");
-            dump_stmts(&w.body, depth + 2, out);
+            dump_stmts(&w.body, depth + 2, strip, out);
         }
         Stmt::Send(s, e) => {
-            push_line(out, depth, &format!("Send @{}:{}", s.line, s.col));
-            dump_expr(e, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "Send", *s));
+            dump_expr(e, depth + 1, strip, out);
         }
         Stmt::Expr(s, e) => {
-            push_line(out, depth, &format!("ExprStmt @{}:{}", s.line, s.col));
-            dump_expr(e, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "ExprStmt", *s));
+            dump_expr(e, depth + 1, strip, out);
         }
         Stmt::ComptimeIf(c) => {
-            push_line(
-                out,
-                depth,
-                &format!("ComptimeIf @{}:{}", c.span.line, c.span.col),
-            );
-            dump_expr(&c.cond, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "ComptimeIf", c.span));
+            dump_expr(&c.cond, depth + 1, strip, out);
             push_line(out, depth + 1, "Then");
-            dump_stmts(&c.then_branch, depth + 2, out);
+            dump_stmts(&c.then_branch, depth + 2, strip, out);
             if let Some(else_branch) = &c.else_branch {
                 push_line(out, depth + 1, "Else");
-                dump_stmts(else_branch, depth + 2, out);
+                dump_stmts(else_branch, depth + 2, strip, out);
             }
         }
         Stmt::ComptimeAssert(s, cond, message) => {
-            push_line(out, depth, &format!("ComptimeAssert @{}:{}", s.line, s.col));
-            dump_expr(cond, depth + 1, out);
+            push_line(out, depth, &hdr(strip, "ComptimeAssert", *s));
+            dump_expr(cond, depth + 1, strip, out);
             if let Some(msg) = message {
                 push_line(out, depth + 1, "Message");
-                dump_expr(msg, depth + 2, out);
+                dump_expr(msg, depth + 2, strip, out);
             }
         }
     }

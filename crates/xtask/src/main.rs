@@ -6,9 +6,14 @@
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
 //!   fuzz       cargo xtask fuzz [lexer|parser] [--iters N] [--seed S];
-//!              deterministic in-tree fuzzer (plans/M1.md items B/E). The
-//!              `lexer` target is live (bare `fuzz` runs it at the deep
-//!              default budget); `parser` fails closed until item E.
+//!              deterministic in-tree fuzzer (plans/M1.md items B/E). Both
+//!              targets are live (bare `fuzz` runs `lexer` at the deep
+//!              default budget); each has its own smoke budget wired into
+//!              `check`.
+//!   roundtrip  pretty-print every parseable corpus entry and ast-* golden
+//!              input, reparse it, and compare the two AST dumps (spans
+//!              stripped) — the parser's `diff-eval` (plans/M1.md item E);
+//!              fails closed until the pretty-printer lands.
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
 //!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
@@ -27,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
+use wrela_compiler::syntax::parser::{self, Parsed};
 
 fn root() -> PathBuf {
     // crates/xtask -> repo root
@@ -43,6 +49,7 @@ fn main() -> ExitCode {
         Some("check") => check(),
         Some("golden") => golden(args.iter().any(|a| a == "--update")),
         Some("corpus") => corpus(),
+        Some("roundtrip") => roundtrip(),
         Some("ledger") => ledger(),
         Some("repro") => fail_closed("repro", "requires image emission (backend not implemented)"),
         Some("diff-eval") => fail_closed(
@@ -61,7 +68,7 @@ fn main() -> ExitCode {
         ),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser] [--iters N] [--seed S]|ledger|repro|diff-eval|profile|bench>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser] [--iters N] [--seed S]|roundtrip|ledger|repro|diff-eval|profile|bench>"
             );
             return ExitCode::FAILURE;
         }
@@ -105,6 +112,7 @@ fn check() -> Result<(), String> {
     golden(false)?;
     corpus()?;
     fuzz_lexer_smoke()?;
+    fuzz_parser_smoke()?;
     ledger()?;
     println!("xtask check: ok");
     Ok(())
@@ -247,7 +255,7 @@ fn corpus() -> Result<(), String> {
             continue;
         }
         match wrela_compiler::syntax::parser::parse_any(tokens) {
-            Ok(()) => parsed += 1,
+            Ok(_) => parsed += 1,
             Err(e) => failures.push(format!(
                 "{}:{}: parse error at block line {}:{}: {}",
                 b.doc.display(),
@@ -340,11 +348,11 @@ fn fuzz(args: &[String]) -> Result<(), String> {
             let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_LEXER_DEEP_SEED);
             fuzz_lexer(iters, seed)
         }
-        "parser" => fail_closed(
-            "fuzz parser",
-            "the parser fuzz target lands at plans/M1.md item E (parser hardening); \
-             there is no parser yet",
-        ),
+        "parser" => {
+            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_PARSER_DEEP_ITERS);
+            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_PARSER_DEEP_SEED);
+            fuzz_parser(iters, seed)
+        }
         other => Err(format!(
             "fuzz: unknown target `{other}` (expected `lexer` or `parser`)"
         )),
@@ -636,6 +644,246 @@ fn fuzz_lexer_smoke() -> Result<(), String> {
     })
 }
 
+// --- fuzz: parser -----------------------------------------------------
+//
+// plans/M1.md item E ("parser hardening"). Two strategies, mirroring the
+// lexer fuzzer's shape exactly (same `Rng`, same corpus seed inputs):
+//
+//  1. corpus mutation (`mutate_seed_input`, already shared with the lexer
+//     fuzzer) fed through the same lex-then-parse pipeline `xtask corpus`
+//     itself uses (`parser::parse_any`, which picks the fragment entry
+//     point when the input has no `module` header);
+//  2. token-soup (`token_soup` below): builds random-but-lexable *text* by
+//     sampling a vocabulary of keywords, identifiers, literals, operators,
+//     newlines, and 4-space indent units — never `Token` structs directly,
+//     so the real lexer stays in the loop.
+//
+// Invariants checked every iteration, on the whole lex-then-parse
+// pipeline: never panics; the result is a successful parse (module or
+// fragment) or exactly one error (from either stage); running the same
+// input through the pipeline twice gives an identical outcome (same AST
+// dump, or the same error stage/message/line/col). A find writes the input
+// to `target/fuzz/parse-crash-<n>.wr` and reports the seed + iteration so
+// it reproduces; every find is minimized by hand into a
+// `tests/golden/parse-fuzz-*` case before the underlying bug is fixed.
+
+const FUZZ_PARSER_DEEP_ITERS: u64 = 100_000;
+const FUZZ_PARSER_DEEP_SEED: u64 = 1;
+const FUZZ_PARSER_SMOKE_SEEDS: &[u64] = &[1, 2];
+const FUZZ_PARSER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
+
+/// One full run of the pipeline the parser fuzzer exercises: lex, then (on
+/// success) parse via `parse_any`. Exactly one of these four shapes comes
+/// back — never a panic, per `check_parse_invariants`'s `catch_unwind`.
+enum PipelineOutcome {
+    /// A successful parse (module or fragment), reduced to its dump (with
+    /// spans — determinism means the *same* input reproduces byte-
+    /// identical spans too, not just the same tree shape).
+    Ok(String),
+    LexErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+    ParseErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+}
+
+fn run_pipeline_once(input: &str) -> PipelineOutcome {
+    match lexer::lex(input) {
+        Err(e) => PipelineOutcome::LexErr {
+            message: e.message,
+            line: e.line,
+            col: e.col,
+        },
+        Ok(tokens) => match parser::parse_any(tokens) {
+            Ok(Parsed::Module(m)) => PipelineOutcome::Ok(parser::dump(&m)),
+            Ok(Parsed::Fragment(entries)) => PipelineOutcome::Ok(parser::dump_fragment(&entries)),
+            Err(e) => PipelineOutcome::ParseErr {
+                message: e.message,
+                line: e.line,
+                col: e.col,
+            },
+        },
+    }
+}
+
+/// Every invariant the parser fuzzer checks, once per iteration, on one
+/// input. Runs the whole lex-then-parse pipeline twice under
+/// `catch_unwind` (a panic in either stage is a finding), mirroring
+/// `check_lex_invariants`'s shape.
+fn check_parse_invariants(input: &str) -> Result<(), String> {
+    let first = std::panic::catch_unwind(|| run_pipeline_once(input))
+        .map_err(|p| format!("parser panicked: {}", panic_message(&p)))?;
+    let second = std::panic::catch_unwind(|| run_pipeline_once(input))
+        .map_err(|p| format!("parser panicked on a repeat call: {}", panic_message(&p)))?;
+    match (&first, &second) {
+        (PipelineOutcome::Ok(d1), PipelineOutcome::Ok(d2)) => {
+            if d1 != d2 {
+                return Err(
+                    "parsing is not deterministic: two runs produced different ASTs".into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            PipelineOutcome::LexErr {
+                message: m1,
+                line: l1,
+                col: c1,
+            },
+            PipelineOutcome::LexErr {
+                message: m2,
+                line: l2,
+                col: c2,
+            },
+        ) => {
+            if m1 != m2 || l1 != l2 || c1 != c2 {
+                return Err(
+                    "parsing is not deterministic: two runs produced different lex errors".into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            PipelineOutcome::ParseErr {
+                message: m1,
+                line: l1,
+                col: c1,
+            },
+            PipelineOutcome::ParseErr {
+                message: m2,
+                line: l2,
+                col: c2,
+            },
+        ) => {
+            if m1 != m2 || l1 != l2 || c1 != c2 {
+                return Err(
+                    "parsing is not deterministic: two runs produced different parse errors".into(),
+                );
+            }
+            Ok(())
+        }
+        _ => Err(
+            "parsing is not deterministic: the two runs disagreed on success/failure or which \
+             stage failed"
+                .into(),
+        ),
+    }
+}
+
+/// Token-soup, strategy 2: builds random-but-lexable *text* (never `Token`
+/// structs) by sampling a vocabulary of real wrela tokens. At the start of
+/// a line, occasionally emits 0-3 four-space indent units so INDENT/DEDENT
+/// paths are exercised; otherwise samples one token (keyword, identifier,
+/// int/float/string literal, or operator) and separates pieces with a
+/// single space so tokens never accidentally glue together (`1` next to
+/// `0` must stay two tokens unless the fuzzer means to test `10`).
+fn token_soup(rng: &mut Rng) -> String {
+    const IDENTS: &[&str] = &[
+        "x", "y", "foo", "bar", "self", "counter", "Widget", "T", "_",
+    ];
+    const INT_LITS: &[&str] = &["0", "1", "42", "0x1000_0000", "0b101", "0o17", "1_000"];
+    const FLOAT_LITS: &[&str] = &["1.0", "0.5e10", "3.14", "2e-3"];
+    const STR_LITS: &[&str] = &["\"hi\"", "\"\"", "f\"{x}\"", "b\"\\x00\""];
+    const OPERATORS: &[&str] = &[
+        "+", "-", "*", "/", "%", "&", "|", "^", "~", "<", ">", "=", "(", ")", "[", "]", "{", "}",
+        ",", ":", ".", "?", "@", ";", "->", "..", "..=", "<<", ">>", "<=", ">=", "==", "!=", "+=",
+        "-=", "*=", "/=", "%=", "&=", "|=", "^=", "+%", "-%", "*%", "<<=", ">>=",
+    ];
+
+    let piece_count = 1 + rng.gen_range(80);
+    let mut out = String::new();
+    let mut at_line_start = true;
+    for _ in 0..piece_count {
+        if at_line_start && rng.gen_range(100) < 40 {
+            let levels = rng.gen_range(4);
+            for _ in 0..levels {
+                out.push_str("    ");
+            }
+            at_line_start = false;
+            continue;
+        }
+        match rng.gen_range(100) {
+            0..=24 => out.push_str(lexer::KEYWORDS[rng.gen_range(lexer::KEYWORDS.len())]),
+            25..=44 => out.push_str(IDENTS[rng.gen_range(IDENTS.len())]),
+            45..=54 => out.push_str(INT_LITS[rng.gen_range(INT_LITS.len())]),
+            55..=59 => out.push_str(FLOAT_LITS[rng.gen_range(FLOAT_LITS.len())]),
+            60..=64 => out.push_str(STR_LITS[rng.gen_range(STR_LITS.len())]),
+            65..=89 => out.push_str(OPERATORS[rng.gen_range(OPERATORS.len())]),
+            90..=97 => {
+                out.push('\n');
+                at_line_start = true;
+                continue;
+            }
+            _ => {
+                out.push(' ');
+                continue;
+            }
+        }
+        out.push(' ');
+        at_line_start = false;
+    }
+    out
+}
+
+fn run_parser_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
+    let mut rng = Rng::new(seed);
+    for i in 0..iters {
+        let input = if i % 2 == 0 {
+            String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
+        } else {
+            token_soup(&mut rng)
+        };
+        if let Err(reason) = check_parse_invariants(&input) {
+            return report_parser_fuzz_failure(seed, i, &input, &reason);
+        }
+    }
+    println!("fuzz parser: {iters} iteration(s) clean (seed={seed})");
+    Ok(())
+}
+
+fn report_parser_fuzz_failure(
+    seed: u64,
+    iter: u64,
+    input: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let dir = root().join("target/fuzz");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let mut n = 0usize;
+    let path = loop {
+        let p = dir.join(format!("parse-crash-{n}.wr"));
+        if !p.exists() {
+            break p;
+        }
+        n += 1;
+    };
+    std::fs::write(&path, input).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Err(format!(
+        "fuzz parser: seed={seed} iteration={iter}: {reason}\n  input written to {}",
+        path.display()
+    ))
+}
+
+fn fuzz_parser(iters: u64, seed: u64) -> Result<(), String> {
+    let seed_inputs = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| run_parser_fuzz(iters, seed, &seed_inputs))
+}
+
+fn fuzz_parser_smoke() -> Result<(), String> {
+    let seed_inputs = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| {
+        for &seed in FUZZ_PARSER_SMOKE_SEEDS {
+            run_parser_fuzz(FUZZ_PARSER_SMOKE_ITERS_PER_SEED, seed, &seed_inputs)?;
+        }
+        Ok(())
+    })
+}
+
 // --- golden ---------------------------------------------------------------
 //
 // Layout: tests/golden/<case>/input.wr + expected/<stage>.txt. Each
@@ -720,6 +968,18 @@ fn golden(update: bool) -> Result<(), String> {
         }
         Err(format!("golden: {} failure(s)", failures.len()))
     }
+}
+
+// --- roundtrip --------------------------------------------------------
+//
+// plans/M1.md item E's second oracle: TODO (Part 2) — pretty-printer not
+// implemented yet.
+
+fn roundtrip() -> Result<(), String> {
+    fail_closed(
+        "roundtrip",
+        "requires the pretty-printer (plans/M1.md item E, Part 2 — not implemented yet)",
+    )
 }
 
 // --- ledger ---------------------------------------------------------------

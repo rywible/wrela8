@@ -110,6 +110,13 @@ tests = ["golden/ast-patterns"]
 note = "_, literals (incl. negative numbers), bindings, .Variant(...)/Enum.Variant(...) with positional payload binding, take in payload position, tuple and fixed-array destructuring, | alternatives, if guards on match arms, and is as an expression-position pattern test"
 
 [[clause]]
+id = "syntax.parser.no-panics"
+doc = "02-language.md#8"
+status = "test"
+tests = ["xtask:fuzz"]
+note = "cargo xtask fuzz parser: seeded deterministic corpus-mutation + token-soup fuzzing through the lex-then-parse pipeline; never panics, result is a successful parse or exactly one error, deterministic across repeat runs; 100_000-iteration deep run clean across 15+ seeds (2.1M+ total iterations, no finds), smoke budget wired into xtask check"
+
+[[clause]]
 id = "docs.examples.wrela-blocks-parse"
 doc = "02-language.md#1"
 status = "test"
