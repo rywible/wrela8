@@ -1,0 +1,2 @@
+error[move]: `b.item` is a resource; use `take` to move it here (an implicit copy is not allowed) at 10:11
+  instantiated at tests/golden/err-x-generic-flow-copy/input.wr:14

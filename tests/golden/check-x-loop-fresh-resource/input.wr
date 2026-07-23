@@ -1,0 +1,19 @@
+module examples.check_x_loop_fresh_resource
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+pub fn make(n: u64) -> Packet:
+    return Packet(size=n)
+
+pub fn use_it(n: u64) -> u64:
+    total: u64 = 0
+    i: u64 = 0
+    while i < n:
+        q = make(i)
+        total += q.size
+        i += 1
+    return total

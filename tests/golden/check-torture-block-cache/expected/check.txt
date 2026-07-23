@@ -36,7 +36,7 @@ Module path=examples.block_cache
   Fn close_cache(cache: take BlockCache) -> unit
   Struct Slot[T, const N: usize] data
     field items: [Option[T]; N]
-    fn get(read self, index: read usize) -> Option[T]
+    fn occupied(read self, index: read usize) -> bool
   Fn use_data_slots() -> unit
   Struct Handle resource
     field block: own[BlockPayloads] DmaBlock

@@ -1,0 +1,1 @@
+error[access]: calling a `mut self` method requires a mutable place, found `read` parameter `b` at 13:7

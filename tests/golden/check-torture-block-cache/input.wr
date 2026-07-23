@@ -130,8 +130,14 @@ pub fn close_cache(take cache: BlockCache) -> unit:
 pub struct Slot[T, const N: usize]:
     items: [Option[T]; N]
 
-    pub fn get(read self, index: usize) -> Option[T]:
-        return self.items[index]
+    # Returning `Option[T]` by value would make the inferred contract
+    # require T copyable — illegal for the Slot[Handle, 2] resource
+    # instantiation below (caught once flow saw through instantiated
+    # generic fields, post-M2 shoring). Observe without copying instead.
+    pub fn occupied(read self, index: usize) -> bool:
+        if self.items[index] is .Some(_):
+            return true
+        return false
 
 pub fn use_data_slots() -> unit:
     slots = Slot[u64, 2]([None, None])

@@ -1,0 +1,13 @@
+module examples.err_x_init_flow_selfmethod
+
+pub struct Meter:
+    value: u64
+    scale: u64
+
+    fn describe(self) -> u64:
+        return self.value * self.scale
+
+    init(mut self, v: u64):
+        self.value = v
+        x = self.describe()
+        self.scale = 1

@@ -125,6 +125,36 @@ fn subst_expr(e: &Expr, subst: &Subst) -> Expr {
     e.clone()
 }
 
+/// `pub(crate)` reuse for `flow.rs`'s own best-effort place typing
+/// (decision 10's minimal-footprint rule, the same pattern the rest of
+/// this file's `pub(crate)` surface follows): substitutes a single
+/// unsubstituted field type using a struct's own generics zipped against
+/// a use site's concrete type arguments — a type-only `Subst` (no consts;
+/// a field's own type never needs one, only an array/`Bytes` *length*
+/// might, and `place_type`'s callers only ever ask "is this field's type
+/// a resource", never its size) so a resource classification through an
+/// instantiated generic struct's field (`Box[DmaBlock].item`, not just a
+/// bare generic parameter) is answered correctly instead of silently
+/// falling back to "unknown" the moment a use site's type arguments are
+/// non-empty.
+pub(crate) fn subst_field_type(
+    field_ty: &Type,
+    generics: &[DeclGenericParam],
+    targs: &[TypeArg],
+) -> Type {
+    let mut types = BTreeMap::new();
+    for (g, a) in generics.iter().zip(targs.iter()) {
+        if let TypeArg::Type(t) = a {
+            types.insert(g.name.clone(), t.clone());
+        }
+    }
+    let subst = Subst {
+        types,
+        consts: BTreeMap::new(),
+    };
+    subst_type(field_ty, &subst)
+}
+
 // --- const argument evaluation (decision 4) -----------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]

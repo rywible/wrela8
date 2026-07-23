@@ -1,0 +1,6 @@
+Module path=examples.check_x_loop_fresh_resource
+  Struct Packet resource
+    field size: u64
+    init(mut self, size: read u64) -> unit
+  Fn make(n: read u64) -> Packet
+  Fn use_it(n: read u64) -> u64
