@@ -1,0 +1,13 @@
+module examples.check_comptime_if_module
+
+const DEBUG: bool = true
+
+comptime if DEBUG:
+    pub fn label() -> u64:
+        return 1
+comptime else:
+    pub fn label() -> u64:
+        return 2
+
+pub fn use_label() -> u64:
+    return label()

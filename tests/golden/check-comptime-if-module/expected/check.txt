@@ -1,0 +1,4 @@
+Module path=examples.check_comptime_if_module
+  Const DEBUG: bool
+  Fn label() -> u64
+  Fn use_label() -> u64

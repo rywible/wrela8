@@ -42,7 +42,7 @@
 use std::collections::BTreeMap;
 
 use crate::sema::types::{self, Type};
-use crate::syntax::ast::{AccessMode, BinOp};
+use crate::syntax::ast::{AccessMode, BinOp, Span};
 
 // --- callee keys (decision 1) --------------------------------------------
 
@@ -296,6 +296,23 @@ pub enum TypedStmtKind {
     Pass,
     Return(Option<TypedExpr>),
     Assert {
+        cond: TypedExpr,
+        message: Option<TypedExpr>,
+    },
+    /// `comptime assert` (plans/M3.md item D, decision 8: "evaluates
+    /// after typing; failure is a build error with the message"). The
+    /// one deliberate exception to decision 1's "no spans anywhere": a
+    /// comptime assert is checked exactly once, unconditionally, by
+    /// `eval::check_comptime_asserts` — independent of whether anything
+    /// ever calls the fn/method it lives in (the ordinary per-call
+    /// evaluator, `interp::exec_stmt`, treats this node as a no-op, since
+    /// re-running it per call would be redundant and its own vocabulary
+    /// — module consts/literals only, no locals — never depends on a
+    /// call's own arguments anyway) — so its own build-error diagnostic
+    /// needs a real `L:C` to be useful, unlike every other typed node's
+    /// failure (which already has a live call-stack instead).
+    ComptimeAssert {
+        span: Span,
         cond: TypedExpr,
         message: Option<TypedExpr>,
     },
@@ -587,6 +604,13 @@ fn dump_stmt(stmt: &TypedStmt, depth: usize, out: &mut String) {
         }
         TypedStmtKind::Assert { cond, message } => {
             push_line(out, depth, "Assert");
+            dump_expr(cond, depth + 1, out);
+            if let Some(m) = message {
+                dump_expr(m, depth + 1, out);
+            }
+        }
+        TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            push_line(out, depth, "ComptimeAssert");
             dump_expr(cond, depth + 1, out);
             if let Some(m) = message {
                 dump_expr(m, depth + 1, out);

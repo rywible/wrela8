@@ -1,0 +1,1 @@
+error[comptime]: comptime if condition references `y`, which is not comptime-visible here (only literals and top-level consts are — a local, a generic parameter, or a const declared inside another `comptime if` branch cannot be) at 5:17

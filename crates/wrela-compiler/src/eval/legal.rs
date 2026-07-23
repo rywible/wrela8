@@ -158,6 +158,22 @@ pub fn require_legal(
     }
 }
 
+/// Direct callees referenced by one standalone expression that is not
+/// itself a node `classify`'s own graph tracks — a `const` initializer,
+/// a `comptime assert`'s condition/message (plans/M3.md item D's own
+/// legality-wiring surface: `sema::mod::check_typed` `require_legal`s
+/// every key this returns against the program-wide `Legality` `classify`
+/// already computed, which accounts for each callee's own transitive
+/// closure — no second graph, no re-walk beyond this one expression).
+/// Reuses the identical exhaustive `scan_expr` this module already
+/// maintains for `classify` itself, so a new `TypedExprKind` variant
+/// forces an arm here for free.
+pub fn direct_callees(expr: &TypedExpr) -> BTreeSet<String> {
+    let mut scan = BodyScan::default();
+    scan_expr(expr, &mut scan);
+    scan.callees
+}
+
 /// Classifies every fn/method/instantiation key the typed program
 /// carries (decision 7): builds the whole-program callee graph directly
 /// from typed callee keys, scans each node's own body for a decision-7
@@ -365,6 +381,7 @@ fn stmt_illegal_reason(kind: &TypedStmtKind) -> Option<&'static str> {
         | TypedStmtKind::Pass
         | TypedStmtKind::Return(_)
         | TypedStmtKind::Assert { .. }
+        | TypedStmtKind::ComptimeAssert { .. }
         | TypedStmtKind::Defer(_)
         | TypedStmtKind::ExprStmt(_) => None,
     }
@@ -436,6 +453,12 @@ fn scan_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
             }
         }
         TypedStmtKind::Assert { cond, message } => {
+            scan_expr(cond, scan);
+            if let Some(m) = message {
+                scan_expr(m, scan);
+            }
+        }
+        TypedStmtKind::ComptimeAssert { cond, message, .. } => {
             scan_expr(cond, scan);
             if let Some(m) = message {
                 scan_expr(m, scan);

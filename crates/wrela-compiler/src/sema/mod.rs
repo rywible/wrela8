@@ -27,6 +27,7 @@ pub mod generics;
 pub mod matches;
 pub mod paths;
 pub mod prelude;
+pub mod specialize;
 pub mod symbols;
 pub mod typed;
 pub mod types;
@@ -129,6 +130,15 @@ pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
 /// enqueuing into the same shared `mctx`) discovered ends up checked and
 /// typed exactly once.
 ///
+/// plans/M3.md item D: `specialize::specialize` runs first, before
+/// `collect` even sees the module — every `comptime if` node (module,
+/// member, or statement scope) is replaced by its own selected branch's
+/// items/members/statements, spliced in directly (decision 8: "the graph
+/// that is checked is the graph that exists"); every pass below this
+/// line only ever walks that already-specialized module
+/// (`specialize.rs`'s own module doc states the exact reading pinned:
+/// a condition may reference literals and top-level consts only).
+///
 /// plans/M3.md item B: once the program is fully assembled (past
 /// `generics::check`, so a const initializer calling into a generic-fn
 /// instantiation can resolve it), every module-level `const`'s own
@@ -136,17 +146,26 @@ pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
 /// the integration surface replacing M2-H's literal-only const-argument
 /// subset; abandonment (overflow, a failed `assert`, an explicit
 /// `panic`, a blown quota) is a build error here, `error[comptime]`.
+///
+/// plans/M3.md item D: right after, every `comptime assert` statement
+/// anywhere in the program is evaluated exactly once
+/// (`eval::check_comptime_asserts`), unconditionally — decision 8:
+/// "`comptime assert` evaluates after typing; failure is a build error
+/// with the message." Both this and `check_consts` share one
+/// `eval::legal::classify` call (item C×D's own legality wiring) rather
+/// than each computing the whole-program callee graph separately.
 pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, SemaError> {
-    let symtab = symbols::collect(module)?;
-    symbols::resolve(module, &symtab)?;
-    let decl_items = types::declare(module)?;
-    let mctx = bodies::build_module_ctx(module, &decl_items);
-    let mut program = bodies::check(module, &decl_items, &mctx)?;
-    access::check(module, &decl_items, &mctx)?;
-    flow::check(module, &decl_items, &mctx)?;
-    matches::check(module, &decl_items, &mctx)?;
-    program.instantiations = generics::check(module, &decl_items, &mctx, path)?;
-    crate::eval::check_consts(&program)?;
+    let specialized = specialize::specialize(module)?;
+    let symtab = symbols::collect(&specialized)?;
+    symbols::resolve(&specialized, &symtab)?;
+    let decl_items = types::declare(&specialized)?;
+    let mctx = bodies::build_module_ctx(&specialized, &decl_items);
+    let mut program = bodies::check(&specialized, &decl_items, &mctx)?;
+    access::check(&specialized, &decl_items, &mctx)?;
+    flow::check(&specialized, &decl_items, &mctx)?;
+    matches::check(&specialized, &decl_items, &mctx)?;
+    program.instantiations = generics::check(&specialized, &decl_items, &mctx, path)?;
+    crate::eval::check_comptime(&program)?;
     Ok(program)
 }
 
@@ -163,13 +182,19 @@ pub fn dump_typed(program: &typed::TypedProgram) -> String {
 /// spans, resolved types spelled fully (types.rs's `render_items` owns
 /// every declaration's exact grammar — item A's dump was names only;
 /// item B graduates it to full resolved signatures). Only call this
-/// after `check` returns `Ok` — `declare` is re-run here (dumb, no
-/// state threaded from `check`) and its result unwrapped, since success
-/// is already guaranteed by the caller's contract.
+/// after `check` returns `Ok` — `specialize`/`declare` are re-run here
+/// (dumb, no state threaded from `check`) and the result unwrapped,
+/// since success is already guaranteed by the caller's contract.
+/// plans/M3.md item D: specializing first (exactly like `check_typed`)
+/// means this dump shows only the selected branch of any `comptime if`
+/// — the golden-visible surface the M3-D task names explicitly.
 pub fn dump(module: &Module) -> String {
-    let decl_items = types::declare(module).expect("dump is only called after check returns Ok");
-    let effects = access::infer_effects(module, &decl_items);
-    let mut out = format!("Module path={}\n", module.path.join("."));
+    let specialized =
+        specialize::specialize(module).expect("dump is only called after check returns Ok");
+    let decl_items =
+        types::declare(&specialized).expect("dump is only called after check returns Ok");
+    let effects = access::infer_effects(&specialized, &decl_items);
+    let mut out = format!("Module path={}\n", specialized.path.join("."));
     types::render_items(&decl_items, &effects, &mut out);
     out
 }

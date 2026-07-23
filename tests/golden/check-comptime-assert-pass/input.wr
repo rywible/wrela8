@@ -1,0 +1,7 @@
+module examples.check_comptime_assert_pass
+
+const LIMIT: u64 = 10
+
+pub fn use_limit() -> u64:
+    comptime assert LIMIT > 0, "LIMIT must be positive"
+    return LIMIT

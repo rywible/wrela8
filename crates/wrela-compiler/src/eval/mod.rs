@@ -31,7 +31,11 @@ pub mod quota;
 pub mod value;
 
 use crate::sema::SemaError;
-use crate::sema::typed::TypedProgram;
+use crate::sema::typed::{
+    TypedClosureBody, TypedDeferBody, TypedExpr, TypedFn, TypedForIter, TypedInstantiation,
+    TypedProgram, TypedStmt, TypedStmtKind, TypedStruct,
+};
+use crate::syntax::ast::Span;
 
 pub use interp::EvalError;
 pub use value::Value;
@@ -60,6 +64,21 @@ pub fn to_sema_error(e: EvalError) -> SemaError {
     }
 }
 
+/// The whole comptime-evaluation tail of `sema::mod::check_typed`
+/// (plans/M3.md item D): computes the program-wide legality
+/// classification exactly once (`legal::classify` — item C×D's own
+/// wiring point) and threads it through both `check_consts` and
+/// `check_comptime_asserts` below, rather than each recomputing the same
+/// whole-graph callee scan separately. Runs asserts first (decision 8
+/// frames `comptime assert` as proving preconditions; nothing else here
+/// depends on the order, but a fixed one keeps failures deterministic
+/// when a program has more than one kind of comptime error).
+pub fn check_comptime(program: &TypedProgram) -> Result<(), SemaError> {
+    let legality = legal::classify(program);
+    check_comptime_asserts(program, &legality)?;
+    check_consts(program, &legality)
+}
+
 /// Evaluates every module-level `const`'s own initializer with the real
 /// evaluator (the integration surface, plans/M3.md item B) — called
 /// once, after the typed program is fully assembled (`sema::mod::check_typed`,
@@ -67,9 +86,298 @@ pub fn to_sema_error(e: EvalError) -> SemaError {
 /// generic-fn instantiation can resolve it); fail-fast, `BTreeMap`
 /// (name) order, matching every other pass's own diagnostic ordering
 /// convention (CLAUDE.md: deterministic, first error wins).
-pub fn check_consts(program: &TypedProgram) -> Result<(), SemaError> {
-    for name in program.consts.keys() {
+///
+/// plans/M3.md item D's own legality wiring: every direct callee a
+/// const's own initializer reaches (`legal::direct_callees`) must be
+/// comptime-legal per the already-computed whole-program `legality`
+/// (context `"const <name>"`, matching `eval::legal`'s own doc-comment
+/// example verbatim) — checked before evaluating, so an illegal closure
+/// is diagnosed as such rather than however evaluating it might
+/// otherwise fail. `Span::default()` is this diagnostic's own location
+/// today: nothing representable can actually be illegal yet (see
+/// `eval::legal`'s module doc), so this path is honestly unreachable
+/// until M5 — a real span is not worth threading through `TypedConst`
+/// for a diagnostic no golden can produce yet.
+fn check_consts(program: &TypedProgram, legality: &legal::Legality) -> Result<(), SemaError> {
+    for (name, c) in &program.consts {
+        for callee in legal::direct_callees(&c.value) {
+            legal::require_legal(legality, &callee, &format!("const {name}"), Span::default())?;
+        }
         interp::eval_const(program, name).map_err(to_sema_error)?;
     }
     Ok(())
+}
+
+/// Evaluates every `comptime assert` statement anywhere in the typed
+/// program exactly once (plans/M3.md item D, decision 8: "`comptime
+/// assert` evaluates after typing; failure is a build error with the
+/// message") — unconditionally, independent of whether anything ever
+/// calls the fn/method/instantiation it lives in (`interp::exec_stmt`'s
+/// own no-op arm for `TypedStmtKind::ComptimeAssert` explains why that
+/// must be a separate, whole-program walk rather than piggybacking on
+/// ordinary per-call execution: a `comptime assert` inside a fn nothing
+/// currently calls would otherwise never be checked at all, which would
+/// make it prove nothing). Walks every fn/method/instantiation body in
+/// the same `BTreeMap` order `legal::classify` itself enumerates them in
+/// (fns, then structs' methods/assoc-fns/init, then instantiations),
+/// depth-first through nested statement blocks in source order — fail-
+/// fast, deterministic.
+fn check_comptime_asserts(
+    program: &TypedProgram,
+    legality: &legal::Legality,
+) -> Result<(), SemaError> {
+    for f in program.fns.values() {
+        check_asserts_in_fn(program, legality, f)?;
+    }
+    for s in program.structs.values() {
+        check_asserts_in_struct(program, legality, s)?;
+    }
+    for inst in program.instantiations.values() {
+        match inst {
+            TypedInstantiation::Fn(f) => check_asserts_in_fn(program, legality, f)?,
+            TypedInstantiation::Struct(s) => check_asserts_in_struct(program, legality, s)?,
+            TypedInstantiation::Enum => {}
+        }
+    }
+    Ok(())
+}
+
+fn check_asserts_in_struct(
+    program: &TypedProgram,
+    legality: &legal::Legality,
+    s: &TypedStruct,
+) -> Result<(), SemaError> {
+    for f in s.methods.values() {
+        check_asserts_in_fn(program, legality, f)?;
+    }
+    for f in s.assoc_fns.values() {
+        check_asserts_in_fn(program, legality, f)?;
+    }
+    if let Some(f) = &s.init {
+        check_asserts_in_fn(program, legality, f)?;
+    }
+    Ok(())
+}
+
+fn check_asserts_in_fn(
+    program: &TypedProgram,
+    legality: &legal::Legality,
+    f: &TypedFn,
+) -> Result<(), SemaError> {
+    let mut sites = Vec::new();
+    collect_asserts_stmts(&f.body, &mut sites);
+    for site in sites {
+        check_one_comptime_assert(program, legality, site)?;
+    }
+    Ok(())
+}
+
+/// One `comptime assert` statement found by the collector below,
+/// borrowed straight out of the typed tree (no cloning — the collection
+/// and the checking both happen within `check_asserts_in_fn`'s own call,
+/// before anything else could need a mutable borrow of `program`).
+struct AssertSite<'p> {
+    cond: &'p TypedExpr,
+    message: Option<&'p TypedExpr>,
+    span: Span,
+}
+
+fn check_one_comptime_assert(
+    program: &TypedProgram,
+    legality: &legal::Legality,
+    site: AssertSite<'_>,
+) -> Result<(), SemaError> {
+    for callee in legal::direct_callees(site.cond) {
+        legal::require_legal(legality, &callee, "comptime assert", site.span)?;
+    }
+    if let Some(m) = site.message {
+        for callee in legal::direct_callees(m) {
+            legal::require_legal(legality, &callee, "comptime assert", site.span)?;
+        }
+    }
+
+    let cond_value = interp::eval_standalone(program, site.cond, "comptime assert".to_string())
+        .map_err(to_sema_error)?;
+    if interp::as_bool(&cond_value) {
+        return Ok(());
+    }
+    let msg = match site.message {
+        Some(m) => {
+            let mv = interp::eval_standalone(program, m, "comptime assert".to_string())
+                .map_err(to_sema_error)?;
+            format!(": {}", interp::render_message(&mv))
+        }
+        None => String::new(),
+    };
+    Err(SemaError {
+        category: "comptime",
+        message: format!("comptime assert failed{msg}"),
+        line: site.span.line,
+        col: site.span.col,
+        extra_lines: Vec::new(),
+        omit_location: false,
+        missing_method: None,
+    })
+}
+
+// --- the whole-program `comptime assert` collector -------------------------
+//
+// Mirrors `eval::legal`'s own exhaustive `scan_stmt`/`scan_expr` shape
+// (same reason: a new node kind should force a compile error here, not
+// silently go unwalked) but collects `AssertSite`s by reference instead
+// of callees by key — kept as its own small walk rather than widening
+// `legal::BodyScan` with a lifetime parameter every one of its own
+// existing call sites would then have to thread through.
+
+fn collect_asserts_stmts<'p>(stmts: &'p [TypedStmt], out: &mut Vec<AssertSite<'p>>) {
+    for s in stmts {
+        collect_asserts_stmt(s, out);
+    }
+}
+
+fn collect_asserts_stmt<'p>(stmt: &'p TypedStmt, out: &mut Vec<AssertSite<'p>>) {
+    match &stmt.kind {
+        TypedStmtKind::ComptimeAssert {
+            span,
+            cond,
+            message,
+        } => {
+            out.push(AssertSite {
+                cond,
+                message: message.as_ref(),
+                span: *span,
+            });
+        }
+        TypedStmtKind::Let { value, .. } => collect_asserts_expr(value, out),
+        TypedStmtKind::Assign { target, value } => {
+            collect_asserts_expr(target, out);
+            collect_asserts_expr(value, out);
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            collect_asserts_expr(cond, out);
+            collect_asserts_stmts(then_branch, out);
+            for elif in elifs {
+                collect_asserts_expr(&elif.cond, out);
+                collect_asserts_stmts(&elif.body, out);
+            }
+            if let Some(b) = else_branch {
+                collect_asserts_stmts(b, out);
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            collect_asserts_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_asserts_expr(g, out);
+                }
+                collect_asserts_stmts(&arm.body, out);
+            }
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(from, to, _) => {
+                    collect_asserts_expr(from, out);
+                    collect_asserts_expr(to, out);
+                }
+                TypedForIter::Expr(e) => collect_asserts_expr(e, out),
+            }
+            collect_asserts_stmts(body, out);
+        }
+        TypedStmtKind::While { cond, body } => {
+            collect_asserts_expr(cond, out);
+            collect_asserts_stmts(body, out);
+        }
+        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
+        TypedStmtKind::Return(value) => {
+            if let Some(e) = value {
+                collect_asserts_expr(e, out);
+            }
+        }
+        TypedStmtKind::Assert { cond, message } => {
+            collect_asserts_expr(cond, out);
+            if let Some(m) = message {
+                collect_asserts_expr(m, out);
+            }
+        }
+        TypedStmtKind::Defer(body) => match body {
+            TypedDeferBody::Expr(e) => collect_asserts_expr(e, out),
+            TypedDeferBody::Suite(stmts) => collect_asserts_stmts(stmts, out),
+        },
+        TypedStmtKind::ExprStmt(e) => collect_asserts_expr(e, out),
+    }
+}
+
+fn collect_asserts_expr<'p>(e: &'p TypedExpr, out: &mut Vec<AssertSite<'p>>) {
+    use crate::sema::typed::TypedExprKind;
+    match &e.kind {
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::Local(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::FnRef(_) => {}
+        TypedExprKind::Field(base, _) => collect_asserts_expr(base, out),
+        TypedExprKind::Index(base, idx) => {
+            collect_asserts_expr(base, out);
+            collect_asserts_expr(idx, out);
+        }
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                collect_asserts_expr(r, out);
+            }
+            for a in args.iter().flatten() {
+                collect_asserts_expr(a, out);
+            }
+        }
+        TypedExprKind::CallValue(callee, args) => {
+            collect_asserts_expr(callee, out);
+            for a in args {
+                collect_asserts_expr(a, out);
+            }
+        }
+        TypedExprKind::ToScalar(inner)
+        | TypedExprKind::Neg(inner)
+        | TypedExprKind::BitNot(inner)
+        | TypedExprKind::Take(inner)
+        | TypedExprKind::Not(inner) => collect_asserts_expr(inner, out),
+        TypedExprKind::Try(inner, _) => collect_asserts_expr(inner, out),
+        TypedExprKind::Binary(_, l, r) | TypedExprKind::OpCall(_, l, r) => {
+            collect_asserts_expr(l, out);
+            collect_asserts_expr(r, out);
+        }
+        TypedExprKind::Is(inner, _) => collect_asserts_expr(inner, out),
+        TypedExprKind::And(l, r) | TypedExprKind::Or(l, r) => {
+            collect_asserts_expr(l, out);
+            collect_asserts_expr(r, out);
+        }
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args {
+                collect_asserts_expr(a, out);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => match body {
+            TypedClosureBody::Expr(e) => collect_asserts_expr(e, out),
+            TypedClosureBody::Suite(stmts) => collect_asserts_stmts(stmts, out),
+        },
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                collect_asserts_expr(i, out);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                collect_asserts_expr(v, out);
+            }
+        }
+        TypedExprKind::Panic(msg) => collect_asserts_expr(msg, out),
+    }
 }

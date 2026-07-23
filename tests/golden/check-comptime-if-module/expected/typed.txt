@@ -1,0 +1,11 @@
+Program
+  Const name=DEBUG ty=bool
+    Bool value=true ty=bool
+  Fn name=label ret=u64
+    Body
+      Return
+        Int text=1 ty=u64
+  Fn name=use_label ret=u64
+    Body
+      Return
+        Call key=label ty=u64

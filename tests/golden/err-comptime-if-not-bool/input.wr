@@ -1,0 +1,7 @@
+module examples.err_comptime_if_not_bool
+
+const COUNT: u64 = 3
+
+comptime if COUNT:
+    pub fn f() -> u64:
+        return 1

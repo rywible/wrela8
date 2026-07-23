@@ -1,0 +1,3 @@
+Module path=examples.check_comptime_if_stmt
+  Const FAST_PATH: bool
+  Fn compute(x: read u64) -> u64
