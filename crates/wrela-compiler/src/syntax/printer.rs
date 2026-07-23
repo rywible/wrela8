@@ -735,7 +735,8 @@ fn print_arg(arg: &Arg, indent: usize) -> String {
 /// closure's own enclosing line, exactly like any other suite — see the
 /// module doc comment on why this reparses correctly even when the
 /// closure sits inside an enclosing `()[]{}` that suppresses layout
-/// tokens (parser.rs's own module doc comment on embedded suites).
+/// tokens (lexer.rs's layout-island doc comment; parser.rs's own module
+/// doc comment on embedded suites).
 fn print_closure(c: &ClosureExpr, indent: usize) -> String {
     let params = c
         .params
@@ -753,12 +754,22 @@ fn print_closure(c: &ClosureExpr, indent: usize) -> String {
     match &c.body {
         ClosureBody::Expr(e) => format!("|{params}| {}", print_expr(e, indent)),
         ClosureBody::Suite(stmts) => {
+            // Keep `print_stmts`'s own trailing newline (ledger clause
+            // syntax.lexer.layout-islands, sema-roundtrip fuzz finding): a
+            // suite-form closure can be a non-final call argument
+            // (`f(x, |p|:\n    a\n    b, y)`), and whatever the caller
+            // glues on after this string — a `, next_arg`, a bare `)` —
+            // must start on its own fresh line so the last statement gets
+            // a real terminator instead of that following text landing on
+            // its line with nothing but a comma between them (exactly the
+            // single-statement-per-line ambiguity `parse_inline_stmt_seq`
+            // now rejects, reintroduced from the printer's side). A closure
+            // that is itself a whole statement's RHS costs one blank line
+            // from `push_line`'s own trailing newline landing after this
+            // one; harmless (blank lines are layout-transparent) and no
+            // existing golden pins exact `pretty`-stage text.
             let mut out = format!("|{params}|:\n");
             print_stmts(stmts, indent + 1, &mut out);
-            // Drop the trailing newline `print_stmts` left: this string is
-            // spliced into the middle of the caller's own line, which adds
-            // its own trailing newline via `push_line`.
-            out.pop();
             out
         }
     }

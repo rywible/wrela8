@@ -16,9 +16,11 @@ attached to the immediately following declaration.
 
 Blocks use a trailing `:` and significant indentation, exactly four spaces per
 level; tabs in leading whitespace are errors. A newline ends a simple
-statement unless it is inside `()`, `[]`, or `{}`. A declaration header may
-continue onto an indented line beginning with `->`. Comma lists may have a
-trailing comma.
+statement unless it is inside `()`, `[]`, or `{}`. Exception: inside a suite
+introduced by a `:` at the end of a line (a closure body in an argument
+list), indentation layout resumes until the suite closes. A declaration
+header may continue onto an indented line beginning with `->`. Comma lists
+may have a trailing comma.
 
 ### 1.1 Literals
 

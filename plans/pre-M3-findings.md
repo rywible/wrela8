@@ -198,7 +198,36 @@ loop, since per-element moves through a runtime index are otherwise
 forbidden (turned out to already be handled by the existing take-expression
 path, per the paragraph above).
 
-## 3. A place-postfix ambiguity inside an embedded (bracket-suppressed) suite lets a `take`/`mut` place silently swallow the *next*, unrelated statement's leading token
+## 3. A place-postfix ambiguity inside an embedded (bracket-suppressed) suite lets a `take`/`mut` place silently swallow the *next*, unrelated statement's leading token — **FIXED**
+
+**Fixed** (a later session, pre-M3 shoring continuation): the root cause was
+the lexer, not the parser — `()[]{}` fully suppressing NEWLINE/INDENT/DEDENT
+gave a multi-statement embedded suite no separator token at all, so no local
+patch to `parse_unary`/`parse_call_args`'s grammar could disambiguate it (see
+"why this wasn't fixed here" below, which already said as much). Fixed by
+teaching the lexer **layout islands**: a `:` immediately followed by a
+newline while bracket depth > 0 resumes real NEWLINE/INDENT/DEDENT tracking
+for exactly that suite, in a fresh indentation sub-stack, until the suite's
+own indentation closes it or an enclosing bracket closes without it ever
+dedenting on its own line first (`crates/wrela-compiler/src/syntax/lexer.rs`,
+its module doc comment, and ledger clause `syntax.lexer.layout-islands`,
+which has the full accounting). The parser's `parse_stmt_suite` `Newline`
+branch now handles every multi-line embedded suite the same way it always
+handled a top-level one; the no-`Newline` inline branch
+(`parse_inline_stmt_seq`) is narrowed to exactly one statement — reachable
+only for a `:` followed by real content on the same physical line, since
+every `:`-newline now opens an island or an ordinary block instead — with a
+second statement rejected outright (`error[parse]: an embedded suite on one
+line holds one statement; use an indented block`,
+golden/err-inline-suite-two-stmts) rather than guessed at. The minimized
+repro below now parses cleanly (no `error[parse]` at all; the two `x`/`y`
+locals it never defines produce ordinary `error[name]: unknown name`
+instead), and the sema-roundtrip oracle (`cargo xtask fuzz sema`, seed=1,
+2_000_000 iterations — the exact campaign that previously failed at
+iteration 76076) is clean. See the ledger clause for the full verification
+record (golden/lex-layout-island, golden/check-embedded-suite, and every
+existing golden — including ast-virtio's own two multi-statement embedded
+closures — unchanged byte-for-byte).
 
 **Where:** `crates/wrela-compiler/src/syntax/parser.rs`, `parse_unary`'s
 `take` case and `parse_call_args`'s mode-marked argument parsing, both of

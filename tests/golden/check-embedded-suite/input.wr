@@ -1,0 +1,17 @@
+module examples.check_embedded_suite
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+fn run(body: fn() -> u64) -> u64:
+    return body()
+
+pub fn use_it(take p: Packet) -> u64:
+    a = run(||:
+        x = take p
+        y = x.size
+        y + 1)
+    return a

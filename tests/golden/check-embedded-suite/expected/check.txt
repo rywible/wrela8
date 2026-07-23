@@ -1,0 +1,6 @@
+Module path=examples.check_embedded_suite
+  Struct Packet resource
+    field size: u64
+    init(mut self, size: read u64) -> unit
+  Fn run(body: read fn() -> u64) -> u64
+  Fn use_it(p: take Packet) -> u64

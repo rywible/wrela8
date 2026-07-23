@@ -9,6 +9,37 @@
 //! never decoded); f-string brace-balance scanning (interior expressions are
 //! not lexed); and the operator set of 02 §8.2. Anything unsupported is a
 //! lex error, never a guess.
+//!
+//! ## Layout islands (ledger clause syntax.lexer.layout-islands)
+//!
+//! `()[]{}` suppress NEWLINE/INDENT/DEDENT — except a `:` immediately
+//! followed by a newline while bracket depth > 0 is unambiguously a suite
+//! header (a closure body embedded in an enclosing call's argument list,
+//! `docs/language/examples/virtio-storage.wr`'s `BlockCache.edit`/`peek`
+//! call sites), so layout tracking *resumes* for exactly that suite: a
+//! fresh indentation sub-stack opens ("a layout island"), seeded from
+//! whatever the innermost enclosing context's current indent level already
+//! was (`innermost_indent`), and stays active — real NEWLINE/INDENT/DEDENT
+//! tokens flow — until the island closes. Two independent events close it:
+//! (a) a later line's indentation falls back to (or below) the island's own
+//! base level (`apply_island_indent`'s dedent branch), or (b) a closing
+//! bracket brings the bracket depth below the level the island opened at,
+//! before the island's own indentation ever dedented on its own line (the
+//! `))`-on-one-line shape in `BlockCache.edit`/`peek`; handled in
+//! `lex_operator` via `close_layout_islands_before_bracket_close`, which
+//! force-emits the balancing DEDENTs *before* the closing bracket's own
+//! token). A bracket opened *inside* an active island suppresses layout
+//! again immediately (no bookkeeping needed: `layout_active` simply stops
+//! matching once `depth` moves past the island's `open_depth`), and a
+//! further `:`-newline found while suppressed there opens a nested island
+//! the same way, so islands stack arbitrarily deep. A `:`-newline seen
+//! while already inside an *active* island's own body (e.g. a nested `if`
+//! in a closure suite) is not a new island at all — it's just an ordinary
+//! deeper level on that island's existing indent stack, exactly like a
+//! nested block at the top level. This closes the roundtrip ambiguity
+//! recorded in `plans/pre-M3-findings.md` (finding 3): the parser no
+//! longer has to guess statement boundaries inside an embedded suite with
+//! more than one statement, because the lexer now hands it real separators.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
@@ -76,6 +107,20 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(source).run()
 }
 
+/// One open layout island (module doc comment): a suite whose layout
+/// tracking was resumed inside brackets. `open_depth` is the bracket
+/// `depth` at the moment its `:`-newline was seen — layout is active for
+/// this island exactly while `depth == open_depth`, and it closes for
+/// good once a line dedents to (or below) `indents[0]` (`apply_island_indent`)
+/// or a closing bracket drives `depth` below `open_depth`
+/// (`close_layout_islands_before_bracket_close`). `indents` is a sub-stack
+/// exactly like the top-level `Lexer::indents`, seeded with the island's
+/// base level as its permanent floor (`indents[0]`) instead of `0`.
+struct Island {
+    open_depth: usize,
+    indents: Vec<u32>,
+}
+
 struct Lexer<'s> {
     src: &'s [u8],
     pos: usize,
@@ -83,6 +128,7 @@ struct Lexer<'s> {
     col: u32,
     depth: usize, // () [] {} nesting: newlines are suppressed inside
     indents: Vec<u32>,
+    islands: Vec<Island>,
     tokens: Vec<Token>,
 }
 
@@ -95,8 +141,61 @@ impl<'s> Lexer<'s> {
             col: 1,
             depth: 0,
             indents: vec![0],
+            islands: Vec::new(),
             tokens: Vec::new(),
         }
+    }
+
+    /// True when NEWLINE/INDENT/DEDENT tracking is active right now: either
+    /// true top level (`depth == 0`, no island ever needed there) or inside
+    /// the topmost open island, exactly at the bracket depth it opened at.
+    /// A bracket opened deeper than that (inside an island or not) makes
+    /// this false again until its own `:`-newline opens a nested island.
+    fn layout_active(&self) -> bool {
+        match self.islands.last() {
+            Some(island) => self.depth == island.open_depth,
+            None => self.depth == 0,
+        }
+    }
+
+    /// The current indentation width of whichever layout context is
+    /// innermost right now — an open island's own indent stack if one
+    /// exists, else the top-level stack — regardless of whether that
+    /// context is presently *active* (suppressed contexts still have a
+    /// frozen "current level" from before suppression began). Used only to
+    /// seed a newly opened island's base (`open_layout_island`): the common
+    /// case is a closure suite one bracket deep with no enclosing island at
+    /// all, where this is simply the top-level stack's frozen top.
+    fn innermost_indent(&self) -> u32 {
+        match self.islands.last() {
+            Some(island) => *island
+                .indents
+                .last()
+                .expect("island indent stack is never empty"),
+            None => *self.indents.last().expect("indent stack is never empty"),
+        }
+    }
+
+    /// True exactly when the last token pushed so far is a bare `:` — the
+    /// trigger check for opening a layout island. Comments push no token,
+    /// so `:  # trailing comment` before the newline still counts: no real
+    /// code follows the colon on that line either way (module doc comment:
+    /// "a `:` followed by same-line content does not [open an island]").
+    fn last_token_is_colon(&self) -> bool {
+        matches!(self.tokens.last(), Some(t) if t.kind == TokenKind::Op && t.text == ":")
+    }
+
+    /// Opens a new layout island. Only called when `!layout_active()`: a
+    /// `:`-newline seen while already active (a nested suite inside an
+    /// open island's own body, or an ordinary top-level suite) is not a new
+    /// island, just the next line's width being read against the context
+    /// that's already tracking it.
+    fn open_layout_island(&mut self) {
+        let base = self.innermost_indent();
+        self.islands.push(Island {
+            open_depth: self.depth,
+            indents: vec![base],
+        });
     }
 
     fn error(&self, message: impl Into<String>) -> LexError {
@@ -139,7 +238,7 @@ impl<'s> Lexer<'s> {
     fn run(mut self) -> Result<Vec<Token>, LexError> {
         let mut at_line_start = true;
         loop {
-            if at_line_start && self.depth == 0 {
+            if at_line_start && self.layout_active() {
                 self.handle_indentation()?;
                 at_line_start = false;
                 continue;
@@ -147,8 +246,16 @@ impl<'s> Lexer<'s> {
             match self.peek() {
                 None => break,
                 Some(b'\n') => {
+                    // A `:` immediately followed by this newline while
+                    // suppressed (bracket depth > 0, no already-active
+                    // island at this depth) is a suite header: open a
+                    // layout island before deciding whether to emit the
+                    // Newline itself (module doc comment).
+                    if !self.layout_active() && self.last_token_is_colon() {
+                        self.open_layout_island();
+                    }
                     self.bump();
-                    if self.depth == 0 {
+                    if self.layout_active() {
                         if self.last_is_content() {
                             let (l, c) = (self.line - 1, 1);
                             self.push(TokenKind::Newline, "", l, c);
@@ -294,6 +401,23 @@ impl<'s> Lexer<'s> {
             }
             _ => {}
         }
+        // Dispatch to whichever indent stack is active at this depth: the
+        // topmost open island if one exactly matches, else the top-level
+        // stack. `run()` only calls `handle_indentation` when
+        // `layout_active()` held at line start, so exactly one of these
+        // applies (module doc comment on layout islands).
+        let in_island = matches!(self.islands.last(), Some(i) if i.open_depth == self.depth);
+        if in_island {
+            self.apply_island_indent(width)
+        } else {
+            self.apply_top_level_indent(width)
+        }
+    }
+
+    /// The original (pre-island) top-level indent-stack logic, unchanged:
+    /// `width` against `self.indents`, whose floor (`indents[0] == 0`) is
+    /// permanent for the whole file.
+    fn apply_top_level_indent(&mut self, width: u32) -> Result<(), LexError> {
         let current = *self.indents.last().expect("indent stack is never empty");
         if width == current {
             return Ok(());
@@ -316,6 +440,64 @@ impl<'s> Lexer<'s> {
             self.push(TokenKind::Newline, "", l, c);
         }
         if width != *self.indents.last().expect("indent stack is never empty") {
+            return Err(self.error("dedent does not match any enclosing indentation level"));
+        }
+        Ok(())
+    }
+
+    /// Same shape as `apply_top_level_indent`, but against the topmost
+    /// island's own indent sub-stack, whose floor (`indents[0]`) is the
+    /// island's base rather than a permanent `0`: reaching it (or falling
+    /// below it) closes the island for good instead of erroring (module
+    /// doc comment, closing case (a)).
+    fn apply_island_indent(&mut self, width: u32) -> Result<(), LexError> {
+        let current = *self
+            .islands
+            .last()
+            .expect("checked by caller")
+            .indents
+            .last()
+            .expect("island indent stack is never empty");
+        if width == current {
+            return Ok(());
+        }
+        if width > current {
+            if width != current + 4 {
+                return Err(self.error(format!(
+                    "indentation must deepen by exactly four spaces (found {width}, parent {current})"
+                )));
+            }
+            self.islands
+                .last_mut()
+                .expect("checked by caller")
+                .indents
+                .push(width);
+            let (l, c) = (self.line, 1);
+            self.push(TokenKind::Indent, "", l, c);
+            return Ok(());
+        }
+        // width < current: dedent, one level at a time, same as the
+        // top-level loop — but never popping the island's own floor
+        // (indents[0], its base level) off the stack.
+        loop {
+            let island = self.islands.last_mut().expect("checked by caller");
+            if island.indents.len() > 1 && width < *island.indents.last().expect("non-empty") {
+                island.indents.pop();
+                let (l, c) = (self.line, 1);
+                self.push(TokenKind::Dedent, "", l, c);
+                self.push(TokenKind::Newline, "", l, c);
+                continue;
+            }
+            break;
+        }
+        let island = self.islands.last().expect("checked by caller");
+        if island.indents.len() == 1 && width <= island.indents[0] {
+            // Back at (or below) the island's own base: the suite this
+            // island tracked is over — close it and resume suppression.
+            self.islands.pop();
+            return Ok(());
+        }
+        if width != *island.indents.last().expect("non-empty") {
             return Err(self.error("dedent does not match any enclosing indentation level"));
         }
         Ok(())
@@ -600,6 +782,13 @@ impl<'s> Lexer<'s> {
                 if self.depth == 0 {
                     return Err(self.error(format!("unmatched closing `{c}`")));
                 }
+                // A closing bracket that drops `depth` below an open
+                // island's `open_depth` closes that island right now (module
+                // doc comment, closing case (b)): the balancing DEDENTs are
+                // force-emitted before this bracket's own token, since the
+                // island's line-based dedent check (`apply_island_indent`)
+                // never gets a further line of its own to trigger on.
+                self.close_layout_islands_before_bracket_close(line, col);
                 self.depth -= 1;
             }
             self.bump();
@@ -607,6 +796,37 @@ impl<'s> Lexer<'s> {
             return Ok(());
         }
         Err(self.error(format!("unexpected character `{c}`")))
+    }
+
+    /// Closes every open island whose `open_depth` equals `self.depth` (the
+    /// depth this closing-bracket token is about to leave) — at most one,
+    /// since island `open_depth`s are strictly increasing bottom-to-top on
+    /// the stack (each new island only opens deeper than whatever enclosed
+    /// it) — emitting its remaining DEDENT/NEWLINE pairs at the bracket's
+    /// own position first.
+    fn close_layout_islands_before_bracket_close(&mut self, line: u32, col: u32) {
+        while let Some(island) = self.islands.last() {
+            if island.open_depth != self.depth {
+                break;
+            }
+            while self
+                .islands
+                .last()
+                .expect("checked Some above")
+                .indents
+                .len()
+                > 1
+            {
+                self.islands
+                    .last_mut()
+                    .expect("checked Some above")
+                    .indents
+                    .pop();
+                self.push(TokenKind::Dedent, "", line, col);
+                self.push(TokenKind::Newline, "", line, col);
+            }
+            self.islands.pop();
+        }
     }
 }
 
@@ -739,6 +959,95 @@ mod tests {
         assert!(
             !toks.contains(&TokenKind::DocComment),
             "a plain `#` comment is not a doc comment: {toks:?}"
+        );
+    }
+
+    // --- layout islands (syntax.lexer.layout-islands) ---------------------
+
+    /// A `:` followed by a newline while bracket depth > 0 opens a layout
+    /// island: a multi-statement suite embedded in a call's argument list
+    /// gets real NEWLINE/INDENT/DEDENT tokens, closing (case (a)) once a
+    /// later line's own indentation returns to the island's base.
+    #[test]
+    fn island_opens_for_bracketed_multi_statement_suite() {
+        let toks = lex("f(||:\n    a\n    b\n)\n").expect("should lex");
+        let kinds: Vec<_> = toks.iter().map(|t| t.kind.clone()).collect();
+        assert_eq!(
+            kinds.iter().filter(|k| **k == TokenKind::Indent).count(),
+            1,
+            "one INDENT for the suite body: {kinds:?}"
+        );
+        assert_eq!(
+            kinds.iter().filter(|k| **k == TokenKind::Dedent).count(),
+            1,
+            "one balancing DEDENT closing the island: {kinds:?}"
+        );
+        // Each body statement (`a`, `b`) is a real, separately lexed
+        // token immediately followed by its own Newline — a real
+        // separator, not the parser guessing where one statement ends
+        // and the next begins.
+        for name in ["a", "b"] {
+            let i = toks
+                .iter()
+                .position(|t| t.kind == TokenKind::Ident && t.text == name)
+                .unwrap_or_else(|| panic!("`{name}` token: {kinds:?}"));
+            assert_eq!(
+                toks[i + 1].kind,
+                TokenKind::Newline,
+                "`{name}` must be immediately followed by a real Newline: {kinds:?}"
+            );
+        }
+    }
+
+    /// A bracket opened inside an active island suppresses layout again
+    /// immediately, with no bookkeeping beyond bracket depth: a multi-line
+    /// call nested inside the suite body must not itself contribute any
+    /// layout tokens.
+    #[test]
+    fn bracket_inside_island_suppresses_layout_again() {
+        let toks = kinds("f(||:\n    a(\n        1,\n        2,\n    )\n    b\n)\n");
+        assert_eq!(
+            toks.iter().filter(|k| **k == TokenKind::Indent).count(),
+            1,
+            "the nested call's own multi-line argument list opens no \
+             INDENT of its own: {toks:?}"
+        );
+        assert_eq!(
+            toks.iter().filter(|k| **k == TokenKind::Dedent).count(),
+            1,
+            "{toks:?}"
+        );
+    }
+
+    /// Closing case (b): a closing bracket that drives depth below the
+    /// island's own opening depth force-emits the balancing DEDENT (and its
+    /// paired Newline) *before* the bracket's own token, since the island
+    /// never gets a further line of its own to dedent on.
+    #[test]
+    fn island_closes_before_bracket_when_never_dedents_on_own_line() {
+        let toks = lex("f(||:\n    a\n    b)\n").expect("should lex");
+        let close_paren_idx = toks
+            .iter()
+            .position(|t| t.kind == TokenKind::Op && t.text == ")")
+            .expect("closing paren token");
+        assert!(
+            close_paren_idx >= 2
+                && toks[close_paren_idx - 2].kind == TokenKind::Dedent
+                && toks[close_paren_idx - 1].kind == TokenKind::Newline,
+            "the island's DEDENT/NEWLINE must appear immediately before \
+             the closing `)`: {toks:?}"
+        );
+    }
+
+    /// A `:` followed by content on the same physical line never opens an
+    /// island, bracketed or not — the inline single-statement suite stays
+    /// exactly as layout-free as before.
+    #[test]
+    fn colon_same_line_content_does_not_open_island() {
+        let toks = kinds("f(||: a)\n");
+        assert!(
+            !toks.contains(&TokenKind::Indent) && !toks.contains(&TokenKind::Dedent),
+            "no layout tokens for a same-line inline suite: {toks:?}"
         );
     }
 }

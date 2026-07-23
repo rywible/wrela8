@@ -15,13 +15,20 @@
 //! yes/no) because item E's oracles (xtask's `fuzz parser`/`roundtrip`)
 //! need real content to dump and pretty-print, exactly like a module's.
 //!
-//! Suite parsing note: `()[]{}` suppress NEWLINE/INDENT/DEDENT in the
-//! lexer (02-language.md §1), so a suite-form closure body embedded inside
-//! an enclosing call's argument list (see docs/language/examples/
-//! virtio-storage.wr, `BlockCache.read_file`) has no layout tokens at all —
-//! its statements run back-to-back. `parse_stmt_suite` handles both the
-//! normal (NEWLINE + INDENT) and this embedded (no separator, bounded by
-//! the enclosing bracket) case with one shared implementation.
+//! Suite parsing note: `()[]{}` suppress NEWLINE/INDENT/DEDENT in the lexer
+//! (02-language.md §1) — except a `:` immediately followed by a newline
+//! opens a *layout island* (lexer.rs's module doc comment) that resumes
+//! real layout tokens for exactly that suite, so a suite-form closure body
+//! embedded inside an enclosing call's argument list (see
+//! docs/language/examples/virtio-storage.wr, `BlockCache.edit`/`peek`)
+//! parses through the ordinary NEWLINE+INDENT...DEDENT path in
+//! `parse_stmt_suite`, the same as any top-level suite. The only case left
+//! with no layout tokens at all is a `:` followed by real content on the
+//! *same* physical line (no newline ever appears for the lexer to act on),
+//! handled by `parse_inline_stmt_seq` — restricted to exactly one statement,
+//! since two statements jammed onto one line with no separator token is a
+//! genuine grammar ambiguity (`plans/pre-M3-findings.md`'s roundtrip-
+//! ambiguity finding; ledger clause syntax.lexer.layout-islands).
 //!
 //! Errors are fail-fast (plans/M1.md decision 2): the first one stops
 //! parsing.
@@ -84,14 +91,18 @@ pub fn parse_any(tokens: Vec<Token>) -> Result<Parsed, ParseError> {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    /// Nesting depth of "embedded" statement suites — a `|params|: suite`
-    /// (or other colon-suite) sitting inside an enclosing `()[]{}` where the
-    /// lexer has suppressed NEWLINE/INDENT/DEDENT entirely (module doc
-    /// comment above, and `parse_stmt_suite`). Statements run back-to-back
-    /// there with no separator; `end_of_simple_stmt` only tolerates a
-    /// missing terminator while this is nonzero — at true depth 0 the
-    /// lexer always inserts a real `Newline`, so two statements jammed onto
-    /// one physical line remain a real error outside this context.
+    /// Nesting depth of single-line inline suites (`parse_inline_stmt_seq`):
+    /// a `:` followed by real content on the same physical line, with no
+    /// `Newline` token ever going to appear (module doc comment above —
+    /// a `:`-newline instead opens a layout island or an ordinary indented
+    /// block, never this path). `parse_inline_stmt_seq` now parses exactly
+    /// one statement, but that one statement's own `end_of_simple_stmt`
+    /// call still needs to tolerate having no terminator token to consume
+    /// while this is nonzero (there's nothing there — the enclosing token,
+    /// `)`/`]`/`}`/`,`/Eof/Dedent, is what `parse_inline_stmt_seq` itself
+    /// checks for once control returns to it). At true depth 0 the lexer
+    /// always inserts a real `Newline`, so this fallback is unreachable
+    /// outside an inline suite.
     inline_depth: u32,
 }
 
@@ -2122,11 +2133,14 @@ impl Parser {
         Ok(stmts)
     }
 
-    /// The suite following a `:` — either a normal indented block, or (see
-    /// the module doc comment) an embedded run of statements with no
-    /// layout tokens at all, when this suite sits inside an enclosing
-    /// `()[]{}` that already suppressed them. Assumes the caller has
-    /// already consumed the leading `:`.
+    /// The suite following a `:` — either a normal indented block (now the
+    /// path taken for every multi-statement suite, including one embedded
+    /// in an enclosing `()[]{}`: the lexer's layout islands, see
+    /// `lexer.rs`'s module doc comment, hand real NEWLINE/INDENT/DEDENT
+    /// tokens back to the parser for exactly this case), or (see the module
+    /// doc comment) the single-statement inline form when the `:` is
+    /// followed by real content on the same physical line instead of a
+    /// newline. Assumes the caller has already consumed the leading `:`.
     fn parse_stmt_suite(&mut self) -> Result<Vec<Stmt>, ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
@@ -2142,24 +2156,35 @@ impl Parser {
         }
     }
 
+    /// The single-line inline suite: `:` immediately followed by real
+    /// content on the same physical line, with no layout tokens at all
+    /// (`if x: return 0`, or — since the lexer now only suppresses layout
+    /// entirely for a suite that never sees a newline before its content —
+    /// the same shape found one bracket deeper, e.g. a closure passed as a
+    /// call argument written `|x|: x.size` with nothing after it on the
+    /// line). Holds **exactly one** statement: with no separator token
+    /// available here (no real `Newline` was ever going to appear — a
+    /// `:`-newline always opens a layout island or an ordinary indented
+    /// block instead, see `parse_stmt_suite`), a second statement's leading
+    /// tokens are genuinely ambiguous with the first statement's own
+    /// trailing expression grammar (`plans/pre-M3-findings.md`'s
+    /// roundtrip-ambiguity finding) — so it is rejected outright rather than
+    /// guessed at.
     fn parse_inline_stmt_seq(&mut self) -> Result<Vec<Stmt>, ParseError> {
-        let mut stmts = vec![self.parse_stmt()?];
-        loop {
-            if self.at_kind(TokenKind::Newline) {
-                self.bump();
-                break;
-            }
-            if matches!(self.peek_kind(), TokenKind::Eof | TokenKind::Dedent)
-                || self.at_op(")")
-                || self.at_op("]")
-                || self.at_op("}")
-                || self.at_op(",")
-            {
-                break;
-            }
-            stmts.push(self.parse_stmt()?);
+        let stmt = self.parse_stmt()?;
+        if self.at_kind(TokenKind::Newline) {
+            self.bump();
+        } else if !(matches!(self.peek_kind(), TokenKind::Eof | TokenKind::Dedent)
+            || self.at_op(")")
+            || self.at_op("]")
+            || self.at_op("}")
+            || self.at_op(","))
+        {
+            return Err(self.error_here(
+                "an embedded suite on one line holds one statement; use an indented block",
+            ));
         }
-        Ok(stmts)
+        Ok(vec![stmt])
     }
 
     /// Validates (without consuming) that a simple statement has ended:

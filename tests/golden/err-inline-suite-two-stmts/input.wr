@@ -1,0 +1,13 @@
+module examples.err_inline_suite_two_stmts
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+fn run(body: fn() -> u64) -> u64:
+    return body()
+
+fn use_it(take p: Packet) -> u64:
+    return run(||: x = take p x.size)

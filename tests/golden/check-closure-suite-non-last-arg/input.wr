@@ -1,0 +1,16 @@
+module examples.check_closure_suite_non_last_arg
+
+resource struct Packet:
+    size: u64
+
+    init(mut self, size: u64):
+        self.size = size
+
+fn combine(body: fn() -> u64, extra: u64) -> u64:
+    return body() + extra
+
+pub fn use_it(take p: Packet) -> u64:
+    return combine(||:
+        x = take p
+        x.size
+    , 1)
