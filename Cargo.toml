@@ -1,6 +1,16 @@
-[package]
-name = "wrela8"
+[workspace]
+resolver = "2"
+members = [
+    "crates/wrela-machine",
+    "crates/wrela-compiler",
+    "crates/wrela-vmm",
+    "crates/xtask",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+# Keep this list short. A dependency is a liability the whole stack inherits.
+[workspace.dependencies]
+toml = "0.8"

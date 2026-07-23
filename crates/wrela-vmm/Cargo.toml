@@ -1,0 +1,7 @@
+[package]
+name = "wrela-vmm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wrela-machine = { path = "../wrela-machine" }

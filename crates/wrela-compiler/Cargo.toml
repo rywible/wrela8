@@ -1,0 +1,11 @@
+[package]
+name = "wrela-compiler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wrela-machine = { path = "../wrela-machine" }
+
+[[bin]]
+name = "wrela"
+path = "src/bin/wrela.rs"

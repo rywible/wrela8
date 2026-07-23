@@ -1,0 +1,8 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+toml.workspace = true
+wrela-compiler = { path = "../wrela-compiler" }

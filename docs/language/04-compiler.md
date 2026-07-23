@@ -71,8 +71,12 @@ report.
 ## 2. Scheduling semantics
 
 The reference executor is a cooperative, priority-banded event loop (device
-bottom halves; normal turns; background). These behaviors are semantic and
-survive every lowering:
+bottom halves; normal turns; background) — **one per core**, over the
+actors placed there. There is no cross-core work stealing and no migration;
+cross-core edges are the generated bounded rings of §3, and the only
+scheduling nondeterminism in the whole machine is cross-core admission
+order at each mailbox, which record/replay logs. These behaviors are
+semantic and survive every lowering:
 
 - admission occupies one logical mailbox slot until selection; selection is
   FIFO per mailbox by admission order;
@@ -118,10 +122,24 @@ with a why-chain (allocation site, escape path, footprint contribution);
 silent promotion of an unbounded allocation is forbidden — if no finite bound
 exists, the build fails.
 
-Placement generalizes to cores: every actor gets exactly one build-time core
-assignment (trivially core 0 on the advertised single-core profile),
-inferred deterministically from published facts unless the image overrides
-it. No migration, no work stealing.
+Placement generalizes to the machine's four cores. Every actor gets exactly
+one build-time core assignment; explicit image assignments (`core=`) are
+fixed first, then the compiler places the rest deterministically from
+published facts only — proved maximum uninterrupted turn work, owned image
+and mailbox bytes, and reserved pool bytes — sorting by descending work,
+then bytes, then canonical identity, and assigning each actor to the core
+whose resulting (work, bytes) pair is lexicographically smallest. The
+inputs, the inference, and the final table are published in the report and
+sealed into the build identity, so placement is reproducible and load
+imbalance is a build-time diagnostic, not a runtime discovery. There is no
+migration and no work stealing.
+
+Cross-core actor edges keep identical message semantics, lowered to
+compiler-generated bounded SPSC rings in guest memory with sealed
+publish/acquire ordering — no app-visible atomics or fences exist. A
+`@driver`'s vectors, pools, permits, and recovery lanes live on its core;
+there is no cross-core hardware state. Same-core edges keep every as-if
+fast path of §6.
 
 ## 4. Cancellation and recovery mechanics
 
@@ -164,10 +182,20 @@ The compiler maintains three verified whole-image representations:
 `SemanticWir` (specialized, structured operations and proofs), `FlowWir`
 (typed SSA retaining ownership, capacity, wait-for, and checkpoint facts —
 the only serialized IR, where ordinary optimization happens), and
-`MachineWir` (AArch64 ABI, layout, and every UB-bearing backend fact). Safety
-validation runs on the first two; every backend fact (`noalias`, ranges,
-alignment) must trace to a semantic proof — never be invented from naming or
-optimism.
+`MachineWir` (AArch64 ABI, layout, and every machine-level fact). The
+toolchain's **own backend** lowers MachineWir to Cortex-A76-tuned machine
+code and emits the bootable image directly at the machine spec's fixed
+addresses — there is no LLVM and no external linker anywhere in the output
+path (rustc's own build of the toolchain is the only place LLVM exists,
+outside every artifact this contract covers). One CPU means the cost model
+that discharges `@budget`, checkpoint, and frame proofs is the real
+microarchitecture, not an abstraction. NEON code generation for the stdlib
+vector types ([05 §8.1](05-library.md)) is a first-class backend
+obligation — the flagship's compositor is its hottest loop. Safety
+validation runs on SemanticWir and FlowWir; every backend fact (aliasing,
+ranges, alignment) must trace to a semantic proof — never be invented from
+naming or optimism. That proof-tracing discipline is what substitutes for
+a third-party backend's soak time.
 
 **Actor as-if.** A call through an actor handle is always a logical admission
 under capacity and FIFO rules. Subject to that, the compiler may use direct
@@ -229,11 +257,13 @@ warning[performance]: loop may perform 4096 cross-actor turns per request
 
 ## 8. Reproducibility and phases
 
-Identical declared inputs, compiler revision, target package, profile, and
-quotas produce a byte-for-byte identical unsigned image and report. No
+Identical declared inputs, compiler revision, machine revision, profile,
+and quotas produce a byte-for-byte identical unsigned image and report. No
 timestamps, host paths, or undeclared environment data enter the artifact.
 Pure comptime results may be cached content-addressed; a hit must be
-observationally identical to evaluation.
+observationally identical to evaluation. The same discipline extends to the
+shipped appliance triple — host image, VMM, wrela image — so
+reproducibility covers everything a device runs ([06 §9](06-machine.md)).
 
 The logical build phases (implementations may fuse them when results and
 diagnostics are equivalent): parse and collect; resolve signatures and
@@ -246,42 +276,50 @@ layout pass); emit and link, verifying section sizes against the report.
 
 ## 9. Boot
 
-The single revision 0.1 target is `aarch64-qemu-virt-uefi` (PE/COFF UEFI
-application; QEMU `virt`, GICv3). The generated entry validates the boot
-contract, performs all firmware-backed discovery and allocation, calls
-`GetMemoryMap` + `ExitBootServices` with no intervening boot-service call
-(retrying only that pair on a stale map key, boundedly), installs fault and
-interrupt state, mints capabilities, initializes drivers and actors in
-dependency order, opens mailboxes atomically, and enters the event loop.
-Comptime moves deterministic construction out of boot; device reset, feature
-negotiation, and secret provisioning remain runtime boot work. Firmware boot
-services are unreachable after the transition.
+The single target is the wrela machine ([06 §3](06-machine.md)): the VMM
+consumes the image report, preconfigures every declared device and
+shared-memory window, loads the image at the fixed base, and starts vCPU 0
+at the entry — no firmware, no discovery, no UEFI. The generated entry
+validates the machine revision and info page, installs per-core state,
+releases the remaining vCPUs, mints capabilities, initializes drivers and
+actors in image dependency order, opens mailboxes atomically, and enters
+the per-core event loops. Comptime moves deterministic construction out of
+boot; device reset, feature verification, and secret provisioning remain
+runtime boot work.
 
 ## 10. Record/replay
 
-An optional but, when advertised, normative deterministic profile. Record
-mode captures every nondeterministic input at sealed boundaries: device
-completions and DMA-written bytes, interrupt arrivals with their exact
-injection checkpoints, timer and clock observations, entropy, and digests of
-externally visible outputs. Ordinary code cannot read raw cycle counters or
-entropy — only recording capabilities. Replay feeds recorded inputs from a
-virtual boundary, injects interrupts at the same checkpoints, suppresses real
-device writes, and diagnoses any divergence in inputs, outputs, or
-checkpoint order. Log buffers are bounded pools with a declared full-buffer
-policy (stop with marker, stream, or abandon) — never silent drops. The
+Determinism is a machine property, not an optional profile: the VMM injects
+vectors only at compiler-emitted checkpoints and records at the virtio
+boundary ([06 §8](06-machine.md)). Record mode captures every
+nondeterministic input: device completions and DMA-written bytes, each
+vector raise with its consuming checkpoint, clock observations, entropy,
+cross-core admission order per mailbox, and digests of every externally
+visible output — including display frames, so replay reproduces what the
+user saw pixel-exactly. Ordinary code cannot read raw cycle counters or
+entropy — only recording capabilities. Replay feeds recorded inputs from
+virtual device models, suppresses real outputs, and diagnoses any
+divergence in inputs, outputs, or checkpoint order. Log buffers are bounded
+pools with a declared full-buffer policy (stop with marker, stream, or
+abandon) — never silent drops. The
 profile must also expose cleanup-graph states (quarantine, pending nodes,
 receipt transfers, mailbox reopening) as first-class replay events, so a
 replay viewer can answer "why is my request not resolving."
 
 ## 11. Conformance
 
-A revision 0.1 toolchain conforms only if it implements every normative rule
-in chapters 01–05 for its advertised target profile. The archived draft
-specification's enumerated conformance-test catalogue
-([archive](../archive/v0.1-draft/08-build-contract.md)) remains the working
-checklist; the worked example
+A toolchain conforms only if it implements every normative rule in chapters
+01–06 for the machine revision it advertises. The digest-pinned test runner
+is the wrela VMM itself (QEMU stands in only during bootstrap and is then
+retired); machine implementations additionally pass the machine conformance
+suite of [06 §10](06-machine.md). The archived draft's enumerated test
+catalogue ([archive](../archive/v0.1-draft/08-build-contract.md)) remains
+the working checklist; the worked example
 ([virtio-storage.wr](examples/virtio-storage.wr)) is a required
-integration-shape test once the corresponding library APIs exist. Structural
-properties (direct calls, static frames, scoped-pool reset) are not benchmark
-claims; performance numbers require a named target, workload, and
-measurement.
+integration-shape test once the corresponding library APIs exist.
+Structural properties (direct calls, static frames, scoped-pool reset,
+exitless I/O) are not benchmark claims. The flagship's claims are named
+measurements against a general-purpose OS on comparable hardware: cold
+boot time, input-to-photon latency, sustained frame time under load,
+zero memory-pressure terminations, and instant resume — each measured on a
+named workload before it is advertised.

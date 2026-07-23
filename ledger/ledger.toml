@@ -1,0 +1,99 @@
+schema = 1
+
+# --- source language ------------------------------------------------------
+
+[[clause]]
+id = "source.indentation.four-spaces"
+doc = "02-language.md#1"
+status = "test"
+tests = ["golden/lex-basic"]
+
+[[clause]]
+id = "source.indentation.no-tabs"
+doc = "02-language.md#1"
+status = "test"
+tests = ["golden/lex-tab-error"]
+
+[[clause]]
+id = "source.literals.integer-underscores"
+doc = "02-language.md#1.1"
+status = "test"
+tests = ["golden/lex-basic"]
+
+[[clause]]
+id = "source.identifiers.ascii-only"
+doc = "02-language.md#1"
+status = "gap"
+note = "reject non-ASCII identifier bytes with a named diagnostic"
+
+[[clause]]
+id = "docs.examples.wrela-blocks-lex"
+doc = "02-language.md#1"
+status = "test"
+tests = ["xtask:corpus"]
+note = "every ```wrela block in docs/language/ lexes; parse joins at M1"
+
+# --- value model ----------------------------------------------------------
+
+[[clause]]
+id = "values.data.copies-implicitly"
+doc = "02-language.md#3"
+status = "gap"
+
+[[clause]]
+id = "values.resource.move-spells-take"
+doc = "02-language.md#3"
+status = "gap"
+
+[[clause]]
+id = "values.exclusivity.no-overlap"
+doc = "02-language.md#3"
+status = "gap"
+
+# --- actors ---------------------------------------------------------------
+
+[[clause]]
+id = "actors.turns.non-reentrant"
+doc = "02-language.md#9.2"
+status = "gap"
+
+[[clause]]
+id = "actors.send.statement-requires-proof"
+doc = "02-language.md#9.4"
+status = "gap"
+
+[[clause]]
+id = "actors.placement.deterministic"
+doc = "04-compiler.md#3"
+status = "gap"
+
+# --- compiler contract ----------------------------------------------------
+
+[[clause]]
+id = "compiler.repro.byte-identical"
+doc = "04-compiler.md#8"
+status = "gap"
+note = "cargo xtask repro fails closed until image emission exists"
+
+[[clause]]
+id = "compiler.eval.matches-backend"
+doc = "04-compiler.md#6"
+status = "gap"
+note = "cargo xtask diff-eval fails closed until both sides exist"
+
+# --- machine --------------------------------------------------------------
+
+[[clause]]
+id = "machine.boot.no-discovery"
+doc = "06-machine.md#3"
+status = "gap"
+
+[[clause]]
+id = "machine.interrupts.checkpoint-injection"
+doc = "06-machine.md#4"
+status = "gap"
+
+[[clause]]
+id = "machine.display.golden-frames"
+doc = "06-machine.md#7"
+status = "gap"

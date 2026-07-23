@@ -2,32 +2,44 @@
 
 ## 1. Purpose
 
-wrela builds fixed-function appliance images: storage targets, network
-functions, routers, kiosks, embedded guests, and similarly sealed systems. It
-is designed around facts a general-purpose, separately compiled language cannot
-assume:
+wrela builds fixed-function appliance images: sealed systems whose complete
+behavior is known at build time. Its flagship product is **wrela OS** — an
+appliance operating system for creatives that runs on a Raspberry Pi 5 with
+1 GiB of memory, every app built in statically, nothing downloadable, with
+instant boot, deterministic latency, and reproducible-to-the-pixel
+execution as the claims that beat a general-purpose OS on its own hardware
+class.
+
+The stack is owned front to back: the language, the compiler and its
+aarch64 backend (no LLVM, no external linker), the standard library and its
+drivers, and the virtual machine the image runs on — the **wrela machine**
+([06](06-machine.md)), implemented by an in-house VMM on Linux/KVM and
+macOS/Hypervisor.framework. The language is designed around facts this
+closed stack makes true:
 
 - the complete code graph is known at build time;
 - the actor and task set is finite and bounded;
-- hardware bindings and resource budgets are build inputs;
-- no code enters the image after it is sealed; and
-- revision 0.1 runs application code on one core.
+- the machine — 4 cores, one memory map, one closed virtio device set — is
+  a versioned contract, not a discovered environment;
+- hardware bindings and resource budgets are build inputs; and
+- no code enters the image after it is sealed.
 
 The compilation unit is not a library or a process. It is the machine image.
 
 ## 2. The closed world
 
 An image contains exactly the runtime code reachable from its single `@image`
-entry, the selected target package, and the actors, tasks, ISR bindings, and
+entry, the wrela machine contract, and the actors, tasks, ISR bindings, and
 teardown paths wired by the image. The compiler rejects a build whose
 reachability is not closed. There is no dynamic loader, JIT, runtime dispatch,
 `dyn` type, or unbounded task creation.
 
-A revision 0.1 image has one address space, one application core, one
-cooperative event loop, a bounded generated set of actor and task frames, and
-target-defined interrupt entry. The one-core rule eliminates simultaneous
-execution of ordinary actor code. It does **not** eliminate asynchronous
-interleaving, compiler reordering, DMA concurrency, or interrupt preemption;
+An image has one address space and the machine's four cores, each running
+one cooperative event loop. Every actor lives on exactly one core, assigned
+at build time; within a core nothing runs simultaneously, and across cores
+the only interaction is the same typed message channels, lowered to
+generated bounded rings. Placement does **not** eliminate asynchronous
+interleaving, compiler reordering, DMA concurrency, or interrupt delivery;
 those remain explicit parts of the model.
 
 The result of `@image build()` is a typed graph: device bindings, actor
@@ -66,7 +78,8 @@ each generic's contract. There are no interface declarations.
 **Actors.** Mutable state lives in exactly one actor. Actors exchange messages
 through typed async calls; one turn runs at a time. `async fn` may suspend;
 plain `fn` may not. A `group` scope is the unit of deadline, cancellation,
-and bounded child work.
+and bounded child work. Every actor has one build-time core — inferred, or
+set in the image — and nothing about the APIs changes across cores.
 
 **Errors.** Recoverable failures are `Result` values propagated with `?`. Bugs
 abandon the actor and reach its supervisor. Cross-actor calls add one composed
@@ -126,9 +139,12 @@ CPU access to device-owned DMA payloads; ISR effects outside the ISR set; and
 reclaim of in-flight DMA on an unquiesced device.
 
 This is language-level isolation in one address space, not process-style fault
-containment. A compiler bug, target-runtime bug, firmware bug, malicious
-device, or incorrect target ABI can compromise the entire image. Typed MMIO,
-DMA confinement, and an IOMMU shrink that trusted base; they do not erase it.
+containment. The trusted base is: the compiler and its generated code, the
+wrela VMM and its device models, and the host kernel. The first two are
+in-house and codesigned; nothing in the boot-to-pixel path is third-party
+firmware, a bootloader, a GPU driver, or a vendor blob. A bug in any
+trusted component can still compromise the entire image — ownership of the
+stack makes the base auditable, not infallible.
 
 The safe language has no pointer arithmetic and no `unsafe` block. Any future
 FFI or unsafe facility is a separately auditable target capability outside
@@ -150,16 +166,15 @@ frame while retaining a build-time memory ceiling.
 
 ## 7. Revision boundary
 
-Revision 0.1 deliberately excludes: multi-core runtime execution (the
-advertised profile is single-core `aarch64-qemu-virt-uefi`); shared-memory
-concurrency and app-visible atomics; dynamic loading; garbage collection;
-reflection and dynamic dispatch; nominal interface/trait declarations
-(generics are structural); async and escaping closures; legacy PCI INTx
-sharing; privileged-ISR escape hatches; non-ASCII identifiers; and a general
-user-defined iteration protocol.
+Revision 0.1 deliberately excludes: shared-memory concurrency and
+app-visible atomics (cores interact only through actor messages);
+hardware-accelerated rendering (the display path is software rendering onto
+the machine's framebuffer device — [06 §7](06-machine.md)); dynamic loading
+and downloadable apps; garbage collection; reflection and dynamic dispatch;
+nominal interface/trait declarations (generics are structural); async and
+escaping closures; UEFI and any firmware boot path; non-ASCII identifiers;
+and a general user-defined iteration protocol.
 
-Each exclusion is reversible in a later revision without breaking the model.
-Multicore in particular is designed so that application APIs do not change
-when a target offers more cores: actors gain build-time core placement, and
-cross-core edges lower to generated bounded rings. That design lives outside
-this normative specification until a multicore profile is advertised.
+Each exclusion is reversible in a later revision without breaking the
+model; a new device or core count is a machine revision, never an ambient
+environment change.

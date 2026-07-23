@@ -1,9 +1,15 @@
 # Hardware
 
 The driver surface of the language. A wrela image has one address space;
-driver/application separation is typed authority, not privilege rings. The
-reference virtio contracts target OASIS VIRTIO 1.2 split rings; each target
-package pins the protocol revision it implements.
+driver/application separation is typed authority, not privilege rings.
+
+The machine's device set is closed and its drivers ship with the stdlib
+([06 §6](06-machine.md)) — appliance authors wire drivers in the image and
+call their safe APIs; they do not write drivers. This chapter is how those
+stdlib drivers are themselves written and checked: the same safe language,
+under the rules below. The virtio contracts follow OASIS VIRTIO 1.2 split
+rings as profiled by the machine spec, which also fixes the display
+device's software-rendering scanout contract ([06 §7](06-machine.md)).
 
 ## 1. Capabilities
 
@@ -148,10 +154,12 @@ completions and resolves receipts without re-entering anyone.
 ## 6. Interrupts
 
 The ownership unit is a **vector**: exactly one handler per vector, possibly
-several vectors per driver (MSI-X per-queue plus config). Virtio-MMIO uses
-one IRQ whose handler demultiplexes status bits. Shared legacy INTx is
-rejected. The vector table is generated from the image graph; source cannot
-bind an unowned vector.
+several vectors per driver (one per queue, plus configuration). The wrela
+machine's vectors are paravirtual — shared-memory pending words delivered
+only at compiler-emitted checkpoints, with no emulated interrupt controller
+([06 §4](06-machine.md)) — so delivery is deterministic and identical on
+every host. The vector table is generated from the image graph; source
+cannot bind an unowned vector.
 
 An interrupt handler is a plain `fn` bound to a vector at image/driver
 wiring (`irq.bind(self.on_queue_irq)`). The binding — not a keyword — makes
@@ -259,9 +267,10 @@ reclaims possibly device-owned memory.
 
 ## 10. Residual trusted base
 
-Trusted: the compiler and generated code; target boot/interrupt/MMIO/DMA/
-cache/reset implementations; sealed capability constructors; firmware and
-hypervisor behavior assumed by the target contract; IOMMU configuration. The
-language keeps apps away from MMIO and safe drivers away from arbitrary
-memory; it cannot make one address space as fault-contained as separate
-hardware processes, and documentation must preserve that distinction.
+Trusted: the compiler and generated code; the wrela VMM and its device
+models; the host kernel; and the sealed capability constructors. All but
+the host kernel are in-house ([06 §9](06-machine.md)); there is no
+third-party firmware or vendor blob in the path. The language keeps apps
+away from MMIO and safe drivers away from arbitrary memory; it cannot make
+one address space as fault-contained as separate hardware processes, and
+documentation must preserve that distinction.

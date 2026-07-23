@@ -3,7 +3,10 @@
 wrela is a language for sealed, fixed-function appliance images: the
 compilation unit is the bootable machine image, the whole code graph is
 closed at build time, and everything — memory, tasks, mailboxes, DMA — has a
-proven build-time bound.
+proven build-time bound. Its flagship product is **wrela OS**, an appliance
+operating system for creatives on a Raspberry Pi 5 with 1 GiB of memory —
+all apps built in statically, software-rendered, instant-on, and
+reproducible to the pixel.
 
 ## Reading order
 
@@ -14,11 +17,35 @@ proven build-time bound.
 | [03 — Hardware](03-hardware.md) | driver authors | Capabilities, MMIO, DMA, ISRs, receipts, reset. |
 | [04 — The compiler contract](04-compiler.md) | implementers | Every proof, inference, report, and as-if rule. |
 | [05 — Library contracts](05-library.md) | both | Standard types the invariants depend on. |
+| [06 — The wrela machine](06-machine.md) | implementers | The versioned virtual platform: CPU, boot, interrupts, devices, hosts. |
 | [examples/virtio-storage.wr](examples/virtio-storage.wr) | both | Worked end-to-end appliance (aspirational). |
 
 The organizing rule: **chapter 02 is everything a user must hold in their
 head; chapter 04 is everything the compiler must prove so that chapter 02
 stays small.** If a concept appears in 04, source code never spells it.
+
+## Platform decisions (2026-07)
+
+The project targets one designed machine, front to back:
+
+- **One machine** ([06](06-machine.md)): 4 vCPUs at an ARMv8.2-A/NEON
+  baseline (Cortex-A76 cost model), one memory map, a closed virtio device
+  set whose drivers ship with the stdlib. New hardware is a machine
+  revision, never a discovered environment.
+- **Hosted, not bare metal**: a Firecracker-class Rust VMM on Linux/KVM
+  (the Pi 5 flagship host) and macOS/Hypervisor.framework (development and
+  Mac hosts). QEMU is bootstrap-only, then retired.
+- **Direct boot, no UEFI**; paravirtual interrupts injected only at
+  compiler checkpoints (no emulated GIC); shared-memory doorbells — exits
+  and power are codesign outputs, and determinism is a machine property.
+- **Software rendering**: CPU/NEON compositing in the guest; the display
+  device is a zero-copy, tile-scatter-gather framebuffer. Every frame is
+  replayable.
+- **Multicore is normative**: every actor has a build-time core; APIs are
+  identical across cores; cross-core parallelism is ownership transfer.
+- **Own toolchain**: no LLVM, no external linker — an in-house
+  MachineWir→A76 backend emits the bootable image directly, under the
+  proof-tracing discipline of [04 §6](04-compiler.md).
 
 ## Relation to the earlier draft
 

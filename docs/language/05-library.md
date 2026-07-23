@@ -173,6 +173,22 @@ every data type are compiler-generated; core scalar operators never desugar.
 that `?` consumes. `Duration` declares `add`/`subtract`/`less_than` with
 ordinary checked overflow.
 
+### 8.1 SIMD vectors
+
+The closed vector set — `u8x16`, `i8x16`, `u16x8`, `i16x8`, `u32x4`,
+`i32x4`, `f32x4`, and `u64x2`/`i64x2`/`f64x2` — are 128-bit **data** types:
+they copy, they have structural `==`, and nothing else in the value model
+notices them. Lanewise arithmetic uses the ordinary operators (element
+semantics identical to the scalar type, including wrapping `+%` peers and
+abandonment on lanewise checked overflow — abandonment reports the first
+faulting lane); shuffles, saturating and widening ops, lane insert/extract,
+masks, and loads/stores from `Bytes` are named methods. Because the machine
+has one ISA, every operation lowers to a fixed NEON sequence with no
+portability fallback — the mapping is part of the backend contract
+([04 §6](04-compiler.md)) and the compositor's inner loops are its
+benchmark. SIMD types are forbidden in ISR-bound code like floats, and
+permitted everywhere else data is.
+
 ## 9. Image builder intrinsics
 
 `Image`, `group`, actor admission, and pool construction are
@@ -184,9 +200,10 @@ compiler-recognized intrinsics even when a package supplies their surface:
   boot still verifies the real device.
 - `img.driver(A[...], device=d, ...)` / `img.actor(A, mailbox=n, ...)` —
   actor declarations whose arguments must match `A.init` (or its literal
-  constructor) after generated capabilities and handles are substituted.
-  `decl.handle()` installs an `Actor[A]` identity as another actor's
-  `init` dependency.
+  constructor) after generated capabilities and handles are substituted; an
+  optional `core=` fixes placement, otherwise it is inferred
+  ([04 §3](04-compiler.md)). `decl.handle()` installs an `Actor[A]`
+  identity as another actor's `init` dependency.
 - `img.pool[T](name=P, slots=N, max_payload=B)` and
   `img.dma_pool[T](name=P, device=d, count=N)` — bind the previously
   unbound pool name `P` exactly once, reserve exact backing, and create the

@@ -96,7 +96,7 @@ requirement = "=0.1.0"
 name = "appliance"
 module = "appliance.image"
 entry = "image"
-target = "aarch64-qemu-virt-uefi"
+target = "wrela-machine-v1"
 profile = "development"
 ```
 
@@ -301,6 +301,8 @@ no fast-math in revision 0.1.
 - `own[P] T` — pool handle (§4).
 - `Static[T]` — a copyable read-only handle to immutable image data. It may
   cross actor boundaries; it exposes no address and no mutation.
+- SIMD vectors `u8x16`, `i16x8`, `u32x4`, `f32x4`, and peers — ordinary
+  data, lowered to NEON ([05 §8.1](05-library.md)).
 
 A `read` or `mut` **parameter** of a bounded type may omit the bound:
 `fn hash(data: Bytes)` accepts any capacity, and `fn fill(mut s: String)`
@@ -560,6 +562,14 @@ mutable fields. Other actors hold generated `Actor[T]` handles minted by the
 image — every possible call edge is a build-time fact. Handles cannot appear
 in messages, replies, or runtime collections.
 
+Every actor also has exactly one build-time **core** on the machine's four
+cores — inferred deterministically ([04 §3](04-compiler.md)) or set with
+`core=` in the image wiring. Nothing in this chapter changes across cores:
+a cross-core call is the same typed call. Cross-core parallelism is
+therefore actors plus moved ownership — the flagship's compositor fans
+tile buffers out to worker actors on other cores and gathers them for
+scanout ([06 §7](06-machine.md)), with no shared mutation anywhere.
+
 ```wrela
 @actor
 pub struct Storage:
@@ -815,7 +825,7 @@ in [05 §9](05-library.md).
 ```wrela
 @image
 pub fn build() -> Image:
-    img = Image(name="appliance", target=Target.aarch64_qemu_virt_uefi)
+    img = Image(name="appliance", target=Target.wrela_machine_v1)
     disk = img.driver(BlkDriver[DriverMode.Irq], device=blk_device, ...)
     storage = img.actor(Storage, disk=disk.handle(), mailbox=16, ...)
     img.supervise(children=[disk, storage], strategy=Restart.OneForOne,
@@ -832,10 +842,12 @@ layout against the read-only `ImageReport` and can fail the build.
 
 `@test` on a zero-argument `fn`/`async fn` declares a test. A test whose
 closure is comptime-legal runs in the build evaluator; `@test(runtime)` or an
-illegal closure makes it a generated image test booted under the pinned
-QEMU/UEFI runner, with statically bounded frames, events, output, and
-timeouts. Image-level scenarios (serial send/expect, shutdown, exit) are
-declared in the manifest. There is no hosted or mocked test target.
+illegal closure makes it a generated image test booted on the digest-pinned
+wrela machine runner — the VMM itself ([06](06-machine.md)) — with
+statically bounded frames, events, output, and timeouts. Image-level
+scenarios (console send/expect, input events, golden-frame digests,
+shutdown, exit) are declared in the manifest. There is no hosted or mocked
+test target.
 
 ## 13. Attributes
 
