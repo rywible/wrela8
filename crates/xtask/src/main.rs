@@ -1183,10 +1183,18 @@ fn golden(update: bool) -> Result<(), String> {
                 .and_then(|s| s.to_str())
                 .ok_or_else(|| format!("bad expected file name: {}", exp.display()))?
                 .to_string();
+            // Invoke with a root-relative path from the repo root: the
+            // path is rendered into some diagnostics (the generic
+            // requirement chain's `instantiated at <path>:<line>` lines),
+            // and an absolute path would bake this checkout's location
+            // into the pinned expectation — failing in any worktree or
+            // clone.
+            let rel_input = input.strip_prefix(root()).unwrap_or(&input);
             let out = Command::new(&wrela)
+                .current_dir(root())
                 .arg("dump")
                 .arg(format!("--stage={stage}"))
-                .arg(&input)
+                .arg(rel_input)
                 .output()
                 .map_err(|e| format!("run wrela: {e}"))?;
             if !out.status.success() {
