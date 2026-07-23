@@ -1,0 +1,13 @@
+module examples.err_match_or_bindings
+
+pub enum Lookup:
+    Found(u64)
+    Absent
+    Failed(u64)
+
+pub fn classify(x: Lookup) -> u64:
+    match x:
+        case .Found(value) | .Failed(code):
+            return value
+        case .Absent:
+            return 0

@@ -1,0 +1,1 @@
+error[match]: `|` alternatives must bind the same names at the same types at 10:30

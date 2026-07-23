@@ -1,0 +1,75 @@
+module examples.matches
+
+pub enum Lookup:
+    Found(u64)
+    Absent
+    Failed(u64)
+
+pub fn classify(x: Lookup) -> u64:
+    match x:
+        case .Found(value):
+            return value
+        case .Absent:
+            return 0
+        case .Failed(code):
+            return code
+
+pub fn classify_guarded(x: Lookup) -> u64:
+    match x:
+        case .Found(value) if value > 100:
+            return value
+        case .Found(value):
+            return value * 2
+        case .Absent:
+            return 0
+        case .Failed(_):
+            return 0
+
+pub fn classify_alt(x: Lookup) -> u64:
+    match x:
+        case .Absent | .Failed(_):
+            return 0
+        case .Found(value):
+            return value
+
+pub fn classify_bool(b: bool) -> u64:
+    match b:
+        case true:
+            return 1
+        case false:
+            return 0
+
+pub fn classify_pair(x: Lookup, y: bool) -> u64:
+    match (x, y):
+        case (.Found(value), true):
+            return value
+        case (.Found(value), false):
+            return value * 2
+        case (.Absent, _):
+            return 0
+        case (.Failed(_), _):
+            return 0
+
+pub fn classify_wildcard(x: Lookup) -> u64:
+    match x:
+        case .Found(value):
+            return value
+        case _:
+            return 0
+
+pub fn describe_option(x: Option[u64]) -> u64:
+    match x:
+        case .Some(value):
+            return value
+        case .None:
+            return 0
+
+pub fn is_found(x: Lookup) -> bool:
+    if x is .Found(_):
+        return true
+    return false
+
+pub fn take_found(x: Lookup) -> u64:
+    if x is .Found(value):
+        return value
+    return 0

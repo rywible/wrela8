@@ -81,6 +81,7 @@ pub fn check(module: &Module) -> Result<(), SemaError> {
     symbols::resolve(module, &symtab)?;
     let decl_items = types::declare(module)?;
     bodies::check(module, &decl_items)?;
+    matches::check(module, &decl_items)?;
     Ok(())
 }
 

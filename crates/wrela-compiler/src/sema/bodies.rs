@@ -41,13 +41,16 @@ use crate::syntax::ast::{
 /// out — mirrors exactly what `types::declare_struct` iterated) so field
 /// defaults, method/init bodies, param defaults, and per-member generics
 /// are all available without re-walking the module.
-struct StructInfo {
-    decl: types::DeclStruct,
+pub(crate) struct StructInfo {
+    pub(crate) decl: types::DeclStruct,
     ast_members: Vec<Member>,
 }
 
 impl StructInfo {
-    fn members(&self) -> impl Iterator<Item = (&Member, &DeclMember)> {
+    /// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness
+    /// pass re-walks struct bodies the same way `check_struct_bodies`
+    /// below does, and needs this same member iteration.
+    pub(crate) fn members(&self) -> impl Iterator<Item = (&Member, &DeclMember)> {
         self.ast_members.iter().zip(self.decl.members.iter())
     }
 
@@ -106,11 +109,17 @@ struct FnInfo {
 /// `module` + `declare`'s already-resolved `decl_items`; nothing here
 /// borrows either, so no lifetime parameter is needed anywhere in this
 /// file (decision 4: clone freely).
-struct ModuleCtx {
+/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
+/// re-walks every body exactly like this one does, and needs the same
+/// struct/enum/pool lookup context to re-derive scrutinee types via
+/// `check_expr` below (only `structs`/`enums`/`module_pools` are actually
+/// read from outside this file; `shapes`/`fns`/`consts` stay private —
+/// nothing else needs them yet).
+pub(crate) struct ModuleCtx {
     shapes: BTreeMap<String, usize>,
-    module_pools: BTreeSet<String>,
-    structs: BTreeMap<String, StructInfo>,
-    enums: BTreeMap<String, types::DeclEnum>,
+    pub(crate) module_pools: BTreeSet<String>,
+    pub(crate) structs: BTreeMap<String, StructInfo>,
+    pub(crate) enums: BTreeMap<String, types::DeclEnum>,
     fns: BTreeMap<String, FnInfo>,
     consts: BTreeMap<String, Type>,
 }
@@ -121,7 +130,7 @@ impl ModuleCtx {
     /// this pass actually checks lives inside a non-generic declaration
     /// (item H's job otherwise), so a local annotation, closure param
     /// annotation, etc. can never legally name a generic parameter here.
-    fn resolve_type(
+    pub(crate) fn resolve_type(
         &self,
         ty: &ast::Type,
         local_pools: &BTreeSet<String>,
@@ -137,7 +146,10 @@ impl ModuleCtx {
     }
 }
 
-fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) -> ModuleCtx {
+/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
+/// rebuilds its own `ModuleCtx` the same dumb, no-state-threaded way
+/// every other pass does (mirrors `mod.rs::dump` re-running `declare`).
+pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) -> ModuleCtx {
     let mut shapes = BTreeMap::new();
     let mut module_pools = BTreeSet::new();
     let mut structs = BTreeMap::new();
@@ -211,14 +223,18 @@ fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) -> ModuleCt
 /// the pool names visible by bare name inside `own[P]` annotations here
 /// (a struct's own `pool` members, when checking one of its
 /// methods/init; otherwise just the module's).
-struct FnCtx {
-    ret_ty: Type,
+/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
+/// re-derives scrutinee types by re-walking every body in lockstep with
+/// this same flat-scope model (only a closure pushes a new scope), so it
+/// needs the same local-variable state `check_expr` reads/writes.
+pub(crate) struct FnCtx {
+    pub(crate) ret_ty: Type,
     locals: Vec<BTreeMap<String, Type>>,
-    local_pools: BTreeSet<String>,
+    pub(crate) local_pools: BTreeSet<String>,
 }
 
 impl FnCtx {
-    fn new(ret_ty: Type, local_pools: BTreeSet<String>) -> FnCtx {
+    pub(crate) fn new(ret_ty: Type, local_pools: BTreeSet<String>) -> FnCtx {
         FnCtx {
             ret_ty,
             locals: vec![BTreeMap::new()],
@@ -226,17 +242,17 @@ impl FnCtx {
         }
     }
 
-    fn push_scope(&mut self) {
+    pub(crate) fn push_scope(&mut self) {
         self.locals.push(BTreeMap::new());
     }
 
-    fn pop_scope(&mut self) {
+    pub(crate) fn pop_scope(&mut self) {
         self.locals.pop();
     }
 
     /// A read-position lookup: innermost scope outward, matching
     /// `symbols::Resolver::resolve_name`'s search order.
-    fn lookup_local(&self, name: &str) -> Option<Type> {
+    pub(crate) fn lookup_local(&self, name: &str) -> Option<Type> {
         for scope in self.locals.iter().rev() {
             if let Some(t) = scope.get(name) {
                 return Some(t.clone());
@@ -245,7 +261,7 @@ impl FnCtx {
         None
     }
 
-    fn lookup_innermost(&self, name: &str) -> Option<Type> {
+    pub(crate) fn lookup_innermost(&self, name: &str) -> Option<Type> {
         self.locals
             .last()
             .expect("at least one scope")
@@ -253,7 +269,7 @@ impl FnCtx {
             .cloned()
     }
 
-    fn insert_local(&mut self, name: String, ty: Type) {
+    pub(crate) fn insert_local(&mut self, name: String, ty: Type) {
         self.locals
             .last_mut()
             .expect("at least one scope")
@@ -658,7 +674,11 @@ fn check_compound_assign(
 
 // --- patterns (02-language.md §7.2) --------------------------------------
 
-fn check_pattern(
+/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
+/// reuses this verbatim to bind a match arm's/`is`'s pattern names into
+/// the re-walked `FnCtx` exactly as this pass does, rather than
+/// reimplementing pattern-binding.
+pub(crate) fn check_pattern(
     p: &Pattern,
     scrutinee: &Type,
     fctx: &mut FnCtx,
@@ -758,7 +778,11 @@ fn check_pattern(
     }
 }
 
-fn literal_array_len(e: &Expr) -> Option<i128> {
+/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
+/// needs the same literal-length reading to decide whether a fixed array
+/// type is component-wise checkable (plans/M2.md item G) or must fall
+/// back to "unbounded, needs a wildcard" like an integer/`char`/string.
+pub(crate) fn literal_array_len(e: &Expr) -> Option<i128> {
     match e {
         Expr::Int(_, text) => parse_int_literal(text),
         _ => None, // needs comptime evaluation; skip the arity check rather than fail closed.
@@ -847,7 +871,11 @@ fn variant_payload_types_for(
     }
 }
 
-fn decl_variant_payload_types(dv: &types::DeclVariant) -> Vec<Type> {
+/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
+/// needs a closed enum's own variant payload types (declaration order) to
+/// build its constructor matrix — the same mapping `bodies.rs` already
+/// uses for pattern typing and `?`'s `From` conversion.
+pub(crate) fn decl_variant_payload_types(dv: &types::DeclVariant) -> Vec<Type> {
     match &dv.payload {
         DeclVariantPayload::None => vec![],
         DeclVariantPayload::Tuple(types_) => types_.clone(),
@@ -864,7 +892,12 @@ fn decl_variant_payload_types(dv: &types::DeclVariant) -> Vec<Type> {
 /// `expected` when one was supplied. Always returns the actual type, so
 /// callers that need it (call-argument checking, `for`'s range endpoints,
 /// ...) get it back either way.
-fn check_expr(
+/// Widened to `pub(crate)` (item G, matches.rs): this is the one function
+/// that pass reuses to synthesize an expression's type in a local
+/// context — the "dumbest workable route" plans/M2.md item G calls for,
+/// rather than reimplementing expression typing to find a `match`/`is`
+/// scrutinee's type.
+pub(crate) fn check_expr(
     expr: &Expr,
     expected: Option<&Type>,
     fctx: &mut FnCtx,
@@ -1284,7 +1317,11 @@ fn is_numeric_scalar(t: &Type) -> bool {
 /// the *same* `[T; 3]` written at two different source locations would
 /// otherwise never compare equal. `same_len_expr` below compares length
 /// expressions by value/name instead, ignoring span.
-fn types_eq(a: &Type, b: &Type) -> bool {
+/// Widened to `pub(crate)` (item G, matches.rs): the `|` alternative
+/// binding-consistency check (02-language.md §7.2: "same bindings, same
+/// types") needs the same span-insensitive comparison bodies.rs uses
+/// throughout, rather than the derived (span-sensitive) `PartialEq`.
+pub(crate) fn types_eq(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Bool, Type::Bool)
         | (Type::U8, Type::U8)
