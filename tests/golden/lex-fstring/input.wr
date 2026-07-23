@@ -1,0 +1,3 @@
+f"plain {{brace}} and {value} mix"
+f"nested {call(a, {1, 2})} end"
+f"line1\n{value}"

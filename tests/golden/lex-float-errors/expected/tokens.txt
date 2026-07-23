@@ -1,0 +1,1 @@
+error[lex]: float exponent requires at least one digit at 1:6

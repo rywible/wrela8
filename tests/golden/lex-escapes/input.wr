@@ -1,0 +1,6 @@
+"a\\b\"c\'d\ne\rf\tg\0h"
+"u\u{48}\u{1F600}"
+b"\x00\xFF\\\x41"
+'\n'
+'\u{1F600}'
+"héllo wörld ☃"

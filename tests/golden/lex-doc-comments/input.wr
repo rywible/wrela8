@@ -1,0 +1,7 @@
+## Counts widgets.
+fn count() -> u64:
+    pass
+
+# plain comment, skipped
+fn other():
+    pass

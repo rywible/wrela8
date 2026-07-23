@@ -23,8 +23,8 @@ tests = ["golden/lex-basic"]
 [[clause]]
 id = "source.identifiers.ascii-only"
 doc = "02-language.md#1"
-status = "gap"
-note = "reject non-ASCII identifier bytes with a named diagnostic"
+status = "test"
+tests = ["golden/lex-non-ascii-ident"]
 
 [[clause]]
 id = "docs.examples.wrela-blocks-lex"
@@ -32,6 +32,40 @@ doc = "02-language.md#1"
 status = "test"
 tests = ["xtask:corpus"]
 note = "every ```wrela block in docs/language/ lexes; parse joins at M1"
+
+[[clause]]
+id = "syntax.lexer.float-literals"
+doc = "02-language.md#1.1"
+status = "test"
+tests = ["golden/lex-floats", "golden/lex-float-errors"]
+note = "digits.digits with optional e/E exponent, or digits with a required exponent; digits required both sides of `.`"
+
+[[clause]]
+id = "syntax.lexer.escapes"
+doc = "02-language.md#1.1"
+status = "test"
+tests = ["golden/lex-escapes", "golden/lex-escape-errors"]
+note = "\\\\ \\\" \\' \\n \\r \\t \\0 everywhere; \\xNN byte-string-only; \\u{H...} text/char-only; validated at lex time, token text stays raw"
+
+[[clause]]
+id = "syntax.lexer.doc-comments"
+doc = "02-language.md#1"
+status = "test"
+tests = ["golden/lex-doc-comments"]
+note = "`##` emits a DocComment token (raw text, attachment is the parser's job); `#` stays skipped"
+
+[[clause]]
+id = "syntax.lexer.triple-quote-reserved"
+doc = "02-language.md#1.1"
+status = "test"
+tests = ["golden/lex-triple-quote"]
+
+[[clause]]
+id = "syntax.lexer.fstring-braces"
+doc = "02-language.md#1.1"
+status = "test"
+tests = ["golden/lex-fstring"]
+note = "{{ and }} are literal braces; a single { opens an interpolation extent with balanced braces; interior expression is not lexed"
 
 # --- value model ----------------------------------------------------------
 
