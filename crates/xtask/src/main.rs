@@ -5,11 +5,13 @@
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
-//!   fuzz       cargo xtask fuzz [lexer|parser] [--iters N] [--seed S];
-//!              deterministic in-tree fuzzer (plans/M1.md items B/E). Both
-//!              targets are live (bare `fuzz` runs `lexer` at the deep
-//!              default budget); each has its own smoke budget wired into
-//!              `check`.
+//!   fuzz       cargo xtask fuzz [lexer|parser|sema] [--iters N] [--seed S];
+//!              deterministic in-tree fuzzer (plans/M1.md items B/E,
+//!              plans/M2.md item I). All three targets are live (bare
+//!              `fuzz` runs `lexer` at the deep default budget); each has
+//!              its own smoke budget wired into `check`. `sema` runs
+//!              lex -> parse -> `sema::check` over corpus/golden-input
+//!              mutations and token-soup, same shape as `parser`.
 //!   roundtrip  pretty-print every parseable corpus entry and ast-* golden
 //!              input, reparse it, and compare the two AST dumps (spans
 //!              stripped) — the parser's `diff-eval` (plans/M1.md item E).
@@ -25,8 +27,13 @@
 //!              iterations), reporting min/median/max total wall time and
 //!              the median for the single largest entry, then comparing
 //!              the median against the locked threshold in
-//!              bench/thresholds.toml. Wired into `check`, after
-//!              roundtrip. `bench guest` and bare `bench` still fail
+//!              bench/thresholds.toml. plans/M2.md item I adds a second
+//!              lane in the same command: lex+parse+`sema::check` over
+//!              every tests/golden/*/input.wr that lexes and parses (both
+//!              sema-ok and sema-error outcomes count; lex/parse-error
+//!              inputs are excluded), same 3+15 shape, its own locked
+//!              median (`check_golden_median_us`). Wired into `check`,
+//!              after roundtrip. `bench guest` and bare `bench` still fail
 //!              closed — the guest lane needs the VMM and record/replay,
 //!              which land at M5.
 //!
@@ -43,6 +50,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
+use wrela_compiler::sema;
 use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
 use wrela_compiler::syntax::parser::{self, Parsed};
 use wrela_compiler::syntax::printer;
@@ -77,7 +85,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser] [--iters N] [--seed S]|roundtrip|ledger|repro|diff-eval|profile|bench <compiler|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema] [--iters N] [--seed S]|roundtrip|ledger|repro|diff-eval|profile|bench <compiler|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -122,6 +130,7 @@ fn check() -> Result<(), String> {
     corpus()?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
+    fuzz_sema_smoke()?;
     roundtrip()?;
     bench_compiler()?;
     ledger()?;
@@ -350,7 +359,7 @@ impl Rng {
 
 fn fuzz(args: &[String]) -> Result<(), String> {
     let (target, rest) = match args.first() {
-        Some(a) if a == "lexer" || a == "parser" => (a.as_str(), &args[1..]),
+        Some(a) if a == "lexer" || a == "parser" || a == "sema" => (a.as_str(), &args[1..]),
         _ => ("lexer", args),
     };
     match target {
@@ -364,8 +373,13 @@ fn fuzz(args: &[String]) -> Result<(), String> {
             let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_PARSER_DEEP_SEED);
             fuzz_parser(iters, seed)
         }
+        "sema" => {
+            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_SEMA_DEEP_ITERS);
+            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_SEMA_DEEP_SEED);
+            fuzz_sema(iters, seed)
+        }
         other => Err(format!(
-            "fuzz: unknown target `{other}` (expected `lexer` or `parser`)"
+            "fuzz: unknown target `{other}` (expected `lexer`, `parser`, or `sema`)"
         )),
     }
 }
@@ -895,6 +909,257 @@ fn fuzz_parser_smoke() -> Result<(), String> {
     })
 }
 
+// --- fuzz: sema ---------------------------------------------------------
+//
+// plans/M2.md item I ("hardening + measurement"). Exactly the parser
+// fuzzer's two strategies and the same corpus seed inputs
+// (`corpus_seed_inputs`, `mutate_seed_input`, `token_soup`) — that seed
+// set already includes every `tests/golden/*/input.wr`, which is what
+// makes it the interesting one here: it includes the sema-*valid*
+// `check-*` programs, not just syntax the lexer/parser alone would
+// generate. One more stage is added to the pipeline: lex, then (on
+// success) parse via `parser::parse` (sema operates on a whole `Module`;
+// there is no fragment entry point for it, unlike the parser fuzzer's
+// `parse_any`), then (on success) `sema::check`.
+//
+// Invariants checked every iteration, under `catch_unwind` (a panic in
+// any stage is a finding): sema never panics; the outcome is a successful
+// dump or exactly one `SemaError` whose `category` is one of the fixed
+// set plans/M2.md decision 1 names (`name`, `type`, `access`, `move`,
+// `init`, `overlap`, `match`, `generic`, `unimplemented`) — any other
+// category string is itself a bug; running the whole pipeline twice on
+// the same input gives an identical outcome (same dump, or the same
+// error stage/category/message/line/col); and on success, `sema::dump`
+// itself does not panic and is byte-identical across two separate calls
+// (checked in addition to, not instead of, the two full-pipeline runs
+// above, since `check`'s dumb re-run-declare-inside-dump shape means dump
+// has its own chance to misbehave independently of `check`). A find
+// writes to `target/fuzz/sema-crash-<n>.wr` and reports the seed +
+// iteration so it reproduces; every find is minimized by hand into a
+// `tests/golden/sema-fuzz-*` case before the underlying bug is fixed.
+
+// Measured on the authoring machine (debug build): ~38-39us/iteration
+// (500_000 iters in ~19.4s, 2_000_000 in ~78s) — sema's extra lex+parse+
+// three-pass-pipeline+dump work per iteration over the parser fuzzer's
+// lex+parse is real but not dramatic, since most mutated/soup inputs fail
+// out at lex or parse and never reach a pass. 2_000_000 lands a bare
+// `cargo xtask fuzz sema` at roughly a minute and a quarter — "very
+// roughly a minute or two" per plans/M2.md item I.
+const FUZZ_SEMA_DEEP_ITERS: u64 = 2_000_000;
+const FUZZ_SEMA_DEEP_SEED: u64 = 1;
+const FUZZ_SEMA_SMOKE_SEEDS: &[u64] = &[1, 2];
+const FUZZ_SEMA_SMOKE_ITERS_PER_SEED: u64 = 1_000;
+
+/// The fixed diagnostic-category set plans/M2.md decision 1 names. Any
+/// `SemaError` whose category is not in this list is itself an
+/// invariant violation, not a legitimate rejection.
+const SEMA_CATEGORIES: &[&str] = &[
+    "name",
+    "type",
+    "access",
+    "move",
+    "init",
+    "overlap",
+    "match",
+    "generic",
+    "unimplemented",
+];
+
+/// One full run of the pipeline the sema fuzzer exercises: lex, then (on
+/// success) parse a whole module, then (on success) `sema::check`.
+/// Exactly one of these four shapes comes back — never a panic, per
+/// `check_sema_invariants`'s `catch_unwind`.
+enum SemaPipelineOutcome {
+    /// A successful `check`, reduced to its dump (determinism means the
+    /// *same* input reproduces a byte-identical dump too).
+    Ok(String),
+    LexErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+    ParseErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+    SemaErr {
+        category: &'static str,
+        message: String,
+        line: u32,
+        col: u32,
+    },
+}
+
+fn run_sema_pipeline_once(input: &str) -> SemaPipelineOutcome {
+    match lexer::lex(input) {
+        Err(e) => SemaPipelineOutcome::LexErr {
+            message: e.message,
+            line: e.line,
+            col: e.col,
+        },
+        Ok(tokens) => match parser::parse(tokens) {
+            Err(e) => SemaPipelineOutcome::ParseErr {
+                message: e.message,
+                line: e.line,
+                col: e.col,
+            },
+            Ok(module) => match sema::check(&module) {
+                Ok(()) => SemaPipelineOutcome::Ok(sema::dump(&module)),
+                Err(e) => SemaPipelineOutcome::SemaErr {
+                    category: e.category,
+                    message: e.message,
+                    line: e.line,
+                    col: e.col,
+                },
+            },
+        },
+    }
+}
+
+/// Every invariant the sema fuzzer checks, once per iteration, on one
+/// input. Runs the whole lex-then-parse-then-check pipeline twice under
+/// `catch_unwind`, mirroring `check_parse_invariants`'s shape, plus a
+/// direct check that a successful `SemaError` category (when the outcome
+/// is instead an error) is one of the fixed set, and that `sema::dump` is
+/// itself panic-free and repeat-call-identical on a successful outcome.
+fn check_sema_invariants(input: &str) -> Result<(), String> {
+    let first = std::panic::catch_unwind(|| run_sema_pipeline_once(input))
+        .map_err(|p| format!("sema panicked: {}", panic_message(&p)))?;
+    let second = std::panic::catch_unwind(|| run_sema_pipeline_once(input))
+        .map_err(|p| format!("sema panicked on a repeat call: {}", panic_message(&p)))?;
+
+    if let SemaPipelineOutcome::SemaErr { category, .. } = &first {
+        if !SEMA_CATEGORIES.contains(category) {
+            return Err(format!(
+                "sema produced an unknown diagnostic category `{category}` (not in the fixed set)"
+            ));
+        }
+    }
+
+    match (&first, &second) {
+        (SemaPipelineOutcome::Ok(d1), SemaPipelineOutcome::Ok(d2)) => {
+            if d1 != d2 {
+                return Err("sema is not deterministic: two runs produced different dumps".into());
+            }
+            Ok(())
+        }
+        (
+            SemaPipelineOutcome::LexErr {
+                message: m1,
+                line: l1,
+                col: c1,
+            },
+            SemaPipelineOutcome::LexErr {
+                message: m2,
+                line: l2,
+                col: c2,
+            },
+        ) => {
+            if m1 != m2 || l1 != l2 || c1 != c2 {
+                return Err(
+                    "sema is not deterministic: two runs produced different lex errors".into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            SemaPipelineOutcome::ParseErr {
+                message: m1,
+                line: l1,
+                col: c1,
+            },
+            SemaPipelineOutcome::ParseErr {
+                message: m2,
+                line: l2,
+                col: c2,
+            },
+        ) => {
+            if m1 != m2 || l1 != l2 || c1 != c2 {
+                return Err(
+                    "sema is not deterministic: two runs produced different parse errors".into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            SemaPipelineOutcome::SemaErr {
+                category: cat1,
+                message: m1,
+                line: l1,
+                col: c1,
+            },
+            SemaPipelineOutcome::SemaErr {
+                category: cat2,
+                message: m2,
+                line: l2,
+                col: c2,
+            },
+        ) => {
+            if cat1 != cat2 || m1 != m2 || l1 != l2 || c1 != c2 {
+                return Err(
+                    "sema is not deterministic: two runs produced different diagnostics".into(),
+                );
+            }
+            Ok(())
+        }
+        _ => Err(
+            "sema is not deterministic: the two runs disagreed on success/failure or which \
+             stage failed"
+                .into(),
+        ),
+    }
+}
+
+fn run_sema_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
+    let mut rng = Rng::new(seed);
+    for i in 0..iters {
+        let input = if i % 2 == 0 {
+            String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
+        } else {
+            token_soup(&mut rng)
+        };
+        if let Err(reason) = check_sema_invariants(&input) {
+            return report_sema_fuzz_failure(seed, i, &input, &reason);
+        }
+    }
+    println!("fuzz sema: {iters} iteration(s) clean (seed={seed})");
+    Ok(())
+}
+
+fn report_sema_fuzz_failure(seed: u64, iter: u64, input: &str, reason: &str) -> Result<(), String> {
+    let dir = root().join("target/fuzz");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let mut n = 0usize;
+    let path = loop {
+        let p = dir.join(format!("sema-crash-{n}.wr"));
+        if !p.exists() {
+            break p;
+        }
+        n += 1;
+    };
+    std::fs::write(&path, input).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Err(format!(
+        "fuzz sema: seed={seed} iteration={iter}: {reason}\n  input written to {}",
+        path.display()
+    ))
+}
+
+fn fuzz_sema(iters: u64, seed: u64) -> Result<(), String> {
+    let seed_inputs = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| run_sema_fuzz(iters, seed, &seed_inputs))
+}
+
+fn fuzz_sema_smoke() -> Result<(), String> {
+    let seed_inputs = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| {
+        for &seed in FUZZ_SEMA_SMOKE_SEEDS {
+            run_sema_fuzz(FUZZ_SEMA_SMOKE_ITERS_PER_SEED, seed, &seed_inputs)?;
+        }
+        Ok(())
+    })
+}
+
 // --- golden ---------------------------------------------------------------
 //
 // Layout: tests/golden/<case>/input.wr + expected/<stage>.txt. Each
@@ -1263,11 +1528,75 @@ fn run_bench_workload(entries: &[BenchEntry], track_index: usize) -> (Duration, 
     (start.elapsed(), tracked)
 }
 
-/// The locked threshold from `bench/thresholds.toml`, in microseconds.
-/// Committed, not generated: it exists to catch algorithmic blowups, not
-/// to track machine noise, so it is set deliberately (see the file's own
-/// comment) rather than recomputed on every run.
-fn compiler_bench_threshold_us() -> Result<u128, String> {
+/// One golden entry for the bench's check lane: its full source text,
+/// restricted (see `bench_check_entries`) to inputs that lex and parse
+/// cleanly, so every timed iteration reaches `sema::check`.
+struct CheckBenchEntry {
+    body: String,
+}
+
+/// Every `tests/golden/*/input.wr` whose lex+parse succeeds — plans/M2.md
+/// item I: "every input whose check currently succeeds AND every one that
+/// fails sema (an error result is still a timed, valid outcome — but
+/// exclude lex/parse-error inputs)". Filtering is done by actually
+/// running lex+parse here (not by name pattern: `err-type-*` etc. are
+/// exactly the sema-error-but-parses cases this lane must include, while
+/// `err-bad-dedent`/`err-unterminated-string`/etc. must not).
+fn bench_check_entries() -> Result<Vec<CheckBenchEntry>, String> {
+    let golden_dir = root().join("tests/golden");
+    let mut dirs: Vec<_> = std::fs::read_dir(&golden_dir)
+        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    let mut entries = Vec::new();
+    for dir in dirs {
+        let input = dir.join("input.wr");
+        if !input.exists() {
+            continue;
+        }
+        let body = std::fs::read_to_string(&input)
+            .map_err(|e| format!("read {}: {e}", input.display()))?;
+        let parses = match lexer::lex(&body) {
+            Ok(tokens) => parser::parse(tokens).is_ok(),
+            Err(_) => false,
+        };
+        if !parses {
+            continue;
+        }
+        entries.push(CheckBenchEntry { body });
+    }
+    if entries.is_empty() {
+        return Err("bench compiler (check lane): no lexing/parsing golden inputs found".into());
+    }
+    Ok(entries)
+}
+
+/// One full check-lane workload iteration: lex, parse, then `sema::check`
+/// every entry (all three always succeed at lex/parse by construction of
+/// `bench_check_entries`; `check`'s own Ok/Err outcome is discarded —
+/// only wall time is measured, and an error result is as valid a timed
+/// outcome as success).
+fn run_check_bench_workload(entries: &[CheckBenchEntry]) -> Duration {
+    let start = Instant::now();
+    for e in entries {
+        if let Ok(tokens) = lexer::lex(&e.body) {
+            if let Ok(module) = parser::parse(tokens) {
+                let _ = sema::check(&module);
+            }
+        }
+    }
+    start.elapsed()
+}
+
+/// A locked threshold from `bench/thresholds.toml`, in microseconds, read
+/// from `[compiler]`'s `key`. Committed, not generated: it exists to
+/// catch algorithmic blowups, not to track machine noise, so it is set
+/// deliberately (see the file's own comment) rather than recomputed on
+/// every run.
+fn bench_threshold_us(key: &str) -> Result<u128, String> {
     let path = root().join("bench/thresholds.toml");
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -1276,15 +1605,18 @@ fn compiler_bench_threshold_us() -> Result<u128, String> {
         .map_err(|e| format!("parse {}: {e}", path.display()))?;
     value
         .get("compiler")
-        .and_then(|c| c.get("full_corpus_median_us"))
+        .and_then(|c| c.get(key))
         .and_then(|v| v.as_integer())
         .map(|v| v as u128)
-        .ok_or_else(|| {
-            format!(
-                "{}: missing [compiler] full_corpus_median_us",
-                path.display()
-            )
-        })
+        .ok_or_else(|| format!("{}: missing [compiler] {key}", path.display()))
+}
+
+fn compiler_bench_threshold_us() -> Result<u128, String> {
+    bench_threshold_us("full_corpus_median_us")
+}
+
+fn check_bench_threshold_us() -> Result<u128, String> {
+    bench_threshold_us("check_golden_median_us")
 }
 
 fn median(sorted: &[Duration]) -> Duration {
@@ -1345,6 +1677,58 @@ fn bench_compiler() -> Result<(), String> {
     }
     println!(
         "bench compiler: median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
+    );
+
+    bench_check_lane()
+}
+
+/// The check lane (plans/M2.md item I): lex+parse+`sema::check` over
+/// every golden input that lexes and parses (both sema-ok and
+/// sema-error outcomes are timed; lex/parse-error golden inputs are
+/// excluded — see `bench_check_entries`). Same 3 warmup + 15 timed shape
+/// as the lex+parse lane above, its own locked median
+/// (`check_golden_median_us`, kept separate from `full_corpus_median_us`
+/// so the two lanes never mask one another).
+fn bench_check_lane() -> Result<(), String> {
+    let entries = bench_check_entries()?;
+
+    for _ in 0..BENCH_WARMUP_ITERS {
+        run_check_bench_workload(&entries);
+    }
+
+    let mut totals = Vec::with_capacity(BENCH_TIMED_ITERS);
+    for _ in 0..BENCH_TIMED_ITERS {
+        totals.push(run_check_bench_workload(&entries));
+    }
+    totals.sort();
+
+    let min = totals[0];
+    let max = totals[totals.len() - 1];
+    let med = median(&totals);
+    let median_us = med.as_micros();
+
+    println!(
+        "bench compiler (check lane): {} golden entries, {BENCH_WARMUP_ITERS} warmup + \
+         {BENCH_TIMED_ITERS} timed iteration(s)",
+        entries.len()
+    );
+    println!(
+        "bench compiler (check lane): total: min={}us median={}us max={}us",
+        min.as_micros(),
+        median_us,
+        max.as_micros()
+    );
+
+    let threshold_us = check_bench_threshold_us()?;
+    if median_us > threshold_us {
+        return Err(format!(
+            "bench compiler (check lane): FAIL: measured median {median_us}us exceeds locked \
+             threshold {threshold_us}us (bench/thresholds.toml) — an algorithmic blowup, not \
+             machine noise, is what this lock exists to catch"
+        ));
+    }
+    println!(
+        "bench compiler (check lane): median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
     );
     Ok(())
 }
