@@ -29,12 +29,18 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
   the commit.
 - `cargo xtask corpus` — every ```wrela block in the docs must lex (and,
   from M1, parse). The docs are test inputs; drift is a failure.
-- `cargo xtask fuzz [lexer|parser] [--iters N] [--seed S]` — deterministic
-  in-tree fuzzer (plans/M1.md items B/E), no external engine. `lexer` is
-  live: seeded splitmix64, random bytes + corpus mutation, checked for
-  panics/invariants every iteration; bare `fuzz` runs it at the deep
-  default (200_000 iterations); a smoke budget is wired into `check`.
-  `parser` fails closed until item E.
+- `cargo xtask fuzz [lexer|parser|sema|eval|lower|async] [--iters N]
+  [--seed S]` — deterministic in-tree fuzzer, no external engine. All six
+  lanes are live: seeded splitmix64, random bytes / corpus mutation /
+  token soup, checked every iteration for panics, nondeterminism,
+  rejections outside the fixed category set, and `internal error:`
+  messages (each of which is a bug, not an outcome). Bare `fuzz` runs
+  `lexer` at its deep default (200_000 iterations); every lane has its own
+  deep default and its own smoke budget wired into `check`. `async`
+  (plans/M7.md item Y) is the one lane that reaches `flowwir_lower` and
+  the async codegen/image-layout path — it mutates the async/actor
+  goldens, since no random byte stream ever spells a valid actor image,
+  and prints its measured reach into that surface every run.
 - `cargo xtask ledger` — validate spec coverage, list gaps.
 - `cargo xtask repro` / `cargo xtask diff-eval` — determinism and
   evaluator-vs-backend oracles; they fail closed until implemented and

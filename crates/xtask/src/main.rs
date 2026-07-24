@@ -5,18 +5,13 @@
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
-//!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower] [--iters N]
-//!              [--seed S]; deterministic in-tree fuzzer (plans/M1.md
-//!              items B/E, plans/M2.md item I, plans/M3.md item F,
-//!              plans/M5.md item G). All five targets are live (bare
-//!              `fuzz` runs `lexer` at the deep default budget); every
-//!              target but `lower` has its own smoke budget wired into
-//!              `check` (`lower`'s own smoke fn exists and runs standalone
-//!              — `fuzz_lower_smoke`'s own doc comment explains exactly why
-//!              it is not yet called from `check()`: it currently
-//!              reproduces a real, pinned, out-of-scope `sema::bodies`
-//!              finding at essentially every seed, well inside any smoke
-//!              budget). `sema` runs lex -> parse -> `sema::check` over
+//!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async]
+//!              [--iters N] [--seed S]; deterministic in-tree fuzzer
+//!              (plans/M1.md items B/E, plans/M2.md item I, plans/M3.md
+//!              item F, plans/M5.md item G, plans/M7.md item Y). All six
+//!              targets are live (bare `fuzz` runs `lexer` at the deep
+//!              default budget) and all six have a smoke budget wired into
+//!              `check`. `sema` runs lex -> parse -> `sema::check` over
 //!              corpus/golden-input
 //!              mutations and token-soup, same shape as `parser`, plus (on
 //!              every iteration whose input parses, ledger clause
@@ -46,7 +41,27 @@
 //!              always the fixed `unimplemented` diagnostic category, and
 //!              every successfully codegen'd program passes
 //!              `codegen::validate`'s own structural checks (ledger clause
-//!              compiler.lower.no-panics).
+//!              compiler.lower.no-panics). `async` (plans/M7.md item Y) is
+//!              the same pipeline's *async* half, which `lower` has
+//!              disclosed since M6-D that it never reaches at all: lex ->
+//!              parse -> `sema::check_typed` -> `lower::lower_program` +
+//!              `flowwir_lower::lower_program` -> `eval_image` (whenever
+//!              the program declares an `@image`) ->
+//!              `codegen::codegen_program_with_async` (the `emit_flowwir_fn`
+//!              driver) -> `async_frame_sizes`/`compute_group_child_indices`
+//!              -> `layout::layout_test_image` with a real `BootCtx`,
+//!              i.e. `bin/wrela.rs::test_cmd`'s own runtime tier stage for
+//!              stage. Generation is biased at the surface it covers —
+//!              mutation bases are the fixed `ASYNC_SEED_CASES` list of
+//!              async/actor goldens, since no random byte stream ever
+//!              spells a valid actor image — and every run prints its own
+//!              measured reach (how many iterations type-checked, lowered
+//!              >=1 async fn, reached async codegen, laid out an async
+//!              image). Same invariants as `lower`: never panics,
+//!              deterministic across two runs (FlowWir dump, codegen'd
+//!              words, image bytes, and the reach itself), every rejection
+//!              in the fixed category set, and `"internal error: "`
+//!              anywhere is a bug (ledger clause compiler.lower.no-panics).
 //!   roundtrip  pretty-print every parseable corpus entry and golden input,
 //!              reparse it, and compare the two AST dumps (spans stripped)
 //!              — the parser's `diff-eval` (plans/M1.md item E). Also runs
@@ -126,6 +141,8 @@ use std::time::{Duration, Instant};
 
 use wrela_compiler::codegen;
 use wrela_compiler::eval;
+use wrela_compiler::flowwir;
+use wrela_compiler::flowwir_lower;
 use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::lower;
@@ -191,7 +208,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower|async] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -245,6 +262,9 @@ fn check() -> Result<(), String> {
     // (commit 5766861, sema.names.resolution), the lane runs clean at its
     // deep budget on fresh seeds, and the smoke joins every other lane's.
     fuzz_lower_smoke()?;
+    // plans/M7.md item Y: the async half of that same pipeline, which the
+    // `lower` lane above has disclosed it never reaches since M6-D.
+    fuzz_async_smoke()?;
     // (Historical note, kept for the record: this call was briefly and
     // deliberately absent — the lane's first exercise reproduced a real,
     // pinned `sema::bodies` finding, golden/err-mwir-if-else-scope-leak,
@@ -484,7 +504,14 @@ impl Rng {
 
 fn fuzz(args: &[String]) -> Result<(), String> {
     let (target, rest) = match args.first() {
-        Some(a) if a == "lexer" || a == "parser" || a == "sema" || a == "eval" || a == "lower" => {
+        Some(a)
+            if a == "lexer"
+                || a == "parser"
+                || a == "sema"
+                || a == "eval"
+                || a == "lower"
+                || a == "async" =>
+        {
             (a.as_str(), &args[1..])
         }
         _ => ("lexer", args),
@@ -515,8 +542,14 @@ fn fuzz(args: &[String]) -> Result<(), String> {
             let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_LOWER_DEEP_SEED);
             fuzz_lower(iters, seed)
         }
+        "async" => {
+            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_ASYNC_DEEP_ITERS);
+            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_ASYNC_DEEP_SEED);
+            fuzz_async(iters, seed)
+        }
         other => Err(format!(
-            "fuzz: unknown target `{other}` (expected `lexer`, `parser`, `sema`, `eval`, or `lower`)"
+            "fuzz: unknown target `{other}` (expected `lexer`, `parser`, `sema`, `eval`, \
+             `lower`, or `async`)"
         )),
     }
 }
@@ -679,9 +712,19 @@ fn random_input(rng: &mut Rng) -> Vec<u8> {
 /// input, so the fuzzer spends most of its budget near inputs the lexer is
 /// supposed to accept rather than only in the wholly-random tail.
 fn mutate_seed_input(rng: &mut Rng, seed_inputs: &[String]) -> Vec<u8> {
-    let mut bytes = seed_inputs[rng.gen_range(seed_inputs.len())]
-        .as_bytes()
-        .to_vec();
+    mutate_seed_input_from(rng, seed_inputs, seed_inputs)
+}
+
+/// `mutate_seed_input` with the *base* population and the *splice-donor*
+/// population named separately (plans/M7.md item Y): the async lane wants
+/// every base to be an async/actor-shaped golden while still occasionally
+/// splicing in a slice of the wider corpus, so a mutation can carry a
+/// generic fn, a `defer`, or a `for ... take` into an actor program. Every
+/// existing caller passes the same slice twice (`mutate_seed_input` above),
+/// which consumes the RNG in exactly the order it always did — no existing
+/// lane's seed changes meaning.
+fn mutate_seed_input_from(rng: &mut Rng, bases: &[String], donors: &[String]) -> Vec<u8> {
+    let mut bytes = bases[rng.gen_range(bases.len())].as_bytes().to_vec();
     let ops = 1 + rng.gen_range(4);
     for _ in 0..ops {
         if bytes.is_empty() {
@@ -706,7 +749,7 @@ fn mutate_seed_input(rng: &mut Rng, seed_inputs: &[String]) -> Vec<u8> {
                 bytes.truncate(i);
             }
             _ => {
-                let other = seed_inputs[rng.gen_range(seed_inputs.len())].as_bytes();
+                let other = donors[rng.gen_range(donors.len())].as_bytes();
                 if !other.is_empty() {
                     let start = rng.gen_range(other.len());
                     let end = start + rng.gen_range(other.len() - start + 1);
@@ -2691,6 +2734,737 @@ fn fuzz_lower_smoke() -> Result<(), String> {
     with_silenced_panic_hook(|| {
         for &seed in FUZZ_LOWER_SMOKE_SEEDS {
             run_lower_fuzz(FUZZ_LOWER_SMOKE_ITERS_PER_SEED, seed, &seed_inputs)?;
+        }
+        Ok(())
+    })
+}
+
+// --- fuzz: async --------------------------------------------------------
+//
+// plans/M7.md item Y. `attempt_layout`'s own doc comment has disclosed
+// since M6-D that the `lower` lane never calls `flowwir_lower::lower_program`
+// or `codegen::codegen_program_with_async` at all — an async `@test(runtime)`
+// fn is an honest `LayoutOutcome::Skipped` there — so the whole async
+// pipeline (FlowWir lowering, `emit_flowwir_fn`, async frame sizing, the
+// group child-index map, and `layout_test_image` with a real `BootCtx`)
+// had **no fuzz coverage whatsoever**. This lane is that coverage: the same
+// mechanism as every lane above it (seeded splitmix64, corpus mutation, no
+// external engine), pointed at the pipeline `bin/wrela.rs::test_cmd`'s own
+// runtime tier actually runs.
+//
+// Generation (the one thing this lane does differently, and it has to):
+// the async surface is not reachable by chance. A `token_soup` string will
+// never spell `@actor` + `pub fn` + `async fn` + `await` + `@image`, and a
+// mutation of an arbitrary corpus entry lands on an async program only as
+// often as async entries appear in the corpus. So the *base* population is
+// the fixed, named `ASYNC_SEED_CASES` list below — every accept-shaped
+// async/actor golden in the tree — while splice donors come from the same
+// list most of the time and from the whole corpus occasionally (an
+// `f`-string, a generic fn, a `defer`, a `for ... take` carried into an
+// actor program is exactly the cross-shape a hand-written golden never
+// covers). `token_soup` keeps one iteration in eight anyway, so the
+// arbitrary-garbage tail every other lane checks is not silently dropped
+// here. `run_async_fuzz` prints the measured reach every run (how many
+// iterations type-checked, how many actually lowered >=1 async fn, how many
+// reached async codegen, how many laid out a real async test image) — a
+// lane that never reaches the surface it claims to cover is worthless, and
+// the number is printed rather than assumed.
+//
+// Invariants, identical to the `lower` lane's: (a) nothing in the pipeline
+// ever panics; (b) two runs of the same input agree — the FlowWir dump, the
+// concatenated codegen'd words, and the laid-out image blob/entry/sections
+// all byte-compared, plus the measured reach itself; (c) every rejection is
+// a legitimate fail-closed diagnostic in the fixed category set
+// (`SEMA_CATEGORIES` — a `SemaError`'s own `category`, and for the stages
+// that carry no category of their own the fixed literal `bin/wrela.rs`
+// prints for that stage, recorded per stage in `AsyncFuzzOutcome::Rejected`);
+// (d) an `"internal error: "`-prefixed message anywhere, a
+// `codegen::validate` failure, or a `mwir`/`layout` context failure on a
+// program `check_typed` already accepted is a **bug**, reported as a
+// finding, never tolerated.
+//
+// A find writes the exact input to `target/fuzz/async-crash-<n>.wr` and
+// reports the seed + iteration so it reproduces exactly.
+
+// Measured on the authoring machine, the same way every other lane's
+// budget was (the `cargo xtask` alias' own debug build — `run -q -p xtask`,
+// never a release one): 20_000 iterations in 5.0s of user time, 60_000 in
+// 15.1s, i.e. ~250us/iteration. That is roughly 4-5x the `lower` lane's own
+// ~50-60us, for two named reasons rather than a mysterious one: this lane's
+// mutation bases are *all* real programs, so ~14% of its iterations reach
+// `check_typed` where the corpus-wide lanes reach it far more rarely; and
+// each of those then pays a full sync+async lowering, an async codegen and
+// (for ~4.6% of all iterations) a real `BootCtx` image layout, instead of
+// falling out at lex. 400_000 therefore lands a bare `cargo xtask fuzz
+// async` at roughly 100 seconds — inside the same "roughly a minute or
+// two" band `fuzz sema`/`fuzz eval`/`fuzz lower` already target. The band
+// is what is being matched here, not their iteration count.
+const FUZZ_ASYNC_DEEP_ITERS: u64 = 400_000;
+const FUZZ_ASYNC_DEEP_SEED: u64 = 1;
+// Wired into `check` alongside every other live lane's smoke: two fixed
+// seeds, 1_000 iterations each (~0.5s total at the cost measured above),
+// no seed ever from the clock or the environment.
+const FUZZ_ASYNC_SMOKE_SEEDS: &[u64] = &[1, 2];
+const FUZZ_ASYNC_SMOKE_ITERS_PER_SEED: u64 = 1_000;
+
+/// Every accept-shaped async/actor golden in the tree — this lane's own
+/// mutation bases. A fixed, named list rather than a directory scan with a
+/// `grep`-shaped heuristic, for the same reason `PROJECT_SEED_CASES` is one:
+/// which cases carry async surface is a decision, and a decision belongs in
+/// source where a reviewer can see it move. `async_seed_inputs` fails
+/// closed if any name here no longer exists, so a renamed golden breaks the
+/// lane loudly instead of silently shrinking its base population.
+///
+/// Deliberately excluded: the `err-actor-*`/`err-await-*`/`err-send-*`/
+/// `err-group-*` cases, whose whole point is a rejection sema reaches long
+/// before FlowWir does. They are still reachable *as splice donors* through
+/// `corpus_seed_inputs` (every golden `input.wr` is in there), which is the
+/// role they can actually play here.
+const ASYNC_SEED_CASES: &[&str] = &[
+    // The FlowWir stage's own goldens — await in a branch, in a loop, in a
+    // chain, under `defer`.
+    "flowwir-basic",
+    "flowwir-branch-await",
+    "flowwir-chain",
+    "flowwir-defer",
+    "flowwir-loop-await",
+    // The async machine-code goldens.
+    "asm-async-basic",
+    "asm-async-loop-checkpoint",
+    // Every real actor/async boot image: the full BootCtx path (rtdata,
+    // boot sequence, dispatch tables, group arena, deadlines).
+    "boot-actor-chain",
+    "boot-actor-reply-struct",
+    "boot-actor-smoke",
+    "boot-actors",
+    "boot-await-mailbox-full",
+    "boot-cancel-cleanup",
+    "boot-deadline-cancel",
+    "boot-deadline-inherit",
+    "boot-group-join",
+    "boot-send",
+    // Accept-shaped sema cases over the same surface — no runtime test, so
+    // they mutate toward "async fns that lower and codegen but never lay
+    // out an image", which is `asm-async-*`'s shape with more variety.
+    "check-actor-methods",
+    "check-actor-private-handle-helper",
+    "check-actor-send",
+    "check-await-self-path",
+    "check-deadline",
+    "check-group",
+    "check-send-proven",
+];
+
+/// The `ASYNC_SEED_CASES` inputs, in the listed order. Fails closed on a
+/// missing case (see that constant's own doc comment).
+fn async_seed_inputs() -> Result<Vec<String>, String> {
+    let golden_dir = root().join("tests/golden");
+    let mut inputs = Vec::with_capacity(ASYNC_SEED_CASES.len());
+    for case in ASYNC_SEED_CASES {
+        let path = golden_dir.join(case).join("input.wr");
+        inputs.push(std::fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "fuzz async: ASYNC_SEED_CASES names `{case}`, but {} is unreadable: {e} \
+                 (a renamed/removed golden must be fixed in ASYNC_SEED_CASES, not ignored)",
+                path.display()
+            )
+        })?);
+    }
+    Ok(inputs)
+}
+
+/// How far one fuzzed input actually got down the async pipeline — the
+/// measured hit rate this lane reports, and (since it is fully derived from
+/// the run) part of the determinism compare for free.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct AsyncReach {
+    /// `sema::check_typed` accepted it.
+    typechecked: bool,
+    /// `flowwir_lower::lower_program` returned `Ok` — i.e. the async
+    /// lowering ran to completion (over zero or more async fns).
+    flow_lowered: bool,
+    /// How many async fns/methods that FlowWir program actually contains.
+    /// Zero means "this input reached `flowwir_lower` but gave it nothing
+    /// to do" — counted separately, because counting it as coverage would
+    /// be the exact dishonesty this lane exists to end.
+    async_fns: usize,
+    /// `codegen::codegen_program_with_async` returned `Ok` (and
+    /// `codegen::validate` passed).
+    codegen_ok: bool,
+    /// `layout::layout_test_image` built an image with a real `BootCtx`.
+    image_built: bool,
+    /// ...and at least one of that image's runtime tests was async, so the
+    /// entry driver's own scheduler loop, turn areas and dispatch tables
+    /// were laid out for real.
+    async_image: bool,
+}
+
+/// Running totals across one `run_async_fuzz` invocation.
+#[derive(Default)]
+struct AsyncReachTotals {
+    typechecked: u64,
+    flow_lowered: u64,
+    with_async_fns: u64,
+    async_fns_seen: u64,
+    codegen_ok: u64,
+    image_built: u64,
+    async_image: u64,
+}
+
+impl AsyncReachTotals {
+    fn add(&mut self, r: &AsyncReach) {
+        self.typechecked += u64::from(r.typechecked);
+        self.flow_lowered += u64::from(r.flow_lowered);
+        self.with_async_fns += u64::from(r.async_fns > 0);
+        self.async_fns_seen += r.async_fns as u64;
+        self.codegen_ok += u64::from(r.codegen_ok);
+        self.image_built += u64::from(r.image_built);
+        self.async_image += u64::from(r.async_image);
+    }
+}
+
+/// Exactly one of these shapes comes back from one pipeline run — never a
+/// panic, per `check_async_invariants`'s `catch_unwind`.
+#[derive(Debug, Clone, PartialEq)]
+enum AsyncFuzzOutcome {
+    LexErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+    ParseErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+    /// Anything that produces a real `SemaError`: `sema::check_typed`,
+    /// `layout::merge_layout_ctx`, and the image evaluator (via
+    /// `eval::to_sema_error`). Its own `category` is checked against
+    /// `SEMA_CATEGORIES`.
+    SemaErr {
+        category: &'static str,
+        message: String,
+        line: u32,
+        col: u32,
+        extra_lines: Vec<String>,
+        omit_location: bool,
+    },
+    /// A fail-closed rejection from a stage whose error type carries no
+    /// category of its own (`LowerError`, `FlowError`, `CodegenError`,
+    /// `LayoutError`, `resolve_runtime_test_args`' bare `String`).
+    /// `category` is the fixed literal `bin/wrela.rs::test_cmd` prints for
+    /// that exact stage, so invariant (c) checks the same set a user would
+    /// actually see; `stage` names the call site so a determinism
+    /// divergence or a category miss is diagnosable without a rerun.
+    Rejected {
+        stage: &'static str,
+        category: &'static str,
+        message: String,
+    },
+    /// The whole async pipeline ran.
+    Ok {
+        flow_dump: String,
+        code_words: Vec<u32>,
+        layout: LayoutOutcome,
+    },
+    /// A genuine bug this lane found — `check_async_invariants` always
+    /// rejects this variant as a finding. Same population as the `lower`
+    /// lane's own `Bug`: an `"internal error: "`-prefixed message from any
+    /// stage, or a structural failure on a program `check_typed` already
+    /// accepted.
+    Bug(String),
+}
+
+impl AsyncFuzzOutcome {
+    /// Which stage this outcome came from — the determinism compare's own
+    /// first check, so "the two runs disagreed" always names where.
+    fn stage(&self) -> &'static str {
+        match self {
+            AsyncFuzzOutcome::LexErr { .. } => "lex",
+            AsyncFuzzOutcome::ParseErr { .. } => "parse",
+            AsyncFuzzOutcome::SemaErr { .. } => "sema",
+            AsyncFuzzOutcome::Rejected { stage, .. } => stage,
+            AsyncFuzzOutcome::Ok { .. } => "ok",
+            AsyncFuzzOutcome::Bug(_) => "bug",
+        }
+    }
+}
+
+/// Every `SemaError` this lane can see — `sema::check_typed`'s own, and
+/// the two later stages that report through the same type
+/// (`layout::merge_layout_ctx`, and the image evaluator via
+/// `eval::to_sema_error`). `stage` names which, for the determinism
+/// compare's own diagnostics.
+///
+/// The `"internal error: "` carve-out applies here exactly as it does to
+/// every other stage in this lane, and it is not decoration: `eval/interp.rs`
+/// alone carries ~50 of those guards (`await`/`send`/`with group` reaching
+/// the comptime evaluator, an unbound local in place position, a missing
+/// builder argument, ...), every one of them a "should be unreachable for a
+/// `check_typed`-accepted program" claim that this lane is in a position to
+/// falsify. Classifying them as ordinary `comptime` diagnostics would have
+/// silently swallowed exactly the class of find this item exists to make
+/// visible.
+fn async_sema_outcome(stage: &'static str, e: sema::SemaError) -> AsyncFuzzOutcome {
+    if e.message.starts_with("internal error: ") {
+        return AsyncFuzzOutcome::Bug(format!("{stage}: {}", e.message));
+    }
+    AsyncFuzzOutcome::SemaErr {
+        category: e.category,
+        message: e.message,
+        line: e.line,
+        col: e.col,
+        extra_lines: e.extra_lines,
+        omit_location: e.omit_location,
+    }
+}
+
+/// `codegen::validate`, minus the one arm it cannot decide on its own for
+/// an *async* program, plus that arm decided the way `layout.rs` actually
+/// decides it.
+///
+/// `validate`'s own doc comment predates M6-D: it asserts that every
+/// `Reloc::Call`'s key "names another fn this same `CodegenProgram`
+/// actually contains". That is exactly true of the sync pipeline the
+/// `lower` lane drives, and *not* true of the async one — `codegen`
+/// emits a symbolic `bl <rt_enqueue X>` for every `await`/`send` through
+/// an `Actor[X]` handle (`codegen::rt_enqueue_symbol`), and the routine it
+/// names is hand-assembled by `layout.rs` into the harness section, not
+/// codegen'd into `program.fns` at all. `layout_test_image`'s own reloc
+/// resolution knows both naming schemes (`fn_word_base`, then
+/// `glue_symbols`, then `unresolved_call_target`), and this lane's very
+/// first exercise hit `validate`'s stale arm within 13 iterations on a
+/// perfectly ordinary mutated `boot-*` program.
+///
+/// So: the call-target arm is re-implemented here with layout's own rule
+/// (in `program.fns` **or** a `codegen::rt_enqueue_actor` glue symbol —
+/// anything else is still a finding, and a *stricter* one, since it is
+/// caught a stage before layout's own `internal error:` guard), the word
+/// index is range-checked exactly as `validate` does it, and every other
+/// arm is left to `validate` itself by handing it a clone with only the
+/// glue relocs stripped. Nothing is skipped, and nothing is duplicated
+/// beyond the single arm that has to move. The honest fix lives one crate
+/// over — `codegen::validate` growing the glue arm itself — which is
+/// compiler surface this item does not own.
+fn async_validate(program: &codegen::CodegenProgram) -> Result<(), String> {
+    let mut glue_calls = 0usize;
+    for (key, f) in &program.fns {
+        for reloc in &f.relocs {
+            let codegen::Reloc::Call { word, key: target } = reloc else {
+                continue;
+            };
+            if *word >= f.code.len() {
+                return Err(format!(
+                    "fn `{key}`: Reloc::Call word {word} is out of range (code has {} word(s))",
+                    f.code.len()
+                ));
+            }
+            if program.fns.contains_key(target) {
+                continue;
+            }
+            if codegen::rt_enqueue_actor(target).is_some() {
+                glue_calls += 1;
+                continue;
+            }
+            return Err(format!(
+                "fn `{key}`: Reloc::Call targets `{target}`, which is neither a fn this \
+                 `CodegenProgram` codegen'd nor a runtime-glue symbol `layout.rs` could ever \
+                 resolve"
+            ));
+        }
+    }
+    if glue_calls == 0 {
+        return codegen::validate(program);
+    }
+    let mut stripped = program.clone();
+    for f in stripped.fns.values_mut() {
+        f.relocs.retain(
+            |r| !matches!(r, codegen::Reloc::Call { key, .. } if !program.fns.contains_key(key)),
+        );
+    }
+    codegen::validate(&stripped)
+}
+
+/// One stage's `Err`, split the one way that matters: an
+/// `"internal error: "` prefix is a bug (invariant (d)), anything else is a
+/// legitimate fail-closed rejection carrying the category that stage prints
+/// (invariant (c)).
+fn async_stage_err(
+    stage: &'static str,
+    category: &'static str,
+    message: String,
+) -> AsyncFuzzOutcome {
+    if message.starts_with("internal error: ") {
+        AsyncFuzzOutcome::Bug(format!("{stage}: {message}"))
+    } else {
+        AsyncFuzzOutcome::Rejected {
+            stage,
+            category,
+            message,
+        }
+    }
+}
+
+/// One full run of the async pipeline, mirroring `bin/wrela.rs::test_cmd`'s
+/// own runtime tier stage for stage (and `build_runtime_test_image`'s own
+/// "deliberately parallel copy" reasoning — those driver internals are not
+/// a library surface this crate can call into). "<fuzz-async>" is not a
+/// real path: the determinism check only ever compares two runs of the
+/// *same* input, so any fixed placeholder works.
+fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncReach) {
+    let mut reach = AsyncReach::default();
+    let module = match lexer::lex(input) {
+        Err(e) => {
+            return (
+                AsyncFuzzOutcome::LexErr {
+                    message: e.message,
+                    line: e.line,
+                    col: e.col,
+                },
+                reach,
+            );
+        }
+        Ok(tokens) => match parser::parse(tokens) {
+            Err(e) => {
+                return (
+                    AsyncFuzzOutcome::ParseErr {
+                        message: e.message,
+                        line: e.line,
+                        col: e.col,
+                    },
+                    reach,
+                );
+            }
+            Ok(module) => module,
+        },
+    };
+    let program = match sema::check_typed(&module, "<fuzz-async>") {
+        Err(e) => return (async_sema_outcome("sema::check_typed", e), reach),
+        Ok(p) => p,
+    };
+    reach.typechecked = true;
+
+    let mut modules: BTreeMap<String, Module> = BTreeMap::new();
+    modules.insert(module.path.join("."), module.clone());
+    // A failure here is a **bug**, not a rejection — the identical judgement
+    // the `lower` lane already makes about `mwir::build_layout_ctx`, which
+    // is exactly what this fn calls for a single-module build: it re-runs
+    // `specialize`/`declare`, both strict subsets of what `check_typed`
+    // itself just ran clean on this same module.
+    let layout_ctx = match layout::merge_layout_ctx(&modules) {
+        Err(e) => {
+            return (
+                AsyncFuzzOutcome::Bug(format!(
+                    "layout::merge_layout_ctx failed after check_typed already accepted this \
+                     program: [{}] {}",
+                    e.category, e.message
+                )),
+                reach,
+            );
+        }
+        Ok(c) => c,
+    };
+    // The sync half, exactly as `test_cmd` runs it: `codegen_program_with_async`
+    // needs both halves, and `flowwir_lower` never touches a sync fn.
+    let mwir_program = match lower::lower_program(&program) {
+        Err(e) => {
+            return (
+                async_stage_err("lower::lower_program", "unimplemented", e.message),
+                reach,
+            );
+        }
+        Ok(p) => p,
+    };
+    // THE stage this whole lane exists for.
+    let flow_program = match flowwir_lower::lower_program(&program) {
+        Err(e) => {
+            return (
+                async_stage_err("flowwir_lower::lower_program", "unimplemented", e.message),
+                reach,
+            );
+        }
+        Ok(p) => p,
+    };
+    reach.flow_lowered = true;
+    reach.async_fns = flow_program.fns.len();
+    let flow_dump = flowwir::dump(&flow_program);
+
+    let graph = match &program.image_fn {
+        Some(fn_name) => match eval::interp::eval_image(&program, fn_name) {
+            Err(e) => {
+                return (
+                    async_sema_outcome("eval::interp::eval_image", eval::to_sema_error(e)),
+                    reach,
+                );
+            }
+            Ok(g) => g,
+        },
+        None => eval::image::ImageGraph::default(),
+    };
+    let method_index = match layout::actor_method_index_tables(&modules, &layout_ctx) {
+        Err(e) => {
+            return (
+                async_stage_err(
+                    "layout::actor_method_index_tables",
+                    "unimplemented",
+                    e.message,
+                ),
+                reach,
+            );
+        }
+        Ok(m) => m,
+    };
+    let runtime_tests = runtime_test_names(&program);
+    let test_args = match layout::resolve_runtime_test_args(&program, &runtime_tests, &graph) {
+        Err(msg) => {
+            return (
+                async_stage_err("layout::resolve_runtime_test_args", "build", msg),
+                reach,
+            );
+        }
+        Ok(a) => a,
+    };
+    let group_arena_capacity = layout::count_with_group_sites(&modules);
+    let codegen_program = match codegen::codegen_program_with_async(
+        &mwir_program,
+        &flow_program,
+        &layout_ctx,
+        &method_index,
+        group_arena_capacity,
+    ) {
+        Err(e) => {
+            return (
+                async_stage_err(
+                    "codegen::codegen_program_with_async",
+                    "unimplemented",
+                    e.message,
+                ),
+                reach,
+            );
+        }
+        Ok(p) => p,
+    };
+    if let Err(reason) = async_validate(&codegen_program) {
+        return (
+            AsyncFuzzOutcome::Bug(format!("codegen::validate (async-aware): {reason}")),
+            reach,
+        );
+    }
+    reach.codegen_ok = true;
+    let code_words = concat_code_words(&codegen_program);
+
+    let async_frames = match codegen::async_frame_sizes(&flow_program, &layout_ctx) {
+        Err(e) => {
+            return (
+                async_stage_err("codegen::async_frame_sizes", "unimplemented", e.message),
+                reach,
+            );
+        }
+        Ok(m) => m,
+    };
+    let group_child_index = match codegen::compute_group_child_indices(&flow_program) {
+        Err(e) => {
+            return (
+                async_stage_err(
+                    "codegen::compute_group_child_indices",
+                    "unimplemented",
+                    e.message,
+                ),
+                reach,
+            );
+        }
+        Ok(m) => m,
+    };
+
+    // `test_cmd`'s runtime tier only ever lays out an image when the file
+    // declares at least one `@test(runtime)` fn — mirrored exactly, so a
+    // `Skipped` here means "production would not have laid one out either",
+    // not "this lane looked away" (which is precisely what `attempt_layout`
+    // in the `lower` lane had to say about every async test).
+    let layout_outcome = if runtime_tests.is_empty() {
+        LayoutOutcome::Skipped
+    } else {
+        let async_tests: std::collections::BTreeSet<String> = runtime_tests
+            .iter()
+            .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
+            .cloned()
+            .collect();
+        let is_async_image = !async_tests.is_empty();
+        let boot = layout::BootCtx {
+            graph: &graph,
+            modules: &modules,
+            layout_ctx: &layout_ctx,
+            async_frames: &async_frames,
+            group_child_index: &group_child_index,
+        };
+        match layout::layout_test_image(
+            &codegen_program,
+            &runtime_tests,
+            &async_tests,
+            Some(boot),
+            &test_args,
+        ) {
+            Ok(l) => {
+                reach.image_built = true;
+                reach.async_image = is_async_image;
+                LayoutOutcome::Built {
+                    blob: l.blob,
+                    entry: l.entry,
+                    sections: l
+                        .sections
+                        .iter()
+                        .map(|s| (s.name, s.base, s.size))
+                        .collect(),
+                }
+            }
+            Err(e) => {
+                if e.message.starts_with("internal error: ") {
+                    return (
+                        AsyncFuzzOutcome::Bug(format!("layout::layout_test_image: {}", e.message)),
+                        reach,
+                    );
+                }
+                LayoutOutcome::Rejected(e.message)
+            }
+        }
+    };
+
+    (
+        AsyncFuzzOutcome::Ok {
+            flow_dump,
+            code_words,
+            layout: layout_outcome,
+        },
+        reach,
+    )
+}
+
+/// Every invariant the async fuzzer checks, once per iteration, on one
+/// input. Runs the whole pipeline twice under `catch_unwind` (invariant
+/// (a)), rejects a `Bug` (invariant (d)), category-checks a rejection
+/// (invariant (c)), then compares the two runs (invariant (b)) — stage
+/// first, so a divergence names where, then the full value, which for an
+/// `Ok` is the FlowWir dump, the codegen'd words and the image bytes.
+/// Returns the first run's reach so the caller can total it.
+fn check_async_invariants(input: &str) -> Result<AsyncReach, String> {
+    let (first, reach) = std::panic::catch_unwind(|| run_async_pipeline_once(input))
+        .map_err(|p| format!("the async pipeline panicked: {}", panic_message(&p)))?;
+    let (second, reach2) =
+        std::panic::catch_unwind(|| run_async_pipeline_once(input)).map_err(|p| {
+            format!(
+                "the async pipeline panicked on a repeat call: {}",
+                panic_message(&p)
+            )
+        })?;
+
+    if let AsyncFuzzOutcome::Bug(msg) = &first {
+        return Err(format!("async fuzz found a bug: {msg}"));
+    }
+    match &first {
+        AsyncFuzzOutcome::SemaErr { category, .. } => {
+            if !SEMA_CATEGORIES.contains(category) {
+                return Err(format!(
+                    "async: unknown sema diagnostic category `{category}` (not in the fixed set)"
+                ));
+            }
+        }
+        AsyncFuzzOutcome::Rejected {
+            stage, category, ..
+        } => {
+            if !SEMA_CATEGORIES.contains(category) {
+                return Err(format!(
+                    "async: {stage} rejected with category `{category}`, which is not in the \
+                     fixed set"
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    if first.stage() != second.stage() {
+        return Err(format!(
+            "the async pipeline is not deterministic: one run stopped at `{}`, the other at `{}`",
+            first.stage(),
+            second.stage()
+        ));
+    }
+    if first != second {
+        return Err(format!(
+            "the async pipeline is not deterministic: two runs of the same input produced \
+             different `{}` results",
+            first.stage()
+        ));
+    }
+    if reach != reach2 {
+        return Err(
+            "the async pipeline is not deterministic: two runs reached different stages".into(),
+        );
+    }
+    Ok(reach)
+}
+
+/// One iteration's input: mostly a mutated async/actor golden, sometimes
+/// one with a splice donor drawn from the whole corpus, occasionally plain
+/// token soup — see the section comment above for why the mix is weighted
+/// this way rather than the 50/50 the other lanes use.
+fn async_fuzz_input(rng: &mut Rng, async_seeds: &[String], corpus_seeds: &[String]) -> String {
+    match rng.gen_range(8) {
+        0 => token_soup(rng),
+        1 => String::from_utf8_lossy(&mutate_seed_input_from(rng, async_seeds, corpus_seeds))
+            .into_owned(),
+        _ => String::from_utf8_lossy(&mutate_seed_input(rng, async_seeds)).into_owned(),
+    }
+}
+
+fn run_async_fuzz(
+    iters: u64,
+    seed: u64,
+    async_seeds: &[String],
+    corpus_seeds: &[String],
+) -> Result<(), String> {
+    let mut rng = Rng::new(seed);
+    let mut totals = AsyncReachTotals::default();
+    for i in 0..iters {
+        let input = async_fuzz_input(&mut rng, async_seeds, corpus_seeds);
+        match check_async_invariants(&input) {
+            Ok(reach) => totals.add(&reach),
+            Err(reason) => {
+                return report_fuzz_failure("async", "async-crash-", seed, i, &input, &reason);
+            }
+        }
+    }
+    println!(
+        "fuzz async: {iters} iteration(s) clean (seed={seed}); reached check_typed {}, \
+         flowwir_lower {} ({} with >=1 async fn, {} async fns lowered), async codegen {}, \
+         test image laid out {} ({} of them async)",
+        totals.typechecked,
+        totals.flow_lowered,
+        totals.with_async_fns,
+        totals.async_fns_seen,
+        totals.codegen_ok,
+        totals.image_built,
+        totals.async_image,
+    );
+    Ok(())
+}
+
+fn fuzz_async(iters: u64, seed: u64) -> Result<(), String> {
+    let async_seeds = async_seed_inputs()?;
+    let corpus_seeds = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| run_async_fuzz(iters, seed, &async_seeds, &corpus_seeds))
+}
+
+fn fuzz_async_smoke() -> Result<(), String> {
+    let async_seeds = async_seed_inputs()?;
+    let corpus_seeds = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| {
+        for &seed in FUZZ_ASYNC_SMOKE_SEEDS {
+            run_async_fuzz(
+                FUZZ_ASYNC_SMOKE_ITERS_PER_SEED,
+                seed,
+                &async_seeds,
+                &corpus_seeds,
+            )?;
         }
         Ok(())
     })
