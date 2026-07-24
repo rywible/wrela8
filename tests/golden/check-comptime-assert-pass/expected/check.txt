@@ -1,0 +1,3 @@
+Module path=examples.check_comptime_assert_pass
+  Const LIMIT: u64
+  Fn use_limit() -> u64

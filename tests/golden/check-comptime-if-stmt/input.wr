@@ -1,0 +1,10 @@
+module examples.check_comptime_if_stmt
+
+const FAST_PATH: bool = true
+
+pub fn compute(x: u64) -> u64:
+    comptime if FAST_PATH:
+        y = x * 2
+    comptime else:
+        y = x + x
+    return y

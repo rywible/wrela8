@@ -1243,11 +1243,33 @@ fn walk_stmt<'a>(
             dstack.push(d);
             Ok(fallthrough(state.clone()))
         }
-        Stmt::With(_) | Stmt::Send(..) | Stmt::ComptimeIf(_) | Stmt::ComptimeAssert(..) => {
-            // Every one of these already fails closed in `bodies::check`
-            // (plans/M2.md decision 7); `mod.rs::check` is fail-fast, so
-            // flow never runs over a module containing one.
+        Stmt::With(_) | Stmt::Send(..) => {
+            // Both still fail closed in `bodies::check` (plans/M2.md
+            // decision 7); `mod.rs::check` is fail-fast, so flow never
+            // runs over a module containing one.
             unreachable!("bodies.rs already rejects this construct before flow runs")
+        }
+        // plans/M3.md item D: `sema::specialize` eliminates every
+        // `comptime if` node before `collect`/`declare`/`bodies` (and so
+        // `flow`) ever see the module — reaching this would mean
+        // `specialize` left one behind (a producer bug), not an expected
+        // path; kept as a defense-in-depth net rather than silently
+        // matched by a wildcard.
+        Stmt::ComptimeIf(_) => {
+            unreachable!("sema::specialize already eliminates this construct before flow runs")
+        }
+        // `comptime assert`'s own condition/message are ordinary typed
+        // expressions once `bodies.rs` lifted the fail-closed on this
+        // node (decision 8) — flow needs to walk them for definite-init
+        // exactly like a plain `assert`'s, since a name introduced
+        // earlier in the same block may be read here.
+        Stmt::ComptimeAssert(_, cond, message) => {
+            let mut st = state.clone();
+            walk_expr(cond, &mut st, fctx, wctx, dstack, loop_marker)?;
+            if let Some(msg) = message {
+                walk_expr(msg, &mut st, fctx, wctx, dstack, loop_marker)?;
+            }
+            Ok(fallthrough(st))
         }
         Stmt::Expr(_, e) => {
             let mut st = state.clone();

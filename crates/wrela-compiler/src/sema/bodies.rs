@@ -809,9 +809,59 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
         Stmt::Expr(_span, e) => Ok(TypedStmt {
             kind: TypedStmtKind::ExprStmt(check_expr(e, None, fctx, mctx)?),
         }),
+        // plans/M3.md item D: `sema::specialize` runs before this pass
+        // (`mod.rs::check_typed`) and eliminates every `comptime if`
+        // node from the tree it hands to `collect`/`resolve`/`declare`/
+        // `bodies` — the selected branch's statements are spliced in
+        // directly, so the graph this pass ever sees already IS the
+        // specialized graph (decision 8). Reaching this arm would mean
+        // `specialize` left one behind (a producer bug); it stays fail-
+        // closed as a defense-in-depth net, not because it is expected
+        // to fire.
         Stmt::ComptimeIf(c) => Err(unimplemented_at("`comptime if` is", c.span)),
-        Stmt::ComptimeAssert(span, _, _) => Err(unimplemented_at("`comptime assert` is", *span)),
+        Stmt::ComptimeAssert(span, cond, message) => {
+            check_comptime_assert(*span, cond, message, fctx, mctx)
+        }
     }
+}
+
+/// `comptime assert` (plans/M3.md item D, decision 8): typed exactly
+/// like a plain `assert` (`check_assert` above) — condition typed as
+/// `bool`, message required to be a text literal — except the result
+/// carries the statement's own `span` (`TypedStmtKind::ComptimeAssert`'s
+/// own doc comment explains why) and is never evaluated here: evaluation
+/// is `eval::check_comptime_asserts`'s job, once the whole program is
+/// assembled, unconditionally (independent of whether anything calls the
+/// fn/method this statement lives in) — decision 8's "evaluates after
+/// typing."
+fn check_comptime_assert(
+    span: Span,
+    cond: &Expr,
+    message: &Option<Expr>,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedStmt, SemaError> {
+    let cond = check_expr(cond, Some(&Type::Bool), fctx, mctx)?;
+    let message = match message {
+        Some(msg) => match msg {
+            Expr::Str(..) => Some(check_expr(msg, None, fctx, mctx)?),
+            Expr::FStr(_) => return Err(unimplemented_at("f-strings are", msg.span())),
+            other => {
+                return Err(type_error(
+                    "comptime assert message must be a text literal".to_string(),
+                    other.span(),
+                ));
+            }
+        },
+        None => None,
+    };
+    Ok(TypedStmt {
+        kind: TypedStmtKind::ComptimeAssert {
+            span,
+            cond,
+            message,
+        },
+    })
 }
 
 fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {

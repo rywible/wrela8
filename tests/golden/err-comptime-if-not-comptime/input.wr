@@ -1,0 +1,7 @@
+module examples.err_comptime_if_not_comptime
+
+pub fn f(x: u64) -> u64:
+    y = x + 1
+    comptime if y > 0:
+        return 1
+    return 0

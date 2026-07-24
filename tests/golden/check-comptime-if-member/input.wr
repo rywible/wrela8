@@ -1,0 +1,30 @@
+module examples.check_comptime_if_member
+
+const WITH_EXTRA: bool = false
+
+comptime if WITH_EXTRA:
+    enum Status:
+        Ready
+        Pending
+        Extra
+comptime else:
+    enum Status:
+        Ready
+        Pending
+
+pub fn describe(s: Status) -> u64:
+    match s:
+        case .Ready:
+            return 1
+        case .Pending:
+            return 2
+
+pub struct Counter:
+    value: u64 = 0
+
+    comptime if WITH_EXTRA:
+        pub fn bonus(read self) -> u64:
+            return self.value + 100
+    comptime else:
+        pub fn bonus(read self) -> u64:
+            return self.value

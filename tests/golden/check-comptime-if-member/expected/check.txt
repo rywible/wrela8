@@ -1,0 +1,9 @@
+Module path=examples.check_comptime_if_member
+  Const WITH_EXTRA: bool
+  Enum Status data
+    variant Ready
+    variant Pending
+  Fn describe(s: read Status) -> u64
+  Struct Counter data
+    field value: u64
+    fn bonus(read self) -> u64

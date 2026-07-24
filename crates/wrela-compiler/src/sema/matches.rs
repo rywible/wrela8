@@ -204,12 +204,24 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sem
             DeferBody::Expr(e) => walk_expr(e, fctx, mctx),
             DeferBody::Suite(stmts) => check_stmts(stmts, fctx, mctx),
         },
-        // `with`/`send`/`comptime if`/`comptime assert` always fail
-        // closed in the bodies pass (plans/M2.md decision 7); reaching
-        // one here would mean bodies::check had already returned Err,
-        // and mod.rs's `check` is fail-fast — this pass never runs on
-        // such a module. Nothing to walk.
-        Stmt::With(_) | Stmt::Send(_, _) | Stmt::ComptimeIf(_) | Stmt::ComptimeAssert(_, _, _) => {
+        // `with`/`send` always fail closed in the bodies pass (plans/M2.md
+        // decision 7); reaching one here would mean bodies::check had
+        // already returned Err, and mod.rs's `check` is fail-fast — this
+        // pass never runs on such a module. `comptime if` is eliminated
+        // by `sema::specialize` before this pass (or any pass after
+        // `declare`) ever runs (plans/M3.md item D) — reaching one here
+        // would mean `specialize` left one behind. Nothing to walk in
+        // either case.
+        Stmt::With(_) | Stmt::Send(_, _) | Stmt::ComptimeIf(_) => Ok(()),
+        // `comptime assert`'s condition/message are ordinary typed
+        // expressions (decision 8 lifted the fail-closed) — walked here
+        // exactly like a plain `assert`'s in case either embeds a nested
+        // `match`/`is` this pass must still find.
+        Stmt::ComptimeAssert(_, cond, message) => {
+            walk_expr(cond, fctx, mctx)?;
+            if let Some(msg) = message {
+                walk_expr(msg, fctx, mctx)?;
+            }
             Ok(())
         }
         Stmt::Expr(_, e) => walk_expr(e, fctx, mctx),

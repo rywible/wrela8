@@ -486,6 +486,16 @@ fn exec_stmt<'a, 'p>(
                 Err(ctx.abandon(format!("assertion failed{msg}")))
             }
         }
+        // plans/M3.md item D, decision 8: a `comptime assert` is checked
+        // exactly once, unconditionally, by `eval::check_comptime_asserts`
+        // — independent of whether anything ever calls the fn/method it
+        // lives in (its own vocabulary, module consts/literals only, does
+        // not depend on a call's own locals/arguments anyway, so nothing
+        // would differ call to call). Re-running it here, per ordinary
+        // call execution, would at best be redundant and at worst wrong
+        // (this statement's own typed node carries no live `env` lookup
+        // path for locals — it is not meant to see any); a no-op.
+        TypedStmtKind::ComptimeAssert { .. } => Ok(()),
         TypedStmtKind::Defer(body) => {
             dstack.push(body);
             Ok(())
@@ -559,7 +569,12 @@ fn exec_for<'a, 'p>(
     }
 }
 
-fn as_bool(v: &Value) -> bool {
+/// `pub(crate)` (plans/M3.md item D): `eval/mod.rs::check_one_comptime_assert`
+/// reuses this exact helper rather than duplicating it — a `comptime
+/// assert` condition is typed as `bool` by `bodies::check_comptime_assert`
+/// exactly like a plain `assert`'s, so the same "sema already proved
+/// this" invariant holds.
+pub(crate) fn as_bool(v: &Value) -> bool {
     match v {
         Value::Bool(b) => *b,
         other => {
@@ -584,7 +599,11 @@ fn scalar_ty_of(v: &Value) -> Type {
     }
 }
 
-fn render_message(v: &Value) -> String {
+/// `pub(crate)` (plans/M3.md item D): shared verbatim with
+/// `eval/mod.rs::check_one_comptime_assert`'s own message rendering — a
+/// `comptime assert` message is typed exactly like a plain `assert`'s
+/// (a text literal), so the identical rendering applies.
+pub(crate) fn render_message(v: &Value) -> String {
     match v {
         Value::Str(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         other => format!("{other:?}"),
