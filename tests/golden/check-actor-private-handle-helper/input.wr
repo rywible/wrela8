@@ -1,0 +1,20 @@
+module examples.check_actor_private_handle_helper
+
+# 02-language.md §9.2: "Calls on self are ordinary calls." Only a `pub`
+# method is ever reachable through an `Actor[T]` handle
+# (`bodies::check_await_actor_call`/`check_send_call`'s own `mf.is_pub`
+# gate) — a private method's own parameter list is therefore never a
+# message shape, so it may freely take/return `Actor[T]` (recorded
+# decision, plans/M6.md item A's own post-review note): `deliver` (the
+# only `pub` entry point) takes no handle argument of its own; it reads
+# one already held on `self` and hands it to a private same-actor helper
+# via an ordinary `self.forward(...)` call, never a message.
+@actor
+pub struct Relay:
+    peer: Actor[Relay]
+
+    pub async fn deliver(mut self) -> u64:
+        return self.forward(self.peer)
+
+    fn forward(read self, target: Actor[Relay]) -> u64:
+        return 0

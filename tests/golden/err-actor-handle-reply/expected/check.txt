@@ -1,0 +1,1 @@
+error[actor]: an `Actor[T]` handle cannot appear in a reply (`Directory.lookup`'s own return type `Actor[Registry]` — 02-language.md §9.1) at 12:5

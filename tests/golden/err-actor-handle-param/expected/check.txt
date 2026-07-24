@@ -1,0 +1,1 @@
+error[actor]: an `Actor[T]` handle cannot appear in a message (`A.go`'s own `other: Actor[A]` — 02-language.md §9.1) at 15:5

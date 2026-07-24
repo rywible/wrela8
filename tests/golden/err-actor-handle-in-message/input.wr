@@ -1,5 +1,19 @@
 module examples.err_actor_handle_in_message
 
+# 02-language.md §9.1: "Handles cannot appear in messages, replies, or
+# runtime collections." `Outer.relay` is `pub` (its own parameter list is
+# a message shape, reachable only through `Actor[Outer]`) and declares an
+# `Actor[Inner]` parameter — rejected at *declaration* (post-review fix:
+# a public actor method's own signature is the message/reply shape, so
+# accepting the declaration and only erroring lazily at the first call
+# site was dead surface). `Hub.forward`'s own call site below (`await
+# self.outer.relay(target=self.inner)`) is never reached at all now —
+# `declare()` fails before `bodies::check` ever runs — kept only to show
+# the shape that used to be this golden's own trigger point (see
+# `actors.messages.value-restrictions`'s own ledger note: the call-site
+# rejection in `bodies::check_message_args` is now unreachable in
+# practice for this exact shape, kept as an internal defense-in-depth
+# guard, not deleted).
 @actor
 pub struct Inner:
     value: u64

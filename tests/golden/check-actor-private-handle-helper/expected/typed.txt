@@ -1,0 +1,17 @@
+Program
+  Struct name=Relay
+    Method name=deliver ret=u64
+      Receiver mode=mut ty=Relay
+      Body
+        Return
+          Call key=Relay.forward ty=u64
+            Receiver
+              Local name=self ty=Relay
+            Field name=peer ty=Actor[Relay]
+              Local name=self ty=Relay
+    Method name=forward ret=u64
+      Receiver mode=read ty=Relay
+      Param name=target mode=read ty=Actor[Relay]
+      Body
+        Return
+          Int text=0 ty=u64

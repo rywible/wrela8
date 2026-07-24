@@ -419,6 +419,125 @@ fn validate_fn_actor_types(
     validate_actor_type(ret, span, structs)
 }
 
+// --- declaration-position message-shape validation (post-review fix) -----
+//
+// 02-language.md §9.1: "Handles cannot appear in messages, replies, or
+// runtime collections." A public method of an `@actor`/`@driver` struct's
+// own parameter list *is* the message shape, and its return type *is* the
+// reply shape (02 §9.4: calling a public method through `Actor[T]` yields
+// an awaitable composing that exact declared type) — a declaration
+// carrying `Actor[T]` there can never be legally called or replied to
+// (`bodies::check_await_actor_call`/`check_send_call` both already
+// require `mf.is_pub`, so the only way to *reach* such a method is
+// exactly the message path this clause forbids). Checking this only at
+// the call site (`bodies::check_message_args`'s own `Actor[T]`-arg
+// rejection) left the *declaration* itself silently acceptable — dead
+// surface that only ever errors lazily, the first time anyone dares call
+// it. Fail-closed doctrine says reject at declaration; this is that
+// fix, run in the same post-declare pass as `validate_actor_handles`
+// (`declare`'s own call site).
+//
+// `init` is exempt: an `init`'s own parameters are the image's wiring
+// arguments (`img.actor(A, disk=disk.handle(), ...)`), not a runtime
+// message — substituted at build time by `eval::image_checks`'s own
+// decl-reference mechanism, never admitted through a mailbox. A
+// *non*-`pub` method is exempt too: 02 §9.2's own "calls on self are
+// ordinary calls" — only a `pub` method is ever reachable through an
+// `Actor[T]` handle at all (`mf.is_pub`, the identical gate the call-site
+// checks already enforce), so a private method's parameter list is never
+// a message shape; it may freely take/return `Actor[T]` (a same-actor
+// helper handed a peer handle already held elsewhere — a field, or a
+// public method's own local — `golden/check-actor-private-handle-helper`).
+//
+// "At any nesting" (array/struct-of-handle counts): `type_contains_actor_handle`
+// recurses through every composite shape `validate_actor_type` does, plus
+// one more `validate_actor_type` never needed — a *named struct*'s own
+// declared fields (`component_types`), so a plain data struct with an
+// `Actor[T]` field, passed by value as a message argument, is caught too
+// (a `BTreeSet` cycle guard, `seen`, makes this safe against a
+// self-referential struct shape — `classify_all`'s own infinite-size
+// check already rejects a genuinely infinite one before this ever runs,
+// but a merely self-*referential-through-`own`* one is legal data and
+// must not infinite-loop this walk).
+fn type_contains_actor_handle(
+    ty: &Type,
+    structs: &BTreeMap<String, &DeclStruct>,
+    seen: &mut BTreeSet<String>,
+) -> bool {
+    match ty {
+        Type::Named(name, _) if name == "Actor" => true,
+        Type::Array(elem, _) => type_contains_actor_handle(elem, structs, seen),
+        Type::Tuple(elems) => elems
+            .iter()
+            .any(|e| type_contains_actor_handle(e, structs, seen)),
+        Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+            type_contains_actor_handle(inner, structs, seen)
+        }
+        Type::Result(ok, err) => {
+            type_contains_actor_handle(ok, structs, seen)
+                || type_contains_actor_handle(err, structs, seen)
+        }
+        Type::Fn(params, ret) => {
+            params
+                .iter()
+                .any(|(_, t)| type_contains_actor_handle(t, structs, seen))
+                || type_contains_actor_handle(ret, structs, seen)
+        }
+        Type::Named(name, targs) => {
+            if !seen.insert(name.clone()) {
+                return false; // already visited on this path: cycle guard.
+            }
+            let via_fields = structs.get(name.as_str()).is_some_and(|s| {
+                s.component_types
+                    .iter()
+                    .any(|(t, _)| type_contains_actor_handle(t, structs, seen))
+            });
+            let via_targs = targs.iter().any(
+                |a| matches!(a, TypeArg::Type(t) if type_contains_actor_handle(t, structs, seen)),
+            );
+            seen.remove(name);
+            via_fields || via_targs
+        }
+        _ => false,
+    }
+}
+
+fn validate_message_shape(
+    struct_name: &str,
+    method_name: &str,
+    span: Span,
+    params: &[DeclParam],
+    ret: &Type,
+    structs: &BTreeMap<String, &DeclStruct>,
+) -> Result<(), SemaError> {
+    for p in params {
+        if type_contains_actor_handle(&p.ty, structs, &mut BTreeSet::new()) {
+            return Err(SemaError::at(
+                "actor",
+                format!(
+                    "an `Actor[T]` handle cannot appear in a message (`{struct_name}.{method_name}`'s \
+                     own `{}: {}` — 02-language.md §9.1)",
+                    p.name,
+                    render_type(&p.ty)
+                ),
+                span,
+            ));
+        }
+    }
+    if type_contains_actor_handle(ret, structs, &mut BTreeSet::new()) {
+        return Err(SemaError::at(
+            "actor",
+            format!(
+                "an `Actor[T]` handle cannot appear in a reply (`{struct_name}.{method_name}`'s own \
+                 return type `{}` — 02-language.md §9.1)",
+                render_type(ret)
+            ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
 fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), SemaError> {
     let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
     for item in items {
@@ -451,6 +570,17 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
                                 continue;
                             };
                             validate_fn_actor_types(f.span, &fd.params, &fd.ret, &structs)?;
+                            // Post-review fix: a *public* method of an
+                            // `@actor`/`@driver` struct is a message
+                            // shape — see `validate_message_shape`'s own
+                            // doc comment for the full reasoning (init
+                            // exempt, non-`pub` methods exempt, checked
+                            // here rather than only at the call site).
+                            if d.is_actor && f.is_pub && f.receiver.is_some() {
+                                validate_message_shape(
+                                    &d.name, &f.name, f.span, &fd.params, &fd.ret, &structs,
+                                )?;
+                            }
                         }
                         Member::Init(i) => {
                             let Some(DeclMember::Init(id)) = d

@@ -1,0 +1,5 @@
+Module path=examples.check_actor_private_handle_helper
+  Struct Relay resource
+    field peer: Actor[Relay]
+    async fn deliver(mut self) -> u64
+    fn forward(read self, target: read Actor[Relay]) -> u64
