@@ -924,7 +924,12 @@ fn render_bytes(bytes: &[u8]) -> String {
     out
 }
 
-fn fmt_inst(inst: &Inst) -> String {
+/// Plans/M6.md item B: bumped from private to `pub(crate)` so
+/// `flowwir.rs`'s own `--stage=flowwir` dump can format an embedded
+/// `mwir::Inst` (decision: FlowWir embeds `mwir::Inst` directly for its
+/// non-suspending ops rather than inventing a parallel formatter) —
+/// logic unchanged, this is purely a visibility bump for reuse.
+pub(crate) fn fmt_inst(inst: &Inst) -> String {
     match inst {
         Inst::ConstInt { dst, ty, value } => {
             format!(

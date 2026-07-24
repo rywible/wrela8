@@ -1,0 +1,38 @@
+module examples.flowwir_chain
+
+@actor
+pub struct Alpha:
+    value: u64
+
+    pub fn step(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Chain:
+    a: Actor[Alpha]
+    b: Actor[Alpha]
+    c: Actor[Alpha]
+
+    pub async fn run(mut self) -> u64:
+        ra = await self.a.step()
+        x: u64 = 0
+        match ra:
+            case .Ok(v):
+                x = v
+            case .Err(_):
+                pass
+        rb = await self.b.step()
+        y: u64 = 0
+        match rb:
+            case .Ok(v):
+                y = v
+            case .Err(_):
+                pass
+        rc = await self.c.step()
+        z: u64 = 0
+        match rc:
+            case .Ok(v):
+                z = v
+            case .Err(_):
+                pass
+        return x + y + z

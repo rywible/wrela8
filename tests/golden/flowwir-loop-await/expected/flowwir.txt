@@ -1,0 +1,69 @@
+Program
+  Fn key=poll_until ret=u64 states=5 frame=27 lineage=[group=t0,deadline=t1] params=[t2,t3]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=Actor[Store]
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u64
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=bool
+    Temp t9 ty=Result[u64, CallError[never]]
+    Temp t10 ty=Result[u64, CallError[never]]
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Temp t13 ty=u64
+    Temp t14 ty=bool
+    Temp t15 ty=u64
+    Temp t16 ty=bool
+    Temp t17 ty=bool
+    Temp t18 ty=u64
+    Temp t19 ty=u64
+    Temp t20 ty=u64
+    Temp t21 ty=bool
+    Temp t22 ty=CallError[never]
+    Temp t23 ty=bool
+    Temp t24 ty=bool
+    Temp t25 ty=u64
+    Temp t26 ty=u64
+    State 0
+      0000: Mwir ConstInt dst=t4 ty=u64 value=0
+      0001: Mwir Copy dst=t5 src=t4
+      0002: Mwir ConstInt dst=t6 ty=u64 value=0
+      0003: Mwir Copy dst=t7 src=t6
+      Transition Jump target=1
+    State 1
+      0000: Mwir Compare op=< ty=u64 dst=t8 lhs=t7 rhs=t3
+      Transition Branch cond=t8 then=2 else=3
+    State 2
+      Transition Await what=ActorCall{target=t2,method=Store.load,args=[]} resume=4 result=t9
+    State 3
+      0000: Mwir Return value=t5
+      Transition Return
+    State 4
+      0000: Mwir Copy dst=t10 src=t9
+      0001: Mwir EnumTag dst=t12 src=t10
+      0002: Mwir ConstInt dst=t13 ty=u64 value=0
+      0003: Mwir Compare op=== ty=u64 dst=t14 lhs=t12 rhs=t13
+      0004: Mwir EnumPayload dst=t15 src=t10 index=0
+      0005: Mwir Copy dst=t11 src=t15
+      0006: Mwir ConstBool dst=t16 value=true
+      0007: Mwir BoolAnd dst=t17 lhs=t14 rhs=t16
+      0008: Mwir JumpIfFalse cond=t17 target=0012
+      0009: Mwir ArithChecked op=+ ty=u64 dst=t18 lhs=t5 rhs=t11 abort="arithmetic overflow in `+`"
+      0010: Mwir Copy dst=t5 src=t18
+      0011: Mwir Jump target=0021
+      0012: Mwir EnumTag dst=t19 src=t10
+      0013: Mwir ConstInt dst=t20 ty=u64 value=1
+      0014: Mwir Compare op=== ty=u64 dst=t21 lhs=t19 rhs=t20
+      0015: Mwir EnumPayload dst=t22 src=t10 index=0
+      0016: Mwir ConstBool dst=t23 value=true
+      0017: Mwir BoolAnd dst=t24 lhs=t21 rhs=t23
+      0018: Mwir JumpIfFalse cond=t24 target=0020
+      0019: Mwir Jump target=0021
+      0020: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0021: Mwir ConstInt dst=t25 ty=u64 value=1
+      0022: Mwir ArithChecked op=+ ty=u64 dst=t26 lhs=t7 rhs=t25 abort="arithmetic overflow in `+`"
+      0023: Mwir Copy dst=t7 src=t26
+      Transition Jump target=1
