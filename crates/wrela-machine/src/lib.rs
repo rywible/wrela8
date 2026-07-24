@@ -221,6 +221,21 @@ pub mod machine_info {
     /// fields" convention (module doc, above).
     pub const OFF_TEST_LINE_BUF: u64 = 0x100;
     pub const TEST_LINE_BUF_SIZE: u64 = 256;
+
+    /// Offset 0x200 (512): plans/M6.md item E's own vector-observation
+    /// counter, `u64`, zeroed at boot — `__wrela_vector0_service`'s whole
+    /// body (`wrela-compiler/src/layout.rs::build_checkpoint_and_vector_stub`)
+    /// increments this every time the checkpoint service dispatches the
+    /// one M6 vector (index 0, the deadline/cancel vector), purely so a
+    /// conformance test can observe "the vector was actually delivered and
+    /// serviced" from outside the guest (a memory flag, per 06 §4's own
+    /// checkpoint-injection contract) without needing a console/report
+    /// line. Item F's real group-cancellation delivery is expected to grow
+    /// this routine's body into real cancellation work; the counter itself
+    /// may stay alongside it as a cheap observability hook, or retire —
+    /// either way this offset is reserved now, past `OFF_TEST_LINE_BUF`'s
+    /// own 256-byte scratch region, so nothing else needs to move.
+    pub const OFF_VECTOR0_OBSERVED: u64 = 0x200;
 }
 
 /// Console: a runtime-owned tx ring, virtio-shaped (plans/M5.md decision
@@ -369,6 +384,33 @@ pub mod mmio {
     /// distinguishable by address range in a fault handler, not because
     /// either is wider than 8 bytes.
     pub const EXIT_MMIO_ADDR: u64 = MMIO_BASE + 0x1000;
+
+    /// One `u64` store: the park protocol's own trapping doorbell
+    /// (plans/M6.md item E, 06 §5: "when a core's scheduler has no ready
+    /// work it parks with its next deadline written to the machine-info
+    /// page; the VMM sleeps the vCPU thread until that deadline or a
+    /// wake"). The dumbest reliable, deterministic mechanism available on
+    /// both HVF and a future KVM backend — a trapping store, mirroring
+    /// `EXIT_MMIO_ADDR`'s own precedent exactly (a WFI trap would work on
+    /// HVF too, but a store-exit needs no extra per-backend trap-class
+    /// decoding beyond the `decode_data_abort` this crate's consumers
+    /// already have for the clock/exit registers, and generalizes
+    /// identically to KVM's own MMIO-exit machinery). Protocol: the guest
+    /// writes its own next deadline to `machine_info::OFF_NEXT_DEADLINE`
+    /// (an ordinary, non-trapping store — visible in a plain guest memory
+    /// dump, mirroring `OFF_EXIT_CODE`'s own convention) and only then
+    /// performs *this* trapping store (any value; the VMM reads the real
+    /// deadline back from `OFF_NEXT_DEADLINE`, not from the stored value
+    /// itself) — the VMM rechecks this core's own pending word
+    /// (`pending::core_word_addr`) before deciding to sleep at all (the
+    /// mask-arm-recheck discipline's own "recheck" half, 06 §4: "a wake
+    /// between test and park cannot be lost"): a vector already pending at
+    /// the moment of this trap means the VMM resumes the vCPU immediately,
+    /// no sleep, so the guest's own next checkpoint (the park's own resume
+    /// point counts as one, by construction) observes it right away.
+    /// Placed a further page after `EXIT_MMIO_ADDR`, the identical
+    /// separate-page-per-register convention.
+    pub const PARK_MMIO_ADDR: u64 = MMIO_BASE + 0x2000;
 }
 
 /// The closed device set of machine v1 (06-machine.md §6). There is no
@@ -466,6 +508,7 @@ mod tests {
             ("image_base", layout::IMAGE_BASE, 0),
             ("clock_mmio", mmio::CLOCK_MMIO_ADDR, 8),
             ("exit_mmio", mmio::EXIT_MMIO_ADDR, 8),
+            ("park_mmio", mmio::PARK_MMIO_ADDR, 8),
         ]
     }
 
@@ -554,8 +597,9 @@ mod tests {
         assert!(machine_info::OFF_LINE_START + 8 <= machine_info::OFF_TEST_LINE_BUF);
         assert!(
             machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
-                <= layout::MACHINE_INFO_SIZE
+                <= machine_info::OFF_VECTOR0_OBSERVED
         );
+        assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= layout::MACHINE_INFO_SIZE);
     }
 
     #[test]

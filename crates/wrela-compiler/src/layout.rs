@@ -206,6 +206,13 @@ const X_SP: u8 = 31;
 const SCRATCH_A: u8 = 9;
 const SCRATCH_B: u8 = 10;
 const SCRATCH_C: u8 = 11;
+/// The same bit pattern as `X_SP` (register field `31`), used only where
+/// the instruction's own Rt/source-register position is meant — `STR`'s
+/// own `Rt=11111` always denotes `XZR`, never `SP` (unlike `ADD`
+/// (immediate)'s Rd/Rn field, where `31` means `SP`) — a separate name so
+/// a reader never has to reason about which encoding class is in play at
+/// each call site.
+const X_ZR: u8 = 31;
 
 /// Placeholder failure exit codes (module doc's own "Entry/abort
 /// contract" section) — distinct only so a post-mortem guest memory dump
@@ -256,20 +263,124 @@ fn build_abort_stub(exit_code: u64) -> Vec<u32> {
     words
 }
 
-/// plans/M6.md decision 6/item D: `__wrela_checkpoint_service` — the
-/// shared target every `codegen::Reloc::CheckpointService` `BL` resolves
-/// to, in every image flavor (ordinary `wrela build`/`--stage=report` and
-/// `wrela test`'s runtime harness alike). At D it is a bare, immediate
-/// `ret`: "vectors unraisable until E" (item D's own task text) means
-/// there is nothing real to service yet — a checkpoint's own load-test-
-/// branch sequence (`codegen::FnCtx::checkpoint`) only ever calls this
-/// when the pending word is *already* nonzero, and even then this stub
-/// deliberately clears nothing (item E owns the real service: consuming
-/// the pending vector and acting on it). One instruction, shared by every
-/// caller, exactly like `build_checkpoint_stub`'s abort-stub siblings
-/// above.
-fn build_checkpoint_stub() -> Vec<u32> {
-    vec![encode::enc_ret(30)]
+/// plans/M6.md item E, decision 7/06 §4: `__wrela_checkpoint_service` is
+/// now real — the shared target every `codegen::Reloc::CheckpointService`
+/// `BL` resolves to, in every image flavor (ordinary `wrela build`/
+/// `--stage=report` and `wrela test`'s runtime harness alike; also the
+/// entry driver's own park-resume path, below, calls it directly). Item
+/// D's own bare `ret` is replaced by the real mask-arm-recheck loop over
+/// the per-core pending word (`wrela_machine::pending::core_word_addr(0)`
+/// — M6 is core-0-only, exactly like `codegen::FnCtx::checkpoint`'s own
+/// identical address choice, which is the load-test half of this same
+/// sequence: this fn is only ever reached once that test already found
+/// the word nonzero).
+///
+/// **The vector table, honestly collapsed**: 06 §4/the plan's own item-E
+/// task text calls for "a static vector table in rtdata" so a set bit
+/// dispatches to its own registered service routine. At M6 there is
+/// exactly one vector (index 0, the deadline/cancel vector) — a real
+/// runtime-loaded table with one entry is pure ceremony over what a
+/// single, directly-relocated `BL` to `__wrela_vector0_service` (emitted
+/// immediately below, at a *compile-time-known* word offset — no
+/// relocation across sections needed at all, since both routines are
+/// built together, here, in one pass) already gives byte-for-byte:
+/// exactly one link-time-resolved call target. CLAUDE.md's "no layers for
+/// their own sake" governs over the plan's own literal wording here — a
+/// table an M6 image can never populate with a second entry is not a
+/// table, it is one `BL`, and building the indirection anyway before a
+/// second vector exists would be exactly the "cleverness bought without
+/// a profile" rule bars. **What multi-vector growth actually needs**
+/// (disclosed, not built ahead of need): a real address table in rtdata
+/// (or a fixed global data region, whichever a later milestone's own
+/// static-sizing pass finds cleaner) plus a per-bit test-and-dispatch
+/// loop in place of this fn's own single unconditional dispatch below —
+/// the surrounding mask-arm-recheck loop shape does not change.
+///
+/// **Mask-arm-recheck, the M6-simple (single-core) form**: loop { read
+/// the word; if zero, done; dispatch (the one vector); clear; reread
+/// (recheck) }. Clearing is a plain whole-word zero-store, not a
+/// bit-clear — honest only because bit 0 is the *only* bit any writer
+/// ever sets at M6 (the VMM's own raise path, below, never sets another
+/// bit); a real multi-vector version must AND-clear only the bit(s) just
+/// serviced (this crate's `encode.rs` has no bitwise-not/BIC encoder yet,
+/// deliberately not added for a floor nothing here needs). Rereading
+/// after the clear-store is the actual "recheck": a raise landing
+/// anywhere between our own read and our own clear-store (the VMM writes
+/// from a different host thread, entirely unsynchronized with this loop)
+/// is never lost — it is simply serviced on the loop's next iteration
+/// rather than this one, so "arm" (there is nothing to separately
+/// re-enable here — the pending word has no mask bit of its own, unlike
+/// `InterruptCell`'s per-vector mask) collapses into "the loop always
+/// rereads before deciding it is done." **What multi-core would
+/// additionally need** (disclosed): this whole read-test-clear sequence
+/// must become a single atomic RMW (`LDXR`/`STXR` or an atomic AND),
+/// since a *different* vCPU's own checkpoint could race this one's clear
+/// against the VMM's raise from yet another host thread — single-core
+/// M6 has no such second reader/writer to race against, which is exactly
+/// why a plain load/store loop is honestly sufficient here and would not
+/// be once core 1+ start (a later milestone's own job, per the plan's own
+/// "M6 is core-0-only").
+///
+/// Returns `(words, checkpoint_service_word_offset)` — the second value
+/// is `__wrela_checkpoint_service`'s own entry point, *relative to the
+/// start of `words`* (not `0`, since `__wrela_vector0_service` is placed
+/// first so its own address needs no forward reference at all). Every
+/// caller must resolve `Reloc::CheckpointService`/its own local `BL`s
+/// against `section_base + checkpoint_service_word_offset * 4`, never
+/// `section_base` alone.
+///
+/// **The vector-0 service routine's own contract** (item F's plug-in
+/// point, named precisely so F never has to reshape this fn): called via
+/// `BL` from the loop below, with the caller's own `x30` already saved —
+/// a service routine may clobber `x0..x14` freely (checkpoints fire
+/// between arbitrary instructions of interrupted code, so nothing about
+/// a live register survives one anyway, by construction) but must
+/// preserve `x28` (`codegen::X_FRAME`, the persistent turn-frame base
+/// register live across suspension) and `sp`, and returns via its own
+/// ordinary `ret` (its own `x30`, set fresh by the `BL`, never the
+/// caller's). Clearing the pending bit is `__wrela_checkpoint_service`'s
+/// own job, unconditionally, after every dispatch — never the routine's:
+/// a vector routine's whole contract is "do the vector's work
+/// synchronously, then return," exactly the shape item F's group-
+/// cancellation delivery already needs (deliver cancellation to every
+/// target the expired group names, then return).
+pub fn build_checkpoint_and_vector_stub() -> (Vec<u32>, usize) {
+    let mut a = Asm::new(0);
+
+    // --- __wrela_vector0_service --- placed first: word offset 0, so the
+    // checkpoint loop's own `BL` below needs no forward-reference bookkeeping.
+    let vector0_start = a.abs();
+    debug_assert_eq!(vector0_start, 0);
+    let observed_addr = machine_layout::MACHINE_INFO_BASE + machine_info::OFF_VECTOR0_OBSERVED;
+    a.load_imm(SCRATCH_A, observed_addr);
+    a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
+    a.push(encode::enc_add_imm(SCRATCH_B, SCRATCH_B, 1, true));
+    a.push(encode::enc_str_x_imm(SCRATCH_B, SCRATCH_A, 0));
+    a.push(encode::enc_ret(30));
+
+    // --- __wrela_checkpoint_service ---
+    let checkpoint_service_word = a.abs();
+    a.push(encode::enc_sub_imm(X_SP, X_SP, 16, true)); // sub sp, sp, #16
+    a.push(encode::enc_str_x_imm(30, X_SP, 0)); // str x30, [sp]  (BLR below clobbers it)
+    let loop_top = a.abs();
+    let pending_addr = wrela_machine::pending::core_word_addr(0);
+    a.load_imm(SCRATCH_A, pending_addr);
+    a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
+    let skip_done = a.skip_placeholder(); // cbz X_B, .done
+    a.bl_to(vector0_start);
+    // Reload the address fresh — the callee's own contract (above) may
+    // clobber any of x9..x14, so nothing from before the `BL` survives it.
+    a.load_imm(SCRATCH_A, pending_addr);
+    a.push(encode::enc_str_x_imm(X_ZR, SCRATCH_A, 0)); // clear (M6: whole-word == bit-0-only, module doc above)
+    a.b_to(loop_top); // recheck
+    let done = a.abs();
+    a.patch_cbz(skip_done, SCRATCH_B);
+    debug_assert_eq!(done, a.abs());
+    a.push(encode::enc_ldr_x_imm(30, X_SP, 0));
+    a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
+    a.push(encode::enc_ret(30));
+
+    (a.words, checkpoint_service_word)
 }
 
 // --- section packing helpers ---------------------------------------------
@@ -441,7 +552,7 @@ pub fn layout_program(
 
     let abort_fixed_words = build_abort_stub(EXIT_CODE_ABORT_FIXED);
     let abort_val_words = build_abort_stub(EXIT_CODE_ABORT_VAL);
-    let checkpoint_words = build_checkpoint_stub();
+    let (checkpoint_words, checkpoint_service_word) = build_checkpoint_and_vector_stub();
 
     // --- place sections, fixed order: entry, code, rodata?, abort. ------
     let mut cursor = image_base;
@@ -474,6 +585,11 @@ pub fn layout_program(
     let checkpoint_base = cursor;
     let checkpoint_size = (checkpoint_words.len() * 4) as u64;
     cursor += checkpoint_size;
+    // `__wrela_checkpoint_service`'s own entry point (module doc on
+    // `build_checkpoint_and_vector_stub`): `__wrela_vector0_service` is
+    // placed first in this section, so the section's own base is never
+    // the right `Reloc::CheckpointService` target on its own.
+    let checkpoint_service_addr = checkpoint_base + (checkpoint_service_word as u64) * 4;
 
     let mut sections = vec![
         Section {
@@ -584,7 +700,12 @@ pub fn layout_program(
                 }
                 Reloc::CheckpointService { word } => {
                     let this_addr = code_base + ((base + word) * 4) as u64;
-                    patch_bl(&mut all_code_words, base + word, this_addr, checkpoint_base)?;
+                    patch_bl(
+                        &mut all_code_words,
+                        base + word,
+                        this_addr,
+                        checkpoint_service_addr,
+                    )?;
                 }
                 Reloc::TurnFrameAddr { word, key: fn_key } => {
                     let addr = placement
@@ -2769,6 +2890,12 @@ fn build_entry_driver(
     // block into existence via its own free-turn area).
     async_tests: &std::collections::BTreeSet<String>,
     rt_run_one_start: Option<usize>,
+    // plans/M6.md item E: `__wrela_checkpoint_service`'s own harness-
+    // absolute word index (module doc on `build_checkpoint_and_vector_stub`)
+    // — the park-resume path below calls it directly (06 §4: "the guest
+    // observes vectors only at checkpoints and parks", and the park's own
+    // resume point *is* one, by construction).
+    checkpoint_service_word: usize,
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
     boot_init_start: Option<usize>,
@@ -2895,7 +3022,40 @@ fn build_entry_driver(
                 let delta = (drive_top as i64 - this as i64) * 4;
                 a.push(encode::enc_cbnz(0, delta as i32, true));
             }
-            // Deadlock: root not ready, nothing else ready either.
+            // Nothing ready. plans/M6.md item E, decision 7/06 §5: park
+            // iff a deadline is pending (`OFF_NEXT_DEADLINE != 0`);
+            // otherwise item D's own deadlock diagnostic still applies
+            // unchanged — no deadline and nothing ready is no progress,
+            // ever (the park path below can never turn a real deadlock
+            // into a hang: it only ever fires when *something* names a
+            // future wake, which item F's groups are the only real M6
+            // producer of — conformance tests exercise it via
+            // hand-arranged state, exactly like D's own deadlock test).
+            a.load_imm(9, addrs.info_base + mi::OFF_NEXT_DEADLINE);
+            a.push(encode::enc_ldr_x_imm(10, 9, 0));
+            let skip_park = a.skip_placeholder(); // cbz x10, .deadlock
+            // Park (06 §5's own protocol): the deadline is already resident
+            // at `OFF_NEXT_DEADLINE` (a real group's expiry write is item
+            // F's job; conformance hand-arranges it here, mirroring D's
+            // own hand-arranged deadlock state) — x10 already holds it.
+            // The trapping store to `PARK_MMIO_ADDR` is the park itself;
+            // the VMM reads the real deadline back from
+            // `OFF_NEXT_DEADLINE`, not from the value stored here.
+            a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
+            a.push(encode::enc_str_x_imm(10, 9, 0));
+            // Resumed: the VMM slept until the deadline (or was woken
+            // sooner), raised the vector, and resumed this vCPU with PC
+            // advanced past the trapping store above. The park's own
+            // resume point is a checkpoint by construction (06 §4:
+            // "observed only at checkpoints and parks") — service it
+            // directly, unconditionally, then retry the scheduler.
+            a.bl_to(checkpoint_service_word);
+            a.b_to(drive_top);
+            let deadlock = a.abs();
+            a.patch_cbz(skip_park, 10);
+            debug_assert_eq!(deadlock, a.abs());
+            // Deadlock: root not ready, nothing else ready, no deadline
+            // pending either — no progress is possible, ever.
             a.load_rodata_addr_at(0, ddl_off);
             a.load_imm(1, DEADLOCK_MSG.len() as u64);
             a.bl_to(abort_fixed_start); // noreturn (landing pad)
@@ -3247,15 +3407,25 @@ pub fn layout_test_image(
         failed_word_off,
         abort_newline_off,
     );
-    // plans/M6.md decision 6/item D: `__wrela_checkpoint_service`, the
-    // exact same one-instruction stub `layout_program`'s own
-    // `build_checkpoint_stub` builds for the ordinary image path — placed
-    // once here, in the test harness's own combined word section, since a
-    // runtime-test image's compiled fns (`program.fns`, below) can carry
-    // `Reloc::CheckpointService` exactly like `Reloc::AbortFixed`/`AbortVal`.
+    // plans/M6.md item E: `__wrela_checkpoint_service` + its own
+    // `__wrela_vector0_service` sibling, the exact same real routine pair
+    // `layout_program`'s own `build_checkpoint_and_vector_stub` builds for
+    // the ordinary image path — placed once here, in the test harness's
+    // own combined word section, since a runtime-test image's compiled
+    // fns (`program.fns`, below) can carry `Reloc::CheckpointService`
+    // exactly like `Reloc::AbortFixed`/`AbortVal`, and the entry driver's
+    // own park-resume path (below) calls the service directly too.
     let checkpoint_start = abort_val_start + abort_val_asm.words.len();
-    let mut checkpoint_asm = Asm::new(checkpoint_start);
-    checkpoint_asm.push(encode::enc_ret(30));
+    let (checkpoint_words, checkpoint_service_offset) = build_checkpoint_and_vector_stub();
+    let checkpoint_asm = Asm {
+        start: checkpoint_start,
+        words: checkpoint_words,
+        relocs: Vec::new(),
+    };
+    // `__wrela_checkpoint_service`'s own harness-absolute word index (see
+    // `build_checkpoint_and_vector_stub`'s doc: `__wrela_vector0_service`
+    // sits first, so the section's own start is never the right target).
+    let checkpoint_service_word = checkpoint_start + checkpoint_service_offset;
 
     // plans/M6.md item D: the runtime-glue routines + boot-init sequence
     // (module docs on `build_runtime_glue_block`/`build_boot_init` above)
@@ -3307,6 +3477,7 @@ pub fn layout_test_image(
         runtime_tests,
         async_tests,
         rt_run_one_start,
+        checkpoint_service_word,
         &mut rodata,
         &mut rodata_cursor,
         boot_init_start_opt,
@@ -3551,7 +3722,7 @@ pub fn layout_test_image(
                 }
                 Reloc::CheckpointService { word } => {
                     let this_addr = code_base + ((base + word) * 4) as u64;
-                    let target_addr = harness_base + (checkpoint_start as u64) * 4;
+                    let target_addr = harness_base + (checkpoint_service_word as u64) * 4;
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::TurnFrameAddr { word, key: fn_key } => {

@@ -3435,14 +3435,99 @@ fn repro_test_image() -> Result<(), String> {
     Ok(())
 }
 
-/// `cargo xtask repro` (plans/M5.md decision 10, item F): the standalone,
-/// full-corpus form — `report_determinism`'s own `@image`/`wrela build`
-/// population plus `repro_test_image`'s one runtime-test-image case,
-/// so bare `repro` covers every image-emitting path this milestone has,
-/// not only the one `report_determinism` alone can reach.
+/// plans/M6.md item E: the choice-sequence recorder's own citable
+/// conformance evidence (`machine.replay.clock-log`/`machine.replay.
+/// choice-sequence`'s own ledger notes) — shells out to the freshly
+/// built-and-signed `wrela-vmm` *binary* exactly once more (never the
+/// `wrela-vmm` *crate*: this file's own established "xtask stays
+/// unsigned, only the one signed binary calls HVF" boundary, the same
+/// reason `run_vmm`/`bench_guest_lane` never link it either), recording
+/// `tests/golden/boot-hello`'s own real test image live via `--record`,
+/// then replaying that exact recording via `--replay` — a genuine
+/// end-to-end exercise of `record::Chooser::choose_next`'s own record and
+/// replay arms alike, over a real, already-citable golden's own compiled
+/// image, not a hand-built stand-in. `boot-hello` declares no actors, so
+/// this particular boot's own choice sequence is `ClockRead`-shaped only
+/// (no `DeadlineWake`/`VectorRaise`) — the fuller tag coverage lives in
+/// `wrela-vmm`'s own conformance suite (`park_conformance_wakes_at_the_
+/// deadline_and_resumes_over_hvf`, `vector_raise_observed_at_a_checkpoint_
+/// over_hvf`, `record_replay_of_the_park_wake_scenario_is_byte_stable_and_
+/// detects_tamper`), disclosed here rather than silently implied covered:
+/// those tests are real, but — like `machine.clock.trap-logged`'s own
+/// established precedent — `cargo test -p wrela-vmm` unit tests are not
+/// individually citable by `xtask ledger`'s own validator (no `tests/`
+/// path, no `xtask:<command>`).
+fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
+    let (img_bytes, report_text) = boot_hello_test_image()?;
+    let tmp_dir = root().join("target/repro-choice-log-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 && record_exit != 1 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: choice-log record boot did not complete (exit {record_exit})"
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    if !record_text.starts_with("ChoiceLog v1\n") {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(
+            "repro: choice-log record file does not start with the versioned `ChoiceLog v1` header"
+                .to_string(),
+        );
+    }
+
+    let replay_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if replay_exit != 0 {
+        return Err(format!(
+            "repro: choice-log replay diverged from its own recording (exit {replay_exit}):\n{}",
+            String::from_utf8_lossy(&replay_out.stderr)
+        ));
+    }
+    println!(
+        "repro: tests/golden/boot-hello's own choice log (`ChoiceLog v1`) records and replays \
+         byte-stable, zero divergence"
+    );
+    Ok(())
+}
+
+/// `cargo xtask repro` (plans/M5.md decision 10, item F; plans/M6.md item
+/// E): the standalone, full-corpus form — `report_determinism`'s own
+/// `@image`/`wrela build` population, `repro_test_image`'s runtime-test-
+/// image case, and `repro_choice_log_roundtrip`'s own record/replay
+/// round trip, so bare `repro` covers every image-emitting *and*
+/// determinism-recording path this milestone has.
 fn repro() -> Result<(), String> {
     report_determinism()?;
-    repro_test_image()
+    repro_test_image()?;
+    let vmm = build_and_sign_vmm()?;
+    repro_choice_log_roundtrip(&vmm)
 }
 
 // --- diff-eval (plans/M5.md decision 9, item F) -----------------------------
@@ -3598,33 +3683,38 @@ fn run_vmm(vmm: &Path, report_path: &Path, img_path: &Path) -> Result<VmmBoot, S
 /// as a design boundary worth keeping crisp at the crate-graph level too,
 /// not only at the "who calls HVF" level) — a few `strip_prefix` calls
 /// over a handful of known keys is simpler than a real dependency for
-/// the three fields `bench guest`/`profile` actually need.
+/// the three fields `bench guest`/`profile` actually need. plans/M6.md
+/// item E: `clock_log_len` -> `choice_count` (decision 9's own choice-
+/// sequence recorder grows the field this reads — bench guest's own
+/// "exact counts" assertion now covers the whole choice sequence, not
+/// only clock reads, per the item's own "bench guest's exact-count
+/// assertions extend to choice-count" instruction).
 struct GuestRecord {
     exit_code: u64,
     exits: u64,
-    clock_log_len: usize,
+    choice_count: usize,
 }
 
 fn parse_guest_record(text: &str) -> Result<GuestRecord, String> {
     let mut exit_code = None;
     let mut exits = None;
-    let mut clock_log_len = None;
+    let mut choice_count = None;
     for line in text.lines() {
         if let Some(v) = line.strip_prefix("exit_code=") {
             exit_code = Some(v.parse().map_err(|e| format!("bad exit_code {v:?}: {e}"))?);
         } else if let Some(v) = line.strip_prefix("exits=") {
             exits = Some(v.parse().map_err(|e| format!("bad exits {v:?}: {e}"))?);
-        } else if let Some(v) = line.strip_prefix("clock_log_len=") {
-            clock_log_len = Some(
+        } else if let Some(v) = line.strip_prefix("choice_count=") {
+            choice_count = Some(
                 v.parse()
-                    .map_err(|e| format!("bad clock_log_len {v:?}: {e}"))?,
+                    .map_err(|e| format!("bad choice_count {v:?}: {e}"))?,
             );
         }
     }
     Ok(GuestRecord {
         exit_code: exit_code.ok_or("record file: missing exit_code")?,
         exits: exits.ok_or("record file: missing exits")?,
-        clock_log_len: clock_log_len.ok_or("record file: missing clock_log_len")?,
+        choice_count: choice_count.ok_or("record file: missing choice_count")?,
     })
 }
 
@@ -3858,7 +3948,7 @@ fn diff_eval_smoke() -> Result<(), String> {
 // image (built once, outside the timed loop — only the *boot* itself is
 // the measured workload, not compilation) via the codesigned `wrela-vmm`
 // binary, `--record`ed every time so the exact per-boot counts
-// (`RecordFile`'s own `exits`/`clock_log_len`/`exit_code`, plus the
+// (`RecordFile`'s own `exits`/`choice_count`/`exit_code`, plus the
 // transcript bytes captured on stdout) are available for the "exact
 // replay counts" half of decision 14 without a second, separately-timed
 // invocation. Same warmup+timed shape as every other bench lane, its own
@@ -3939,6 +4029,7 @@ fn bench_guest_lane() -> Result<(), String> {
     let mut transcripts = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
     let mut exit_codes = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
     let mut exits_counts = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
+    let mut choice_counts = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
     for _ in 0..BENCH_GUEST_TIMED_ITERS {
         let (elapsed, transcript, exit_code_class, record) = boot_one()?;
         if exit_code_class != 0 && exit_code_class != 1 {
@@ -3951,6 +4042,7 @@ fn bench_guest_lane() -> Result<(), String> {
         transcripts.push(transcript);
         exit_codes.push(record.exit_code);
         exits_counts.push(record.exits);
+        choice_counts.push(record.choice_count);
     }
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
@@ -3958,7 +4050,11 @@ fn bench_guest_lane() -> Result<(), String> {
     // identical image must produce byte-identical transcripts and
     // identical exit codes/exit counts — anything else is a real
     // nondeterminism bug (the generated runtime or the VMM), never
-    // ordinary machine noise.
+    // ordinary machine noise. plans/M6.md item E: the choice-sequence
+    // recorder's own count joins this exact-count set (`boot-hello` has
+    // no actors/deadlines, so its own choice count is just its clock-read
+    // count today — the identical fact `clock_log_len` used to name,
+    // generalized).
     let first_transcript = transcripts[0].clone();
     for (i, t) in transcripts.iter().enumerate() {
         if *t != first_transcript {
@@ -3975,6 +4071,10 @@ fn bench_guest_lane() -> Result<(), String> {
     let first_exits = exits_counts[0];
     if exits_counts.iter().any(|&e| e != first_exits) {
         return Err("bench guest: vCPU exit count differs across timed boots".to_string());
+    }
+    let first_choice_count = choice_counts[0];
+    if choice_counts.iter().any(|&c| c != first_choice_count) {
+        return Err("bench guest: choice-sequence count differs across timed boots".to_string());
     }
 
     totals.sort();
@@ -3995,7 +4095,7 @@ fn bench_guest_lane() -> Result<(), String> {
     );
     println!(
         "bench guest: exact counts across every timed boot: transcript={} byte(s), \
-         exit_code={first_exit_code}, exits={first_exits}",
+         exit_code={first_exit_code}, exits={first_exits}, choices={first_choice_count}",
         first_transcript.len()
     );
 
@@ -4150,11 +4250,11 @@ fn profile() -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     println!(
-        "profile: guest (tests/golden/boot-hello) wall={}us exits={} transcript_bytes={} clock_reads={}",
+        "profile: guest (tests/golden/boot-hello) wall={}us exits={} transcript_bytes={} choices={}",
         guest_wall.as_micros(),
         record.exits,
         transcript_len,
-        record.clock_log_len
+        record.choice_count
     );
     Ok(())
 }

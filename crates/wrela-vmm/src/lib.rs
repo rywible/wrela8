@@ -117,7 +117,12 @@ impl std::error::Error for VmmError {}
 pub struct BootOutcome {
     pub transcript: Vec<u8>,
     pub exit_code: u64,
-    pub clock_log: Vec<u64>,
+    /// plans/M6.md item E: the whole ordered choice sequence this boot
+    /// resolved (decision 9) — clock reads, deadline wakes, and vector
+    /// raises alike, in the order `Chooser::choose_next` (`record.rs`)
+    /// saw them. M5's own `clock_log: Vec<u64>` is exactly the
+    /// `ChoiceEntry::ClockRead` subsequence of this, now generalized.
+    pub choices: Vec<record::ChoiceEntry>,
     pub exits: u64,
 }
 
@@ -200,30 +205,46 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
 /// affect a real guest write to a freshly mapped page.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, VmmError> {
-    boot_image_core(report_path, img_path, None).map(|(outcome, _underrun)| outcome)
+    boot_image_core(report_path, img_path, None, None).map(|(outcome, _divergences)| outcome)
 }
 
-/// The shared boot core (plans/M5.md item F): identical to `boot_image`
-/// above in every respect but one — when `clock_feed` is `Some(values)`,
-/// every guest read of `CLOCK_MMIO_ADDR` is answered from `values`, in
-/// order, instead of `monotonic_ns()` (06 §8's replay half: "replay feeds
-/// the log from virtual device models" — the clock trap is this
-/// machine's one live "device" at M5). `boot_image` itself is simply this
-/// function called with `clock_feed: None` (live clock) and the second
-/// return value discarded — a live boot can never underrun a log it
-/// isn't consuming. The second return value is `Some(read_index)` the
-/// *first* time a replayed guest reads the clock more times than
-/// `clock_feed` has entries for (a log **underrun** — `record::replay`'s
-/// own divergence check, below); such a read is answered with `0` so the
-/// guest keeps running normally (a wrong value is exactly as informative
-/// a divergence signal as a hung boot, and far more useful for a
-/// post-mortem transcript) rather than aborting the boot outright.
+/// The shared boot core (plans/M5.md item F, grown by plans/M6.md item E
+/// into the choice-sequence shape): identical to `boot_image` above in
+/// every respect but two extra parameters.
+///
+/// `replay_choices`: `None` (live/record mode) or `Some(log)` (replay
+/// mode) — every nondeterministic decision this boot's exit loop makes
+/// (a clock read, a deadline park's own wake) flows through exactly one
+/// `record::Chooser::choose_next` call (decision 9's own single-point-of-
+/// choice mandate), which either produces a fresh live value (recording
+/// it) or consumes the next tagged entry from `log` (replaying it,
+/// diverging loudly — via the second return value — on a tag mismatch or
+/// underrun, never a panic and never a silently wrong value). `boot_image`
+/// itself is simply this function called with `replay_choices: None`.
+///
+/// `test_delayed_raise`: `cfg(test)`-only conformance seam (this crate's
+/// own tests module is the only caller — plans/M6.md item E's
+/// conformance test (a), "vector raise observed at a checkpoint"): after
+/// `(delay, vector_bit)`, a background host thread stores `vector_bit`
+/// directly into this core's own pending word — a raw host-side memory
+/// write, no vCPU exit involved, exactly modeling "the VMM raises a
+/// vector while the guest is actively running, not parked" (06 §4's own
+/// store-half of "a store-release plus a wake" — no wake is needed here
+/// since the vCPU was never parked). This path is **not** itself
+/// recorded/replayed (a host-timing-dependent raise cannot be replayed
+/// deterministically without a virtual clock this milestone does not
+/// have) — it exists purely to prove the checkpoint-service dispatch
+/// mechanism honestly, since M6-E's only *real* mid-run vector producer
+/// (an expired group's deadline while its target is still running) is
+/// item F's own job. Always `None` on every production call site
+/// (`boot_image`, `record::record`, `record::replay`).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn boot_image_core(
     report_path: &Path,
     img_path: &Path,
-    clock_feed: Option<&[u64]>,
-) -> Result<(BootOutcome, Option<usize>), VmmError> {
+    replay_choices: Option<Vec<record::ChoiceEntry>>,
+    test_delayed_raise: Option<(Duration, u64)>,
+) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
     use hv::*;
     use std::alloc::{Layout, alloc_zeroed, dealloc};
     use std::ffi::c_void;
@@ -421,18 +442,69 @@ fn boot_image_core(
         handle: Some(watchdog),
     };
 
+    // --- plans/M6.md item E's own conformance-only seam: a delayed,
+    // host-side raise (module doc above) — absent (`None`) on every
+    // production path. `host_ram` is a raw pointer into this fn's own
+    // `alloc_zeroed` reservation, alive for the whole fn body (`_ram_guard`
+    // frees it only on return) — a plain byte store into it from another
+    // host thread is exactly as safe as the main thread's own later
+    // `drain_console`/park-handling reads of the identical region, wrapped
+    // only so `std::thread::spawn` accepts the raw pointer at all.
+    struct SendPtr(*mut u8);
+    unsafe impl Send for SendPtr {}
+    /// Joins the raiser thread on drop — guarantees it is finished (and
+    /// therefore never touches `host_ram` again) before `_ram_guard`
+    /// (declared earlier, dropped later — Rust drops in reverse
+    /// declaration order) deallocates the reservation this thread writes
+    /// into.
+    struct RaiseGuard(Option<std::thread::JoinHandle<()>>);
+    impl Drop for RaiseGuard {
+        fn drop(&mut self) {
+            if let Some(h) = self.0.take() {
+                let _ = h.join();
+            }
+        }
+    }
+    let _raise_guard = RaiseGuard(test_delayed_raise.map(|(delay, vector_bit)| {
+        let ptr = SendPtr(host_ram);
+        let raise_pending_off =
+            (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
+        std::thread::spawn(move || {
+            // `let ptr = ptr;` forces the closure to capture the whole
+            // `SendPtr` value (Rust 2021's disjoint-field capture would
+            // otherwise capture only the inner `*mut u8` field directly,
+            // which is not `Send` on its own — `SendPtr`'s own `unsafe
+            // impl Send` only helps if the wrapper itself is what gets
+            // captured).
+            let ptr = ptr;
+            std::thread::sleep(delay);
+            let SendPtr(base) = ptr;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    vector_bit.to_le_bytes().as_ptr(),
+                    base.add(raise_pending_off),
+                    8,
+                );
+            }
+        })
+    }));
+
     // --- the exit loop ---------------------------------------------------------
     let clock_addr = mmio::CLOCK_MMIO_ADDR;
     let exit_addr = mmio::EXIT_MMIO_ADDR;
-    let mut clock_log = Vec::new();
+    let park_addr = mmio::PARK_MMIO_ADDR;
+    let pending_off =
+        (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
+    let deadline_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize
+        + machine_info::OFF_NEXT_DEADLINE as usize;
     let mut exits: u64 = 0;
     let exit_code: u64;
-    // `clock_feed`'s own read cursor, and the first read index (if any)
-    // that ran past the end of it — a replay log **underrun**
-    // (`record::replay`'s own divergence check reads this back via this
-    // function's second return value).
-    let mut clock_feed_idx: usize = 0;
-    let mut clock_underrun: Option<usize> = None;
+    // plans/M6.md item E, decision 9: the single point every
+    // nondeterministic decision this loop makes flows through.
+    let mut chooser = match replay_choices {
+        Some(log) => record::Chooser::replayer(log),
+        None => record::Chooser::recorder(),
+    };
 
     loop {
         let r = unsafe { hv_vcpu_run(vcpu) };
@@ -488,20 +560,21 @@ fn boot_image_core(
                                 .to_string(),
                         ));
                     }
-                    let ns = match clock_feed {
-                        None => monotonic_ns(),
-                        Some(values) => match values.get(clock_feed_idx) {
-                            Some(&v) => v,
-                            None => {
-                                if clock_underrun.is_none() {
-                                    clock_underrun = Some(clock_feed_idx);
-                                }
-                                0
-                            }
-                        },
+                    // plans/M6.md item E, decision 9: the single point of
+                    // choice — record produces a fresh live read, replay
+                    // consumes the next logged one (never re-reading the
+                    // real clock).
+                    let entry = chooser.choose_next(record::ChoiceRequest::ClockRead, || {
+                        record::ChoiceEntry::ClockRead {
+                            value: monotonic_ns(),
+                        }
+                    });
+                    let record::ChoiceEntry::ClockRead { value: ns } = entry else {
+                        unreachable!(
+                            "choose_next(ClockRead, ..) always returns a ClockRead-shaped entry \
+                             (a mismatched replay tag falls back to the request's own shape)"
+                        )
                     };
-                    clock_feed_idx += 1;
-                    clock_log.push(ns);
                     if let Some(reg) = da.reg {
                         let r = unsafe { hv_vcpu_set_reg(vcpu, hv_reg_xn(reg), ns) };
                         if r != HV_SUCCESS {
@@ -512,6 +585,75 @@ fn boot_image_core(
                         }
                     }
                     advance_pc(vcpu)?;
+                } else if ipa == park_addr {
+                    // plans/M6.md item E, decision 7/06 §5: the park
+                    // protocol's own doorbell (`mmio::PARK_MMIO_ADDR`'s
+                    // own module doc has the whole contract).
+                    let Some(da) = decode_data_abort(esr) else {
+                        return Err(VmmError::GuestFault(format!(
+                            "unhandled access shape at PARK_MMIO_ADDR (esr={esr:#x})"
+                        )));
+                    };
+                    if !da.write {
+                        return Err(VmmError::GuestFault(
+                            "a load from PARK_MMIO_ADDR is not part of the park protocol"
+                                .to_string(),
+                        ));
+                    }
+                    // Advance PC now — the guest resumes right after its
+                    // own trapping store the moment this vCPU is next run,
+                    // whether or not this park ends up sleeping at all.
+                    advance_pc(vcpu)?;
+                    let deadline_ns = unsafe {
+                        let mut b = [0u8; 8];
+                        std::ptr::copy_nonoverlapping(
+                            host_ram.add(deadline_off),
+                            b.as_mut_ptr(),
+                            8,
+                        );
+                        u64::from_le_bytes(b)
+                    };
+                    // The mask-arm-recheck discipline's own "recheck"
+                    // half (`mmio::PARK_MMIO_ADDR`'s own doc): a vector
+                    // already pending at the moment of this trap means a
+                    // wake already happened (or was never needed) — do
+                    // not sleep at all, so it is never lost.
+                    let already_pending = unsafe {
+                        let mut b = [0u8; 8];
+                        std::ptr::copy_nonoverlapping(host_ram.add(pending_off), b.as_mut_ptr(), 8);
+                        u64::from_le_bytes(b) != 0
+                    };
+                    if !already_pending {
+                        chooser.choose_next(
+                            record::ChoiceRequest::DeadlineWake { deadline_ns },
+                            || {
+                                // The real, host-side sleep — never
+                                // invoked in replay mode (decision 9:
+                                // "sleep skipped under replay").
+                                let now = monotonic_ns();
+                                if deadline_ns > now {
+                                    std::thread::sleep(Duration::from_nanos(deadline_ns - now));
+                                }
+                                record::ChoiceEntry::DeadlineWake { deadline_ns }
+                            },
+                        );
+                        chooser
+                            .choose_next(record::ChoiceRequest::VectorRaise { vector: 0 }, || {
+                                record::ChoiceEntry::VectorRaise { vector: 0 }
+                            });
+                        // The raise itself (06 §4: "a store-release plus
+                        // a wake"): a plain host-side write into this
+                        // core's own pending word. No separate wake is
+                        // needed — resuming this already-exited vCPU on
+                        // the next loop iteration below *is* the wake.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                1u64.to_le_bytes().as_ptr(),
+                                host_ram.add(pending_off),
+                                8,
+                            );
+                        }
+                    }
                 } else if let Some(imm) = decode_brk(esr) {
                     let pc = read_pc(vcpu).unwrap_or(0);
                     return Err(VmmError::GuestFault(format!(
@@ -539,14 +681,15 @@ fn boot_image_core(
     // decision 12: the transcript is read from the ring pages only after the
     // guest halts.
     let transcript = drain_console(host_ram);
+    let (choices, divergences) = record::finish_chooser(chooser);
     Ok((
         BootOutcome {
             transcript,
             exit_code,
-            clock_log,
+            choices,
             exits,
         },
-        clock_underrun,
+        divergences,
     ))
 }
 
@@ -672,8 +815,9 @@ pub fn boot_image(_report_path: &Path, _img_path: &Path) -> Result<BootOutcome, 
 fn boot_image_core(
     _report_path: &Path,
     _img_path: &Path,
-    _clock_feed: Option<&[u64]>,
-) -> Result<(BootOutcome, Option<usize>), VmmError> {
+    _replay_choices: Option<Vec<record::ChoiceEntry>>,
+    _test_delayed_raise: Option<(Duration, u64)>,
+) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
     Err(VmmError::Unsupported(
         "the wrela VMM needs Hypervisor.framework (macOS/aarch64 at M5); no other host is implemented yet",
     ))
@@ -894,9 +1038,16 @@ mod tests {
         // --- record: one live boot -------------------------------------
         let recorded = record::record(&report_path, &img_path).expect("live boot");
         assert_eq!(
-            recorded.clock_log.len(),
+            recorded.choices.len(),
             2,
             "the guest reads the clock exactly twice"
+        );
+        assert!(
+            recorded
+                .choices
+                .iter()
+                .all(|c| matches!(c, record::ChoiceEntry::ClockRead { .. })),
+            "no park/deadline/vector activity in this hand-built clock-only guest"
         );
         assert_eq!(recorded.exit_code, 0);
 
@@ -926,25 +1077,27 @@ mod tests {
             actual: 0,
         }));
 
-        // --- truncated clock log: an underrun, caught ---------------------
+        // --- truncated choice log: an underrun, caught ---------------------
         let mut short_log = recorded.clone();
-        short_log.clock_log.truncate(1);
+        short_log.choices.truncate(1);
         let divergences = record::replay(&report_path, &img_path, &short_log).expect("replay boot");
         assert!(divergences.iter().any(|d| matches!(
             d,
-            record::Divergence::ClockLogUnderrun {
-                read_index: 1,
+            record::Divergence::ChoiceLogUnderrun {
+                index: 1,
                 recorded: 1
             }
         )));
 
-        // --- padded clock log: an overrun, caught -------------------------
+        // --- padded choice log: an overrun, caught -------------------------
         let mut long_log = recorded.clone();
-        long_log.clock_log.push(424242);
+        long_log
+            .choices
+            .push(record::ChoiceEntry::ClockRead { value: 424242 });
         let divergences = record::replay(&report_path, &img_path, &long_log).expect("replay boot");
         assert!(divergences.iter().any(|d| matches!(
             d,
-            record::Divergence::ClockLogOverrun {
+            record::Divergence::ChoiceLogOverrun {
                 consumed: 2,
                 recorded: 3
             }
@@ -986,6 +1139,33 @@ mod tests {
         let outcome = boot_image(&report_path, &img_path).expect("live boot");
         let _ = std::fs::remove_dir_all(&tmp_dir);
         outcome
+    }
+
+    /// Writes `img_bytes` to disk under `tag` and returns the
+    /// `(report_path, img_path)` pair, without booting — shared by every
+    /// test below that needs to call `boot_image_core`/`record::record`/
+    /// `record::replay` directly (rather than through the plain
+    /// `boot_image` wrapper `boot_hand_built_image` above uses).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn write_hand_built_image(
+        img_bytes: &[u8],
+        tag: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let report_text = format!(
+            "Machine revision={}\nInput path={tag}.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            wrela_machine::layout::IMAGE_BASE,
+            img_bytes.len(),
+            wrela_machine::layout::IMAGE_BASE,
+        );
+        let tmp_dir =
+            std::env::temp_dir().join(format!("wrela-vmm-{tag}-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+        let img_path = tmp_dir.join(format!("{tag}.img"));
+        let report_path = tmp_dir.join(format!("{tag}.report.txt"));
+        std::fs::write(&img_path, img_bytes).expect("write image");
+        std::fs::write(&report_path, &report_text).expect("write report");
+        (report_path, img_path)
     }
 
     /// Rounds `n` up to the next multiple of 8 — every `ActorAddrs` field
@@ -1797,5 +1977,277 @@ pub fn build() -> Image:
             "the named deadlock line, on the failing root turn's own test line"
         );
         assert_eq!(outcome.exit_code, 1, "fail closed: the image exits nonzero");
+    }
+
+    // =======================================================================
+    // plans/M6.md item E: pending words, deadline wakes, and the choice-
+    // sequence recorder — conformance tests over real HVF, hand-assembled
+    // guests exactly like this file's own item-C/clock-test precedent
+    // (module docs above): no `.wr` source can exercise a real deadline
+    // yet (groups are item F's own job), so these hand-build the minimal
+    // guest each mechanism needs, reusing `wrela_compiler::layout::
+    // build_checkpoint_and_vector_stub`/`encode` — the exact production
+    // routine, never a re-derivation of it.
+
+    /// (b) Park + deadline wake: a hand-assembled guest reads the real
+    /// clock once, writes `now + 3ms` to `OFF_NEXT_DEADLINE`, and parks
+    /// (the trapping store to `PARK_MMIO_ADDR`). The VMM must sleep real
+    /// wall time until (approximately) that deadline, raise vector 0 (a
+    /// plain host-side write into this core's own pending word), and
+    /// resume the vCPU with PC advanced past the trapping store — the
+    /// guest then reads its own pending word back and asserts it reads
+    /// `1` (the VMM's own raise, left uncleared since this hand-built
+    /// guest never calls `__wrela_checkpoint_service`), proving "guest
+    /// resumes and completes" (the task's own conformance wording) rather
+    /// than hanging past `WALL_CAP`.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn park_conformance_wakes_at_the_deadline_and_resumes_over_hvf() {
+        use wrela_compiler::encode;
+        use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
+
+        const DELTA_NS: u64 = 3_000_000; // 3ms — short, but a real, observable sleep.
+        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+
+        let mut w = Vec::new();
+        w.extend(load_imm_words(9, sp_top));
+        w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+
+        // x1 = now_ns (a real clock read — CLOCK_MMIO_ADDR trap #1).
+        w.extend(load_imm_words(9, mmio::CLOCK_MMIO_ADDR));
+        w.push(encode::enc_ldr_x_imm(1, 9, 0));
+
+        // x1 = deadline = now_ns + DELTA_NS
+        w.extend(load_imm_words(2, DELTA_NS));
+        w.push(encode::enc_add_reg(1, 1, 2, true));
+
+        // OFF_NEXT_DEADLINE = deadline (an ordinary, non-trapping store —
+        // mmio::PARK_MMIO_ADDR's own module doc: "the guest writes its
+        // own next deadline ... and only then performs the trapping
+        // store").
+        w.extend(load_imm_words(
+            9,
+            machine_layout::MACHINE_INFO_BASE + machine_info::OFF_NEXT_DEADLINE,
+        ));
+        w.push(encode::enc_str_x_imm(1, 9, 0));
+
+        // Park: the trapping store to PARK_MMIO_ADDR.
+        w.extend(load_imm_words(9, mmio::PARK_MMIO_ADDR));
+        w.push(encode::enc_str_x_imm(1, 9, 0));
+
+        // Resumed: the pending word must now read 1.
+        w.extend(load_imm_words(9, pending::core_word_addr(0)));
+        w.push(encode::enc_ldr_x_imm(10, 9, 0));
+        w.push(encode::enc_movz(11, 0, 0, true)); // fail accumulator
+        w.extend(check_eq_into(11, 12, 10, 1, 0));
+
+        w.extend(load_imm_words(12, mmio::EXIT_MMIO_ADDR));
+        w.push(encode::enc_str_x_imm(11, 12, 0));
+        w.push(encode::enc_brk(0));
+
+        let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let outcome = boot_hand_built_image(&img_bytes, "park-wake");
+        assert_eq!(
+            outcome.exit_code, 0,
+            "the pending word must read 1 after the park's own resume (the VMM's raise)"
+        );
+    }
+
+    /// (a) Vector raise observed at a checkpoint: a hand-assembled,
+    /// bounded spinning loop (never parks) calls
+    /// `__wrela_checkpoint_service` — the real production routine,
+    /// embedded verbatim via `build_checkpoint_and_vector_stub` — at
+    /// every back-edge, exactly like a compiled loop's own checkpoint
+    /// (`codegen::FnCtx::checkpoint`). A background host thread (this
+    /// crate's own `test_delayed_raise` conformance seam — module doc on
+    /// `boot_image_core`) raises vector 0 mid-run, entirely independently
+    /// of the park protocol (the guest is actively running, never
+    /// parked) — modeling "the VMM raises a vector while the guest is
+    /// somewhere in a bounded loop" (06 §4) honestly, since M6-E's only
+    /// *real* producer of a mid-run raise (an expired group's deadline)
+    /// is item F's own job. The loop's own bound is large enough that the
+    /// raise's own short delay reliably lands inside it (not after), so
+    /// the checkpoint service dispatches the vector-0 routine, which
+    /// increments the observation counter — asserted `== 1` after the
+    /// loop completes (never lost, never double-counted), alongside the
+    /// loop's own counter reaching exactly zero (the raise never
+    /// corrupts ordinary control flow). Deliberately not claimed as
+    /// replay-exact (the raise's own timing is real wall-clock, not part
+    /// of the choice sequence — disclosed in `boot_image_core`'s own doc,
+    /// not silently narrowed): replay-stability is (c)'s own job, over
+    /// the deadline-wake path (b), which *is* choice-sequence-covered.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn vector_raise_observed_at_a_checkpoint_over_hvf() {
+        use wrela_compiler::encode;
+        use wrela_compiler::layout::build_checkpoint_and_vector_stub;
+        use wrela_machine::{layout as machine_layout, machine_info, pending};
+
+        const LOOP_BOUND: u64 = 200_000_000;
+        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+        let (cp_words, cp_entry_offset) = build_checkpoint_and_vector_stub();
+
+        let mut w = Vec::new();
+        w.extend(load_imm_words(9, sp_top));
+        w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+        w.extend(load_imm_words(19, LOOP_BOUND)); // x19 = loop counter
+
+        let loop_top = w.len();
+        // checkpoint: load pending word, skip the BL if zero.
+        w.extend(load_imm_words(9, pending::core_word_addr(0)));
+        w.push(encode::enc_ldr_x_imm(10, 9, 0));
+        w.push(encode::enc_cbz(10, 8, true)); // cbz x10, +2 words (skip the bl)
+        let bl_word = w.len();
+        w.push(0); // placeholder, patched below once cp_words' own base is known
+        w.push(encode::enc_subs_imm(19, 19, 1, true));
+        {
+            let this = w.len() as i64;
+            let delta = (loop_top as i64 - this) * 4;
+            w.push(encode::enc_cbnz(19, delta as i32, true));
+        }
+
+        // The loop's own `cbnz` above falls straight through to here once
+        // `x19` hits zero — an unconditional `B` over `cp_words` is
+        // required so that fall-through never executes the checkpoint
+        // routine itself as if it were this test's own post-loop code
+        // (its own trailing `ret` would then return through whatever
+        // garbage `x30` happens to hold, not a `BL`'s own fresh value).
+        let skip_cp_word = w.len();
+        w.push(0); // placeholder `B`, patched once `cp_words`' own end is known
+
+        let cp_base = w.len();
+        {
+            let this = bl_word as i64;
+            let target = (cp_base + cp_entry_offset) as i64;
+            w[bl_word] = encode::enc_bl(((target - this) * 4) as i32);
+        }
+        w.extend(cp_words);
+        {
+            let after_cp = w.len() as i64;
+            let this = skip_cp_word as i64;
+            w[skip_cp_word] = encode::enc_b(((after_cp - this) * 4) as i32);
+        }
+
+        // Post-loop checks: observed count == 1, loop counter == 0.
+        w.extend(load_imm_words(
+            9,
+            machine_layout::MACHINE_INFO_BASE + machine_info::OFF_VECTOR0_OBSERVED,
+        ));
+        w.push(encode::enc_ldr_x_imm(10, 9, 0));
+        w.push(encode::enc_movz(11, 0, 0, true)); // fail accumulator
+        w.extend(check_eq_into(11, 12, 10, 1, 0));
+        w.extend(check_eq_into(11, 12, 19, 0, 1));
+
+        w.extend(load_imm_words(12, wrela_machine::mmio::EXIT_MMIO_ADDR));
+        w.push(encode::enc_str_x_imm(11, 12, 0));
+        w.push(encode::enc_brk(0));
+
+        let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (report_path, img_path) = write_hand_built_image(&img_bytes, "vector-raise");
+        let (outcome, divergences) = boot_image_core(
+            &report_path,
+            &img_path,
+            None,
+            Some((Duration::from_millis(10), 1)),
+        )
+        .expect("live boot");
+        let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
+        assert!(divergences.is_empty(), "a live boot cannot diverge");
+        assert_eq!(
+            outcome.exit_code, 0,
+            "bit 0 = observed-count != 1, bit 1 = loop counter != 0"
+        );
+    }
+
+    /// (c) Record -> replay of the park/deadline-wake scenario (b),
+    /// byte-stable, with divergence detection on tamper — the choice-
+    /// sequence recorder's own conformance evidence (decision 9): a real
+    /// recorded boot of the identical park-wake guest, replayed, must
+    /// reproduce the exact same transcript digest/exit code (replay's own
+    /// sleep-skipped, virtual-time-fed wake, per `Chooser::choose_next`'s
+    /// own doc), and a tampered choice log must be caught, named, by
+    /// `record::Divergence`.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn record_replay_of_the_park_wake_scenario_is_byte_stable_and_detects_tamper() {
+        use wrela_compiler::encode;
+        use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
+
+        const DELTA_NS: u64 = 2_000_000; // 2ms
+        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+
+        let mut w = Vec::new();
+        w.extend(load_imm_words(9, sp_top));
+        w.push(encode::enc_add_imm(31, 9, 0, true));
+        w.extend(load_imm_words(9, mmio::CLOCK_MMIO_ADDR));
+        w.push(encode::enc_ldr_x_imm(1, 9, 0));
+        w.extend(load_imm_words(2, DELTA_NS));
+        w.push(encode::enc_add_reg(1, 1, 2, true));
+        w.extend(load_imm_words(
+            9,
+            machine_layout::MACHINE_INFO_BASE + machine_info::OFF_NEXT_DEADLINE,
+        ));
+        w.push(encode::enc_str_x_imm(1, 9, 0));
+        w.extend(load_imm_words(9, mmio::PARK_MMIO_ADDR));
+        w.push(encode::enc_str_x_imm(1, 9, 0));
+        w.extend(load_imm_words(9, pending::core_word_addr(0)));
+        w.push(encode::enc_ldr_x_imm(10, 9, 0));
+        w.push(encode::enc_movz(11, 0, 0, true));
+        w.extend(check_eq_into(11, 12, 10, 1, 0));
+        w.extend(load_imm_words(12, mmio::EXIT_MMIO_ADDR));
+        w.push(encode::enc_str_x_imm(11, 12, 0));
+        w.push(encode::enc_brk(0));
+
+        let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (report_path, img_path) = write_hand_built_image(&img_bytes, "park-wake-replay");
+
+        let recorded = record::record(&report_path, &img_path).expect("live boot");
+        assert_eq!(recorded.exit_code, 0);
+        // Exactly one ClockRead, then a DeadlineWake, then the vector-0
+        // raise — the park-wake scenario's own choice sequence, pinned
+        // structurally (values are real wall-clock/monotonic-ns, never
+        // compared here — only the tag shape, per the format's own house
+        // rule).
+        assert_eq!(recorded.choices.len(), 3);
+        assert!(matches!(
+            recorded.choices[0],
+            record::ChoiceEntry::ClockRead { .. }
+        ));
+        assert!(matches!(
+            recorded.choices[1],
+            record::ChoiceEntry::DeadlineWake { .. }
+        ));
+        assert_eq!(
+            recorded.choices[2],
+            record::ChoiceEntry::VectorRaise { vector: 0 }
+        );
+
+        // --- replay with the real recording: byte-stable, no divergence ---
+        let divergences = record::replay(&report_path, &img_path, &recorded).expect("replay boot");
+        assert!(
+            divergences.is_empty(),
+            "expected no divergence, got {divergences:?}"
+        );
+
+        // --- tampered choice tag: caught -----------------------------------
+        let mut bad_tag = recorded.clone();
+        bad_tag.choices[1] = record::ChoiceEntry::ClockRead { value: 0 };
+        let divergences = record::replay(&report_path, &img_path, &bad_tag).expect("replay boot");
+        assert!(
+            divergences
+                .iter()
+                .any(|d| matches!(d, record::Divergence::ChoiceTagMismatch { index: 1, .. }))
+        );
+
+        // --- tampered exit code: caught -------------------------------------
+        let mut bad_exit = recorded.clone();
+        bad_exit.exit_code = 7;
+        let divergences = record::replay(&report_path, &img_path, &bad_exit).expect("replay boot");
+        assert!(divergences.contains(&record::Divergence::ExitCodeMismatch {
+            expected: 7,
+            actual: 0,
+        }));
+
+        let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
     }
 }
