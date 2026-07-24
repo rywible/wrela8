@@ -80,7 +80,7 @@ Program
     0063: f2a00000  movk x0, #0x0, lsl #16
     0064: f2c00000  movk x0, #0x0, lsl #32
     0065: f2e00000  movk x0, #0x0, lsl #48
-    0066: 94000000  bl <__rt_enqueue_Store>
+    0066: 94000000  bl <rt_enqueue Store>
     0067: b4000040  cbz x0, #8
     0068: d4359a60  brk #0xacd3
     0069: d2800029  movz x9, #0x1

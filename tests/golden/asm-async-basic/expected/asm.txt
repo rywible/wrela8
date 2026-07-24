@@ -40,7 +40,7 @@ Program
     0037: f2a00000  movk x0, #0x0, lsl #16
     0038: f2c00000  movk x0, #0x0, lsl #32
     0039: f2e00000  movk x0, #0x0, lsl #48
-    0040: 94000000  bl <__rt_enqueue_Counter>
+    0040: 94000000  bl <rt_enqueue Counter>
     0041: b4000040  cbz x0, #8
     0042: d4359a60  brk #0xacd3
     0043: d2800029  movz x9, #0x1

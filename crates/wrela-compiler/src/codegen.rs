@@ -2309,19 +2309,34 @@ pub fn rt_enqueue_symbol(actor: &str) -> String {
 /// declares, so no `rt_enqueue` routine for it exists) apart from a genuine
 /// internal inconsistency, instead of reporting both as the latter.
 ///
-/// Disclosed, recorded rather than silently assumed away: `__` *is* a
-/// lexically legal identifier start, so a source fn literally named
-/// `__rt_enqueue_Doubler` would be found by `layout.rs`'s own
-/// compiled-fn lookup first and silently shadow the real glue routine.
-/// No naming rule reserving this prefix exists in `docs/language/` today,
-/// so none is enforced here; named as follow-up rather than half-fixed.
+/// The shadowing hazard an earlier spelling of this prefix carried is
+/// closed by construction rather than by a naming rule: `layout.rs`
+/// resolves a `Reloc::Call` against compiled source fns *before* glue
+/// symbols, so any synthesized symbol a source fn could also be named
+/// would silently shadow the real routine and emit a wrong image. The
+/// prefix therefore contains a space — legal in a `BTreeMap` key, and
+/// never in a wrela identifier (`syntax::lexer`), so no source fn's own
+/// `CalleeKey::spelling()` can collide with one of these no matter what
+/// it is called. This needs no reserved-prefix rule in `docs/language/`
+/// and cannot be defeated by a cleverly named fn; `symbol_is_synthetic`
+/// below states the invariant one place for every future glue symbol.
 pub fn rt_enqueue_actor(key: &str) -> Option<&str> {
     key.strip_prefix(RT_ENQUEUE_PREFIX)
 }
 
+/// Whether `key` is a compiler-synthesized call target rather than a
+/// source fn's own `CalleeKey`. The whole rule: a synthesized symbol
+/// contains a character no wrela identifier may contain (a space), so
+/// the two namespaces cannot overlap. Any future glue symbol must keep
+/// that property — this fn is the one place to check it against.
+pub fn symbol_is_synthetic(key: &str) -> bool {
+    key.contains(' ')
+}
+
 /// The one place the symbol's own spelling lives, so `rt_enqueue_symbol`
-/// and `rt_enqueue_actor` can never drift apart.
-const RT_ENQUEUE_PREFIX: &str = "__rt_enqueue_";
+/// and `rt_enqueue_actor` can never drift apart. The trailing space is
+/// load-bearing (see `rt_enqueue_actor` above), not cosmetic.
+const RT_ENQUEUE_PREFIX: &str = "rt_enqueue ";
 
 // --- the turn record (the real park-and-resume contract) --------------------
 //
@@ -5348,5 +5363,34 @@ mod tests {
             err.contains("Reloc::AbortFixed/AbortVal word 3 is out of range"),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod synthetic_symbol_tests {
+    use super::*;
+
+    /// The shadowing hazard, stated as a test: a source fn cannot be
+    /// named anything whose `CalleeKey::spelling()` equals a synthesized
+    /// glue symbol, because identifiers cannot contain a space.
+    #[test]
+    fn synthesized_symbols_are_unrepresentable_as_source_keys() {
+        let sym = rt_enqueue_symbol("Doubler");
+        assert!(symbol_is_synthetic(&sym), "{sym} must be synthetic");
+        assert_eq!(rt_enqueue_actor(&sym), Some("Doubler"));
+        // A source fn's key is its bare name (or `Struct.member`); none
+        // can contain a space, so none can collide.
+        for plausible in [
+            "rt_enqueue_Doubler",
+            "__rt_enqueue_Doubler",
+            "Doubler",
+            "A.rt_enqueue",
+        ] {
+            assert!(
+                !symbol_is_synthetic(plausible),
+                "{plausible} is source-shaped"
+            );
+            assert_ne!(plausible, sym);
+        }
     }
 }
