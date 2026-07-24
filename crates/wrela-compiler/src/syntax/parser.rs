@@ -1905,6 +1905,18 @@ impl Parser {
         let span = self.peek_span();
         let target = self.parse_or()?;
         if let Some(op) = self.assign_op_here() {
+            // Same place check as the ordinary statement path above
+            // (err-assign-nonplace-*): without it, `|x| 5 = true` built
+            // an AssignStmt with a non-place target through this one
+            // remaining side door — accepted here, rejected on reparse
+            // of its own pretty-printed suite form, which is exactly the
+            // roundtrip asymmetry `fuzz sema` found at seeds 41-43
+            // (golden/err-assign-nonplace-closure pins the shape).
+            if !is_place_expr(&target) {
+                return Err(self.error_here(
+                    "the left side of an assignment must be a place expression (name, field, index)",
+                ));
+            }
             self.bump();
             let value = self.parse_or()?;
             return Ok(ClosureBody::Suite(vec![Stmt::Assign(AssignStmt {
