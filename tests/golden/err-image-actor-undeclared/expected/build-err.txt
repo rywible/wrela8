@@ -1,0 +1,1 @@
+error[build]: layout: this image sends to actor `Doubler` (an `await` or `send` through an `Actor[Doubler]` handle) but never declares a `Doubler` instance — add `img.actor(Doubler, mailbox=...)` to the `@image` fn, or remove the call: a handle type with no declared instance has no mailbox to admit into

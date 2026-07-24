@@ -1,0 +1,1 @@
+error[build]: layout: this image sends to `Blk` (an `await` or `send` through an `Actor[Blk]` handle), but `Blk` is declared as a `@driver` — driver mailboxes are not wired for messaging yet (M6-D's own floor: only an `img.actor(...)` declaration gets a mailbox and admission routine)

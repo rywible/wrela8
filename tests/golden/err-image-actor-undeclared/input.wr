@@ -1,0 +1,34 @@
+module examples.err_image_actor_undeclared
+
+# plans/M6.md item F/G follow-up: `Actor[T]` is a perfectly good type
+# whether or not this image declares a `T` instance, so a program that
+# messages an undeclared actor types and lowers fine and only fails when
+# `layout` looks for the `rt_enqueue` routine that was never built for it.
+# Reported as `internal error: call target `__rt_enqueue_Doubler` was never
+# codegen'd` until the audit that pinned this case.
+
+@actor
+pub struct Doubler:
+    pub fn double(read self, n: u64) -> u64:
+        return n * 2
+
+@actor
+pub struct Counter:
+    pub fn bump(read self) -> u64:
+        return 1
+
+async fn fetch(d: Actor[Doubler]) -> u64:
+    v = await d.double(n=10)
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="actor-undeclared", target=Target.wrela_machine_v1)
+    c = img.actor(Counter, mailbox=4)
+    img.supervise(children=[c], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -2300,8 +2300,28 @@ use crate::flowwir::{AwaitKind, FlowInst, FlowWirFn, FlowWirProgram, Transition}
 /// `__await_actor_*` glue symbol died with the nested-drain placeholder
 /// it belonged to.)
 pub fn rt_enqueue_symbol(actor: &str) -> String {
-    format!("__rt_enqueue_{actor}")
+    format!("{RT_ENQUEUE_PREFIX}{actor}")
 }
+
+/// The inverse: which actor a symbolic call target names, or `None` for an
+/// ordinary compiled-fn key. `layout.rs` needs it to tell a real,
+/// diagnosable source condition (this image messages an actor it never
+/// declares, so no `rt_enqueue` routine for it exists) apart from a genuine
+/// internal inconsistency, instead of reporting both as the latter.
+///
+/// Disclosed, recorded rather than silently assumed away: `__` *is* a
+/// lexically legal identifier start, so a source fn literally named
+/// `__rt_enqueue_Doubler` would be found by `layout.rs`'s own
+/// compiled-fn lookup first and silently shadow the real glue routine.
+/// No naming rule reserving this prefix exists in `docs/language/` today,
+/// so none is enforced here; named as follow-up rather than half-fixed.
+pub fn rt_enqueue_actor(key: &str) -> Option<&str> {
+    key.strip_prefix(RT_ENQUEUE_PREFIX)
+}
+
+/// The one place the symbol's own spelling lives, so `rt_enqueue_symbol`
+/// and `rt_enqueue_actor` can never drift apart.
+const RT_ENQUEUE_PREFIX: &str = "__rt_enqueue_";
 
 // --- the turn record (the real park-and-resume contract) --------------------
 //

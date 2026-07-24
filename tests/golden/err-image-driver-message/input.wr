@@ -1,0 +1,29 @@
+module examples.err_image_driver_message
+
+# plans/M6.md item F/G follow-up, the same audit as
+# `err-image-actor-undeclared`, the other half: a `@driver` *is* an actor
+# root (02 §9.1) and an `Actor[T]` handle resolves against declared drivers
+# too, but M6 sizes mailboxes for `img.actor(...)` declarations only — so a
+# messaged driver reaches the identical unresolved-call-target site and gets
+# its own sentence rather than the (wrong) "you never declared it" advice.
+
+@driver
+pub struct Blk:
+    pub fn depth(read self) -> u64:
+        return 8
+
+async fn ask(b: Actor[Blk]) -> u64:
+    v = await b.depth()
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="driver-message", target=Target.wrela_machine_v1)
+    b = img.driver(Blk)
+    img.supervise(children=[b], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

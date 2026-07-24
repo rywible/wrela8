@@ -682,6 +682,64 @@ const BL_HALF_RANGE_BYTES: i64 = 1i64 << 27;
 /// `imm21`'s own signed *page* range (`ADRP`'s 21-bit signed page count).
 const ADRP_HALF_RANGE_PAGES: i64 = 1i64 << 20;
 
+/// The one diagnostic both image flavors report for a `Reloc::Call` whose
+/// target is neither a compiled fn nor one of this image's own runtime-glue
+/// routines.
+///
+/// The `__rt_enqueue_X` arm is a **real, user-reachable source condition**,
+/// not an internal inconsistency, and was reported as the latter until the
+/// item-F/G follow-up audit: `codegen` emits one of these for every
+/// `await`/`send` through an `Actor[X]` handle, while `layout` only builds
+/// an `rt_enqueue` routine for an actor this image actually *declares*
+/// (`RuntimeTables::actors`, straight from `ImageGraph::actors`). A program
+/// that types fine — an `Actor[X]` parameter is a perfectly good type
+/// whether or not any `X` instance is declared — and whose `@image` fn
+/// never calls `img.actor(X, ...)` lands here through `wrela build`,
+/// `wrela dump --stage=report` and `wrela test` alike. It gets a named
+/// diagnostic that says what to do, in the same voice
+/// `resolve_runtime_test_args` already uses for the sibling "no unique
+/// declared instance" condition.
+///
+/// The other arm keeps the internal-error framing on purpose: an ordinary
+/// compiled-fn key that reached relocation without codegen ever producing
+/// it is a `lower`/`codegen` disagreement about the program's own call
+/// graph, never anything a source file can express — both halves of every
+/// key here come out of the same `MwirProgram`/`FlowWirProgram` this same
+/// `CodegenProgram` was built from.
+fn unresolved_call_target(target: &str, graph: Option<&ImageGraph>) -> LayoutError {
+    let Some(actor) = crate::codegen::rt_enqueue_actor(target) else {
+        return LayoutError::new(format!(
+            "internal error: call target `{target}` was never codegen'd or registered as a \
+             runtime-glue symbol"
+        ));
+    };
+    // A `@driver` *is* an actor root (02 §9.1) and `resolve_runtime_test_args`
+    // already resolves an `Actor[T]` handle against `graph.drivers` too — but
+    // `compute_runtime_tables` sizes mailboxes for `graph.actors` only, so a
+    // messaged driver lands here as well. It gets its own sentence rather than
+    // the (wrong) "you never declared it" advice, in the same words
+    // `resolve_runtime_test_args` already uses for its own driver floor.
+    let declared_driver = graph.is_some_and(|g| {
+        g.drivers
+            .iter()
+            .any(|d| crate::sema::types::render_type(&d.actor_type) == actor)
+    });
+    if declared_driver {
+        return LayoutError::new(format!(
+            "this image sends to `{actor}` (an `await` or `send` through an `Actor[{actor}]` \
+             handle), but `{actor}` is declared as a `@driver` — driver mailboxes are not \
+             wired for messaging yet (M6-D's own floor: only an `img.actor(...)` declaration \
+             gets a mailbox and admission routine)"
+        ));
+    }
+    LayoutError::new(format!(
+        "this image sends to actor `{actor}` (an `await` or `send` through an \
+         `Actor[{actor}]` handle) but never declares a `{actor}` instance — add \
+         `img.actor({actor}, mailbox=...)` to the `@image` fn, or remove the call: a \
+         handle type with no declared instance has no mailbox to admit into"
+    ))
+}
+
 fn patch_bl(
     words: &mut [u32],
     idx: usize,
@@ -734,6 +792,16 @@ fn patch_adrp_add(
 
 // --- section-size verification (image.layout.sections-verified's teeth) --
 
+/// Internal-error audit (the item-F/G follow-up's own second half): every
+/// `Err` below is genuinely unreachable from any source program, and stays
+/// framed as an internal error for that reason. Nothing here reads the
+/// program at all — every `base`/`size` argument was computed moments
+/// earlier by `layout_program`/`layout_test_image` from one monotonically
+/// advancing `cursor`, and `blob_len` from the identical word/byte counts
+/// that fixed those sizes. A source file cannot make two sections overlap,
+/// open a gap wider than the 8-byte alignment either fn ever rounds to, or
+/// move the first section off `IMAGE_BASE`; only an editing mistake in
+/// those two placement bodies can, which is precisely what this fn is for.
 fn verify_section_sizes(
     sections: &[Section],
     image_base: u64,
@@ -792,22 +860,42 @@ fn verify_section_sizes(
 /// "this program doesn't lower" outcome, which is decided one layer up,
 /// before this fn is ever called (see `try_layout_program`, below).
 ///
-/// `runtime` (plans/M6.md item C): `Some(tables)` reserves one more
-/// section, `rtdata`, sized exactly `tables.total_bytes` — zeroed,
-/// uninitialized bytes, the same "no allocation, all sized at build time"
-/// discipline every other section here already follows. Every existing
-/// caller of this ordinary (non-test) build path passes `None` whenever
-/// `ImageGraph::actors` is empty (the overwhelming majority of today's
-/// corpus); an actor-bearing `wrela build`/`--stage=report` image still
-/// never runs any of this milestone's runtime code (the placeholder entry
-/// stub above is untouched) — the reservation exists because decision 3
-/// says the tables are part of the image, tests or not, not because
-/// anything here executes against them yet.
+/// `boot` (plans/M6.md item C, then the item-F/G follow-up that made this
+/// path work at all): `Some(ctx)` for a build that declares actors reserves
+/// two more sections — `rtcode`, this image's own runtime routines
+/// (`build_runtime_block`: every actor's `__rt_enqueue_*`/
+/// `rt_select_and_run`, each `g.start` site's poll routine, `rt_run_one`,
+/// and boot-init), and `rtdata`, sized exactly `tables.total_bytes` of
+/// zeroed, uninitialized bytes — the same "no allocation, all sized at
+/// build time" discipline every other section here already follows.
+/// `None` (no `@actor` in the build closure, or a caller with nothing to
+/// derive from) keeps this fn byte-identical to its pre-M6 behavior.
+///
+/// The `rtcode` half is not optional decoration: `codegen` lowers every
+/// `await`/`send` through an `Actor[T]` handle to a `Reloc::Call` at the
+/// symbolic `codegen::rt_enqueue_symbol` name, so an image that *messages*
+/// an actor cannot resolve its own relocations without it. Before that was
+/// wired here, `wrela build`/`--stage=report` on any such image died with
+/// `internal error: call target `__rt_enqueue_X` was never codegen'd`.
+///
+/// Both sections are present for **any** actor-bearing image, tests or not
+/// (decision 3's own rule), even though `build_entry_stub` above still
+/// halts with `EXIT_CODE_NO_RUNTIME` and therefore never calls into them:
+/// they are there because they are part of the image, not because anything
+/// in a `wrela build` image executes them yet. The entry driver is the one
+/// thing that legitimately differs between this fn and `layout_test_image`
+/// — see the `RuntimeWiring`/`build_runtime_block` module block.
 pub fn layout_program(
     program: &CodegenProgram,
-    runtime: Option<&RuntimeTables>,
+    boot: Option<BootCtx>,
 ) -> Result<ImageLayout, LayoutError> {
     let image_base = machine_layout::IMAGE_BASE;
+
+    let wiring: Option<RuntimeWiring> = match &boot {
+        Some(b) => RuntimeWiring::derive(b)?,
+        None => None,
+    };
+    let runtime: Option<&RuntimeTables> = wiring.as_ref().map(|w| &w.tables);
 
     let entry_words = build_entry_stub();
 
@@ -839,6 +927,22 @@ pub fn layout_program(
     let checkpoint_block = build_checkpoint_and_vector_stub(checkpoint_shape.as_ref());
     let checkpoint_words = checkpoint_block.words;
     let checkpoint_service_word = checkpoint_block.checkpoint_service_word;
+
+    // This image's own runtime routines (`build_runtime_block`), built
+    // twice for the identical reason the checkpoint block above is: their
+    // word count never depends on `rtdata`'s address, but their bytes do,
+    // and `rtdata`'s base is not known until this very block's own size
+    // has moved `cursor`. Word indices are relative to the `rtcode`
+    // section's own base (this fn's own placement, unlike
+    // `layout_test_image`'s, gives the block a section of its own rather
+    // than a slice of the combined harness section).
+    let dummy_runtime_block = wiring
+        .as_ref()
+        .map(|w| build_runtime_block(w, &place_runtime_tables(0, &w.tables), 0));
+    let rtcode_words_len = dummy_runtime_block
+        .as_ref()
+        .map(|b| b.words.len())
+        .unwrap_or(0);
 
     // --- place sections, fixed order: entry, code, rodata?, abort. ------
     let mut cursor = image_base;
@@ -877,6 +981,14 @@ pub fn layout_program(
     // the right `Reloc::CheckpointService` target on its own.
     let checkpoint_service_addr = checkpoint_base + (checkpoint_service_word as u64) * 4;
 
+    let rtcode_base = if rtcode_words_len > 0 {
+        let base = cursor;
+        cursor += (rtcode_words_len * 4) as u64;
+        Some(base)
+    } else {
+        None
+    };
+
     let mut sections = vec![
         Section {
             name: "entry",
@@ -911,6 +1023,17 @@ pub fn layout_program(
         base: checkpoint_base,
         size: checkpoint_size,
     });
+    // plans/M6.md item F/G follow-up: `rtcode` — this image's own runtime
+    // routines, the exact block `layout_test_image` places inside its
+    // combined harness section. Absent entirely for an image with no
+    // actors, never a zero-size placeholder section.
+    if let Some(base) = rtcode_base {
+        sections.push(Section {
+            name: "rtcode",
+            base,
+            size: (rtcode_words_len * 4) as u64,
+        });
+    }
 
     // --- rtdata (plans/M6.md item C, decision 3): reserved, zeroed bytes
     // for this image's own static actor runtime tables — absent entirely
@@ -939,6 +1062,13 @@ pub fn layout_program(
         _ => None,
     };
     // Second pass over the checkpoint block, now that `rtdata` is placed.
+    // The two word-count guards here and just below are unreachable from
+    // any source program (internal-error audit): both blocks are built from
+    // the identical shape inputs in both passes and differ only in the
+    // *values* a fixed four-word `load_imm` materializes, so a source file
+    // has no way to change one pass's length without changing the other's.
+    // They are kept as real `Err`s rather than `debug_assert`s because a
+    // length disagreement would silently corrupt every later section base.
     let checkpoint_words = match (&placement, runtime_live) {
         (Some(pl), Some(tables)) => {
             let real = build_checkpoint_and_vector_stub(group_service_ctx(pl, tables).as_ref());
@@ -952,19 +1082,72 @@ pub fn layout_program(
         }
         _ => checkpoint_words,
     };
+    // Second pass over the runtime block, now that `rtdata` is placed —
+    // the identical shape the checkpoint block above uses.
+    let runtime_block = match (&wiring, &placement) {
+        (Some(w), Some(pl)) => {
+            let real = build_runtime_block(w, pl, 0);
+            if real.words.len() != rtcode_words_len {
+                return Err(LayoutError::new(
+                    "internal error: the runtime block's own word count changed between its \
+                     sizing pass and its real-address pass",
+                ));
+            }
+            Some(real)
+        }
+        _ => None,
+    };
+    let empty_symbols = BTreeMap::new();
+    let glue_symbols: &BTreeMap<String, usize> = runtime_block
+        .as_ref()
+        .map(|b| &b.symbols)
+        .unwrap_or(&empty_symbols);
     let mut all_code_words = code_words;
+    // Internal-error audit (the item-F/G follow-up's own second half), for
+    // the three non-`Call` guards below — each is unreachable from any
+    // source program, and each says so here rather than being demoted:
+    //
+    // - `Reloc::Rodata` with an empty `rodata` section: codegen only emits
+    //   that reloc by interning a literal into `RodataPool`, which is the
+    //   very thing that makes `program.rodata` non-empty.
+    // - `Reloc::TurnFrameAddr`/`Reloc::GroupArenaBase` with no runtime
+    //   tables: both are emitted only from compiled *async* code, and
+    //   `compute_runtime_tables` returns `None` only when the build has
+    //   neither a declared actor nor a single async fn (`async_frames`
+    //   empty). One async fn is enough to size a table set whose
+    //   `total_bytes` is already non-zero (a ready queue and an RR cursor
+    //   at minimum), so the two conditions are mutually exclusive.
+    //   `turn_area_for` likewise partitions every `async_frames` key into
+    //   exactly one of "owned by a declared actor" or "free turn", from
+    //   the same map codegen keyed its relocs by.
+    //
+    // The `Reloc::Call` arm is the one that was *not* unreachable — see
+    // `unresolved_call_target`.
     for (key, f) in &program.fns {
         let base = fn_word_base[key];
         for reloc in &f.relocs {
             match reloc {
                 Reloc::Call { word, key: target } => {
-                    let target_base = *fn_word_base.get(target).ok_or_else(|| {
-                        LayoutError::new(format!(
-                            "internal error: call target `{target}` was never codegen'd"
-                        ))
-                    })?;
+                    // A compiled `Send`/`Await{ActorCall}` op's own symbolic
+                    // call target is a per-actor runtime-glue routine
+                    // (`glue_symbols`, `rtcode`-section-relative) rather than
+                    // an ordinary `program.fns` entry (`fn_word_base`,
+                    // `code`-section-relative) — the identical two-scheme
+                    // lookup `layout_test_image` already does, and the whole
+                    // reason a messaged-actor image lays out at all.
                     let this_addr = code_base + ((base + word) * 4) as u64;
-                    let target_addr = code_base + (target_base * 4) as u64;
+                    let target_addr = if let Some(target_base) = fn_word_base.get(target) {
+                        code_base + (*target_base as u64) * 4
+                    } else if let (Some(rc), Some(glue_word)) =
+                        (rtcode_base, glue_symbols.get(target))
+                    {
+                        rc + (*glue_word as u64) * 4
+                    } else {
+                        return Err(unresolved_call_target(
+                            target,
+                            boot.as_ref().map(|b| b.graph),
+                        ));
+                    };
                     patch_bl(&mut all_code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::Rodata {
@@ -1034,6 +1217,55 @@ pub fn layout_program(
         }
     }
 
+    // The `rtcode` section's own relocations: `Reloc::Call` only — every
+    // `rt_select_and_run` dispatch chain entry (a `pub` method's real
+    // compiled body or state machine) and every boot-init `init` call.
+    // `build_runtime_block` emits no other kind, and any other kind
+    // appearing here would be a real internal inconsistency, so it is
+    // rejected rather than guessed at.
+    //
+    // Internal-error audit: both guards below are unreachable from any
+    // source program. The kind guard is structural (this block is assembled
+    // by two named builders in this file, neither of which can emit those
+    // relocs). The "never codegen'd" guard's own targets are a declared
+    // actor's `pub` method keys and its zero-argument `init` key, all read
+    // out of the same module set `lower`/`codegen` compiled — and a method
+    // that fails to lower stops the whole attempt one layer up, at
+    // `try_layout_program`'s "all or nothing" rule, long before here. It is
+    // the *undeclared*-actor direction that was reachable, and that is the
+    // `Reloc::Call` case handled by `unresolved_call_target` above.
+    let mut rtcode_words: Vec<u32> = runtime_block
+        .as_ref()
+        .map(|b| b.words.clone())
+        .unwrap_or_default();
+    if let (Some(block), Some(rc)) = (&runtime_block, rtcode_base) {
+        for reloc in &block.relocs {
+            match reloc {
+                Reloc::Call { word, key } => {
+                    let target_base = *fn_word_base.get(key).ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: runtime-glue call target `{key}` was never codegen'd"
+                        ))
+                    })?;
+                    let this_addr = rc + (*word as u64) * 4;
+                    let target_addr = code_base + (target_base as u64) * 4;
+                    patch_bl(&mut rtcode_words, *word, this_addr, target_addr)?;
+                }
+                Reloc::Rodata { .. }
+                | Reloc::AbortFixed { .. }
+                | Reloc::AbortVal { .. }
+                | Reloc::CheckpointService { .. }
+                | Reloc::TurnFrameAddr { .. }
+                | Reloc::GroupArenaBase { .. } => {
+                    return Err(LayoutError::new(
+                        "internal error: the runtime block itself must never emit a Rodata/\
+                         AbortFixed/AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase reloc",
+                    ));
+                }
+            }
+        }
+    }
+
     // --- serialize -------------------------------------------------------
     let mut blob = Vec::new();
     for w in &entry_words {
@@ -1057,6 +1289,12 @@ pub fn layout_program(
     pad_to(&mut blob, image_base, checkpoint_base);
     for w in &checkpoint_words {
         blob.extend_from_slice(&w.to_le_bytes());
+    }
+    if let Some(rc) = rtcode_base {
+        pad_to(&mut blob, image_base, rc);
+        for w in &rtcode_words {
+            blob.extend_from_slice(&w.to_le_bytes());
+        }
     }
     if let (Some(rb), Some(tables)) = (rtdata_base, runtime.filter(|t| t.total_bytes > 0)) {
         pad_to(&mut blob, image_base, rb);
@@ -1229,10 +1467,32 @@ pub fn try_layout_program(
         Ok(p) => p,
         Err(_) => return Ok(None),
     };
-    let runtime_tables = compute_runtime_tables(graph, modules, layout_ctx, &async_frames)?;
-    layout_program(&codegen_program, runtime_tables.as_ref())
-        .map(Some)
-        .map_err(|e| e.message)
+    // plans/M6.md item F/G follow-up: the same `BootCtx` the test-image
+    // path builds — `layout_program` derives its runtime tables *and* its
+    // runtime routines from it, through the one shared
+    // `RuntimeWiring::derive`/`build_runtime_block` pair, so the two image
+    // flavors can never again disagree about what runtime machinery an
+    // actor-bearing image contains.
+    // (`codegen_program_with_async` above already called this same fn and
+    // propagated its two disclosed floors, so this call can only ever
+    // succeed here — the `Err` arm keeps this fn's own "all or nothing"
+    // rule rather than introducing a second, differently-shaped outcome.)
+    let group_child_index = match crate::codegen::compute_group_child_indices(&flow) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    layout_program(
+        &codegen_program,
+        Some(BootCtx {
+            graph,
+            modules,
+            layout_ctx,
+            async_frames: &async_frames,
+            group_child_index: &group_child_index,
+        }),
+    )
+    .map(Some)
+    .map_err(|e| e.message)
 }
 
 // ===========================================================================
@@ -2772,6 +3032,150 @@ fn build_boot_init(
 }
 
 // ===========================================================================
+// plans/M6.md item F/G follow-up (the found-and-fixed `layout_program`
+// defect): the runtime machinery, derived and assembled **once**, for both
+// image flavors.
+//
+// Until this landed, only `layout_test_image` built the per-actor
+// `__rt_enqueue_*`/`rt_select_and_run` glue, the group-child poll routines,
+// `rt_run_one` and the boot-init routine. `layout_program` — the path
+// `wrela build`/`wrela dump --stage=report` take — reserved `rtdata` but
+// emitted none of the code that addresses it, so the first `.wr` image that
+// actually *messaged* an actor (any `await`/`send` through an `Actor[T]`
+// handle, which codegen lowers to a `Reloc::Call` at the symbolic
+// `codegen::rt_enqueue_symbol` name) died in reloc resolution with
+// `internal error: call target `__rt_enqueue_X` was never codegen'd` — an
+// internal-error guard on a plainly user-reachable path. `tests/golden/
+// appliance` never caught it because its actors are declared and never
+// messaged, so no such `Reloc::Call` is ever emitted.
+//
+// The rule (item C's own, restated): the runtime tables **and** the routines
+// that address them are part of the image, tests or not. So both paths now
+// derive their inputs through `RuntimeWiring::derive` and assemble the exact
+// same words through `build_runtime_block`. The only thing that legitimately
+// differs is the entry driver — `layout_test_image`'s real console harness +
+// test roots vs. `layout_program`'s `build_entry_stub` placeholder, which
+// still halts with `EXIT_CODE_NO_RUNTIME` and therefore never calls any of
+// this. That the block is unreachable in a `wrela build` image today is the
+// identical, already-recorded position `rtdata`'s own reservation takes
+// (`layout_program`'s doc): it is *there* because it is part of the image,
+// not because anything executes it yet. The moment a real non-test image
+// entry exists (M7+), it is one `bl_to(boot_init_start)` away, byte-for-byte
+// the same machinery `wrela test` already boots for real.
+
+/// Every whole-build fact the runtime block needs, derived once from a
+/// `BootCtx` so the two image flavors can never disagree about an actor's
+/// dispatch keys, its `init`, or the group-child index. `None` means "this
+/// build has no actor runtime at all" (no `@actor` declaration, or tables
+/// that size to zero bytes) — the overwhelming majority of today's corpus,
+/// for which both paths stay byte-identical to their pre-M6 behavior.
+struct RuntimeWiring {
+    tables: RuntimeTables,
+    /// Per actor, in `tables.actors` order: its own name and its `pub`
+    /// method dispatch keys (`"{Actor}.{method}"`, `program.fns` keys) with
+    /// each one's asyncness.
+    dispatch: Vec<(String, Vec<(String, bool)>)>,
+    /// Actor name -> its zero-argument `init`'s own `program.fns` key.
+    init_keys: BTreeMap<String, String>,
+    actor_names: Vec<String>,
+    state_sizes: Vec<u64>,
+    group_child_index: BTreeMap<String, usize>,
+}
+
+impl RuntimeWiring {
+    fn derive(boot: &BootCtx) -> Result<Option<RuntimeWiring>, LayoutError> {
+        let Some(tables) =
+            compute_runtime_tables(boot.graph, boot.modules, boot.layout_ctx, boot.async_frames)
+                .map_err(LayoutError::new)?
+                .filter(|t| t.total_bytes > 0)
+        else {
+            return Ok(None);
+        };
+        let shapes = merge_actor_pub_methods(boot.modules, boot.layout_ctx)?;
+        let dispatch = tables
+            .actors
+            .iter()
+            .map(|a| {
+                let methods = shapes.get(&a.name).cloned().unwrap_or_default();
+                let keys = methods
+                    .iter()
+                    .map(|m| (format!("{}.{}", a.name, m.name), m.is_async))
+                    .collect();
+                (a.name.clone(), keys)
+            })
+            .collect();
+        let init_keys = actor_zero_arg_init_keys(boot.modules)?;
+        let actor_names = tables.actors.iter().map(|a| a.name.clone()).collect();
+        let state_sizes = tables.actors.iter().map(|a| a.state_size).collect();
+        Ok(Some(RuntimeWiring {
+            tables,
+            dispatch,
+            init_keys,
+            actor_names,
+            state_sizes,
+            group_child_index: boot.group_child_index.clone(),
+        }))
+    }
+}
+
+/// The assembled runtime block: `build_runtime_glue_block`'s routines
+/// followed by `build_boot_init`'s, one contiguous run of words starting at
+/// word index `start` within whichever section the caller places it in.
+/// Every index here (`symbols`, `rt_run_one_start`, `boot_init_start`, and
+/// each reloc's own `word`) is section-relative in exactly that sense.
+///
+/// Word counts never depend on `placement`'s address *values* (every
+/// `load_imm` is a fixed four words) — only on the wiring's own shapes — so
+/// both callers build this twice: once against a placeholder placement
+/// purely to learn `words.len()` before `rtdata`'s base can be known, then
+/// again against the real placement for the bytes that ship. Both assert
+/// the two passes agreed on the length.
+struct RuntimeBlock {
+    words: Vec<u32>,
+    relocs: Vec<Reloc>,
+    symbols: BTreeMap<String, usize>,
+    rt_run_one_start: usize,
+    boot_init_start: usize,
+}
+
+fn build_runtime_block(
+    wiring: &RuntimeWiring,
+    placement: &RuntimePlacement,
+    start: usize,
+) -> RuntimeBlock {
+    let glue = build_runtime_glue_block(
+        &wiring.tables,
+        &wiring.dispatch,
+        placement,
+        &wiring.group_child_index,
+        start,
+    );
+    let mut words = Vec::new();
+    let mut relocs = Vec::new();
+    for asm in &glue.asms {
+        words.extend(asm.words.iter().copied());
+        relocs.extend(asm.relocs.iter().cloned());
+    }
+    let boot_init_start = start + words.len();
+    let boot_init = build_boot_init(
+        &wiring.actor_names,
+        &placement.actors,
+        &wiring.state_sizes,
+        &wiring.init_keys,
+        boot_init_start,
+    );
+    words.extend(boot_init.words.iter().copied());
+    relocs.extend(boot_init.relocs.iter().cloned());
+    RuntimeBlock {
+        words,
+        relocs,
+        symbols: glue.symbols,
+        rt_run_one_start: glue.rt_run_one_start,
+        boot_init_start,
+    }
+}
+
+// ===========================================================================
 // plans/M5.md item E: the runtime test image's own harness.
 //
 // `layout_program`/`build_entry_stub`/`build_abort_stub` above are the
@@ -4009,46 +4413,14 @@ pub fn layout_test_image(
     // both just ordinary `program.fns` entries now, no color-based
     // special-casing anywhere in this fn). `None` when `boot` is absent or
     // the build declares no actors — every pre-M6 call site's own
-    // behavior, byte-identical.
-    let runtime_tables: Option<RuntimeTables> = match &boot {
-        Some(b) => compute_runtime_tables(b.graph, b.modules, b.layout_ctx, b.async_frames)
-            .map_err(LayoutError::new)?
-            .filter(|t| t.total_bytes > 0),
+    // behavior, byte-identical. Derived by `RuntimeWiring::derive`, the
+    // one copy `layout_program` uses too (that fn's own module block above
+    // has the full reasoning).
+    let wiring: Option<RuntimeWiring> = match &boot {
+        Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
-    let actor_dispatch: Vec<(String, Vec<(String, bool)>)> = match (&runtime_tables, &boot) {
-        (Some(tables), Some(b)) => {
-            let shapes = merge_actor_pub_methods(b.modules, b.layout_ctx)?;
-            tables
-                .actors
-                .iter()
-                .map(|a| {
-                    let methods = shapes.get(&a.name).cloned().unwrap_or_default();
-                    let keys = methods
-                        .iter()
-                        .map(|m| (format!("{}.{}", a.name, m.name), m.is_async))
-                        .collect();
-                    (a.name.clone(), keys)
-                })
-                .collect()
-        }
-        _ => Vec::new(),
-    };
-    let init_keys: BTreeMap<String, String> = match &boot {
-        Some(b) if runtime_tables.is_some() => actor_zero_arg_init_keys(b.modules)?,
-        _ => BTreeMap::new(),
-    };
-    // plans/M6.md item F: empty for a sync-only image or one with no
-    // `with group(...)` sites, byte-identical to every pre-item-F caller.
-    let empty_group_child_index = BTreeMap::new();
-    let group_child_index: &BTreeMap<String, usize> = boot
-        .as_ref()
-        .map(|b| b.group_child_index)
-        .unwrap_or(&empty_group_child_index);
-    let actor_names: Vec<String> = runtime_tables
-        .as_ref()
-        .map(|t| t.actors.iter().map(|a| a.name.clone()).collect())
-        .unwrap_or_default();
+    let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());
 
     let ring_append_asm = build_ring_append(&addrs, 0);
     let ring_append_start = 0usize;
@@ -4119,38 +4491,14 @@ pub fn layout_test_image(
     // computed below, replacing the placeholder-valued bytes in the final
     // buffer at the identical word offsets.
     let glue_start = checkpoint_start + checkpoint_asm.words.len();
-    let (dummy_placement, state_sizes): (RuntimePlacement, Vec<u64>) = match &runtime_tables {
-        Some(tables) => (
-            place_runtime_tables(0, tables),
-            tables.actors.iter().map(|a| a.state_size).collect(),
-        ),
-        None => (RuntimePlacement::default(), Vec::new()),
-    };
-    let dummy_glue = runtime_tables.as_ref().map(|tables| {
-        build_runtime_glue_block(
-            tables,
-            &actor_dispatch,
-            &dummy_placement,
-            group_child_index,
-            glue_start,
-        )
-    });
-    let glue_words_len: usize = dummy_glue
+    let dummy_block = wiring
         .as_ref()
-        .map(|g| g.asms.iter().map(|a| a.words.len()).sum())
-        .unwrap_or(0);
-    let rt_run_one_start = dummy_glue.as_ref().map(|g| g.rt_run_one_start);
-    let boot_init_start = glue_start + glue_words_len;
-    let dummy_boot_init_asm = build_boot_init(
-        &actor_names,
-        &dummy_placement.actors,
-        &state_sizes,
-        &init_keys,
-        boot_init_start,
-    );
-    let boot_init_start_opt = runtime_tables.as_ref().map(|_| boot_init_start);
+        .map(|w| build_runtime_block(w, &place_runtime_tables(0, &w.tables), glue_start));
+    let runtime_words_len = dummy_block.as_ref().map(|b| b.words.len()).unwrap_or(0);
+    let rt_run_one_start = dummy_block.as_ref().map(|b| b.rt_run_one_start);
+    let boot_init_start_opt = dummy_block.as_ref().map(|b| b.boot_init_start);
 
-    let entry_start = boot_init_start + dummy_boot_init_asm.words.len();
+    let entry_start = glue_start + runtime_words_len;
     let entry_asm = build_entry_driver(
         &addrs,
         entry_start,
@@ -4187,13 +4535,9 @@ pub fn layout_test_image(
         harness_words.extend(asm.words);
     }
     debug_assert_eq!(glue_start, harness_words.len());
-    if let Some(g) = &dummy_glue {
-        for asm in &g.asms {
-            harness_words.extend(asm.words.clone());
-        }
+    if let Some(b) = &dummy_block {
+        harness_words.extend(b.words.iter().copied());
     }
-    debug_assert_eq!(boot_init_start, harness_words.len());
-    harness_words.extend(dummy_boot_init_asm.words.clone());
     debug_assert_eq!(entry_start, harness_words.len());
     harness_relocs.extend(entry_asm.relocs.clone());
     harness_words.extend(entry_asm.words.clone());
@@ -4235,7 +4579,8 @@ pub fn layout_test_image(
     // the placeholder pass already reserved — replacing their
     // placeholder-valued bytes in `harness_words` in place.
     let (glue_symbols, real_placement): (BTreeMap<String, usize>, Option<RuntimePlacement>) =
-        if let Some(tables) = &runtime_tables {
+        if let Some(w) = &wiring {
+            let tables = &w.tables;
             let real_base =
                 rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
             let placement = place_runtime_tables(real_base, tables);
@@ -4255,43 +4600,25 @@ pub fn layout_test_image(
                     harness_words[checkpoint_start + i] = *word;
                 }
             }
-            let real_glue = build_runtime_glue_block(
-                tables,
-                &actor_dispatch,
-                &placement,
-                group_child_index,
-                glue_start,
-            );
-            let mut w = glue_start;
-            for asm in &real_glue.asms {
-                for word in &asm.words {
-                    harness_words[w] = *word;
-                    w += 1;
-                }
-                // `build_rt_select_and_run_symbolic`'s own dispatch chain
-                // carries real `Reloc::Call`s (a sync method's real compiled
-                // body, or an async method's real state-machine entry) —
-                // these must resolve exactly like every other harness-section
-                // call, or the emitted `BL` stays a self-referencing
-                // placeholder.
-                harness_relocs.extend(asm.relocs.clone());
+            let real_block = build_runtime_block(w, &placement, glue_start);
+            if real_block.words.len() != runtime_words_len {
+                return Err(LayoutError::new(
+                    "internal error: the runtime block's own word count changed between its \
+                     sizing pass and its real-address pass",
+                ));
             }
-            debug_assert_eq!(w, boot_init_start);
-            let real_boot_init_asm = build_boot_init(
-                &actor_names,
-                &placement.actors,
-                &state_sizes,
-                &init_keys,
-                boot_init_start,
-            );
-            let mut w = boot_init_start;
-            for word in &real_boot_init_asm.words {
-                harness_words[w] = *word;
-                w += 1;
+            for (i, word) in real_block.words.iter().enumerate() {
+                harness_words[glue_start + i] = *word;
             }
-            harness_relocs.extend(real_boot_init_asm.relocs.clone());
-            debug_assert_eq!(w, entry_start);
-            (real_glue.symbols, Some(placement))
+            // `build_rt_select_and_run_symbolic`'s own dispatch chain (and
+            // `build_boot_init`'s own `init` calls) carry real
+            // `Reloc::Call`s — a sync method's real compiled body, or an
+            // async method's real state-machine entry — which must resolve
+            // exactly like every other harness-section call, or the emitted
+            // `BL` stays a self-referencing placeholder.
+            harness_relocs.extend(real_block.relocs.iter().cloned());
+            debug_assert_eq!(glue_start + real_block.words.len(), entry_start);
+            (real_block.symbols, Some(placement))
         } else {
             (BTreeMap::new(), None)
         };
@@ -4299,6 +4626,12 @@ pub fn layout_test_image(
     // Resolves a `Reloc::TurnFrameAddr` key to its real turn-area
     // address (`RuntimePlacement::turn_area_for`'s own rule) — an
     // internal error if no tables exist or the key was never sized.
+    // Internal-error audit: unreachable from any source program, for the
+    // identical reason `layout_program`'s own copy of this guard is —
+    // a `TurnFrameAddr` exists only for an async fn, one async fn is
+    // already enough for `compute_runtime_tables` to size a non-empty
+    // table set, and `turn_area_for` partitions every key of the same
+    // `async_frames` map codegen keyed its relocs by.
     let turn_area_addr = |key: &str| -> Result<u64, LayoutError> {
         let (Some(tables), Some(placement)) = (&runtime_tables, &real_placement) else {
             return Err(LayoutError::new(format!(
@@ -4341,6 +4674,15 @@ pub fn layout_test_image(
     }
 
     // --- resolve relocs ----------------------------------------------------
+    // Internal-error audit: every guard in this harness loop is unreachable
+    // from any source program. `Call` targets here are the entry driver's
+    // own `@test(runtime)` roots (already checked against `fn_word_base` at
+    // the top of this fn), a declared actor's `pub` method keys and its
+    // zero-argument `init` — all read from the same module set `codegen`
+    // compiled, with a method that fails to lower stopping the attempt one
+    // layer up. `Rodata` cannot outrun its own pool (interning a literal is
+    // what fills it). The last arm is structural: the harness builders in
+    // this file emit no such reloc.
     for reloc in &harness_relocs {
         match reloc {
             Reloc::Call { word, key } => {
@@ -4392,19 +4734,21 @@ pub fn layout_test_image(
                     // glue routine (`glue_symbols`, harness-section-relative)
                     // rather than an ordinary `program.fns` entry
                     // (`fn_word_base`, code-section-relative) — checked
-                    // second, never both at once for the same key (the two
-                    // naming schemes, `rt_enqueue_symbol` vs. plain
-                    // `Struct.method`, never collide).
+                    // second (`codegen::rt_enqueue_actor`'s doc records the
+                    // one disclosed way the two naming schemes could ever
+                    // collide, and why nothing enforces against it yet).
+                    // The `else` arm is the audit's one genuinely
+                    // user-reachable find — `unresolved_call_target`.
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4
                     } else if let Some(glue_word) = glue_symbols.get(target) {
                         harness_base + (*glue_word as u64) * 4
                     } else {
-                        return Err(LayoutError::new(format!(
-                            "internal error: call target `{target}` was never codegen'd or \
-                             registered as a runtime-glue symbol"
-                        )));
+                        return Err(unresolved_call_target(
+                            target,
+                            boot.as_ref().map(|b| b.graph),
+                        ));
                     };
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
                 }
