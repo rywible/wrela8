@@ -66,6 +66,53 @@ impl From<EvalError> for Unwind {
     }
 }
 
+/// The native stack `run_on_guarded_stack` gives every top-level comptime
+/// evaluation (plans/M3.md decision 6's own quota family, alongside
+/// `quota::MAX_CALL_DEPTH`) — found by `cargo xtask fuzz sema`, seed=11:
+/// this recursive-descent walk (`eval_expr`/`eval_block`/`eval_stmt`/
+/// `run_call`, several native frames per one guest-level call) costs
+/// enough native stack per level that a plain, legitimate ~100-deep
+/// recursive call already overflowed this process's own default thread
+/// stack (a few MiB) natively — nowhere near `MAX_CALL_DEPTH`'s budget of
+/// 1_000, and long before `Interp::enter`'s own depth check ever got a
+/// chance to reject it with `error[comptime]`. `quota.rs`'s own module
+/// doc already named the risk ("the step quota alone cannot promise"
+/// native-stack safety) and `MAX_CALL_DEPTH` was chosen "to stay well
+/// inside this process's own native stack" — a claim this fixes rather
+/// than one `MAX_CALL_DEPTH` alone could keep, since lowering that
+/// constant would also change every pinned `Quota max_call_depth=...`
+/// report line (golden/appliance, golden/image-project,
+/// golden/image-helper-accept) for no reason a real language quota
+/// demands. 256 MiB comfortably covers 1_000 levels at the
+/// empirically-observed cost (~8 MiB blew ~100 levels, so 1_000 needs on
+/// the order of 80-90 MiB; this doubles that with margin for a slower
+/// release-mode improvement never being required to hold) without
+/// depending on the calling thread's own stack size (`RUST_MIN_STACK`,
+/// the OS default, or whatever a future caller happens to run on).
+const EVAL_STACK_SIZE: usize = 256 * 1024 * 1024;
+
+/// Runs `f` — one top-level comptime evaluation — on a dedicated thread
+/// sized by `EVAL_STACK_SIZE`, joining before returning. `thread::scope`
+/// lets `f` borrow non-`'static` data (every entry point below borrows
+/// `&TypedProgram`/`&TypedExpr` from its caller); `Builder::spawn_scoped`
+/// is the one piece of that API that also accepts a custom stack size. A
+/// panic inside `f` (there should never be one — every real failure is an
+/// `Err`, not a panic) is re-raised on the calling thread via `resume_unwind`
+/// rather than swallowed, so `catch_unwind` callers (the fuzz harness'
+/// own guarded invariants) still see it exactly as if `f` had run inline.
+fn run_on_guarded_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new()
+            .stack_size(EVAL_STACK_SIZE)
+            .spawn_scoped(scope, f)
+            .expect("spawn comptime-eval thread");
+        match handle.join() {
+            Ok(v) => v,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
+}
+
 /// The evaluator's shared, non-scope state: the typed program being
 /// walked, the running quota, and the live comptime call stack (callee
 /// spellings/const-context names, in call order) diagnostics read from.
@@ -170,17 +217,19 @@ pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError>
             stack: vec![],
         });
     };
-    let mut ctx = Interp {
-        program,
-        quota: Quota::new(),
-        stack: Vec::new(),
-        image: None,
-        sealed_image: None,
-    };
-    match run_call(f, None, name.to_string(), |_, _| Ok(()), &mut ctx) {
-        Ok((v, _)) => Ok(v),
-        Err(u) => Err(unwind_to_error(u)),
-    }
+    run_on_guarded_stack(move || {
+        let mut ctx = Interp {
+            program,
+            quota: Quota::new(),
+            stack: Vec::new(),
+            image: None,
+            sealed_image: None,
+        };
+        match run_call(f, None, name.to_string(), |_, _| Ok(()), &mut ctx) {
+            Ok((v, _)) => Ok(v),
+            Err(u) => Err(unwind_to_error(u)),
+        }
+    })
 }
 
 /// Runs one `@test(exhaustive)` fn's body for one enumerated case
@@ -199,23 +248,25 @@ pub fn eval_test_case(
             stack: vec![],
         });
     };
-    let mut ctx = Interp {
-        program,
-        quota: Quota::new(),
-        stack: Vec::new(),
-        image: None,
-        sealed_image: None,
-    };
-    let bind = |env: &mut Env, _ctx: &mut Interp| {
-        for (p, v) in f.params.iter().zip(args.iter()) {
-            env_insert(env, p.name.clone(), v.clone());
+    run_on_guarded_stack(move || {
+        let mut ctx = Interp {
+            program,
+            quota: Quota::new(),
+            stack: Vec::new(),
+            image: None,
+            sealed_image: None,
+        };
+        let bind = |env: &mut Env, _ctx: &mut Interp| {
+            for (p, v) in f.params.iter().zip(args.iter()) {
+                env_insert(env, p.name.clone(), v.clone());
+            }
+            Ok(())
+        };
+        match run_call(f, None, name.to_string(), bind, &mut ctx) {
+            Ok((v, _)) => Ok(v),
+            Err(u) => Err(unwind_to_error(u)),
         }
-        Ok(())
-    };
-    match run_call(f, None, name.to_string(), bind, &mut ctx) {
-        Ok((v, _)) => Ok(v),
-        Err(u) => Err(unwind_to_error(u)),
-    }
+    })
 }
 
 /// Evaluates the one reachable `@image` fn (plans/M4.md item B): a
@@ -238,40 +289,44 @@ pub fn eval_image(
             stack: vec![],
         });
     };
-    let mut ctx = Interp {
-        program,
-        quota: Quota::new(),
-        stack: Vec::new(),
-        image: None,
-        sealed_image: None,
-    };
-    match run_call(f, None, fn_name.to_string(), |_, _| Ok(()), &mut ctx) {
-        Ok(_) => ctx.sealed_image.ok_or_else(|| EvalError {
-            message: format!("`@image` fn `{fn_name}` returned without calling `img.seal()`"),
-            stack: vec![fn_name.to_string()],
-        }),
-        Err(u) => Err(unwind_to_error(u)),
-    }
+    run_on_guarded_stack(move || {
+        let mut ctx = Interp {
+            program,
+            quota: Quota::new(),
+            stack: Vec::new(),
+            image: None,
+            sealed_image: None,
+        };
+        match run_call(f, None, fn_name.to_string(), |_, _| Ok(()), &mut ctx) {
+            Ok(_) => ctx.sealed_image.ok_or_else(|| EvalError {
+                message: format!("`@image` fn `{fn_name}` returned without calling `img.seal()`"),
+                stack: vec![fn_name.to_string()],
+            }),
+            Err(u) => Err(unwind_to_error(u)),
+        }
+    })
 }
 
 fn eval_top(program: &TypedProgram, expr: &TypedExpr, context: String) -> Result<Value, EvalError> {
-    let mut ctx = Interp {
-        program,
-        quota: Quota::new(),
-        stack: Vec::new(),
-        image: None,
-        sealed_image: None,
-    };
-    if let Err(e) = ctx.enter(context) {
-        return Err(unwind_to_error(e));
-    }
-    let mut env: Env = vec![BTreeMap::new()];
-    let mut dstack: Vec<&TypedDeferBody> = Vec::new();
-    let result = eval_expr(expr, &mut env, &mut dstack, 0, &mut ctx);
-    match result {
-        Ok(v) => Ok(v),
-        Err(u) => Err(unwind_to_error(u)),
-    }
+    run_on_guarded_stack(move || {
+        let mut ctx = Interp {
+            program,
+            quota: Quota::new(),
+            stack: Vec::new(),
+            image: None,
+            sealed_image: None,
+        };
+        if let Err(e) = ctx.enter(context) {
+            return Err(unwind_to_error(e));
+        }
+        let mut env: Env = vec![BTreeMap::new()];
+        let mut dstack: Vec<&TypedDeferBody> = Vec::new();
+        let result = eval_expr(expr, &mut env, &mut dstack, 0, &mut ctx);
+        match result {
+            Ok(v) => Ok(v),
+            Err(u) => Err(unwind_to_error(u)),
+        }
+    })
 }
 
 fn unwind_to_error(u: Unwind) -> EvalError {

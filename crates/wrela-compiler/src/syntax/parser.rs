@@ -43,6 +43,26 @@ pub struct ParseError {
     pub col: u32,
 }
 
+/// The deepest live nesting of the expression precedence chain a single
+/// parse may build (`parse_unary`'s own guard) — mirrors
+/// `sema::bodies::MAX_GENERIC_DEPTH`/`eval::quota::MAX_CALL_DEPTH`'s own
+/// role one layer either side of this pass: an unbounded-nesting input
+/// (deeply parenthesized/bracketed groups, chained unary prefixes, or any
+/// mix — every one of them re-enters the chain through `parse_unary`
+/// exactly once per level) must fail closed with a diagnostic *before* it
+/// overflows this process's own native stack, which nothing before this
+/// guard existed to notice (found by `cargo xtask fuzz sema`, seed=11 —
+/// deeply nested groups blew the native stack well before any other
+/// limit fired). Chosen empirically, not measured/profiled: parsing (and
+/// the downstream AST dump/pretty-print/`sema::bodies::check_expr` walks,
+/// which recurse over the same shape) stayed clean through roughly 350
+/// levels of plain paren-nesting on this process's default stack, and
+/// broke somewhere before 400; 100 keeps a >3x margin below that observed
+/// ceiling while comfortably covering any reasonable hand-written
+/// expression (the deepest in the whole doc/example corpus is nowhere
+/// close).
+const MAX_EXPR_DEPTH: u32 = 100;
+
 pub fn parse(tokens: Vec<Token>) -> Result<Module, ParseError> {
     Parser::new(tokens).parse_module()
 }
@@ -91,6 +111,13 @@ pub fn parse_any(tokens: Vec<Token>) -> Result<Parsed, ParseError> {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Live nesting depth of the expression precedence chain
+    /// (`parse_unary`'s own guard, `MAX_EXPR_DEPTH`) — every recursive
+    /// re-entry into the chain (a parenthesized/bracketed group, a call
+    /// argument, a chained unary prefix) passes through `parse_unary`
+    /// exactly once per level, so counting there bounds native recursion
+    /// depth regardless of which construct is doing the nesting.
+    expr_depth: u32,
     /// Nesting depth of single-line inline suites (`parse_inline_stmt_seq`):
     /// a `:` followed by real content on the same physical line, with no
     /// `Newline` token ever going to appear (module doc comment above —
@@ -115,6 +142,7 @@ impl Parser {
         Parser {
             tokens,
             pos: 0,
+            expr_depth: 0,
             inline_depth: 0,
         }
     }
@@ -1572,7 +1600,28 @@ impl Parser {
         Ok(e)
     }
 
+    /// Guarded entry to the expression precedence chain (`MAX_EXPR_DEPTH`'s
+    /// own doc comment): every recursive re-entry — a parenthesized/
+    /// bracketed group via `parse_primary`, a chained unary prefix via
+    /// this function's own self-recursion — passes through here exactly
+    /// once per nesting level, so counting on entry/exit bounds native
+    /// recursion depth regardless of which construct is doing the
+    /// nesting. The actual grammar lives in `parse_unary_body`, unchanged
+    /// below; this wrapper only ever adds the counter.
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        self.expr_depth += 1;
+        if self.expr_depth > MAX_EXPR_DEPTH {
+            self.expr_depth -= 1;
+            return Err(self.error_here(format!(
+                "expression nesting depth exceeded {MAX_EXPR_DEPTH}"
+            )));
+        }
+        let result = self.parse_unary_body();
+        self.expr_depth -= 1;
+        result
+    }
+
+    fn parse_unary_body(&mut self) -> Result<Expr, ParseError> {
         if self.at_op("-") {
             let span = self.peek_span();
             self.bump();
