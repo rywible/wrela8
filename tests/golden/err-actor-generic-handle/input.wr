@@ -1,0 +1,36 @@
+module examples.err_actor_generic_handle
+
+# plans/M6.md item H (orchestrator verification probe): an actor handle
+# naming a *generic instantiation*. `sema::types::validate_actor_type` is
+# the only place that ever sees `Actor[...]`'s own type arguments — every
+# later resolution looks the method up under the generic *base* struct's
+# name — so before this golden, `Actor[Box[u64]]` typechecked clean and
+# then hit `flowwir_lower`'s own `internal error: unknown struct `Box``
+# producer-bug guard (the exact shape the lower fuzz lane's own invariant
+# (c) classifies as a compiler bug, reached from ordinary source). The
+# whole M6 surface excludes async generics by design (`flowwir.rs`'s own
+# module doc); this pins that scope limit failing *closed*, by name.
+#
+# Counterexample, run and confirmed to still compile: drop `[T]`/`[u64]`
+# and the identical program lowers to FlowWir cleanly — the rejection is
+# the type arguments, not actor handles in general.
+
+@actor
+pub struct Box[T]:
+    value: T
+    tag: u64
+
+    pub async fn tag_of(read self) -> u64:
+        return self.tag
+
+@actor
+pub struct Caller:
+    b: Actor[Box[u64]]
+
+    pub async fn run(mut self) -> u64:
+        v = await self.b.tag_of()
+        match v:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0

@@ -353,7 +353,7 @@ fn validate_actor_type(
                     ));
                 }
             };
-            let Type::Named(actor_name, _) = inner else {
+            let Type::Named(actor_name, actor_targs) = inner else {
                 return Err(SemaError::at(
                     "type",
                     format!(
@@ -363,6 +363,28 @@ fn validate_actor_type(
                     span,
                 ));
             };
+            // A handle to a *generic instantiation* is outside the M6
+            // surface (`flowwir.rs`'s own module doc: "no async generic
+            // exists in the M6 surface"), and this is the one place that
+            // can say so: every later resolution drops these type
+            // arguments on the floor and looks the method up under the
+            // generic *base* struct's own name. Accepting the type here
+            // is what let `Actor[Box[u64]]` typecheck clean and then hit
+            // `flowwir_lower`'s own `internal error: unknown struct
+            // `Box`` producer-bug guard — an unimplemented path failing
+            // open, and reported as a compiler bug rather than as the
+            // scope limit it actually is. Rejected by name instead.
+            if !actor_targs.is_empty() {
+                return Err(SemaError::at(
+                    "actor",
+                    format!(
+                        "`Actor[{}]` names a generic instantiation; an actor handle to a \
+                         generic struct is not implemented (M6 scope)",
+                        render_type(inner)
+                    ),
+                    span,
+                ));
+            }
             match structs.get(actor_name.as_str()) {
                 Some(s) if s.is_actor => Ok(()),
                 _ => Err(SemaError::at(
