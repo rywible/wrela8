@@ -877,6 +877,7 @@ fn value_as_u64(v: &crate::eval::value::Value) -> Option<u64> {
 /// shapes). Keyed by struct name, last-module-wins on a same-spelling
 /// collision — the identical disclosed simplification `merge_layout_ctx`
 /// already carries.
+#[derive(Clone)]
 struct ActorMethodShape {
     /// plans/M6.md item D: this method's own bare name — added to this
     /// struct (previously anonymous within its own `Vec`) so
@@ -1433,6 +1434,53 @@ pub fn build_rt_select_and_run(
     dispatch: &[usize],
     start: usize,
 ) -> Vec<u32> {
+    build_rt_select_and_run_core(
+        addrs,
+        capacity,
+        slot_size,
+        dispatch.len(),
+        start,
+        |a, idx| a.bl_to(dispatch[idx]),
+    )
+    .words
+}
+
+/// plans/M6.md item D: the exact same routine as `build_rt_select_and_run`
+/// above, but dispatching to a *real compiled program's own `code`
+/// section* by fn key (a `Reloc::Call`, resolved by `layout_test_image`
+/// exactly like an ordinary compiled call) instead of a same-buffer
+/// absolute word index — item C's own module doc named this "item D's own
+/// follow-up" and this is it: an async method's own dispatch entry is now
+/// its real compiled state-machine address, a sync method's is its real
+/// compiled body's address, with no special-casing by color at all (both
+/// simply live in `program.fns`, keyed identically). Shares every byte of
+/// hand-assembly with the JIT-tested original above via
+/// `build_rt_select_and_run_core` — never a forked copy.
+fn build_rt_select_and_run_symbolic(
+    addrs: &ActorAddrs,
+    capacity: u64,
+    slot_size: u64,
+    dispatch: &[String],
+    start: usize,
+) -> Asm {
+    build_rt_select_and_run_core(
+        addrs,
+        capacity,
+        slot_size,
+        dispatch.len(),
+        start,
+        |a, idx| a.bl_call_key(&dispatch[idx]),
+    )
+}
+
+fn build_rt_select_and_run_core(
+    addrs: &ActorAddrs,
+    capacity: u64,
+    slot_size: u64,
+    num_methods: usize,
+    start: usize,
+    mut call_dispatch: impl FnMut(&mut Asm, usize),
+) -> Asm {
     let mut a = Asm::new(start);
     // Unlike every other hand-assembled fragment in this file (all leaf
     // fns, or noreturn like the abort stubs), this one both calls out
@@ -1515,10 +1563,10 @@ pub fn build_rt_select_and_run(
     }
     a.load_imm(0, addrs.state); // x0 = self ptr (the receiver ABI)
 
-    for (idx, &target_abs) in dispatch.iter().enumerate() {
+    for idx in 0..num_methods {
         a.push(encode::enc_cmp_imm(15, idx as u16, true));
         let skip_next = a.skip_placeholder(); // b.ne .next
-        a.bl_to(target_abs);
+        call_dispatch(&mut a, idx);
         a.load_imm(9, addrs.last_result);
         a.push(encode::enc_str_x_imm(0, 9, 0));
         to_dispatch_done.push(a.skip_placeholder()); // b .done (unconditional)
@@ -1576,7 +1624,147 @@ pub fn build_rt_select_and_run(
         let delta = (epilogue as i64 - this as i64) * 4;
         a.words[*m] = encode::enc_b(delta as i32);
     }
-    a.words
+    a
+}
+
+/// `__await_actor_<Actor>(x0=method_idx, x1=args_ptr, x2=nargs_words) ->
+/// x0=reply_value`. plans/M6.md item D's own disclosed simplification of
+/// decision 1's "park the turn... return to scheduler" wording
+/// (`codegen.rs`'s own module doc, "Await, simplified" section, has the
+/// full reasoning): rather than a real cross-native-call suspend/resume,
+/// this glue enqueues the caller's own message into the target actor's
+/// mailbox, then *synchronously drains* that target (repeated
+/// `rt_select_and_run` ticks) until it goes idle, then reads back the one
+/// scalar reply `rt_select_and_run` already stashes at `addrs.last_result`
+/// (M6-C's own "deliberately minimal reply-plumbing floor" — this is the
+/// first thing that ever actually consumes it). The awaiting actor's own
+/// `busy` flag (set by whichever `rt_select_and_run` call dispatched the
+/// awaiting turn in the first place) stays set for this whole nested
+/// span, so decision 4's own non-reentrancy proof holds structurally
+/// regardless of which suspension mechanic implements the park.
+///
+/// A rejected admission aborts (`BRK`) rather than composing a real
+/// `CallError[Rejected(..)]` value — a disclosed floor, item G's own
+/// send-proof job to replace; no required M6-D conformance boot ever
+/// fills a mailbox.
+pub const BRK_AWAIT_ACTOR_REJECTED: u16 = 0xACD3;
+
+fn build_await_actor_glue(
+    addrs: &ActorAddrs,
+    enqueue_start: usize,
+    select_start: usize,
+    start: usize,
+) -> Asm {
+    let mut a = Asm::new(start);
+    a.push(encode::enc_sub_imm(31, 31, 16, true));
+    a.push(encode::enc_str_x_imm(30, 31, 0));
+
+    a.bl_to(enqueue_start); // x0 = outcome (0 admitted, 1 rejected)
+    let skip_abort = a.skip_placeholder(); // cbz x0, .ok
+    a.push(encode::enc_brk(BRK_AWAIT_ACTOR_REJECTED));
+    let ok = a.abs();
+    a.patch_cbz(skip_abort, 0);
+    debug_assert_eq!(ok, a.abs());
+
+    // Drain the target's own mailbox until idle — our own just-enqueued
+    // message is guaranteed to be in there (M6's own single-core, one-
+    // root-turn-at-a-time scope: nothing else can have admitted to this
+    // target between our own enqueue and this loop).
+    let loop_top = a.abs();
+    a.bl_to(select_start); // x0 = 1 ran / 0 idle
+    let skip_loop = a.skip_placeholder(); // cbz x0, .done
+    a.b_to(loop_top);
+    let done = a.abs();
+    a.patch_cbz(skip_loop, 0);
+    debug_assert_eq!(done, a.abs());
+
+    a.load_imm(9, addrs.last_result);
+    a.push(encode::enc_ldr_x_imm(0, 9, 0));
+
+    a.push(encode::enc_ldr_x_imm(30, 31, 0));
+    a.push(encode::enc_add_imm(31, 31, 16, true));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// plans/M6.md item D: every actor's own `rt_enqueue`/`rt_select_and_run`/
+/// `__await_actor_*` triple, placed sequentially from `start` — the exact
+/// per-actor hand-assembled routines `layout_test_image` registers under
+/// `rt_enqueue_symbol`/`codegen::await_actor_symbol` so a compiled
+/// `Send`/`Await{ActorCall}` op's own `Reloc::Call` resolves to them.
+/// Word counts here never depend on `actor_addrs`' own field *values*
+/// (every `load_imm` is a fixed four words regardless) — only on
+/// `tables`/`actor_dispatch`'s own shapes — so this fn is safe to call
+/// once with a placeholder `actor_addrs` purely to learn the total word
+/// count (sizing the `rtdata` section itself needs), then again with the
+/// real, now-known addresses for the bytes that actually ship.
+fn build_runtime_glue_block(
+    tables: &RuntimeTables,
+    actor_dispatch: &[(String, Vec<String>)],
+    actor_addrs: &[ActorAddrs],
+    start: usize,
+) -> (Vec<Asm>, BTreeMap<String, usize>) {
+    let mut asms = Vec::new();
+    let mut symbols = BTreeMap::new();
+    let mut cursor = start;
+    for (i, a) in tables.actors.iter().enumerate() {
+        let addrs = &actor_addrs[i];
+        let (_, dispatch_keys) = &actor_dispatch[i];
+
+        let enqueue_start = cursor;
+        let enqueue_words = build_rt_enqueue(addrs, a.mailbox_capacity, a.slot_size, enqueue_start);
+        cursor += enqueue_words.len();
+        symbols.insert(crate::codegen::rt_enqueue_symbol(&a.name), enqueue_start);
+        asms.push(Asm {
+            start: enqueue_start,
+            words: enqueue_words,
+            relocs: Vec::new(),
+        });
+
+        let select_start = cursor;
+        let select_asm = build_rt_select_and_run_symbolic(
+            addrs,
+            a.mailbox_capacity,
+            a.slot_size,
+            dispatch_keys,
+            select_start,
+        );
+        cursor += select_asm.words.len();
+        asms.push(select_asm);
+
+        let glue_start = cursor;
+        let glue_asm = build_await_actor_glue(addrs, enqueue_start, select_start, glue_start);
+        cursor += glue_asm.words.len();
+        symbols.insert(crate::codegen::await_actor_symbol(&a.name), glue_start);
+        asms.push(glue_asm);
+    }
+    (asms, symbols)
+}
+
+/// plans/M6.md item D: the real boot sequence's own actor-state half —
+/// every actor's own state slot, zero-initialized before any root turn
+/// runs (`build_entry_driver`'s own `bl_to(boot_init_start)`, right after
+/// the console/test-counter zeroing it already did). **Disclosed floor,
+/// not silently narrowed**: calling a declared `init` (materializing
+/// `ActorDecl::args` against its own declared parameter list, in
+/// dependency order) is real, further work this item does not ship —
+/// every M6-D required conformance actor's own fields are plain data with
+/// no declared `init` of their own, so plain zero-initialization is exact
+/// for them; a real `init`-arg materialization pass is named, deferred
+/// follow-up for whichever later item's own flagship boot actually
+/// declares one (recorded in the ledger clause, not silently assumed
+/// solved).
+fn build_boot_init(actor_addrs: &[ActorAddrs], state_sizes: &[u64], start: usize) -> Asm {
+    let mut a = Asm::new(start);
+    for (addrs, &size) in actor_addrs.iter().zip(state_sizes) {
+        let mut w = 0u64;
+        while w < size {
+            a.load_imm(9, addrs.state + w);
+            a.push(encode::enc_str_x_imm(31, 9, 0)); // store xzr (unit is Copy/all-zero-valid)
+            w += 8;
+        }
+    }
+    a
 }
 
 /// The named abort stub `rt_select_and_run`'s own `dispatch` table points
@@ -2337,6 +2525,7 @@ fn build_abort_val(
 /// through whatever `x8` holds; a test fn's return value is otherwise
 /// unread, but this guarantees an aggregate return, if one ever exists, has
 /// somewhere harmless to land rather than an arbitrary stale address).
+#[allow(clippy::too_many_arguments)]
 fn build_entry_driver(
     addrs: &HarnessAddrs,
     start: usize,
@@ -2348,6 +2537,7 @@ fn build_entry_driver(
     runtime_tests: &[String],
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
+    boot_init_start: Option<usize>,
 ) -> Asm {
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
@@ -2365,6 +2555,21 @@ fn build_entry_driver(
     ] {
         a.load_imm(10, addrs.info_base + off);
         a.push(encode::enc_str_x_imm(9, 10, 0));
+    }
+
+    // plans/M6.md item D: the real boot sequence C deferred — every
+    // actor's own state gets zero-initialized (`build_boot_init`) before
+    // any root turn (`@test(runtime)` fn) ever runs, so an actor call
+    // reaches deterministic, in-range memory rather than whatever the
+    // rtdata section's own zeroed-at-load bytes already were (which is
+    // itself all-zero at M6 — this call is what makes that a *documented*
+    // fact rather than an accident of `layout_program`'s own "reserved,
+    // zeroed bytes" section, and the one hook a later item's own real
+    // `init`-arg materialization/dependency-order walk extends). Absent
+    // entirely for a sync-only image (`boot_init_start: None`) — no
+    // actors, nothing to boot.
+    if let Some(boot_init) = boot_init_start {
+        a.bl_to(boot_init);
     }
 
     let ok_off = append_rodata(rodata, rodata_cursor, b"ok\n".to_vec());
@@ -2591,9 +2796,23 @@ pub fn check_transcript_bound(
 /// produced (an internal invariant `bin/wrela.rs`'s own caller is expected
 /// to have already checked via `TypedProgram::tests`, kept here anyway as
 /// a real `Err` rather than a silent skip).
+/// plans/M6.md item D: the three whole-build-closure facts needed to run
+/// a real actor boot sequence (`compute_runtime_tables`'s own signature,
+/// unchanged) — bundled so `layout_test_image`'s own signature grows by
+/// exactly one `Option` parameter rather than three. `None` (the
+/// overwhelming majority of today's corpus, and every pre-M6 golden)
+/// keeps `layout_test_image` byte-identical to its pre-item-D behavior:
+/// no `rtdata`, no boot sequence, no runtime-glue routines.
+pub struct BootCtx<'a> {
+    pub graph: &'a ImageGraph,
+    pub modules: &'a BTreeMap<String, Module>,
+    pub layout_ctx: &'a LayoutCtx,
+}
+
 pub fn layout_test_image(
     program: &CodegenProgram,
     runtime_tests: &[String],
+    boot: Option<BootCtx>,
 ) -> Result<ImageLayout, LayoutError> {
     check_transcript_bound(program, runtime_tests)?;
 
@@ -2623,6 +2842,41 @@ pub fn layout_test_image(
     // either is built (both need their byte offsets).
     let failed_word_off = append_rodata(&mut rodata, &mut rodata_cursor, b"FAILED ".to_vec());
     let abort_newline_off = append_rodata(&mut rodata, &mut rodata_cursor, b"\n".to_vec());
+
+    // plans/M6.md item D: the real boot wiring C's own sub-note deferred —
+    // `RuntimeTables` (item C's own static sizing pass, unchanged) plus
+    // each actor's own dispatch-key list (`"{Actor}.{method}"`, the exact
+    // `program.fns` keys `build_rt_select_and_run_symbolic`'s own
+    // `Reloc::Call`-based dispatch chain targets — a sync method's real
+    // compiled body and an async method's real compiled state machine are
+    // both just ordinary `program.fns` entries now, no color-based
+    // special-casing anywhere in this fn). `None` when `boot` is absent or
+    // the build declares no actors — every pre-M6 call site's own
+    // behavior, byte-identical.
+    let runtime_tables: Option<RuntimeTables> = match &boot {
+        Some(b) => compute_runtime_tables(b.graph, b.modules, b.layout_ctx)
+            .map_err(LayoutError::new)?
+            .filter(|t| t.total_bytes > 0),
+        None => None,
+    };
+    let actor_dispatch: Vec<(String, Vec<String>)> = match (&runtime_tables, &boot) {
+        (Some(tables), Some(b)) => {
+            let shapes = merge_actor_pub_methods(b.modules, b.layout_ctx)?;
+            tables
+                .actors
+                .iter()
+                .map(|a| {
+                    let methods = shapes.get(&a.name).cloned().unwrap_or_default();
+                    let keys = methods
+                        .iter()
+                        .map(|m| format!("{}.{}", a.name, m.name))
+                        .collect();
+                    (a.name.clone(), keys)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
 
     let ring_append_asm = build_ring_append(&addrs, 0);
     let ring_append_start = 0usize;
@@ -2661,7 +2915,37 @@ pub fn layout_test_image(
     let mut checkpoint_asm = Asm::new(checkpoint_start);
     checkpoint_asm.push(encode::enc_ret(30));
 
-    let entry_start = checkpoint_start + checkpoint_asm.words.len();
+    // plans/M6.md item D: the runtime-glue routines + boot-init sequence
+    // (module docs on `build_runtime_glue_block`/`build_boot_init` above)
+    // — absent entirely when no actor exists. Built *twice* when present:
+    // once with placeholder (`base=0`) addresses purely to learn the
+    // total word count (`build_runtime_glue_block`'s own doc: word count
+    // never depends on address *values*), which is what lets
+    // `boot_init_start`/`entry_start` — and therefore `entry_asm` itself,
+    // built only once — be fixed before `rtdata_base` is even known; then
+    // again with the real, now-known addresses once `rtdata_base` is
+    // computed below, replacing the placeholder-valued bytes in the final
+    // buffer at the identical word offsets.
+    let glue_start = checkpoint_start + checkpoint_asm.words.len();
+    let (dummy_actor_addrs, state_sizes): (Vec<ActorAddrs>, Vec<u64>) = match &runtime_tables {
+        Some(tables) => (
+            place_actor_addrs(0, tables),
+            tables.actors.iter().map(|a| a.state_size).collect(),
+        ),
+        None => (Vec::new(), Vec::new()),
+    };
+    let (dummy_glue_asms, _) = runtime_tables
+        .as_ref()
+        .map(|tables| {
+            build_runtime_glue_block(tables, &actor_dispatch, &dummy_actor_addrs, glue_start)
+        })
+        .unwrap_or_default();
+    let glue_words_len: usize = dummy_glue_asms.iter().map(|a| a.words.len()).sum();
+    let boot_init_start = glue_start + glue_words_len;
+    let dummy_boot_init_asm = build_boot_init(&dummy_actor_addrs, &state_sizes, boot_init_start);
+    let boot_init_start_opt = runtime_tables.as_ref().map(|_| boot_init_start);
+
+    let entry_start = boot_init_start + dummy_boot_init_asm.words.len();
     let entry_asm = build_entry_driver(
         &addrs,
         entry_start,
@@ -2673,6 +2957,7 @@ pub fn layout_test_image(
         runtime_tests,
         &mut rodata,
         &mut rodata_cursor,
+        boot_init_start_opt,
     );
 
     let mut harness_words: Vec<u32> = Vec::new();
@@ -2685,12 +2970,20 @@ pub fn layout_test_image(
         abort_fixed_asm,
         abort_val_asm,
         checkpoint_asm,
-        entry_asm,
     ] {
         debug_assert_eq!(asm.start, harness_words.len());
         harness_relocs.extend(asm.relocs);
         harness_words.extend(asm.words);
     }
+    debug_assert_eq!(glue_start, harness_words.len());
+    for asm in &dummy_glue_asms {
+        harness_words.extend(asm.words.clone());
+    }
+    debug_assert_eq!(boot_init_start, harness_words.len());
+    harness_words.extend(dummy_boot_init_asm.words.clone());
+    debug_assert_eq!(entry_start, harness_words.len());
+    harness_relocs.extend(entry_asm.relocs.clone());
+    harness_words.extend(entry_asm.words.clone());
 
     // --- place sections: entry(harness), code, rodata? -------------------
     let mut cursor = image_base;
@@ -2708,9 +3001,49 @@ pub fn layout_test_image(
         None
     } else {
         cursor = round_up(cursor, 8);
-        // rodata is this image shape's final section — nothing consumes
-        // the cursor past it, so it is not advanced further here.
         Some(cursor)
+    };
+    if rodata_base.is_some() {
+        cursor += rodata_bytes.len() as u64;
+    }
+
+    // plans/M6.md item C, decision 3: the `rtdata` section, sized exactly
+    // `tables.total_bytes` — this image shape's own final section, mirroring
+    // `layout_program`'s identical convention.
+    let rtdata_base = runtime_tables.as_ref().map(|tables| {
+        cursor = round_up(cursor, 8);
+        let base = cursor;
+        cursor += tables.total_bytes;
+        base
+    });
+
+    // Now that `rtdata_base` is real, rebuild the address-dependent
+    // fragments (glue routines + boot-init) at the identical word offsets
+    // the placeholder pass already reserved — replacing their
+    // placeholder-valued bytes in `harness_words` in place.
+    let glue_symbols: BTreeMap<String, usize> = if let Some(tables) = &runtime_tables {
+        let real_base = rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
+        let real_actor_addrs = place_actor_addrs(real_base, tables);
+        let (real_glue_asms, glue_symbols) =
+            build_runtime_glue_block(tables, &actor_dispatch, &real_actor_addrs, glue_start);
+        let mut w = glue_start;
+        for asm in &real_glue_asms {
+            for word in &asm.words {
+                harness_words[w] = *word;
+                w += 1;
+            }
+        }
+        debug_assert_eq!(w, boot_init_start);
+        let real_boot_init_asm = build_boot_init(&real_actor_addrs, &state_sizes, boot_init_start);
+        let mut w = boot_init_start;
+        for word in &real_boot_init_asm.words {
+            harness_words[w] = *word;
+            w += 1;
+        }
+        debug_assert_eq!(w, entry_start);
+        glue_symbols
+    } else {
+        BTreeMap::new()
     };
 
     let mut sections = vec![
@@ -2730,6 +3063,13 @@ pub fn layout_test_image(
             name: "rodata",
             base: rb,
             size: rodata_bytes.len() as u64,
+        });
+    }
+    if let (Some(rb), Some(tables)) = (rtdata_base, &runtime_tables) {
+        sections.push(Section {
+            name: "rtdata",
+            base: rb,
+            size: tables.total_bytes,
         });
     }
 
@@ -2771,13 +3111,25 @@ pub fn layout_test_image(
         for reloc in &f.relocs {
             match reloc {
                 Reloc::Call { word, key: target } => {
-                    let target_base = *fn_word_base.get(target).ok_or_else(|| {
-                        LayoutError::new(format!(
-                            "internal error: call target `{target}` was never codegen'd"
-                        ))
-                    })?;
+                    // plans/M6.md item D: an async `Send`/`Await{ActorCall}`
+                    // op's own symbolic call target is a per-actor runtime
+                    // glue routine (`glue_symbols`, harness-section-relative)
+                    // rather than an ordinary `program.fns` entry
+                    // (`fn_word_base`, code-section-relative) — checked
+                    // second, never both at once for the same key (the two
+                    // naming schemes, `rt_enqueue_symbol`/`await_actor_symbol`
+                    // vs. plain `Struct.method`, never collide).
                     let this_addr = code_base + ((base + word) * 4) as u64;
-                    let target_addr = code_base + (target_base * 4) as u64;
+                    let target_addr = if let Some(target_base) = fn_word_base.get(target) {
+                        code_base + (*target_base as u64) * 4
+                    } else if let Some(glue_word) = glue_symbols.get(target) {
+                        harness_base + (*glue_word as u64) * 4
+                    } else {
+                        return Err(LayoutError::new(format!(
+                            "internal error: call target `{target}` was never codegen'd or \
+                             registered as a runtime-glue symbol"
+                        )));
+                    };
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::Rodata {
@@ -2825,6 +3177,10 @@ pub fn layout_test_image(
         pad_to(&mut blob, image_base, rb);
         blob.extend_from_slice(&rodata_bytes);
     }
+    if let (Some(rb), Some(tables)) = (rtdata_base, &runtime_tables) {
+        pad_to(&mut blob, image_base, rb);
+        blob.resize(blob.len() + tables.total_bytes as usize, 0);
+    }
 
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
 
@@ -2832,19 +3188,10 @@ pub fn layout_test_image(
         blob,
         entry: harness_base + (entry_start as u64) * 4,
         sections,
-        // `wrela test`'s own CLI path (`bin/wrela.rs`, frozen for this
-        // item) never calls this fn with an `ImageGraph` at all — no
-        // existing `@test(runtime)` golden declares any actor yet, so
-        // this is never a silent narrowing of a real case. The actor
-        // runtime machinery this item adds (`build_rt_enqueue`/
-        // `build_rt_select_and_run`, below) is exercised directly by this
-        // module's own JIT unit tests and by `wrela-vmm`'s conformance
-        // tests, which assemble their own hand-built test images rather
-        // than going through this fn — wiring a real `@test(runtime)`
-        // actor image through this exact CLI path is staged, named work
-        // (plans/M6.md item C's own sub-note), not a silently dropped
-        // case.
-        runtime: None,
+        // plans/M6.md item D: real at last for an actor-bearing test image
+        // (`bin/wrela.rs::test_cmd` now passes a real `BootCtx` — the item-C
+        // sub-note's own "staged, named work" is this commit).
+        runtime: runtime_tables,
     })
 }
 
@@ -3947,5 +4294,120 @@ mod harness_jit {
         let ran = page.call0_at(select_start * 4);
         assert_eq!(ran, 1, "should have dispatched");
         assert_eq!(ram.read_u64(addrs.last_result - base), 42);
+    }
+
+    /// plans/M6.md item D: `build_await_actor_glue`'s own conformance
+    /// proof — the one genuinely new runtime mechanism this item adds
+    /// (`codegen.rs`'s own "Await, simplified" module doc has the full
+    /// design). Real execution (JIT, this module's own established
+    /// oracle), combining a stand-in sync "actor method" with the real
+    /// `rt_enqueue`/`rt_select_and_run` this same fixture already proves
+    /// sound, plus the new glue on top: `rt_enqueue` admits a no-arg
+    /// message, the glue's own drain loop ticks `rt_select_and_run` until
+    /// idle, and the reply it hands back is the dispatched method's own
+    /// real return value read straight out of `last_result` — the exact
+    /// slot item C built but never consumed.
+    #[test]
+    fn await_actor_glue_enqueues_drains_and_returns_the_dispatched_reply() {
+        let capacity: u64 = 4;
+        let slot_size: u64 = 8; // tag only, no args
+        let state_size: u64 = 8;
+        let ram = HostRam::new(4096);
+        let base = ram.base();
+        let addrs = ActorAddrs {
+            state: base,
+            ring: base + state_size,
+            head: base + state_size + capacity * slot_size,
+            tail: base + state_size + capacity * slot_size + 8,
+            count: base + state_size + capacity * slot_size + 16,
+            last_result: base + state_size + capacity * slot_size + 24,
+            busy: base + state_size + capacity * slot_size + 32,
+        };
+        let no_arg_method = vec![encode::enc_movz(0, 42, 0, true), encode::enc_ret(30)];
+
+        let mut combined: Vec<u32> = Vec::new();
+        let method0_start = combined.len();
+        combined.extend(no_arg_method);
+        let enqueue_start = combined.len();
+        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
+        let select_start = combined.len();
+        combined.extend(build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[method0_start],
+            select_start,
+        ));
+        let glue_start = combined.len();
+        let glue_asm = build_await_actor_glue(&addrs, enqueue_start, select_start, glue_start);
+        combined.extend(glue_asm.words);
+
+        let page = ExecPage::new(&combined);
+        let reply = page.call3_at(glue_start * 4, 0, 0, 0);
+        assert_eq!(
+            reply, 42,
+            "the glue's own reply is the target's real dispatched result"
+        );
+        assert_eq!(
+            ram.read_u64(addrs.count - base),
+            0,
+            "the message was fully drained, not left queued"
+        );
+        assert_eq!(
+            ram.read_u64(addrs.busy - base),
+            0,
+            "the target actor is idle again once drained"
+        );
+    }
+
+    /// The same scenario, but for a message carrying one scalar argument —
+    /// proves the glue's own `arg_temps` marshaling path (`codegen.rs`'s
+    /// `emit_marshal_and_call`) reaches the dispatched method correctly
+    /// through the full enqueue -> select -> glue chain, not just the
+    /// no-arg case above.
+    #[test]
+    fn await_actor_glue_carries_one_scalar_argument_through_to_the_dispatched_method() {
+        let capacity: u64 = 4;
+        let slot_size: u64 = 16; // tag + one scalar arg
+        let state_size: u64 = 8;
+        let ram = HostRam::new(4096);
+        let base = ram.base();
+        let addrs = ActorAddrs {
+            state: base,
+            ring: base + state_size,
+            head: base + state_size + capacity * slot_size,
+            tail: base + state_size + capacity * slot_size + 8,
+            count: base + state_size + capacity * slot_size + 16,
+            last_result: base + state_size + capacity * slot_size + 24,
+            busy: base + state_size + capacity * slot_size + 32,
+        };
+
+        let mut combined: Vec<u32> = Vec::new();
+        let method0_start = combined.len();
+        combined.extend(stand_in_method(1)); // x0 = x1(arg0) + 1
+        let enqueue_start = combined.len();
+        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
+        let select_start = combined.len();
+        combined.extend(build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[method0_start],
+            select_start,
+        ));
+        let glue_start = combined.len();
+        let glue_asm = build_await_actor_glue(&addrs, enqueue_start, select_start, glue_start);
+        combined.extend(glue_asm.words);
+
+        // args_ptr must point at real, readable host memory holding the
+        // one arg word `rt_enqueue` will copy — a second small region of
+        // the same host RAM, distinct from the actor's own tables.
+        ram.write_u64(4096 - 8, 41); // arg0 = 41, tucked at the very end of the page
+        let page = ExecPage::new(&combined);
+        let reply = page.call3_at(glue_start * 4, 0, base + 4096 - 8, 1);
+        assert_eq!(
+            reply, 42,
+            "41 + 1, computed inside the real dispatched method"
+        );
     }
 }

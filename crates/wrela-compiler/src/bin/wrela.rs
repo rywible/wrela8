@@ -1011,7 +1011,56 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let codegen_program = match codegen::codegen_program(&mwir_program, &layout_ctx) {
+    // plans/M6.md item D: the async half, alongside the sync one above —
+    // `flowwir_lower::lower_program` never touches a sync fn (decision 2),
+    // so this is additive, never a re-lowering of anything `lower_program`
+    // already covers.
+    let flow_program = match wrela_compiler::flowwir_lower::lower_program(&program) {
+        Ok(p) => p,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!(
+                "error[unimplemented]: the runtime test tier could not lower this program's \
+                 async fns: {}",
+                e.message
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    // The real `ImageGraph`, if this file declares an `@image` (plans/M6.md
+    // item D: the one necessary step `test_cmd` never took before this
+    // item — no actor could ever exist in a runtime-test image otherwise).
+    // Absent `@image`, an empty graph (no actors, `compute_runtime_tables`'s
+    // own "empty -> None" path) — byte-identical to every pre-M6 `wrela
+    // test` golden.
+    let graph = match &program.image_fn {
+        Some(fn_name) => match eval::interp::eval_image(&program, fn_name) {
+            Ok(g) => g,
+            Err(e) => {
+                print_sema_error(&eval::to_sema_error(e));
+                return ExitCode::FAILURE;
+            }
+        },
+        None => eval::image::ImageGraph::default(),
+    };
+    let method_index = match layout::actor_method_index_tables(&modules, &layout_ctx) {
+        Ok(m) => m,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!("error[unimplemented]: {}", e.message);
+            return ExitCode::FAILURE;
+        }
+    };
+    let codegen_program = match codegen::codegen_program_with_async(
+        &mwir_program,
+        &flow_program,
+        &layout_ctx,
+        &method_index,
+    ) {
         Ok(p) => p,
         Err(e) => {
             for l in &comptime_lines {
@@ -1024,7 +1073,13 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let image_layout = match layout::layout_test_image(&codegen_program, &runtime_tests) {
+    let boot = layout::BootCtx {
+        graph: &graph,
+        modules: &modules,
+        layout_ctx: &layout_ctx,
+    };
+    let image_layout = match layout::layout_test_image(&codegen_program, &runtime_tests, Some(boot))
+    {
         Ok(l) => l,
         Err(e) => {
             for l in &comptime_lines {
