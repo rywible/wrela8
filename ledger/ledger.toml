@@ -476,6 +476,12 @@ note = "`comptime assert` (plans/M3.md item D, decision 8: \"`comptime assert` e
 # --- M3: hardening + measurement ---------------------------------------
 
 [[clause]]
+id = "comptime.fstring.bounds"
+doc = "02-language.md#12"
+status = "gap"
+note = "f-string bound computation (the comptime evaluation that sizes an f-string's `String[..N]` result) needs the stdlib `Format` contract, which does not exist until the stdlib milestone (plans/M3.md decision 10's own named gap) — until then every f-string fails closed in sema itself (`sema::bodies`, `error[unimplemented]: f-strings are not checked yet`) before the evaluator could ever see one, so nothing here approximates a bound."
+
+[[clause]]
 id = "comptime.eval.no-panics"
 doc = "04-compiler.md#8"
 status = "test"
