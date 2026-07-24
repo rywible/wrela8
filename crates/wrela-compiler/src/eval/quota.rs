@@ -1,7 +1,9 @@
 //! Comptime evaluation quotas (plans/M3.md decision 6): finite step,
-//! memory, and call-depth budgets. Fixed constants for revision 0.1 —
-//! build profiles (and per-profile quotas) arrive at M4; there is no
-//! wall clock anywhere in this file or its callers.
+//! memory, and call-depth budgets. Fixed constants: 02-language.md §2.1
+//! (revised 2026-07, the no-manifest decision) makes these the
+//! language-defined quotas of revision 0.1 — there is no build
+//! configuration to override them, and no wall clock anywhere in this
+//! file or its callers.
 //!
 //! Every evaluator loop iteration and function/method/init call costs
 //! one step (`tick_step`); every `Value` a construction site
@@ -26,8 +28,10 @@
 /// (now including const evaluation) over the *whole* golden corpus
 /// against one combined threshold (`bench/thresholds.toml`), so a
 /// worst-case quota-exceeding `const` initializer's own runtime has to
-/// stay a small fraction of that budget, not dominate it. Real build
-/// profiles (and their own, more generous quotas) arrive at M4.
+/// stay a small fraction of that budget, not dominate it. Per 02 §2.1
+/// (no build configuration in revision 0.1) these constants are the
+/// quotas; a mechanism to override them arrives only with a
+/// demonstrated need, not with a milestone.
 pub const MAX_STEPS: u64 = 20_000;
 
 /// One evaluation's total `Value`-weight budget (`value::Value::weight`

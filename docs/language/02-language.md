@@ -68,39 +68,28 @@ Declarations are module-private unless `pub`.
 A fixed prelude is always in scope: `Option`, `Some`, `None`, `Result`, `Ok`,
 `Err`, `panic`. Scalar type names are builtin. Everything else is imported.
 
-### 2.1 Manifest
+### 2.1 The build root
 
-`wrela.toml` (schema 1) declares: the package `name`, `version`, and one
-`source_root`; dependencies by local alias (revision 0.1 ships exactly one
-acquirable package, the toolchain `core` component, bound under the reserved
-alias `core`); named build profiles stating only their overrides of
-language-defined defaults; image entries naming module, `@image` function,
-target, and profile; and optional image tests naming a scenario file and
-finite bounds. Unknown fields, duplicate keys, and absolute or parent paths
-are errors. Modules are discovered by a deterministic walk of `source_root`;
-there is no module list and, in revision 0.1, no lockfile.
+There is no manifest. A build is pointed at one source file — the module
+declaring the `@image` function ([§12.1](#121-the-image-constructor)) —
+and everything else is derived. A module's declared path must agree with
+its file path; walking that agreement upward from the root file anchors
+the package root. The build's module graph is the transitive import
+closure of the root — exactly the graph [04 §1](04-compiler.md)'s Closure
+obligations are checked over; an unimported module is not part of the
+build. The toolchain's `core` package resolves under the reserved alias
+`core` with no declaration; revision 0.1 ships no other acquirable
+package, no lockfile, and no package acquisition. The image itself
+declares its name and target, comptime-checked, so no build fact lives
+outside the program.
 
-```toml
-schema = 1
-language = "0.1-design"
-
-[package]
-name = "appliance"
-version = "0.1.0"
-source_root = "src"
-
-[[dependency]]
-alias = "core"
-package = "wrela-core"
-requirement = "=0.1.0"
-
-[[image]]
-name = "appliance"
-module = "appliance.image"
-entry = "image"
-target = "wrela-machine-v1"
-profile = "development"
-```
+Revision 0.1 has no build configuration file of any kind: comptime
+quotas and reporting thresholds are language-defined constants, and
+every build-affecting input — compiler revision, target, quotas, input
+digests — is recorded in the report's build identity
+([04 §7–8](04-compiler.md)). Non-image tools point at files the same
+way (`wrela test file.wr`, stage dumps); their imports resolve by the
+same closure rule.
 
 ## 3. Values and access
 
@@ -801,8 +790,9 @@ A plain `fn` is comptime-callable when its transitive closure is
 deterministic and free of I/O, async/actor operations, and hardware effects;
 legality is inferred (no annotation) and violations are diagnosed with the
 offending call path. Evaluation emulates the **target** (widths, endianness,
-layout) under finite step/memory quotas from the build profile; exceeding a
-quota is a build error with the hottest stack. External inputs enter only as
+layout) under finite language-defined step/memory quotas (fixed constants
+in revision 0.1, recorded in the build identity); exceeding a quota is a
+build error with the hottest stack. External inputs enter only as
 declared content-addressed build inputs. Comptime values become runtime data
 only when they have a concrete target layout; they land in read-only image
 data.
@@ -848,8 +838,8 @@ illegal closure makes it a generated image test booted on the digest-pinned
 wrela machine runner — the VMM itself ([06](06-machine.md)) — with
 statically bounded frames, events, output, and timeouts. Image-level
 scenarios (console send/expect, input events, golden-frame digests,
-shutdown, exit) are declared in the manifest. There is no hosted or mocked
-test target.
+shutdown, exit) are declared in scenario files supplied to the runner
+invocation. There is no hosted or mocked test target.
 
 `@test(exhaustive)` on a comptime-legal `fn` with parameters enumerates the
 fn's entire input domain and runs the body once per case, each under its own

@@ -241,8 +241,9 @@ new epoch that invalidates all prior receipts. Each fallible transition
 **consumes** its input state and, on failure, routes the underlying
 capability to its restart provision internally — so a driver `init` is a
 straight line of `?`-propagating consuming calls with no cleanup
-choreography of its own. The manifest declares required features; boot still
-negotiates the real device.
+choreography of its own. The image declares required features
+(`img.device`, [05 §9](05-library.md)); boot still negotiates the real
+device.
 
 Once published, a virtio request cannot generally be retracted, so cancelling
 in-flight work is a driver protocol, not a dropped future: the receipt moves

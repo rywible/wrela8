@@ -25,8 +25,9 @@ have proven bounds; unbounded recursion in either the sync or async call
 graph is
 rejected; forced promotions to image lifetime are reported, and rejected
 under `@no_promote` or an unaccounted hard `@budget`. Every data copy is
-priced by the target cost model — copies above the profile threshold are
-reported, and a hard `@budget` makes them errors; cost visibility is this
+priced by the target cost model — copies above the reporting threshold (a
+language-defined constant in revision 0.1) are reported, and a hard
+`@budget` makes them errors; cost visibility is this
 chapter's obligation, not a syntax rule. A returned literal or an `init`
 body constructs in place: elision into the destination is guaranteed, never
 best-effort, so no aggregate is moved by being built.
@@ -235,8 +236,8 @@ verified part of that build.
 ## 7. The image report
 
 Every successful build emits a machine-readable report and a summary. At
-minimum: build identity (compiler, revision, target, profile, digests of
-every input); memory by owner and site with peak ceiling; every promotion
+minimum: build identity (compiler, revision, target, the build-affecting
+constants — quotas, thresholds — and digests of every input); memory by owner and site with peak ceiling; every promotion
 with its why-chain; per-actor mailbox logical capacity and physical bytes;
 frame slot counts, sizes, and overlays; stack bounds (executor, ISR, fault);
 pool capacities (image and scoped) with reclaim destinations and restart
@@ -245,7 +246,7 @@ queue shapes and maximum in-flight operations; every logical actor edge and
 its physical lowering (queued / direct / forwarded / fused); checkpoint
 sites and proven elisions; maximum interrupt-masked interval; receipt
 handoff edges with their recovery nodes; every data copy above the
-profile's reporting threshold, with site and size; baked artifact hashes;
+reporting threshold, with site and size; baked artifact hashes;
 and code and data size by owner.
 
 Tooling (hover, expanded views) must display inferred facts wherever source
@@ -273,8 +274,8 @@ warning[performance]: loop may perform 4096 cross-actor turns per request
 
 ## 8. Reproducibility and phases
 
-Identical declared inputs, compiler revision, machine revision, profile,
-and quotas produce a byte-for-byte identical unsigned image and report. No
+Identical declared inputs, compiler revision, machine revision, and
+quotas produce a byte-for-byte identical unsigned image and report. No
 timestamps, host paths, or undeclared environment data enter the artifact.
 Pure comptime results may be cached content-addressed; a hit must be
 observationally identical to evaluation. The same discipline extends to the
