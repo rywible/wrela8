@@ -29,5 +29,6 @@
 //! with it on every pure program.
 
 pub mod eval;
+pub mod loader;
 pub mod sema;
 pub mod syntax;

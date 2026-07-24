@@ -1,0 +1,3 @@
+module app.a
+
+pub const X: u64 = 1

@@ -25,7 +25,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::sema::{SemaError, unimplemented_at};
+use crate::sema::SemaError;
+use crate::sema::imports::ImportBindings;
 use crate::syntax::ast::*;
 
 /// The module item table: declared name -> declaring span. `BTreeMap`
@@ -66,42 +67,54 @@ fn item_name(item: &Item) -> Option<(&str, Span)> {
     }
 }
 
-/// Pass 2: name resolution. Imports fail closed first (decision 7,
-/// 02-language.md §2 — "single file, whole program", plans/M2.md
-/// decision 6): the first `from ... import ...` in the file, if any, is
-/// the pass's first and only diagnostic, before any item is resolved
-/// (source order: imports always precede every item in `Module`).
-pub fn resolve(module: &Module, symtab: &SymbolTable) -> Result<(), SemaError> {
-    if let Some(import) = module.imports.first() {
-        return Err(unimplemented_at("imports are", import.span));
-    }
+/// Pass 2: name resolution (plans/M4.md item A, decision 2: whole-
+/// program import resolution replaces the old "imports fail closed"
+/// stub — `imports` is this module's own already-resolved
+/// `sema::imports::ImportBindings`, empty for every single-module
+/// caller that has no closure to resolve against (the plain `check`/
+/// `check_typed` entry, the fuzzer, `specialize.rs`'s const skeleton),
+/// so a module with no real imports resolves byte-identically to
+/// before this item (existing goldens are not affected either way).
+pub fn resolve(
+    module: &Module,
+    symtab: &SymbolTable,
+    imports: &ImportBindings,
+) -> Result<(), SemaError> {
     for item in &module.items {
-        resolve_item(item, symtab)?;
+        resolve_item(item, symtab, imports)?;
     }
     Ok(())
 }
 
-fn resolve_item(item: &Item, symtab: &SymbolTable) -> Result<(), SemaError> {
+fn resolve_item(
+    item: &Item,
+    symtab: &SymbolTable,
+    imports: &ImportBindings,
+) -> Result<(), SemaError> {
     match item {
-        Item::Const(c) => resolve_const(c, symtab),
-        Item::Fn(f) => resolve_fn(f, symtab),
-        Item::Struct(s) => resolve_struct(s, symtab),
-        Item::Enum(e) => resolve_enum(e, symtab),
+        Item::Const(c) => resolve_const(c, symtab, imports),
+        Item::Fn(f) => resolve_fn(f, symtab, imports),
+        Item::Struct(s) => resolve_struct(s, symtab, imports),
+        Item::Enum(e) => resolve_enum(e, symtab, imports),
         Item::Pool(_) => Ok(()),
         Item::ComptimeIf(_) => Ok(()), // comptime evaluation is item C's job
     }
 }
 
-fn resolve_const(c: &ConstItem, symtab: &SymbolTable) -> Result<(), SemaError> {
-    let mut r = Resolver::new(symtab);
+fn resolve_const(
+    c: &ConstItem,
+    symtab: &SymbolTable,
+    imports: &ImportBindings,
+) -> Result<(), SemaError> {
+    let mut r = Resolver::new(symtab, imports);
     if let Some(ty) = &c.ty {
         r.resolve_type(ty)?;
     }
     r.resolve_expr(&c.value)
 }
 
-fn resolve_fn(f: &FnItem, symtab: &SymbolTable) -> Result<(), SemaError> {
-    let mut r = Resolver::new(symtab);
+fn resolve_fn(f: &FnItem, symtab: &SymbolTable, imports: &ImportBindings) -> Result<(), SemaError> {
+    let mut r = Resolver::new(symtab, imports);
     r.resolve_signature(&f.generics, f.receiver.as_ref(), &f.params, f.ret.as_ref())?;
     if let Some(body) = &f.body {
         r.resolve_stmts(body)?;
@@ -112,11 +125,15 @@ fn resolve_fn(f: &FnItem, symtab: &SymbolTable) -> Result<(), SemaError> {
 /// A struct's own generics are visible to every member (fields, methods,
 /// `init`) — each member gets a fresh `Resolver` seeded with them, since
 /// members share no locals with one another.
-fn resolve_struct(s: &StructItem, symtab: &SymbolTable) -> Result<(), SemaError> {
+fn resolve_struct(
+    s: &StructItem,
+    symtab: &SymbolTable,
+    imports: &ImportBindings,
+) -> Result<(), SemaError> {
     for m in &s.members {
         match m {
             Member::Field(field) => {
-                let mut r = Resolver::new(symtab);
+                let mut r = Resolver::new(symtab, imports);
                 for g in &s.generics {
                     r.introduce_generic(g)?;
                 }
@@ -126,7 +143,7 @@ fn resolve_struct(s: &StructItem, symtab: &SymbolTable) -> Result<(), SemaError>
                 }
             }
             Member::Fn(f) => {
-                let mut r = Resolver::new(symtab);
+                let mut r = Resolver::new(symtab, imports);
                 for g in &s.generics {
                     r.introduce_generic(g)?;
                 }
@@ -136,7 +153,7 @@ fn resolve_struct(s: &StructItem, symtab: &SymbolTable) -> Result<(), SemaError>
                 }
             }
             Member::Init(i) => {
-                let mut r = Resolver::new(symtab);
+                let mut r = Resolver::new(symtab, imports);
                 for g in &s.generics {
                     r.introduce_generic(g)?;
                 }
@@ -150,9 +167,13 @@ fn resolve_struct(s: &StructItem, symtab: &SymbolTable) -> Result<(), SemaError>
     Ok(())
 }
 
-fn resolve_enum(e: &EnumItem, symtab: &SymbolTable) -> Result<(), SemaError> {
+fn resolve_enum(
+    e: &EnumItem,
+    symtab: &SymbolTable,
+    imports: &ImportBindings,
+) -> Result<(), SemaError> {
     for v in &e.variants {
-        let mut r = Resolver::new(symtab);
+        let mut r = Resolver::new(symtab, imports);
         for g in &e.generics {
             r.introduce_generic(g)?;
         }
@@ -184,16 +205,20 @@ fn resolve_enum(e: &EnumItem, symtab: &SymbolTable) -> Result<(), SemaError> {
 type Scope = BTreeMap<String, Span>;
 
 /// One function-like unit's resolution state: the module item table
-/// (read-only, shared) plus the scope stack it is walking.
+/// (read-only, shared), this module's own resolved import bindings
+/// (plans/M4.md item A — empty outside a real closure), plus the scope
+/// stack it is walking.
 struct Resolver<'a> {
     symtab: &'a SymbolTable,
+    imports: &'a ImportBindings,
     scopes: Vec<Scope>,
 }
 
 impl<'a> Resolver<'a> {
-    fn new(symtab: &'a SymbolTable) -> Self {
+    fn new(symtab: &'a SymbolTable, imports: &'a ImportBindings) -> Self {
         Resolver {
             symtab,
+            imports,
             scopes: vec![Scope::new()],
         }
     }
@@ -240,14 +265,23 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolves a read-position identifier — a local in the current or
-    /// any enclosing scope, a module declaration, or the prelude
-    /// (02-language.md §3.2, §2). Also used for type names in
-    /// annotations, per the item A brief (item B refines type checking).
+    /// any enclosing scope, a module declaration, an imported name
+    /// (plans/M4.md item A), or the prelude (02-language.md §3.2, §2).
+    /// Also used for type names in annotations, per the item A brief
+    /// (item B refines type checking; item A of M4 does not extend
+    /// `types::declare`'s own type-name resolution to imports — an
+    /// imported `struct`/`enum` name used *as a type annotation* still
+    /// resolves here but fails at `declare` with the ordinary
+    /// `error[type]: unknown type`, a real, narrow, reported scope gap,
+    /// not a silent wrong answer).
     fn resolve_name(&self, name: &str, span: Span) -> Result<(), SemaError> {
         if self.scopes.iter().any(|s| s.contains_key(name)) {
             return Ok(());
         }
         if self.symtab.contains_key(name) {
+            return Ok(());
+        }
+        if self.imports.contains_key(name) {
             return Ok(());
         }
         if super::prelude::is_builtin(name) {

@@ -12,9 +12,12 @@
 //! sampling, no counters, just a clock a batch pipeline already has phase
 //! boundaries for.
 
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use wrela_compiler::loader;
 use wrela_compiler::sema;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
@@ -184,9 +187,37 @@ fn dump(args: &[String]) -> ExitCode {
                 // artifact-production step.
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) => match sema::check(&module, &path) {
+                    // plans/M4.md item A: a module with no imports keeps
+                    // the exact single-file path (byte-identical to
+                    // before this item — the hard constraint every
+                    // existing goldens depends on); a module with any
+                    // import loads its whole closure through the loader
+                    // instead, since resolving even one import needs the
+                    // package root and every module it reaches.
+                    Ok(module) if module.imports.is_empty() => match sema::check(&module, &path) {
                         Ok(()) => print!("{}", sema::dump(&module)),
                         Err(e) => print_sema_error(&e),
+                    },
+                    Ok(_) => match loader::load_closure(Path::new(&path)) {
+                        Ok(program) => {
+                            let paths: BTreeMap<Vec<String>, String> = program
+                                .modules
+                                .iter()
+                                .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                                .collect();
+                            let modules: BTreeMap<Vec<String>, _> = program
+                                .modules
+                                .into_iter()
+                                .map(|(k, m)| (k, m.module))
+                                .collect();
+                            match sema::check_program(&modules, &paths) {
+                                Ok(()) => print!("{}", sema::dump_program(&modules)),
+                                Err(e) => print_sema_error(&e),
+                            }
+                        }
+                        Err(loader::LoadError::Lex(e)) => print_lex_error(&e),
+                        Err(loader::LoadError::Parse(e)) => print_parse_error(&e),
+                        Err(loader::LoadError::Build(e)) => print_sema_error(&e),
                     },
                     Err(e) => print_parse_error(&e),
                 }

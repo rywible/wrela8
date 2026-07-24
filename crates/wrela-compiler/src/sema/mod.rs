@@ -24,6 +24,7 @@ pub mod access;
 pub mod bodies;
 pub mod flow;
 pub mod generics;
+pub mod imports;
 pub mod matches;
 pub mod paths;
 pub mod prelude;
@@ -31,6 +32,8 @@ pub mod specialize;
 pub mod symbols;
 pub mod typed;
 pub mod types;
+
+use std::collections::BTreeMap;
 
 use crate::syntax::ast::{Module, Span};
 
@@ -69,7 +72,10 @@ pub struct SemaError {
 }
 
 impl SemaError {
-    fn at(category: &'static str, message: String, span: Span) -> SemaError {
+    /// `pub(crate)` (plans/M4.md item A): `loader.rs` (the new `build`
+    /// category) and `sema::imports` construct `SemaError`s directly,
+    /// same as every existing pass in this module.
+    pub(crate) fn at(category: &'static str, message: String, span: Span) -> SemaError {
         SemaError {
             category,
             message,
@@ -157,7 +163,7 @@ pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
 pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, SemaError> {
     let specialized = specialize::specialize(module)?;
     let symtab = symbols::collect(&specialized)?;
-    symbols::resolve(&specialized, &symtab)?;
+    symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
     let decl_items = types::declare(&specialized)?;
     let mctx = bodies::build_module_ctx(&specialized, &decl_items);
     let mut program = bodies::check(&specialized, &decl_items, &mctx)?;
@@ -196,5 +202,178 @@ pub fn dump(module: &Module) -> String {
     let effects = access::infer_effects(&specialized, &decl_items);
     let mut out = format!("Module path={}\n", specialized.path.join("."));
     types::render_items(&decl_items, &effects, &mut out);
+    out
+}
+
+/// The whole-program entry (plans/M4.md item A, decision 2): `modules`
+/// is `crate::loader::load_closure`'s own output (module address ->
+/// file + parsed `Module`, already in BTree order by construction), and
+/// `paths` gives each module's own file path string for
+/// `generics::check`'s requirement-chain diagnostic (mirrors
+/// `check_typed`'s own `path` parameter, one file per chain there —
+/// each module here is exactly that "one file" for its own chain).
+///
+/// Four whole-program passes, then the existing per-module pipeline:
+///
+/// 1. `specialize` every module independently (comptime-if expansion
+///    never needs another module — `specialize.rs`'s own const skeleton
+///    already always resolves with zero imports, so this is unaffected
+///    either way).
+/// 2. `symbols::collect` + this item's own `imports::public_names` for
+///    every module — decision 2's "global symbol table: module path ->
+///    public names".
+/// 3. `imports::resolve_imports` per module against that whole-program
+///    table (missing name / non-pub / collision; a missing *module*
+///    cannot happen here — `crate::loader` already guaranteed every
+///    imported module path is a key of `modules`).
+/// 4. The existing single-module pipeline — `symbols::resolve` (now
+///    with imports bound), `types::declare`, `bodies::build_module_ctx`
+///    — runs per module, exactly unchanged from `check_typed` above.
+///
+/// Then the **splice**: every import binding copies its target's
+/// already-built `fn`/`const`/`struct`/`enum` entry from the exporting
+/// module's own, completely independent `ModuleCtx` into the importing
+/// module's, under the (possibly aliased) local name — read-only reuse
+/// of another module's already-finished output, never a re-check (the
+/// importing module's own `bodies::check` only ever walks *its own*
+/// `module.items`, never `mctx.fns`/`consts`/`structs`/`enums`
+/// directly, so a spliced entry is available for a call/field-
+/// access/construction lookup but is never independently re-checked).
+/// This is exactly what makes import cycles free (decision 3): each
+/// module's own `declare`/`build_module_ctx` needs nothing from any
+/// other module to run to completion; only the splice afterward reads
+/// another module's already-finished output, and by the time it runs,
+/// every module's own output already exists regardless of which one
+/// imports which.
+///
+/// This item's own scope line: an imported `const`/`fn` is fully usable
+/// as a *value* (called, referenced) via the splice above, and an
+/// imported `struct`/`enum` is fully usable as a value too (constructed,
+/// field-accessed) via the same mechanism — but `types::declare`'s own
+/// type-name table stays module-local, so writing an imported
+/// `struct`/`enum` name as an explicit *type annotation* (a fn
+/// param/return, a struct field, a `const`'s own declared type) still
+/// fails with the ordinary `error[type]: unknown type` (a real, narrow,
+/// reported gap: see this module's own report for the full reasoning,
+/// not a silent wrong answer either way).
+///
+/// Finally, the rest of the existing per-module pipeline —
+/// `bodies::check`/`access::check`/`flow::check`/`matches::check`/
+/// `generics::check`/`eval::check_comptime` — runs per module, in
+/// `modules`'s own BTree order (decision 2's "one deterministic batch"),
+/// fail-fast: the first module (BTree order) to raise a diagnostic wins,
+/// exactly mirroring the existing single-module "first error in pass
+/// order, source order within a pass" discipline one level up.
+pub fn check_program(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+) -> Result<(), SemaError> {
+    let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
+    for (key, module) in modules {
+        specialized.insert(key.clone(), specialize::specialize(module)?);
+    }
+
+    let mut symtabs: BTreeMap<Vec<String>, symbols::SymbolTable> = BTreeMap::new();
+    let mut exports = imports::Exports::new();
+    for (key, module) in &specialized {
+        let table = symbols::collect(module)?;
+        let public = imports::public_names(module);
+        exports.insert(
+            key.clone(),
+            imports::ModuleExports {
+                all: table.clone(),
+                public,
+            },
+        );
+        symtabs.insert(key.clone(), table);
+    }
+
+    let mut bindings: BTreeMap<Vec<String>, imports::ImportBindings> = BTreeMap::new();
+    for (key, module) in &specialized {
+        let b = imports::resolve_imports(module, &symtabs[key], &exports)?;
+        bindings.insert(key.clone(), b);
+    }
+
+    let mut decl_items_map: BTreeMap<Vec<String>, Vec<types::DeclItem>> = BTreeMap::new();
+    let mut mctxs: BTreeMap<Vec<String>, bodies::ModuleCtx> = BTreeMap::new();
+    for (key, module) in &specialized {
+        symbols::resolve(module, &symtabs[key], &bindings[key])?;
+        let decl_items = types::declare(module)?;
+        let mctx = bodies::build_module_ctx(module, &decl_items);
+        decl_items_map.insert(key.clone(), decl_items);
+        mctxs.insert(key.clone(), mctx);
+    }
+
+    // Splice (order-independent — every mctx above is already fully
+    // built, so which module imports which does not matter here).
+    let splices: Vec<(Vec<String>, String, Vec<String>, String)> = bindings
+        .iter()
+        .flat_map(|(key, bs)| {
+            bs.iter().map(move |(local, b)| {
+                (
+                    key.clone(),
+                    local.clone(),
+                    b.target_module.clone(),
+                    b.target_name.clone(),
+                )
+            })
+        })
+        .collect();
+    for (key, local, target_module, target_name) in splices {
+        let (fn_entry, const_entry, const_val_entry, struct_entry, enum_entry) = {
+            let src = &mctxs[&target_module];
+            (
+                src.fns.get(&target_name).cloned(),
+                src.consts.get(&target_name).cloned(),
+                src.const_values.get(&target_name).cloned(),
+                src.structs.get(&target_name).cloned(),
+                src.enums.get(&target_name).cloned(),
+            )
+        };
+        let dst = mctxs.get_mut(&key).expect("key is a key of mctxs");
+        if let Some(f) = fn_entry {
+            dst.fns.insert(local.clone(), f);
+        }
+        if let Some(c) = const_entry {
+            dst.consts.insert(local.clone(), c);
+            if let Some(v) = const_val_entry {
+                dst.const_values.insert(local.clone(), v);
+            }
+        }
+        if let Some(s) = struct_entry {
+            dst.structs.insert(local.clone(), s);
+        }
+        if let Some(e) = enum_entry {
+            dst.enums.insert(local, e);
+        }
+    }
+
+    for (key, module) in &specialized {
+        let decl_items = &decl_items_map[key];
+        let mctx = &mctxs[key];
+        let mut program = bodies::check(module, decl_items, mctx)?;
+        access::check(module, decl_items, mctx)?;
+        flow::check(module, decl_items, mctx)?;
+        matches::check(module, decl_items, mctx)?;
+        let empty_path = String::new();
+        let path = paths.get(key).unwrap_or(&empty_path);
+        program.instantiations = generics::check(module, decl_items, mctx, path)?;
+        crate::eval::check_comptime(&program)?;
+    }
+
+    Ok(())
+}
+
+/// The multi-module `--stage=check` dump (plans/M4.md item A): every
+/// module's own dump (`dump` above, unchanged), concatenated in
+/// `modules`'s own BTree order — an imported name is bound, never
+/// declared, so it never appears in *its importer's* own block, exactly
+/// like the single-module dump already never mentions an import
+/// statement at all.
+pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> String {
+    let mut out = String::new();
+    for module in modules.values() {
+        out.push_str(&dump(module));
+    }
     out
 }

@@ -1,0 +1,3 @@
+module app.lib.constants
+
+pub const LIMIT: u64 = 100

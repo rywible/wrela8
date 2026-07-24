@@ -1,0 +1,1 @@
+error[name]: import `X` is bound more than once at 4:19

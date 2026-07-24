@@ -1,0 +1,7 @@
+Module path=app.lib.constants
+  Const LIMIT: u64
+Module path=app.main
+  Fn compute(x: read u64) -> u64
+Module path=app.util
+  Fn double(x: read u64) -> u64
+  Fn secret(x: read u64) -> u64

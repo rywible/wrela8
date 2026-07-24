@@ -1,0 +1,4 @@
+module app.util
+
+pub fn real() -> u64:
+    return 1

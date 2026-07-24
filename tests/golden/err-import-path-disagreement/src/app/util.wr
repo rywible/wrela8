@@ -1,0 +1,4 @@
+module app.util
+
+pub fn helper() -> u64:
+    return 1

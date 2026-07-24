@@ -184,7 +184,13 @@ impl StructInfo {
 }
 
 /// One top-level fn's ast (params/defaults/generics/attrs/body) plus its
-/// resolved declaration.
+/// resolved declaration. `Clone` (plans/M4.md item A): the multi-module
+/// entry (`sema::check_program`) splices an *already-built* `FnInfo`
+/// straight from the exporting module's own independent `ModuleCtx`
+/// into an importing module's, under the (possibly aliased) local name
+/// — a plain, owned copy, never a re-check (see that function's own doc
+/// comment for why this is sound even across an import cycle).
+#[derive(Clone)]
 pub(crate) struct FnInfo {
     pub(crate) ast: ast::FnItem,
     pub(crate) decl: types::DeclFn,

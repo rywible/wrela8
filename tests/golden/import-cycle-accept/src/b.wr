@@ -1,0 +1,9 @@
+module b
+
+from a import from_a
+
+pub fn from_b(x: u64) -> u64:
+    return x * 2
+
+pub fn use_a(x: u64) -> u64:
+    return from_a(x)

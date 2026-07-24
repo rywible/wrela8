@@ -360,7 +360,11 @@ fn build_const_skeleton(
         items,
     };
     let symtab = symbols::collect(&skeleton_module)?;
-    symbols::resolve(&skeleton_module, &symtab)?;
+    symbols::resolve(
+        &skeleton_module,
+        &symtab,
+        &crate::sema::imports::ImportBindings::new(),
+    )?;
     let decl_items = types::declare(&skeleton_module)?;
     let mctx = bodies::build_module_ctx(&skeleton_module, &decl_items);
     let program = bodies::check(&skeleton_module, &decl_items, &mctx)?;

@@ -1,0 +1,6 @@
+module app.main
+
+from app.nope import X
+
+pub fn f() -> u64:
+    return 1

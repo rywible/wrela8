@@ -1,0 +1,1 @@
+error[build]: module `app.main` disagrees with its file path: expected the file name `main.wr`, found `tests/golden/err-import-path-disagreement/src/app/other.wr` at 1:1

@@ -1,0 +1,1 @@
+error[name]: import `X` collides with a local declaration at 3:22

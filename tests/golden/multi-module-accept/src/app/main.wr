@@ -1,0 +1,7 @@
+module app.main
+
+from app.util import double as twice
+from app.lib.constants import LIMIT
+
+pub fn compute(x: u64) -> u64:
+    return twice(x) + LIMIT

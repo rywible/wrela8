@@ -1,0 +1,7 @@
+module app.util
+
+pub fn double(x: u64) -> u64:
+    return x * 2
+
+fn secret(x: u64) -> u64:
+    return x + 1

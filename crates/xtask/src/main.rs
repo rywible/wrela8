@@ -1016,6 +1016,12 @@ const SEMA_CATEGORIES: &[&str] = &[
     "generic",
     "unimplemented",
     "comptime",
+    // plans/M4.md item A: the loader's own diagnostics (root-file/
+    // module-path disagreement, a missing file for an imported module
+    // path) — deliberately added, not discovered by the fuzzer (the
+    // fuzzer never drives the loader; it exercises `sema::check`
+    // directly on a single fuzzed file).
+    "build",
 ];
 
 /// One full run of the pipeline the sema fuzzer exercises: lex, then (on
@@ -1794,6 +1800,34 @@ fn fuzz_eval_smoke() -> Result<(), String> {
 //
 // Layout: tests/golden/<case>/input.wr + expected/<stage>.txt. Each
 // expected file pins `wrela dump --stage=<stage> input.wr` byte-for-byte.
+//
+// plans/M4.md item A adds one more case shape, a *project*: a case dir
+// containing `src/` (a package tree of `.wr` files), a file `root` (one
+// line: the root file's path relative to the case dir, e.g.
+// `src/app/main.wr`), and `expected/` exactly like today. The runner
+// tells the two shapes apart by `root`'s presence — `root` names the
+// file `wrela dump`/`wrela test` is actually invoked on in place of the
+// flat shape's `input.wr`; everything else (stage dispatch, `test.txt`'s
+// touch convention, `--update`) is identical. The loader (`wrela dump
+// --stage=check`, plans/M4.md item A) anchors the package root from
+// that file's own path alone — no new flag.
+fn golden_case_target(case: &Path) -> Result<Option<PathBuf>, String> {
+    let root_marker = case.join("root");
+    if root_marker.is_file() {
+        let rel = std::fs::read_to_string(&root_marker)
+            .map_err(|e| format!("read {}: {e}", root_marker.display()))?;
+        let rel = rel.trim();
+        if rel.is_empty() {
+            return Err(format!("{}: `root` file is empty", root_marker.display()));
+        }
+        return Ok(Some(case.join(rel)));
+    }
+    let input = case.join("input.wr");
+    if input.exists() {
+        return Ok(Some(input));
+    }
+    Ok(None)
+}
 
 fn golden(update: bool) -> Result<(), String> {
     run(
@@ -1805,12 +1839,17 @@ fn golden(update: bool) -> Result<(), String> {
     let mut cases = 0usize;
     let mut failures = Vec::new();
     for case in golden_case_dirs(&golden_dir)? {
-        let input = case.join("input.wr");
         let expected_dir = case.join("expected");
-        if !input.exists() || !expected_dir.is_dir() {
-            failures.push(format!("{}: missing input.wr or expected/", case.display()));
-            continue;
-        }
+        let input = match golden_case_target(&case)? {
+            Some(target) if target.exists() && expected_dir.is_dir() => target,
+            _ => {
+                failures.push(format!(
+                    "{}: missing input.wr (or `root`'s target) or expected/",
+                    case.display()
+                ));
+                continue;
+            }
+        };
         let mut expected_files: Vec<_> = std::fs::read_dir(&expected_dir)
             .map_err(|e| format!("read {}: {e}", expected_dir.display()))?
             .filter_map(Result::ok)

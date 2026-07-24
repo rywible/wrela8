@@ -1,0 +1,6 @@
+module app.main
+
+from core import time
+
+pub fn f() -> u64:
+    return 1

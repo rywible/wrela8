@@ -1,0 +1,8 @@
+module app.main
+
+from app.util import X
+
+pub const X: u64 = 2
+
+pub fn f() -> u64:
+    return X

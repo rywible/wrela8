@@ -1,0 +1,7 @@
+module app.main
+
+from app.a import X
+from app.b import X
+
+pub fn f() -> u64:
+    return X

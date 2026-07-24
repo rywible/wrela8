@@ -1,6 +1,0 @@
-module examples.err_import
-
-from core.bytes import Bytes
-
-fn use_it(x: Bytes) -> Bytes:
-    return x
