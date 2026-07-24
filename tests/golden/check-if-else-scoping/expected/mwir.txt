@@ -1,0 +1,17 @@
+Program
+  Fn key=conditional_use ret=u64 temps=5 params=[t0]
+    Temp t0 ty=bool
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Body
+      0000: JumpIfFalse cond=t0 target=0005
+      0001: ConstInt dst=t1 ty=u64 value=1
+      0002: Copy dst=t2 src=t1
+      0003: Return value=t2
+      0004: Jump target=0008
+      0005: ConstInt dst=t3 ty=u64 value=2
+      0006: Copy dst=t4 src=t3
+      0007: Return value=t4
+      0008: Return

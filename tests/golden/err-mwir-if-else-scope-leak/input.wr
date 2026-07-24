@@ -30,6 +30,22 @@ module examples.err_mwir_if_else_scope_leak
 # check_typed-accepted program" internal guard fires — proof this is a
 # sema-level over-acceptance bug, not a lowering gap: lowering's own
 # scoping is the one behaving correctly here.
+#
+# Fixed (ledger `sema.init.definite`): `sema::symbols::Resolver` and
+# `sema::bodies::FnCtx` (and their own re-walking mirrors in `flow.rs`/
+# `matches.rs`) now push a real scope per `if`/`elif`/`else` branch,
+# `while`/`for` body, and `match` arm (`bodies::scoped`) — exactly as
+# this comment predicted, `value` no longer resolves past the `if`/
+# `else`, so the whole fn is now rejected at `sema::symbols::resolve`,
+# before `bodies`/`flow`/`lower` ever run (see `expected/check.txt`).
+# `expected/typed.txt` and `expected/mwir.txt` are now the same "unknown
+# name" diagnostic, one per stage this golden dumps, since the pipeline
+# is fail-fast — kept as separate files rather than pruning the pin down
+# to `check.txt` alone, so a future regression that made *any* of these
+# three stages diverge from the others would still show up as a golden
+# diff. See also `check-if-else-scoping` (the accepted sibling case: same
+# name, used only within each branch) and `err-scope-use-after-if` (the
+# same rejection, minimized further).
 pub fn conditional_init(cond: bool) -> u64:
     if cond:
         value: u64 = 1

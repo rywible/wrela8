@@ -13,10 +13,11 @@ resource struct Handle:
         self.packet = take packet
 
 pub fn conditional_init(cond: bool) -> u64:
+    value: u64 = 0
     if cond:
-        value: u64 = 1
+        value = 1
     else:
-        value: u64 = 2
+        value = 2
     return value
 
 pub fn inspect_packet(p: Packet) -> u64:

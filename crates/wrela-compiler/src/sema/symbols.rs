@@ -194,14 +194,23 @@ fn resolve_enum(
     Ok(())
 }
 
-/// One local name scope: a flat map for the current lexical level. Only a
-/// closure (`ClosureExpr`) pushes a new one — `if`/`elif`/`else`/`while`/
-/// `for`/`match` arms all write into the innermost scope directly.
+/// One local name scope: a flat map for the current lexical level. A
+/// closure (`ClosureExpr`) pushes a new one, and so does every
+/// `if`/`elif`/`else` branch, `while`/`for` body, and `match` arm
+/// (`resolve_stmts_scoped`) — a *typed* declaration (`name: T = value`)
+/// made inside one of those is scoped to it alone and must not resolve
+/// afterward (err-mwir-if-else-scope-leak: two sibling branches each
+/// declaring their own `value: u64` were wrongly treated as the same
+/// binding). A *plain*, untyped assignment (`name = value`) is the
+/// arm-merge idiom instead (02-language.md §8.1) and is introduced via
+/// `reassign_or_introduce`, which searches outward across these same
+/// pushed scopes so a name conditionally set in every arm still resolves
+/// once the construct closes.
 /// Whether a name introduced on one control-flow path is *definitely*
-/// bound on every other is the flow pass's job (items E/F: definite
-/// initialization — 02-language.md §3.2), not name resolution's; a name
-/// only needs to exist lexically somewhere in the enclosing function (or
-/// an outer closure) to resolve here.
+/// bound on every other (the untyped case) is the flow pass's job (items
+/// E/F: definite initialization — 02-language.md §3.2), not name
+/// resolution's; a name only needs to exist in some scope still on the
+/// stack to resolve here.
 type Scope = BTreeMap<String, Span>;
 
 /// One function-like unit's resolution state: the module item table
@@ -252,6 +261,40 @@ impl<'a> Resolver<'a> {
         }
         self.scopes[last].insert(name.to_string(), span);
         Ok(())
+    }
+
+    /// A plain (untyped) assignment target, `name = value` — the
+    /// arm-merge idiom (02-language.md §8.1), never a shadow error: a
+    /// name already bound in *any* scope still on the stack (an outer
+    /// function-level local, or a sibling branch's own scope while that
+    /// branch is still open — the two-arms-of-one-`if` case, not a
+    /// *different*, already-closed sibling, since its scope has already
+    /// been popped by the time this one runs) is reused as a
+    /// reassignment; otherwise this is the first occurrence anywhere and
+    /// introduces a fresh binding, scoped to wherever it textually is
+    /// (the innermost open scope) — same as a typed declaration, since
+    /// nothing merges a name that was never bound outside the one branch
+    /// that first assigned it.
+    fn reassign_or_introduce(&mut self, name: &str, span: Span) {
+        if self.scopes.iter().any(|s| s.contains_key(name)) {
+            return;
+        }
+        let last = self.scopes.len() - 1;
+        self.scopes[last].insert(name.to_string(), span);
+    }
+
+    /// Runs `f` with a fresh innermost scope pushed for one `if`/`elif`/
+    /// `else` branch, `while`/`for` body, or `match` arm — always popped
+    /// again, even on error (`mod.rs::check_program`'s multi-module walk
+    /// keeps going after one body errors).
+    fn scoped(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<(), SemaError>,
+    ) -> Result<(), SemaError> {
+        self.push_scope();
+        let result = f(self);
+        self.pop_scope();
+        result
     }
 
     fn introduce_generic(&mut self, g: &GenericParam) -> Result<(), SemaError> {
@@ -384,45 +427,64 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(ty)?;
                 }
                 match &a.target {
-                    // The first assignment to a bare name introduces it
-                    // (02-language.md §3.2); any other place (a field, an
-                    // index) must already be bound, so it is resolved
-                    // like any other read.
-                    Expr::Name(span, name) => self.introduce(name, *span),
+                    // `name: T = value` is a fresh declaration (an error
+                    // if it would shadow an outer local); `name = value`
+                    // is the arm-merge idiom's plain reassignment, which
+                    // reuses a binding from any scope still open instead
+                    // (02-language.md §3.2, §8.1 — see `Scope`'s own doc
+                    // comment). Any other place (a field, an index) must
+                    // already be bound, so it is resolved like any other
+                    // read.
+                    Expr::Name(span, name) => {
+                        if a.ty.is_some() {
+                            self.introduce(name, *span)
+                        } else {
+                            self.reassign_or_introduce(name, *span);
+                            Ok(())
+                        }
+                    }
                     other => self.resolve_expr(other),
                 }
             }
+            // Each branch is its own scope, popped again once resolved,
+            // so a typed declaration in `then_branch` cannot resolve in
+            // an `elif`/`else` sibling or after the whole `if`
+            // (err-mwir-if-else-scope-leak).
             Stmt::If(i) => {
                 self.resolve_expr(&i.cond)?;
-                self.resolve_stmts(&i.then_branch)?;
+                self.scoped(|r| r.resolve_stmts(&i.then_branch))?;
                 for elif in &i.elifs {
                     self.resolve_expr(&elif.cond)?;
-                    self.resolve_stmts(&elif.body)?;
+                    self.scoped(|r| r.resolve_stmts(&elif.body))?;
                 }
                 if let Some(b) = &i.else_branch {
-                    self.resolve_stmts(b)?;
+                    self.scoped(|r| r.resolve_stmts(b))?;
                 }
                 Ok(())
             }
             Stmt::Match(m) => {
                 self.resolve_expr(&m.scrutinee)?;
                 for arm in &m.arms {
-                    self.resolve_pattern(&arm.pattern)?;
-                    if let Some(g) = &arm.guard {
-                        self.resolve_expr(g)?;
-                    }
-                    self.resolve_stmts(&arm.body)?;
+                    self.scoped(|r| {
+                        r.resolve_pattern(&arm.pattern)?;
+                        if let Some(g) = &arm.guard {
+                            r.resolve_expr(g)?;
+                        }
+                        r.resolve_stmts(&arm.body)
+                    })?;
                 }
                 Ok(())
             }
             Stmt::For(f) => {
                 self.resolve_expr(&f.iterable)?;
-                self.introduce(&f.name, f.span)?;
-                self.resolve_stmts(&f.body)
+                self.scoped(|r| {
+                    r.introduce(&f.name, f.span)?;
+                    r.resolve_stmts(&f.body)
+                })
             }
             Stmt::While(w) => {
                 self.resolve_expr(&w.cond)?;
-                self.resolve_stmts(&w.body)
+                self.scoped(|r| r.resolve_stmts(&w.body))
             }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => Ok(()),
             Stmt::Return(_span, e) => match e {

@@ -1,15 +1,1 @@
-Program
-  Fn name=conditional_init ret=u64
-    Param name=cond mode=read ty=bool
-    Body
-      If
-        Local name=cond ty=bool
-        Then
-          Let name=value ty=u64
-            Int text=1 ty=u64
-        Else
-          Assign
-            Local name=value ty=u64
-            Int text=2 ty=u64
-      Return
-        Local name=value ty=u64
+error[name]: unknown name `value` at 54:12

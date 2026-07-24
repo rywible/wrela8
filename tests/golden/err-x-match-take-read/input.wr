@@ -11,6 +11,7 @@ pub enum Wrapper:
     None
 
 pub fn use_it(x: Wrapper) -> u64:
+    v: u64 = 0
     match x:
         case .Has(take p):
             v = p.size

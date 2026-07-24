@@ -1,0 +1,2 @@
+Module path=examples.check_if_else_scoping
+  Fn conditional_use(cond: read bool) -> u64

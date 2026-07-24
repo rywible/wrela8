@@ -471,6 +471,29 @@ fn env_insert(env: &mut Env, name: String, v: Value) {
     env.last_mut().expect("at least one scope").insert(name, v);
 }
 
+/// Runs `f` with a fresh innermost `env` scope pushed for one `if`/
+/// `elif`/`else` branch, `while`/`for` body, or `match` arm — always
+/// popped again, even on an early exit (`Unwind::Break`/`Continue`/
+/// `Return`/`Error` all still unwind through this normally, via `?`).
+/// Mirrors `sema::bodies::scoped`/`sema::flow`'s own per-branch scope
+/// push/pop exactly, for the same reason: only `check_typed`-accepted
+/// programs ever reach here, and `check_typed` (once this pass's own fix
+/// landed for err-mwir-if-else-scope-leak) never accepts a program that
+/// reads a branch-local past its own branch — so nothing an accepted
+/// program can express actually depends on stale env entries from an
+/// already-finished sibling branch or a prior loop iteration surviving
+/// here. This still pushes/pops a real scope (rather than relying on
+/// that observation) so the evaluator's own env model stays honest on
+/// its own terms, matching `lower.rs`'s per-block `LEnv` and every sema
+/// pass's `FnCtx`/`Scope` stack, instead of being the one place left
+/// silently relying on a flat map never mattering in practice.
+fn scoped_env<T>(env: &mut Env, f: impl FnOnce(&mut Env) -> R<T>) -> R<T> {
+    env.push(BTreeMap::new());
+    let result = f(env);
+    env.pop();
+    result
+}
+
 // --- defer ------------------------------------------------------------------
 
 fn run_defers<'a, 'p>(defers: &[&'a TypedDeferBody], env: &mut Env, ctx: &mut Interp<'p>) -> R<()> {
@@ -538,6 +561,11 @@ fn exec_stmt<'a, 'p>(
             *place = v;
             Ok(())
         }
+        // One `env` scope per branch (`scoped_env`) — a `Let` inside
+        // `then_branch` must not leave a binding an `elif`/`else` sibling
+        // or a later statement can see (err-mwir-if-else-scope-leak's
+        // runtime mirror; see `scoped_env`'s own doc comment for why this
+        // is defense-in-depth rather than fixing an observed crash).
         TypedStmtKind::If {
             cond,
             then_branch,
@@ -546,16 +574,20 @@ fn exec_stmt<'a, 'p>(
         } => {
             let c = eval_expr(cond, env, dstack, loop_marker, ctx)?;
             if as_bool(&c) {
-                return exec_block(then_branch, env, dstack, loop_marker, ctx);
+                return scoped_env(env, |env| {
+                    exec_block(then_branch, env, dstack, loop_marker, ctx)
+                });
             }
             for elif in elifs {
                 let ec = eval_expr(&elif.cond, env, dstack, loop_marker, ctx)?;
                 if as_bool(&ec) {
-                    return exec_block(&elif.body, env, dstack, loop_marker, ctx);
+                    return scoped_env(env, |env| {
+                        exec_block(&elif.body, env, dstack, loop_marker, ctx)
+                    });
                 }
             }
             if let Some(b) = else_branch {
-                return exec_block(b, env, dstack, loop_marker, ctx);
+                return scoped_env(env, |env| exec_block(b, env, dstack, loop_marker, ctx));
             }
             Ok(())
         }
@@ -563,16 +595,24 @@ fn exec_stmt<'a, 'p>(
             let sv = eval_expr(scrutinee, env, dstack, loop_marker, ctx)?;
             for arm in arms {
                 if let Some(bindings) = match_pattern(&arm.pattern, &sv, ctx)? {
-                    for (n, v) in &bindings {
-                        env_insert(env, n.clone(), v.clone());
-                    }
-                    if let Some(guard) = &arm.guard {
-                        let gv = eval_expr(guard, env, dstack, loop_marker, ctx)?;
-                        if !as_bool(&gv) {
-                            continue;
+                    // Pattern bindings, guard, and body all share one
+                    // pushed scope, same as `sema::bodies::check_match`.
+                    let matched = scoped_env(env, |env| -> R<bool> {
+                        for (n, v) in &bindings {
+                            env_insert(env, n.clone(), v.clone());
                         }
+                        if let Some(guard) = &arm.guard {
+                            let gv = eval_expr(guard, env, dstack, loop_marker, ctx)?;
+                            if !as_bool(&gv) {
+                                return Ok(false);
+                            }
+                        }
+                        exec_block(&arm.body, env, dstack, loop_marker, ctx)?;
+                        Ok(true)
+                    })?;
+                    if matched {
+                        return Ok(());
                     }
-                    return exec_block(&arm.body, env, dstack, loop_marker, ctx);
                 }
             }
             Err(ctx.abandon(
@@ -587,7 +627,7 @@ fn exec_stmt<'a, 'p>(
                     break;
                 }
                 ctx.tick_step()?;
-                match exec_block(body, env, dstack, new_marker, ctx) {
+                match scoped_env(env, |env| exec_block(body, env, dstack, new_marker, ctx)) {
                     Ok(()) => {}
                     Err(Unwind::Break) => break,
                     Err(Unwind::Continue) => {}
@@ -678,8 +718,13 @@ fn exec_for<'a, 'p>(
                     break;
                 }
                 ctx.tick_step()?;
-                env_insert(env, name.to_string(), value::make_int(&elem_ty, i));
-                match exec_block(body, env, dstack, new_marker, ctx) {
+                // The loop binding + body share one scope per iteration
+                // (`scoped_env`), same as `sema::bodies::check_for`.
+                let outcome = scoped_env(env, |env| {
+                    env_insert(env, name.to_string(), value::make_int(&elem_ty, i));
+                    exec_block(body, env, dstack, new_marker, ctx)
+                });
+                match outcome {
                     Ok(()) => {}
                     Err(Unwind::Break) => break,
                     Err(Unwind::Continue) => {}
@@ -701,8 +746,11 @@ fn exec_for<'a, 'p>(
             };
             for elem in elems {
                 ctx.tick_step()?;
-                env_insert(env, name.to_string(), elem);
-                match exec_block(body, env, dstack, new_marker, ctx) {
+                let outcome = scoped_env(env, |env| {
+                    env_insert(env, name.to_string(), elem);
+                    exec_block(body, env, dstack, new_marker, ctx)
+                });
+                match outcome {
                     Ok(()) => {}
                     Err(Unwind::Break) => break,
                     Err(Unwind::Continue) => {}

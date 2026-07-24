@@ -368,16 +368,21 @@ pub(crate) fn enqueue_instantiation(
 // --- per-body checking context -------------------------------------------
 
 /// One function/method/init/closure body's typing state: the current
-/// return type (for `return`/`?`), a local-variable scope stack (only a
-/// closure pushes a new one — mirrors `symbols::Resolver`'s scope model
-/// exactly, decision 3's name-resolution shape reused for types), and
-/// the pool names visible by bare name inside `own[P]` annotations here
-/// (a struct's own `pool` members, when checking one of its
-/// methods/init; otherwise just the module's).
+/// return type (for `return`/`?`), a local-variable scope stack — a
+/// closure pushes a new one, and so does every non-closure suite below
+/// the top of a function body (an `if`/`elif`/`else` branch, a
+/// `while`/`for` body, a `match` arm: see `scoped`), mirroring
+/// `symbols::Resolver`'s scope model and `lower.rs`'s own per-block
+/// `LEnv` push/pop (found+fixed: err-mwir-if-else-scope-leak — a typed
+/// declaration in each branch of an `if`/`else` was wrongly merged into
+/// one binding because no scope was pushed per branch), and the pool
+/// names visible by bare name inside `own[P]` annotations here (a
+/// struct's own `pool` members, when checking one of its methods/init;
+/// otherwise just the module's).
 /// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
 /// re-derives scrutinee types by re-walking every body in lockstep with
-/// this same flat-scope model (only a closure pushes a new scope), so it
-/// needs the same local-variable state `check_expr` reads/writes.
+/// this same scope model, so it needs the same local-variable state
+/// `check_expr` reads/writes.
 pub(crate) struct FnCtx {
     pub(crate) ret_ty: Type,
     locals: Vec<BTreeMap<String, Type>>,
@@ -428,15 +433,42 @@ impl FnCtx {
     }
 }
 
+/// Runs `f` with a fresh innermost scope pushed, always popping it again
+/// before returning — even on error, so a rejected body never leaves a
+/// stray scope on the stack (only relevant because `mod.rs::check` keeps
+/// checking further items after one body errors, in `check_program`'s
+/// multi-module walk). Used for every non-closure suite that must NOT
+/// leak its own typed (`name: T = value`) declarations sideways to a
+/// sibling branch or past the construct: an `if`/`elif`/`else` branch, a
+/// `while`/`for` body, a `match` arm's pattern-bindings + guard + body
+/// (err-mwir-if-else-scope-leak, ledger `sema.init.definite`). This is
+/// the one place `lower.rs`'s own per-block `LEnv` push/pop is mirrored
+/// here — see `check_assign`'s doc comment for how a *plain* (untyped)
+/// assignment still reaches an outer scope instead (the arm-merge idiom,
+/// 02-language.md §8.1).
+pub(crate) fn scoped<T>(
+    fctx: &mut FnCtx,
+    f: impl FnOnce(&mut FnCtx) -> Result<T, SemaError>,
+) -> Result<T, SemaError> {
+    fctx.push_scope();
+    let result = f(fctx);
+    fctx.pop_scope();
+    result
+}
+
 /// Binds `name` to `ty` in the current (innermost) scope: a plain insert
-/// if this is the first binding, an equality check if `name` is already
-/// bound there — this is how a match arm's pattern binding, a `for`
-/// binding, and a fresh assignment all interact with a name reused by an
-/// *earlier* sibling branch in the same flat scope (name resolution
-/// permits this — only a closure pushes a new scope — so typing must
-/// decide what happens: reusing the name requires the same type, which
-/// is a dumb, sound, non-flow-sensitive stand-in for the real arm-merge
-/// analysis flow's pass (items E/F) owns).
+/// if this is the first binding here, an equality check if `name` is
+/// already bound in *this same* scope (re-binding a match arm's own
+/// pattern name, a `for` binding, or a typed declaration a second time
+/// in the same block requires the same type — a dumb, sound stand-in for
+/// real flow-sensitivity, which items E/F's flow pass owns). Since
+/// `scoped` now pushes a fresh scope per `if`/`elif`/`else` branch,
+/// `while`/`for` body, and `match` arm, this never sees a sibling
+/// branch's own binding — only genuine same-block reuse. Reaching a
+/// *different* branch's binding of the same name (the arm-merge idiom,
+/// 02-language.md §8.1) is `check_assign`'s job for a plain, untyped
+/// assignment, which looks outward across scopes instead of calling
+/// this function — see its own doc comment.
 fn bind_local(fctx: &mut FnCtx, name: &str, ty: Type, span: Span) -> Result<(), SemaError> {
     if let Some(existing) = fctx.lookup_innermost(name) {
         if !types_eq(&existing, &ty) {
@@ -1062,17 +1094,23 @@ fn check_comptime_assert(
     })
 }
 
+/// Each branch is its own scope (`scoped`): a typed declaration made in
+/// `then_branch` must not be visible in an `elif`/`else` sibling, nor
+/// survive past the whole `if` (err-mwir-if-else-scope-leak). A *plain*
+/// (untyped) assignment reusing an outer name still crosses branches
+/// fine — `check_assign` reaches outward past whatever scope `scoped`
+/// pushed, so the arm-merge idiom (02-language.md §8.1) is unaffected.
 fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let cond = check_expr(&i.cond, Some(&Type::Bool), fctx, mctx)?;
-    let then_branch = check_stmts(&i.then_branch, fctx, mctx)?;
+    let then_branch = scoped(fctx, |fctx| check_stmts(&i.then_branch, fctx, mctx))?;
     let mut elifs = Vec::with_capacity(i.elifs.len());
     for elif in &i.elifs {
         let ec = check_expr(&elif.cond, Some(&Type::Bool), fctx, mctx)?;
-        let eb = check_stmts(&elif.body, fctx, mctx)?;
+        let eb = scoped(fctx, |fctx| check_stmts(&elif.body, fctx, mctx))?;
         elifs.push(TypedElif { cond: ec, body: eb });
     }
     let else_branch = match &i.else_branch {
-        Some(b) => Some(check_stmts(b, fctx, mctx)?),
+        Some(b) => Some(scoped(fctx, |fctx| check_stmts(b, fctx, mctx))?),
         None => None,
     };
     Ok(TypedStmt {
@@ -1087,7 +1125,7 @@ fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt,
 
 fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let cond = check_expr(&w.cond, Some(&Type::Bool), fctx, mctx)?;
-    let body = check_stmts(&w.body, fctx, mctx)?;
+    let body = scoped(fctx, |fctx| check_stmts(&w.body, fctx, mctx))?;
     Ok(TypedStmt {
         kind: TypedStmtKind::While { cond, body },
     })
@@ -1098,12 +1136,19 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
     let sty = scrutinee.ty.clone();
     let mut arms = Vec::with_capacity(m.arms.len());
     for arm in &m.arms {
-        let pattern = check_pattern(&arm.pattern, &sty, fctx, mctx)?;
-        let guard = match &arm.guard {
-            Some(g) => Some(check_expr(g, Some(&Type::Bool), fctx, mctx)?),
-            None => None,
-        };
-        let body = check_stmts(&arm.body, fctx, mctx)?;
+        // Pattern bindings, guard, and body all share one pushed scope
+        // per arm: a binding from one arm's pattern must not leak into a
+        // sibling arm or past the whole `match`, exactly like an
+        // `if`/`elif`/`else` branch.
+        let (pattern, guard, body) = scoped(fctx, |fctx| {
+            let pattern = check_pattern(&arm.pattern, &sty, fctx, mctx)?;
+            let guard = match &arm.guard {
+                Some(g) => Some(check_expr(g, Some(&Type::Bool), fctx, mctx)?),
+                None => None,
+            };
+            let body = check_stmts(&arm.body, fctx, mctx)?;
+            Ok((pattern, guard, body))
+        })?;
         arms.push(TypedMatchArm {
             pattern,
             guard,
@@ -1209,8 +1254,13 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
             }
         }
     };
-    bind_local(fctx, &f.name, elem_ty.clone(), f.span)?;
-    let body = check_stmts(&f.body, fctx, mctx)?;
+    // The loop binding and any typed declaration inside the body are
+    // scoped to the body itself, same as `if`/`while`/`match` — see
+    // `scoped`'s doc comment.
+    let body = scoped(fctx, |fctx| {
+        bind_local(fctx, &f.name, elem_ty.clone(), f.span)?;
+        check_stmts(&f.body, fctx, mctx)
+    })?;
     Ok(TypedStmt {
         kind: TypedStmtKind::For {
             name: f.name.clone(),
@@ -1235,6 +1285,27 @@ fn check_defer(d: &DeferStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
     })
 }
 
+/// `name: T = value` (`a.ty.is_some()`) is a genuine declaration: it may
+/// only ever reuse a binding already sitting in *this exact* block
+/// (`lookup_innermost` — re-declaring the same name with the same type
+/// twice in one suite, `bind_local`'s job below); a name one scope out
+/// is a *different* binding as far as this statement is concerned (never
+/// merged with it — `symbols::resolve` has already rejected the case
+/// where that would shadow an outer local, 02-language.md §3.2, so
+/// reaching here with the name absent from the innermost scope always
+/// means "declare fresh, scoped to this block" is correct and safe).
+///
+/// `name = value` (`a.ty.is_none()`) is the arm-merge idiom's plain
+/// reassignment (02-language.md §8.1): it must find a binding introduced
+/// in *any* enclosing scope (`lookup_local`), including one made by an
+/// already-finished sibling branch's own untyped first assignment,
+/// because that is exactly how a name conditionally initialized in every
+/// arm survives to be read after the construct. Only when no scope at
+/// all already has the name does a plain assignment fall through to
+/// introducing a fresh binding (necessarily scoped to the innermost
+/// block, same as a typed declaration — a name first bound inside one
+/// branch, with no annotation, still cannot escape that branch, exactly
+/// like `lower.rs`'s own per-block `LEnv`).
 fn check_assign(
     a: &AssignStmt,
     fctx: &mut FnCtx,
@@ -1244,7 +1315,12 @@ fn check_assign(
         return Err(type_error("closures cannot be stored".to_string(), a.span));
     }
     if let Expr::Name(_, name) = &a.target {
-        if fctx.lookup_innermost(name).is_some() {
+        let already_bound = if a.ty.is_some() {
+            fctx.lookup_innermost(name)
+        } else {
+            fctx.lookup_local(name)
+        };
+        if already_bound.is_some() {
             let target_t = check_expr(&a.target, None, fctx, mctx)?;
             let value_t = if a.op == AssignOp::Assign {
                 check_expr(&a.value, Some(&target_t.ty), fctx, mctx)?

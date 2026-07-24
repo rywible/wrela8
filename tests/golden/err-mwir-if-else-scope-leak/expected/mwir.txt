@@ -1,1 +1,1 @@
-error[unimplemented]: internal error: unbound local `value` in place position
+error[name]: unknown name `value` at 54:12
