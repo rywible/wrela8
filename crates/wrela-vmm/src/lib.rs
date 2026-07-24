@@ -952,4 +952,395 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
+
+    // =======================================================================
+    // plans/M6.md item C: the guest runtime core, conformance-tested the
+    // M5-E way — real HVF boots of hand-assembled guest programs, reusing
+    // `wrela_compiler::layout`'s own `build_rt_enqueue`/
+    // `build_rt_select_and_run` (the exact machinery a real image will use,
+    // not a re-derivation of it) exactly the way this file's own
+    // `record_replay_roundtrips...` test above already reuses
+    // `wrela_compiler::encode`. No compiled `.wr` source can reach this
+    // machinery yet (async lowering is items B/D's own in-flight/future
+    // work — `layout.rs`'s own item-C module doc explains why), so every
+    // "actor method" here is a tiny hand-assembled stand-in, exactly like
+    // this file's own clock test already hand-assembles a whole guest
+    // program with no compiler involved at all.
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn boot_hand_built_image(img_bytes: &[u8], tag: &str) -> BootOutcome {
+        let report_text = format!(
+            "Machine revision={}\nInput path={tag}.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            wrela_machine::layout::IMAGE_BASE,
+            img_bytes.len(),
+            wrela_machine::layout::IMAGE_BASE,
+        );
+        let tmp_dir =
+            std::env::temp_dir().join(format!("wrela-vmm-{tag}-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+        let img_path = tmp_dir.join(format!("{tag}.img"));
+        let report_path = tmp_dir.join(format!("{tag}.report.txt"));
+        std::fs::write(&img_path, &img_bytes).expect("write image");
+        std::fs::write(&report_path, &report_text).expect("write report");
+        let outcome = boot_image(&report_path, &img_path).expect("live boot");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        outcome
+    }
+
+    /// Rounds `n` up to the next multiple of 8 — every `ActorAddrs` field
+    /// this item's own tests place is a `u64`, so the `rtdata` region's
+    /// own base must be 8-byte aligned (an unaligned 64-bit `LDR`/`STR`
+    /// can fault): a real image already gets this via `layout.rs`'s own
+    /// `round_up(cursor, 8)`; this test harness needs the identical
+    /// rounding since it lays out its own hand-built blob rather than
+    /// going through `layout_program`/`layout_test_image`.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn round_up8(n: u64) -> u64 {
+        n.div_ceil(8) * 8
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn load_imm_words(reg: u8, value: u64) -> Vec<u32> {
+        use wrela_compiler::encode;
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        vec![
+            encode::enc_movz(reg, h0, 0, true),
+            encode::enc_movk(reg, h1, 16, true),
+            encode::enc_movk(reg, h2, 32, true),
+            encode::enc_movk(reg, h3, 48, true),
+        ]
+    }
+
+    /// `x_reg` already holds an actual value; compares against `expect`,
+    /// sets `scratch` to `1` if they differ, shifts it into `bit` (a power
+    /// of two, `1 << shift`), and ORs it into `acc` — a branch-free
+    /// "assert" this test's own entry sequence composes one call per
+    /// checked fact, entirely so the boot's own single observable exit
+    /// code (`BootOutcome::exit_code`) can carry every check's own
+    /// pass/fail bit at once, since this hand-built harness has no
+    /// console/report machinery of its own to print through (unlike a
+    /// real compiled program's `@test(runtime)` — this fn's own module
+    /// doc explains why no compiled program can reach this code yet).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn check_eq_into(acc: u8, scratch: u8, x_reg: u8, expect: u16, shift: u8) -> Vec<u32> {
+        use wrela_compiler::encode;
+        let mut w = vec![
+            encode::enc_cmp_imm(x_reg, expect, true),
+            encode::enc_cset(scratch, encode::Cond::Ne, true),
+        ];
+        if shift > 0 {
+            w.push(encode::enc_lsl_imm(scratch, scratch, shift, true));
+        }
+        w.push(encode::enc_orr_reg(acc, acc, scratch, true));
+        w
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn push_halt(w: &mut Vec<u32>, exit_reg_scratch: u8, addr_scratch: u8, exit_code: u64) {
+        use wrela_compiler::encode;
+        w.extend(load_imm_words(exit_reg_scratch, exit_code));
+        w.extend(load_imm_words(
+            addr_scratch,
+            wrela_machine::mmio::EXIT_MMIO_ADDR,
+        ));
+        w.push(encode::enc_str_x_imm(exit_reg_scratch, addr_scratch, 0));
+        w.push(encode::enc_brk(0));
+    }
+
+    /// Enqueue -> select -> run a sync method end-to-end, FIFO order
+    /// across two queued messages, and the ring-full rejection path — all
+    /// three of item C's own conformance goals for admission/selection in
+    /// one boot (mirrors this file's own `record_replay_...` test's "every
+    /// real boot happens sequentially within one `#[test]` fn" reasoning,
+    /// one level down: one guest program, several checks, one exit code).
+    ///
+    /// Two stand-in "actor methods" (`x0 = x1 + 1`/`x0 = x1 + 2`, self in
+    /// `x0` unread — the exact scalar-receiver ABI shape a real compiled
+    /// method already uses) stand in for `Store.bump`-shaped `pub fn`s.
+    /// The guest's own entry: writes `10`/`20`/`30` in turn into one
+    /// shared arg-scratch word, calls `rt_enqueue` three times (method 0,
+    /// method 1, method 0 again — the third over `capacity=2`), then
+    /// calls `rt_select_and_run` three times, and finally folds every
+    /// expected-vs-actual comparison into one exit code via
+    /// `check_eq_into` (branch-free) before the trapping exit store.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn actor_runtime_enqueue_select_fifo_and_ring_full_over_hvf() {
+        use wrela_compiler::encode;
+        use wrela_compiler::layout::{ActorAddrs, build_rt_enqueue, build_rt_select_and_run};
+        use wrela_machine::layout as machine_layout;
+
+        let capacity: u64 = 2;
+        let slot_size: u64 = 16; // 8-byte method tag + one 8-byte scalar arg
+        let state_size: u64 = 8;
+        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+
+        let method0 = vec![encode::enc_add_imm(0, 1, 1, true), encode::enc_ret(30)]; // arg + 1
+        let method1 = vec![encode::enc_add_imm(0, 1, 2, true), encode::enc_ret(30)]; // arg + 2
+
+        // Builds the whole entry sequence — addr-value-independent in
+        // length (every embedded constant is a fixed-width `load_imm` or
+        // a single relative `bl`), so it is safe to call once with
+        // placeholder indices purely to measure its own word count, then
+        // again with the real ones once every other fragment's own
+        // position is known (this file's own two-pass approach; `Asm`,
+        // the identical technique `layout.rs` itself uses for relocation,
+        // is private to that crate — not worth exposing for one test).
+        fn build_entry(
+            sp_top: u64,
+            arg_scratch_addr: u64,
+            last_result_addr: u64,
+            enqueue_word_idx: usize,
+            select_word_idx: usize,
+        ) -> Vec<u32> {
+            let mut w = Vec::new();
+            w.extend(load_imm_words(9, sp_top));
+            w.push(encode::enc_add_imm(31, 9, 0, true));
+
+            let enqueue_call = |w: &mut Vec<u32>, method_idx: u16, value: u64, save_to: u8| {
+                w.extend(load_imm_words(9, arg_scratch_addr));
+                w.extend(load_imm_words(10, value));
+                w.push(encode::enc_str_x_imm(10, 9, 0));
+                w.push(encode::enc_movz(0, method_idx, 0, true));
+                w.extend(load_imm_words(1, arg_scratch_addr));
+                w.push(encode::enc_movz(2, 1, 0, true));
+                let this = w.len();
+                let delta = (enqueue_word_idx as i64 - this as i64) * 4;
+                w.push(encode::enc_bl(delta as i32));
+                w.push(encode::enc_mov_reg(save_to, 0, true));
+            };
+            enqueue_call(&mut w, 0, 10, 19);
+            enqueue_call(&mut w, 1, 20, 20);
+            enqueue_call(&mut w, 0, 30, 21);
+
+            let select_call = |w: &mut Vec<u32>, save_ran_to: u8, save_result_to: u8| {
+                let this = w.len();
+                let delta = (select_word_idx as i64 - this as i64) * 4;
+                w.push(encode::enc_bl(delta as i32));
+                w.push(encode::enc_mov_reg(save_ran_to, 0, true));
+                w.extend(load_imm_words(9, last_result_addr));
+                w.push(encode::enc_ldr_x_imm(save_result_to, 9, 0));
+            };
+            select_call(&mut w, 22, 23); // x22 = ran1, x23 = result1
+            select_call(&mut w, 24, 25); // x24 = ran2, x25 = result2
+            select_call(&mut w, 26, 27); // x26 = ran3 (idle expected); result unread
+
+            w.push(encode::enc_movz(9, 0, 0, true)); // x9 = fail accumulator
+            w.extend(check_eq_into(9, 10, 19, 0, 0)); // outcome0 == 0 (admitted)
+            w.extend(check_eq_into(9, 10, 20, 0, 1)); // outcome1 == 0 (admitted)
+            w.extend(check_eq_into(9, 10, 21, 1, 2)); // outcome2 == 1 (rejected: ring full)
+            w.extend(check_eq_into(9, 10, 22, 1, 3)); // ran1 == 1
+            w.extend(check_eq_into(9, 10, 23, 11, 4)); // result1 == 11 (method 0, arg 10)
+            w.extend(check_eq_into(9, 10, 24, 1, 5)); // ran2 == 1
+            w.extend(check_eq_into(9, 10, 25, 22, 6)); // result2 == 22 (method 1, arg 20) — FIFO order
+            w.extend(check_eq_into(9, 10, 26, 0, 7)); // ran3 == 0 (mailbox now empty)
+
+            w.extend(load_imm_words(11, wrela_machine::mmio::EXIT_MMIO_ADDR));
+            w.push(encode::enc_str_x_imm(9, 11, 0));
+            w.push(encode::enc_brk(0));
+            w
+        }
+
+        // Pass 1: placeholder indices, to learn `entry`'s own word count
+        // (length is provably addr-value-independent, module doc above).
+        let entry_len = build_entry(sp_top, 0, 0, 0, 0).len();
+        let placeholder = ActorAddrs {
+            state: 0,
+            ring: 0,
+            head: 0,
+            tail: 0,
+            count: 0,
+            last_result: 0,
+            busy: 0,
+        };
+        let enqueue_len = build_rt_enqueue(&placeholder, capacity, slot_size, 0).len();
+        let select_len =
+            build_rt_select_and_run(&placeholder, capacity, slot_size, &[0, 0], 0).len();
+
+        let method0_word_idx = entry_len;
+        let method1_word_idx = method0_word_idx + method0.len();
+        let enqueue_word_idx = method1_word_idx + method1.len();
+        let select_word_idx = enqueue_word_idx + enqueue_len;
+        let code_words_total = select_word_idx + select_len;
+
+        let rtdata_base = round_up8(machine_layout::IMAGE_BASE + (code_words_total as u64) * 4);
+        let addrs = ActorAddrs {
+            state: rtdata_base,
+            ring: rtdata_base + state_size,
+            head: rtdata_base + state_size + capacity * slot_size,
+            tail: rtdata_base + state_size + capacity * slot_size + 8,
+            count: rtdata_base + state_size + capacity * slot_size + 16,
+            last_result: rtdata_base + state_size + capacity * slot_size + 24,
+            busy: rtdata_base + state_size + capacity * slot_size + 32,
+        };
+        let arg_scratch_addr = addrs.busy + 8; // one more scratch word past the ring's own bookkeeping.
+        let rtdata_bytes = (arg_scratch_addr + 8 - rtdata_base) as usize;
+
+        let entry = build_entry(
+            sp_top,
+            arg_scratch_addr,
+            addrs.last_result,
+            enqueue_word_idx,
+            select_word_idx,
+        );
+        assert_eq!(
+            entry.len(),
+            entry_len,
+            "entry's own length must not depend on the real addresses"
+        );
+        let enqueue_words = build_rt_enqueue(&addrs, capacity, slot_size, enqueue_word_idx);
+        let select_words = build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[method0_word_idx, method1_word_idx],
+            select_word_idx,
+        );
+
+        let mut words = Vec::new();
+        words.extend(entry);
+        words.extend(method0);
+        words.extend(method1);
+        words.extend(enqueue_words);
+        words.extend(select_words);
+        assert_eq!(words.len(), code_words_total);
+
+        let mut img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let rtdata_end = (rtdata_base - machine_layout::IMAGE_BASE) as usize + rtdata_bytes;
+        img_bytes.resize(rtdata_end, 0);
+
+        let outcome = boot_hand_built_image(&img_bytes, "actor-runtime");
+        assert_eq!(
+            outcome.exit_code, 0,
+            "every check bit must be 0 (a nonzero bit names which check failed, decoded: \
+             1=admit#1 2=admit#2 4=ring-full 8=ran#1 16=result#1 32=ran#2 64=result#2/FIFO 128=idle#3)"
+        );
+    }
+
+    /// Decision 12 (abandon = image-fatal at M6): an actor turn that
+    /// aborts must never resume — the image exits nonzero, deterministically,
+    /// full stop. Since this item's own turn-kind-aware `__wrela_abort`
+    /// routing (naming *which* actor faulted on the console, the way a
+    /// real compiled program's abort eventually will) is staged follow-up
+    /// work once item D's real dispatch exists, this test proves the
+    /// structural half directly: a dispatched "method" that performs the
+    /// machine's own halt sequence (the identical `push_halt` shape every
+    /// M5 abort stub already uses) instead of an ordinary `ret` — the
+    /// image exits nonzero and `rt_select_and_run` never regains control
+    /// (there is nothing to observe from a resumed turn at all: the guest
+    /// is gone the instant the trapping `EXIT_MMIO_ADDR` store lands).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn actor_turn_abandon_exits_the_image_nonzero_and_never_resumes() {
+        use wrela_compiler::encode;
+        use wrela_compiler::layout::{ActorAddrs, build_rt_enqueue, build_rt_select_and_run};
+        use wrela_machine::layout as machine_layout;
+
+        const ABANDON_EXIT_CODE: u64 = 0x7;
+        let capacity: u64 = 1;
+        let slot_size: u64 = 8; // no-arg method: tag only
+        let state_size: u64 = 8;
+        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+
+        // The one stand-in "actor method": aborts the turn directly
+        // instead of returning (module doc above).
+        let mut aborting_method = Vec::new();
+        push_halt(&mut aborting_method, 9, 10, ABANDON_EXIT_CODE);
+
+        fn build_entry(
+            sp_top: u64,
+            arg_scratch_addr: u64,
+            enqueue_word_idx: usize,
+            select_word_idx: usize,
+        ) -> Vec<u32> {
+            let mut w = Vec::new();
+            w.extend(load_imm_words(9, sp_top));
+            w.push(encode::enc_add_imm(31, 9, 0, true));
+
+            // enqueue(method_idx=0, args_ptr=arg_scratch, nargs=0)
+            w.extend(load_imm_words(0, 0));
+            w.extend(load_imm_words(1, arg_scratch_addr));
+            w.extend(load_imm_words(2, 0));
+            let this = w.len();
+            let delta = (enqueue_word_idx as i64 - this as i64) * 4;
+            w.push(encode::enc_bl(delta as i32));
+
+            // select() -> dispatches the aborting method; execution never
+            // returns here if the abandon path is real (the trapping
+            // store ends the guest mid-call).
+            let this = w.len();
+            let delta = (select_word_idx as i64 - this as i64) * 4;
+            w.push(encode::enc_bl(delta as i32));
+
+            // Unreachable if the abandon path works: a *different*,
+            // named exit code proves the guest wrongly resumed instead
+            // of the dispatched method's own abort taking effect.
+            push_halt(&mut w, 9, 10, 0xBAD);
+            w
+        }
+
+        let entry_len = build_entry(0, 0, 0, 0).len();
+        let placeholder = ActorAddrs {
+            state: 0,
+            ring: 0,
+            head: 0,
+            tail: 0,
+            count: 0,
+            last_result: 0,
+            busy: 0,
+        };
+        let enqueue_len = build_rt_enqueue(&placeholder, capacity, slot_size, 0).len();
+        let select_len = build_rt_select_and_run(&placeholder, capacity, slot_size, &[0], 0).len();
+
+        let method0_word_idx = entry_len;
+        let enqueue_word_idx = method0_word_idx + aborting_method.len();
+        let select_word_idx = enqueue_word_idx + enqueue_len;
+        let code_words_total = select_word_idx + select_len;
+
+        let rtdata_base = round_up8(machine_layout::IMAGE_BASE + (code_words_total as u64) * 4);
+        let addrs = ActorAddrs {
+            state: rtdata_base,
+            ring: rtdata_base + state_size,
+            head: rtdata_base + state_size + capacity * slot_size,
+            tail: rtdata_base + state_size + capacity * slot_size + 8,
+            count: rtdata_base + state_size + capacity * slot_size + 16,
+            last_result: rtdata_base + state_size + capacity * slot_size + 24,
+            busy: rtdata_base + state_size + capacity * slot_size + 32,
+        };
+        let arg_scratch_addr = addrs.busy + 8;
+        let rtdata_bytes = (arg_scratch_addr + 8 - rtdata_base) as usize;
+
+        let entry = build_entry(sp_top, arg_scratch_addr, enqueue_word_idx, select_word_idx);
+        assert_eq!(entry.len(), entry_len);
+        let enqueue_words = build_rt_enqueue(&addrs, capacity, slot_size, enqueue_word_idx);
+        let select_words = build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[method0_word_idx],
+            select_word_idx,
+        );
+
+        let mut words = Vec::new();
+        words.extend(entry);
+        words.extend(aborting_method);
+        words.extend(enqueue_words);
+        words.extend(select_words);
+        assert_eq!(words.len(), code_words_total);
+
+        let mut img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let rtdata_end = (rtdata_base - machine_layout::IMAGE_BASE) as usize + rtdata_bytes;
+        img_bytes.resize(rtdata_end, 0);
+
+        let outcome = boot_hand_built_image(&img_bytes, "actor-abandon");
+        assert_eq!(
+            outcome.exit_code, ABANDON_EXIT_CODE,
+            "the aborting method's own exit code must win — the guest must never resume \
+             `rt_select_and_run` (which would instead halt with the unreachable 0xBAD marker)"
+        );
+    }
 }

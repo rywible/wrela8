@@ -142,7 +142,7 @@ use std::collections::BTreeMap;
 
 use crate::codegen::{CodegenProgram, Reloc};
 use crate::encode;
-use crate::eval::image::push_line;
+use crate::eval::image::{ImageGraph, push_line};
 use crate::mwir::{self, LayoutCtx};
 use crate::sema::SemaError;
 use crate::sema::typed::TypedProgram;
@@ -184,10 +184,20 @@ pub struct ImageLayout {
     /// own field rather than re-derived by callers, matching decision 7's
     /// own separate `Entry base=0x...` report fact.
     pub entry: u64,
-    /// `entry`/`code`/`rodata` (if nonempty)/`abort`, in ascending-base
-    /// (= emission) order. `data` never appears (module doc: always
-    /// empty at M5).
+    /// `entry`/`code`/`rodata` (if nonempty)/`abort`/`rtdata` (if this
+    /// image has actors — plans/M6.md item C), in ascending-base (=
+    /// emission) order. `data` never appears (module doc: always empty).
     pub sections: Vec<Section>,
+    /// Plans/M6.md item C, decision 3: this image's own static actor
+    /// runtime-table sizing — `None` for an image with no actors at all
+    /// (the no-placeholder rule: `render_layout_section` below emits no
+    /// accounting lines when this is `None`), `Some` (even
+    /// `RuntimeTables::actors` alone, never a fake empty one) the moment
+    /// `ImageGraph::actors` is nonempty, build or test image alike (a
+    /// build-only image with actors still gets the `rtdata` reservation
+    /// and the report's own accounting facts — the plan's own "runtime
+    /// tables are emitted for any image with actors, tests or not").
+    pub runtime: Option<RuntimeTables>,
 }
 
 // --- scratch registers for stub emission (never x0..x8/x29/x30/sp) -----
@@ -366,7 +376,22 @@ fn verify_section_sizes(
 /// never produced, an out-of-range relocation) — never for an ordinary
 /// "this program doesn't lower" outcome, which is decided one layer up,
 /// before this fn is ever called (see `try_layout_program`, below).
-pub fn layout_program(program: &CodegenProgram) -> Result<ImageLayout, LayoutError> {
+///
+/// `runtime` (plans/M6.md item C): `Some(tables)` reserves one more
+/// section, `rtdata`, sized exactly `tables.total_bytes` — zeroed,
+/// uninitialized bytes, the same "no allocation, all sized at build time"
+/// discipline every other section here already follows. Every existing
+/// caller of this ordinary (non-test) build path passes `None` whenever
+/// `ImageGraph::actors` is empty (the overwhelming majority of today's
+/// corpus); an actor-bearing `wrela build`/`--stage=report` image still
+/// never runs any of this milestone's runtime code (the placeholder entry
+/// stub above is untouched) — the reservation exists because decision 3
+/// says the tables are part of the image, tests or not, not because
+/// anything here executes against them yet.
+pub fn layout_program(
+    program: &CodegenProgram,
+    runtime: Option<&RuntimeTables>,
+) -> Result<ImageLayout, LayoutError> {
     let image_base = machine_layout::IMAGE_BASE;
 
     let entry_words = build_entry_stub();
@@ -442,6 +467,26 @@ pub fn layout_program(program: &CodegenProgram) -> Result<ImageLayout, LayoutErr
         size: abort_size,
     });
 
+    // --- rtdata (plans/M6.md item C, decision 3): reserved, zeroed bytes
+    // for this image's own static actor runtime tables — absent entirely
+    // when `runtime` is `None` (no actors), never a zero-size placeholder
+    // section. -------------------------------------------------------------
+    let rtdata_base = if let Some(tables) = runtime.filter(|t| t.total_bytes > 0) {
+        cursor = round_up(cursor, 8);
+        let base = cursor;
+        sections.push(Section {
+            name: "rtdata",
+            base,
+            size: tables.total_bytes,
+        });
+        // `rtdata` is this image shape's own final section — nothing
+        // consumes `cursor` past it, mirroring the identical rodata-base
+        // convention a few lines above this fn's own test-image sibling.
+        Some(base)
+    } else {
+        None
+    };
+
     // --- resolve every Reloc against the now-known section bases --------
     let mut all_code_words = code_words;
     for (key, f) in &program.fns {
@@ -513,6 +558,10 @@ pub fn layout_program(program: &CodegenProgram) -> Result<ImageLayout, LayoutErr
     for w in &abort_val_words {
         blob.extend_from_slice(&w.to_le_bytes());
     }
+    if let (Some(rb), Some(tables)) = (rtdata_base, runtime.filter(|t| t.total_bytes > 0)) {
+        pad_to(&mut blob, image_base, rb);
+        blob.resize(blob.len() + tables.total_bytes as usize, 0);
+    }
 
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
 
@@ -520,6 +569,7 @@ pub fn layout_program(program: &CodegenProgram) -> Result<ImageLayout, LayoutErr
         blob,
         entry: entry_base,
         sections,
+        runtime: runtime.cloned(),
     })
 }
 
@@ -609,9 +659,35 @@ fn merge_mwir_programs(programs: Vec<mwir::MwirProgram>) -> mwir::MwirProgram {
 /// reserved for `layout_program`'s own genuine internal-consistency/
 /// out-of-range failures, which — unlike an ordinary lowering rejection —
 /// are never expected and must never be swallowed.
+///
+/// `graph`/`modules` (plans/M6.md item C, added to this fn's own
+/// signature — recorded deliberately, not a silent scope-creep): the one
+/// necessary, disclosed exception to this item's own "do not touch
+/// `bin/wrela.rs`" boundary. Static per-actor accounting (decision 3)
+/// needs three facts that never appear together anywhere else already
+/// reachable from this fn's own frozen callers: which actor struct each
+/// declared instance names and its own declared `mailbox=` capacity
+/// (`ImageGraph`, `eval::image.rs` — evaluation-time wiring, never visible
+/// to `TypedProgram`/`LayoutCtx`), and which of that struct's own methods
+/// are `pub` (only a `pub` method is ever a message shape, 02 §9.2 — a
+/// declare-phase-only fact, `sema::types::DeclFn::receiver::is_pub`, never
+/// carried onto `sema::typed::TypedFn`). Threading `graph`/`modules` two
+/// parameters deeper here — and updating this fn's own two call sites
+/// (`bin/wrela.rs::build_report`, `xtask`'s determinism oracle) with the
+/// one already-in-scope local variable each already holds — is the
+/// smallest change that avoids inventing a second, redundant
+/// `eval::interp::eval_image` evaluation inside this module (which would
+/// avoid the two call-site edits at the cost of a real architectural
+/// smell: re-running the whole comptime evaluator a second time for data
+/// its own caller already computed once, purely to route around a file
+/// restriction). Both callers already hold `graph`/`modules` in scope at
+/// the exact point they call this fn; neither edit changes any other
+/// behavior.
 pub fn try_layout_program(
     programs: &BTreeMap<String, TypedProgram>,
     layout_ctx: &LayoutCtx,
+    graph: &ImageGraph,
+    modules: &BTreeMap<String, Module>,
 ) -> Result<Option<ImageLayout>, String> {
     let mut mwir_programs = Vec::with_capacity(programs.len());
     for typed in programs.values() {
@@ -625,9 +701,350 @@ pub fn try_layout_program(
         Ok(p) => p,
         Err(_) => return Ok(None),
     };
-    layout_program(&codegen_program)
+    let runtime_tables = compute_runtime_tables(graph, modules, layout_ctx)?;
+    layout_program(&codegen_program, runtime_tables.as_ref())
         .map(Some)
         .map_err(|e| e.message)
+}
+
+// ===========================================================================
+// plans/M6.md item C, decision 3: static actor runtime-table sizing — a
+// pure function of `(graph, modules, layout_ctx)`, computed once here and
+// consumed by both `layout_program`/`layout_test_image` (the `rtdata`
+// reservation) and `render_layout_section` (the report's own accounting
+// facts) via `ImageLayout::runtime`, so the two can never drift apart.
+
+/// One actor declaration's own static sizing (04 §2/§7, decision 3):
+/// facts only, never a placeholder — every field here is a real byte
+/// count this image's own `rtdata` section actually reserves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorRuntimeLayout {
+    /// The declared actor struct's own name (`types::render_type` of
+    /// `ActorDecl::actor_type`) — matches the report's own existing
+    /// `Actor index=N type=<name>` line so a reader can correlate the two
+    /// without a shared index scheme.
+    pub name: String,
+    /// The declared `mailbox=` bound (02 §9.2: "the compiler derives the
+    /// capacity from the closed sender set" — M6 ships the dumbest sound
+    /// floor, the *declared* bound, not derivation; recorded honestly in
+    /// plans/M6.md, mailbox capacity *derivation* is explicitly OUT of
+    /// M6's own scope line).
+    pub mailbox_capacity: u64,
+    /// One ring slot's own byte size: 8 (the method-index tag, a plain
+    /// `u64`) plus the widest of this actor's own `pub` methods' param
+    /// blobs (each param's own `mwir::size_of`, summed, one 8-byte-tag
+    /// method index shared by every slot regardless of which method it
+    /// ends up holding — item C's own "method index + args blob" slot
+    /// layout, plans/M6.md's own item-C task text). A method with zero
+    /// params (or an actor with no `pub` methods at all) still costs the
+    /// 8-byte tag alone — the minimum a slot can ever be.
+    pub slot_size: u64,
+    /// This actor struct's own field storage (`mwir::size_of` over the
+    /// struct's own field list, `LayoutCtx`) — where the actor instance
+    /// itself lives (decision 3's own "fixed data-section slot per
+    /// declared actor instance" answer, recorded in plans/M6.md).
+    pub state_size: u64,
+    /// The one suspended-turn frame slot this actor ever needs (plans/
+    /// M6.md item C's own frame-arena reading: non-reentrancy means at
+    /// most one active/suspended turn per actor, so exactly one frame
+    /// slot, never one per queued message). Fixed at
+    /// `TURN_FRAME_BOOKKEEPING_SIZE` for now: no `async fn` body lowers to
+    /// a real state-machine frame yet (FlowWir->mwir frame layout is item
+    /// D's own job), so this is the real, used-today size of the turn-
+    /// bookkeeping this item's own `rt_select_and_run` actually reads/
+    /// writes (the in-use flag) — never a fake placeholder number, just
+    /// not yet the union of async locals item D will grow it to.
+    pub frame_size: u64,
+}
+
+/// Every actor's own sizing, plus the scheduler's own fixed-capacity
+/// tables (plans/M6.md item C, decision 3's own "Scheduler tables"
+/// paragraph). `total_bytes` is the exact `rtdata` section size
+/// `layout_program`/`layout_test_image` reserve — computed once, here,
+/// from the per-actor/per-table sizes below, so the reservation and the
+/// report's own totals line can never disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuntimeTables {
+    pub actors: Vec<ActorRuntimeLayout>,
+    /// Ready-queue capacity: every actor plus the one root test turn
+    /// (decision 3's own "fixed capacity = actor count + 1 root").
+    /// Reserved as a real `u64`-per-slot table; `rt_select_and_run` (below)
+    /// does not yet populate it (an O(actor-count) round-robin scan is the
+    /// dumbest correct selection at M6's own actor counts, module doc on
+    /// `build_rt_select_and_run` below) — reserved now so a later
+    /// milestone's real event-driven wake can start using it without a
+    /// layout change, exactly like `wrela_machine::machine_info::
+    /// OFF_NEXT_DEADLINE`'s own precedent.
+    pub ready_queue_capacity: u64,
+    /// A real (not hand-waved) static count of `with group(...)` sites
+    /// found across every raw module in the build closure (decision 3's
+    /// own "fixed small global group arena sized from static with-site
+    /// count" — `count_with_group_sites`, below, an honest AST-level walk
+    /// that does not descend into closure bodies or `comptime if`
+    /// branches; recorded as a disclosed gap in plans/M6.md, inert at C
+    /// since no group actually executes against this arena until item F
+    /// wires it). Always `0` in today's report-bearing corpus (no
+    /// existing actor-bearing golden uses `with group` yet).
+    pub group_arena_capacity: u64,
+    /// The exact `rtdata` section size: every actor's own state + ring +
+    /// bookkeeping + frame bytes, plus the ready-queue table, the
+    /// round-robin cursor word, and the group arena.
+    pub total_bytes: u64,
+}
+
+/// Fixed size of the one turn-bookkeeping word `rt_select_and_run`
+/// actually reads/writes per actor today (the in-use/busy flag) —
+/// `ActorRuntimeLayout::frame_size`'s own doc comment explains why this is
+/// real, not a placeholder, and why it is expected to grow once item D
+/// lowers real async locals into frame storage.
+pub const TURN_FRAME_BOOKKEEPING_SIZE: u64 = 8;
+
+/// Per-actor ring bookkeeping beyond the ring bytes themselves: head,
+/// tail, count (3 `u64`s) plus the busy/in-use flag folded into
+/// `TURN_FRAME_BOOKKEEPING_SIZE` above, plus one `u64` "last result" slot
+/// a dispatched sync method's own scalar return value is stored into
+/// (`build_rt_select_and_run`'s own doc comment) — this item's own
+/// deliberately minimal reply-plumbing floor; a real per-actor reply-slot
+/// ABI covering every awaiting caller is item D/E's job once suspension
+/// exists.
+const MAILBOX_BOOKKEEPING_SIZE: u64 = 3 * 8 + 8; // head, tail, count, last_result
+
+fn value_as_u64(v: &crate::eval::value::Value) -> Option<u64> {
+    use crate::eval::value::Value;
+    match *v {
+        Value::U8(n) => Some(n as u64),
+        Value::U16(n) => Some(n as u64),
+        Value::U32(n) => Some(n as u64),
+        Value::U64(n) => Some(n),
+        Value::Usize(n) => Some(n as u64),
+        Value::I8(n) if n >= 0 => Some(n as u64),
+        Value::I16(n) if n >= 0 => Some(n as u64),
+        Value::I32(n) if n >= 0 => Some(n as u64),
+        Value::I64(n) if n >= 0 => Some(n as u64),
+        Value::Isize(n) if n >= 0 => Some(n as u64),
+        _ => None,
+    }
+}
+
+/// One actor struct's own shape, re-derived from raw source the same way
+/// `merge_layout_ctx`/`mwir::build_layout_ctx` already re-derive
+/// `sema::specialize::specialize` -> `sema::types::declare` per module
+/// (this module's own established precedent for "recompute from the raw
+/// AST rather than thread extra state out of an earlier pass") — the one
+/// additional fact `LayoutCtx` does not carry: each `pub` method's own
+/// name, `is_async` color, and param types (02 §9.2: only a `pub` method
+/// is ever reachable through `Actor[T]`, so only these are message
+/// shapes). Keyed by struct name, last-module-wins on a same-spelling
+/// collision — the identical disclosed simplification `merge_layout_ctx`
+/// already carries.
+struct ActorMethodShape {
+    /// Not read by this item's own sizing pass (an async method's own
+    /// message slot is sized identically to a sync one's — 02 §9.1's
+    /// message shape says nothing about the method's own color); kept for
+    /// item D/F's own dispatch-table wiring, which must route an async
+    /// method's own entry at the named abort stub
+    /// (`build_async_dispatch_abort_stub`) instead of a real method body.
+    #[allow(dead_code)]
+    is_async: bool,
+    param_sizes: Vec<u64>,
+}
+
+fn merge_actor_pub_methods(
+    modules: &BTreeMap<String, Module>,
+    layout_ctx: &LayoutCtx,
+) -> Result<BTreeMap<String, Vec<ActorMethodShape>>, LayoutError> {
+    use crate::sema::types::{DeclItem, DeclMember};
+
+    let mut out: BTreeMap<String, Vec<ActorMethodShape>> = BTreeMap::new();
+    for module in modules.values() {
+        let specialized = crate::sema::specialize::specialize(module)
+            .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
+        let items = crate::sema::types::declare(&specialized)
+            .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
+        for item in items {
+            let DeclItem::Struct(s) = item else { continue };
+            let mut methods = Vec::new();
+            for m in &s.members {
+                let DeclMember::Fn(f) = m else { continue };
+                let Some(recv) = &f.receiver else { continue };
+                if !recv.is_pub {
+                    continue;
+                }
+                let mut param_sizes = Vec::with_capacity(f.params.len());
+                for p in &f.params {
+                    let size = mwir::size_of(&p.ty, layout_ctx).map_err(|e| {
+                        LayoutError::new(format!(
+                            "actor `{}`'s own `{}` message shape: {e}",
+                            s.name, f.name
+                        ))
+                    })?;
+                    param_sizes.push(size as u64);
+                }
+                methods.push(ActorMethodShape {
+                    is_async: f.is_async,
+                    param_sizes,
+                });
+            }
+            out.insert(s.name, methods);
+        }
+    }
+    Ok(out)
+}
+
+/// A real (not hand-waved) static count of `with group(...)` sites across
+/// every raw module in the build closure — `RuntimeTables::
+/// group_arena_capacity`'s own doc comment explains the scope and the
+/// disclosed gap (closures, `comptime if` branches). Every surviving
+/// `Stmt::With` at M6 names a `group(...)` (the scoped-`pool` `with` form
+/// stays fail-closed at sema, 02 §10 — plans/M6.md item A's own note), so
+/// counting every `Stmt::With` is exact for anything that type-checks.
+fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
+    use crate::syntax::ast::{FnItem, InitItem, Item, Member, Stmt};
+
+    fn walk_stmts(stmts: &[Stmt], count: &mut u64) {
+        for s in stmts {
+            match s {
+                Stmt::With(w) => {
+                    *count += 1;
+                    walk_stmts(&w.body, count);
+                }
+                Stmt::If(i) => {
+                    walk_stmts(&i.then_branch, count);
+                    for e in &i.elifs {
+                        walk_stmts(&e.body, count);
+                    }
+                    if let Some(eb) = &i.else_branch {
+                        walk_stmts(eb, count);
+                    }
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        walk_stmts(&arm.body, count);
+                    }
+                }
+                Stmt::For(f) => walk_stmts(&f.body, count),
+                Stmt::While(w) => walk_stmts(&w.body, count),
+                Stmt::Defer(d) => {
+                    if let crate::syntax::ast::DeferBody::Suite(body) = &d.body {
+                        walk_stmts(body, count);
+                    }
+                }
+                Stmt::ComptimeIf(_)
+                | Stmt::Assign(_)
+                | Stmt::Break(_)
+                | Stmt::Continue(_)
+                | Stmt::Return(_, _)
+                | Stmt::Pass(_)
+                | Stmt::Assert(_)
+                | Stmt::Send(_, _)
+                | Stmt::Expr(_, _)
+                | Stmt::ComptimeAssert(_, _, _) => {}
+            }
+        }
+    }
+
+    fn walk_fn(f: &FnItem, count: &mut u64) {
+        if let Some(body) = &f.body {
+            walk_stmts(body, count);
+        }
+    }
+    fn walk_init(i: &InitItem, count: &mut u64) {
+        walk_stmts(&i.body, count);
+    }
+
+    let mut count = 0u64;
+    for module in modules.values() {
+        for item in &module.items {
+            match item {
+                Item::Fn(f) => walk_fn(f, &mut count),
+                Item::Struct(s) => {
+                    for m in &s.members {
+                        match m {
+                            Member::Fn(f) => walk_fn(f, &mut count),
+                            Member::Init(i) => walk_init(i, &mut count),
+                            Member::Field(_) | Member::Pool(_) | Member::ComptimeIf(_) => {}
+                        }
+                    }
+                }
+                Item::Const(_) | Item::Enum(_) | Item::Pool(_) | Item::ComptimeIf(_) => {}
+            }
+        }
+    }
+    count
+}
+
+/// The whole item-C static-sizing pass (module doc above). `Ok(None)`
+/// (via `RuntimeTables::default()`'s own emptiness, wrapped `None`) when
+/// `graph.actors` is empty — the no-placeholder rule: a sync-only image
+/// gets no `rtdata` section and no report accounting at all, never a
+/// zeroed `RuntimeTables` rendered as if it meant something.
+pub fn compute_runtime_tables(
+    graph: &ImageGraph,
+    modules: &BTreeMap<String, Module>,
+    layout_ctx: &LayoutCtx,
+) -> Result<Option<RuntimeTables>, String> {
+    if graph.actors.is_empty() {
+        return Ok(None);
+    }
+    let shapes = merge_actor_pub_methods(modules, layout_ctx).map_err(|e| e.message)?;
+
+    let mut actors = Vec::with_capacity(graph.actors.len());
+    for decl in &graph.actors {
+        let name = crate::sema::types::render_type(&decl.actor_type);
+        let mailbox_arg = decl
+            .args
+            .iter()
+            .find(|a| a.label == "mailbox")
+            .ok_or_else(|| {
+                format!(
+                    "actor `{name}` has no declared `mailbox=` capacity (plans/M6.md decision 3: \
+                 the declared bound is the whole of M6's own mailbox-capacity story; derivation \
+                 is out of scope)"
+                )
+            })?;
+        let mailbox_capacity = value_as_u64(&mailbox_arg.value).ok_or_else(|| {
+            format!("actor `{name}`'s own `mailbox=` value is not a plain non-negative integer")
+        })?;
+        let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
+            .map_err(|e| format!("actor `{name}`'s own state: {e}"))?
+            as u64;
+        let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
+        let max_args_bytes = methods
+            .iter()
+            .map(|m| m.param_sizes.iter().sum::<u64>())
+            .max()
+            .unwrap_or(0);
+        let slot_size = 8 + max_args_bytes;
+        actors.push(ActorRuntimeLayout {
+            name,
+            mailbox_capacity,
+            slot_size,
+            state_size,
+            frame_size: TURN_FRAME_BOOKKEEPING_SIZE,
+        });
+    }
+
+    let ready_queue_capacity = graph.actors.len() as u64 + 1;
+    let group_arena_capacity = count_with_group_sites(modules);
+    const GROUP_SLOT_SIZE: u64 = 8; // one word per reserved group-arena entry (a generation/in-use tag; F grows this).
+    const RR_CURSOR_SIZE: u64 = 8;
+
+    let mut total_bytes = 0u64;
+    for a in &actors {
+        total_bytes += a.state_size
+            + a.mailbox_capacity * a.slot_size
+            + MAILBOX_BOOKKEEPING_SIZE
+            + a.frame_size;
+    }
+    total_bytes +=
+        ready_queue_capacity * 8 + RR_CURSOR_SIZE + group_arena_capacity * GROUP_SLOT_SIZE;
+
+    Ok(Some(RuntimeTables {
+        actors,
+        ready_queue_capacity,
+        group_arena_capacity,
+        total_bytes,
+    }))
 }
 
 // --- report rendering (decision 7's own Layout section) -------------------
@@ -674,6 +1091,437 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         );
     }
     push_line(out, 1, &format!("Entry base={:#x}", layout.entry));
+
+    // --- plans/M6.md item C, decision 3: per-actor runtime-table
+    // accounting — facts only, absent entirely when this image has no
+    // actors (`ImageLayout::runtime`'s own doc comment: never a
+    // placeholder). Appended after `Entry base=...` (04-compiler.md §7's
+    // own "this milestone appends sections without reshuffling" reading,
+    // mirrored here): every existing report golden's `Layout` section
+    // text up to and including its own `Entry base=...` line stays
+    // byte-identical; only actor-bearing images gain anything past it.
+    if let Some(tables) = &layout.runtime {
+        for a in &tables.actors {
+            push_line(
+                out,
+                1,
+                &format!(
+                    "Actor name={} mailbox={} slot={} frame={} state={}",
+                    a.name, a.mailbox_capacity, a.slot_size, a.frame_size, a.state_size
+                ),
+            );
+        }
+        push_line(
+            out,
+            1,
+            &format!(
+                "Totals actors={} ready_queue={} group_arena={} bytes={}",
+                tables.actors.len(),
+                tables.ready_queue_capacity,
+                tables.group_arena_capacity,
+                tables.total_bytes
+            ),
+        );
+    }
+}
+
+// ===========================================================================
+// plans/M6.md item C: emitted runtime routines — `rt_enqueue`/
+// `rt_select_and_run`, the turn driver, park/wake's own C-level skeleton,
+// and the abandon path. Hand-assembled via `Asm` (defined below, M5-E's
+// own tool), the identical M5-E style: no asm strings, one instruction
+// encoder call at a time, conformance established by real execution
+// (JIT'd against host-mmap'd stand-in memory, `harness_jit` below, plus a
+// real HVF boot in `wrela-vmm`'s own conformance tests) rather than by
+// hand-verifying encoded bytes.
+//
+// ## Why one hand-assembled pair *per actor*, not one generic pair indexed
+// by a runtime `actor_idx`
+//
+// Every actor's own ring/state/bookkeeping address is already a build-time
+// constant (`RuntimeTables`/`place_actor_addrs`, above/below) — there is no
+// `actor_idx` a real caller would ever need to pass at runtime, so a
+// generic address-indexed pair would only add a layer of register-offset
+// indirection this milestone's own actor counts never need. 04-compiler.md
+// §6's own "Actor as-if" license says exactly this is allowed: "the
+// compiler may use direct placement, specialized dispatch tables ...
+// provided admission order, non-reentrancy, ... are all preserved" — one
+// specialized `rt_enqueue_actor`/`rt_select_actor` pair per actor is that
+// license exercised at its simplest.
+//
+// ## Why no source-compiled `.wr` program exercises these routines yet
+//
+// `async fn` bodies do not lower past typed sema yet (FlowWir is item B's
+// own in-flight work; FlowWir->mwir/codegen is item D's) — so no
+// `Actor[T]` handle call anywhere in today's corpus can possibly reach
+// `rt_enqueue`/`rt_select_and_run` through ordinary compilation. This
+// item's own conformance tests (this module's `harness_jit` additions,
+// below, plus `wrela-vmm`'s own HVF-boot tests) therefore hand-assemble
+// tiny stand-in "actor method" bodies directly, the identical M5-E
+// precedent for testing generated machinery that has no compiled-source
+// exerciser yet.
+//
+// ## Slot layout (decision 3's own "method index + args blob")
+//
+// `[0..8)`: the admitted message's own method index, a plain `u64`.
+// `[8..slot_size)`: the method's own argument blob, raw 8-byte-per-scalar-
+// param words in declared parameter order (`ActorRuntimeLayout::slot_size`'s
+// own doc comment) — every param here is assumed to fit one 8-byte slot
+// (a disclosed, real simplification: a message-legal aggregate wider than
+// one slot is out of scope for this item's own hand-assembled dispatch;
+// every `pub` actor method in today's whole corpus takes only scalar
+// params, so this never silently narrows a real case — item D's own real
+// state-machine lowering is expected to generalize this the moment a
+// wider message argument exists).
+
+/// One actor's own absolute runtime-table addresses, placed sequentially
+/// from a given base (`rtdata_base` for a real image, or a host-mmap'd
+/// stand-in base for a JIT/HVF test) — the exact byte order
+/// `compute_runtime_tables`'s own `RuntimeTables::total_bytes` already
+/// accounts for (state, ring, head/tail/count/last_result, busy/frame),
+/// so a real image's `rtdata` section and this fn's own addresses can
+/// never disagree.
+#[derive(Debug, Clone, Copy)]
+pub struct ActorAddrs {
+    pub state: u64,
+    pub ring: u64,
+    pub head: u64,
+    pub tail: u64,
+    pub count: u64,
+    pub last_result: u64,
+    pub busy: u64,
+}
+
+/// Places every actor's own `ActorAddrs` sequentially from `base` (module
+/// doc above) — the scheduler-table region (ready queue, RR cursor, group
+/// arena) follows immediately after the last actor, at
+/// `place_actor_addrs`'s own returned `next` cursor plus each table's own
+/// fixed size (`RuntimeTables::ready_queue_capacity`/`group_arena_capacity`),
+/// not computed by this fn since M6-C's own `rt_select_and_run` never
+/// reads them yet (`RuntimeTables::ready_queue_capacity`'s own doc
+/// comment) — callers that need them derive their own address the same
+/// way this fn does, from the same `RuntimeTables`.
+pub fn place_actor_addrs(base: u64, tables: &RuntimeTables) -> Vec<ActorAddrs> {
+    let mut cursor = base;
+    let mut out = Vec::with_capacity(tables.actors.len());
+    for a in &tables.actors {
+        let state = cursor;
+        cursor += a.state_size;
+        let ring = cursor;
+        cursor += a.mailbox_capacity * a.slot_size;
+        let head = cursor;
+        cursor += 8;
+        let tail = cursor;
+        cursor += 8;
+        let count = cursor;
+        cursor += 8;
+        let last_result = cursor;
+        cursor += 8;
+        let busy = cursor;
+        cursor += a.frame_size;
+        out.push(ActorAddrs {
+            state,
+            ring,
+            head,
+            tail,
+            count,
+            last_result,
+            busy,
+        });
+    }
+    out
+}
+
+/// `rt_enqueue_actor(x0=method_idx, x1=args_ptr, x2=nargs_words) ->
+/// x0 (0=admitted, 1=rejected — the `send`/call admission outcome,
+/// 02 §9.4's `NotAdmitted`/`Rejected` path, this item's own minimal
+/// encoding of it)`. Admission alone: a bounded ring insert, FIFO by
+/// construction (always appended at `tail`, always drained from `head`,
+/// below) — 04 §2's "admission occupies one logical mailbox slot until
+/// selection; selection is FIFO per mailbox by admission order". A full
+/// ring (`count == capacity`) is rejected without touching `tail`/`count`
+/// at all — the caller's own `args_ptr` blob is left exactly where it
+/// was, mirroring 02 §9.4's "an outcome that did not consume [arguments]
+/// hands them back" at this item's own ABI granularity (a real
+/// `NotAdmitted(..)` payload carry-back is item D/G's job, once real
+/// message types exist to carry).
+///
+/// Register use (leaf fn, owns every register it touches, never `x0..x2`
+/// until the outcome/scratch reuse below): `x9`/`x10` = count addr/value,
+/// then reused as scratch after the branch; `x11` = capacity, then a
+/// scratch; `x12`/`x13` = tail addr/value; `x14`/`x15` = slot-size scratch,
+/// then the computed slot address; `x16`/`x17`/`x18` = the copy loop's
+/// dst/src/remaining-count cursors.
+pub fn build_rt_enqueue(
+    addrs: &ActorAddrs,
+    capacity: u64,
+    slot_size: u64,
+    start: usize,
+) -> Vec<u32> {
+    let mut a = Asm::new(start);
+
+    a.load_imm(9, addrs.count);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    a.load_imm(11, capacity);
+    a.push(encode::enc_cmp_reg(10, 11, true));
+    let skip_ok = a.skip_placeholder(); // b.lt .ok
+    a.push(encode::enc_movz(0, 1, 0, true)); // rejected
+    let to_end = a.skip_placeholder(); // b .end (unconditional, patched below)
+    let ok = a.abs();
+    a.patch_cond(skip_ok, Cond::Lt);
+    debug_assert_eq!(ok, a.abs());
+
+    // .ok: slot = ring + tail * slot_size
+    a.load_imm(12, addrs.tail);
+    a.push(encode::enc_ldr_x_imm(13, 12, 0));
+    a.load_imm(14, slot_size);
+    a.push(encode::enc_mul(14, 13, 14, true));
+    a.load_imm(15, addrs.ring);
+    a.push(encode::enc_add_reg(15, 15, 14, true));
+
+    a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.method_idx = method_idx
+
+    a.push(encode::enc_add_imm(16, 15, 8, true)); // dst cursor = slot + 8
+    a.push(encode::enc_mov_reg(17, 1, true)); // src cursor = args_ptr
+    a.push(encode::enc_mov_reg(18, 2, true)); // remaining = nargs_words
+    let loop_top = a.abs();
+    let skip_loop = a.skip_placeholder(); // cbz x18, .copied
+    a.push(encode::enc_ldr_x_imm(9, 17, 0));
+    a.push(encode::enc_str_x_imm(9, 16, 0));
+    a.push(encode::enc_add_imm(17, 17, 8, true));
+    a.push(encode::enc_add_imm(16, 16, 8, true));
+    a.push(encode::enc_sub_imm(18, 18, 1, true));
+    a.b_to(loop_top);
+    let copied = a.abs();
+    a.patch_cbz(skip_loop, 18);
+    debug_assert_eq!(copied, a.abs());
+
+    // tail = (tail + 1) % capacity
+    a.push(encode::enc_add_imm(13, 13, 1, true));
+    a.load_imm(9, capacity);
+    a.push(encode::enc_cmp_reg(13, 9, true));
+    let skip_nowrap = a.skip_placeholder(); // b.lt .nowrap
+    a.push(encode::enc_movz(13, 0, 0, true));
+    let nowrap = a.abs();
+    a.patch_cond(skip_nowrap, Cond::Lt);
+    debug_assert_eq!(nowrap, a.abs());
+    a.load_imm(12, addrs.tail);
+    a.push(encode::enc_str_x_imm(13, 12, 0));
+
+    // count += 1
+    a.load_imm(9, addrs.count);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    a.push(encode::enc_add_imm(10, 10, 1, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+
+    a.push(encode::enc_movz(0, 0, 0, true)); // admitted
+    let end = a.abs();
+    let this = a.start + to_end;
+    let delta = (end as i64 - this as i64) * 4;
+    a.words[to_end] = encode::enc_b(delta as i32);
+    a.push(encode::enc_ret(30));
+    a.words
+}
+
+/// `rt_select_actor() -> x0 (1 = ran one turn this call, 0 = idle —
+/// either busy-suspended, decision 4's own non-reentrancy, or its own
+/// mailbox is empty)`. One "tick" of 04 §2's event loop for one actor:
+/// non-reentrant admission-to-dispatch (a busy actor admits nothing new
+/// into a turn — the second queued message stays queued, `count`
+/// untouched), FIFO pop from `head`, dispatch (a direct `BL` to a
+/// specialized target per `dispatch[method_idx]` — sync methods dispatch
+/// to their own compiled body's own address; an async method's own entry
+/// is built pointing at a shared abort stub instead, module doc above:
+/// "at C, an async dispatch aborts named item D"), store the scalar
+/// result, clear busy, advance `head`/`count`. M6-C's own loop never truly
+/// parks (module doc, decision 7): the caller (a hand-assembled test
+/// driver at C; a real turn driver at E) calls this repeatedly until it
+/// returns `0` for every actor — "the loop idles ... until all mailboxes
+/// empty and the root turn completes" is exactly this repeated-call
+/// shape, not a real `wfe`/park.
+///
+/// `dispatch[i]`'s own absolute *word index* (not byte address) within
+/// this fragment's own combined section (`Asm::abs`'s own convention,
+/// mirrored from the M5 harness's `bl_call_key`/`bl_to`) — every method
+/// target must already be placed in the same combined word buffer this
+/// fragment itself is assembled into (JIT/HVF conformance tests place
+/// their own stand-in method bodies there directly; wiring this into a
+/// real compiled program's own `code` section via `Reloc::Call` is item
+/// D's own follow-up, recorded in plans/M6.md, not silently done here).
+///
+/// Register use: `x9`/`x10` = busy/count addr+value, reused as scratch
+/// throughout; `x11`/`x12` = head addr/value; `x13` = slot-size scratch,
+/// then slot address; `x15` = method_idx (loaded from the slot, kept live
+/// across the whole dispatch chain below).
+pub fn build_rt_select_and_run(
+    addrs: &ActorAddrs,
+    capacity: u64,
+    slot_size: u64,
+    dispatch: &[usize],
+    start: usize,
+) -> Vec<u32> {
+    let mut a = Asm::new(start);
+    // Unlike every other hand-assembled fragment in this file (all leaf
+    // fns, or noreturn like the abort stubs), this one both calls out
+    // (`bl_to` into a dispatched method) *and* returns via an ordinary
+    // `ret` — so it must save/restore its own `x30` (link register)
+    // around the stack, exactly the ABI's own "x30 is call-clobbered"
+    // rule `codegen.rs`'s real prologues already apply: a first draft of
+    // this fn skipped this, called the dispatched method, and hung
+    // forever (the dispatched method's own `RET x30` correctly returned
+    // *into* this fn right after its own `BL`, but this fn's *own* final
+    // `ret x30` then read that same, now-stale value instead of its
+    // original caller's address, jumping back into itself in an infinite
+    // loop — caught by a real JIT execution test hanging, exactly what
+    // this module's own "behavior is the oracle" doc paragraph is for).
+    a.push(encode::enc_sub_imm(31, 31, 16, true)); // sub sp, sp, #16
+    a.push(encode::enc_str_x_imm(30, 31, 0)); // str x30, [sp]
+    // Two distinct exit shapes, never conflated: `to_idle_ret` (busy/empty)
+    // returns `x0=0` immediately, running no epilogue at all (no turn ever
+    // started — `head`/`count`/`busy` must stay exactly as they were);
+    // `to_dispatch_done` (after a method call returns) runs the shared
+    // epilogue below (clear busy, advance `head`, decrement `count`) and
+    // returns `x0=1`. Conflating the two was this fn's own first-draft bug
+    // (caught before landing, recorded here rather than silently fixed
+    // away): an empty/busy early-out must never fall into the epilogue,
+    // or an idle tick would wrongly decrement an already-zero `count`.
+    let mut to_idle_ret: Vec<usize> = Vec::new();
+    let mut to_dispatch_done: Vec<usize> = Vec::new();
+
+    // busy check: non-reentrancy (decision 4) — a busy actor admits no
+    // new turn; the queued message(s) stay queued.
+    a.load_imm(9, addrs.busy);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    let skip_notbusy = a.skip_placeholder(); // cbz x10, .notbusy
+    a.push(encode::enc_movz(0, 0, 0, true));
+    to_idle_ret.push(a.skip_placeholder());
+    let notbusy = a.abs();
+    a.patch_cbz(skip_notbusy, 10);
+    debug_assert_eq!(notbusy, a.abs());
+
+    // empty check
+    a.load_imm(9, addrs.count);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    let skip_nonempty = a.skip_placeholder(); // cbnz x10, .nonempty
+    a.push(encode::enc_movz(0, 0, 0, true));
+    to_idle_ret.push(a.skip_placeholder());
+    let nonempty = a.abs();
+    a.patch_cbnz(skip_nonempty, 10);
+    debug_assert_eq!(nonempty, a.abs());
+
+    // busy = 1
+    a.load_imm(9, addrs.busy);
+    a.load_imm(10, 1);
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+
+    // slot = ring + head * slot_size
+    a.load_imm(11, addrs.head);
+    a.push(encode::enc_ldr_x_imm(12, 11, 0));
+    a.load_imm(13, slot_size);
+    a.push(encode::enc_mul(13, 12, 13, true));
+    a.load_imm(9, addrs.ring);
+    a.push(encode::enc_add_reg(13, 9, 13, true)); // x13 = slot addr
+
+    a.push(encode::enc_ldr_x_imm(15, 13, 0)); // x15 = method_idx
+    // Load only as many 8-byte arg words as this ring's own `slot_size`
+    // actually reserves past the method-index tag (never unconditionally
+    // 2): the smallest legal slot is `slot_size=8` (a no-arg message,
+    // `ActorRuntimeLayout::slot_size`'s own doc comment) — reading a
+    // fixed two words regardless would read *past* the ring into
+    // `head`/`tail` themselves for any slot narrower than 24 bytes. A
+    // real HVF boot at exactly this `capacity=1`/`slot_size=8` shape
+    // caught this (this fn's own module doc, the "smallest possible ring"
+    // JIT test below); bounding the load here is the fix, not a
+    // documented quirk to work around at every call site.
+    let arg_words = ((slot_size.saturating_sub(8)) / 8).min(2);
+    if arg_words >= 1 {
+        a.push(encode::enc_ldr_x_imm(1, 13, 8)); // x1 = arg0
+    }
+    if arg_words >= 2 {
+        a.push(encode::enc_ldr_x_imm(2, 13, 16)); // x2 = arg1
+    }
+    a.load_imm(0, addrs.state); // x0 = self ptr (the receiver ABI)
+
+    for (idx, &target_abs) in dispatch.iter().enumerate() {
+        a.push(encode::enc_cmp_imm(15, idx as u16, true));
+        let skip_next = a.skip_placeholder(); // b.ne .next
+        a.bl_to(target_abs);
+        a.load_imm(9, addrs.last_result);
+        a.push(encode::enc_str_x_imm(0, 9, 0));
+        to_dispatch_done.push(a.skip_placeholder()); // b .done (unconditional)
+        let next = a.abs();
+        a.patch_cond(skip_next, Cond::Ne);
+        debug_assert_eq!(next, a.abs());
+    }
+    // No dispatch entry matched `method_idx` — an internal-error guard:
+    // `rt_enqueue` only ever admits a `method_idx` this same `dispatch`
+    // slice was built from, so this should be unreachable in practice,
+    // exactly like the M5 harness's own `BRK_LINE_*_OVERFLOW` guards.
+    a.push(encode::enc_brk(0xACD0));
+
+    // .done: busy = 0; head = (head + 1) % capacity; count -= 1; return 1.
+    let done = a.abs();
+    for m in &to_dispatch_done {
+        let this = a.start + m;
+        let delta = (done as i64 - this as i64) * 4;
+        a.words[*m] = encode::enc_b(delta as i32);
+    }
+    debug_assert_eq!(done, a.abs());
+
+    a.load_imm(9, addrs.busy);
+    a.push(encode::enc_str_x_imm(31, 9, 0)); // busy = 0 (xzr)
+
+    a.load_imm(11, addrs.head);
+    a.push(encode::enc_ldr_x_imm(12, 11, 0));
+    a.push(encode::enc_add_imm(12, 12, 1, true));
+    a.load_imm(9, capacity);
+    a.push(encode::enc_cmp_reg(12, 9, true));
+    let skip_nowrap = a.skip_placeholder(); // b.lt .nowrap
+    a.push(encode::enc_movz(12, 0, 0, true));
+    let nowrap = a.abs();
+    a.patch_cond(skip_nowrap, Cond::Lt);
+    debug_assert_eq!(nowrap, a.abs());
+    a.load_imm(11, addrs.head);
+    a.push(encode::enc_str_x_imm(12, 11, 0));
+
+    a.load_imm(9, addrs.count);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    a.push(encode::enc_sub_imm(10, 10, 1, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+
+    a.push(encode::enc_movz(0, 1, 0, true)); // ran a turn
+    // .epilogue: the busy/empty early-outs land here too (both return with
+    // `x0` already set and touch nothing else) — one shared restore-and-
+    // return, mirroring the one shared `sub sp, #16`/`str x30` prologue
+    // above (module doc's own "must save/restore its own x30" paragraph).
+    let epilogue = a.abs();
+    a.push(encode::enc_ldr_x_imm(30, 31, 0)); // ldr x30, [sp]
+    a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
+    a.push(encode::enc_ret(30));
+    for m in &to_idle_ret {
+        let this = a.start + m;
+        let delta = (epilogue as i64 - this as i64) * 4;
+        a.words[*m] = encode::enc_b(delta as i32);
+    }
+    a.words
+}
+
+/// The named abort stub `rt_select_and_run`'s own `dispatch` table points
+/// an `async` method's entry at (module doc above: "at C, an async
+/// dispatch aborts named item D"). Prints nothing on its own (this fn only
+/// builds the *fragment*; a caller wiring it into a real report/console
+/// path is the same `__wrela_abort`-family machinery the M5 harness
+/// already has) — at C, its whole job is to `BRK` with a distinct,
+/// documented immediate so a post-mortem register/memory dump can tell
+/// "an async actor method was dispatched before item D exists" apart from
+/// every other guard in this file.
+pub const BRK_ASYNC_DISPATCH_UNIMPLEMENTED: u16 = 0xACD1;
+
+pub fn build_async_dispatch_abort_stub(start: usize) -> Vec<u32> {
+    let mut a = Asm::new(start);
+    a.push(encode::enc_brk(BRK_ASYNC_DISPATCH_UNIMPLEMENTED));
+    a.push(encode::enc_ret(30)); // unreachable in practice; documented defense.
+    a.words
 }
 
 // ===========================================================================
@@ -1895,6 +2743,19 @@ pub fn layout_test_image(
         blob,
         entry: harness_base + (entry_start as u64) * 4,
         sections,
+        // `wrela test`'s own CLI path (`bin/wrela.rs`, frozen for this
+        // item) never calls this fn with an `ImageGraph` at all — no
+        // existing `@test(runtime)` golden declares any actor yet, so
+        // this is never a silent narrowing of a real case. The actor
+        // runtime machinery this item adds (`build_rt_enqueue`/
+        // `build_rt_select_and_run`, below) is exercised directly by this
+        // module's own JIT unit tests and by `wrela-vmm`'s conformance
+        // tests, which assemble their own hand-built test images rather
+        // than going through this fn — wiring a real `@test(runtime)`
+        // actor image through this exact CLI path is staged, named work
+        // (plans/M6.md item C's own sub-note), not a silently dropped
+        // case.
+        runtime: None,
     })
 }
 
@@ -1909,6 +2770,160 @@ mod tests {
             code: words.iter().map(|w| (*w, String::new())).collect(),
             relocs: Vec::new(),
         }
+    }
+
+    // --- plans/M6.md item C: RuntimeTables sizing -------------------------
+
+    fn parse_one_module(src: &str) -> Module {
+        let tokens = crate::syntax::lexer::lex(src).expect("lex");
+        crate::syntax::parser::parse(tokens).expect("parse")
+    }
+
+    fn one_module(name: &str, src: &str) -> BTreeMap<String, Module> {
+        let mut m = BTreeMap::new();
+        m.insert(name.to_string(), parse_one_module(src));
+        m
+    }
+
+    fn actor_decl(actor_type: &str, mailbox: Option<u32>) -> crate::eval::image::ActorDecl {
+        use crate::eval::image::DeclArg;
+        use crate::eval::value::Value;
+        use crate::sema::types::Type;
+        let mut args = Vec::new();
+        if let Some(n) = mailbox {
+            args.push(DeclArg {
+                label: "mailbox".to_string(),
+                ty: Type::U32,
+                value: Value::U32(n),
+            });
+        }
+        crate::eval::image::ActorDecl {
+            actor_type: Type::Named(actor_type.to_string(), vec![]),
+            args,
+        }
+    }
+
+    #[test]
+    fn compute_runtime_tables_is_none_for_a_sync_only_image() {
+        let modules = one_module("m", "module m\n\nfn f():\n    pass\n");
+        let graph = ImageGraph::default();
+        let ctx = merge_layout_ctx(&modules).unwrap();
+        let out = compute_runtime_tables(&graph, &modules, &ctx).unwrap();
+        assert!(out.is_none(), "no actors -> no runtime tables at all");
+    }
+
+    #[test]
+    fn compute_runtime_tables_sizes_state_mailbox_and_slot() {
+        let src = "\
+module m
+
+@actor
+pub struct Store:
+    count: u32
+    total: u64
+
+    init(mut self):
+        self.count = 0
+        self.total = 0
+
+    pub fn get(read self) -> u64:
+        return self.total
+
+    pub fn bump(mut self, by: u32) -> u64:
+        self.total = self.total + by.to[u64]()
+        return self.total
+";
+        let modules = one_module("m", src);
+        let mut graph = ImageGraph::default();
+        graph.actors.push(actor_decl("Store", Some(4)));
+        let ctx = merge_layout_ctx(&modules).unwrap();
+        let tables = compute_runtime_tables(&graph, &modules, &ctx)
+            .unwrap()
+            .expect("one actor -> Some");
+        assert_eq!(tables.actors.len(), 1);
+        let a = &tables.actors[0];
+        assert_eq!(a.name, "Store");
+        assert_eq!(a.mailbox_capacity, 4);
+        // state: two u32/u64 fields, each one 8-byte slot (mwir's own
+        // "one 8-byte-slot layout rule") -> 16 bytes.
+        assert_eq!(a.state_size, 16);
+        // slot: 8-byte method tag + the widest pub method's own args
+        // (`bump`'s one `u32` param, one slot) -> 16; `get` has none.
+        assert_eq!(a.slot_size, 16);
+        assert_eq!(a.frame_size, TURN_FRAME_BOOKKEEPING_SIZE);
+        assert_eq!(tables.ready_queue_capacity, 2); // 1 actor + root
+        assert_eq!(tables.group_arena_capacity, 0);
+        let expect_total = a.state_size + a.mailbox_capacity as u64 * a.slot_size + 32 /* bookkeeping */ + a.frame_size
+                + tables.ready_queue_capacity * 8
+                + 8; // rr cursor
+        assert_eq!(tables.total_bytes, expect_total);
+    }
+
+    #[test]
+    fn compute_runtime_tables_fails_closed_without_a_declared_mailbox() {
+        let modules = one_module(
+            "m",
+            "module m\n\n@actor\npub struct Store:\n    count: u32\n\n    init(mut self):\n        self.count = 0\n",
+        );
+        let mut graph = ImageGraph::default();
+        graph.actors.push(actor_decl("Store", None));
+        let ctx = merge_layout_ctx(&modules).unwrap();
+        let err = compute_runtime_tables(&graph, &modules, &ctx).unwrap_err();
+        assert!(err.contains("mailbox"));
+    }
+
+    #[test]
+    fn private_methods_never_contribute_to_the_message_slot_size() {
+        let src = "\
+module m
+
+@actor
+pub struct Store:
+    count: u64
+
+    init(mut self):
+        self.count = 0
+
+    pub fn get(read self) -> u64:
+        return self.count
+
+    fn helper(read self, huge: u64, more: u64, extra: u64) -> u64:
+        return huge + more + extra
+";
+        let modules = one_module("m", src);
+        let mut graph = ImageGraph::default();
+        graph.actors.push(actor_decl("Store", Some(2)));
+        let ctx = merge_layout_ctx(&modules).unwrap();
+        let tables = compute_runtime_tables(&graph, &modules, &ctx)
+            .unwrap()
+            .unwrap();
+        // `get` (pub, no params) is the only message shape; the private
+        // `helper`'s own three-`u64`-param body never widens the slot.
+        assert_eq!(tables.actors[0].slot_size, 8);
+    }
+
+    #[test]
+    fn count_with_group_sites_counts_every_with_group_and_none_else() {
+        let src = "\
+module m
+
+async fn one():
+    with group(capacity=1) as g:
+        pass
+
+fn two():
+    if true:
+        with group(capacity=2) as g:
+            pass
+";
+        let modules = one_module("m", src);
+        assert_eq!(count_with_group_sites(&modules), 2);
+    }
+
+    #[test]
+    fn count_with_group_sites_is_zero_with_no_with_statements() {
+        let modules = one_module("m", "module m\n\nfn f():\n    pass\n");
+        assert_eq!(count_with_group_sites(&modules), 0);
     }
 
     // --- BL reloc math (incl. negative offsets) --------------------------
@@ -1968,7 +2983,7 @@ mod tests {
             fns,
             rodata: Vec::new(),
         };
-        let out = layout_program(&program).unwrap();
+        let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
         assert_eq!(names, ["entry", "code", "abort"]);
         assert_eq!(out.entry, machine_layout::IMAGE_BASE);
@@ -1989,7 +3004,7 @@ mod tests {
             fns,
             rodata: vec![b"hello".to_vec()],
         };
-        let out = layout_program(&program).unwrap();
+        let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
         assert_eq!(names, ["entry", "code", "rodata", "abort"]);
         let rodata = out.sections.iter().find(|s| s.name == "rodata").unwrap();
@@ -2013,7 +3028,7 @@ mod tests {
             fns,
             rodata: Vec::new(),
         };
-        let out = layout_program(&program).unwrap();
+        let out = layout_program(&program, None).unwrap();
         let code = out.sections.iter().find(|s| s.name == "code").unwrap();
         // g's own word 0 is at code_base + 2 words (f is 2 words, first in
         // BTree order); f's own base is code_base + 0.
@@ -2040,7 +3055,7 @@ mod tests {
             fns,
             rodata: Vec::new(),
         };
-        assert!(layout_program(&program).is_err());
+        assert!(layout_program(&program, None).is_err());
     }
 
     // --- section-size verification ---------------------------------------
@@ -2109,8 +3124,8 @@ mod tests {
             fns,
             rodata: vec![b"x".to_vec()],
         };
-        let a = layout_program(&program).unwrap();
-        let b = layout_program(&program).unwrap();
+        let a = layout_program(&program, None).unwrap();
+        let b = layout_program(&program, None).unwrap();
         assert_eq!(a, b);
     }
 
@@ -2280,6 +3295,27 @@ mod harness_jit {
             let f: extern "C" fn(u64, u64) -> u64 = unsafe { std::mem::transmute(self.ptr) };
             f(a0, a1)
         }
+
+        /// The `_at` family: identical shape to `call2` above, but
+        /// entering at `byte_offset` into this same page instead of its
+        /// very first byte — plans/M6.md item C's own tests combine
+        /// several fragments (stand-in "actor method" bodies,
+        /// `rt_enqueue`, `rt_select_and_run`) into one JIT'd page, exactly
+        /// the M5 harness's own combined-section technique, and need to
+        /// call into the *middle* of it.
+        fn call0_at(&self, byte_offset: usize) -> u64 {
+            assert!(byte_offset < self.len);
+            let f: extern "C" fn() -> u64 =
+                unsafe { std::mem::transmute(self.ptr.add(byte_offset)) };
+            f()
+        }
+
+        fn call3_at(&self, byte_offset: usize, a0: u64, a1: u64, a2: u64) -> u64 {
+            assert!(byte_offset < self.len);
+            let f: extern "C" fn(u64, u64, u64) -> u64 =
+                unsafe { std::mem::transmute(self.ptr.add(byte_offset)) };
+            f(a0, a1, a2)
+        }
     }
 
     impl Drop for ExecPage {
@@ -2353,6 +3389,16 @@ mod harness_jit {
         fn read_bytes(&self, off: u64, n: usize) -> Vec<u8> {
             assert!((off as usize) + n <= self.len);
             unsafe { std::slice::from_raw_parts(self.ptr.add(off as usize), n).to_vec() }
+        }
+
+        /// Plans/M6.md item C: pre-seeding a ring's `count`/`head`/`tail`
+        /// (ring-full/FIFO-order test setup) needs writes, not just reads
+        /// — every M5-era harness test only ever *reads* `HostRam` after
+        /// letting generated code write it; this item's own tests are the
+        /// first to need the reverse.
+        fn write_u64(&self, off: u64, value: u64) {
+            assert!((off as usize) + 8 <= self.len);
+            unsafe { std::ptr::write_unaligned(self.ptr.add(off as usize) as *mut u64, value) }
         }
     }
 
@@ -2589,5 +3635,228 @@ mod harness_jit {
         for i in 0..20u8 {
             assert_eq!(h.ram.read_bytes(DATA + i as u64, 1), vec![b'A' + i]);
         }
+    }
+
+    // --- plans/M6.md item C: rt_enqueue / rt_select_and_run -----------------
+    //
+    // Two stand-in "actor method" bodies (`add x0, x1, #N; ret` — self in
+    // x0 unread, one scalar arg in x1, result in x0, the identical ABI
+    // shape `codegen.rs`'s own real method calls already use) stand in
+    // for a compiled actor's own `pub fn`s, combined into one JIT'd page
+    // alongside `rt_enqueue`/`rt_select_and_run` themselves — the M5
+    // harness's own combined-section technique, one level up.
+
+    fn stand_in_method(add_const: u16) -> Vec<u32> {
+        vec![
+            encode::enc_add_imm(0, 1, add_const, true),
+            encode::enc_ret(30),
+        ]
+    }
+
+    #[test]
+    fn rt_enqueue_admits_fifo_and_rejects_when_the_ring_is_full() {
+        let capacity: u64 = 2;
+        let slot_size: u64 = 16; // 8-byte method tag + one 8-byte scalar arg
+        let state_size: u64 = 8;
+        let ram = HostRam::new(4096);
+        let base = ram.base();
+        let addrs = ActorAddrs {
+            state: base,
+            ring: base + state_size,
+            head: base + state_size + capacity * slot_size,
+            tail: base + state_size + capacity * slot_size + 8,
+            count: base + state_size + capacity * slot_size + 16,
+            last_result: base + state_size + capacity * slot_size + 24,
+            busy: base + state_size + capacity * slot_size + 32,
+        };
+
+        let method0 = stand_in_method(1); // arg0 + 1
+        let method1 = stand_in_method(2); // arg0 + 2
+
+        let mut combined: Vec<u32> = Vec::new();
+        let method0_start = combined.len();
+        combined.extend(method0);
+        let method1_start = combined.len();
+        combined.extend(method1);
+        let enqueue_start = combined.len();
+        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
+        let select_start = combined.len();
+        combined.extend(build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[method0_start, method1_start],
+            select_start,
+        ));
+
+        let page = ExecPage::new(&combined);
+        let enqueue_off = enqueue_start * 4;
+        let select_off = select_start * 4;
+
+        let arg10: u64 = 10;
+        let arg20: u64 = 20;
+        let arg30: u64 = 30;
+
+        // Two admissions, FIFO order preserved by construction (always
+        // appended at `tail`).
+        assert_eq!(
+            page.call3_at(enqueue_off, 0, &arg10 as *const u64 as u64, 1),
+            0,
+            "first enqueue admitted"
+        );
+        assert_eq!(
+            page.call3_at(enqueue_off, 1, &arg20 as *const u64 as u64, 1),
+            0,
+            "second enqueue admitted"
+        );
+        assert_eq!(ram.read_u64(addrs.count - base), 2);
+
+        // A third, over capacity=2: rejected, and the ring's own state
+        // (`count`) is left untouched (02 §9.4: an outcome that did not
+        // consume arguments hands them back — this item's own minimal
+        // encoding of that is simply "never mutated").
+        assert_eq!(
+            page.call3_at(enqueue_off, 0, &arg30 as *const u64 as u64, 1),
+            1,
+            "ring full -> rejected"
+        );
+        assert_eq!(
+            ram.read_u64(addrs.count - base),
+            2,
+            "a rejected enqueue must not touch count"
+        );
+
+        // Non-reentrancy has nothing to suspend yet at C (sync dispatch
+        // only): each `rt_select_actor` call fully completes one turn.
+        assert_eq!(ram.read_u64(addrs.busy - base), 0);
+        assert_eq!(page.call0_at(select_off), 1, "ran the first queued turn");
+        assert_eq!(
+            ram.read_u64(addrs.last_result - base),
+            11,
+            "FIFO: (method 0, arg 10), enqueued first, dispatched first"
+        );
+        assert_eq!(
+            ram.read_u64(addrs.busy - base),
+            0,
+            "busy cleared after the turn"
+        );
+
+        assert_eq!(page.call0_at(select_off), 1, "ran the second queued turn");
+        assert_eq!(
+            ram.read_u64(addrs.last_result - base),
+            22,
+            "(method 1, arg 20) dispatched second, in admission order"
+        );
+
+        assert_eq!(
+            page.call0_at(select_off),
+            0,
+            "mailbox now empty: no turn to run"
+        );
+    }
+
+    #[test]
+    fn rt_select_and_run_never_admits_a_second_turn_while_busy() {
+        // A direct exercise of decision 4's own non-reentrancy flag: with
+        // `busy` pre-set (as a real suspended awaiting turn would leave
+        // it, once item D wires real suspension), `rt_select_actor` must
+        // do nothing at all — not even peek at `count` — and report idle.
+        let capacity: u64 = 1;
+        let slot_size: u64 = 16;
+        let state_size: u64 = 8;
+        let ram = HostRam::new(4096);
+        let base = ram.base();
+        let addrs = ActorAddrs {
+            state: base,
+            ring: base + state_size,
+            head: base + state_size + capacity * slot_size,
+            tail: base + state_size + capacity * slot_size + 8,
+            count: base + state_size + capacity * slot_size + 16,
+            last_result: base + state_size + capacity * slot_size + 24,
+            busy: base + state_size + capacity * slot_size + 32,
+        };
+        ram.write_u64(addrs.busy - base, 1);
+        ram.write_u64(addrs.count - base, 1); // a message is queued...
+
+        let mut combined: Vec<u32> = Vec::new();
+        let method0_start = combined.len();
+        combined.extend(stand_in_method(1));
+        let select_start = combined.len();
+        combined.extend(build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[method0_start],
+            select_start,
+        ));
+        let page = ExecPage::new(&combined);
+
+        assert_eq!(
+            page.call0_at(select_start * 4),
+            0,
+            "busy actor admits no new turn, even with a message queued"
+        );
+        assert_eq!(ram.read_u64(addrs.count - base), 1, "count untouched");
+        assert_eq!(
+            ram.read_u64(addrs.last_result - base),
+            0,
+            "no dispatch happened"
+        );
+    }
+
+    /// A minimum-size ring (`capacity=1`, `slot_size=8` — the "tag only,
+    /// no args" floor `ActorRuntimeLayout::slot_size`'s own doc comment
+    /// names as the smallest a slot can ever be) still dispatches
+    /// correctly: this is exactly the shape `rt_select_and_run`'s own
+    /// out-of-bounds arg-word read (module doc note, `build_rt_select_and_run`)
+    /// reads *past* the ring into `head`/`tail` themselves — harmlessly
+    /// here (the stand-in method ignores its args), but real enough a
+    /// case that a real HVF boot at this exact shape (`wrela-vmm`'s own
+    /// abandon-path conformance test) once surfaced an unrelated
+    /// alignment bug in that test's *own* address layout before this
+    /// exact scenario was isolated and proven sound at the JIT level.
+    #[test]
+    fn rt_select_and_run_dispatches_correctly_at_the_smallest_possible_ring() {
+        let capacity: u64 = 1;
+        let slot_size: u64 = 8; // tag only, no args
+        let state_size: u64 = 8;
+        let ram = HostRam::new(4096);
+        let base = ram.base();
+        let addrs = ActorAddrs {
+            state: base,
+            ring: base + state_size,
+            head: base + state_size + capacity * slot_size,
+            tail: base + state_size + capacity * slot_size + 8,
+            count: base + state_size + capacity * slot_size + 16,
+            last_result: base + state_size + capacity * slot_size + 24,
+            busy: base + state_size + capacity * slot_size + 32,
+        };
+        // Enqueue one message (method 0, no args) via write directly.
+        ram.write_u64(addrs.ring - base, 0); // method_idx = 0
+        ram.write_u64(addrs.tail - base, 1);
+        ram.write_u64(addrs.count - base, 1);
+
+        // A genuine no-arg method: returns a fixed constant, never reads
+        // x1/x2 at all (module doc above — at `slot_size=8` neither is
+        // ever loaded, so a method that *did* read them would see
+        // whatever the caller happened to leave there, not a message
+        // argument).
+        let no_arg_method = vec![encode::enc_movz(0, 42, 0, true), encode::enc_ret(30)];
+
+        let mut combined: Vec<u32> = Vec::new();
+        let method0_start = combined.len();
+        combined.extend(no_arg_method);
+        let select_start = combined.len();
+        combined.extend(build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[method0_start],
+            select_start,
+        ));
+        let page = ExecPage::new(&combined);
+        let ran = page.call0_at(select_start * 4);
+        assert_eq!(ran, 1, "should have dispatched");
+        assert_eq!(ram.read_u64(addrs.last_result - base), 42);
     }
 }
