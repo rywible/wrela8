@@ -454,6 +454,17 @@ note = "`wrela test <file.wr>` (plans/M3.md item E, decision 9): runs sema (`sem
 # --- M3: comptime if specialization + comptime assert ----------------------
 
 [[clause]]
+id = "comptime.tests.exhaustive"
+doc = "02-language.md#12.2"
+status = "test"
+tests = [
+  "golden/check-tests-exhaustive",
+  "golden/check-tests-exhaustive-counterexample",
+  "golden/err-test-exhaustive-param",
+]
+note = "`@test(exhaustive)` (02-language.md §12.2, added post-M3 with this clause in the same commit per the house rule): a comptime-legal `fn` with parameters has its entire input domain enumerated — every parameter must be default-mode and of an enumerable type (`bool`, `u8`, `i8`, or a fieldless non-generic module enum; `sema::bodies::check_exhaustive_test_params`, validated against the resolved declaration, golden/err-test-exhaustive-param), the product of the domain sizes is capped by `eval::quota::MAX_EXHAUSTIVE_CASES = 65_536` (a fixed revision-0.1 constant like every other quota; `u8 × u8` exactly admitted; over the cap fails that test's own report line naming the count — never sampling, golden/check-tests-exhaustive-counterexample's `domain_over_cap`), and the body runs once per case, each under its own fresh `Quota` (`eval::interp::eval_test_case`, `eval_test`'s twin with parameters bound). Enumeration order is fixed and pinned: per-parameter canonical order (`false` before `true`, numeric ascending, enum variants in declaration order), cartesian product with the rightmost parameter varying fastest — so a failing test's first counterexample is deterministic and reported in the FAILED line as `[param=value, ...]` (golden/check-tests-exhaustive-counterexample pins both a single-parameter and a two-parameter counterexample, the latter proving the rightmost-fastest order: `[flag=true, x=3]` means every `flag=false` case ran first... rightmost `x` varies fastest *within* `flag=false` before `flag` advances, so the first failure is the first `flag=true` case with `x >= 3`). A passing run prints `test <name>: ok (<N> cases)` — the case count is part of the pinned report (`xtask`'s `test_line_well_formed` accepts exactly this one new success shape; the fuzz-eval well-formedness invariant covers it every iteration). golden/check-tests-exhaustive: three passing tests — a u8 wrap round-trip (256 cases), an i8 wrapping double-negation identity (256 cases), and an enum×bool range property (6 cases) — each a §6.1 statement verified for every input, which is the point: bounded domains + the build evaluator make a test a proof, at the cost of one loop (the mechanism is `eval/mod.rs::run_exhaustive_test`, an odometer over `param_domain` vectors — no new architecture)."
+
+[[clause]]
 id = "comptime.specialize.selected-branch-only"
 doc = "02-language.md#12"
 status = "test"

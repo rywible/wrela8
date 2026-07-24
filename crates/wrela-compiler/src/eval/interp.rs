@@ -166,6 +166,39 @@ pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError>
     }
 }
 
+/// Runs one `@test(exhaustive)` fn's body for one enumerated case
+/// (02-language.md §12.2): identical to `eval_test` except the fn's
+/// parameters are bound to this case's values — a fresh `Interp`/`Quota`
+/// per case, so every case gets the same budget any standalone test
+/// gets, and one pathological case cannot starve the rest.
+pub fn eval_test_case(
+    program: &TypedProgram,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, EvalError> {
+    let Some(f) = program.fns.get(name) else {
+        return Err(EvalError {
+            message: format!("internal error: test fn `{name}` not found in the checked program"),
+            stack: vec![],
+        });
+    };
+    let mut ctx = Interp {
+        program,
+        quota: Quota::new(),
+        stack: Vec::new(),
+    };
+    let bind = |env: &mut Env, _ctx: &mut Interp| {
+        for (p, v) in f.params.iter().zip(args.iter()) {
+            env_insert(env, p.name.clone(), v.clone());
+        }
+        Ok(())
+    };
+    match run_call(f, None, name.to_string(), bind, &mut ctx) {
+        Ok((v, _)) => Ok(v),
+        Err(u) => Err(unwind_to_error(u)),
+    }
+}
+
 fn eval_top(program: &TypedProgram, expr: &TypedExpr, context: String) -> Result<Value, EvalError> {
     let mut ctx = Interp {
         program,

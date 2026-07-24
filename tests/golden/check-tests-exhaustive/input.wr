@@ -1,0 +1,30 @@
+module examples.check_tests_exhaustive
+
+enum Mode:
+    Off
+    Low
+    High
+
+# 02 §12.2 @test(exhaustive): the whole input domain is enumerated —
+# a passing run is a verified statement about every input, not a sample.
+@test(exhaustive)
+fn wrap_round_trip(x: u8):
+    assert (x +% 1) -% 1 == x, "increment then decrement round-trips"
+
+@test(exhaustive)
+fn negate_twice_is_identity(x: i8):
+    assert 0 -% (0 -% x) == x, "wrapping double negation"
+
+@test(exhaustive)
+fn mode_and_flag_stay_in_range(m: Mode, flag: bool):
+    v: u64 = 0
+    match m:
+        case .Off:
+            v = 0
+        case .Low:
+            v = 1
+        case .High:
+            v = 2
+    if flag:
+        v = v + 10
+    assert v < 13, "always in range"

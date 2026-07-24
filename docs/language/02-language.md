@@ -851,6 +851,22 @@ scenarios (console send/expect, input events, golden-frame digests,
 shutdown, exit) are declared in the manifest. There is no hosted or mocked
 test target.
 
+`@test(exhaustive)` on a comptime-legal `fn` with parameters enumerates the
+fn's entire input domain and runs the body once per case, each under its own
+fresh quota. Every parameter must have a finite enumerable type — `bool`,
+`u8`, `i8`, or a fieldless enum — and the product of the domain sizes is
+bounded by a fixed build limit; a domain over the limit fails the test
+rather than sampling. A passing exhaustive test is a verified statement
+about every input, not a sample; a failing one reports the first
+counterexample in the fixed enumeration order (rightmost parameter varying
+fastest).
+
+```wrela
+@test(exhaustive)
+fn wrap_then_unwrap_is_identity(x: u8):
+    assert (x +% 1) -% 1 == x, "round trip"
+```
+
 ## 13. Attributes
 
 Attributes are resolved names with typed comptime arguments; they attach
@@ -865,7 +881,7 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 | `@layout(kind, ...)` | Exact byte layout, `kind` one of `dma`, `mmio`, `wire` ([03](03-hardware.md)). |
 | `@offset(n)` | Field offset inside a `@layout` declaration. |
 | `@layout_assert` | Post-layout build assertion over `ImageReport`. |
-| `@test` / `@test(runtime)` | Test declaration (§12.2). |
+| `@test` / `@test(runtime)` / `@test(exhaustive)` | Test declaration (§12.2). |
 | `@budget(...)` | Proven work/memory bound on a function or the loop it precedes. |
 | `@no_promote` | Reject image-lifetime promotion in the annotated scope. |
 | `@detached` | Work independent of any enclosing group (§9.5). |

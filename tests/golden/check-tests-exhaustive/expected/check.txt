@@ -1,0 +1,8 @@
+Module path=examples.check_tests_exhaustive
+  Enum Mode data
+    variant Off
+    variant Low
+    variant High
+  Fn wrap_round_trip(x: read u8) -> unit
+  Fn negate_twice_is_identity(x: read i8) -> unit
+  Fn mode_and_flag_stay_in_range(m: read Mode, flag: read bool) -> unit

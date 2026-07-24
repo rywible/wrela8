@@ -507,6 +507,9 @@ pub(crate) fn check(
                 // *before* `check_top_fn` so the diagnostic fires even
                 // when the body itself would otherwise check cleanly.
                 let test_kind = test_attr_kind(f)?;
+                if test_kind == Some(TestKind::Exhaustive) {
+                    check_exhaustive_test_params(f, d, mctx)?;
+                }
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
                     program.fns.insert(f.name.clone(), tf);
                     if let Some(kind) = test_kind {
@@ -566,28 +569,97 @@ pub(crate) fn test_attr_kind(f: &ast::FnItem) -> Result<Option<TestKind>, SemaEr
     let Some(attr) = f.attrs.iter().find(|a| a.name == "test") else {
         return Ok(None);
     };
-    if !f.params.is_empty() {
-        return Err(type_error(
+    let kind = match attr.args.as_slice() {
+        [] => TestKind::Comptime,
+        [arg] => match &arg.value {
+            Expr::Name(_, name) if name == "runtime" && arg.label.is_none() => TestKind::Runtime,
+            Expr::Name(_, name) if name == "exhaustive" && arg.label.is_none() => {
+                TestKind::Exhaustive
+            }
+            _ => {
+                return Err(type_error(
+                    "`@test`'s only argument is the bare name `runtime` or `exhaustive`"
+                        .to_string(),
+                    attr.span,
+                ));
+            }
+        },
+        _ => {
+            return Err(type_error(
+                "`@test` takes at most one argument (`runtime` or `exhaustive`)".to_string(),
+                attr.span,
+            ));
+        }
+    };
+    // An exhaustive test's whole point is its parameters (the enumerated
+    // domain — their types are validated against the *resolved*
+    // declaration in `check`'s own per-item loop, not here where only
+    // raw ast is visible); the other two kinds take none.
+    match kind {
+        TestKind::Exhaustive if f.params.is_empty() => Err(type_error(
+            format!(
+                "`@test(exhaustive)` fn `{}` needs at least one parameter (the enumerated domain)",
+                f.name
+            ),
+            f.span,
+        )),
+        TestKind::Comptime | TestKind::Runtime if !f.params.is_empty() => Err(type_error(
             format!("`@test` fn `{}` takes no arguments", f.name),
             f.span,
-        ));
-    }
-    match attr.args.as_slice() {
-        [] => Ok(Some(TestKind::Comptime)),
-        [arg] => match &arg.value {
-            Expr::Name(_, name) if name == "runtime" && arg.label.is_none() => {
-                Ok(Some(TestKind::Runtime))
-            }
-            _ => Err(type_error(
-                "`@test`'s only argument is the bare name `runtime`".to_string(),
-                attr.span,
-            )),
-        },
-        _ => Err(type_error(
-            "`@test` takes at most one argument (`runtime`)".to_string(),
-            attr.span,
         )),
+        _ => Ok(Some(kind)),
     }
+}
+
+/// `@test(exhaustive)`'s parameter validation (02-language.md §12.2),
+/// run against the *resolved* declaration: every parameter must be
+/// default-mode (`read` — the domain is data handed in by value, never
+/// `mut`/`take`) and of an enumerable type — `bool`, `u8`, `i8`, or a
+/// fieldless non-generic module `enum` — the finite domains small
+/// enough to enumerate outright (`eval::quota::MAX_EXHAUSTIVE_CASES`
+/// caps the *product* at run time; this check bounds each factor's
+/// kind). Everything else is rejected here, at declaration, so
+/// `wrela test` never has to invent a domain.
+fn check_exhaustive_test_params(
+    f: &ast::FnItem,
+    d: &types::DeclFn,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    for p in &d.params {
+        if p.mode != AccessMode::Read {
+            return Err(type_error(
+                format!(
+                    "`@test(exhaustive)` fn `{}`'s parameter `{}` must be a plain (read) parameter",
+                    f.name, p.name
+                ),
+                f.span,
+            ));
+        }
+        let enumerable = match &p.ty {
+            Type::Bool | Type::U8 | Type::I8 => true,
+            Type::Named(name, targs) if targs.is_empty() => match mctx.enums.get(name) {
+                Some(en) => en
+                    .variants
+                    .iter()
+                    .all(|v| matches!(v.payload, types::DeclVariantPayload::None)),
+                None => false,
+            },
+            _ => false,
+        };
+        if !enumerable {
+            return Err(type_error(
+                format!(
+                    "`@test(exhaustive)` fn `{}`'s parameter `{}` has no enumerable domain \
+                     (supported: `bool`, `u8`, `i8`, a fieldless enum), found `{}`",
+                    f.name,
+                    p.name,
+                    types::render_type(&p.ty)
+                ),
+                f.span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn local_pool_names(info: &StructInfo) -> BTreeSet<String> {

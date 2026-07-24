@@ -387,11 +387,17 @@ pub enum TypedInstantiation {
 /// evaluator under a fresh quota; `Runtime` for `@test(runtime)`
 /// (02-language.md §12.2: booted on the wrela machine runner, a
 /// generated image test — M5, fail-closed here, decision 10's own named
-/// gap).
+/// gap); `Exhaustive` for `@test(exhaustive)` (02-language.md §12.2:
+/// every input in the fn's finite parameter domain is enumerated and
+/// the body run once per case, each under its own fresh quota — a
+/// passing exhaustive test is a verified statement about the whole
+/// domain, not a sample; `sema::bodies` validates the parameter types
+/// are enumerable before this kind is ever recorded).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestKind {
     Comptime,
     Runtime,
+    Exhaustive,
 }
 
 /// One `@test`-attributed module-level fn (`sema::bodies::test_attr_kind`

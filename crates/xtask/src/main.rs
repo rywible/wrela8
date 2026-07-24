@@ -1628,16 +1628,29 @@ fn summary_line_well_formed(line: &str) -> bool {
     n.parse::<u64>().is_ok() && m.parse::<u64>().is_ok()
 }
 
-/// `"test <name>: ok"` or `"test <name>: FAILED <message>"` — the only
-/// two shapes `run_tests` ever emits per test (`eval/mod.rs`'s own doc
-/// comment on `run_tests`).
+/// `"test <name>: ok"`, `"test <name>: ok (<N> cases)"` (an exhaustive
+/// test's own success line), or `"test <name>: FAILED <message>"` — the
+/// only shapes `run_tests` ever emits per test (`eval/mod.rs`'s own doc
+/// comment on `run_tests`; an exhaustive counterexample's
+/// `[param=value, ...]` prefix lives inside the FAILED message).
 fn test_line_well_formed(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("test ") else {
         return false;
     };
     match rest.split_once(": ") {
         Some((_name, "ok")) => true,
-        Some((_name, verdict)) => verdict.starts_with("FAILED "),
+        Some((_name, verdict)) => {
+            if verdict.starts_with("FAILED ") {
+                return true;
+            }
+            let Some(n) = verdict
+                .strip_prefix("ok (")
+                .and_then(|v| v.strip_suffix(" cases)"))
+            else {
+                return false;
+            };
+            n.parse::<u64>().is_ok()
+        }
         None => false,
     }
 }

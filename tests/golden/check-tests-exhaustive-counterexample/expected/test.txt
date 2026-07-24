@@ -1,0 +1,4 @@
+test planted_failure: FAILED [x=42] assertion failed: planted: fails exactly at 42
+test pair_counterexample: FAILED [flag=true, x=3] assertion failed: fails first at flag=true, x=3
+test domain_over_cap: FAILED exhaustive domain has 16777216 cases, over the 65536 cap
+0 passed, 3 failed

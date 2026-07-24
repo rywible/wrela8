@@ -1,0 +1,4 @@
+test wrap_round_trip: ok (256 cases)
+test negate_twice_is_identity: ok (256 cases)
+test mode_and_flag_stay_in_range: ok (6 cases)
+3 passed, 0 failed

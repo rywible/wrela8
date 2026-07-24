@@ -35,6 +35,7 @@ use crate::sema::typed::{
     TestKind, TypedClosureBody, TypedDeferBody, TypedExpr, TypedFn, TypedForIter,
     TypedInstantiation, TypedProgram, TypedStmt, TypedStmtKind, TypedStruct,
 };
+use crate::sema::types::Type;
 use crate::syntax::ast::Span;
 
 pub use interp::EvalError;
@@ -119,10 +120,12 @@ fn check_consts(program: &TypedProgram, legality: &legal::Legality) -> Result<()
 /// full report text plus whether the caller's own exit code should be
 /// nonzero (`true` iff at least one test's line is `FAILED`).
 ///
-/// Line format, pinned by golden coverage (`comptime.tests.build-tier`),
-/// chosen once and never varied:
+/// Line format, pinned by golden coverage (`comptime.tests.build-tier`,
+/// `comptime.tests.exhaustive`), chosen once and never varied:
 ///   `test <name>: ok`
+///   `test <name>: ok (<N> cases)`        (exhaustive only)
 ///   `test <name>: FAILED <first line of the diagnostic>`
+///   `test <name>: FAILED [<param>=<value>, ...] <first line>`  (exhaustive counterexample)
 ///   `<N> passed, <M> failed`
 /// A file with no `@test` fns at all still prints the summary line alone
 /// (`0 passed, 0 failed`) — the dumbest honest "ran zero tests" report,
@@ -176,12 +179,137 @@ pub fn run_tests(program: &TypedProgram) -> (String, bool) {
                     },
                 }
             }
+            TestKind::Exhaustive => {
+                match legal::require_legal(&legality, &test.name, "@test", Span::default()) {
+                    Err(e) => {
+                        failed += 1;
+                        format!(
+                            "test {}: FAILED {} (M5: illegal-closure tests run as image tests)",
+                            test.name, e.message
+                        )
+                    }
+                    Ok(()) => match run_exhaustive_test(program, &test.name) {
+                        Ok(cases) => {
+                            passed += 1;
+                            format!("test {}: ok ({cases} cases)", test.name)
+                        }
+                        Err(line) => {
+                            failed += 1;
+                            format!("test {}: FAILED {line}", test.name)
+                        }
+                    },
+                }
+            }
         };
         out.push_str(&line);
         out.push('\n');
     }
     out.push_str(&format!("{passed} passed, {failed} failed\n"));
     (out, failed > 0)
+}
+
+/// One `@test(exhaustive)` fn's whole enumeration (02-language.md
+/// §12.2): every parameter's finite domain (validated at declaration —
+/// `sema::bodies::check_exhaustive_test_params` — so an unenumerable
+/// type here is an internal error, fail closed), cartesian product in
+/// declaration order with the rightmost parameter varying fastest, one
+/// `interp::eval_test_case` per case under its own fresh quota, stopping
+/// at the first failing case — the enumeration order is fixed, so the
+/// reported counterexample is deterministic. `Ok` carries the case
+/// count for the report line; `Err` carries everything after `FAILED `
+/// (the `[param=value, ...]` counterexample prefix when a case failed,
+/// or the cap/internal-error text when the enumeration never ran).
+fn run_exhaustive_test(program: &TypedProgram, name: &str) -> Result<u128, String> {
+    let Some(f) = program.fns.get(name) else {
+        return Err(format!(
+            "internal error: test fn `{name}` not found in the checked program"
+        ));
+    };
+    let mut domains: Vec<Vec<Value>> = Vec::new();
+    for p in &f.params {
+        let Some(domain) = param_domain(program, &p.ty) else {
+            return Err(format!(
+                "internal error: parameter `{}` has no enumerable domain",
+                p.name
+            ));
+        };
+        domains.push(domain);
+    }
+    let total: u128 = domains.iter().map(|d| d.len() as u128).product();
+    if total > quota::MAX_EXHAUSTIVE_CASES {
+        return Err(format!(
+            "exhaustive domain has {total} cases, over the {} cap",
+            quota::MAX_EXHAUSTIVE_CASES
+        ));
+    }
+    // Odometer over the domains, rightmost fastest.
+    let mut indices = vec![0usize; domains.len()];
+    for _ in 0..total {
+        let args: Vec<Value> = indices
+            .iter()
+            .zip(domains.iter())
+            .map(|(&i, d)| d[i].clone())
+            .collect();
+        if let Err(e) = interp::eval_test_case(program, name, &args) {
+            let first_line = e.message.lines().next().unwrap_or("");
+            return Err(format!(
+                "[{}] {first_line}",
+                f.params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(p, v)| format!("{}={}", p.name, render_case_value(program, &p.ty, v)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        for slot in (0..indices.len()).rev() {
+            indices[slot] += 1;
+            if indices[slot] < domains[slot].len() {
+                break;
+            }
+            indices[slot] = 0;
+        }
+    }
+    Ok(total)
+}
+
+/// The finite domain of one `@test(exhaustive)` parameter type, in its
+/// canonical order (`false` before `true`; numeric ascending; enum
+/// variants in declaration order — `TypedProgram::enums`). `None` for
+/// anything sema should already have rejected.
+fn param_domain(program: &TypedProgram, ty: &Type) -> Option<Vec<Value>> {
+    match ty {
+        Type::Bool => Some(vec![Value::Bool(false), Value::Bool(true)]),
+        Type::U8 => Some((0..=u8::MAX).map(Value::U8).collect()),
+        Type::I8 => Some((i8::MIN..=i8::MAX).map(Value::I8).collect()),
+        Type::Named(name, targs) if targs.is_empty() => {
+            let variants = program.enums.get(name)?;
+            Some(
+                (0..variants.len())
+                    .map(|i| Value::Enum(i, vec![]))
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Renders one enumerated case value for the counterexample line —
+/// exactly the shapes `param_domain` can produce, nothing more.
+fn render_case_value(program: &TypedProgram, ty: &Type, v: &Value) -> String {
+    match (ty, v) {
+        (Type::Named(name, _), Value::Enum(idx, _)) => match program.enums.get(name) {
+            Some(variants) => variants
+                .get(*idx)
+                .cloned()
+                .unwrap_or_else(|| format!("<variant {idx}>")),
+            None => format!("<variant {idx}>"),
+        },
+        (_, Value::Bool(b)) => b.to_string(),
+        (_, Value::U8(n)) => n.to_string(),
+        (_, Value::I8(n)) => n.to_string(),
+        _ => "<value>".to_string(),
+    }
 }
 
 /// Evaluates every `comptime assert` statement anywhere in the typed

@@ -1,0 +1,16 @@
+module examples.check_tests_exhaustive_counterexample
+
+# A failing exhaustive test reports the first counterexample in the
+# fixed enumeration order (rightmost parameter fastest); a domain over
+# the build cap fails the test rather than sampling (02 §12.2).
+@test(exhaustive)
+fn planted_failure(x: u8):
+    assert x != 42, "planted: fails exactly at 42"
+
+@test(exhaustive)
+fn pair_counterexample(flag: bool, x: u8):
+    assert not flag or x < 3, "fails first at flag=true, x=3"
+
+@test(exhaustive)
+fn domain_over_cap(a: u8, b: u8, c: u8):
+    assert a +% b +% c == c +% b +% a, "never runs: 16777216 cases"

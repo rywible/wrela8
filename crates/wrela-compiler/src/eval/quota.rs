@@ -41,6 +41,16 @@ pub const MAX_MEMORY: u64 = 10_000_000;
 /// layer up the pipeline).
 pub const MAX_CALL_DEPTH: usize = 1_000;
 
+/// The largest input domain an `@test(exhaustive)` fn may enumerate
+/// (02-language.md §12.2) — the *product* of its parameters' domain
+/// sizes (each parameter's kind is already bounded at declaration,
+/// `sema::bodies::check_exhaustive_test_params`). Revision-0.1
+/// constant like everything above: `u8 × u8` (65,536 cases) is exactly
+/// admitted; anything larger fails that test's own report line rather
+/// than silently sampling — an exhaustive test that cannot enumerate
+/// is not a weaker test, it is no test at all.
+pub const MAX_EXHAUSTIVE_CASES: u128 = 65_536;
+
 #[derive(Debug, Clone, Default)]
 pub struct Quota {
     steps: u64,
