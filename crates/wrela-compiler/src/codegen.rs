@@ -4208,14 +4208,22 @@ fn emit_await_suspend(
                 scratch1,
                 true, // waker = this turn's own area (X_FRAME).
             )?;
-            // A rejected admission aborts — the disclosed floor
-            // (`BRK_AWAIT_ACTOR_REJECTED`'s own doc comment; item G owns
-            // the real NotAdmitted composition).
+            // A rejected admission aborts. plans/M6.md item H3: it used
+            // to abort as a bare `BRK`, which is a real EL1 exception
+            // into a vector table this machine never installs, so the
+            // operator saw a raw `esr=... pc=0x200` dump and no hint of
+            // the cause. Fail closed *legibly* instead — the ordinary
+            // abort path already prints a message over the console ring
+            // before halting, and this is a condition a plain program
+            // can reach (fill a mailbox with consumed-`Result` sends,
+            // then `await`). The real fix is 02 §9.4's
+            // `CallError::NotAdmitted` composition, which does not exist
+            // (see this arm's ledger note on
+            // `actors.calls.callerror-composition`).
             let skip = ctx.emit_skip(SkipKind::Cbz(0));
-            ctx.push(
-                encode::enc_brk(BRK_AWAIT_ACTOR_REJECTED),
-                format!("brk #{BRK_AWAIT_ACTOR_REJECTED:#x}"),
-            );
+            ctx.abort_fixed(&format!(
+                "await rejected: `{actor}`'s mailbox was full (M6 does not compose CallError::NotAdmitted, so a full mailbox is fatal here)"
+            ));
             ctx.patch_skip(skip, SkipKind::Cbz(0));
             // Park: suspended = 1, status = suspended, return to the
             // scheduler (the real park — control genuinely leaves this

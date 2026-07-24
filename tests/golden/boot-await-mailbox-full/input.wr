@@ -1,0 +1,63 @@
+module examples.boot_await_mailbox_full
+
+# plans/M6.md item H3 — the adversarial sweep's third find, pinned as the
+# witness that this path fails closed *legibly*.
+#
+# 02-language.md §9.4 names this outcome by name: `NotAdmitted(Admission)
+# # never ran: mailbox full`. Composing that value is not implemented at
+# M6, and that limit is fine — what was not fine is how it failed. The
+# `await`'s rejected enqueue executed a bare `BRK`, i.e. a real EL1
+# exception into a vector table this machine never installs, so the
+# operator saw only `esr=0x82000006, ipa=0x200, pc=0x200` and had no way
+# to reach the cause from it. Its only disclosure was a code comment
+# pointing at item G, which shipped without the composition; the constant
+# appeared in neither the plan nor the ledger, so it was not a floor
+# anyone could have looked up.
+#
+# It now aborts through the ordinary abort path, which prints over the
+# console ring before halting: the actor is named, the cause is named,
+# and the scope limit is named. Reaching it takes only ordinary source —
+# fill a two-slot mailbox with consumed-`Result` sends, then `await`.
+#
+# This golden moves the day `CallError::NotAdmitted` becomes real, which
+# is exactly the signal that change should produce.
+
+@actor
+pub struct Logger:
+    total: u64
+
+    pub fn record(mut self, code: u64) -> unit:
+        self.total = self.total + code
+        return unit
+
+    pub fn read_total(read self) -> u64:
+        return self.total
+
+@test(runtime)
+async fn await_into_full_mailbox(lg: Actor[Logger]):
+    filled: u64 = 0
+    match send lg.record(code=1):
+        case .Ok(_):
+            filled = filled + 1
+        case .Err(_):
+            pass
+    match send lg.record(code=2):
+        case .Ok(_):
+            filled = filled + 1
+        case .Err(_):
+            pass
+    assert filled == 2, "the two-slot mailbox is now full"
+    t = await lg.read_total()
+    match t:
+        case .Ok(_):
+            assert false, "unreachable at M6: the await above is fatal"
+        case .Err(_):
+            pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-await-mailbox-full", target=Target.wrela_machine_v1)
+    lg = img.actor(Logger, mailbox=2)
+    img.supervise(children=[lg], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
