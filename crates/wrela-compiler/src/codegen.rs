@@ -4485,13 +4485,34 @@ fn emit_await_suspend(
 /// itself, so the whole temp is deterministic no matter which arm is live.
 /// The tag is written by the caller (both call sites want `Ok`, but they
 /// reach it differently).
+///
+/// The copy is bounds-checked against the destination rather than trusted.
+/// At Z1 it cannot overflow: the declared reply is a non-`Result` `T`, the
+/// composed temp is `Result[T, CallError[never]]`, so the payload area is
+/// `max(size(T), size(CallError[never]))` — never narrower than `T`. That
+/// stops being true the moment item Z2 stages a declared `Result[T, E]`,
+/// whose staged size is `8 + max(size(T), size(E))` against a payload area
+/// of only `max(size(T), 8 + size(E))` — for a wide `T` and a narrow `E`
+/// (say `T` = 24 bytes, `E` = 8) the staged value is genuinely *wider*
+/// than the destination, and an unchecked copy here would scribble past
+/// the temp onto the next frame slot. Z2 must recompose rather than copy;
+/// this check is what makes that a loud build failure instead of silent
+/// memory corruption, so it stays even though today nothing can trip it.
 fn emit_copy_staged_reply(
     ctx: &mut FnCtx,
     stage_off: usize,
     staged_size: usize,
     result_off: usize,
     result_size: usize,
-) {
+) -> Result<(), CodegenError> {
+    if staged_size + 8 > result_size {
+        return Err(CodegenError::internal(format!(
+            "a staged reply of {staged_size} byte(s) does not fit the composed result's own \
+             {}-byte payload area (plans/M7.md item Z1: the staged declared reply must be \
+             recomposed, not copied, when the two shapes differ)",
+            result_size.saturating_sub(8)
+        )));
+    }
     let mut w = 0;
     while w < staged_size {
         ctx.load_slot(X_A, stage_off + w);
@@ -4506,6 +4527,7 @@ fn emit_copy_staged_reply(
         ctx.store_slot(X_ZR, result_off + 8 + w);
         w += 8;
     }
+    Ok(())
 }
 
 /// The resume half (module doc's step 3) — the dispatch chain's landing
@@ -4567,7 +4589,7 @@ fn emit_await_resume(
             };
             if let Some((stage_off, staged_size)) = staged {
                 if gctx.arena_capacity == 0 {
-                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size);
+                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size)?;
                     ctx.store_slot(X_ZR, result_off); // tag = Ok
                 } else {
                     // Same rule the scalar path below applies (02 §9.5:
@@ -4591,7 +4613,7 @@ fn emit_await_resume(
                     ctx.load_imm(X_A, 1); // tag = Err (`value::RESULT_ERR`)
                     ctx.store_slot(X_A, result_off);
                     let skip_ok = ctx.emit_skip(SkipKind::Cbnz(X_C));
-                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size);
+                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size)?;
                     ctx.store_slot(X_ZR, result_off); // tag = Ok
                     ctx.patch_skip(skip_ok, SkipKind::Cbnz(X_C));
                 }
