@@ -1,0 +1,41 @@
+module examples.err_image_actor_ambiguous
+
+# plans/M6.md item H (orchestrator verification probe): the other half of
+# 02-language.md §12.2's own runtime-test handle rule — "If the closure's
+# image declares zero or more than one instance of `T`, the build fails
+# naming the candidates; nothing is searched for or mocked."
+#
+# The zero case is pinned by `golden/err-image-actor-undeclared`. The
+# more-than-one case had no test at all, so half of a rule this repo
+# itself introduced (decision 11b) was unverified. Two `Store` instances,
+# one `Actor[Store]` test parameter: the build must fail *and* name both
+# candidates, because picking either one silently is exactly the
+# "searched for or mocked" behaviour the sentence forbids.
+
+@actor
+pub struct Store:
+    value: u64
+
+    init(mut self):
+        self.value = 7
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@test(runtime)
+async fn smoke(store: Actor[Store]):
+    v = await store.get()
+    match v:
+        case .Ok(n):
+            assert n == 7, "expected 7 from Store"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-image-actor-ambiguous", target=Target.wrela_machine_v1)
+    store = img.actor(Store, mailbox=4)
+    store2 = img.actor(Store, mailbox=4)
+    img.supervise(children=[store, store2], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

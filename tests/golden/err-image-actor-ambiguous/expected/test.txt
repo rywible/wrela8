@@ -1,0 +1,1 @@
+error[build]: runtime test `smoke`'s own parameter `store: Actor[Store]` needs exactly one declared `Store` instance in this image; found 2 (actor#0, actor#1)
