@@ -890,7 +890,12 @@ fn find_vmm_binary(explicit: Option<&str>) -> Option<PathBuf> {
 /// (2) lowers/codegens/lays out the whole program as one test image
 /// (`layout::layout_test_image`) — a lowering/codegen failure here fails
 /// closed with a named `error[unimplemented]` line, never a panic or a
-/// silent skip; (3) locates and runs the codesigned `wrela-vmm` binary
+/// silent skip; (2b) runs `eval::image_checks::check_sealed` over this
+/// file's own sealed `ImageGraph`, when it declares an `@image` at all —
+/// the same graph checks `--stage=image`/`--stage=report`/`wrela build`
+/// run, on the path that actually boots the thing (see the inline comment
+/// at the `graph` binding below for why they belong here too);
+/// (3) locates and runs the codesigned `wrela-vmm` binary
 /// (`find_vmm_binary`) — its absence is itself a named fail-closed line,
 /// per the plan's own exact wording; (4) verifies the transcript's own
 /// well-formedness (exactly one `test <name>: `-prefixed line per runtime
@@ -1040,6 +1045,34 @@ fn test_cmd(args: &[String]) -> ExitCode {
     // Absent `@image`, an empty graph (no actors, `compute_runtime_tables`'s
     // own "empty -> None" path) — byte-identical to every pre-M6 `wrela
     // test` golden.
+    // The graph checks (`eval::image_checks::check_sealed`) run here too,
+    // on exactly the sealed graph this command is about to boot. Until
+    // 2026-07-24 they ran only from `dump --stage=image`/`--stage=report`
+    // and `wrela build`, which is the same placement mistake
+    // `sema::send_proof`'s own module doc already recorded for a sibling
+    // pass ("that pass only runs from `--stage=image`/`report`/`build` ...
+    // Fail closed: the rejection has to live where every consumer of the
+    // checked program passes through it"). `wrela test` is a consumer of
+    // the checked program — it lays out and boots a real image built from
+    // this exact graph — so a wiring mistake that `wrela build` rejects
+    // must not sail through here.
+    //
+    // Two boundaries, both deliberate and both disclosed rather than
+    // silently narrowed:
+    //
+    //   - No `@image` fn: the graph is `ImageGraph::default()` and is not
+    //     checked at all, exactly like `run_image_stage`/`build_report`,
+    //     which only run `check_sealed` when there is a real `@image` to
+    //     seal. Checking a default graph against this module's own
+    //     `declared_pools` would invent a rejection for a program that
+    //     binds nothing precisely because it declares no image.
+    //   - No `@test(runtime)` fn: control never reaches this point at all
+    //     (the comptime-only early return above). That path builds no
+    //     image, lays out nothing and boots nothing — there is no
+    //     consumer of the graph there for the graph checks to guard, and
+    //     it is the same tier `--stage=check`/`--stage=typed` occupy.
+    //     The checks live on the path that actually produces an image,
+    //     which is the whole of what the placement argument above asks.
     let graph = match &program.image_fn {
         Some(fn_name) => match eval::interp::eval_image(&program, fn_name) {
             Ok(g) => g,
@@ -1050,6 +1083,14 @@ fn test_cmd(args: &[String]) -> ExitCode {
         },
         None => eval::image::ImageGraph::default(),
     };
+    if program.image_fn.is_some() {
+        let mut programs = BTreeMap::new();
+        programs.insert(module.path.join("."), program.clone());
+        if let Err(e) = eval::image_checks::check_sealed(&graph, &program, &programs) {
+            print_sema_error(&e);
+            return ExitCode::FAILURE;
+        }
+    }
     let method_index = match layout::actor_method_index_tables(&modules, &layout_ctx) {
         Ok(m) => m,
         Err(e) => {

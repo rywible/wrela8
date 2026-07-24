@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::eval::image::{DeclArg, ImageDeclRef, ImageGraph};
 use crate::eval::value::Value;
 use crate::sema::SemaError;
-use crate::sema::typed::{TypedFn, TypedParam, TypedProgram};
+use crate::sema::typed::TypedProgram;
 use crate::sema::types::{self, Type};
 
 fn build_error(message: String) -> SemaError {
@@ -258,6 +258,24 @@ pub fn check_pools_bound(
 // --- check 4/7: init-argument matching with substitution
 // (05-library.md §9, image.graph.init-args-match) --------------------------
 //
+// 05-library.md §9, in full: an actor declaration's arguments "must match
+// `A.init` **(or its literal constructor)** after generated capabilities
+// and handles are substituted". Both halves of that parenthetical are
+// live (`find_constructor`, below): a struct that declares an `init` is
+// matched against its parameters; a struct that declares none is
+// constructed by its *literal* constructor and is matched against its own
+// declared fields, name and declared type alike. The field half was
+// missing until 2026-07-24 — `find_init`'s `None` arm handed the loop an
+// empty parameter slice, so *every* non-reserved wiring argument to a
+// no-`init` struct was rejected as naming nothing, and the three actor
+// boot goldens (`boot-actors`, `boot-actor-chain`,
+// `boot-actor-reply-struct`) could not reach `--stage=image`/`report`/
+// `wrela build` at all despite running correctly under `wrela test`.
+// The widening is exactly the doc sentence and no wider: an argument
+// naming neither an `init` parameter nor a declared field is still an
+// error, and a value that does not fit the field's declared type is
+// still an error naming that field.
+//
 // Decision-7 sub-note (recorded at item C execution, 2026-07-23 — the
 // plan's own "decide the dumb exact rule, record it" instruction): the
 // intrinsic's own *reserved* arguments belong to the image's wiring, not
@@ -357,13 +375,71 @@ fn value_fits_param_type(arg: &DeclArg, param_ty: &Type) -> bool {
     }
 }
 
-fn find_init<'p>(
-    programs: &'p BTreeMap<String, TypedProgram>,
-    struct_name: &str,
-) -> Option<&'p TypedFn> {
-    programs
+/// The name/type slots an image wiring argument is matched against —
+/// 05-library.md §9's own "must match `A.init` **(or its literal
+/// constructor)**", made mechanical. A struct that declares an `init` is
+/// constructed by that `init`, so its parameters are the slots; a struct
+/// that declares none is constructed by its *literal* constructor — its
+/// own declared fields — so the fields are the slots, name and declared
+/// type alike, in declaration order.
+///
+/// The two are not interchangeable in the diagnostics (a message naming
+/// `X.init` for a struct that has no `init` would name something that
+/// does not exist) nor in the *missing*-slot direction — see
+/// `check_one_decl` below, which runs that direction only for `Init`.
+enum Constructor {
+    Init(Vec<(String, Type)>),
+    Fields(Vec<(String, Type)>),
+}
+
+impl Constructor {
+    fn slots(&self) -> &[(String, Type)] {
+        match self {
+            Constructor::Init(s) | Constructor::Fields(s) => s,
+        }
+    }
+}
+
+/// `05-library.md` §9's own "`A.init` (or its literal constructor)",
+/// resolved over the whole build closure (an actor/driver struct's own
+/// declaration may live in a different module than the `@image` fn that
+/// wires it — `check_init_args`'s own doc comment).
+///
+/// The `init` search is exactly what it always was: the first module (in
+/// `programs`'s own BTree order) whose same-named struct declares one
+/// wins. Only when *no* module's copy declares an `init` at all does the
+/// literal-constructor arm run, over the first module declaring the
+/// struct.
+///
+/// A struct name no module in the closure declares at all falls back to
+/// `Constructor::Init(vec![])` — byte-identical to the pre-existing
+/// behavior (every ordinary argument rejected by name, no missing-slot
+/// error), and still the honest wording: today the only shape that can
+/// reach here unfound is a *generic* instantiation, whose checked body
+/// lives in `TypedProgram::instantiations` rather than `structs`, and
+/// whose `init` is therefore invisible to this pass. Fail closed, and
+/// leave it exactly as loud as it already was.
+fn find_constructor(programs: &BTreeMap<String, TypedProgram>, struct_name: &str) -> Constructor {
+    if let Some(f) = programs
         .values()
         .find_map(|p| p.structs.get(struct_name).and_then(|s| s.init.as_ref()))
+    {
+        return Constructor::Init(
+            f.params
+                .iter()
+                .map(|p| (p.name.clone(), p.ty.clone()))
+                .collect(),
+        );
+    }
+    let Some(s) = programs.values().find_map(|p| p.structs.get(struct_name)) else {
+        return Constructor::Init(Vec::new());
+    };
+    Constructor::Fields(
+        s.fields
+            .iter()
+            .filter_map(|name| s.field_types.get(name).map(|ty| (name.clone(), ty.clone())))
+            .collect(),
+    )
 }
 
 fn check_one_decl(
@@ -376,48 +452,79 @@ fn check_one_decl(
     let Type::Named(struct_name, _) = actor_type else {
         return Ok(()); // defensive: only ever a bare struct name reaches here
     };
-    let empty: Vec<TypedParam> = Vec::new();
-    let params: &[TypedParam] = match find_init(programs, struct_name) {
-        Some(f) => &f.params,
-        None => &empty,
-    };
+    let ctor = find_constructor(programs, struct_name);
     let reserved = reserved_args(kind);
     let mut satisfied: BTreeSet<String> = BTreeSet::new();
     for a in args {
         if reserved.contains(&a.label.as_str()) {
             continue;
         }
-        let Some(p) = params.iter().find(|p| p.name == a.label) else {
-            return Err(build_error(format!(
-                "`{}` passes `{}=...` to `{struct_name}`, but `{struct_name}.init` has no \
-                 parameter named `{}`",
-                decl_ref.render(),
-                a.label,
-                a.label
-            )));
+        let Some((slot_name, slot_ty)) = ctor.slots().iter().find(|(n, _)| *n == a.label) else {
+            return Err(build_error(match &ctor {
+                Constructor::Init(_) => format!(
+                    "`{}` passes `{}=...` to `{struct_name}`, but `{struct_name}.init` has no \
+                     parameter named `{}`",
+                    decl_ref.render(),
+                    a.label,
+                    a.label
+                ),
+                Constructor::Fields(_) => format!(
+                    "`{}` passes `{}=...` to `{struct_name}`, but `{struct_name}` declares no \
+                     `init` and has no field named `{}`",
+                    decl_ref.render(),
+                    a.label,
+                    a.label
+                ),
+            }));
         };
         if matches!(a.value, Value::ImageDecl(_)) {
-            satisfied.insert(p.name.clone());
+            satisfied.insert(slot_name.clone());
             continue;
         }
-        if !value_fits_param_type(a, &p.ty) {
-            return Err(build_error(format!(
-                "`{}` passes `{}={}`, which does not fit `{struct_name}.init`'s own `{}: {}`",
-                decl_ref.render(),
-                a.label,
-                types::render_type(&a.ty),
-                p.name,
-                types::render_type(&p.ty)
-            )));
+        if !value_fits_param_type(a, slot_ty) {
+            return Err(build_error(match &ctor {
+                Constructor::Init(_) => format!(
+                    "`{}` passes `{}={}`, which does not fit `{struct_name}.init`'s own `{}: {}`",
+                    decl_ref.render(),
+                    a.label,
+                    types::render_type(&a.ty),
+                    slot_name,
+                    types::render_type(slot_ty)
+                ),
+                Constructor::Fields(_) => format!(
+                    "`{}` passes `{}={}`, which does not fit `{struct_name}`'s own field `{}: {}`",
+                    decl_ref.render(),
+                    a.label,
+                    types::render_type(&a.ty),
+                    slot_name,
+                    types::render_type(slot_ty)
+                ),
+            }));
         }
-        satisfied.insert(p.name.clone());
+        satisfied.insert(slot_name.clone());
     }
-    for p in params {
-        if satisfied.contains(&p.name) {
+    // The *missing*-slot direction, for a declared `init` only. A field
+    // this image leaves unwired is not missing anything: the boot
+    // sequence zero-initializes every actor's whole state slot before any
+    // turn runs and only then calls a declared zero-argument `init`
+    // (`layout::build_boot_init`'s own doc comment, whose disclosed floor
+    // says materializing `ActorDecl::args` against a real parameter list
+    // is deferred work) — so an unsupplied field has a defined value, and
+    // demanding an argument for it would reject every actor whose state
+    // is ordinary data (`tests/golden/boot-actors`'s own `Ledger.marks:
+    // u64`, wired with nothing but the reserved `mailbox=`). 05-library.md
+    // §9's own "a resource `init` argument without one recovery source is
+    // a build error" names `init` arguments, and that is exactly the
+    // scope kept here.
+    let Constructor::Init(params) = &ctor else {
+        return Ok(());
+    };
+    for (name, ty) in params {
+        if satisfied.contains(name) {
             continue;
         }
-        if let Type::Named(name, _) = &p.ty {
-            if is_capability_type_name(name) || is_handle_type_name(name) {
+        if let Type::Named(tn, _) = ty {
+            if is_capability_type_name(tn) || is_handle_type_name(tn) {
                 continue;
             }
         }
@@ -425,9 +532,9 @@ fn check_one_decl(
             "`{}` is missing `{struct_name}.init`'s own `{}: {}` — no `{}=...` argument and no \
              wiring substitution source",
             decl_ref.render(),
-            p.name,
-            types::render_type(&p.ty),
-            p.name
+            name,
+            types::render_type(ty),
+            name
         )));
     }
     Ok(())
@@ -516,7 +623,7 @@ pub fn check_supervision(graph: &ImageGraph) -> Result<(), SemaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sema::typed::TypedStruct;
+    use crate::sema::typed::{TypedFn, TypedParam, TypedStruct};
     use crate::syntax::ast::AccessMode;
 
     fn decl_arg(label: &str, ty: Type, value: Value) -> DeclArg {
@@ -762,6 +869,150 @@ mod tests {
             )],
         });
         assert!(check_init_args(&g, &programs).is_ok());
+    }
+
+    // --- the literal-constructor half (05-library.md §9: "or its literal
+    // constructor") — a struct that declares no `init` at all ----------------
+
+    fn program_with_fields(struct_name: &str, fields: Vec<(&str, Type)>) -> TypedProgram {
+        let mut program = TypedProgram::default();
+        program.structs.insert(
+            struct_name.to_string(),
+            TypedStruct {
+                name: struct_name.to_string(),
+                fields: fields.iter().map(|(n, _)| n.to_string()).collect(),
+                field_types: fields
+                    .into_iter()
+                    .map(|(n, t)| (n.to_string(), t))
+                    .collect(),
+                init: None,
+                ..TypedStruct::default()
+            },
+        );
+        program
+    }
+
+    #[test]
+    fn a_handle_argument_matches_a_declared_field_when_the_struct_has_no_init() {
+        // `tests/golden/image-field-wired-accept`'s own shape, in
+        // miniature: `Worker.led: Actor[Ledger]`, no `init`, wired
+        // `led=<actor#0>`. Before the literal-constructor half landed
+        // this was rejected outright — a no-`init` struct was handed an
+        // empty parameter list, so every wiring argument named nothing.
+        let programs = programs_map(program_with_fields(
+            "Worker",
+            vec![("led", Type::Named("Actor".to_string(), vec![]))],
+        ));
+        let mut g = ImageGraph::default();
+        g.actors.push(crate::eval::image::ActorDecl {
+            actor_type: Type::Named("Worker".to_string(), vec![]),
+            args: vec![decl_arg(
+                "led",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Actor(0)),
+            )],
+        });
+        assert!(check_init_args(&g, &programs).is_ok());
+    }
+
+    #[test]
+    fn an_unwired_field_is_never_a_missing_init_argument() {
+        // `tests/golden/boot-actors`'s own `Ledger.marks: u64`: a plain
+        // data field, no `init`, wired with nothing. The missing-slot
+        // direction runs for a declared `init` only (`check_one_decl`'s
+        // own comment) — the boot sequence zero-initializes the whole
+        // state slot, so there is nothing missing here.
+        let programs = programs_map(program_with_fields("Ledger", vec![("marks", Type::U64)]));
+        let mut g = ImageGraph::default();
+        g.actors.push(crate::eval::image::ActorDecl {
+            actor_type: Type::Named("Ledger".to_string(), vec![]),
+            args: vec![],
+        });
+        assert!(check_init_args(&g, &programs).is_ok());
+    }
+
+    #[test]
+    fn an_argument_naming_neither_an_init_param_nor_a_field_is_rejected() {
+        // `tests/golden/err-image-field-unknown`'s own shape: the
+        // widening is exactly 05 §9's sentence, never "anything goes".
+        let programs = programs_map(program_with_fields("Store", vec![("value", Type::U64)]));
+        let mut g = ImageGraph::default();
+        g.actors.push(crate::eval::image::ActorDecl {
+            actor_type: Type::Named("Store".to_string(), vec![]),
+            args: vec![decl_arg("queue_depth", Type::I64, Value::I64(8))],
+        });
+        let err = check_init_args(&g, &programs).expect_err("Store has no `queue_depth` field");
+        assert_eq!(err.category, "build");
+        assert!(err.message.contains("queue_depth"));
+        assert!(
+            err.message
+                .contains("declares no `init` and has no field named")
+        );
+    }
+
+    #[test]
+    fn a_literal_argument_is_range_checked_against_its_field_type() {
+        // The same `value_fits_param_type` accommodation the `init` half
+        // already needed (a builder intrinsic argument is typed with no
+        // expected type, so `seed=8` is recorded at its `i64` default),
+        // reaching a *field*'s declared type instead of a parameter's.
+        let programs = programs_map(program_with_fields("Store", vec![("seed", Type::U32)]));
+        let mut g = ImageGraph::default();
+        g.actors.push(crate::eval::image::ActorDecl {
+            actor_type: Type::Named("Store".to_string(), vec![]),
+            args: vec![decl_arg("seed", Type::I64, Value::I64(8))],
+        });
+        assert!(check_init_args(&g, &programs).is_ok());
+    }
+
+    #[test]
+    fn a_value_that_does_not_fit_its_field_type_names_the_field() {
+        let programs = programs_map(program_with_fields("Store", vec![("seed", Type::U8)]));
+        let mut g = ImageGraph::default();
+        g.actors.push(crate::eval::image::ActorDecl {
+            actor_type: Type::Named("Store".to_string(), vec![]),
+            args: vec![decl_arg("seed", Type::I64, Value::I64(4096))],
+        });
+        let err = check_init_args(&g, &programs).expect_err("4096 does not fit a u8 field");
+        assert!(err.message.contains("own field `seed: u8`"));
+        // Never `Store.init` — `Store` declares no `init` at all.
+        assert!(!err.message.contains(".init"));
+    }
+
+    #[test]
+    fn a_declared_init_still_wins_over_the_fields_of_the_same_struct() {
+        // 05 §9's "or" is exclusive: a struct that declares an `init` is
+        // matched against that `init`, and a field it does not name is
+        // not a wiring slot.
+        let mut program = program_with_init(
+            "Blk",
+            vec![TypedParam {
+                mode: AccessMode::Read,
+                name: "queue_depth".to_string(),
+                ty: Type::U32,
+                default: None,
+            }],
+        );
+        let s = program
+            .structs
+            .get_mut("Blk")
+            .expect("Blk was just inserted");
+        s.fields = vec!["id".to_string()];
+        s.field_types = BTreeMap::from([("id".to_string(), Type::U32)]);
+        let programs = programs_map(program);
+        let mut g = ImageGraph::default();
+        g.drivers.push(crate::eval::image::DriverDecl {
+            actor_type: Type::Named("Blk".to_string(), vec![]),
+            args: vec![
+                decl_arg("queue_depth", Type::I64, Value::I64(8)),
+                decl_arg("id", Type::I64, Value::I64(1)),
+            ],
+        });
+        let err = check_init_args(&g, &programs).expect_err("`id` is a field, not an init param");
+        assert!(
+            err.message
+                .contains("`Blk.init` has no parameter named `id`")
+        );
     }
 
     // --- supervision ---------------------------------------------------------

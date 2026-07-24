@@ -892,7 +892,7 @@ pub fn layout_program(
     let image_base = machine_layout::IMAGE_BASE;
 
     let wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b)?,
+        Some(b) => RuntimeWiring::derive(b, false)?,
         None => None,
     };
     let runtime: Option<&RuntimeTables> = wiring.as_ref().map(|w| &w.tables);
@@ -1705,15 +1705,42 @@ fn merge_actor_pub_methods(
 /// (beyond the implicit `mut self` receiver) — the one shape this item's
 /// boot sequence can call safely without a real init-arg materialization
 /// pass (`layout::build_boot_init`'s own doc comment names that pass as
-/// real, further, deferred work). An actor whose own `init` takes
-/// further params is not in this map at all — its own state stays plain
-/// zero-initialized, the documented floor, not a silent narrowing.
-fn actor_zero_arg_init_keys(
-    modules: &BTreeMap<String, Module>,
-) -> Result<BTreeMap<String, String>, LayoutError> {
+/// real, further, deferred work).
+///
+/// Both shapes are returned, because the parameterized one is not a
+/// silent floor any more — it is a **rejection**. Until this pass
+/// materializes `init` arguments, an image that declares an actor whose
+/// `init` takes parameters cannot be laid out at all: the wiring is
+/// accepted by `eval::image_checks` (the argument really does name a
+/// real `init` parameter), and then boot would never call that `init`,
+/// leaving the actor's state plain zero-initialized. A verified probe:
+/// an actor declaring `init(mut self, depth: u32)` wired `depth=7` in
+/// the image booted with `depth == 0` and said nothing. That is a wrong
+/// answer, not a missing feature, and CLAUDE.md's "an unimplemented path
+/// errors loudly; it never approximates" governs — a comment disclosing
+/// the floor is not the same as failing closed, which is why this
+/// returns the set rather than merely omitting it.
+///
+/// Deliberately keyed on the struct's `init`, not on the wiring
+/// arguments: an `init` with parameters is never called by boot no
+/// matter what the image passes, so a declaration with no arguments at
+/// all is equally wrong (and `check_one_decl` would have rejected it
+/// first for the missing argument, which is why no golden shows that
+/// spelling).
+struct ActorInitShapes {
+    /// Struct name -> its `Name.init` call key, for the one shape boot
+    /// can call: a zero-argument `init`.
+    zero_arg: BTreeMap<String, String>,
+    /// Struct name -> how many parameters its `init` declares, for the
+    /// shape that must be rejected.
+    parameterized: BTreeMap<String, usize>,
+}
+
+fn actor_init_shapes(modules: &BTreeMap<String, Module>) -> Result<ActorInitShapes, LayoutError> {
     use crate::sema::types::{DeclItem, DeclMember};
 
-    let mut out = BTreeMap::new();
+    let mut zero_arg = BTreeMap::new();
+    let mut parameterized = BTreeMap::new();
     for module in modules.values() {
         let specialized = crate::sema::specialize::specialize(module)
             .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
@@ -1724,13 +1751,18 @@ fn actor_zero_arg_init_keys(
             for m in &s.members {
                 if let DeclMember::Init(f) = m {
                     if f.params.is_empty() {
-                        out.insert(s.name.clone(), format!("{}.init", s.name));
+                        zero_arg.insert(s.name.clone(), format!("{}.init", s.name));
+                    } else {
+                        parameterized.insert(s.name.clone(), f.params.len());
                     }
                 }
             }
         }
     }
-    Ok(out)
+    Ok(ActorInitShapes {
+        zero_arg,
+        parameterized,
+    })
 }
 
 /// plans/M6.md item D: `(actor name) -> (method name) -> its own 0-based
@@ -3157,7 +3189,17 @@ struct RuntimeWiring {
 }
 
 impl RuntimeWiring {
-    fn derive(boot: &BootCtx) -> Result<Option<RuntimeWiring>, LayoutError> {
+    /// `reject_parameterized_init` is set only by the image flavor that
+    /// is actually booted (`layout_test_image`). `layout_program`'s own
+    /// entry stub halts with `EXIT_CODE_NO_RUNTIME` and never calls the
+    /// runtime block at all (this module's own note above says so), so a
+    /// `wrela build` image cannot yet run an `init` of any shape — its
+    /// report stays a description of the image's wiring, which is exactly
+    /// what it claims to be, and its goldens keep their coverage.
+    fn derive(
+        boot: &BootCtx,
+        reject_parameterized_init: bool,
+    ) -> Result<Option<RuntimeWiring>, LayoutError> {
         let Some(tables) =
             compute_runtime_tables(boot.graph, boot.modules, boot.layout_ctx, boot.async_frames)
                 .map_err(LayoutError::new)?
@@ -3184,7 +3226,30 @@ impl RuntimeWiring {
                 (a.name.clone(), keys)
             })
             .collect();
-        let init_keys = actor_zero_arg_init_keys(boot.modules)?;
+        let shapes_init = actor_init_shapes(boot.modules)?;
+        // Fail closed before anything is emitted: this image declares an
+        // actor whose `init` boot cannot call, so booting it would run a
+        // zero-initialized actor and report success. Checked against the
+        // *declared* actor set (`tables.actors`), never against every
+        // struct in the closure — a parameterized `init` on a plain data
+        // struct is ordinary, legal code and is none of this pass's
+        // business.
+        for a in &tables.actors {
+            if !reject_parameterized_init {
+                continue;
+            }
+            if let Some(n) = shapes_init.parameterized.get(&a.name) {
+                return Err(LayoutError::new(format!(
+                    "actor `{}` declares `init` with {n} parameter(s), and this image declares an \
+                     instance of it — boot can only call a zero-argument `init`, so the actor's \
+                     state would silently stay zero-initialized instead of carrying its wired \
+                     arguments. Init-argument materialization is not implemented (plans/M7.md); \
+                     failing closed rather than booting a wrong answer.",
+                    a.name
+                )));
+            }
+        }
+        let init_keys = shapes_init.zero_arg;
         let actor_names = tables.actors.iter().map(|a| a.name.clone()).collect();
         let state_sizes = tables.actors.iter().map(|a| a.state_size).collect();
         Ok(Some(RuntimeWiring {
@@ -4497,7 +4562,7 @@ pub fn layout_test_image(
     // one copy `layout_program` uses too (that fn's own module block above
     // has the full reasoning).
     let wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b)?,
+        Some(b) => RuntimeWiring::derive(b, true)?,
         None => None,
     };
     let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());

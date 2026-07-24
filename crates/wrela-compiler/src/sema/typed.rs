@@ -522,6 +522,24 @@ pub struct TypedStruct {
     /// evaluator-only bookkeeping, not part of the pinned dump grammar,
     /// so no existing golden's text changes.
     pub fields: Vec<String>,
+    /// Each field's own declared type, keyed by name — the same walk
+    /// `fields` above is built by, one step further (`bodies::check_struct_members`
+    /// already has the resolved `Type` in hand there: it is the expected
+    /// type it checks that field's own default against). Kept as a
+    /// by-name map rather than folded into `fields` because `fields` is
+    /// consumed *by index* everywhere else (`eval::value::Value::Struct`,
+    /// `mwir`'s own field-index projections), and this is only ever
+    /// looked up by name.
+    ///
+    /// Added for `eval::image_checks::check_one_decl`, which needs a
+    /// field's declared type to check an image wiring argument against a
+    /// struct that declares no `init` (05-library.md §9: an actor
+    /// declaration's arguments "must match `A.init` (or its literal
+    /// constructor)" — a struct with no `init` is constructed by its
+    /// declared fields). Evaluator/checker-only bookkeeping, exactly like
+    /// `fields`: not rendered by `dump` below, so no pinned golden text
+    /// changes.
+    pub field_types: BTreeMap<String, Type>,
     /// Every field that declared a default, typed once (with `self`
     /// bound, since a default may reference it) — a struct literal that
     /// omits the field elides it from its own `fields` list instead of
