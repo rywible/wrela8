@@ -83,6 +83,17 @@ pub fn hv_reg_xn(n: u32) -> u32 {
 // --- system register IDs (hv_vcpu_types.h's `hv_sys_reg_t`) -----------------
 
 pub const HV_SYS_REG_CPACR_EL1: u16 = 0xc082;
+/// plans/M6.md item F: the three EL1 exception-state registers a guest's
+/// own *first* fault leaves behind when it vectors into an unmapped
+/// vector table (`lib.rs::el1_exception_note`'s own doc comment has the
+/// whole mechanism). Read-only diagnostics — nothing here ever writes
+/// them, and the VMM's own model of the machine is unchanged by their
+/// existence (06-machine.md §4: there is no emulated GIC and no VBAR the
+/// guest is expected to install).
+pub const HV_SYS_REG_ESR_EL1: u16 = 0xc290;
+pub const HV_SYS_REG_ELR_EL1: u16 = 0xc201;
+pub const HV_SYS_REG_FAR_EL1: u16 = 0xc300;
+pub const HV_SYS_REG_VBAR_EL1: u16 = 0xc600;
 
 // --- exit reason (hv_vcpu_types.h's `hv_exit_reason_t`) ---------------------
 
@@ -114,9 +125,11 @@ pub struct HvVcpuExit {
 // names: vm create/destroy, memory map, vcpu create/destroy/run/exit-info
 // (folded into `hv_vcpu_create`'s own out-param, per the real header —
 // there is no separate `hv_vcpu_exit_info` call), register get/set
-// (`hv_vcpu_get_reg`/`hv_vcpu_set_reg`/`hv_vcpu_set_sys_reg`), plus
-// `hv_vcpus_exit` (decision 15's own watchdog force-exit call). Linked via
-// the `Hypervisor` framework (the smoke probe's own exact recipe).
+// (`hv_vcpu_get_reg`/`hv_vcpu_set_reg`/`hv_vcpu_set_sys_reg`/, from
+// plans/M6.md item F, `hv_vcpu_get_sys_reg` — read-only, diagnostics
+// only), plus `hv_vcpus_exit` (decision 15's own watchdog force-exit
+// call). Linked via the `Hypervisor` framework (the smoke probe's own
+// exact recipe).
 
 #[link(name = "Hypervisor", kind = "framework")]
 unsafe extern "C" {
@@ -129,6 +142,7 @@ unsafe extern "C" {
     pub fn hv_vcpu_get_reg(vcpu: u64, reg: u32, value: *mut u64) -> i32;
     pub fn hv_vcpu_set_reg(vcpu: u64, reg: u32, value: u64) -> i32;
     pub fn hv_vcpu_set_sys_reg(vcpu: u64, reg: u16, value: u64) -> i32;
+    pub fn hv_vcpu_get_sys_reg(vcpu: u64, reg: u16, value: *mut u64) -> i32;
     pub fn hv_vcpu_run(vcpu: u64) -> i32;
     pub fn hv_vcpus_exit(vcpus: *mut u64, vcpu_count: u32) -> i32;
 }

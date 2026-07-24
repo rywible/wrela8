@@ -1,0 +1,50 @@
+module examples.boot_group_join
+
+# plans/M6.md item F flagship: `with group(capacity=2)`, two `g.start`
+# children (distinct free async fns — item F's own disclosed floor: one
+# free-turn area per fn, so the same callee can only ever be `g.start`ed
+# from one static site), `g.join_all()`, results asserted.
+
+@actor
+pub struct Doubler:
+    pub fn double(read self, n: u64) -> u64:
+        return n * 2
+
+async fn fetch_a(d: Actor[Doubler]) -> u64:
+    v = await d.double(n=10)
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+async fn fetch_b(d: Actor[Doubler]) -> u64:
+    v = await d.double(n=20)
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+@test(runtime)
+async fn test_join(d: Actor[Doubler]):
+    total: u64 = 0
+    with group(capacity=2) as g:
+        g.start(fetch_a, d=d)
+        g.start(fetch_b, d=d)
+        results = await g.join_all()
+        for r in results:
+            match r:
+                case .Ok(v):
+                    total = total + v
+                case .Err(_):
+                    pass
+    assert total == 60, "both children's own doubled replies (10*2 + 20*2)"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-group-join", target=Target.wrela_machine_v1)
+    d = img.actor(Doubler, mailbox=4)
+    img.supervise(children=[d], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

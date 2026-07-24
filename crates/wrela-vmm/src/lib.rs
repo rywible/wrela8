@@ -661,8 +661,9 @@ fn boot_image_core(
                     )));
                 } else {
                     let pc = read_pc(vcpu).unwrap_or(0);
+                    let note = el1_exception_note(vcpu, pc);
                     return Err(VmmError::GuestFault(format!(
-                        "unhandled exception (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x})"
+                        "unhandled exception (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x}){note}"
                     )));
                 }
             }
@@ -703,6 +704,75 @@ fn read_pc(vcpu: u64) -> Option<u64> {
     let mut pc = 0u64;
     let r = unsafe { hv_vcpu_get_reg(vcpu, HV_REG_PC, &mut pc) };
     if r == HV_SUCCESS { Some(pc) } else { None }
+}
+
+/// plans/M6.md item F: the fault diagnostic's own second half, and the
+/// single highest-value debugging tool this milestone added.
+///
+/// 06-machine.md §4 gives this machine **no** exception vector table:
+/// there is no emulated GIC, the guest never installs a `VBAR_EL1`, and
+/// every interrupt is a checkpoint-observed pending word instead. So an
+/// EL1 synchronous exception the guest takes *itself* — an unaligned
+/// 64-bit access (the MMU is off, so every access is Device-nGnRnE and
+/// alignment-checked), a misaligned `sp`, an undefined instruction — is
+/// not routed to the host at all: the CPU vectors to `VBAR_EL1 + <slot>`,
+/// which is guest-physical `0x000..0x780` with `VBAR_EL1` still zero,
+/// which is not mapped, which *then* exits to this VMM as an instruction
+/// abort at that vector address. The reported `esr`/`ipa`/`pc` therefore
+/// describe the **second** fault, and say nothing at all about the first.
+///
+/// The original fault's own state is still sitting in `ESR_EL1`/
+/// `ELR_EL1`/`FAR_EL1`, untouched (nothing at the vector address ran to
+/// clobber it) — so whenever `pc` lands on a `VBAR_EL1` vector slot,
+/// report those too, and name the mechanism. Item F's own
+/// `golden/boot-group-join` cost a full debugging session to a bare
+/// `pc=0x200`; with this note the same failure reads out its real cause
+/// (`ESR_EL1` EC `0x25`, DFSC `0b100001` — an alignment fault) and its
+/// real faulting instruction directly.
+///
+/// Best-effort by construction: a register read that fails is simply
+/// omitted, never turned into a second error on top of the first.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn el1_exception_note(vcpu: u64, pc: u64) -> String {
+    use hv::*;
+    let sys = |reg: u16| -> Option<u64> {
+        let mut v = 0u64;
+        let r = unsafe { hv_vcpu_get_sys_reg(vcpu, reg, &mut v) };
+        if r == HV_SUCCESS { Some(v) } else { None }
+    };
+    let Some(vbar) = sys(HV_SYS_REG_VBAR_EL1) else {
+        return String::new();
+    };
+    // The AArch64 vector table is 16 slots of 0x80 bytes (ARM ARM
+    // D1.10.2): four groups of four (current EL with SP0, current EL with
+    // SPx, lower EL AArch64, lower EL AArch32) x (sync, IRQ, FIQ, SError).
+    if pc < vbar || pc >= vbar + 0x800 || (pc - vbar) % 0x80 != 0 {
+        return String::new();
+    }
+    let slot = pc - vbar;
+    let (esr1, elr1, far1) = (
+        sys(HV_SYS_REG_ESR_EL1),
+        sys(HV_SYS_REG_ELR_EL1),
+        sys(HV_SYS_REG_FAR_EL1),
+    );
+    let mut note = format!(
+        "; pc is VBAR_EL1({vbar:#x}) + {slot:#x} — the guest took an EL1 exception into a \
+         vector table this machine never installs (06-machine.md §4), so the fault above is \
+         only the resulting instruction abort. The original fault:"
+    );
+    match esr1 {
+        Some(e) => {
+            note.push_str(&format!(" ESR_EL1={e:#x} (EC={:#x})", (e >> 26) & 0x3F));
+        }
+        None => note.push_str(" ESR_EL1=<unreadable>"),
+    }
+    if let Some(v) = elr1 {
+        note.push_str(&format!(" ELR_EL1={v:#x}"));
+    }
+    if let Some(v) = far1 {
+        note.push_str(&format!(" FAR_EL1={v:#x}"));
+    }
+    note
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2173,6 +2243,71 @@ pub fn build() -> Image:
     /// own doc), and a tampered choice log must be caught, named, by
     /// `record::Divergence`.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    /// plans/M6.md item F: the EL1-exception note (`el1_exception_note`'s
+    /// own doc comment has the whole mechanism). A four-instruction
+    /// hand-built guest performs one unaligned 64-bit load — the MMU is
+    /// off, so every access is Device-nGnRnE and naturally
+    /// alignment-checked — which the CPU takes as an EL1 synchronous
+    /// exception, vectoring to `VBAR_EL1 + 0x200` with `VBAR_EL1` never
+    /// installed (06-machine.md §4: this machine has no vector table at
+    /// all). The bare fault the VMM sees is therefore an instruction
+    /// abort at `0x200`, which says nothing; this test pins that the
+    /// diagnostic *also* names the mechanism and reports the original
+    /// `ESR_EL1` (EC `0x25` — data abort, same EL) and the real faulting
+    /// address in `FAR_EL1`. Exactly the diagnostic that would have named
+    /// `golden/boot-group-join`'s own first-boot failure outright.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn an_el1_fault_into_the_absent_vector_table_names_the_original_esr_over_hvf() {
+        use wrela_compiler::encode;
+        use wrela_machine::layout as machine_layout;
+
+        // A deliberately 4-aligned (never 8-aligned) DRAM address.
+        let bad = machine_layout::DRAM_BASE + 0x8004;
+        let mut w = Vec::new();
+        w.extend(load_imm_words(9, bad));
+        w.push(encode::enc_ldr_x_imm(10, 9, 0)); // 64-bit load at a 4-aligned address
+        w.push(encode::enc_brk(0)); // never reached
+
+        let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let report_text = format!(
+            "Machine revision={}\nInput path=el1-vector.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            machine_layout::IMAGE_BASE,
+            img_bytes.len(),
+            machine_layout::IMAGE_BASE,
+        );
+        let tmp_dir =
+            std::env::temp_dir().join(format!("wrela-vmm-el1-vector-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+        let img_path = tmp_dir.join("el1-vector.img");
+        let report_path = tmp_dir.join("el1-vector.report.txt");
+        std::fs::write(&img_path, &img_bytes).expect("write image");
+        std::fs::write(&report_path, &report_text).expect("write report");
+        let err = boot_image(&report_path, &img_path)
+            .expect_err("an unaligned 64-bit load must fault, never boot cleanly");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pc=0x200"),
+            "the bare fault is still reported verbatim: {msg}"
+        );
+        assert!(
+            msg.contains("VBAR_EL1(0x0) + 0x200"),
+            "the note must name the vector slot: {msg}"
+        );
+        assert!(
+            msg.contains("(EC=0x25)"),
+            "the note must carry the ORIGINAL fault's own ESR_EL1 exception class \
+             (0x25 = data abort, same EL): {msg}"
+        );
+        assert!(
+            msg.contains(&format!("FAR_EL1={bad:#x}")),
+            "the note must carry the real faulting address: {msg}"
+        );
+    }
+
     #[test]
     fn record_replay_of_the_park_wake_scenario_is_byte_stable_and_detects_tamper() {
         use wrela_compiler::encode;

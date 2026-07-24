@@ -2439,6 +2439,13 @@ pub const GROUP_SLOT_SIZE: u64 = OFF_GROUP_CHILDREN_BASE + (GROUP_MAX_CHILDREN a
 /// routines this item adds.
 pub const GROUP_NO_PARENT: u64 = u64::MAX;
 
+/// `CallError[E]`'s own `Cancelled` variant tag — 02-language.md §9.4
+/// declares the variant order (`Op`, `Cancelled`, `DeadlineExceeded`,
+/// `NotAdmitted`, `PeerFailed`) and `sema::matches::shape_of`'s own
+/// `CallError` arm builds exactly that order, which is what every
+/// `EnumTag` comparison a `match` lowers to is numbered against.
+pub const CALL_ERROR_TAG_CANCELLED: u64 = 1;
+
 pub fn group_child_tag_off(child_index: usize) -> u64 {
     OFF_GROUP_CHILDREN_BASE + (child_index as u64) * 16
 }
@@ -3782,36 +3789,129 @@ fn emit_async_cancelled_tail(ctx: &mut FnCtx) {
 /// `result_temp`'s frame area — `Array[CallError-composed child type;
 /// child_count]`, one 16-byte `Result` element per child, in declared
 /// order (`GroupCtx::child_index`'s own ordinal numbering). `group_reg`
-/// must already hold the group's own arena address.
+/// must already hold the group's own arena address, and must stay live
+/// across the whole loop — it is the base of every load below.
+///
+/// **A real bug the first real HVF boot of `golden/boot-group-join`
+/// caught** (recorded, per house rule, not silently fixed away): an
+/// earlier draft loaded each child's tag/payload into `X_A`/`X_B` while
+/// both call sites passed `X_B` as `group_reg` — so child 0's own
+/// *payload* load overwrote the arena address itself, and child 1's tag
+/// load addressed `payload_of_child_0 + 72`. With `fetch_a`'s own reply
+/// (20) in that slot, that is a 64-bit access to `0x5c`: 4-aligned, not
+/// 8-aligned, and this machine runs with the MMU off (every access is
+/// Device-nGnRnE, naturally-alignment-checked), so it is an EL1
+/// **alignment** fault — taken to `VBAR_EL1 + 0x200` with `VBAR_EL1`
+/// never set, i.e. the reported `esr=0x82000006, ipa=0x200, pc=0x200` was
+/// the *second* fault (an instruction abort on the unmapped vector page),
+/// never a wild branch. Invisible for any single-child group (the clobber
+/// lands on the last use) and invisible to dump review. The value
+/// registers are now `X_C`/`X_D`, and their disjointness from
+/// `group_reg` is checked here rather than trusted.
+/// **A second real bug the same boot caught, one layer down** (recorded,
+/// not silently fixed): an earlier draft wrote each element at a hardcoded
+/// 16-byte stride with the payload as a bare scalar. The composed element
+/// type is `Result[T, CallError[E]]`, whose real size is
+/// `8 (tag) + max(size_of(T), size_of(CallError[E]))` — for this item's own
+/// `Result[u64, CallError[never]]` that is `8 + max(8, 16) = 24`, not 16.
+/// The stride is now derived from the array temp's own real size, and the
+/// `Err` arm composes a real `CallError::Cancelled` value rather than a
+/// raw scalar.
 fn emit_compose_group_join_result(
     ctx: &mut FnCtx,
     group_reg: u8,
     result_temp: Temp,
     child_count: usize,
-) {
+) -> Result<(), CodegenError> {
+    const VAL_TAG: u8 = X_C;
+    const VAL_PAYLOAD: u8 = X_D;
+    const VAL_CONST: u8 = X_E;
+    if group_reg == VAL_TAG || group_reg == VAL_PAYLOAD || group_reg == VAL_CONST {
+        return Err(CodegenError::internal(format!(
+            "`g.join_all()` composition: the group-address register {} is one of the value \
+             registers this loop loads into, so it would be clobbered mid-loop",
+            reg_name(group_reg)
+        )));
+    }
+    if child_count == 0 {
+        return Ok(());
+    }
+    let total = ctx.frame.size_of_temp(result_temp);
+    if total % child_count != 0 {
+        return Err(CodegenError::internal(format!(
+            "`g.join_all()`'s own result array ({total} bytes) does not divide evenly into \
+             {child_count} elements"
+        )));
+    }
+    let elem_size = total / child_count;
+    // Every sum this backend lays out is `tag` (one 8-byte slot) followed
+    // by its payload area (`enum_payload_offset`'s own `TAG` constant —
+    // the one fixed rule, shared with `EnumPayload`'s own emission), so a
+    // composed element is `[+0] = Result tag`, `[+8..elem_size] = payload`.
+    const PAYLOAD_OFF: usize = 8;
+    if elem_size < PAYLOAD_OFF + 8 {
+        return Err(CodegenError::internal(format!(
+            "`g.join_all()`'s own composed element is {elem_size} bytes — too small to hold a \
+             tag plus one payload word"
+        )));
+    }
     let result_off = ctx.frame.off(result_temp);
     for c in 0..child_count {
+        let elem_off = result_off + c * elem_size;
         ctx.push(
-            encode::enc_ldr_x_imm(X_A, group_reg, group_child_tag_off(c) as u16),
+            encode::enc_ldr_x_imm(VAL_TAG, group_reg, group_child_tag_off(c) as u16),
             format!(
                 "ldr {}, [{}, #{}]",
-                reg_name(X_A),
+                reg_name(VAL_TAG),
                 reg_name(group_reg),
                 group_child_tag_off(c)
             ),
         );
-        ctx.store_slot(X_A, result_off + c * 16);
         ctx.push(
-            encode::enc_ldr_x_imm(X_B, group_reg, group_child_payload_off(c) as u16),
+            encode::enc_ldr_x_imm(VAL_PAYLOAD, group_reg, group_child_payload_off(c) as u16),
             format!(
                 "ldr {}, [{}, #{}]",
-                reg_name(X_B),
+                reg_name(VAL_PAYLOAD),
                 reg_name(group_reg),
                 group_child_payload_off(c)
             ),
         );
-        ctx.store_slot(X_B, result_off + c * 16 + 8);
+        // The arena's own child tag is already the `Result` tag by
+        // construction (0 = `Ok`, 1 = `Err`); its payload word is the
+        // child's scalar reply, which is only meaningful on the `Ok` side.
+        // On the `Err` side the payload area holds a whole
+        // `CallError[E]` value, whose own first word is its variant tag —
+        // `Cancelled` (02-language.md §9.4's declared variant order:
+        // `Op`, `Cancelled`, `DeadlineExceeded`, `NotAdmitted`,
+        // `PeerFailed`), the only non-`Ok` outcome this item's own runtime
+        // can produce. Branch-free, mirroring `emit_group_create`'s own
+        // deadline narrowing.
+        ctx.load_imm(VAL_CONST, CALL_ERROR_TAG_CANCELLED as i64);
+        ctx.push(
+            encode::enc_cmp_imm(VAL_TAG, 0, true),
+            format!("cmp {}, #0", reg_name(VAL_TAG)),
+        );
+        ctx.push(
+            encode::enc_csel(VAL_PAYLOAD, VAL_PAYLOAD, VAL_CONST, Cond::Eq, true),
+            format!(
+                "csel {}, {}, {}, eq",
+                reg_name(VAL_PAYLOAD),
+                reg_name(VAL_PAYLOAD),
+                reg_name(VAL_CONST)
+            ),
+        );
+        ctx.store_slot(VAL_TAG, elem_off);
+        ctx.store_slot(VAL_PAYLOAD, elem_off + PAYLOAD_OFF);
+        // Zero the rest of the payload area: dead union padding on the
+        // `Ok` side, and `CallError::Cancelled`'s own (empty) payload on
+        // the `Err` side — deterministic either way, never stale bytes.
+        let mut w = PAYLOAD_OFF + 8;
+        while w < elem_size {
+            ctx.store_slot(X_ZR, elem_off + w);
+            w += 8;
+        }
     }
+    Ok(())
 }
 
 /// Computes this group's own arena address (`group_temp`'s own encoded
@@ -3947,7 +4047,7 @@ fn emit_await_suspend(
             // Immediate: every child already harvested — compose now and
             // fall straight through to the resume state, no scheduler
             // round-trip at all.
-            emit_compose_group_join_result(ctx, X_B, result_temp, *child_count);
+            emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
             emit_checkpoint_cancellation_test(ctx, gctx);
             ctx.b_unconditional(state_flat_base[resume_state]);
@@ -4039,7 +4139,7 @@ fn emit_await_resume(
             child_count,
         } => {
             emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
-            emit_compose_group_join_result(ctx, X_B, result_temp, *child_count);
+            emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
             emit_checkpoint_cancellation_test(ctx, gctx);
             ctx.b_unconditional(state_flat_base[resume_state]);
