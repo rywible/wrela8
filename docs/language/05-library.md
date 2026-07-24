@@ -195,7 +195,8 @@ permitted everywhere else data is.
 compiler-recognized intrinsics even when a package supplies their surface:
 
 - `Image(name, target)` — comptime-only, produces one resource builder;
-  `seal(take builder)` succeeds only when every declaration is fully bound.
+  `img.seal()` consumes the builder and succeeds only when every
+  declaration is fully bound.
 - `img.device[D](transport=..., required_features=...)` — a build contract;
   boot still verifies the real device.
 - `img.driver(A[...], device=d, ...)` / `img.actor(A, mailbox=n, ...)` —
