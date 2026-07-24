@@ -497,6 +497,10 @@ fn boot_image_core(
         (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
     let deadline_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize
         + machine_info::OFF_NEXT_DEADLINE as usize;
+    // Establish the monotonic epoch before the guest's first instruction,
+    // so `now()` measures from the machine coming up rather than from
+    // whichever guest read happened to be first (`monotonic_ns`'s own doc).
+    let _ = monotonic_ns();
     let mut exits: u64 = 0;
     let exit_code: u64;
     // plans/M6.md item E, decision 9: the single point every
@@ -806,7 +810,16 @@ fn monotonic_ns() -> u64 {
     use std::sync::OnceLock;
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as u64
+    // plans/M6.md item F: never `0`. `0` is the deadline protocol's own
+    // "no deadline" sentinel everywhere it appears — `machine_info::
+    // OFF_NEXT_DEADLINE` (item E's park contract with this VMM) and the
+    // group arena's own `deadline_ns` word — so a guest that computed
+    // `now() + ms(0)` at the very first instant of the epoch would
+    // otherwise arm a deadline indistinguishable from "none". Clamping the
+    // clock's own floor to 1ns is the smallest coherent fix: the machine's
+    // monotonic clock is defined to start at 1, the sentinel keeps its one
+    // meaning, and no arithmetic anywhere needs a second sentinel value.
+    (epoch.elapsed().as_nanos() as u64).max(1)
 }
 
 /// Reads the console ring's own `avail.idx` and walks descriptors
@@ -1418,6 +1431,7 @@ mod tests {
             capacity,
             slot_size,
             &[(0, false), (0, false)],
+            wrela_compiler::codegen::TURN_RECORD_SIZE,
             0,
         )
         .len();
@@ -1460,6 +1474,7 @@ mod tests {
             capacity,
             slot_size,
             &[(method0_word_idx, false), (method1_word_idx, false)],
+            wrela_compiler::codegen::TURN_RECORD_SIZE,
             select_word_idx,
         );
 
@@ -1557,8 +1572,15 @@ mod tests {
             turn: 0,
         };
         let enqueue_len = build_rt_enqueue(&placeholder, capacity, slot_size, 0).len();
-        let select_len =
-            build_rt_select_and_run(&placeholder, capacity, slot_size, &[(0, false)], 0).len();
+        let select_len = build_rt_select_and_run(
+            &placeholder,
+            capacity,
+            slot_size,
+            &[(0, false)],
+            wrela_compiler::codegen::TURN_RECORD_SIZE,
+            0,
+        )
+        .len();
 
         let method0_word_idx = entry_len;
         let enqueue_word_idx = method0_word_idx + aborting_method.len();
@@ -1585,6 +1607,7 @@ mod tests {
             capacity,
             slot_size,
             &[(method0_word_idx, false)],
+            wrela_compiler::codegen::TURN_RECORD_SIZE,
             select_word_idx,
         );
 
@@ -2160,7 +2183,12 @@ pub fn build() -> Image:
 
         const LOOP_BOUND: u64 = 200_000_000;
         let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
-        let (cp_words, cp_entry_offset) = build_checkpoint_and_vector_stub();
+        // `None`: this hand-built conformance guest has no group arena at
+        // all (plans/M6.md item F's own `GroupServiceCtx`), so the
+        // vector-0 body stays exactly the observation counter this test
+        // asserts on.
+        let cp = build_checkpoint_and_vector_stub(None);
+        let (cp_words, cp_entry_offset) = (cp.words, cp.checkpoint_service_word);
 
         let mut w = Vec::new();
         w.extend(load_imm_words(9, sp_top));

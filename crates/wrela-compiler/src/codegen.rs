@@ -2403,7 +2403,22 @@ pub const TURN_STATUS_CANCELLED: u64 = 2;
 //                       `g.join_all()` parks waiting on this group's
 //                       children (0 = not yet awaiting / no parent turn
 //                       registered).
-//   +56.. child result slots: `GROUP_MAX_CHILDREN` pairs of (tag,
+//   +56 owner_turn      the turn area of the frame that executed this
+//                       group's own `GroupCreate` — the group's *parent*
+//                       in 02-language.md §9.5's own sense. Written once
+//                       at creation, read by every cancellation
+//                       observation site to answer the one question that
+//                       decides what a cancelled group does to a running
+//                       activation: is this turn the group's owner, or a
+//                       child started into it? A child's frame is
+//                       terminated ("the cancelled frame never resumes",
+//                       04-compiler.md §4); the owner's frame is not —
+//                       02-language.md §9.5's own "source sees only
+//                       `CallError` and its own `defer`s running" requires
+//                       the `with`-block's own body to survive long enough
+//                       to observe the `CallError` and run its cleanup.
+//                       plans/M6.md item F records this reading in full.
+//   +64.. child result slots: `GROUP_MAX_CHILDREN` pairs of (tag,
 //                       payload), one per static `g.start` call site
 //                       ordinal within this group (`GroupCtx::child_index`,
 //                       below) — tag 0 = Ok, 1 = the composed
@@ -2424,7 +2439,8 @@ pub const OFF_GROUP_DEADLINE: u64 = 24;
 pub const OFF_GROUP_CANCELLED: u64 = 32;
 pub const OFF_GROUP_PARENT: u64 = 40;
 pub const OFF_GROUP_JOIN_WAITER: u64 = 48;
-pub const OFF_GROUP_CHILDREN_BASE: u64 = 56;
+pub const OFF_GROUP_OWNER_TURN: u64 = 56;
+pub const OFF_GROUP_CHILDREN_BASE: u64 = 64;
 /// A fixed, small bound on children per group (a disclosed floor, not a
 /// hidden narrowing — plans/M6.md item F's own recorded reading of
 /// decision 1's "starts may sit in loops": every required M6 golden opens
@@ -2460,6 +2476,13 @@ pub fn group_child_payload_off(child_index: usize) -> u64 {
 /// real composition. No required M6 conformance boot ever fills a mailbox
 /// on an awaited call.
 pub const BRK_AWAIT_ACTOR_REJECTED: u16 = 0xACD3;
+
+/// plans/M6.md item F: an *actor* turn that reports `TURN_STATUS_CANCELLED`
+/// to `rt_select_and_run`. Unreachable at M6 by construction (that routine's
+/// own comment has the proof) and deliberately fail-closed rather than
+/// approximated — the turn record has one scalar reply word and no error
+/// channel, so there is nothing honest to deliver to the awaiting turn.
+pub const BRK_ACTOR_TURN_CANCELLED: u16 = 0xACD5;
 
 fn actor_of_method_key(key: &str) -> &str {
     key.split('.').next().unwrap_or(key)
@@ -3063,10 +3086,20 @@ fn emit_group_create(
         encode::enc_cmp_reg(X_E, X_F, true),
         format!("cmp {}, {}", reg_name(X_E), reg_name(X_F)),
     );
+    // `Ls`, not `Le` — **a real bug the first deadline-bearing boot
+    // caught** (recorded, not silently fixed): a deadline is a raw
+    // `u64` nanosecond count and the "no deadline" sentinel above is
+    // `u64::MAX`, which as a *signed* value is `-1`. With `Le` the
+    // sentinel therefore compared as smaller than every real deadline,
+    // so `min(none, own)` picked the sentinel and the remap below turned
+    // it straight back into `0` — every group with a declared deadline
+    // and no ambient one (i.e. every top-level `with group(deadline=..)`
+    // there is at M6) stored "no deadline" and could never expire.
+    // Invisible until a golden actually armed a deadline.
     ctx.push(
-        encode::enc_csel(X_TAG, X_E, X_F, Cond::Le, true),
+        encode::enc_csel(X_TAG, X_E, X_F, Cond::Ls, true),
         format!(
-            "csel {}, {}, {}, le",
+            "csel {}, {}, {}, ls",
             reg_name(X_TAG),
             reg_name(X_E),
             reg_name(X_F)
@@ -3196,6 +3229,20 @@ fn emit_group_create(
                 reg_name(X_CAND)
             ),
         );
+        // The owning frame (02-language.md §9.5's own "parent"): this
+        // turn's persistent area, which is exactly `X_FRAME`. Every
+        // cancellation observation site compares against it to decide
+        // whether a cancelled group terminates the observing activation (a
+        // child started into the group) or merely hands it a `CallError`
+        // (the `with`-block's own body).
+        ctx.push(
+            encode::enc_str_x_imm(X_FRAME, X_CAND, OFF_GROUP_OWNER_TURN as u16),
+            format!(
+                "str {}, [{}, #{OFF_GROUP_OWNER_TURN}]",
+                reg_name(X_FRAME),
+                reg_name(X_CAND)
+            ),
+        );
         // new ambient lineage = i + 1, threaded into the lineage slots +
         // the `g` binding's own `group_temp`.
         ctx.load_imm(X_D, (i + 1) as i64);
@@ -3264,6 +3311,49 @@ fn emit_group_start(
             "more than 2 scalar `g.start` args (item C's own hand-assembled mailbox-slot floor)",
         ));
     }
+
+    // 04-compiler.md §4's own step one, "atomically closes admission":
+    // a `g.start` into an already-cancelled group never runs its child at
+    // all — the child's own result slot resolves straight to
+    // `CallError::Cancelled` and `active_children` is never incremented,
+    // so a `join_all` already parked on this group is not made to wait for
+    // a child that will never run. **Disclosed floor, not a silent
+    // narrowing**: 04 §4 says a closed-admission attempt gets
+    // `NotAdmitted` with its payloads returned; M6's own composition floor
+    // has exactly one non-`Ok` variant (`emit_compose_group_join_result`'s
+    // own doc), so it resolves `Cancelled` here, and `g.start`'s arguments
+    // are plain scalars with nothing to hand back.
+    emit_group_addr_from_temp(ctx, group_temp, X_B, X_A);
+    ctx.push(
+        encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_CANCELLED as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_CANCELLED}]",
+            reg_name(X_C),
+            reg_name(X_B)
+        ),
+    );
+    let skip_admit = ctx.emit_skip(SkipKind::Cbz(X_C));
+    ctx.load_imm(X_A, 1); // tag = Err(CallError::Cancelled)
+    ctx.push(
+        encode::enc_str_x_imm(X_A, X_B, group_child_tag_off(child_index) as u16),
+        format!(
+            "str {}, [{}, #{}]",
+            reg_name(X_A),
+            reg_name(X_B),
+            group_child_tag_off(child_index)
+        ),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_B, group_child_payload_off(child_index) as u16),
+        format!(
+            "str xzr, [{}, #{}]",
+            reg_name(X_B),
+            group_child_payload_off(child_index)
+        ),
+    );
+    let to_after = ctx.words.len();
+    ctx.words.push((0, String::new()));
+    ctx.patch_skip(skip_admit, SkipKind::Cbz(X_C));
 
     // Write the ambient lineage into the child's own persistent frame
     // (Temp(0)/Temp(1) — always the first two slots past the child's own
@@ -3520,6 +3610,9 @@ fn emit_group_start(
     );
 
     ctx.patch_skip(skip_still_running, SkipKind::Cond(Cond::Eq));
+    let after = ctx.cur_word();
+    let delta = (after as i64 - to_after as i64) as i32 * 4;
+    ctx.words[to_after] = (encode::enc_b(delta), format!("b #{delta}"));
     Ok(())
 }
 
@@ -3664,12 +3757,30 @@ fn emit_flow_op(
             Ok(())
         }
         FlowInst::Duration { dst, n } => {
-            // `ms(n)`: an opaque tick-count passthrough (`flowwir.rs`'s own
-            // doc: "this op just carries n forward, opaque"). A real
-            // tick-scale conversion has no required golden to derive one
-            // from; this is a `Copy`, not a computation.
-            let size = ctx.frame.size_of_temp(*dst);
-            ctx.copy_slot_to_slot(ctx.frame.off(*dst), ctx.frame.off(*n), size);
+            // `ms(n)` -> nanoseconds. plans/M6.md item F: item B/D left
+            // this an opaque passthrough ("a real tick-scale conversion
+            // has no required golden to derive one from"); item F's own
+            // deadline goldens are that golden. The scale is the one the
+            // whole machine already agrees on: `now()` reads
+            // `CLOCK_MMIO_ADDR`, which 06-machine.md §5/decision 13 define
+            // as monotonic **nanoseconds**, and the comptime evaluator has
+            // scaled `ms(n)` to `n * 1_000_000` since item A
+            // (`eval::interp::eval_intrinsic`'s own `"ms"` arm) — this arm
+            // was the tier that disagreed, and 02-language.md §9.5's own
+            // `now() + ms(50)` example is only meaningful once it does not.
+            const NS_PER_MS: i64 = 1_000_000;
+            ctx.load_slot(X_A, ctx.frame.off(*n));
+            ctx.load_imm(X_B, NS_PER_MS);
+            ctx.push(
+                encode::enc_mul(X_A, X_A, X_B, true),
+                format!(
+                    "mul {}, {}, {}",
+                    reg_name(X_A),
+                    reg_name(X_A),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.store_slot(X_A, ctx.frame.off(*dst));
             Ok(())
         }
         FlowInst::Send {
@@ -3713,6 +3824,94 @@ fn emit_flow_op(
 /// (`emit_await_resume`'s `ActorCall` arm) — never from a sync fn's own
 /// `checkpoint()` call sites (a sync fn has no persistent frame/ambient
 /// lineage at all, decision 4's own reading of "sync turn mid-execution").
+/// The one shared read of "what is my ambient group's cancellation state?"
+/// (plans/M6.md item F #2). Leaves, branch-free at the use site:
+///
+/// - `X_C = 1` iff this turn has an ambient group AND that group's own
+///   `cancelled` word is set, else `0`;
+/// - `X_D = 1` iff that same group's `owner_turn` is this turn's own
+///   persistent area (`X_FRAME`), else `0` — the child-vs-owner
+///   distinction `OFF_GROUP_OWNER_TURN`'s own doc comment explains.
+///
+/// Clobbers `X_A`/`X_B`/`X_E`. A no-op producing `X_C = X_D = 0` when the
+/// whole build has no group arena at all, which is what keeps every
+/// pre-item-F async golden byte-identical (`emit_checkpoint_cancellation_test`
+/// below has the full reasoning); callers must not emit it in that case.
+fn emit_group_cancelled_flags(ctx: &mut FnCtx) {
+    ctx.push(
+        encode::enc_movz(X_C, 0, 0, true),
+        format!("movz {}, #0", reg_name(X_C)),
+    );
+    ctx.push(
+        encode::enc_movz(X_D, 0, 0, true),
+        format!("movz {}, #0", reg_name(X_D)),
+    );
+    ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT));
+    let skip_no_group = ctx.emit_skip(SkipKind::Cbz(X_A));
+    let word = ctx.cur_word();
+    ctx.load_imm(X_B, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = "group-arena-base (cancel flags)".to_string();
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word });
+    ctx.push(
+        encode::enc_sub_imm(X_A, X_A, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_A), reg_name(X_A)),
+    );
+    ctx.load_imm(X_E, GROUP_SLOT_SIZE as i64);
+    ctx.push(
+        encode::enc_mul(X_A, X_A, X_E, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_E)
+        ),
+    );
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, X_B, OFF_GROUP_CANCELLED as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_CANCELLED}]",
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.push(
+        encode::enc_cmp_imm(X_A, 0, true),
+        format!("cmp {}, #0", reg_name(X_A)),
+    );
+    ctx.push(
+        encode::enc_cset(X_C, Cond::Ne, true),
+        format!("cset {}, ne", reg_name(X_C)),
+    );
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_OWNER_TURN}]",
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_FRAME, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_FRAME)),
+    );
+    ctx.push(
+        encode::enc_cset(X_D, Cond::Eq, true),
+        format!("cset {}, eq", reg_name(X_D)),
+    );
+    ctx.patch_skip(skip_no_group, SkipKind::Cbz(X_A));
+}
+
 fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx) {
     if gctx.arena_capacity == 0 {
         // No `with group(...)` exists anywhere in this build — a whole-
@@ -3726,50 +3925,26 @@ fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx) {
         // target to resolve against either).
         return;
     }
-    let cancelled_tail = ctx.word_offsets.len() - 2; // module doc: total + 1
-    ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT));
-    let skip_no_group = ctx.emit_skip(SkipKind::Cbz(X_A));
-    let word = ctx.cur_word();
-    ctx.load_imm(X_B, 0);
-    for w in ctx.words[word..word + 4].iter_mut() {
-        w.1 = "group-arena-base (checkpoint cancel test)".to_string();
-    }
-    ctx.relocs.push(Reloc::GroupArenaBase { word });
-    ctx.push(
-        encode::enc_sub_imm(X_A, X_A, 1, true),
-        format!("sub {}, {}, #1", reg_name(X_A), reg_name(X_A)),
-    );
-    ctx.load_imm(X_C, GROUP_SLOT_SIZE as i64);
-    ctx.push(
-        encode::enc_mul(X_A, X_A, X_C, true),
-        format!(
-            "mul {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_A),
-            reg_name(X_C)
-        ),
-    );
-    ctx.push(
-        encode::enc_add_reg(X_B, X_B, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_B),
-            reg_name(X_A)
-        ),
-    );
-    ctx.push(
-        encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_CANCELLED as u16),
-        format!(
-            "ldr {}, [{}, #{OFF_GROUP_CANCELLED}]",
-            reg_name(X_C),
-            reg_name(X_B)
-        ),
-    );
+    // `word_offsets` has `total + 2` entries: `[total]` is the shared
+    // completion epilogue and `[total + 1]` is the cancellation tail —
+    // so the tail is `len() - 1`. **A real off-by-one the first
+    // cancellation-bearing boot caught**: `len() - 2` named the
+    // *completion* epilogue instead, so a cancelled child returned
+    // `TURN_STATUS_COMPLETED` with a garbage reply and its group's own
+    // child slot harvested as `Ok`, exactly as if it had finished.
+    let cancelled_tail = ctx.word_offsets.len() - 1;
+    emit_group_cancelled_flags(ctx);
+    // Terminate this activation iff the ambient group is cancelled AND
+    // this turn is not that group's own owner (`OFF_GROUP_OWNER_TURN`'s
+    // own doc comment): a `g.start`ed child's frame never resumes
+    // (04-compiler.md §4), while the `with`-block's own body keeps
+    // running so it can observe the `CallError` and reach its cleanup
+    // chain (02-language.md §9.5).
     let skip_not_cancelled = ctx.emit_skip(SkipKind::Cbz(X_C));
+    let skip_is_owner = ctx.emit_skip(SkipKind::Cbnz(X_D));
     ctx.b_unconditional(cancelled_tail);
+    ctx.patch_skip(skip_is_owner, SkipKind::Cbnz(X_D));
     ctx.patch_skip(skip_not_cancelled, SkipKind::Cbz(X_C));
-    ctx.patch_skip(skip_no_group, SkipKind::Cbz(X_A));
 }
 
 /// `word_offsets[total + 1]` — module doc on `emit_checkpoint_cancellation_test`.
@@ -4118,17 +4293,67 @@ fn emit_await_resume(
                 )));
             }
             let result_off = ctx.frame.off(result_temp);
-            ctx.push(
-                encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
-                format!(
-                    "ldr {}, [{}, #{OFF_TURN_REPLY}]",
-                    reg_name(X_A),
-                    reg_name(X_FRAME)
-                ),
-            );
-            ctx.store_slot(X_A, result_off + 8); // payload = the delivered reply
-            ctx.load_imm(X_A, 0);
-            ctx.store_slot(X_A, result_off); // tag = Ok
+            let result_size = ctx.frame.size_of_temp(result_temp);
+            if gctx.arena_capacity == 0 {
+                // No group exists anywhere in this build, so no await can
+                // ever resolve `Cancelled` — emit exactly the pre-item-F
+                // sequence, byte-identical (`emit_checkpoint_cancellation_test`'s
+                // own reasoning).
+                ctx.push(
+                    encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+                    format!(
+                        "ldr {}, [{}, #{OFF_TURN_REPLY}]",
+                        reg_name(X_A),
+                        reg_name(X_FRAME)
+                    ),
+                );
+                ctx.store_slot(X_A, result_off + 8); // payload = the delivered reply
+                ctx.load_imm(X_A, 0);
+                ctx.store_slot(X_A, result_off); // tag = Ok
+            } else {
+                // 02-language.md §9.5: "Cancellation becomes observable at
+                // `await` and checkpoints." An await inside a cancelled
+                // group resolves `Err(CallError::Cancelled)`, not the reply
+                // that happened to arrive — for the group's own owner this
+                // is the ONLY way it ever observes the cancellation (its
+                // frame is deliberately not terminated,
+                // `OFF_GROUP_OWNER_TURN`'s own doc comment); for a child
+                // the value is composed and then immediately discarded by
+                // the termination test below, which is cheaper than
+                // branching around it.
+                emit_group_cancelled_flags(ctx);
+                ctx.push(
+                    encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+                    format!(
+                        "ldr {}, [{}, #{OFF_TURN_REPLY}]",
+                        reg_name(X_A),
+                        reg_name(X_FRAME)
+                    ),
+                );
+                ctx.load_imm(X_B, CALL_ERROR_TAG_CANCELLED as i64);
+                ctx.push(
+                    encode::enc_cmp_imm(X_C, 0, true),
+                    format!("cmp {}, #0", reg_name(X_C)),
+                );
+                ctx.push(
+                    encode::enc_csel(X_A, X_A, X_B, Cond::Eq, true),
+                    format!(
+                        "csel {}, {}, {}, eq",
+                        reg_name(X_A),
+                        reg_name(X_A),
+                        reg_name(X_B)
+                    ),
+                );
+                // `X_C` is already 0 (`Ok`) / 1 (`Err`) — the same encoding
+                // the `Result` tag uses (`value::RESULT_OK`/`RESULT_ERR`).
+                ctx.store_slot(X_C, result_off);
+                ctx.store_slot(X_A, result_off + 8);
+                let mut w = 16;
+                while w < result_size {
+                    ctx.store_slot(X_ZR, result_off + w);
+                    w += 8;
+                }
+            }
             ctx.checkpoint();
             emit_checkpoint_cancellation_test(ctx, gctx);
             ctx.b_unconditional(state_flat_base[resume_state]);

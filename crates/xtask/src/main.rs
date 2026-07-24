@@ -3698,6 +3698,137 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// plans/M6.md item F: `tests/golden/boot-deadline-cancel` is the first
+/// boot in this repo whose *behaviour* depends on the clock — the group's
+/// own deadline expires, the scheduler's deadline poll observes it through
+/// a real `CLOCK_MMIO_ADDR` read, and the child is cancelled at exactly one
+/// checkpoint as a result. That makes it the real test of decision 9's own
+/// claim that replay takes its time from the ChoiceLog rather than from the
+/// host clock, so this check proves three things end to end, on the real
+/// signed binary:
+///
+/// 1. the recording is genuinely clock-driven — its choice sequence
+///    carries several `ClockRead` entries and no `DeadlineWake` (this boot
+///    never parks: at M6 nothing can block a turn forever, so the
+///    scheduler always has ready work — recorded honestly rather than
+///    claiming a sleep was skipped that never existed);
+/// 2. replaying that recording is **clean** — zero divergence, and the
+///    same guest-authored exit code, so the whole cancellation schedule
+///    reproduces exactly; and
+/// 3. the replayed clock really is the logged one, proved the only way
+///    that cannot be faked: tampering the *first* logged `ClockRead` to a
+///    far-future value (so the armed deadline is never reached) changes
+///    the guest's own behaviour — the child runs its loop to completion
+///    and the test's assertion fails — and the replay must therefore
+///    report divergence and exit `EXIT_REPLAY_DIVERGENCE`, never `0`. If
+///    replay were quietly reading the host clock, the tamper would change
+///    nothing and this assertion would fail.
+fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), String> {
+    const EXIT_REPLAY_DIVERGENCE: i32 = 3; // mirrors wrela_vmm::main::EXIT_REPLAY_DIVERGENCE
+    let (img_bytes, report_text) = golden_test_image("boot-deadline-cancel")?;
+    let tmp_dir = root().join("target/repro-deadline-cancel-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: boot-deadline-cancel's own recording boot did not pass (exit {record_exit}):\n{}",
+            String::from_utf8_lossy(&record_out.stdout)
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    let clock_reads = record_text.matches("=ClockRead ").count();
+    if clock_reads < 2 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: boot-deadline-cancel recorded {clock_reads} ClockRead choice(s) — this boot \
+             is supposed to be clock-driven (the `now()` that arms the deadline, plus the \
+             scheduler's own deadline poll)"
+        ));
+    }
+
+    let replay_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    if replay_exit != record_exit {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: boot-deadline-cancel replayed with exit {replay_exit}, expected \
+             {record_exit}:\n{}",
+            String::from_utf8_lossy(&replay_out.stderr)
+        ));
+    }
+
+    // (3) The tamper: rewrite the FIRST ClockRead to a far-future value, so
+    // a guest reading its clock from the log arms a deadline that never
+    // expires. Everything else in the log is left exactly as recorded.
+    let mut tampered = String::new();
+    let mut done = false;
+    for line in record_text.lines() {
+        if !done && line.contains("=ClockRead value=") {
+            let head = &line[..line.find("value=").unwrap()];
+            tampered.push_str(head);
+            tampered.push_str("value=9000000000000000000\n");
+            done = true;
+            continue;
+        }
+        tampered.push_str(line);
+        tampered.push('\n');
+    }
+    if !done {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err("repro: no ClockRead line to tamper in the recording".to_string());
+    }
+    let tampered_path = tmp_dir.join("boot.tampered.txt");
+    std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
+    let tampered_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&tampered_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
+    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if tampered_exit != EXIT_REPLAY_DIVERGENCE {
+        return Err(format!(
+            "repro: a replay whose first logged ClockRead was moved to the far future exited \
+             {tampered_exit}, expected {EXIT_REPLAY_DIVERGENCE} — the replayed guest's own \
+             clock must come from the log, so this tamper has to change its behaviour and \
+             diverge"
+        ));
+    }
+    println!(
+        "repro: tests/golden/boot-deadline-cancel ({clock_reads} recorded ClockRead choices) \
+         replays clean with zero divergence, and a tampered clock value diverges \
+         (exit {EXIT_REPLAY_DIVERGENCE}) — replay's time comes from the log"
+    );
+    Ok(())
+}
+
 /// `cargo xtask repro` (plans/M5.md decision 10, item F; plans/M6.md item
 /// E): the standalone, full-corpus form — `report_determinism`'s own
 /// `@image`/`wrela build` population, `repro_test_image`'s runtime-test-
@@ -3710,6 +3841,7 @@ fn repro() -> Result<(), String> {
     repro_test_image()?;
     let vmm = build_and_sign_vmm()?;
     repro_choice_log_roundtrip(&vmm)?;
+    repro_deadline_cancel_replay_is_clock_log_driven(&vmm)?;
     repro_replay_exit_code_contract(&vmm)
 }
 
@@ -3805,17 +3937,62 @@ fn build_runtime_test_image(
     modules.insert(module.path.join("."), module.clone());
     let layout_ctx = layout::merge_layout_ctx(&modules).map_err(|e| e.message)?;
     let mwir_program = lower::lower_program(program).map_err(|e| e.message)?;
-    let codegen_program =
-        codegen::codegen_program(&mwir_program, &layout_ctx).map_err(|e| e.message)?;
-    // plans/M6.md item D: `None` — this harness's own case list declares
-    // no actor yet; a real actor-bearing determinism case is named,
-    // future work (`layout::BootCtx`'s own doc comment).
+    // plans/M6.md item F: the same full pipeline `bin/wrela.rs::test_cmd`
+    // runs, not the sync-only shortcut this fn used through item E — the
+    // determinism/replay lanes now build a real actor+group image
+    // (`boot-deadline-cancel`), which needs FlowWir, the async codegen
+    // entry point, and the real `BootCtx`. A case with no actors and no
+    // async test flows through it byte-identically (empty graph, empty
+    // flow program), which is what keeps `boot-hello`'s own recorded
+    // choice log and `bench guest`'s exact counts unmoved.
+    let flow_program =
+        wrela_compiler::flowwir_lower::lower_program(program).map_err(|e| e.message)?;
+    let graph = match &program.image_fn {
+        Some(fn_name) => {
+            wrela_compiler::eval::interp::eval_image(program, fn_name).map_err(|e| {
+                format!(
+                    "image graph: {}",
+                    wrela_compiler::eval::to_sema_error(e).message
+                )
+            })?
+        }
+        None => wrela_compiler::eval::image::ImageGraph::default(),
+    };
+    let method_index =
+        layout::actor_method_index_tables(&modules, &layout_ctx).map_err(|e| e.message)?;
+    let test_args =
+        layout::resolve_runtime_test_args(program, test_names, &graph).map_err(|e| e)?;
+    let group_arena_capacity = layout::count_with_group_sites(&modules);
+    let codegen_program = codegen::codegen_program_with_async(
+        &mwir_program,
+        &flow_program,
+        &layout_ctx,
+        &method_index,
+        group_arena_capacity,
+    )
+    .map_err(|e| e.message)?;
+    let async_frames =
+        codegen::async_frame_sizes(&flow_program, &layout_ctx).map_err(|e| e.message)?;
+    let async_tests: std::collections::BTreeSet<String> = test_names
+        .iter()
+        .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
+        .cloned()
+        .collect();
+    let group_child_index =
+        codegen::compute_group_child_indices(&flow_program).map_err(|e| e.message)?;
+    let boot = layout::BootCtx {
+        graph: &graph,
+        modules: &modules,
+        layout_ctx: &layout_ctx,
+        async_frames: &async_frames,
+        group_child_index: &group_child_index,
+    };
     let image_layout = layout::layout_test_image(
         &codegen_program,
         test_names,
-        &std::collections::BTreeSet::new(),
-        None,
-        &BTreeMap::new(),
+        &async_tests,
+        Some(boot),
+        &test_args,
     )
     .map_err(|e| e.message)?;
     let source_digest = report::sha256_hex(source.as_bytes());
@@ -4148,14 +4325,22 @@ fn guest_bench_threshold_us() -> Result<u128, String> {
 /// shared by `bench_guest_lane` and `profile`, below, so the "which
 /// program, which tests" decision lives in exactly one place.
 fn boot_hello_test_image() -> Result<(Vec<u8>, String), String> {
-    let case = root().join("tests/golden/boot-hello");
+    golden_test_image("boot-hello")
+}
+
+/// The same builder, over any single-module `tests/golden/<case>` that
+/// declares `@test(runtime)` fns — plans/M6.md item F needs a second one
+/// (`boot-deadline-cancel`, the first genuinely clock-driven boot) and
+/// there is nothing `boot-hello`-specific about the recipe.
+fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), String> {
+    let case = root().join("tests/golden").join(case_name);
     let target = golden_case_target(&case)?
-        .ok_or_else(|| "tests/golden/boot-hello has no input.wr".to_string())?;
+        .ok_or_else(|| format!("tests/golden/{case_name} has no input.wr"))?;
     let source =
         std::fs::read_to_string(&target).map_err(|e| format!("read {}: {e}", target.display()))?;
     let path_display = target.display().to_string();
     let (module, program) = typecheck_single_module(&source, &path_display)
-        .ok_or_else(|| "tests/golden/boot-hello failed to typecheck".to_string())?;
+        .ok_or_else(|| format!("tests/golden/{case_name} failed to typecheck"))?;
     let runtime_names: Vec<String> = program
         .tests
         .iter()
@@ -4163,7 +4348,9 @@ fn boot_hello_test_image() -> Result<(Vec<u8>, String), String> {
         .map(|t| t.name.clone())
         .collect();
     if runtime_names.is_empty() {
-        return Err("tests/golden/boot-hello declares no @test(runtime) fns".to_string());
+        return Err(format!(
+            "tests/golden/{case_name} declares no @test(runtime) fns"
+        ));
     }
     build_runtime_test_image(&module, &program, &source, &path_display, &runtime_names)
 }

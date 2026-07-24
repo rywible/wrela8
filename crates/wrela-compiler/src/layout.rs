@@ -344,7 +344,7 @@ fn build_abort_stub(exit_code: u64) -> Vec<u32> {
 /// synchronously, then return," exactly the shape item F's group-
 /// cancellation delivery already needs (deliver cancellation to every
 /// target the expired group names, then return).
-pub fn build_checkpoint_and_vector_stub() -> (Vec<u32>, usize) {
+pub fn build_checkpoint_and_vector_stub(group: Option<&GroupServiceCtx>) -> CheckpointBlock {
     let mut a = Asm::new(0);
 
     // --- __wrela_vector0_service --- placed first: word offset 0, so the
@@ -356,6 +356,9 @@ pub fn build_checkpoint_and_vector_stub() -> (Vec<u32>, usize) {
     a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
     a.push(encode::enc_add_imm(SCRATCH_B, SCRATCH_B, 1, true));
     a.push(encode::enc_str_x_imm(SCRATCH_B, SCRATCH_A, 0));
+    if let Some(g) = group.filter(|g| g.arena_capacity > 0) {
+        emit_deadline_scan_and_delivery(&mut a, g);
+    }
     a.push(encode::enc_ret(30));
 
     // --- __wrela_checkpoint_service ---
@@ -380,7 +383,280 @@ pub fn build_checkpoint_and_vector_stub() -> (Vec<u32>, usize) {
     a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
     a.push(encode::enc_ret(30));
 
-    (a.words, checkpoint_service_word)
+    // --- __wrela_deadline_poll (plans/M6.md item F #3) ------------------
+    let deadline_poll_word = match group.filter(|g| g.arena_capacity > 0) {
+        Some(g) => {
+            let start = a.abs();
+            emit_deadline_poll(&mut a, g);
+            Some(start)
+        }
+        None => None,
+    };
+
+    CheckpointBlock {
+        words: a.words,
+        checkpoint_service_word,
+        deadline_poll_word,
+    }
+}
+
+/// The whole-image facts the vector-0 deadline service and the scheduler's
+/// own deadline poll need (plans/M6.md item F #2/#3). Every address here is
+/// a real, already-placed `rtdata` address — which is why both routines are
+/// built twice, placeholder then real, exactly like every other
+/// address-bearing hand-assembled routine in this module (word counts never
+/// depend on address *values*, only on `arena_capacity`/`turn_areas.len()`,
+/// both of which are known before placement).
+#[derive(Debug, Clone, Default)]
+pub struct GroupServiceCtx {
+    pub arena_base: u64,
+    pub arena_capacity: u64,
+    /// Every turn area in the image (each actor's, then each free async
+    /// fn's) — the set the delivery half scans to find suspended turns
+    /// whose own ambient group has just been cancelled.
+    pub turn_areas: Vec<u64>,
+}
+
+/// `build_checkpoint_and_vector_stub`'s own result: the block's words plus
+/// the two entry points a caller must resolve against `section_base`.
+pub struct CheckpointBlock {
+    pub words: Vec<u32>,
+    /// `__wrela_checkpoint_service`'s own word offset within `words`.
+    pub checkpoint_service_word: usize,
+    /// `__wrela_deadline_poll`'s own word offset, present only for a build
+    /// that actually has a group arena.
+    pub deadline_poll_word: Option<usize>,
+}
+
+/// The shape-only (`base = 0`) service context a sizing pass needs: the
+/// arena capacity and the *number* of turn areas are both build-time facts,
+/// known long before placement, and they are the only things the emitted
+/// word count depends on.
+fn group_service_shape(runtime: Option<&RuntimeTables>) -> Option<GroupServiceCtx> {
+    let tables = runtime.filter(|t| t.group_arena_capacity > 0)?;
+    Some(GroupServiceCtx {
+        arena_base: 0,
+        arena_capacity: tables.group_arena_capacity,
+        turn_areas: vec![0; tables.actors.len() + tables.free_turns.len()],
+    })
+}
+
+/// The real service context, once `rtdata` is placed: every turn area in
+/// the image (each actor's, then each free async fn's — `place_runtime_tables`'s
+/// own byte order) plus the group arena's own base.
+fn group_service_ctx(
+    placement: &RuntimePlacement,
+    tables: &RuntimeTables,
+) -> Option<GroupServiceCtx> {
+    if tables.group_arena_capacity == 0 {
+        return None;
+    }
+    let mut turn_areas: Vec<u64> = placement.actors.iter().map(|a| a.turn).collect();
+    turn_areas.extend(placement.free_turns.values().copied());
+    Some(GroupServiceCtx {
+        arena_base: placement.group_arena,
+        arena_capacity: tables.group_arena_capacity,
+        turn_areas,
+    })
+}
+
+/// The vector-0 service's real body (plans/M6.md item F #2, 04-compiler.md
+/// §4): the deadline scan, then cancellation delivery. Runs synchronously
+/// inside `__wrela_checkpoint_service`'s own dispatch, so it inherits that
+/// routine's contract verbatim — may clobber `x9..x14`, must preserve
+/// `x28`/`sp`, no calls of its own (so `x30` needs no saving here).
+///
+/// **Step 1, the scan** — a fully-unrolled linear walk of the static arena
+/// (CLAUDE.md's "linear scans over the static arena", no timer wheel):
+/// every `in_use`, not-yet-`cancelled` slot with a nonzero `deadline_ns`
+/// that the clock has passed gets `cancelled = 1`. The clock read is the
+/// ordinary trapping `CLOCK_MMIO_ADDR` load (`codegen::emit_now`'s own
+/// address), so it is a real, recorded `ChoiceRead` in the VMM's choice
+/// sequence and replays from the log rather than from the host clock.
+///
+/// **Step 2, "cancels child registrations recursively" (04 §4), which this
+/// scan already performs — recorded, because it looks like an omission**:
+/// deadlines only ever *narrow* (`codegen::emit_group_create` stores
+/// `min(ambient, own)`, with a group declaring no deadline of its own
+/// inheriting the ambient one unchanged), so every descendant of an expired
+/// group carries an effective deadline no later than its ancestor's and is
+/// therefore expired at the very same instant this same single pass
+/// examines it. Deadline expiry is also M6's *only* cancellation source
+/// (no `race`, no explicit cancel API, and an abandon is image-fatal per
+/// decision 12). A separate parent-to-child propagation pass would
+/// therefore be provably dead code today — and, worse, an *unsound* one
+/// unless iterated to a fixed point, since a child group can occupy a lower
+/// arena index than its parent (`GroupCreate` claims the first free slot).
+/// The day a second cancellation source exists, the fixed-point pass is the
+/// thing to add here.
+///
+/// **Step 3, delivery to parked turns**: a turn suspended on an `await`
+/// whose own ambient group has just been cancelled may have nothing left
+/// that would ever wake it, so the scan makes it `resume_ready` — its own
+/// resume path then composes `CallError::Cancelled` and terminates at the
+/// checkpoint that follows (`codegen::emit_await_resume`/
+/// `emit_checkpoint_cancellation_test`). A group's own *owner* turn is
+/// deliberately excluded (`codegen::OFF_GROUP_OWNER_TURN`): its frame is
+/// never terminated, so force-resuming it would hand the `with`-block's own
+/// body a reply that never arrived. **Disclosed floor**: an owner parked on
+/// an await that can never resolve is therefore not woken by this scan — it
+/// is woken transitively when its own children are cancelled and harvested
+/// (`layout::build_group_child_poll`), which is the only shape any M6
+/// golden constructs; a group with no outstanding children whose owner
+/// awaits an actor that never replies is not constructible at M6's own
+/// acyclic-handle source surface (item D's own recorded finding).
+fn emit_deadline_scan_and_delivery(a: &mut Asm, g: &GroupServiceCtx) {
+    use crate::codegen::{
+        GROUP_SLOT_SIZE, OFF_GROUP_CANCELLED, OFF_GROUP_DEADLINE, OFF_GROUP_IN_USE,
+        OFF_GROUP_OWNER_TURN, OFF_TURN_BUSY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED,
+        TURN_RECORD_SIZE,
+    };
+    const NOW: u8 = SCRATCH_A; // x9  — the clock read, live across the whole scan
+    const SLOT: u8 = SCRATCH_B; // x10 — the candidate slot address
+    const T0: u8 = SCRATCH_C; // x11
+    const T1: u8 = 12;
+    const T2: u8 = 13;
+
+    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
+    a.push(encode::enc_ldr_x_imm(NOW, T0, 0));
+
+    for i in 0..g.arena_capacity {
+        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
+        let skip_a = a.skip_placeholder(); // cbz -> next slot
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
+        let skip_b = a.skip_placeholder(); // cbnz -> already cancelled
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
+        let skip_c = a.skip_placeholder(); // cbz -> no deadline
+        // Expired iff now >= deadline (unsigned — both are raw ns).
+        a.push(encode::enc_cmp_reg(NOW, T0, true));
+        let skip_d = a.skip_placeholder(); // b.cc -> not yet
+        a.load_imm(T1, 1);
+        a.push(encode::enc_str_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
+        let next = a.abs();
+        a.patch_cbz(skip_a, T0);
+        a.patch_cbnz(skip_b, T0);
+        a.patch_cbz(skip_c, T0);
+        a.patch_cond(skip_d, Cond::Cc);
+        debug_assert_eq!(next, a.abs());
+    }
+
+    for &turn in &g.turn_areas {
+        a.load_imm(T0, turn);
+        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_BUSY as u16));
+        let skip_a = a.skip_placeholder(); // cbz -> not busy
+        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_SUSPENDED as u16));
+        let skip_b = a.skip_placeholder(); // cbz -> running, not parked
+        // Ambient group = this turn's own frame `Temp(0)`, always the first
+        // slot past the 48-byte turn record (`flowwir::FrameLayout`'s own
+        // fixed lineage convention, `codegen::LINEAGE_GROUP_SLOT`).
+        a.push(encode::enc_ldr_x_imm(T1, T0, TURN_RECORD_SIZE as u16));
+        let skip_c = a.skip_placeholder(); // cbz -> no ambient group
+        a.push(encode::enc_sub_imm(T1, T1, 1, true));
+        a.load_imm(T2, GROUP_SLOT_SIZE);
+        a.push(encode::enc_mul(T1, T1, T2, true));
+        a.load_imm(SLOT, g.arena_base);
+        a.push(encode::enc_add_reg(SLOT, SLOT, T1, true));
+        a.push(encode::enc_ldr_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
+        let skip_d = a.skip_placeholder(); // cbz -> not cancelled
+        a.push(encode::enc_ldr_x_imm(T1, SLOT, OFF_GROUP_OWNER_TURN as u16));
+        a.load_imm(T2, turn);
+        a.push(encode::enc_cmp_reg(T1, T2, true));
+        let skip_e = a.skip_placeholder(); // b.eq -> this turn owns the group
+        a.load_imm(T1, 1);
+        a.push(encode::enc_str_x_imm(T1, T0, OFF_TURN_RESUME_READY as u16));
+        let next = a.abs();
+        a.patch_cbz(skip_a, T1);
+        a.patch_cbz(skip_b, T1);
+        a.patch_cbz(skip_c, T1);
+        a.patch_cbz(skip_d, T1);
+        a.patch_cond(skip_e, Cond::Eq);
+        debug_assert_eq!(next, a.abs());
+    }
+}
+
+/// `__wrela_deadline_poll()` (plans/M6.md item F #3) — the scheduler's own
+/// half of the deadline protocol, called once per entry-driver scheduler
+/// tick. Two jobs, in one linear scan of the static arena:
+///
+/// 1. **Arm the park** (06-machine.md §5): the minimum effective deadline
+///    over every live, not-yet-cancelled group is written to
+///    `machine_info::OFF_NEXT_DEADLINE` (`0` when no group has one), which
+///    is exactly what the entry driver's own park branch reads and what the
+///    VMM sleeps until. Written every tick rather than maintained
+///    incrementally — the arena is a handful of static slots, and an
+///    incremental min would need invalidation on every create/close/cancel
+///    (CLAUDE.md's cleverness budget: no profile, no cleverness).
+///
+/// 2. **Raise the deadline vector when the guest is *running***. M6's real
+///    injector is this service (decision 7), but the VMM can only raise a
+///    vector at an exit, and a `.wr` program that always has ready work
+///    never parks — at M6 nothing else can block a turn forever (item D's
+///    own finding: no deadlock is constructible at the acyclic-handle
+///    source surface), so a spinning child would otherwise run past its
+///    deadline unnoticed. So when the poll finds the minimum deadline
+///    already passed it sets this core's own pending word (bit 0) — the
+///    identical word the VMM's own raise writes, observed the identical
+///    way. That routing is not ceremony: setting the pending word instead
+///    of calling the scan directly is *what makes the cancellation land at
+///    a checkpoint* (02-language.md §9.5: "never between arbitrary
+///    instructions") rather than at whatever instruction the scheduler
+///    happened to be at, and it is the only reason the injection point is
+///    deterministic and replay-identical.
+///
+/// The clock read is the ordinary trapping `CLOCK_MMIO_ADDR` load, so every
+/// poll that finds a live deadline costs one recorded `ClockRead` — real,
+/// deliberate, and the honest price of a tick-granularity deadline service
+/// with no timer hardware. Leaf routine: clobbers `x9..x13` only, never
+/// `x28`/`sp`, and calls nothing.
+fn emit_deadline_poll(a: &mut Asm, g: &GroupServiceCtx) {
+    use crate::codegen::{
+        GROUP_SLOT_SIZE, OFF_GROUP_CANCELLED, OFF_GROUP_DEADLINE, OFF_GROUP_IN_USE,
+    };
+    const MIN: u8 = SCRATCH_A; // x9 — 0 = no live deadline
+    const SLOT: u8 = SCRATCH_B; // x10
+    const T0: u8 = SCRATCH_C; // x11
+    const T1: u8 = 12;
+    const T2: u8 = 13;
+
+    a.push(encode::enc_movz(MIN, 0, 0, true));
+    for i in 0..g.arena_capacity {
+        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
+        let skip_a = a.skip_placeholder(); // cbz -> next
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
+        let skip_b = a.skip_placeholder(); // cbnz -> already cancelled
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
+        let skip_c = a.skip_placeholder(); // cbz -> no deadline
+        // min = (min == 0 || this < min) ? this : min
+        a.push(encode::enc_cmp_reg(T0, MIN, true));
+        a.push(encode::enc_csel(T1, T0, MIN, Cond::Cc, true)); // T1 = this < min ? this : min
+        a.push(encode::enc_cmp_imm(MIN, 0, true));
+        a.push(encode::enc_csel(MIN, T0, T1, Cond::Eq, true)); // min == 0 -> take this
+        let next = a.abs();
+        a.patch_cbz(skip_a, T0);
+        a.patch_cbnz(skip_b, T0);
+        a.patch_cbz(skip_c, T0);
+        debug_assert_eq!(next, a.abs());
+    }
+    a.load_imm(
+        T0,
+        machine_layout::MACHINE_INFO_BASE + machine_info::OFF_NEXT_DEADLINE,
+    );
+    a.push(encode::enc_str_x_imm(MIN, T0, 0));
+    let skip_done = a.skip_placeholder(); // cbz MIN -> nothing armed
+    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
+    a.push(encode::enc_ldr_x_imm(T1, T0, 0)); // T1 = now
+    a.push(encode::enc_cmp_reg(T1, MIN, true));
+    let skip_not_yet = a.skip_placeholder(); // b.cc -> deadline still in the future
+    a.load_imm(T0, wrela_machine::pending::core_word_addr(0));
+    a.load_imm(T2, 1);
+    a.push(encode::enc_str_x_imm(T2, T0, 0)); // raise vector 0
+    let done = a.abs();
+    a.patch_cbz(skip_done, MIN);
+    a.patch_cond(skip_not_yet, Cond::Cc);
+    debug_assert_eq!(done, a.abs());
+    a.push(encode::enc_ret(30));
 }
 
 // --- section packing helpers ---------------------------------------------
@@ -552,7 +828,17 @@ pub fn layout_program(
 
     let abort_fixed_words = build_abort_stub(EXIT_CODE_ABORT_FIXED);
     let abort_val_words = build_abort_stub(EXIT_CODE_ABORT_VAL);
-    let (checkpoint_words, checkpoint_service_word) = build_checkpoint_and_vector_stub();
+    // plans/M6.md item F: the checkpoint block's own vector-0 body is the
+    // real deadline scan whenever this build has a group arena, so it needs
+    // already-placed `rtdata` addresses — which are not known until after
+    // this very block's own size fixes `cursor`. Built twice, exactly like
+    // the runtime glue block below: once with a shape-only placeholder
+    // context purely to learn the word count (never address-dependent), then
+    // again with the real addresses once `rtdata_base` exists.
+    let checkpoint_shape = group_service_shape(runtime);
+    let checkpoint_block = build_checkpoint_and_vector_stub(checkpoint_shape.as_ref());
+    let checkpoint_words = checkpoint_block.words;
+    let checkpoint_service_word = checkpoint_block.checkpoint_service_word;
 
     // --- place sections, fixed order: entry, code, rodata?, abort. ------
     let mut cursor = image_base;
@@ -651,6 +937,20 @@ pub fn layout_program(
     let placement = match (rtdata_base, runtime_live) {
         (Some(base), Some(tables)) => Some(place_runtime_tables(base, tables)),
         _ => None,
+    };
+    // Second pass over the checkpoint block, now that `rtdata` is placed.
+    let checkpoint_words = match (&placement, runtime_live) {
+        (Some(pl), Some(tables)) => {
+            let real = build_checkpoint_and_vector_stub(group_service_ctx(pl, tables).as_ref());
+            if real.words.len() != checkpoint_words.len() {
+                return Err(LayoutError::new(
+                    "internal error: the checkpoint block's own word count changed between its \
+                     sizing pass and its real-address pass",
+                ));
+            }
+            real.words
+        }
+        _ => checkpoint_words,
     };
     let mut all_code_words = code_words;
     for (key, f) in &program.fns {
@@ -1754,12 +2054,19 @@ pub fn build_rt_select_and_run(
     capacity: u64,
     slot_size: u64,
     dispatch: &[(usize, bool)],
+    frame_area_size: u64,
     start: usize,
 ) -> Vec<u32> {
     let colors: Vec<bool> = dispatch.iter().map(|(_, is_async)| *is_async).collect();
-    build_rt_select_and_run_core(addrs, capacity, slot_size, &colors, start, |a, idx| {
-        a.bl_to(dispatch[idx].0)
-    })
+    build_rt_select_and_run_core(
+        addrs,
+        capacity,
+        slot_size,
+        &colors,
+        frame_area_size,
+        start,
+        |a, idx| a.bl_to(dispatch[idx].0),
+    )
     .words
 }
 
@@ -1776,25 +2083,38 @@ fn build_rt_select_and_run_symbolic(
     capacity: u64,
     slot_size: u64,
     dispatch: &[(String, bool)],
+    frame_area_size: u64,
     start: usize,
 ) -> Asm {
     let colors: Vec<bool> = dispatch.iter().map(|(_, is_async)| *is_async).collect();
-    build_rt_select_and_run_core(addrs, capacity, slot_size, &colors, start, |a, idx| {
-        a.bl_call_key(&dispatch[idx].0)
-    })
+    build_rt_select_and_run_core(
+        addrs,
+        capacity,
+        slot_size,
+        &colors,
+        frame_area_size,
+        start,
+        |a, idx| a.bl_call_key(&dispatch[idx].0),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_rt_select_and_run_core(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
     method_is_async: &[bool],
+    // This actor's own whole turn-area size (`ActorRuntimeLayout::frame_size`)
+    // — the turn record plus its widest async frame. An actor with no async
+    // method has exactly the record and no frame slots at all.
+    frame_area_size: u64,
     start: usize,
     mut call_dispatch: impl FnMut(&mut Asm, usize),
 ) -> Asm {
     use crate::codegen::{
-        OFF_TURN_CUR_METHOD, OFF_TURN_REPLY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED,
-        OFF_TURN_WAKER,
+        BRK_ACTOR_TURN_CANCELLED, OFF_TURN_CUR_METHOD, OFF_TURN_REPLY, OFF_TURN_RESUME_READY,
+        OFF_TURN_SUSPENDED, OFF_TURN_WAKER, TURN_RECORD_SIZE, TURN_STATUS_CANCELLED,
+        TURN_STATUS_SUSPENDED,
     };
     let mut a = Asm::new(start);
     // Unlike most other hand-assembled fragments in this file (leaf fns,
@@ -1872,6 +2192,28 @@ fn build_rt_select_and_run_core(
     a.load_imm(9, addrs.turn);
     a.push(encode::enc_str_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16));
     a.push(encode::enc_str_x_imm(10, 9, OFF_TURN_WAKER as u16));
+    // plans/M6.md item F: a freshly selected turn starts with *no* ambient
+    // lineage (02-language.md §9.5 — a message carries no group; a turn's
+    // lineage is its own task root's, and an actor turn's root is the
+    // message that started it). The two lineage slots are the first two
+    // words past the turn record (`codegen::LINEAGE_GROUP_SLOT`/
+    // `LINEAGE_DEADLINE_SLOT`, `flowwir::FrameLayout`'s fixed convention),
+    // and a previous activation of a *different* method on this same actor
+    // could otherwise leave a stale group id behind — harmless today only
+    // because every M6 actor method that opens a group also closes it, but
+    // correct by construction now rather than by accident.
+    // Guarded on the area actually *having* those two slots: an actor with
+    // no `async` method at all gets a turn area of exactly
+    // `TURN_RECORD_SIZE` bytes and no frame slots past it, so storing there
+    // would scribble on whatever `place_runtime_tables` put next (a real
+    // bug the flagship group goldens caught the moment this zeroing was
+    // added unguarded — the group arena's own `in_use` words, three regions
+    // later, came back set and `GroupCreate` reported "arena capacity
+    // exceeded").
+    if frame_area_size >= TURN_RECORD_SIZE + 16 {
+        a.push(encode::enc_str_x_imm(31, 9, TURN_RECORD_SIZE as u16));
+        a.push(encode::enc_str_x_imm(31, 9, (TURN_RECORD_SIZE + 8) as u16));
+    }
     // Load only as many 8-byte arg words as this ring's own `slot_size`
     // actually reserves past the 16-byte idx+waker pair (never
     // unconditionally 2): the smallest legal slot is `slot_size=16` (a
@@ -1919,12 +2261,30 @@ fn build_rt_select_and_run_core(
         call_dispatch(&mut a, idx);
         if is_async {
             // x0 = status; on completion x1 = reply.
-            let skip_completed = a.skip_placeholder(); // cbz x0, .completed
+            a.push(encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true));
+            let skip_not_suspended = a.skip_placeholder(); // b.ne .not_suspended
             // Suspended: a real slice ran; busy stays set; x0 is
             // already 1 (TURN_STATUS_SUSPENDED) — the "ran" report.
             to_epilogue.push(a.skip_placeholder());
+            let not_suspended = a.abs();
+            a.patch_cond(skip_not_suspended, Cond::Ne);
+            debug_assert_eq!(not_suspended, a.abs());
+            // plans/M6.md item F: `TURN_STATUS_CANCELLED` from an *actor*
+            // turn has no delivery channel — the turn record carries one
+            // scalar reply word and no error tag, so there is nothing to
+            // hand the awaiting turn but a lie. Fail closed, loudly, rather
+            // than approximate. Unreachable at M6 by construction: an actor
+            // turn's lineage slots are zeroed at fresh selection (above), so
+            // its ambient group is only ever one the method opened itself —
+            // and that group's owner IS this turn, which
+            // `emit_checkpoint_cancellation_test` exempts from termination.
+            // The day an actor turn can inherit a caller's lineage, this is
+            // the arm that must grow a real `CallError` reply channel.
+            a.push(encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true));
+            let skip_completed = a.skip_placeholder(); // b.ne .completed
+            a.push(encode::enc_brk(BRK_ACTOR_TURN_CANCELLED));
             let completed = a.abs();
-            a.patch_cbz(skip_completed, 0);
+            a.patch_cond(skip_completed, Cond::Ne);
             debug_assert_eq!(completed, a.abs());
             a.push(encode::enc_mov_reg(9, 1, true)); // x9 = reply
             to_deliver.push(a.skip_placeholder());
@@ -2232,6 +2592,7 @@ fn build_runtime_glue_block(
             a.mailbox_capacity,
             a.slot_size,
             dispatch_keys,
+            a.frame_size,
             select_start,
         );
         cursor += select_asm.words.len();
@@ -2273,6 +2634,87 @@ fn build_runtime_glue_block(
         symbols,
         rt_run_one_start,
     }
+}
+
+/// plans/M6.md decision 11b (02-language.md §12.2): resolves every
+/// runtime test's own declared `Actor[T]` params against the image
+/// graph's own declared instances — `T`'s *unique* instance across
+/// `graph.actors`/`graph.drivers` (both are actor roots, 02 §9.1: "A
+/// struct marked `@actor` ... or `@driver` ... is an actor"), by build-
+/// time index (04-compiler.md §6's own "Actor as-if" license: a handle's
+/// runtime value is just that instance's own build-time-constant index).
+/// Zero or more than one instance is a named `error[build]` line listing
+/// every candidate (`actor#i`/`driver#i`, the identical spelling
+/// `eval::image::dump`'s own edge lines already use) — sema
+/// (`check_runtime_test_params`) already guarantees every param here is
+/// a plain `Actor[T]` handle, so the only failure mode left is a real
+/// ambiguity/absence in *this* image. A test with no params (every sync
+/// test, and any async test that declares none) resolves to an empty arg
+/// list — byte-identical to every pre-decision-11b test.
+pub fn resolve_runtime_test_args(
+    program: &crate::sema::typed::TypedProgram,
+    runtime_tests: &[String],
+    graph: &crate::eval::image::ImageGraph,
+) -> Result<BTreeMap<String, Vec<u64>>, String> {
+    let mut out = BTreeMap::new();
+    for name in runtime_tests {
+        let f = &program.fns[name];
+        let mut args = Vec::with_capacity(f.params.len());
+        for p in &f.params {
+            let crate::sema::types::Type::Named(_, targs) = &p.ty else {
+                return Err(format!(
+                    "internal error: runtime test `{name}`'s own param `{}` is not an \
+                     `Actor[T]` handle (sema should have already rejected this)",
+                    p.name
+                ));
+            };
+            let Some(crate::sema::types::TypeArg::Type(inner)) = targs.first() else {
+                return Err(format!(
+                    "internal error: runtime test `{name}`'s own `Actor[T]` param `{}` has no \
+                     type argument",
+                    p.name
+                ));
+            };
+            let target_name = crate::sema::types::render_type(inner);
+            let mut candidates: Vec<String> = Vec::new();
+            let mut actor_index: Option<usize> = None;
+            for (i, a) in graph.actors.iter().enumerate() {
+                if crate::sema::types::render_type(&a.actor_type) == target_name {
+                    candidates.push(format!("actor#{i}"));
+                    actor_index = Some(i);
+                }
+            }
+            for (i, d) in graph.drivers.iter().enumerate() {
+                if crate::sema::types::render_type(&d.actor_type) == target_name {
+                    candidates.push(format!("driver#{i}"));
+                }
+            }
+            if candidates.len() != 1 {
+                return Err(format!(
+                    "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` needs \
+                     exactly one declared `{target_name}` instance in this image; found {} ({})",
+                    p.name,
+                    candidates.len(),
+                    if candidates.is_empty() {
+                        "none".to_string()
+                    } else {
+                        candidates.join(", ")
+                    }
+                ));
+            }
+            let Some(idx) = actor_index else {
+                return Err(format!(
+                    "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` resolves \
+                     to a driver, not an actor — driver handles are not yet wired for runtime \
+                     tests (M6-D's own floor)",
+                    p.name
+                ));
+            };
+            args.push(idx as u64);
+        }
+        out.insert(name.clone(), args);
+    }
+    Ok(out)
 }
 
 /// plans/M6.md item D: the real boot sequence's own actor-state half —
@@ -3095,6 +3537,10 @@ fn build_entry_driver(
     // observes vectors only at checkpoints and parks", and the park's own
     // resume point *is* one, by construction).
     checkpoint_service_word: usize,
+    // plans/M6.md item F #3: `__wrela_deadline_poll`'s own harness-absolute
+    // word index, present only for a build with a group arena. Called once
+    // per scheduler tick (module doc on `emit_deadline_poll`).
+    deadline_poll_word: Option<usize>,
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
     boot_init_start: Option<usize>,
@@ -3200,6 +3646,17 @@ fn build_entry_driver(
             let status_loop_top = a.abs();
             let skip_done = a.skip_placeholder(); // cbz x0, .done
             let drive_top = a.abs();
+            // plans/M6.md item F #3: the deadline service's own scheduler
+            // half, once per tick, before anything is selected — it arms
+            // `OFF_NEXT_DEADLINE` for the park branch below AND raises the
+            // deadline vector when the minimum live deadline has already
+            // passed, so a turn that keeps running (rather than parking)
+            // still observes its group's cancellation at its very next
+            // checkpoint. Absent entirely for a build with no group arena,
+            // byte-identical to every pre-item-F image.
+            if let Some(poll) = deadline_poll_word {
+                a.bl_to(poll);
+            }
             // NB: `Asm` relocs carry ABSOLUTE word indices (the
             // `bl_call_key` convention) — `abs()`, not `words.len()`.
             let root_area_word = a.abs();
@@ -3629,16 +4086,26 @@ pub fn layout_test_image(
     // exactly like `Reloc::AbortFixed`/`AbortVal`, and the entry driver's
     // own park-resume path (below) calls the service directly too.
     let checkpoint_start = abort_val_start + abort_val_asm.words.len();
-    let (checkpoint_words, checkpoint_service_offset) = build_checkpoint_and_vector_stub();
+    // plans/M6.md item F: built twice (shape-only, then with real `rtdata`
+    // addresses), exactly like the runtime glue block below — the vector-0
+    // body is now the real deadline scan whenever this build has a group
+    // arena. `layout_program`'s own copy of this two-pass shape has the
+    // full reasoning.
+    let checkpoint_shape = group_service_shape(runtime_tables.as_ref());
+    let checkpoint_block = build_checkpoint_and_vector_stub(checkpoint_shape.as_ref());
+    let checkpoint_service_offset = checkpoint_block.checkpoint_service_word;
+    let deadline_poll_offset = checkpoint_block.deadline_poll_word;
+    let checkpoint_words_len = checkpoint_block.words.len();
     let checkpoint_asm = Asm {
         start: checkpoint_start,
-        words: checkpoint_words,
+        words: checkpoint_block.words,
         relocs: Vec::new(),
     };
     // `__wrela_checkpoint_service`'s own harness-absolute word index (see
     // `build_checkpoint_and_vector_stub`'s doc: `__wrela_vector0_service`
     // sits first, so the section's own start is never the right target).
     let checkpoint_service_word = checkpoint_start + checkpoint_service_offset;
+    let deadline_poll_word = deadline_poll_offset.map(|o| checkpoint_start + o);
 
     // plans/M6.md item D: the runtime-glue routines + boot-init sequence
     // (module docs on `build_runtime_glue_block`/`build_boot_init` above)
@@ -3697,6 +4164,7 @@ pub fn layout_test_image(
         async_tests,
         rt_run_one_start,
         checkpoint_service_word,
+        deadline_poll_word,
         &mut rodata,
         &mut rodata_cursor,
         boot_init_start_opt,
@@ -3771,6 +4239,22 @@ pub fn layout_test_image(
             let real_base =
                 rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
             let placement = place_runtime_tables(real_base, tables);
+            // The checkpoint block's own second pass (module doc on
+            // `build_checkpoint_and_vector_stub`): its vector-0 body and
+            // deadline poll now address the real, placed group arena and
+            // turn areas. Same word count by construction, asserted.
+            if let Some(ctx) = group_service_ctx(&placement, tables) {
+                let real_cp = build_checkpoint_and_vector_stub(Some(&ctx));
+                if real_cp.words.len() != checkpoint_words_len {
+                    return Err(LayoutError::new(
+                        "internal error: the checkpoint block's own word count changed between \
+                         its sizing pass and its real-address pass",
+                    ));
+                }
+                for (i, word) in real_cp.words.iter().enumerate() {
+                    harness_words[checkpoint_start + i] = *word;
+                }
+            }
             let real_glue = build_runtime_glue_block(
                 tables,
                 &actor_dispatch,
@@ -4982,6 +5466,7 @@ mod harness_jit {
             capacity,
             slot_size,
             &[(method0_start, false), (method1_start, false)],
+            crate::codegen::TURN_RECORD_SIZE,
             select_start,
         ));
 
@@ -5075,6 +5560,7 @@ mod harness_jit {
             capacity,
             slot_size,
             &[(method0_start, false)],
+            crate::codegen::TURN_RECORD_SIZE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
@@ -5117,6 +5603,7 @@ mod harness_jit {
             capacity,
             slot_size,
             &[(method0_start, false)],
+            crate::codegen::TURN_RECORD_SIZE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
@@ -5161,6 +5648,7 @@ mod harness_jit {
             capacity,
             slot_size,
             &[(method0_start, false)],
+            crate::codegen::TURN_RECORD_SIZE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
@@ -5230,6 +5718,7 @@ mod harness_jit {
             capacity,
             slot_size,
             &[(method0_start, true)],
+            crate::codegen::TURN_RECORD_SIZE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
@@ -5320,6 +5809,7 @@ mod harness_jit {
             capacity,
             slot_size,
             &[(m0_start, false)],
+            crate::codegen::TURN_RECORD_SIZE,
             sel0_start,
         ));
         let sel1_start = combined.len();
@@ -5328,6 +5818,7 @@ mod harness_jit {
             capacity,
             slot_size,
             &[(m1_start, false)],
+            crate::codegen::TURN_RECORD_SIZE,
             sel1_start,
         ));
         let run_one_start = combined.len();

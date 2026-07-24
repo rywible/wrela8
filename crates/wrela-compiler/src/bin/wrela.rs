@@ -18,97 +18,14 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use wrela_compiler::eval;
-use wrela_compiler::eval::image::ImageGraph;
 use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::{TestKind, TypedProgram};
-use wrela_compiler::sema::types::{self, Type, TypeArg};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 use wrela_compiler::{codegen, lower};
-
-/// plans/M6.md decision 11b (02-language.md §12.2): resolves every
-/// runtime test's own declared `Actor[T]` params against the image
-/// graph's own declared instances — `T`'s *unique* instance across
-/// `graph.actors`/`graph.drivers` (both are actor roots, 02 §9.1: "A
-/// struct marked `@actor` ... or `@driver` ... is an actor"), by build-
-/// time index (04-compiler.md §6's own "Actor as-if" license: a handle's
-/// runtime value is just that instance's own build-time-constant index).
-/// Zero or more than one instance is a named `error[build]` line listing
-/// every candidate (`actor#i`/`driver#i`, the identical spelling
-/// `eval::image::dump`'s own edge lines already use) — sema
-/// (`check_runtime_test_params`) already guarantees every param here is
-/// a plain `Actor[T]` handle, so the only failure mode left is a real
-/// ambiguity/absence in *this* image. A test with no params (every sync
-/// test, and any async test that declares none) resolves to an empty arg
-/// list — byte-identical to every pre-decision-11b test.
-fn resolve_runtime_test_args(
-    program: &TypedProgram,
-    runtime_tests: &[String],
-    graph: &ImageGraph,
-) -> Result<BTreeMap<String, Vec<u64>>, String> {
-    let mut out = BTreeMap::new();
-    for name in runtime_tests {
-        let f = &program.fns[name];
-        let mut args = Vec::with_capacity(f.params.len());
-        for p in &f.params {
-            let Type::Named(_, targs) = &p.ty else {
-                return Err(format!(
-                    "internal error: runtime test `{name}`'s own param `{}` is not an \
-                     `Actor[T]` handle (sema should have already rejected this)",
-                    p.name
-                ));
-            };
-            let Some(TypeArg::Type(inner)) = targs.first() else {
-                return Err(format!(
-                    "internal error: runtime test `{name}`'s own `Actor[T]` param `{}` has no \
-                     type argument",
-                    p.name
-                ));
-            };
-            let target_name = types::render_type(inner);
-            let mut candidates: Vec<String> = Vec::new();
-            let mut actor_index: Option<usize> = None;
-            for (i, a) in graph.actors.iter().enumerate() {
-                if types::render_type(&a.actor_type) == target_name {
-                    candidates.push(format!("actor#{i}"));
-                    actor_index = Some(i);
-                }
-            }
-            for (i, d) in graph.drivers.iter().enumerate() {
-                if types::render_type(&d.actor_type) == target_name {
-                    candidates.push(format!("driver#{i}"));
-                }
-            }
-            if candidates.len() != 1 {
-                return Err(format!(
-                    "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` needs \
-                     exactly one declared `{target_name}` instance in this image; found {} ({})",
-                    p.name,
-                    candidates.len(),
-                    if candidates.is_empty() {
-                        "none".to_string()
-                    } else {
-                        candidates.join(", ")
-                    }
-                ));
-            }
-            let Some(idx) = actor_index else {
-                return Err(format!(
-                    "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` resolves \
-                     to a driver, not an actor — driver handles are not yet wired for runtime \
-                     tests (M6-D's own floor)",
-                    p.name
-                ));
-            };
-            args.push(idx as u64);
-        }
-        out.insert(name.clone(), args);
-    }
-    Ok(out)
-}
 
 const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|flowwir|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
 
@@ -1148,7 +1065,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     // *before* ever laying out the image — an ambiguity/absence here is
     // exactly the same `error[build]` category `image_checks::check_sealed`
     // already uses for graph-shaped mistakes.
-    let test_args = match resolve_runtime_test_args(&program, &runtime_tests, &graph) {
+    let test_args = match layout::resolve_runtime_test_args(&program, &runtime_tests, &graph) {
         Ok(a) => a,
         Err(msg) => {
             for l in &comptime_lines {

@@ -1,0 +1,69 @@
+module examples.boot_deadline_inherit
+
+# plans/M6.md item F flagship, 02-language.md §9.5's own "Deadlines are
+# inherited and can only narrow."
+#
+# The inner group declares a deadline five whole seconds out — vastly
+# longer than the outer's zero-budget one. Narrowing means the inner's
+# *effective* deadline is `min(ambient, own)`, i.e. the outer's, so the
+# inner expires at the outer's instant and its child is cancelled anyway.
+# Had the inner's own longer deadline won, `worker` would have finished
+# all eight iterations in microseconds and resolved `Ok`.
+#
+# This is also the reason the deadline service needs no separate
+# parent-to-child cancellation propagation pass at M6: narrowing already
+# guarantees every descendant of an expired group is itself expired at the
+# same instant, so one linear scan of the arena cancels the whole subtree
+# (recorded in `layout::emit_deadline_scan_and_delivery`'s own doc).
+
+@actor
+pub struct Counter:
+    n: u64
+
+    pub fn bump(mut self) -> u64:
+        self.n = self.n + 1
+        return self.n
+
+    pub fn total(read self) -> u64:
+        return self.n
+
+async fn worker(c: Actor[Counter]) -> u64:
+    i: u64 = 0
+    while i < 8:
+        r = await c.bump()
+        match r:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        i = i + 1
+    return i
+
+@test(runtime)
+async fn inner_cancels_at_the_outer_deadline(c: Actor[Counter]):
+    cancelled: u64 = 0
+    with group(deadline=now() + ms(0)):
+        with group(capacity=1, deadline=now() + ms(5000)) as g:
+            g.start(worker, c=c)
+            results = await g.join_all()
+            for r in results:
+                match r:
+                    case .Ok(_):
+                        pass
+                    case .Err(_):
+                        cancelled = cancelled + 1
+    assert cancelled == 1, "the inner group expired at the outer's earlier deadline"
+    n = await c.total()
+    match n:
+        case .Ok(v):
+            assert v == 1, "the child stopped at its first checkpoint past the inherited deadline"
+        case .Err(_):
+            assert false, "total rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-deadline-inherit", target=Target.wrela_machine_v1)
+    c = img.actor(Counter, mailbox=8)
+    img.supervise(children=[c], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

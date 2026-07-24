@@ -1,0 +1,66 @@
+module examples.boot_cancel_cleanup
+
+# plans/M6.md item F flagship, decision 8 / 04-compiler.md §4's own
+# "runs every ready cleanup node in deterministic reverse source order".
+#
+# `defer` cannot print (02-language.md §10: a deferred action handles its
+# own errors and returns nothing), so the order is observed the only way
+# it can be: two defers append a digit each to a local the `with`-block's
+# own frame owns. Reverse registration order is `21`, never `12`.
+#
+# Both facts are asserted together, because at M6 they are one path: the
+# group is genuinely cancelled (its zero-budget deadline expires and the
+# child resolves `Err`), and the group's own cleanup chain runs where
+# `flowwir_lower` wires it — at the group's close, in the owning frame,
+# which cancellation deliberately does NOT terminate
+# (`codegen::OFF_GROUP_OWNER_TURN`: "source sees only `CallError` and its
+# own `defer`s running", 02 §9.5). So the transcript proves cleanup ran,
+# in reverse, on a cancelled group.
+
+@actor
+pub struct Counter:
+    n: u64
+
+    pub fn bump(mut self) -> u64:
+        self.n = self.n + 1
+        return self.n
+
+async fn worker(c: Actor[Counter]) -> u64:
+    i: u64 = 0
+    while i < 8:
+        r = await c.bump()
+        match r:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        i = i + 1
+    return i
+
+@test(runtime)
+async fn cleanup_runs_in_reverse(c: Actor[Counter]):
+    trace: u64 = 0
+    cancelled: u64 = 0
+    with group(capacity=1, deadline=now() + ms(0)) as g:
+        defer:
+            trace = trace * 10 + 1
+        defer:
+            trace = trace * 10 + 2
+        g.start(worker, c=c)
+        results = await g.join_all()
+        for r in results:
+            match r:
+                case .Ok(_):
+                    pass
+                case .Err(_):
+                    cancelled = cancelled + 1
+    assert cancelled == 1, "the group's own child resolved CallError::Cancelled"
+    assert trace == 21, "defers ran in reverse registration order (21, never 12)"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-cancel-cleanup", target=Target.wrela_machine_v1)
+    c = img.actor(Counter, mailbox=8)
+    img.supervise(children=[c], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
