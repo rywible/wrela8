@@ -701,11 +701,16 @@ fn dump(args: &[String]) -> ExitCode {
                                                     &modules, &layout,
                                                 ) {
                                                     Ok(method_index) => {
+                                                        let group_arena_capacity =
+                                                            layout::count_with_group_sites(
+                                                                &modules,
+                                                            );
                                                         match wrela_compiler::codegen::codegen_program_with_async(
                                                             &mwir_program,
                                                             &flow_program,
                                                             &layout,
                                                             &method_index,
+                                                            group_arena_capacity,
                                                         ) {
                                                             Ok(codegen_program) => print!(
                                                                 "{}",
@@ -1153,11 +1158,13 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let group_arena_capacity = layout::count_with_group_sites(&modules);
     let codegen_program = match codegen::codegen_program_with_async(
         &mwir_program,
         &flow_program,
         &layout_ctx,
         &method_index,
+        group_arena_capacity,
     ) {
         Ok(p) => p,
         Err(e) => {

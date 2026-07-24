@@ -467,6 +467,14 @@ pub enum Reloc {
     /// actor) or the fn's own dedicated free-turn area (every other
     /// async fn — `@test(runtime)` roots foremost).
     TurnFrameAddr { word: usize, key: String },
+    /// The four-word `load_imm` starting at `word` materializes the
+    /// absolute base address of the whole-image group arena (plans/M6.md
+    /// item F, `layout::RuntimeTables::group_arena_capacity`-many
+    /// `GROUP_SLOT_SIZE`-byte slots) — one whole-program constant,
+    /// unlike `TurnFrameAddr` (no `key`: there is exactly one arena).
+    /// Emitted by `GroupCreate`'s own arena scan and by the group-child
+    /// poll routines `layout.rs` hand-assembles.
+    GroupArenaBase { word: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2355,6 +2363,88 @@ pub const TURN_RECORD_SIZE: u64 = 48;
 // x1 = the scalar return value.
 pub const TURN_STATUS_COMPLETED: u64 = 0;
 pub const TURN_STATUS_SUSPENDED: u64 = 1;
+/// plans/M6.md item F (decision 8, 04-compiler.md §4): a checkpoint that
+/// observes its own turn's ambient group cancelled terminates the
+/// activation early — "the cancelled frame never resumes." Reported the
+/// same way `TURN_STATUS_COMPLETED`/`_SUSPENDED` are (`x0`), never x1
+/// (there is no real reply to report — whoever reads this status composes
+/// `CallError::Cancelled`/an array slot showing it, never a scalar
+/// value). Only ever produced by the shared cancellation tail
+/// (`emit_async_cancelled_tail`) this item adds; every pre-existing
+/// consumer of this ABI (`rt_select_and_run`'s actor dispatch arms) is
+/// untouched and still only ever sees 0/1 — no required M6 golden runs an
+/// actor method inside a cancelled group's own domain, a disclosed gap
+/// recorded in this item's own ledger note, not silently widened here.
+pub const TURN_STATUS_CANCELLED: u64 = 2;
+
+// --- the group arena record (plans/M6.md item F, 02-language.md §9.5) ------
+//
+// One `GROUP_SLOT_SIZE`-byte record per statically-sized arena slot
+// (`layout::RuntimeTables::group_arena_capacity` — a real count of
+// `with group(...)` sites, item C's own sizing pass), all `u64` words:
+//
+//   +0  in_use          1 while this slot backs a currently-open `with
+//                       group` scope (`GroupCreate`..`GroupClose`).
+//   +8  capacity        the declared `capacity=` (0 = no children).
+//   +16 active_children how many admitted `g.start` children have not yet
+//                       completed/been harvested.
+//   +24 deadline_ns     the narrowed effective deadline (0 = none) —
+//                       `min(ambient, own)`, decision 8's own inheritance
+//                       rule, computed once at `GroupCreate`.
+//   +32 cancelled       1 once the vector-0 deadline scan (or a parent
+//                       group's own cancellation propagation) marks this
+//                       group cancelled.
+//   +40 parent_group    the enclosing group's own arena index, or
+//                       `GROUP_NO_PARENT` (`u64::MAX`) — a distinct
+//                       sentinel from the lineage-slot encoding below
+//                       (this field is arena-internal bookkeeping only,
+//                       never read as a frame lineage value).
+//   +48 join_waiter     the parent turn's own turn-area address, once
+//                       `g.join_all()` parks waiting on this group's
+//                       children (0 = not yet awaiting / no parent turn
+//                       registered).
+//   +56.. child result slots: `GROUP_MAX_CHILDREN` pairs of (tag,
+//                       payload), one per static `g.start` call site
+//                       ordinal within this group (`GroupCtx::child_index`,
+//                       below) — tag 0 = Ok, 1 = the composed
+//                       `CallError::Cancelled` (the only non-`Op` variant
+//                       M6's own dumbest floor ever produces; a real
+//                       `CallError::Op(e)`/other variant composition is
+//                       out of this item's own required surface, exactly
+//                       like `emit_await_resume`'s own existing scalar-reply
+//                       floor).
+//
+// Lives here, not `wrela-machine`, for the identical reason the turn
+// record does (`TURN_RECORD_SIZE`'s own doc comment above): rtdata-interior
+// compiler bookkeeping the VMM never reads.
+pub const OFF_GROUP_IN_USE: u64 = 0;
+pub const OFF_GROUP_CAPACITY: u64 = 8;
+pub const OFF_GROUP_ACTIVE_CHILDREN: u64 = 16;
+pub const OFF_GROUP_DEADLINE: u64 = 24;
+pub const OFF_GROUP_CANCELLED: u64 = 32;
+pub const OFF_GROUP_PARENT: u64 = 40;
+pub const OFF_GROUP_JOIN_WAITER: u64 = 48;
+pub const OFF_GROUP_CHILDREN_BASE: u64 = 56;
+/// A fixed, small bound on children per group (a disclosed floor, not a
+/// hidden narrowing — plans/M6.md item F's own recorded reading of
+/// decision 1's "starts may sit in loops": every required M6 golden opens
+/// at most two `g.start` children in any one group; a third fails closed,
+/// named, at `codegen::compute_group_child_indices`).
+pub const GROUP_MAX_CHILDREN: usize = 2;
+pub const GROUP_SLOT_SIZE: u64 = OFF_GROUP_CHILDREN_BASE + (GROUP_MAX_CHILDREN as u64) * 16;
+/// `parent_group`'s own "no parent" sentinel — distinct from the
+/// lineage-slot encoding (`Temp(0)`'s own "0 = no ambient group, else
+/// arena-index+1" scheme) since this field is never read as a lineage
+/// value, only ever compared against by the deadline-scan/cancellation
+/// routines this item adds.
+pub const GROUP_NO_PARENT: u64 = u64::MAX;
+
+pub fn group_child_tag_off(child_index: usize) -> u64 {
+    OFF_GROUP_CHILDREN_BASE + (child_index as u64) * 16
+}
+pub fn group_child_payload_off(child_index: usize) -> u64 {
+    group_child_tag_off(child_index) + 8
+}
 
 /// A rejected admission on an `await`'s own enqueue aborts (`BRK`) rather
 /// than composing a real `CallError[NotAdmitted(..)]` value — the same
@@ -2378,6 +2468,66 @@ fn method_name_of_key(key: &str) -> &str {
 /// the two can never number a method differently.
 pub type ActorMethodIndex = BTreeMap<String, BTreeMap<String, usize>>;
 
+// --- group runtime context (plans/M6.md item F) -----------------------------
+
+/// The whole-build facts `GroupCreate`/`GroupStart`/the group-child poll
+/// routines (`layout.rs`) need, threaded alongside `ActorMethodIndex`
+/// everywhere that already threads it: the static arena's own slot count
+/// (`arena_capacity`, `layout::RuntimeTables::group_arena_capacity`) and
+/// each `g.start`-able callee's own fixed child-slot ordinal
+/// (`compute_group_child_indices`, below).
+pub struct GroupCtx {
+    pub arena_capacity: u64,
+    pub child_index: BTreeMap<String, usize>,
+}
+
+/// `callee_key -> its own fixed child-slot ordinal` (0-based, within
+/// whichever group starts it) — computed once, whole-program, by counting
+/// each `FlowInst::GroupStart` in program order per `(owner fn,
+/// group_temp)` pair. Two disclosed floors enforced here, named rather
+/// than silently narrowed (module doc on `GROUP_MAX_CHILDREN`): more than
+/// `GROUP_MAX_CHILDREN` children in one group scope, or the identical
+/// callee named from more than one static `g.start` site anywhere in the
+/// build (M6's one-free-turn-area-per-fn floor, `layout::RuntimeTables::
+/// free_turns` — two concurrent instances of the same callee have nowhere
+/// to live).
+pub fn compute_group_child_indices(
+    flow: &FlowWirProgram,
+) -> Result<BTreeMap<String, usize>, CodegenError> {
+    let mut out = BTreeMap::new();
+    for (fn_key, f) in &flow.fns {
+        let mut counters: BTreeMap<Temp, usize> = BTreeMap::new();
+        for state in &f.states {
+            for op in &state.ops {
+                if let FlowInst::GroupStart {
+                    group_temp,
+                    callee_key,
+                    ..
+                } = op
+                {
+                    let counter = counters.entry(*group_temp).or_insert(0);
+                    let this_idx = *counter;
+                    *counter += 1;
+                    if this_idx >= GROUP_MAX_CHILDREN {
+                        return Err(CodegenError::unimplemented(&format!(
+                            "more than {GROUP_MAX_CHILDREN} `g.start` children in one group \
+                             scope (fn `{fn_key}`, plans/M6.md item F's own disclosed floor)"
+                        )));
+                    }
+                    if out.insert(callee_key.clone(), this_idx).is_some() {
+                        return Err(CodegenError::unimplemented(&format!(
+                            "async fn `{callee_key}` is `g.start`ed from more than one static \
+                             call site (plans/M6.md item F's own disclosed floor: one free-turn \
+                             area per fn, M6-C's own sizing)"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// One flattened position: a state's own straight-line op (`FlowInst`,
 /// jump targets already remapped to flat indices), a state's own
 /// `Transition` (compiled last within its state), or an await's own
@@ -2394,6 +2544,7 @@ enum FlatEntry {
     AwaitResume {
         resume_state: usize,
         result_temp: Temp,
+        what: AwaitKind,
     },
 }
 
@@ -2443,15 +2594,16 @@ fn flatten(f: &FlowWirFn) -> (Vec<usize>, Vec<usize>, Vec<FlatEntry>) {
         }
         flat.push(FlatEntry::Trans(s.transition.clone()));
         if let Transition::Await {
+            what,
             resume_state,
             result_temp,
-            ..
         } = &s.transition
         {
             resume_target[*resume_state] = flat.len();
             flat.push(FlatEntry::AwaitResume {
                 resume_state: *resume_state,
                 result_temp: *result_temp,
+                what: what.clone(),
             });
         }
     }
@@ -2810,11 +2962,579 @@ fn emit_now(dst: Temp, ctx: &mut FnCtx) {
     ctx.store_slot(X_B, ctx.frame.off(dst));
 }
 
+/// The two dedicated lineage frame slots every `FlowWirFn` reserves
+/// (`flowwir::FrameLayout`'s own doc: "always `Temp(0)`/`Temp(1)`,
+/// allocated first, before `self`/params/every other temp") — a fixed
+/// convention, not a value threaded from anywhere, so every group op below
+/// just names them directly.
+const LINEAGE_GROUP_SLOT: Temp = Temp(0);
+const LINEAGE_DEADLINE_SLOT: Temp = Temp(1);
+
+/// `with group(...)`'s own opening bracket (02-language.md §9.5,
+/// plans/M6.md item F #1): a real, dumbest-correct linear scan of the
+/// whole-image group arena (`GroupCtx::arena_capacity` slots, fully
+/// unrolled — the count is a small, build-time constant, `CLAUDE.md`'s
+/// "linear scans over the static arena" made literal, never a runtime
+/// loop) for the first `in_use == 0` slot; a build with every slot
+/// occupied aborts, named (an M6 image never nests/loops deeply enough to
+/// exhaust an arena sized from its own static with-site count *unless*
+/// the same static site's own group is somehow still open when re-entered
+/// recursively — M6 has no recursion, so this is a should-never-fire
+/// defensive floor, not a real capacity limit any required golden nears).
+/// Once a slot is claimed: `capacity`/`active_children`/`cancelled`/
+/// `join_waiter`/every child result slot are (re-)initialized (a slot may
+/// be reused by a later loop iteration of the identical `with`-site, so
+/// hygiene zeroing is real, not optional); the deadline narrows
+/// (`min(ambient, own)`, 0 meaning "none" throughout, decision 8's own
+/// inheritance rule) via branch-free `CSEL`s (module doc below); the
+/// *previous* ambient lineage becomes this group's own `parent_group`
+/// (`GROUP_NO_PARENT` if there was none); and the frame's own
+/// `LINEAGE_GROUP_SLOT`/`LINEAGE_DEADLINE_SLOT` (plus `group_temp`
+/// itself, the `as g` binding if any) become this new group's own
+/// `arena_index + 1`/effective deadline — every `Send`/`Await`/nested
+/// `with group`/checkpoint compiled *after* this op, until the matching
+/// `GroupClose`, reads the new ambient values.
+#[allow(clippy::too_many_arguments)]
+fn emit_group_create(
+    group_temp: Temp,
+    capacity: Option<Temp>,
+    deadline: Option<Temp>,
+    ctx: &mut FnCtx,
+    gctx: &GroupCtx,
+) -> Result<(), CodegenError> {
+    const X_ARENA: u8 = 15;
+    const X_CAND: u8 = 16;
+    const X_TAG: u8 = 17;
+
+    let word = ctx.cur_word();
+    ctx.load_imm(X_ARENA, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = format!("group-arena-base {}", reg_name(X_ARENA));
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word });
+
+    // Capture the *old* ambient lineage before anything overwrites it —
+    // this group's own `parent_group`/deadline-narrowing inputs.
+    ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT)); // old ambient group, encoded (0 = none)
+    ctx.load_slot(X_B, ctx.frame.off(LINEAGE_DEADLINE_SLOT)); // old ambient deadline (0 = none)
+    match deadline {
+        Some(t) => ctx.load_slot(X_C, ctx.frame.off(t)),
+        None => ctx.load_imm(X_C, 0),
+    }
+    let own_capacity_off = capacity.map(|t| ctx.frame.off(t));
+
+    // Branch-free narrowing (module doc): 0 means "no deadline" throughout,
+    // so it is remapped to a MAX sentinel for the `min`, then remapped back.
+    ctx.load_imm(X_D, u64::MAX as i64); // sentinel
+    ctx.push(
+        encode::enc_cmp_imm(X_B, 0, true),
+        format!("cmp {}, #0", reg_name(X_B)),
+    );
+    ctx.push(
+        encode::enc_csel(X_E, X_D, X_B, Cond::Eq, true),
+        format!(
+            "csel {}, {}, {}, eq",
+            reg_name(X_E),
+            reg_name(X_D),
+            reg_name(X_B)
+        ),
+    );
+    ctx.push(
+        encode::enc_cmp_imm(X_C, 0, true),
+        format!("cmp {}, #0", reg_name(X_C)),
+    );
+    ctx.push(
+        encode::enc_csel(X_F, X_D, X_C, Cond::Eq, true),
+        format!(
+            "csel {}, {}, {}, eq",
+            reg_name(X_F),
+            reg_name(X_D),
+            reg_name(X_C)
+        ),
+    );
+    ctx.push(
+        encode::enc_cmp_reg(X_E, X_F, true),
+        format!("cmp {}, {}", reg_name(X_E), reg_name(X_F)),
+    );
+    ctx.push(
+        encode::enc_csel(X_TAG, X_E, X_F, Cond::Le, true),
+        format!(
+            "csel {}, {}, {}, le",
+            reg_name(X_TAG),
+            reg_name(X_E),
+            reg_name(X_F)
+        ),
+    );
+    ctx.push(
+        encode::enc_cmp_reg(X_TAG, X_D, true),
+        format!("cmp {}, {}", reg_name(X_TAG), reg_name(X_D)),
+    );
+    ctx.push(
+        encode::enc_csel(X_TAG, X_ZR, X_TAG, Cond::Eq, true),
+        format!(
+            "csel {}, {}, {}, eq",
+            reg_name(X_TAG),
+            reg_name(X_ZR),
+            reg_name(X_TAG)
+        ),
+    );
+    // X_TAG now holds the effective (narrowed) deadline. Stash the old
+    // ambient group (X_A) as the new group's parent before we clobber the
+    // lineage slot — `parent_group = (old_ambient == 0) ? GROUP_NO_PARENT
+    // : old_ambient - 1`.
+    ctx.push(
+        encode::enc_sub_imm(X_B, X_A, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_B), reg_name(X_A)),
+    );
+    ctx.load_imm(X_D, GROUP_NO_PARENT as i64);
+    ctx.push(
+        encode::enc_cmp_imm(X_A, 0, true),
+        format!("cmp {}, #0", reg_name(X_A)),
+    );
+    ctx.push(
+        encode::enc_csel(X_B, X_D, X_B, Cond::Eq, true),
+        format!(
+            "csel {}, {}, {}, eq",
+            reg_name(X_B),
+            reg_name(X_D),
+            reg_name(X_B)
+        ),
+    );
+    // X_B now holds parent_group.
+
+    let mut to_after: Vec<usize> = Vec::new();
+    for i in 0..gctx.arena_capacity {
+        if i == 0 {
+            ctx.push(
+                encode::enc_add_imm(X_CAND, X_ARENA, 0, true),
+                format!("add {}, {}, #0", reg_name(X_CAND), reg_name(X_ARENA)),
+            );
+        } else {
+            ctx.load_imm(X_D, (i * GROUP_SLOT_SIZE) as i64);
+            ctx.push(
+                encode::enc_add_reg(X_CAND, X_ARENA, X_D, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_CAND),
+                    reg_name(X_ARENA),
+                    reg_name(X_D)
+                ),
+            );
+        }
+        ctx.push(
+            encode::enc_ldr_x_imm(X_D, X_CAND, OFF_GROUP_IN_USE as u16),
+            format!(
+                "ldr {}, [{}, #{OFF_GROUP_IN_USE}]",
+                reg_name(X_D),
+                reg_name(X_CAND)
+            ),
+        );
+        let skip_try_next = ctx.emit_skip(SkipKind::Cbnz(X_D)); // in_use != 0 -> try next candidate
+
+        // Found: initialize this slot.
+        ctx.load_imm(X_D, 1);
+        ctx.push(
+            encode::enc_str_x_imm(X_D, X_CAND, OFF_GROUP_IN_USE as u16),
+            format!(
+                "str {}, [{}, #{OFF_GROUP_IN_USE}]",
+                reg_name(X_D),
+                reg_name(X_CAND)
+            ),
+        );
+        match own_capacity_off {
+            Some(off) => {
+                ctx.load_slot(X_D, off);
+            }
+            None => ctx.load_imm(X_D, 0),
+        }
+        ctx.push(
+            encode::enc_str_x_imm(X_D, X_CAND, OFF_GROUP_CAPACITY as u16),
+            format!(
+                "str {}, [{}, #{OFF_GROUP_CAPACITY}]",
+                reg_name(X_D),
+                reg_name(X_CAND)
+            ),
+        );
+        for off in [
+            OFF_GROUP_ACTIVE_CHILDREN,
+            OFF_GROUP_CANCELLED,
+            OFF_GROUP_JOIN_WAITER,
+        ] {
+            ctx.push(
+                encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
+                format!("str xzr, [{}, #{off}]", reg_name(X_CAND)),
+            );
+        }
+        for c in 0..GROUP_MAX_CHILDREN {
+            for off in [group_child_tag_off(c), group_child_payload_off(c)] {
+                ctx.push(
+                    encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
+                    format!("str xzr, [{}, #{off}]", reg_name(X_CAND)),
+                );
+            }
+        }
+        ctx.push(
+            encode::enc_str_x_imm(X_TAG, X_CAND, OFF_GROUP_DEADLINE as u16),
+            format!(
+                "str {}, [{}, #{OFF_GROUP_DEADLINE}]",
+                reg_name(X_TAG),
+                reg_name(X_CAND)
+            ),
+        );
+        ctx.push(
+            encode::enc_str_x_imm(X_B, X_CAND, OFF_GROUP_PARENT as u16),
+            format!(
+                "str {}, [{}, #{OFF_GROUP_PARENT}]",
+                reg_name(X_B),
+                reg_name(X_CAND)
+            ),
+        );
+        // new ambient lineage = i + 1, threaded into the lineage slots +
+        // the `g` binding's own `group_temp`.
+        ctx.load_imm(X_D, (i + 1) as i64);
+        ctx.store_slot(X_D, ctx.frame.off(LINEAGE_GROUP_SLOT));
+        ctx.store_slot(X_TAG, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
+        ctx.store_slot(X_D, ctx.frame.off(group_temp));
+
+        if i + 1 < gctx.arena_capacity {
+            let j = ctx.words.len();
+            ctx.words.push((0, String::new()));
+            to_after.push(j);
+        }
+        ctx.patch_skip(skip_try_next, SkipKind::Cbnz(X_D));
+    }
+    if gctx.arena_capacity == 0 {
+        ctx.abort_fixed("with group: arena capacity is zero (internal error)");
+    } else {
+        ctx.abort_fixed("with group: arena capacity exceeded (plans/M6.md item F)");
+    }
+    let after = ctx.cur_word();
+    for j in to_after {
+        let delta = (after as i64 - j as i64) as i32 * 4;
+        ctx.words[j] = (encode::enc_b(delta), format!("b #{delta}"));
+    }
+    Ok(())
+}
+
+/// `g.start(callee, args...)` (02-language.md §9.5, item F #2): admits a
+/// child directly — no mailbox, no `rt_enqueue` (a free async fn has no
+/// mailbox at all, only its own dedicated free-turn area, item C/D's own
+/// sizing) — by writing the *current* ambient lineage into the callee's
+/// own persistent frame (so the child's own awaits/nested groups see this
+/// group as their parent) and calling its compiled entry directly, exactly
+/// as if this were its first-ever activation. `emit_marshal_and_call`'s own
+/// two-scalar-arg floor applies identically (item C's hand-assembled-
+/// dispatch floor, unchanged). The call's own return status is handled
+/// inline, synchronously, right here — never deferred to a poll for a
+/// child that never suspends: `TURN_STATUS_COMPLETED`/`_CANCELLED` harvest
+/// immediately (result written into this group's own child-result slot,
+/// `active_children` decremented, the join waiter woken if this was the
+/// last one still outstanding); `TURN_STATUS_SUSPENDED` leaves the child
+/// parked in its own turn area, for `layout.rs`'s own per-site poll routine
+/// to keep driving on later scheduler ticks (`rt_run_one`'s own extension).
+#[allow(clippy::too_many_arguments)]
+fn emit_group_start(
+    group_temp: Temp,
+    callee_key: &str,
+    arg_temps: &[Temp],
+    ctx: &mut FnCtx,
+    gctx: &GroupCtx,
+) -> Result<(), CodegenError> {
+    let child_index = *gctx.child_index.get(callee_key).ok_or_else(|| {
+        CodegenError::internal(format!(
+            "g.start callee `{callee_key}` has no child-slot ordinal (compute_group_child_indices \
+             was not run over the whole program, or disagrees with this fn's own lowering)"
+        ))
+    })?;
+    if arg_temps.len() > 2 {
+        return Err(CodegenError::unimplemented(
+            "more than 2 scalar `g.start` args (item C's own hand-assembled mailbox-slot floor)",
+        ));
+    }
+
+    // Write the ambient lineage into the child's own persistent frame
+    // (Temp(0)/Temp(1) — always the first two slots past the child's own
+    // 48-byte turn record header) before ever calling it.
+    let word = ctx.cur_word();
+    ctx.load_imm(X_C, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = format!("turn-frame[{}] {} <{callee_key}>", 0, reg_name(X_C));
+    }
+    ctx.relocs.push(Reloc::TurnFrameAddr {
+        word,
+        key: callee_key.to_string(),
+    });
+    ctx.load_slot(X_D, ctx.frame.off(LINEAGE_GROUP_SLOT));
+    ctx.push(
+        encode::enc_str_x_imm(X_D, X_C, (TURN_RECORD_SIZE) as u16),
+        format!(
+            "str {}, [{}, #{TURN_RECORD_SIZE}]",
+            reg_name(X_D),
+            reg_name(X_C)
+        ),
+    );
+    ctx.load_slot(X_D, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
+    ctx.push(
+        encode::enc_str_x_imm(X_D, X_C, (TURN_RECORD_SIZE + 8) as u16),
+        format!(
+            "str {}, [{}, #{}]",
+            reg_name(X_D),
+            reg_name(X_C),
+            TURN_RECORD_SIZE + 8
+        ),
+    );
+    // Mark it busy/fresh (suspended=0, resume_ready=0 — a truly fresh
+    // activation, its own entry's fresh-vs-resume fork reads this).
+    ctx.load_imm(X_D, 1);
+    ctx.push(
+        encode::enc_str_x_imm(X_D, X_C, OFF_TURN_BUSY as u16),
+        format!(
+            "str {}, [{}, #{OFF_TURN_BUSY}]",
+            reg_name(X_D),
+            reg_name(X_C)
+        ),
+    );
+    for off in [OFF_TURN_SUSPENDED, OFF_TURN_RESUME_READY, OFF_TURN_WAKER] {
+        ctx.push(
+            encode::enc_str_x_imm(X_ZR, X_C, off as u16),
+            format!("str xzr, [{}, #{off}]", reg_name(X_C)),
+        );
+    }
+
+    // Marshal args (at most 2 scalars) directly into x0/x1 (a fresh call's
+    // own receiver-less ABI: a free async fn's entry takes no receiver, so
+    // `x0`/`x1` are its first two ordinary params, mirroring
+    // `emit_async_entry`'s own fresh-path arg spill exactly one level up —
+    // no `rt_enqueue`-style args-pointer marshaling needed here at all,
+    // since this is a direct call, not an admission).
+    for (i, t) in arg_temps.iter().enumerate() {
+        ctx.load_slot(i as u8, ctx.frame.off(*t));
+    }
+    ctx.bl_symbolic_call(callee_key);
+    // x0 = status; x1 = value when COMPLETED.
+    let group_addr_reg = X_D;
+    ctx.load_slot(X_E, ctx.frame.off(group_temp)); // encoded group id (i+1)
+    ctx.push(
+        encode::enc_sub_imm(X_E, X_E, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
+    );
+    ctx.load_imm(X_F, GROUP_SLOT_SIZE as i64);
+    ctx.push(
+        encode::enc_mul(X_E, X_E, X_F, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_E),
+            reg_name(X_F)
+        ),
+    );
+    let word = ctx.cur_word();
+    ctx.load_imm(group_addr_reg, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = "group-arena-base (g.start harvest)".to_string();
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word });
+    ctx.push(
+        encode::enc_add_reg(group_addr_reg, group_addr_reg, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(group_addr_reg),
+            reg_name(group_addr_reg),
+            reg_name(X_E)
+        ),
+    );
+
+    ctx.push(
+        encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true),
+        format!("cmp x0, #{TURN_STATUS_SUSPENDED}"),
+    );
+    let skip_still_running = ctx.emit_skip(SkipKind::Cond(Cond::Eq)); // suspended: leave parked, nothing to harvest yet.
+
+    // Completed or cancelled: tag = 0 (Ok) unless status ==
+    // TURN_STATUS_CANCELLED, in which case tag = 1 (the composed
+    // `CallError::Cancelled`, this item's own floor — module doc above).
+    ctx.push(
+        encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true),
+        format!("cmp x0, #{TURN_STATUS_CANCELLED}"),
+    );
+    ctx.push(
+        encode::enc_cset(X_A, Cond::Eq, true),
+        format!("cset {}, eq", reg_name(X_A)),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_A, group_addr_reg, group_child_tag_off(child_index) as u16),
+        format!(
+            "str {}, [{}, #{}]",
+            reg_name(X_A),
+            reg_name(group_addr_reg),
+            group_child_tag_off(child_index)
+        ),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(
+            1,
+            group_addr_reg,
+            group_child_payload_off(child_index) as u16,
+        ),
+        format!(
+            "str x1, [{}, #{}]",
+            reg_name(group_addr_reg),
+            group_child_payload_off(child_index)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
+            reg_name(X_A),
+            reg_name(group_addr_reg)
+        ),
+    );
+    ctx.push(
+        encode::enc_add_imm(X_A, X_A, 1, true),
+        format!("add {}, {}, #1", reg_name(X_A), reg_name(X_A)),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+        format!(
+            "str {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
+            reg_name(X_A),
+            reg_name(group_addr_reg)
+        ),
+    );
+
+    ctx.patch_skip(skip_still_running, SkipKind::Cond(Cond::Eq));
+    Ok(())
+}
+
+/// The group's own closing bracket (item F #1/#4): free the arena slot
+/// and restore the *parent's* ambient lineage into the frame's lineage
+/// slots — the cleanup chain itself (`GroupClose::cleanup_states`) is
+/// never this op's own job: `flowwir_lower.rs`'s own `lower_with_group`
+/// already wires the flat state graph so the natural fall-through from
+/// this op's own flat position jumps into the (possibly empty) cleanup
+/// chain and back out, in reverse registration order, entirely via
+/// ordinary `Transition::Jump` edges — this op runs exactly once, at the
+/// group's own natural close, regardless of whether any child/await inside
+/// it ever observed cancellation (02-language.md §10: a `defer` runs on
+/// every exit).
+fn emit_group_close(group_temp: Temp, ctx: &mut FnCtx) -> Result<(), CodegenError> {
+    let word = ctx.cur_word();
+    ctx.load_imm(X_A, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = "group-arena-base (GroupClose)".to_string();
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word });
+    ctx.load_slot(X_B, ctx.frame.off(group_temp)); // encoded group id (i+1)
+    ctx.push(
+        encode::enc_sub_imm(X_B, X_B, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_B), reg_name(X_B)),
+    );
+    ctx.load_imm(X_C, GROUP_SLOT_SIZE as i64);
+    ctx.push(
+        encode::enc_mul(X_B, X_B, X_C, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_C)
+        ),
+    );
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    // Restore ambient lineage from this group's own `parent_group`.
+    ctx.push(
+        encode::enc_ldr_x_imm(X_B, X_A, OFF_GROUP_PARENT as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_PARENT}]",
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    ctx.load_imm(X_C, GROUP_NO_PARENT as i64);
+    ctx.push(
+        encode::enc_cmp_reg(X_B, X_C, true),
+        format!("cmp {}, {}", reg_name(X_B), reg_name(X_C)),
+    );
+    let skip_no_parent = ctx.emit_skip(SkipKind::Cond(Cond::Eq)); // == GROUP_NO_PARENT -> no-parent arm
+
+    // Had a parent: new ambient group = parent_index + 1; new ambient
+    // deadline = the parent slot's own (already-narrowed) deadline.
+    ctx.push(
+        encode::enc_add_imm(X_B, X_B, 1, true),
+        format!("add {}, {}, #1", reg_name(X_B), reg_name(X_B)),
+    );
+    ctx.store_slot(X_B, ctx.frame.off(LINEAGE_GROUP_SLOT));
+    ctx.push(
+        encode::enc_sub_imm(X_C, X_B, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_C), reg_name(X_B)),
+    );
+    ctx.load_imm(X_D, GROUP_SLOT_SIZE as i64);
+    ctx.push(
+        encode::enc_mul(X_C, X_C, X_D, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(X_C),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    let word2 = ctx.cur_word();
+    ctx.load_imm(X_D, 0);
+    for w in ctx.words[word2..word2 + 4].iter_mut() {
+        w.1 = "group-arena-base (GroupClose parent deadline)".to_string();
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word: word2 });
+    ctx.push(
+        encode::enc_add_reg(X_C, X_D, X_C, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_C),
+            reg_name(X_D),
+            reg_name(X_C)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldr_x_imm(X_D, X_C, OFF_GROUP_DEADLINE as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_DEADLINE}]",
+            reg_name(X_D),
+            reg_name(X_C)
+        ),
+    );
+    ctx.store_slot(X_D, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
+    let to_free = ctx.cur_word();
+    ctx.words.push((0, String::new()));
+
+    ctx.patch_skip(skip_no_parent, SkipKind::Cond(Cond::Eq));
+    // No parent: ambient becomes "none" (0/0).
+    ctx.store_slot(X_ZR, ctx.frame.off(LINEAGE_GROUP_SLOT));
+    ctx.store_slot(X_ZR, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
+
+    // Both arms converge here: free the slot.
+    let free = ctx.cur_word();
+    let delta = (free as i64 - to_free as i64) as i32 * 4;
+    ctx.words[to_free] = (encode::enc_b(delta), format!("b #{delta}"));
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_A, OFF_GROUP_IN_USE as u16),
+        format!("str xzr, [{}, #{OFF_GROUP_IN_USE}]", reg_name(X_A)),
+    );
+    Ok(())
+}
+
 fn emit_flow_op(
     op: &FlowInst,
     f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
+    gctx: &GroupCtx,
     scratch0: Temp,
     scratch1: Temp,
 ) -> Result<(), CodegenError> {
@@ -2848,28 +3568,192 @@ fn emit_flow_op(
             scratch0,
             scratch1,
         ),
-        FlowInst::GroupCreate { .. }
-        | FlowInst::GroupStart { .. }
-        | FlowInst::GroupClose { .. } => Err(CodegenError::unimplemented(
-            "`with group`/`g.start`/group teardown codegen — plans/M6.md item F owns the \
-                 group runtime pieces (arena admission, join, cancellation); item D does not \
-                 half-implement them",
-        )),
+        FlowInst::GroupCreate {
+            group_temp,
+            capacity,
+            deadline,
+        } => emit_group_create(*group_temp, *capacity, *deadline, ctx, gctx),
+        FlowInst::GroupStart {
+            group_temp,
+            callee_key,
+            arg_temps,
+        } => emit_group_start(*group_temp, callee_key, arg_temps, ctx, gctx),
+        FlowInst::GroupClose { group_temp, .. } => emit_group_close(*group_temp, ctx),
     }
 }
 
-/// The suspend half of an `Await{ActorCall}` (module doc's own
-/// "park-and-resume" step 1): save `resume_state`, enqueue the message
-/// with this turn's own waker, mark the turn suspended, and return
-/// `TURN_STATUS_SUSPENDED` to the scheduler.
+/// The shared cancellation-observation test (plans/M6.md item F #3/#4,
+/// decision 6/7's own flip witness): reads the currently-executing turn's
+/// own ambient group (`LINEAGE_GROUP_SLOT` — 0 means "no ambient group,"
+/// nothing to test) and, if it names a real group, its own `cancelled`
+/// flag; when cancelled, this activation terminates immediately via the
+/// shared cancellation tail (`total + 1`'s own sentinel position, module
+/// doc on `emit_async_cancelled_tail`) — "the cancelled frame never
+/// resumes" (04-compiler.md §4). Called from exactly two places, both
+/// already checkpoints by construction: a loop back-edge
+/// (`emit_transition`'s `Jump` arm) and an await's own resume stub
+/// (`emit_await_resume`'s `ActorCall` arm) — never from a sync fn's own
+/// `checkpoint()` call sites (a sync fn has no persistent frame/ambient
+/// lineage at all, decision 4's own reading of "sync turn mid-execution").
+fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx) {
+    if gctx.arena_capacity == 0 {
+        // No `with group(...)` exists anywhere in this build — a whole-
+        // program fact (`layout::RuntimeTables::group_arena_capacity`),
+        // not a per-fn one. Emitting nothing at all here (rather than a
+        // "no ambient group" runtime check that would always pass) is
+        // what keeps every pre-item-F async golden's own ASM byte-
+        // identical: this fn becomes a true no-op, never touching
+        // `ctx.words`, whenever the build has no group arena to address
+        // in the first place (there would be no `Reloc::GroupArenaBase`
+        // target to resolve against either).
+        return;
+    }
+    let cancelled_tail = ctx.word_offsets.len() - 2; // module doc: total + 1
+    ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT));
+    let skip_no_group = ctx.emit_skip(SkipKind::Cbz(X_A));
+    let word = ctx.cur_word();
+    ctx.load_imm(X_B, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = "group-arena-base (checkpoint cancel test)".to_string();
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word });
+    ctx.push(
+        encode::enc_sub_imm(X_A, X_A, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_A), reg_name(X_A)),
+    );
+    ctx.load_imm(X_C, GROUP_SLOT_SIZE as i64);
+    ctx.push(
+        encode::enc_mul(X_A, X_A, X_C, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_C)
+        ),
+    );
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_CANCELLED as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_CANCELLED}]",
+            reg_name(X_C),
+            reg_name(X_B)
+        ),
+    );
+    let skip_not_cancelled = ctx.emit_skip(SkipKind::Cbz(X_C));
+    ctx.b_unconditional(cancelled_tail);
+    ctx.patch_skip(skip_not_cancelled, SkipKind::Cbz(X_C));
+    ctx.patch_skip(skip_no_group, SkipKind::Cbz(X_A));
+}
+
+/// `word_offsets[total + 1]` — module doc on `emit_checkpoint_cancellation_test`.
+/// Reports `TURN_STATUS_CANCELLED`; no mut-receiver writeback (04 §4: "the
+/// cancelled frame never resumes" — its own last-observed state is
+/// discarded, never published to `self`).
+fn emit_async_cancelled_tail(ctx: &mut FnCtx) {
+    ctx.load_imm(0, TURN_STATUS_CANCELLED as i64);
+    ctx.load_slot(X_LR, ctx.frame.lr_off);
+    ctx.push(encode::enc_ret(X_LR), "ret".to_string());
+}
+
+/// `g.join_all()`'s own result composition (item F #2, shared by both the
+/// "already resolved" immediate path and the real resume path, below):
+/// copies each of `child_count` children's own (tag, payload) pair
+/// straight from the group arena's own child-result slots into
+/// `result_temp`'s frame area — `Array[CallError-composed child type;
+/// child_count]`, one 16-byte `Result` element per child, in declared
+/// order (`GroupCtx::child_index`'s own ordinal numbering). `group_reg`
+/// must already hold the group's own arena address.
+fn emit_compose_group_join_result(
+    ctx: &mut FnCtx,
+    group_reg: u8,
+    result_temp: Temp,
+    child_count: usize,
+) {
+    let result_off = ctx.frame.off(result_temp);
+    for c in 0..child_count {
+        ctx.push(
+            encode::enc_ldr_x_imm(X_A, group_reg, group_child_tag_off(c) as u16),
+            format!(
+                "ldr {}, [{}, #{}]",
+                reg_name(X_A),
+                reg_name(group_reg),
+                group_child_tag_off(c)
+            ),
+        );
+        ctx.store_slot(X_A, result_off + c * 16);
+        ctx.push(
+            encode::enc_ldr_x_imm(X_B, group_reg, group_child_payload_off(c) as u16),
+            format!(
+                "ldr {}, [{}, #{}]",
+                reg_name(X_B),
+                reg_name(group_reg),
+                group_child_payload_off(c)
+            ),
+        );
+        ctx.store_slot(X_B, result_off + c * 16 + 8);
+    }
+}
+
+/// Computes this group's own arena address (`group_temp`'s own encoded
+/// `arena_index + 1` value) into `dst_reg` — the shared address-from-
+/// group-temp shape `GroupJoin`'s suspend/resume/immediate paths all need.
+fn emit_group_addr_from_temp(ctx: &mut FnCtx, group_temp: Temp, dst_reg: u8, scratch_reg: u8) {
+    let word = ctx.cur_word();
+    ctx.load_imm(dst_reg, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = "group-arena-base (join_all)".to_string();
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word });
+    ctx.load_slot(scratch_reg, ctx.frame.off(group_temp));
+    ctx.push(
+        encode::enc_sub_imm(scratch_reg, scratch_reg, 1, true),
+        format!(
+            "sub {}, {}, #1",
+            reg_name(scratch_reg),
+            reg_name(scratch_reg)
+        ),
+    );
+    ctx.push(
+        encode::enc_add_reg(dst_reg, dst_reg, scratch_reg, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(dst_reg),
+            reg_name(dst_reg),
+            reg_name(scratch_reg)
+        ),
+    );
+}
+
+/// The suspend half of an `Await{ActorCall}`/`Await{GroupJoin}` (module doc's
+/// own "park-and-resume" step 1): save `resume_state`, then either enqueue
+/// a message with this turn's own waker (`ActorCall`) or, for
+/// `GroupJoin`, either resolve immediately (every child already harvested
+/// — `active_children == 0` — this item's own disclosed floor: a group
+/// whose children all completed *synchronously* inside their own
+/// `g.start` never gets a wake event to park on, so this path composes the
+/// result right here and continues without ever leaving the fn) or
+/// register as this group's own `join_waiter` and park for real.
+#[allow(clippy::too_many_arguments)]
 fn emit_await_suspend(
     what: &AwaitKind,
     resume_state: usize,
+    result_temp: Temp,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
+    gctx: &GroupCtx,
     state_temp: Temp,
     scratch0: Temp,
     scratch1: Temp,
+    state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match what {
         AwaitKind::ActorCall {
@@ -2915,52 +3799,128 @@ fn emit_await_suspend(
             ctx.push(encode::enc_ret(X_LR), "ret".to_string());
             Ok(())
         }
-        AwaitKind::GroupJoin { .. } => Err(CodegenError::unimplemented(
-            "`g.join_all()` codegen — plans/M6.md item F owns group join/cancellation; this \
-             item does not half-implement it",
-        )),
+        AwaitKind::GroupJoin {
+            group_temp,
+            child_count,
+        } => {
+            if *child_count > GROUP_MAX_CHILDREN {
+                return Err(CodegenError::unimplemented(&format!(
+                    "`g.join_all()` over more than {GROUP_MAX_CHILDREN} children (plans/M6.md \
+                     item F's own disclosed floor)"
+                )));
+            }
+            emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
+            ctx.push(
+                encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_ACTIVE_CHILDREN as u16),
+                format!(
+                    "ldr {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
+                    reg_name(X_C),
+                    reg_name(X_B)
+                ),
+            );
+            let skip_park = ctx.emit_skip(SkipKind::Cbnz(X_C));
+            // Immediate: every child already harvested — compose now and
+            // fall straight through to the resume state, no scheduler
+            // round-trip at all.
+            emit_compose_group_join_result(ctx, X_B, result_temp, *child_count);
+            ctx.checkpoint();
+            emit_checkpoint_cancellation_test(ctx, gctx);
+            ctx.b_unconditional(state_flat_base[resume_state]);
+            ctx.patch_skip(skip_park, SkipKind::Cbnz(X_C));
+            // Park for real: register as this group's own join waiter.
+            ctx.push(
+                encode::enc_str_x_imm(X_FRAME, X_B, OFF_GROUP_JOIN_WAITER as u16),
+                format!(
+                    "str {}, [{}, #{OFF_GROUP_JOIN_WAITER}]",
+                    reg_name(X_FRAME),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.load_imm(X_A, resume_state as i64);
+            ctx.store_slot(X_A, ctx.frame.off(state_temp));
+            ctx.load_imm(X_A, 1);
+            ctx.push(
+                encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+                format!(
+                    "str {}, [{}, #{OFF_TURN_SUSPENDED}]",
+                    reg_name(X_A),
+                    reg_name(X_FRAME)
+                ),
+            );
+            ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
+            ctx.load_slot(X_LR, ctx.frame.lr_off);
+            ctx.push(encode::enc_ret(X_LR), "ret".to_string());
+            Ok(())
+        }
     }
 }
 
 /// The resume half (module doc's step 3) — the dispatch chain's landing
-/// site for `resume_state`: compose `Ok(reply)` into `result_temp` from
-/// the turn record's own reply slot, run decision 6's checkpoint ("await
-/// resume points are checkpoints by construction"), jump on to the
-/// resumed state's own flat base.
+/// site for `resume_state`: for `ActorCall`, compose `Ok(reply)` into
+/// `result_temp` from the turn record's own reply slot; for `GroupJoin`
+/// (parked, now woken — either a real child completion or the join
+/// waiter's own group getting cancelled and forcibly resumed, item F #3's
+/// "make cancelled suspended turns ready-to-resume"), recompose from the
+/// group arena directly (the same shared helper the immediate path uses —
+/// results may have kept changing after the wake, but every write is
+/// idempotent by the time this runs). Either way: decision 6's checkpoint
+/// ("await resume points are checkpoints by construction"), this item's
+/// own cancellation test (module doc on `emit_checkpoint_cancellation_test`
+/// — an `ActorCall` resume whose own ambient group is now cancelled never
+/// gets to use its stale composed `Ok(reply)`; it terminates instead, "the
+/// cancelled frame never resumes"), then jump on to the resumed state.
 fn emit_await_resume(
     resume_state: usize,
     result_temp: Temp,
+    what: &AwaitKind,
     f: &MwirFn,
     ctx: &mut FnCtx,
+    gctx: &GroupCtx,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
-    // `result_temp`'s own type is always the composed
-    // `Result[T, CallError[E]]` (02 §9.4's composition table,
-    // `sema::bodies::compose_call_error`) — never the bare scalar reply.
-    // Every message reply in today's whole corpus is scalar (item C's
-    // established floor); an aggregate reply is a disclosed, unexercised
-    // gap this fn does not widen.
-    let composed_ty = &f.temp_types[result_temp.0];
-    if !matches!(composed_ty, Type::Result(_, _)) {
-        return Err(CodegenError::internal(format!(
-            "Await's own result_temp is not a composed Result type: {composed_ty:?}"
-        )));
+    match what {
+        AwaitKind::ActorCall { .. } => {
+            // `result_temp`'s own type is always the composed
+            // `Result[T, CallError[E]]` (02 §9.4's composition table,
+            // `sema::bodies::compose_call_error`) — never the bare scalar
+            // reply. Every message reply in today's whole corpus is
+            // scalar (item C's established floor); an aggregate reply is
+            // a disclosed, unexercised gap this fn does not widen.
+            let composed_ty = &f.temp_types[result_temp.0];
+            if !matches!(composed_ty, Type::Result(_, _)) {
+                return Err(CodegenError::internal(format!(
+                    "Await's own result_temp is not a composed Result type: {composed_ty:?}"
+                )));
+            }
+            let result_off = ctx.frame.off(result_temp);
+            ctx.push(
+                encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+                format!(
+                    "ldr {}, [{}, #{OFF_TURN_REPLY}]",
+                    reg_name(X_A),
+                    reg_name(X_FRAME)
+                ),
+            );
+            ctx.store_slot(X_A, result_off + 8); // payload = the delivered reply
+            ctx.load_imm(X_A, 0);
+            ctx.store_slot(X_A, result_off); // tag = Ok
+            ctx.checkpoint();
+            emit_checkpoint_cancellation_test(ctx, gctx);
+            ctx.b_unconditional(state_flat_base[resume_state]);
+            Ok(())
+        }
+        AwaitKind::GroupJoin {
+            group_temp,
+            child_count,
+        } => {
+            emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
+            emit_compose_group_join_result(ctx, X_B, result_temp, *child_count);
+            ctx.checkpoint();
+            emit_checkpoint_cancellation_test(ctx, gctx);
+            ctx.b_unconditional(state_flat_base[resume_state]);
+            Ok(())
+        }
     }
-    let result_off = ctx.frame.off(result_temp);
-    ctx.push(
-        encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
-        format!(
-            "ldr {}, [{}, #{OFF_TURN_REPLY}]",
-            reg_name(X_A),
-            reg_name(X_FRAME)
-        ),
-    );
-    ctx.store_slot(X_A, result_off + 8); // payload = the delivered reply
-    ctx.load_imm(X_A, 0);
-    ctx.store_slot(X_A, result_off); // tag = Ok
-    ctx.checkpoint();
-    ctx.b_unconditional(state_flat_base[resume_state]);
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2970,6 +3930,7 @@ fn emit_transition(
     f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
+    gctx: &GroupCtx,
     state_temp: Temp,
     scratch0: Temp,
     scratch1: Temp,
@@ -2984,9 +3945,13 @@ fn emit_transition(
             // state-cycle repeat (`flowwir_lower.rs`'s own
             // `lower_while_split`); the identical position test
             // (`is_loop_back_edge`) that drives a sync fn's back-edges
-            // drives this one too.
+            // drives this one too. plans/M6.md item F: this back-edge is
+            // also where a spinning turn's own cancellation is observed
+            // (decision 7's flip witness — a deterministic iteration
+            // count, never mid-instruction).
             if target_flat <= flat_idx {
                 ctx.checkpoint();
+                emit_checkpoint_cancellation_test(ctx, gctx);
             }
             ctx.b_unconditional(target_flat);
             Ok(())
@@ -3008,15 +3973,18 @@ fn emit_transition(
         Transition::Await {
             what,
             resume_state,
-            result_temp: _,
+            result_temp,
         } => emit_await_suspend(
             what,
             *resume_state,
+            *result_temp,
             ctx,
             method_index,
+            gctx,
             state_temp,
             scratch0,
             scratch1,
+            state_flat_base,
         ),
     }
 }
@@ -3028,19 +3996,21 @@ fn emit_flat_entry(
     f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
+    gctx: &GroupCtx,
     state_temp: Temp,
     scratch0: Temp,
     scratch1: Temp,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match entry {
-        FlatEntry::Op(op) => emit_flow_op(op, f, ctx, method_index, scratch0, scratch1),
+        FlatEntry::Op(op) => emit_flow_op(op, f, ctx, method_index, gctx, scratch0, scratch1),
         FlatEntry::Trans(t) => emit_transition(
             t,
             flat_idx,
             f,
             ctx,
             method_index,
+            gctx,
             state_temp,
             scratch0,
             scratch1,
@@ -3049,7 +4019,16 @@ fn emit_flat_entry(
         FlatEntry::AwaitResume {
             resume_state,
             result_temp,
-        } => emit_await_resume(*resume_state, *result_temp, f, ctx, state_flat_base),
+            what,
+        } => emit_await_resume(
+            *resume_state,
+            *result_temp,
+            what,
+            f,
+            ctx,
+            gctx,
+            state_flat_base,
+        ),
     }
 }
 
@@ -3066,6 +4045,7 @@ fn emit_flowwir_fn(
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
     method_index: &ActorMethodIndex,
+    gctx: &GroupCtx,
 ) -> Result<CodegenFn, CodegenError> {
     if is_aggregate(&f.ret) {
         // The reply-delivery path carries one scalar reply word
@@ -3096,8 +4076,10 @@ fn emit_flowwir_fn(
     // The entry probe needs real-length dummy targets (unlike a sync
     // prologue, the async entry emits branches — the fresh path's jump to
     // state 0 and the resume chain's arms — whose widths are fixed but
-    // whose emission indexes `word_offsets`).
-    let dummy_targets = vec![0usize; total + 1];
+    // whose emission indexes `word_offsets`). plans/M6.md item F: one
+    // extra sentinel past the epilogue (`total + 1`) for the shared
+    // cancellation tail (`emit_async_cancelled_tail`'s own doc comment).
+    let dummy_targets = vec![0usize; total + 2];
     let mut probe_pro = FnCtx {
         frame: &frame,
         layout,
@@ -3134,6 +4116,7 @@ fn emit_flowwir_fn(
             &synthetic,
             &mut probe,
             method_index,
+            gctx,
             state_temp,
             scratch0,
             scratch1,
@@ -3141,13 +4124,34 @@ fn emit_flowwir_fn(
         )?;
         counts.push(probe.words.len());
     }
-    let mut word_offsets = vec![0usize; total + 1];
+    let mut word_offsets = vec![0usize; total + 2];
     let mut acc = prologue_len;
     for (i, c) in counts.iter().enumerate() {
         word_offsets[i] = acc;
         acc += c;
     }
     word_offsets[total] = acc;
+
+    // plans/M6.md item F: the shared cancellation tail (`total + 1`'s own
+    // sentinel) exists only when this *whole build* has a group arena at
+    // all (`GroupCtx::arena_capacity > 0`) — `emit_checkpoint_cancellation_test`
+    // is the only possible producer of a jump to it, and that fn is
+    // itself a no-op whenever `arena_capacity == 0` (its own doc comment).
+    // Skipping the tail's own bytes entirely in that case is what keeps
+    // every pre-item-F async golden's own ASM/frame-size byte-identical —
+    // not merely unreached, genuinely absent.
+    let mut probe_epi = FnCtx {
+        frame: &frame,
+        layout,
+        rodata,
+        word_offsets: &dummy_targets,
+        words: Vec::new(),
+        relocs: Vec::new(),
+        slot_base: X_FRAME,
+        slot_bias: TURN_RECORD_SIZE as usize,
+    };
+    emit_async_epilogue(&synthetic, &mut probe_epi)?;
+    word_offsets[total + 1] = acc + probe_epi.words.len();
 
     let mut ctx = FnCtx {
         frame: &frame,
@@ -3168,6 +4172,7 @@ fn emit_flowwir_fn(
             &synthetic,
             &mut ctx,
             method_index,
+            gctx,
             state_temp,
             scratch0,
             scratch1,
@@ -3176,6 +4181,10 @@ fn emit_flowwir_fn(
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[total]);
     emit_async_epilogue(&synthetic, &mut ctx)?;
+    debug_assert_eq!(ctx.words.len(), word_offsets[total + 1]);
+    if gctx.arena_capacity > 0 {
+        emit_async_cancelled_tail(&mut ctx);
+    }
 
     Ok(CodegenFn {
         frame_size: frame.size,
@@ -3213,9 +4222,21 @@ pub fn codegen_program_with_async(
     flow: &FlowWirProgram,
     layout: &LayoutCtx,
     method_index: &ActorMethodIndex,
+    // plans/M6.md item F: `layout::RuntimeTables::group_arena_capacity` —
+    // the whole-build static arena size `GroupCreate`'s own scan (and the
+    // group-child poll routines `layout.rs` builds alongside it) needs;
+    // `0` for a build with no `with group(...)` sites at all (every
+    // pre-item-F caller, byte-identical: `GroupCtx` is only ever consulted
+    // by a `FlowInst::GroupCreate`/`GroupStart`, neither of which any
+    // pre-F program ever lowers).
+    group_arena_capacity: u64,
 ) -> Result<CodegenProgram, CodegenError> {
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
+    let gctx = GroupCtx {
+        arena_capacity: group_arena_capacity,
+        child_index: compute_group_child_indices(flow)?,
+    };
     let mut fns = BTreeMap::new();
     for (key, f) in &mwir.fns {
         fns.insert(key.clone(), emit_fn(f, layout, &mut rodata)?);
@@ -3223,7 +4244,7 @@ pub fn codegen_program_with_async(
     for (key, f) in &flow.fns {
         fns.insert(
             key.clone(),
-            emit_flowwir_fn(key, f, layout, &mut rodata, method_index)?,
+            emit_flowwir_fn(key, f, layout, &mut rodata, method_index, &gctx)?,
         );
     }
     Ok(CodegenProgram {
@@ -3415,6 +4436,19 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::TurnFrameAddr word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::GroupArenaBase { word } => {
+                    // A four-word `load_imm` — identical shape/reasoning
+                    // to `Reloc::TurnFrameAddr` (its own target, the
+                    // whole-image group arena's base address, is a
+                    // layout-time fact this stage cannot check).
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::GroupArenaBase word {word} (a 4-word load_imm) is \
                              out of range (code has {} word(s))",
                             f.code.len()
                         ));

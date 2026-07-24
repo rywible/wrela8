@@ -1590,11 +1590,13 @@ mod tests {
         };
         let method_index =
             layout::actor_method_index_tables(&modules, &layout_ctx).expect("method index");
+        let group_arena_capacity = layout::count_with_group_sites(&modules);
         let codegen_program = codegen::codegen_program_with_async(
             &mwir_program,
             &flow_program,
             &layout_ctx,
             &method_index,
+            group_arena_capacity,
         )
         .expect("codegen");
         let async_frames =

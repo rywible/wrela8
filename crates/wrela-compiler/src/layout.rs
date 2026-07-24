@@ -720,6 +720,16 @@ pub fn layout_program(
                         })?;
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                Reloc::GroupArenaBase { word } => {
+                    let addr = placement.as_ref().map(|p| p.group_arena).ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a `with group` op needs the group arena but this \
+                             image's runtime tables never sized one"
+                                .to_string(),
+                        )
+                    })?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -908,12 +918,17 @@ pub fn try_layout_program(
         Ok(m) => m,
         Err(_) => return Ok(None),
     };
-    let codegen_program =
-        match crate::codegen::codegen_program_with_async(&merged, &flow, layout_ctx, &method_index)
-        {
-            Ok(p) => p,
-            Err(_) => return Ok(None),
-        };
+    let group_arena_capacity = count_with_group_sites(modules);
+    let codegen_program = match crate::codegen::codegen_program_with_async(
+        &merged,
+        &flow,
+        layout_ctx,
+        &method_index,
+        group_arena_capacity,
+    ) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
     let runtime_tables = compute_runtime_tables(graph, modules, layout_ctx, &async_frames)?;
     layout_program(&codegen_program, runtime_tables.as_ref())
         .map(Some)
@@ -1021,6 +1036,10 @@ pub struct RuntimeTables {
 /// reply is delivered to the *awaiting turn's* own reply slot
 /// (`codegen::OFF_TURN_REPLY`, via the waker carried in the message).
 const MAILBOX_BOOKKEEPING_SIZE: u64 = 3 * 8; // head, tail, count
+/// The deterministic round-robin cursor word `rt_run_one` reads/advances
+/// (04 §2's own tie-breaker) — one `u64`, placed right after the
+/// ready-queue table (`RuntimeTables::total_bytes`'s own byte order).
+const RR_CURSOR_SIZE: u64 = 8;
 
 fn value_as_u64(v: &crate::eval::value::Value) -> Option<u64> {
     use crate::eval::value::Value;
@@ -1177,7 +1196,7 @@ pub fn actor_method_index_tables(
 /// `Stmt::With` at M6 names a `group(...)` (the scoped-`pool` `with` form
 /// stays fail-closed at sema, 02 §10 — plans/M6.md item A's own note), so
 /// counting every `Stmt::With` is exact for anything that type-checks.
-fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
+pub fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
     use crate::syntax::ast::{FnItem, InitItem, Item, Member, Stmt};
 
     fn walk_stmts(stmts: &[Stmt], count: &mut u64) {
@@ -1342,8 +1361,6 @@ pub fn compute_runtime_tables(
 
     let ready_queue_capacity = graph.actors.len() as u64 + 1;
     let group_arena_capacity = count_with_group_sites(modules);
-    const GROUP_SLOT_SIZE: u64 = 8; // one word per reserved group-arena entry (a generation/in-use tag; F grows this).
-    const RR_CURSOR_SIZE: u64 = 8;
 
     let mut total_bytes = 0u64;
     for a in &actors {
@@ -1355,8 +1372,9 @@ pub fn compute_runtime_tables(
     for (_, area) in &free_turns {
         total_bytes += area;
     }
-    total_bytes +=
-        ready_queue_capacity * 8 + RR_CURSOR_SIZE + group_arena_capacity * GROUP_SLOT_SIZE;
+    total_bytes += ready_queue_capacity * 8
+        + RR_CURSOR_SIZE
+        + group_arena_capacity * crate::codegen::GROUP_SLOT_SIZE;
 
     Ok(Some(RuntimeTables {
         actors,
@@ -1531,6 +1549,11 @@ pub struct RuntimePlacement {
     /// equal, so the cursor is the whole selection order among ready
     /// actors).
     pub rr_cursor: u64,
+    /// plans/M6.md item F: the whole-image group arena's own base address
+    /// — `Reloc::GroupArenaBase`'s own resolution target, placed last
+    /// (`RuntimeTables::total_bytes`'s own byte-order doc: actors, free
+    /// turns, ready-queue table, rr cursor, then the group arena).
+    pub group_arena: u64,
 }
 
 impl RuntimePlacement {
@@ -1583,10 +1606,13 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     }
     cursor += tables.ready_queue_capacity * 8;
     let rr_cursor = cursor;
+    cursor += RR_CURSOR_SIZE;
+    let group_arena = cursor;
     RuntimePlacement {
         actors,
         free_turns,
         rr_cursor,
+        group_arena,
     }
 }
 
@@ -3664,9 +3690,12 @@ pub fn layout_test_image(
                 let addr = turn_area_addr(key)?;
                 patch_load_imm_words(&mut harness_words, *word, addr);
             }
-            Reloc::AbortFixed { .. } | Reloc::AbortVal { .. } | Reloc::CheckpointService { .. } => {
+            Reloc::AbortFixed { .. }
+            | Reloc::AbortVal { .. }
+            | Reloc::CheckpointService { .. }
+            | Reloc::GroupArenaBase { .. } => {
                 return Err(LayoutError::new(
-                    "internal error: the harness section itself must never emit an AbortFixed/AbortVal/CheckpointService reloc",
+                    "internal error: the harness section itself must never emit an AbortFixed/AbortVal/CheckpointService/GroupArenaBase reloc",
                 ));
             }
         }
@@ -3730,6 +3759,19 @@ pub fn layout_test_image(
                     // load (its X_FRAME setup) — patched with its turn
                     // area's real `rtdata` address.
                     let addr = turn_area_addr(fn_key)?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                Reloc::GroupArenaBase { word } => {
+                    let addr = real_placement
+                        .as_ref()
+                        .map(|p| p.group_arena)
+                        .ok_or_else(|| {
+                            LayoutError::new(
+                                "internal error: a `with group` op needs the group arena but this \
+                             image's runtime tables never sized one"
+                                    .to_string(),
+                            )
+                        })?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
             }
