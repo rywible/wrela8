@@ -43,7 +43,8 @@ pub const VCPUS: usize = 4;
 /// 0x4000_0000  MACHINE_INFO_BASE   (4 KiB)   machine-info page
 /// 0x4000_1000  console::RING_BASE  (8 KiB)   console ring metadata + doorbell
 /// 0x4000_3000  console::DATA_BASE  (16 KiB)  console tx byte buffers
-/// 0x4000_7000  .. 0x4001_0000               reserved (device-page growth)
+/// 0x4000_7000  pending::BASE       (4 KiB)   per-core pending-vector page
+/// 0x4000_8000  .. 0x4001_0000               reserved (device-page growth)
 /// 0x4001_0000  STACKS_BASE         (4 MiB)   4 per-core stacks, 1 MiB each
 /// 0x4041_0000  .. 0x4050_0000               reserved (stack growth room)
 /// 0x4050_0000  IMAGE_BASE          (rest)    sealed image, loaded flat
@@ -305,6 +306,43 @@ pub mod console {
     pub const DATA_SIZE: u64 = 4 * 0x1000;
 }
 
+/// Vector delivery (06-machine.md §4, plans/M6.md decision 7): "each
+/// virtual vector is a word in a per-core shared-memory page; the VMM
+/// raises a vector by a store-release plus a wake of the target vCPU ...
+/// the guest observes vectors only at checkpoints and parks, via the same
+/// mask–arm–recheck protocol". This is that page's own layout — the
+/// contract item C adds *now*, coherently, so item E's VMM-side raise and
+/// item D's checkpoint-emitted mask–arm–recheck sequence agree on the same
+/// addresses from the start; nothing in this crate or the compiler reads
+/// or writes these words yet (M6-C's own event loop never truly parks, its
+/// own module doc in `wrela-compiler/src/layout.rs` records why) — that is
+/// item E/D's job, not a reason to leave the addresses undecided.
+///
+/// One word per core (`VCPUS` of them, 8 bytes each — room for 64 vector
+/// bits per core, far more than M6's one real injector (decision 7: "the
+/// deadline service") ever needs, but a bitmask-per-core is the dumbest
+/// shape that generalizes to more vectors later without moving anything).
+/// The remainder of the page is reserved.
+pub mod pending {
+    use super::layout::DRAM_BASE;
+
+    /// One page, immediately after the console data region and before the
+    /// generic device-page-growth reservation (module-level map above).
+    pub const BASE: u64 = DRAM_BASE + 0x7000;
+    pub const SIZE: u64 = 0x1000;
+
+    /// Bytes actually used: one `u64` pending-word per core.
+    pub const WORD_SIZE: u64 = 8;
+
+    /// Guest-physical address of core `n`'s own pending word (`n` in
+    /// `0..VCPUS`) — the word a checkpoint's mask–arm–recheck sequence
+    /// (item D) loads, and the word the VMM's deadline-wake/vector-raise
+    /// path (item E) stores to before waking that core's vCPU.
+    pub const fn core_word_addr(core: usize) -> u64 {
+        BASE + (core as u64) * WORD_SIZE
+    }
+}
+
 /// Device MMIO window: a small, entirely separate physical address range
 /// below `layout::DRAM_BASE`, never backed by real RAM pages. Any access
 /// here is necessarily unmapped from the guest's point of view, so it
@@ -399,6 +437,7 @@ mod tests {
             ),
             ("console_ring", console::RING_BASE, console::RING_SIZE),
             ("console_data", console::DATA_BASE, console::DATA_SIZE),
+            ("pending", pending::BASE, pending::SIZE),
             (
                 "core_stack_0",
                 layout::core_stack_base(0),
@@ -477,6 +516,25 @@ mod tests {
     #[test]
     fn console_ring_metadata_fits_the_ring_page() {
         assert!(console::RING_USED_BYTES <= console::RING_SIZE);
+    }
+
+    #[test]
+    fn pending_words_fit_the_page_and_do_not_overlap() {
+        let used = VCPUS as u64 * pending::WORD_SIZE;
+        assert!(used <= pending::SIZE);
+        for core in 0..VCPUS {
+            let addr = pending::core_word_addr(core);
+            assert!(addr >= pending::BASE && addr + pending::WORD_SIZE <= pending::BASE + used);
+        }
+        // Every core's word is distinct and 8-byte-spaced.
+        for a in 0..VCPUS {
+            for b in (a + 1)..VCPUS {
+                let (addr_a, addr_b) = (pending::core_word_addr(a), pending::core_word_addr(b));
+                assert!(
+                    addr_a + pending::WORD_SIZE <= addr_b || addr_b + pending::WORD_SIZE <= addr_a
+                );
+            }
+        }
     }
 
     #[test]

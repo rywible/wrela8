@@ -3258,7 +3258,12 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                             Ok(mut text) => {
                                 let layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
                                     .map_err(|e| render_sema_error(&e))?;
-                                let img = match layout::try_layout_program(&programs, &layout_ctx) {
+                                let img = match layout::try_layout_program(
+                                    &programs,
+                                    &layout_ctx,
+                                    &graph,
+                                    &modules_by_addr,
+                                ) {
                                     Ok(Some(image_layout)) => {
                                         layout::render_layout_section(&mut text, &image_layout);
                                         Some(image_layout.blob)

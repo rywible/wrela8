@@ -242,7 +242,12 @@ fn build_report(
                                     .to_string();
                                 let layout_ctx = layout::merge_layout_ctx(modules)
                                     .map_err(|e| render_sema_error(&e))?;
-                                let img = match layout::try_layout_program(programs, &layout_ctx) {
+                                let img = match layout::try_layout_program(
+                                    programs,
+                                    &layout_ctx,
+                                    &graph,
+                                    modules,
+                                ) {
                                     Ok(Some(image_layout)) => {
                                         layout::render_layout_section(&mut text, &image_layout);
                                         Some(image_layout.blob)
