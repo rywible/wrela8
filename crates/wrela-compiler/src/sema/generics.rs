@@ -42,7 +42,7 @@ use crate::sema::types::{
     DeclMember, DeclParam, DeclStruct, DeclVariant, DeclVariantPayload, Type, TypeArg,
 };
 use crate::sema::{SemaError, access, flow, matches, unimplemented_at};
-use crate::syntax::ast::{Arg, BinOp, Expr, Module, Span, Stmt};
+use crate::syntax::ast::{Arg, BinOp, ClosureBody, Expr, Module, Span, Stmt};
 use crate::syntax::printer;
 
 // --- canonical keys ---------------------------------------------------
@@ -194,6 +194,24 @@ fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
         let Some(raw) = mctx.const_values.get(name) else {
             continue;
         };
+        // A const whose initializer contains a generic bracket is outside
+        // the vocabulary this throwaway program exists to supply
+        // (02-language.md §6.3: a const argument's value is a
+        // bool/char/integer/fieldless-enum — never something a generic
+        // instantiation had to be built to produce) — and type-checking
+        // it here would recurse: `bodies::check_expr` on a generic
+        // construction resolves its const arguments through
+        // `eval_const_expr`, whose evaluation program is built by this
+        // very function, re-checking this very const, forever (a native
+        // stack overflow, found by M3-G's adversarial sweep on
+        // `const A: Array[10] = Array[10](dummy=10)`). Omitting it is
+        // fail-closed, not lossy: a const-arg expression referencing an
+        // omitted const gets the evaluator's own "unknown const"
+        // diagnostic, while the const itself still checks and evaluates
+        // normally in the real pipeline, which owns the instantiations.
+        if contains_generic_brackets(raw) {
+            continue;
+        }
         let mut fctx = bodies::FnCtx::new(Type::Unit, mctx.module_pools.clone());
         if let Ok(value) = bodies::check_expr(raw, Some(ty), &mut fctx, mctx) {
             program.consts.insert(
@@ -220,6 +238,53 @@ fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
         }
     }
     program
+}
+
+/// True when an expression contains any `Expr::Index` node anywhere —
+/// the bracket shape a generic construction (`Name[Args](...)`) or a
+/// plain array index both wear (the parser cannot tell them apart —
+/// `ast::Expr::Index`'s own doc comment), used by
+/// `build_consts_program` above to keep its consts-only vocabulary from
+/// re-entering generic-argument resolution. Deliberately conservative,
+/// same shape as `specialize::collect_names_in_expr`: a suite-bodied
+/// closure is treated as containing one (its statements are not
+/// scanned), and an innocent array index excludes its const too — being
+/// too generous here only ever omits a const from the throwaway
+/// program, which the evaluator reports as an unknown const (fail
+/// closed), never a wrong answer.
+fn contains_generic_brackets(e: &Expr) -> bool {
+    match e {
+        Expr::Index(..) => true,
+        Expr::Name(..)
+        | Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Str(..)
+        | Expr::BStr(..)
+        | Expr::Char(..)
+        | Expr::Bool(..)
+        | Expr::Unit(..)
+        | Expr::FStr(_) => false,
+        Expr::Field(base, _, _) => contains_generic_brackets(base),
+        Expr::Call(callee, _, args) => {
+            contains_generic_brackets(callee)
+                || args.iter().any(|a| contains_generic_brackets(&a.value))
+        }
+        Expr::Unary(_, _, inner) | Expr::Try(_, inner) | Expr::Not(_, inner) => {
+            contains_generic_brackets(inner)
+        }
+        Expr::Binary(_, _, l, r) | Expr::And(_, l, r) | Expr::Or(_, l, r) => {
+            contains_generic_brackets(l) || contains_generic_brackets(r)
+        }
+        Expr::Range(_, a, b, _) => contains_generic_brackets(a) || contains_generic_brackets(b),
+        Expr::Is(_, scrutinee, _) => contains_generic_brackets(scrutinee),
+        Expr::DotVariant(_, _, args) => args.iter().any(|a| contains_generic_brackets(&a.value)),
+        Expr::Closure(c) => match &c.body {
+            ClosureBody::Expr(e) => contains_generic_brackets(e),
+            ClosureBody::Suite(_) => true,
+        },
+        Expr::Send(_, inner) => contains_generic_brackets(inner),
+        Expr::Tuple(_, items) | Expr::List(_, items) => items.iter().any(contains_generic_brackets),
+    }
 }
 
 /// Encodes a decoded char back into lexable char-literal token text

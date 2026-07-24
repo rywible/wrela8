@@ -1,0 +1,5 @@
+Module path=examples.check_const_generic_struct
+  Struct Array[const N: usize] data
+    field dummy: u64
+  Const ARR1: Array[10]
+  Fn const_generic_struct_evaluates() -> unit

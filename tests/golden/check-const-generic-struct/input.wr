@@ -1,0 +1,15 @@
+module examples.check_const_generic_struct
+
+# M3-G adversarial find: a const whose initializer constructs a generic
+# struct used to overflow the compiler's own native stack —
+# `build_consts_program` re-type-checked every const initializer while
+# resolving this one's const argument, re-entering const-argument
+# resolution forever (sema/generics.rs::contains_generic_brackets).
+struct Array[const N: usize]:
+    dummy: u64
+
+const ARR1: Array[10] = Array[10](dummy=7)
+
+@test
+fn const_generic_struct_evaluates():
+    assert ARR1.dummy == 7, "field survives const evaluation"
