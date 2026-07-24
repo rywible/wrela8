@@ -841,6 +841,14 @@ scenarios (console send/expect, input events, golden-frame digests,
 shutdown, exit) are declared in scenario files supplied to the runner
 invocation. There is no hosted or mocked test target.
 
+A `@test(runtime)` fn may additionally declare parameters of type
+`Actor[T]`: the runner supplies the handle of the image's unique declared
+instance of `T` — the same image-minted handle any wired actor would hold.
+If the closure's image declares zero or more than one instance of `T`,
+the build fails naming the candidates; nothing is searched for or mocked.
+This mirrors `@test(exhaustive)` below: a test's parameters declare what
+the harness must supply, and are the only parameters a test may have.
+
 `@test(exhaustive)` on a comptime-legal `fn` with parameters enumerates the
 fn's entire input domain and runs the body once per case, each under its own
 fresh quota. Every parameter must have a finite enumerable type — `bool`,
