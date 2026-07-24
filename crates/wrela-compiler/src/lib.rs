@@ -31,6 +31,8 @@
 pub mod encode;
 pub mod eval;
 pub mod loader;
+pub mod lower;
+pub mod mwir;
 pub mod report;
 pub mod sema;
 pub mod syntax;

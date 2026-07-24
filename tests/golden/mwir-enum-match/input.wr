@@ -1,0 +1,18 @@
+module examples.mwir_enum_match
+
+# An enum plus an exhaustive `match` over every variant shape (payload-
+# carrying and bare) — plans/M5.md item B's own required golden family.
+
+pub enum Shape:
+    Circle(u64)
+    Square(u64)
+    Point
+
+pub fn area(s: Shape) -> u64:
+    match s:
+        case .Circle(r):
+            return r * r
+        case .Square(side):
+            return side * side
+        case .Point:
+            return 0

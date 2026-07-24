@@ -1,0 +1,17 @@
+module examples.err_mwir_dynamic_panic
+
+# plans/M5.md item B's own required err golden: the originally-suggested
+# f-string construct fails at `check_typed` itself (sema already rejects
+# f-strings closed), never reaching this pass at all — so this picks the
+# one construct the session found that actually *passes* `check_typed`
+# but this pass cannot lower: `panic`'s own message only has to type as
+# `Static[Str]` (`sema::bodies`'s own `"panic"` call-by-name arm), unlike
+# `assert`'s (which `check_assert` requires to be a text *literal* — so a
+# non-literal `assert` message can never reach this pass in the first
+# place). `lower.rs`'s own module doc records this exactly.
+
+pub fn label() -> Static[Str]:
+    return "nope"
+
+pub fn check():
+    panic(label())

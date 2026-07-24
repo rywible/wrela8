@@ -1,0 +1,53 @@
+Program
+  Fn key=sum_array ret=u64 temps=10 params=[t0]
+    Temp t0 ty=[u64; 4]
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=usize
+    Temp t4 ty=usize
+    Temp t5 ty=bool
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=usize
+    Temp t9 ty=usize
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=0
+      0001: Copy dst=t2 src=t1
+      0002: ConstInt dst=t3 ty=usize value=0
+      0003: ConstInt dst=t4 ty=usize value=4
+      0004: Compare op=< ty=usize dst=t5 lhs=t3 rhs=t4
+      0005: JumpIfFalse cond=t5 target=0013
+      0006: IndexGet dst=t6 base=t0 index=t3 len=4
+      0007: ArithWrapping op=+% ty=u64 dst=t7 lhs=t2 rhs=t6
+      0008: Copy dst=t2 src=t7
+      0009: ConstInt dst=t8 ty=usize value=1
+      0010: ArithWrapping op=+% ty=usize dst=t9 lhs=t3 rhs=t8
+      0011: Copy dst=t3 src=t9
+      0012: Jump target=0004
+      0013: Return value=t2
+      0014: Return
+  Fn key=sum_to ret=u64 temps=9 params=[t0]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=bool
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=0
+      0001: Copy dst=t2 src=t1
+      0002: ConstInt dst=t3 ty=u64 value=0
+      0003: Copy dst=t4 src=t3
+      0004: Compare op=< ty=u64 dst=t5 lhs=t4 rhs=t0
+      0005: JumpIfFalse cond=t5 target=0012
+      0006: ArithChecked op=+ ty=u64 dst=t6 lhs=t2 rhs=t4 abort="arithmetic overflow in `+`"
+      0007: Copy dst=t2 src=t6
+      0008: ConstInt dst=t7 ty=u64 value=1
+      0009: ArithChecked op=+ ty=u64 dst=t8 lhs=t4 rhs=t7 abort="arithmetic overflow in `+`"
+      0010: Copy dst=t4 src=t8
+      0011: Jump target=0004
+      0012: Return value=t2
+      0013: Return

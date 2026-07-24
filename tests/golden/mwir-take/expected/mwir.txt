@@ -1,0 +1,67 @@
+Program
+  Fn key=consume ret=u64 temps=1 params=[t0]
+    Temp t0 ty=u64
+    Body
+      0000: Return value=t0
+      0001: Return
+  Fn key=consume_box ret=u64 temps=2 params=[t0]
+    Temp t0 ty=Box
+    Temp t1 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Return value=t1
+      0002: Return
+  Fn key=use_takes ret=u64 temps=23
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=[u64; 3]
+    Temp t6 ty=[u64; 3]
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=usize
+    Temp t10 ty=usize
+    Temp t11 ty=bool
+    Temp t12 ty=u64
+    Temp t13 ty=u64
+    Temp t14 ty=usize
+    Temp t15 ty=usize
+    Temp t16 ty=u64
+    Temp t17 ty=Box
+    Temp t18 ty=Box
+    Temp t19 ty=u64
+    Temp t20 ty=u64
+    Temp t21 ty=u64
+    Temp t22 ty=u64
+    Body
+      0000: ConstInt dst=t0 ty=u64 value=5
+      0001: Copy dst=t1 src=t0
+      0002: ConstInt dst=t2 ty=u64 value=1
+      0003: ConstInt dst=t3 ty=u64 value=2
+      0004: ConstInt dst=t4 ty=u64 value=3
+      0005: MakeAggregate dst=t5 elems=[t2,t3,t4]
+      0006: Copy dst=t6 src=t5
+      0007: ConstInt dst=t7 ty=u64 value=0
+      0008: Copy dst=t8 src=t7
+      0009: ConstInt dst=t9 ty=usize value=0
+      0010: ConstInt dst=t10 ty=usize value=3
+      0011: Compare op=< ty=usize dst=t11 lhs=t9 rhs=t10
+      0012: JumpIfFalse cond=t11 target=0020
+      0013: IndexGet dst=t12 base=t6 index=t9 len=3
+      0014: ArithChecked op=+ ty=u64 dst=t13 lhs=t8 rhs=t12 abort="arithmetic overflow in `+`"
+      0015: Copy dst=t8 src=t13
+      0016: ConstInt dst=t14 ty=usize value=1
+      0017: ArithWrapping op=+% ty=usize dst=t15 lhs=t9 rhs=t14
+      0018: Copy dst=t9 src=t15
+      0019: Jump target=0011
+      0020: ConstInt dst=t16 ty=u64 value=9
+      0021: MakeAggregate dst=t17 elems=[t16]
+      0022: Copy dst=t18 src=t17
+      0023: Call key=consume dst=t19 args=[t1]
+      0024: Call key=consume_box dst=t20 args=[t18]
+      0025: ArithChecked op=+ ty=u64 dst=t21 lhs=t19 rhs=t20 abort="arithmetic overflow in `+`"
+      0026: ArithChecked op=+ ty=u64 dst=t22 lhs=t21 rhs=t8 abort="arithmetic overflow in `+`"
+      0027: Return value=t22
+      0028: Return
