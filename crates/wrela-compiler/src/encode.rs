@@ -470,6 +470,44 @@ pub fn enc_asr_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
     data_proc_2(sf, rm, 0b001010, rn, rd)
 }
 
+// --- SMULH/UMULH ------------------------------------------------------------
+//
+// ARM ARM "Data-processing (3 source)", the same shape `MADD`/`MSUB`
+// use above, one class over: `sf op54[30:29] 11011[28:24] op31[23:21]
+// Rm[20:16] o0[15] Ra[14:10] Rn[9:5] Rd[4:0]`. `SMULH`/`UMULH` compute
+// the *high* 64 bits of a full 128-bit product (`sf` is always `1` —
+// there is no 32-bit form); `op31` is `0b010` for both (vs `0b000` for
+// `MADD`/`MSUB`), `op54` is `0b00` (signed) / `0b10` (unsigned), and
+// `Ra` is fixed to `31` (unused by this shape, same convention `MUL`'s
+// own `Ra=31` alias already follows). Item C (codegen) is the reason
+// this pair exists at all: 64-bit (`U64`/`I64`/`Usize`/`Isize`) checked
+// multiplication has no other way to detect overflow without a 128-bit
+// register (plans/M5.md decision 4's own "smulh compare").
+
+fn mulh(rd: u8, rn: u8, rm: u8, op54: u32) -> u32 {
+    (1 << 31)
+        | (op54 << 29)
+        | (0b11011 << 24)
+        | (0b010 << 21)
+        | (reg(rm) << 16)
+        | (31 << 10)
+        | (reg(rn) << 5)
+        | reg(rd)
+}
+
+/// `SMULH Rd, Rn, Rm` — the high 64 bits of the signed 128-bit product
+/// `Rn * Rm`. Always 64-bit (no `sf` parameter: there is no 32-bit
+/// form).
+pub fn enc_smulh(rd: u8, rn: u8, rm: u8) -> u32 {
+    mulh(rd, rn, rm, 0b00)
+}
+
+/// `UMULH Rd, Rn, Rm` — the high 64 bits of the unsigned 128-bit
+/// product `Rn * Rm`.
+pub fn enc_umulh(rd: u8, rn: u8, rm: u8) -> u32 {
+    mulh(rd, rn, rm, 0b10)
+}
+
 // --- AND/ORR/EOR (register), MOV (register alias) --------------------------
 //
 // ARM ARM "Logical (shifted register)": `sf[31] opc[30:29] 01010
@@ -818,6 +856,24 @@ mod tests {
         assert_eq!(enc_msub(0, 1, 2, 3, true), 0x9b028c20);
         assert_eq!(enc_udiv(0, 1, 2, true), 0x9ac20820);
         assert_eq!(enc_sdiv(0, 1, 2, true), 0x9ac20c20);
+    }
+
+    #[test]
+    fn smulh_umulh_forms() {
+        // Hand-derived bit-by-bit against the ARM ARM's own
+        // "Data-processing (3 source)" field layout (this module's own
+        // methodology, matching every other test above): `smulh x0, x1,
+        // x2` is `mul x0, x1, x2`'s own encoding (`0x9b027c20`, Ra=31,
+        // op31=000) with `op31` changed from `000` to `010` (adds
+        // `0b010 << 21` = `0x00400000`), giving `0x9b427c20`; `umulh`
+        // additionally sets `op54`'s high bit (`0b10` vs `0b00`, `+
+        // 1<<30` = `0x40000000` on top), giving `0xdb427c20`.
+        assert_eq!(enc_smulh(0, 1, 2), 0x9b427c20);
+        assert_eq!(enc_umulh(0, 1, 2), 0xdb427c20);
+        // A second, independent pair (distinct Rd/Rn/Rm) confirms the
+        // register fields land in the right places, not just Rd=0.
+        assert_eq!(enc_smulh(3, 4, 5), 0x9b457c83);
+        assert_eq!(enc_umulh(3, 4, 5), 0xdb457c83);
     }
 
     #[test]

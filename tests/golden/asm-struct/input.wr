@@ -1,0 +1,24 @@
+module examples.mwir_struct
+
+# A struct with `init` plus a `mut self` and a `read self` method
+# (plans/M5.md item B's own required golden family).
+
+pub struct Point:
+    x: u64
+    y: u64
+
+    init(mut self, x: u64, y: u64):
+        self.x = x
+        self.y = y
+
+    pub fn sum(read self) -> u64:
+        return self.x + self.y
+
+    pub fn shift(mut self, dx: u64, dy: u64):
+        self.x = self.x + dx
+        self.y = self.y + dy
+
+pub fn make_and_sum() -> u64:
+    p = Point(x=3, y=4)
+    p.shift(1, 1)
+    return p.sum()

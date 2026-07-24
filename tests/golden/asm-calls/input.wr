@@ -1,0 +1,13 @@
+module examples.mwir_calls
+
+# Nested plain-fn calls (plans/M5.md item B's own required golden
+# family).
+
+pub fn add_one(x: u64) -> u64:
+    return x + 1
+
+pub fn double(x: u64) -> u64:
+    return x * 2
+
+pub fn combo(x: u64) -> u64:
+    return double(add_one(x))

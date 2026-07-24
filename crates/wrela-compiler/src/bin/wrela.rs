@@ -24,7 +24,7 @@ use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TypedProgram;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|mwir|image|report> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
 
 /// Renders one `sema::SemaError` exactly the way `print_sema_error` prints
 /// it (decision 1's one-line diagnostic, or item H's one multi-line
@@ -479,6 +479,58 @@ fn dump(args: &[String]) -> ExitCode {
                         Ok(program) => match wrela_compiler::lower::lower_program(&program) {
                             Ok(mwir_program) => {
                                 print!("{}", wrela_compiler::mwir::dump(&mwir_program))
+                            }
+                            Err(e) => println!("error[unimplemented]: {}", e.message),
+                        },
+                        Err(e) => print_sema_error(&e),
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        // plans/M5.md item C: the same single-file entry `mwir` uses, one
+        // stage further — `lower::lower_program` then
+        // `mwir::build_layout_ctx` (the one whole-program struct/enum
+        // field-type fact codegen needs beyond mwir itself) then
+        // `codegen::codegen_program`, dumped via `codegen::dump`. A
+        // lowering or codegen rejection prints the same one-line
+        // `error[unimplemented]: ...` house style every other fail-closed
+        // stage already uses.
+        "asm" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match sema::check_typed(&module, &path) {
+                        Ok(program) => match wrela_compiler::lower::lower_program(&program) {
+                            Ok(mwir_program) => {
+                                match wrela_compiler::mwir::build_layout_ctx(&module) {
+                                    Ok(layout) => {
+                                        match wrela_compiler::codegen::codegen_program(
+                                            &mwir_program,
+                                            &layout,
+                                        ) {
+                                            Ok(codegen_program) => {
+                                                print!(
+                                                    "{}",
+                                                    wrela_compiler::codegen::dump(&codegen_program)
+                                                )
+                                            }
+                                            Err(e) => {
+                                                println!("error[unimplemented]: {}", e.message)
+                                            }
+                                        }
+                                    }
+                                    Err(e) => print_sema_error(&e),
+                                }
                             }
                             Err(e) => println!("error[unimplemented]: {}", e.message),
                         },

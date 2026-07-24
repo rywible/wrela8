@@ -1,0 +1,13 @@
+module examples.mwir_generic
+
+# A generic fn instantiated at a concrete scalar type (plans/M5.md item
+# B's own required golden family — the "generic instantiation" shape;
+# `identity[u64]` is instantiated by `double_identity`'s own call, its
+# own type argument inferred straight from `a`'s concrete parameter
+# type, no literal-defaulting ambiguity).
+
+pub fn identity[T](x: T) -> T:
+    return x
+
+pub fn double_identity(a: u64) -> u64:
+    return identity(a) + identity(a)

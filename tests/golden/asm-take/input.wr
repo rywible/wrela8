@@ -1,0 +1,23 @@
+module examples.mwir_take
+
+# take-heavy copies: a scalar take, a struct take, and `for take x in
+# take arr` (plans/M5.md item B's own required golden family — decision
+# 2's "a take is a copy in mwir").
+
+pub struct Box:
+    item: u64
+
+pub fn consume(take x: u64) -> u64:
+    return x
+
+pub fn consume_box(take b: Box) -> u64:
+    return b.item
+
+pub fn use_takes() -> u64:
+    a: u64 = 5
+    arr: [u64; 3] = [1, 2, 3]
+    total: u64 = 0
+    for take v in take arr:
+        total = total + v
+    b = Box(item=9)
+    return consume(take a) + consume_box(take b) + total
