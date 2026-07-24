@@ -9,7 +9,7 @@ ImageReport v0
   Input path=image_emit.wr sha256=4b955fc5a52fad518b9d68fdbb79235fa208e8002078c6b04a7f45d26b746976
   Name value=emit-demo
   Target value=Target.wrela_machine_v1
-  Section name=pages base=0x40000000 size=24576
+  Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=4194304
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=348

@@ -727,43 +727,80 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
 // flight" at a time (M5 is synchronous, one vCPU), so there is never a
 // need to remember more than the *current* test's own resume point.
 //
-// ## The console ring writer and decimal formatter
+// ## The M5-G adversarial-sweep find/fix: one descriptor per LINE, plus a
+// static build-time bound (ledger `machine.console.transcript-pinned`)
 //
-// `__wrela_ring_write(x0=src_ptr, x1=len)` and `__wrela_fmt_dec(x0=value,
-// x1=is_signed) -> x0=len` are two more fixed, hand-assembled subroutines
-// (like `__wrela_abort`/`__wrela_abort_val`), placed in the same combined
-// "entry" section so every internal call between driver/abort/ring-write/
-// fmt-dec resolves as a *local*, directly-computed `BL` (both call site and
-// callee live in the same contiguously-assembled word list — no `Reloc`
-// needed for these; only calls that leave this section, an `@test(runtime)`
-// fn's own code or a literal string in the rodata section, use the
-// existing `Reloc::Call`/`Reloc::Rodata` machinery unchanged). Console ring
-// bookkeeping (`OFF_RING_DATA_BUMP`/`OFF_RING_DESC_BUMP`, a bump
-// allocator — decision 12's "drained once, after halt" rule means nothing
-// is ever reclaimed) and the "one `__wrela_ring_write` call per printed
-// report line, capped at `console::QUEUE_SIZE` (16) lines per boot" bound
-// are documented in full at each fn's own doc comment below.
+// The original design (this module doc, pre-fix) span one
+// `__wrela_ring_write` call — and so one consumed descriptor — per
+// *piece* of a report line: a passing test alone cost 2 calls (the
+// `test <name>: ` prefix, then `ok\n`); a failing test cost 3-4 (prefix,
+// `FAILED `, the message, the newline; `__wrela_abort_val`'s own
+// interpolated shape costs one more). With `console::QUEUE_SIZE` fixed
+// at 16, a mere 7-8 `@test(runtime)` fns — ordinary, not adversarial —
+// silently exhausted the queue mid-summary: `__wrela_ring_write` (below,
+// pre-fix) treated a full queue as a silent no-op, so the transcript
+// truncated (`"7 passed,"` then nothing) and `wrela test` failed with
+// "the wrela VMM's own transcript is not well-formed". Found by the
+// M5-G sweep's own adversarial pass, reproduced with a plain 8-test file
+// of trivial `assert 1 == 1`-shaped tests.
 //
-// **Disclosed simplification of the split-ring contract**: this producer
-// never reorders or skips a descriptor index, so `__wrela_ring_write` never
-// populates `avail.ring[]` at all — the VMM's own console model (item E,
-// `wrela-vmm`) reads descriptors `0..avail.idx` directly by index, which is
-// exactly what a real virtio consumer would get by walking `avail.ring[]`
-// *because* this producer's own `avail.ring[i]` would always equal `i`.
-// The `used` ring is never populated or read either (M5 has no completion
-// tracking to negotiate: the guest never waits on it, and the transcript is
-// read only after the guest halts, decision 12).
+// The fix makes 02 §12.2's "statically bounded output" literally true,
+// in two parts:
 //
-// **Disclosed simplification of the output cap**: `__wrela_ring_write`
-// clamps an over-long write to whatever room remains in `console::
-// DATA_SIZE` (silently truncating the tail) and, if all `console::
-// QUEUE_SIZE` descriptor slots are already spent, is a silent no-op —
-// unlike the plan's own suggested "FAILED (output cap exceeded)" marker
-// line, which would need `__wrela_ring_write` itself to still have ring
-// capacity to print *that* marker, a circularity this module resolves by
-// simply not attempting the marker. Undetected today by any golden (no
-// `@test(runtime)` here prints anywhere near 16 KiB or 16 lines); recorded
-// here as an honest, disclosed M5 bound rather than silently assumed away.
+// 1. **One descriptor per printed line, never per call.** Three new
+//    fixed subroutines replace the old single `__wrela_ring_write`:
+//    `__wrela_line_begin` (snapshots the data-bump cursor as the new
+//    line's own start, `machine_info::OFF_LINE_START`), `__wrela_ring_
+//    append` (copies bytes into the data region and advances the data-
+//    bump cursor — *no* descriptor published, *no* doorbell rung), and
+//    `__wrela_line_commit` (publishes exactly *one* descriptor spanning
+//    `[OFF_LINE_START, current data-bump)`, then rings the doorbell).
+//    Every report line — a test's `ok`/`FAILED ...` line, or the one
+//    summary line — is now `line_begin`, one or more `ring_append`
+//    calls, `line_commit`: exactly one descriptor, regardless of how
+//    many pieces compose the line. `build_entry_driver`/
+//    `build_abort_fixed`/`build_abort_val` (below) all follow this
+//    pattern; an abort continues (never restarts) the line the entry
+//    driver's own prefix already began, so a `FAILED` line is still one
+//    descriptor covering "test <name>: FAILED ...\n" in full.
+// 2. **A static bound, checked at test-image *build* time, never at
+//    runtime.** `check_transcript_bound` (below) computes the worst-case
+//    line count (`runtime_tests.len() + 1`) and worst-case byte count
+//    (every test's own worst-case line — the longer of its "ok" line or
+//    a "FAILED" line whose message is over-approximated by the longest
+//    string already interned in `program.rodata`, module doc on
+//    `check_transcript_bound` itself has the exact formula) *before*
+//    `layout_test_image` ever assembles a single instruction. Either
+//    bound exceeded fails the build closed with a named diagnostic
+//    (`LayoutError`, surfaced by `bin/wrela.rs`'s existing "could not lay
+//    out the test image" wrapper) — never a truncated transcript.
+//    `console::QUEUE_SIZE` also grew, 16 -> 256 (`wrela-machine`'s own
+//    module doc has the ring-geometry consequences), so an ordinary
+//    build with genuinely many tests still fits comfortably; the static
+//    check is what makes the bound provably *safe* to rely on, not the
+//    bigger number alone.
+//
+// `__wrela_ring_append`'s own over-capacity behavior changed too: rather
+// than silently clamping the write (the old, disclosed simplification),
+// it now `BRK`s — a defensive, should-be-unreachable internal-error guard
+// (`BRK_LINE_APPEND_OVERFLOW`/`BRK_LINE_COMMIT_OVERFLOW`, below): once
+// `check_transcript_bound` has passed, no line the generated driver ever
+// composes can exceed either bound, so hitting either `BRK` in practice
+// means the static check and the actual generated code have drifted
+// apart — a real bug in this module, not a reachable guest condition,
+// exactly the same "internal error" framing `layout_program`'s own
+// `Reloc` resolution failures already use elsewhere in this file.
+//
+// **Disclosed simplification of the split-ring contract (unchanged by
+// this fix)**: this producer never reorders or skips a descriptor index,
+// so nothing here ever populates `avail.ring[]` — the VMM's own console
+// model (`wrela-vmm`) reads descriptors `0..avail.idx` directly by index,
+// which is exactly what a real virtio consumer would get by walking
+// `avail.ring[]` *because* this producer's own `avail.ring[i]` would
+// always equal `i`. The `used` ring is never populated or read either
+// (M5 has no completion tracking to negotiate: the guest never waits on
+// it, and the transcript is read only after the guest halts, decision
+// 12).
 
 use crate::encode::Cond;
 use wrela_machine::machine_info as mi;
@@ -995,82 +1032,155 @@ fn append_rodata(rodata: &mut Vec<Vec<u8>>, cursor: &mut usize, bytes: Vec<u8>) 
     off
 }
 
-/// `__wrela_ring_write(x0=src_ptr, x1=len)`. Copies `len` bytes from
-/// `src_ptr` into the next free slot of `console::DATA_SIZE` (clamping to
-/// whatever room remains — module doc's own disclosed output-cap
-/// simplification), publishes one descriptor covering them, bumps
-/// `avail.idx`, rings the doorbell, and returns (an ordinary leaf `RET`,
-/// unlike the two `noreturn` abort stubs). A silent no-op (immediate
-/// `RET`) if `console::QUEUE_SIZE` descriptor slots are already spent.
+/// BRK immediate operands for the two "should be unreachable" internal-
+/// error guards below (module doc's own "M5-G adversarial-sweep find/fix"
+/// section) — distinct only so a post-mortem guest memory/register dump
+/// can tell the two apart at a glance, exactly like `EXIT_CODE_*` above.
+pub const BRK_LINE_APPEND_OVERFLOW: u16 = 0xB0A0;
+pub const BRK_LINE_COMMIT_OVERFLOW: u16 = 0xB0A1;
+
+/// `__wrela_line_begin()`. Snapshots the current data-bump cursor
+/// (`machine_info::OFF_RING_DATA_BUMP`) into `machine_info::
+/// OFF_LINE_START` — the anchor `__wrela_line_commit` (below) later reads
+/// back to know where the line-in-progress started. Called once, right
+/// before the first `__wrela_ring_append` of a new report line (module
+/// doc's own "one descriptor per LINE" section).
 ///
-/// Register use (this fragment owns every register it touches — nothing
-/// survives a `BL` to this fn per this ABI's own "caller-saved
-/// everything" convention, module doc above): `x9`-`x18` scratch
-/// throughout, retracing (documented once, precisely, since there is no
-/// assembler to re-derive this from): `x9`/`x10` = the desc-bump address/
-/// value; `x11`/`x12` = the data-bump address/value; `x13` = remaining
-/// capacity (clobbered into other uses once the clamp decision is made);
-/// `x14` = the destination byte address (preserved across the copy loop
-/// for the descriptor's own `addr` field); `x15`/`x16`/`x17` = the copy
-/// loop's src/dst cursors and remaining-count; `x18` = the copy loop's
-/// one-byte transfer register, then reused as the descriptor-table
-/// address scratch once the loop is done.
-fn build_ring_write(addrs: &HarnessAddrs, start: usize) -> Asm {
+/// Register use: `x9` = `OFF_RING_DATA_BUMP`'s address; `x10` = its
+/// value; `x11` = `OFF_LINE_START`'s address.
+fn build_line_begin(addrs: &HarnessAddrs, start: usize) -> Asm {
+    let mut a = Asm::new(start);
+    let data_bump_addr = addrs.info_base + mi::OFF_RING_DATA_BUMP;
+    let line_start_addr = addrs.info_base + mi::OFF_LINE_START;
+
+    a.load_imm(9, data_bump_addr);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = data_bump
+    a.load_imm(11, line_start_addr);
+    a.push(encode::enc_str_x_imm(10, 11, 0));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// `__wrela_ring_append(x0=src_ptr, x1=len)`. Copies `len` bytes from
+/// `src_ptr` into the next free bytes of `console::DATA_SIZE`, advancing
+/// the data-bump cursor — **no descriptor is published and no doorbell is
+/// rung here** (module doc's own "one descriptor per LINE" section):
+/// that is `__wrela_line_commit`'s (below) job alone, once, after every
+/// piece of a line has been appended. An ordinary leaf `RET`, like the
+/// old combined routine this replaces.
+///
+/// Unlike the pre-fix `__wrela_ring_write` this replaces, an over-long
+/// append is never silently clamped: `check_transcript_bound` (this
+/// file, called before `layout_test_image` ever assembles a single
+/// instruction) has already proven no line the generated driver composes
+/// can exceed `console::DATA_SIZE`, so overflowing here means that proof
+/// and this code have drifted apart — a real internal bug, not a
+/// reachable guest condition — and this guard `BRK`s rather than
+/// approximating (module doc's own "should be unreachable" framing).
+///
+/// Register use (leaf fn, owns every register it touches): `x9`/`x10` =
+/// the data-bump address/value (both intact, untouched by the copy loop,
+/// through to the final store); `x11` = remaining capacity, then the
+/// destination base address; `x12` = the destination byte address
+/// (`data_base + old data_bump`); `x13`/`x14`/`x15` = the copy loop's
+/// src/dst cursors and remaining count (`x1`, the original `len`, is
+/// never itself clobbered by the loop, so it is read again unchanged for
+/// the final `data_bump += len`); `x16` = the copy loop's one-byte
+/// transfer register.
+fn build_ring_append(addrs: &HarnessAddrs, start: usize) -> Asm {
+    let mut a = Asm::new(start);
+    let data_bump_addr = addrs.info_base + mi::OFF_RING_DATA_BUMP;
+
+    a.load_imm(9, data_bump_addr);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = data_bump (old)
+    a.load_imm(11, console::DATA_SIZE);
+    a.push(encode::enc_sub_reg(11, 11, 10, true)); // x11 = remaining
+    a.push(encode::enc_cmp_reg(1, 11, true)); // len vs remaining
+    let skip_ok = a.skip_placeholder(); // b.le .ok
+    a.push(encode::enc_brk(BRK_LINE_APPEND_OVERFLOW));
+    a.patch_cond(skip_ok, Cond::Le);
+    // .ok:
+    a.load_imm(11, addrs.data_base);
+    a.push(encode::enc_add_reg(12, 11, 10, true)); // x12 = dst = data_base + data_bump
+    a.push(encode::enc_mov_reg(13, 0, true)); // x13 = src cursor
+    a.push(encode::enc_mov_reg(14, 12, true)); // x14 = dst cursor
+    a.push(encode::enc_mov_reg(15, 1, true)); // x15 = remaining count
+    let loop_top = a.abs();
+    let skip_loop = a.skip_placeholder(); // cbz x15, .done
+    a.push(encode::enc_ldrb_imm(16, 13, 0));
+    a.push(encode::enc_strb_imm(16, 14, 0));
+    a.push(encode::enc_add_imm(13, 13, 1, true));
+    a.push(encode::enc_add_imm(14, 14, 1, true));
+    a.push(encode::enc_sub_imm(15, 15, 1, true));
+    a.b_to(loop_top);
+    a.patch_cbz(skip_loop, 15);
+    // .done: data_bump += len (x1 is the untouched original len; x9/x10
+    // are still the address/old-value from the very top of this fn).
+    a.push(encode::enc_add_reg(10, 10, 1, true)); // x10 = old data_bump + len
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// `__wrela_line_commit()`. Publishes exactly **one** descriptor spanning
+/// `[console::DATA_BASE + OFF_LINE_START, console::DATA_BASE +
+/// OFF_RING_DATA_BUMP)` — the whole line `__wrela_line_begin`/one-or-more
+/// `__wrela_ring_append` calls just composed — bumps `avail.idx`, rings
+/// the doorbell, and returns. The direct replacement for the pre-fix
+/// `__wrela_ring_write`'s own per-call descriptor-publish half; called
+/// once per finished report line (module doc's own "one descriptor per
+/// LINE" section), never once per piece.
+///
+/// The over-capacity guard (`console::QUEUE_SIZE` descriptor slots
+/// already spent) is the commit-side twin of `__wrela_ring_append`'s own:
+/// `check_transcript_bound` already proved `runtime_tests.len() + 1`
+/// (every test's own line, plus the summary) never exceeds
+/// `console::QUEUE_SIZE`, so this is the same "should be unreachable"
+/// internal-error `BRK`, never a silent no-op.
+///
+/// Register use: `x9`/`x10` = the desc-bump address/value; `x11`/`x12` =
+/// the line-start address/value; `x13`/`x14` = the data-bump address/
+/// value (the line's own end); `x15` = the computed line length; `x16` =
+/// the line's own start *address* (`data_base + line_start`), then
+/// reused as a zero source; `x17` = the descriptor-table byte offset
+/// scratch; `x18` = the descriptor-entry/avail/doorbell address scratch,
+/// reloaded fresh for each of the three (module's own established style:
+/// reloading a small constant via `load_imm` is simpler than threading a
+/// value through, CLAUDE.md's "prefer obvious").
+fn build_line_commit(addrs: &HarnessAddrs, start: usize) -> Asm {
     let mut a = Asm::new(start);
     let desc_bump_addr = addrs.info_base + mi::OFF_RING_DESC_BUMP;
     let data_bump_addr = addrs.info_base + mi::OFF_RING_DATA_BUMP;
+    let line_start_addr = addrs.info_base + mi::OFF_LINE_START;
 
     a.load_imm(9, desc_bump_addr);
     a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = desc_bump
     a.push(encode::enc_cmp_imm(10, console::QUEUE_SIZE as u16, true));
-    let skip_have_slot = a.skip_placeholder(); // b.lt .have_slot
-    a.push(encode::enc_ret(30)); // no slot left: silent no-op
-    a.patch_cond(skip_have_slot, Cond::Lt);
-    // .have_slot:
-    a.load_imm(11, data_bump_addr);
-    a.push(encode::enc_ldr_x_imm(12, 11, 0)); // x12 = data_bump
-    a.load_imm(13, console::DATA_SIZE);
-    a.push(encode::enc_sub_reg(13, 13, 12, true)); // x13 = remaining
-    a.push(encode::enc_cmp_reg(1, 13, true)); // len vs remaining
-    let skip_len_ok = a.skip_placeholder(); // b.le .len_ok
-    a.push(encode::enc_mov_reg(1, 13, true)); // clamp: len = remaining
-    a.patch_cond(skip_len_ok, Cond::Le);
-    // .len_ok:
-    a.load_imm(14, addrs.data_base);
-    a.push(encode::enc_add_reg(14, 14, 12, true)); // x14 = dst_addr
-    a.push(encode::enc_mov_reg(15, 0, true)); // x15 = src cursor
-    a.push(encode::enc_mov_reg(16, 14, true)); // x16 = dst cursor
-    a.push(encode::enc_mov_reg(17, 1, true)); // x17 = remaining count
-    let loop_top = a.abs();
-    let skip_loop = a.skip_placeholder(); // cbz x17, .copy_done
-    a.push(encode::enc_ldrb_imm(18, 15, 0));
-    a.push(encode::enc_strb_imm(18, 16, 0));
-    a.push(encode::enc_add_imm(15, 15, 1, true));
-    a.push(encode::enc_add_imm(16, 16, 1, true));
-    a.push(encode::enc_sub_imm(17, 17, 1, true));
-    a.b_to(loop_top);
-    a.patch_cbz(skip_loop, 17);
-    // .copy_done: descriptor entry at ring_base+DESC_TABLE_OFFSET+desc_bump*16
-    a.load_imm(9, console::DESC_ENTRY_SIZE);
-    a.push(encode::enc_mul(9, 10, 9, true)); // x9 = desc_bump * 16
+    let skip_ok = a.skip_placeholder(); // b.lt .ok
+    a.push(encode::enc_brk(BRK_LINE_COMMIT_OVERFLOW));
+    a.patch_cond(skip_ok, Cond::Lt);
+    // .ok:
+    a.load_imm(11, line_start_addr);
+    a.push(encode::enc_ldr_x_imm(12, 11, 0)); // x12 = line_start
+    a.load_imm(13, data_bump_addr);
+    a.push(encode::enc_ldr_x_imm(14, 13, 0)); // x14 = data_bump (line end)
+    a.push(encode::enc_sub_reg(15, 14, 12, true)); // x15 = len = end - start
+    a.load_imm(16, addrs.data_base);
+    a.push(encode::enc_add_reg(16, 16, 12, true)); // x16 = line start addr
+    a.load_imm(17, console::DESC_ENTRY_SIZE);
+    a.push(encode::enc_mul(17, 10, 17, true)); // x17 = desc_bump * 16
     a.load_imm(18, addrs.ring_base + console::DESC_TABLE_OFFSET);
-    a.push(encode::enc_add_reg(18, 18, 9, true)); // x18 = desc entry addr
-    a.push(encode::enc_str_x_imm(14, 18, 0)); // desc.addr = dst_addr
-    a.push(encode::enc_str_w_imm(1, 18, 8)); // desc.len = clamped len
-    a.push(encode::enc_mov_reg(0, 31, true)); // x0 = 0 (from xzr)
-    a.push(encode::enc_str_w_imm(0, 18, 12)); // desc.flags/next = 0
+    a.push(encode::enc_add_reg(18, 18, 17, true)); // x18 = desc entry addr
+    a.push(encode::enc_str_x_imm(16, 18, 0)); // desc.addr = line start addr
+    a.push(encode::enc_str_w_imm(15, 18, 8)); // desc.len = line len
+    a.push(encode::enc_mov_reg(9, 31, true)); // x9 = 0 (from xzr)
+    a.push(encode::enc_str_w_imm(9, 18, 12)); // desc.flags/next = 0
     // avail.idx = desc_bump + 1 (avail.ring[] is never populated — module
-    // doc's own disclosed simplification: this producer never reorders or
-    // skips an index, so the VMM reads descriptors 0..avail.idx directly).
+    // doc's own disclosed simplification, unchanged by this fix).
     a.push(encode::enc_add_imm(10, 10, 1, true)); // x10 = desc_bump + 1
     a.push(encode::enc_lsl_imm(9, 10, 16, true)); // x9 = idx << 16 (flags=0)
     a.load_imm(18, addrs.ring_base + console::AVAIL_OFFSET);
     a.push(encode::enc_str_w_imm(9, 18, 0));
-    // bump counters: data_bump += clamped len (x1); desc_bump = x10 (already
-    // desc_bump+1, computed above for the avail.idx write).
-    a.push(encode::enc_add_reg(12, 12, 1, true)); // x12 = data_bump + len
-    a.load_imm(18, data_bump_addr);
-    a.push(encode::enc_str_x_imm(12, 18, 0));
     a.load_imm(18, desc_bump_addr);
     a.push(encode::enc_str_x_imm(10, 18, 0));
     // ring the doorbell: store nonzero (module doc: a shared-memory
@@ -1194,16 +1304,21 @@ fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
 
 /// `__wrela_abort(x0=msg_ptr, x1=msg_len) -> noreturn` — the test-image
 /// variant (module doc's "Item E instead adds a second ... `__wrela_abort`"
-/// paragraph): prints `FAILED ` (shared literal) then the caller's own
-/// fixed message, then a newline, over the console ring, then runs the
-/// landing pad's own tail (above). `msg_ptr`/`msg_len` are stashed on the
-/// stack across the two `__wrela_ring_write` calls that need it (`x0`-`x18`
-/// are all caller-saved under this ABI, module doc above — nothing survives
-/// a `BL` on its own).
+/// paragraph): appends `FAILED ` (shared literal) then the caller's own
+/// fixed message, then a newline, to the *already-open* report line
+/// `build_entry_driver`'s own prefix append began (module doc's own "one
+/// descriptor per LINE" section — an abort continues that line, it never
+/// begins a new one), commits it as the one descriptor covering the whole
+/// `test <name>: FAILED ...\n` line, then runs the landing pad's own tail
+/// (above). `msg_ptr`/`msg_len` are stashed on the stack across the two
+/// `__wrela_ring_append` calls that need it (`x0`-`x18` are all
+/// caller-saved under this ABI, module doc above — nothing survives a
+/// `BL` on its own).
 fn build_abort_fixed(
     addrs: &HarnessAddrs,
     start: usize,
-    ring_write_start: usize,
+    append_start: usize,
+    commit_start: usize,
     failed_word_off: usize,
     newline_off: usize,
 ) -> Asm {
@@ -1214,32 +1329,36 @@ fn build_abort_fixed(
 
     a.load_rodata_addr_at(0, failed_word_off);
     a.load_imm(1, 7);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.push(encode::enc_ldr_x_imm(0, 31, 0));
     a.push(encode::enc_ldr_x_imm(1, 31, 8));
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.load_rodata_addr_at(0, newline_off);
     a.load_imm(1, 1);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
+    a.bl_to(commit_start);
     push_abort_tail(&mut a, addrs);
     a
 }
 
 /// `__wrela_abort_val(x0=prefix_ptr, x1=prefix_len, x2=value,
 /// x3=value_signed, x4=suffix_ptr, x5=suffix_len) -> noreturn` — the
-/// test-image variant: prints `FAILED `, the prefix, `value` rendered as
-/// decimal (via `__wrela_fmt_dec`), the suffix, then a newline, then the
+/// test-image variant: appends `FAILED `, the prefix, `value` rendered as
+/// decimal (via `__wrela_fmt_dec`), the suffix, then a newline, onto the
+/// already-open line (same "continue, don't restart" rule as
+/// `build_abort_fixed` above), commits it as one descriptor, then the
 /// landing-pad tail. All six incoming args are stashed on the stack up
 /// front (48 bytes) and reloaded around each of the four
-/// `__wrela_ring_write`/one `__wrela_fmt_dec` calls that clobber them.
+/// `__wrela_ring_append`/one `__wrela_fmt_dec` calls that clobber them.
 fn build_abort_val(
     addrs: &HarnessAddrs,
     start: usize,
-    ring_write_start: usize,
+    append_start: usize,
+    commit_start: usize,
     fmt_dec_start: usize,
     failed_word_off: usize,
     newline_off: usize,
@@ -1252,28 +1371,29 @@ fn build_abort_val(
 
     a.load_rodata_addr_at(0, failed_word_off);
     a.load_imm(1, 7);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.push(encode::enc_ldr_x_imm(0, 31, 0));
     a.push(encode::enc_ldr_x_imm(1, 31, 8));
-    a.bl_to(ring_write_start); // prefix
+    a.bl_to(append_start); // prefix
 
     a.push(encode::enc_ldr_x_imm(0, 31, 16));
     a.push(encode::enc_ldr_x_imm(1, 31, 24));
     a.bl_to(fmt_dec_start); // x0 = len, written into OFF_TEST_LINE_BUF
     a.push(encode::enc_mov_reg(1, 0, true));
     a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.push(encode::enc_ldr_x_imm(0, 31, 32));
     a.push(encode::enc_ldr_x_imm(1, 31, 40));
-    a.bl_to(ring_write_start); // suffix
+    a.bl_to(append_start); // suffix
 
     a.load_rodata_addr_at(0, newline_off);
     a.load_imm(1, 1);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.push(encode::enc_add_imm(31, 31, 48, true));
+    a.bl_to(commit_start);
     push_abort_tail(&mut a, addrs);
     a
 }
@@ -1281,14 +1401,18 @@ fn build_abort_val(
 /// The runtime test image's own entry driver (module doc's "Why the entry
 /// driver needs no runtime loop at all"): installs core 0's stack pointer,
 /// zeroes every harness counter, then one straight-line block per
-/// `@test(runtime)` fn in `runtime_tests`' own order — print `test <name>:
-/// `, arm the landing pad's own continuation slot, `BL` the test, print
-/// `ok\n` and increment the passed counter on an ordinary return (an abort
-/// anywhere inside that `BL`'s own call tree instead lands directly at the
-/// top of the *next* block, module doc's own landing-pad section) — then
-/// the one merged summary line and the exit-code/halt tail. `x8` is set to
-/// the fixed `OFF_TEST_LINE_BUF` scratch address before every test call as
-/// a defensive measure (this ABI's own aggregate-return convention writes
+/// `@test(runtime)` fn in `runtime_tests`' own order — begin a new report
+/// line, append `test <name>: `, arm the landing pad's own continuation
+/// slot, `BL` the test, append `ok\n` and commit the line (one descriptor
+/// covering the whole `test <name>: ok\n` text) and increment the passed
+/// counter on an ordinary return (an abort anywhere inside that `BL`'s own
+/// call tree instead continues and commits *this same* line itself —
+/// `build_abort_fixed`/`build_abort_val`'s own doc — then lands directly at
+/// the top of the *next* block, module doc's own landing-pad section) —
+/// then the one merged summary line (begin/append/append/append/append/
+/// commit, identically) and the exit-code/halt tail. `x8` is set to the
+/// fixed `OFF_TEST_LINE_BUF` scratch address before every test call as a
+/// defensive measure (this ABI's own aggregate-return convention writes
 /// through whatever `x8` holds; a test fn's return value is otherwise
 /// unread, but this guarantees an aggregate return, if one ever exists, has
 /// somewhere harmless to land rather than an arbitrary stale address).
@@ -1296,7 +1420,9 @@ fn build_entry_driver(
     addrs: &HarnessAddrs,
     start: usize,
     harness_base: u64,
-    ring_write_start: usize,
+    line_begin_start: usize,
+    append_start: usize,
+    commit_start: usize,
     fmt_dec_start: usize,
     runtime_tests: &[String],
     rodata: &mut Vec<Vec<u8>>,
@@ -1314,6 +1440,7 @@ fn build_entry_driver(
         mi::OFF_TEST_FAILED,
         mi::OFF_RING_DATA_BUMP,
         mi::OFF_RING_DESC_BUMP,
+        mi::OFF_LINE_START,
     ] {
         a.load_imm(10, addrs.info_base + off);
         a.push(encode::enc_str_x_imm(9, 10, 0));
@@ -1328,9 +1455,11 @@ fn build_entry_driver(
         let prefix_len = prefix_bytes.len() as u64;
         let prefix_off = append_rodata(rodata, rodata_cursor, prefix_bytes);
 
+        a.bl_to(line_begin_start);
+
         a.load_rodata_addr_at(0, prefix_off);
         a.load_imm(1, prefix_len);
-        a.bl_to(ring_write_start);
+        a.bl_to(append_start);
 
         let cont_marker = a.load_imm_placeholder(9);
         a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
@@ -1341,7 +1470,9 @@ fn build_entry_driver(
 
         a.load_rodata_addr_at(0, ok_off);
         a.load_imm(1, 3);
-        a.bl_to(ring_write_start);
+        a.bl_to(append_start);
+
+        a.bl_to(commit_start);
 
         a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
         a.push(encode::enc_ldr_x_imm(10, 9, 0));
@@ -1352,18 +1483,21 @@ fn build_entry_driver(
         a.patch_load_imm(cont_marker, 9, cont_target);
     }
 
-    // Summary line: "<passed> passed, <failed> failed\n".
+    // Summary line: "<passed> passed, <failed> failed\n" — one descriptor,
+    // like every test's own line above.
+    a.bl_to(line_begin_start);
+
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
     a.push(encode::enc_movz(1, 0, 0, true));
     a.bl_to(fmt_dec_start);
     a.push(encode::enc_mov_reg(1, 0, true));
     a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.load_rodata_addr_at(0, passed_comma_off);
     a.load_imm(1, 9);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
@@ -1371,11 +1505,13 @@ fn build_entry_driver(
     a.bl_to(fmt_dec_start);
     a.push(encode::enc_mov_reg(1, 0, true));
     a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
 
     a.load_rodata_addr_at(0, failed_tail_off);
     a.load_imm(1, 8);
-    a.bl_to(ring_write_start);
+    a.bl_to(append_start);
+
+    a.bl_to(commit_start);
 
     // Exit code: 0 if failed==0, else 1 — stored plainly then via the
     // trapping MMIO store (the same two-writes-one-trap shape
@@ -1392,33 +1528,154 @@ fn build_entry_driver(
     a
 }
 
+/// Max decimal digits `__wrela_fmt_dec` ever writes, sign included:
+/// `i64::MIN` (`-9223372036854775808`) and `u64::MAX`
+/// (`18446744073709551615`) both render as exactly 20 ASCII characters —
+/// the widest either the summary line's two counts or an `AbortVal`
+/// line's interpolated value can ever be.
+const MAX_DECIMAL_DIGITS: u64 = 20;
+
+/// The worst-case transcript shape `check_transcript_bound` (below)
+/// checks against `console::QUEUE_SIZE`/`console::DATA_SIZE` — module
+/// doc's own "M5-G adversarial-sweep find/fix" section names this as the
+/// static-bound half of the fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptBound {
+    /// One descriptor per test's own line, plus one for the summary —
+    /// exact, not an over-approximation (module doc's own "one descriptor
+    /// per LINE" invariant makes this a hard equality, never a bound).
+    pub lines: u64,
+    /// Every test's own worst-case line length, summed, plus the
+    /// summary's own exact worst case (`worst_case_test_line_bytes`/
+    /// `worst_case_summary_line_bytes`, below).
+    pub worst_case_bytes: u64,
+}
+
+/// The longest single string already interned in `program.rodata` — the
+/// documented over-approximation this module's static bound stands on
+/// (module doc's own `check_transcript_bound` paragraph): rather than
+/// tracing which abort site is actually reachable from which test (real
+/// call-graph analysis this module does not have), every test's own
+/// worst-case *message* is bounded by the single longest literal string
+/// anywhere in the whole program's rodata pool, applied uniformly. Sound
+/// (it can only over-count, never under-count, since every reachable
+/// message is itself one of `program.rodata`'s own entries) and simple;
+/// the plan's own explicit license for "the longest string in the whole
+/// rodata pool ... documented over-approximation" over the alternative,
+/// harder-to-get-right "each test's own longest reachable message".
+fn longest_rodata_len(program: &CodegenProgram) -> u64 {
+    program
+        .rodata
+        .iter()
+        .map(|entry| entry.len() as u64)
+        .max()
+        .unwrap_or(0)
+}
+
+/// One test's own worst-case printed line length: `"test " + name + ": "`
+/// (exact — both are known at compile time), then the *longer* of the two
+/// shapes that line can ever take: `"ok\n"` (always exactly 3 bytes) or a
+/// `FAILED` line. A `FAILED` line's own worst case covers *both*
+/// `__wrela_abort` (one message, `"FAILED " + msg + "\n"`) and
+/// `__wrela_abort_val` (`"FAILED " + prefix + <=20 digits + suffix +
+/// "\n"`) uniformly, by allowing for *two* copies of the longest rodata
+/// string (covers `AbortVal`'s prefix+suffix pair; strictly more than
+/// `AbortFixed`'s one-string shape ever needs) plus the full 20-digit
+/// interpolation width — an honest over-approximation applied to every
+/// test regardless of which shape (if either) it can actually reach.
+fn worst_case_test_line_bytes(name: &str, longest_msg: u64) -> u64 {
+    let prefix_len = "test ".len() as u64 + name.len() as u64 + ": ".len() as u64;
+    let ok_len = "ok\n".len() as u64;
+    let failed_len =
+        "FAILED ".len() as u64 + 2 * longest_msg + MAX_DECIMAL_DIGITS + "\n".len() as u64;
+    prefix_len + ok_len.max(failed_len)
+}
+
+/// The summary line's own worst case, exact rather than over-approximated
+/// (both counts are `u64`s, bounded by `MAX_DECIMAL_DIGITS` each):
+/// `"<=20 digits> passed, <=20 digits> failed\n"`.
+fn worst_case_summary_line_bytes() -> u64 {
+    2 * MAX_DECIMAL_DIGITS + " passed, ".len() as u64 + " failed\n".len() as u64
+}
+
+/// Computes the exact worst-case shape `layout_test_image`'s own static
+/// bound check (below) enforces — a pure function of `program`/
+/// `runtime_tests` alone, callable standalone by unit tests without
+/// building a whole image.
+pub fn compute_transcript_bound(
+    program: &CodegenProgram,
+    runtime_tests: &[String],
+) -> TranscriptBound {
+    let longest_msg = longest_rodata_len(program);
+    let mut worst_case_bytes = worst_case_summary_line_bytes();
+    for name in runtime_tests {
+        worst_case_bytes += worst_case_test_line_bytes(name, longest_msg);
+    }
+    TranscriptBound {
+        lines: runtime_tests.len() as u64 + 1,
+        worst_case_bytes,
+    }
+}
+
+/// The static bound check itself (module doc's own "M5-G adversarial-
+/// sweep find/fix" section, part 2): `Err` — a real, named, build-time
+/// diagnostic, never a runtime truncation — the moment either dimension
+/// of `compute_transcript_bound`'s own result would overflow the
+/// machine's fixed console geometry (`wrela-machine`'s own
+/// `console::QUEUE_SIZE`/`console::DATA_SIZE`). Called first thing in
+/// `layout_test_image`, below, before a single harness instruction is
+/// ever assembled — 02 §12.2's "statically bounded output" made literally
+/// true at build time, per this item's own task.
+pub fn check_transcript_bound(
+    program: &CodegenProgram,
+    runtime_tests: &[String],
+) -> Result<(), LayoutError> {
+    let bound = compute_transcript_bound(program, runtime_tests);
+    if bound.lines > console::QUEUE_SIZE || bound.worst_case_bytes > console::DATA_SIZE {
+        return Err(LayoutError::new(format!(
+            "this test image's worst-case transcript ({} byte(s) across {} line(s)) exceeds \
+             the machine's console bound ({} byte(s) across {} line(s))",
+            bound.worst_case_bytes,
+            bound.lines,
+            console::DATA_SIZE,
+            console::QUEUE_SIZE
+        )));
+    }
+    Ok(())
+}
+
 /// Places a codegen'd test-image program into the machine's fixed
 /// contract, per module doc above: **one** combined "entry" section
-/// (`__wrela_ring_write`, `__wrela_fmt_dec`, `__wrela_abort`,
-/// `__wrela_abort_val`, the entry driver, in that fixed order — the order
-/// every internal local branch/call above assumes), then `code` (every
-/// codegen'd fn, `@test(runtime)` fns included — they are ordinary fns to
-/// `codegen.rs`, called by name like any other), then `rodata`
-/// (`program.rodata`'s own already-interned entries, followed by every
-/// harness literal this fn appends — `append_rodata`, above). Every
-/// `Reloc` — the harness's own `Call`/`Rodata` entries and every ordinary
-/// compiled fn's `Call`/`Rodata`/`AbortFixed`/`AbortVal` — resolves through
-/// the identical `patch_bl`/`patch_adrp_add` this file's item-D half
-/// already proved; `AbortFixed`/`AbortVal` targets are simply this
-/// section's own `abort_fixed_start`/`abort_val_start` words instead of a
-/// separate section, since the test image's `__wrela_abort`/
-/// `__wrela_abort_val` symbols *are* these words.
+/// (`__wrela_ring_append`, `__wrela_line_begin`, `__wrela_line_commit`,
+/// `__wrela_fmt_dec`, `__wrela_abort`, `__wrela_abort_val`, the entry
+/// driver, in that fixed order — the order every internal local branch/
+/// call above assumes), then `code` (every codegen'd fn, `@test(runtime)`
+/// fns included — they are ordinary fns to `codegen.rs`, called by name
+/// like any other), then `rodata` (`program.rodata`'s own already-interned
+/// entries, followed by every harness literal this fn appends —
+/// `append_rodata`, above). Every `Reloc` — the harness's own `Call`/
+/// `Rodata` entries and every ordinary compiled fn's `Call`/`Rodata`/
+/// `AbortFixed`/`AbortVal` — resolves through the identical `patch_bl`/
+/// `patch_adrp_add` this file's item-D half already proved;
+/// `AbortFixed`/`AbortVal` targets are simply this section's own
+/// `abort_fixed_start`/`abort_val_start` words instead of a separate
+/// section, since the test image's `__wrela_abort`/`__wrela_abort_val`
+/// symbols *are* these words.
 ///
-/// `Err` for a genuine internal inconsistency (module doc mirrors
-/// `layout_program`'s own doc here): an out-of-range relocation, or a
-/// name in `runtime_tests` `codegen_program` never produced (an internal
-/// invariant `bin/wrela.rs`'s own caller is expected to have already
-/// checked via `TypedProgram::tests`, kept here anyway as a real `Err`
-/// rather than a silent skip).
+/// `Err` for a genuine internal inconsistency, **or** for a program whose
+/// worst-case transcript provably cannot fit (`check_transcript_bound`,
+/// called first, before anything else here) — module doc mirrors
+/// `layout_program`'s own doc here for the former: an out-of-range
+/// relocation, or a name in `runtime_tests` `codegen_program` never
+/// produced (an internal invariant `bin/wrela.rs`'s own caller is expected
+/// to have already checked via `TypedProgram::tests`, kept here anyway as
+/// a real `Err` rather than a silent skip).
 pub fn layout_test_image(
     program: &CodegenProgram,
     runtime_tests: &[String],
 ) -> Result<ImageLayout, LayoutError> {
+    check_transcript_bound(program, runtime_tests)?;
+
     let image_base = machine_layout::IMAGE_BASE;
     let addrs = HarnessAddrs::production();
 
@@ -1446,15 +1703,20 @@ pub fn layout_test_image(
     let failed_word_off = append_rodata(&mut rodata, &mut rodata_cursor, b"FAILED ".to_vec());
     let abort_newline_off = append_rodata(&mut rodata, &mut rodata_cursor, b"\n".to_vec());
 
-    let ring_write_asm = build_ring_write(&addrs, 0);
-    let ring_write_start = 0usize;
-    let fmt_dec_start = ring_write_start + ring_write_asm.words.len();
+    let ring_append_asm = build_ring_append(&addrs, 0);
+    let ring_append_start = 0usize;
+    let line_begin_start = ring_append_start + ring_append_asm.words.len();
+    let line_begin_asm = build_line_begin(&addrs, line_begin_start);
+    let line_commit_start = line_begin_start + line_begin_asm.words.len();
+    let line_commit_asm = build_line_commit(&addrs, line_commit_start);
+    let fmt_dec_start = line_commit_start + line_commit_asm.words.len();
     let fmt_dec_asm = build_fmt_dec(&addrs, fmt_dec_start);
     let abort_fixed_start = fmt_dec_start + fmt_dec_asm.words.len();
     let abort_fixed_asm = build_abort_fixed(
         &addrs,
         abort_fixed_start,
-        ring_write_start,
+        ring_append_start,
+        line_commit_start,
         failed_word_off,
         abort_newline_off,
     );
@@ -1462,7 +1724,8 @@ pub fn layout_test_image(
     let abort_val_asm = build_abort_val(
         &addrs,
         abort_val_start,
-        ring_write_start,
+        ring_append_start,
+        line_commit_start,
         fmt_dec_start,
         failed_word_off,
         abort_newline_off,
@@ -1472,7 +1735,9 @@ pub fn layout_test_image(
         &addrs,
         entry_start,
         image_base,
-        ring_write_start,
+        line_begin_start,
+        ring_append_start,
+        line_commit_start,
         fmt_dec_start,
         runtime_tests,
         &mut rodata,
@@ -1482,7 +1747,9 @@ pub fn layout_test_image(
     let mut harness_words: Vec<u32> = Vec::new();
     let mut harness_relocs: Vec<Reloc> = Vec::new();
     for asm in [
-        ring_write_asm,
+        ring_append_asm,
+        line_begin_asm,
+        line_commit_asm,
         fmt_dec_asm,
         abort_fixed_asm,
         abort_val_asm,
@@ -1846,6 +2113,85 @@ mod tests {
         let b = layout_program(&program).unwrap();
         assert_eq!(a, b);
     }
+
+    // --- static transcript bound (M5-G adversarial-sweep find/fix) ---------
+
+    fn program_with_rodata(longest: &[u8]) -> CodegenProgram {
+        CodegenProgram {
+            fns: BTreeMap::new(),
+            rodata: vec![longest.to_vec()],
+        }
+    }
+
+    #[test]
+    fn transcript_bound_counts_one_line_per_test_plus_the_summary() {
+        let program = program_with_rodata(b"boom");
+        let tests = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let bound = compute_transcript_bound(&program, &tests);
+        assert_eq!(bound.lines, 4); // 3 tests + 1 summary
+    }
+
+    #[test]
+    fn transcript_bound_grows_with_the_longest_rodata_string() {
+        let short = program_with_rodata(b"x");
+        let long = program_with_rodata(&vec![b'x'; 500]);
+        let tests = vec!["t".to_string()];
+        let short_bound = compute_transcript_bound(&short, &tests);
+        let long_bound = compute_transcript_bound(&long, &tests);
+        assert!(long_bound.worst_case_bytes > short_bound.worst_case_bytes);
+        // The over-approximation counts the longest message *twice* (an
+        // AbortVal's prefix+suffix pair) plus up to 20 interpolated digits.
+        assert_eq!(
+            long_bound.worst_case_bytes - short_bound.worst_case_bytes,
+            2 * (500 - 1)
+        );
+    }
+
+    #[test]
+    fn transcript_bound_with_no_rodata_is_just_the_fixed_harness_text() {
+        let program = CodegenProgram {
+            fns: BTreeMap::new(),
+            rodata: Vec::new(),
+        };
+        let tests = vec!["only_test".to_string()];
+        let bound = compute_transcript_bound(&program, &tests);
+        // "test " (5) + "only_test" (9) + ": " (2) = 16, plus
+        // max(3, 7+0+20+1=28) = 28, so 44 for the one test line, plus the
+        // summary's own exact 2*20+9+8=57.
+        assert_eq!(bound.worst_case_bytes, 44 + 57);
+    }
+
+    #[test]
+    fn check_transcript_bound_accepts_an_ordinary_small_program() {
+        let program = program_with_rodata(b"short message");
+        let tests: Vec<String> = (0..10).map(|i| format!("test_{i}")).collect();
+        assert!(check_transcript_bound(&program, &tests).is_ok());
+    }
+
+    #[test]
+    fn check_transcript_bound_rejects_too_many_lines() {
+        let program = program_with_rodata(b"x");
+        let tests: Vec<String> = (0..(console::QUEUE_SIZE as usize))
+            .map(|i| format!("t{i}"))
+            .collect();
+        // QUEUE_SIZE tests + 1 summary line = QUEUE_SIZE + 1 lines: over.
+        let err = check_transcript_bound(&program, &tests).unwrap_err();
+        assert!(
+            err.message.contains("exceeds the machine's console bound"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn check_transcript_bound_rejects_a_worst_case_byte_overflow() {
+        // One test whose rodata pool holds a message long enough alone to
+        // blow the byte bound, well under the line-count bound.
+        let huge = vec![b'x'; (console::DATA_SIZE) as usize];
+        let program = program_with_rodata(&huge);
+        let tests = vec!["one_test".to_string()];
+        assert!(check_transcript_bound(&program, &tests).is_err());
+    }
 }
 
 // ===========================================================================
@@ -2004,11 +2350,6 @@ mod harness_jit {
             unsafe { std::ptr::read_unaligned(self.ptr.add(off as usize) as *const u32) }
         }
 
-        fn write_u64(&self, off: u64, v: u64) {
-            assert!((off as usize) + 8 <= self.len);
-            unsafe { std::ptr::write_unaligned(self.ptr.add(off as usize) as *mut u64, v) }
-        }
-
         fn read_bytes(&self, off: u64, n: usize) -> Vec<u8> {
             assert!((off as usize) + n <= self.len);
             unsafe { std::slice::from_raw_parts(self.ptr.add(off as usize), n).to_vec() }
@@ -2101,115 +2442,152 @@ mod harness_jit {
         assert_eq!(s, u64::MAX.to_string());
     }
 
-    // --- __wrela_ring_write -------------------------------------------------
+    // --- __wrela_line_begin / __wrela_ring_append / __wrela_line_commit ----
+    //
+    // The M5-G fix's own three-way split of the old combined
+    // `__wrela_ring_write` (module doc's "one descriptor per LINE"
+    // section): a shared `HostRam` stand-in for info/ring/data (one
+    // combined page region, exactly like the pre-fix tests below used),
+    // with one small helper per routine so a test can freely interleave
+    // `line_begin`/`ring_append`*/`line_commit` calls the same way the
+    // generated entry driver/abort bodies do.
 
-    fn ring_write_call(prior_desc_bump: u64, prior_data_bump: u64, src: &[u8]) -> HostRam {
-        // One combined host page stands in for info/ring/data alike (their
-        // real, separate addresses are just three different fields of
-        // `HarnessAddrs` — using the same page for all three here only
-        // works because none of `console`'s own offsets collide with
-        // `machine_info`'s in this synthetic single-page layout; this test
-        // never claims that's true of the real, separate machine regions).
-        let ram = HostRam::new(4096 * 8);
-        let addrs = HarnessAddrs {
-            info_base: ram.base(),
-            ring_base: ram.base() + 4096,
-            data_base: ram.base() + 4096 * 2,
-            exit_mmio_addr: 0,
-        };
-        ram.write_u64(
-            addrs.info_base - ram.base() + mi::OFF_RING_DESC_BUMP,
-            prior_desc_bump,
-        );
-        ram.write_u64(
-            addrs.info_base - ram.base() + mi::OFF_RING_DATA_BUMP,
-            prior_data_bump,
-        );
+    struct LineHarness {
+        ram: HostRam,
+        addrs: HarnessAddrs,
+    }
 
-        let asm = build_ring_write(&addrs, 0);
-        assert!(asm.relocs.is_empty(), "ring_write must need no Reloc");
-        let page = ExecPage::new(&words_of(&asm));
-
-        // src lives in its own host buffer so `call2` can pass a real
-        // pointer distinct from the fake "guest RAM" page.
-        let src_ram = HostRam::new(src.len().max(1));
-        unsafe {
-            std::ptr::copy_nonoverlapping(src.as_ptr(), src_ram.ptr, src.len());
+    impl LineHarness {
+        fn new() -> LineHarness {
+            // `console::RING_SIZE` is 2 pages now (`QUEUE_SIZE` grew to
+            // 256, `wrela-machine`'s own module doc has the geometry
+            // story) — the ring region needs 2 host pages here too, not
+            // 1, or `console::AVAIL_OFFSET` (4096, since the 256-entry
+            // desc table alone is exactly one page) lands past this
+            // stand-in's own "ring" region and into "data", exactly the
+            // aliasing bug this comment is recording so it is never
+            // reintroduced.
+            let ram = HostRam::new(4096 * 8);
+            let addrs = HarnessAddrs {
+                info_base: ram.base(),
+                ring_base: ram.base() + 4096,
+                data_base: ram.base() + 4096 * 3,
+                exit_mmio_addr: 0,
+            };
+            LineHarness { ram, addrs }
         }
-        page.call2(src_ram.base(), src.len() as u64);
-        ram
+
+        fn line_begin(&self) {
+            let asm = build_line_begin(&self.addrs, 0);
+            assert!(asm.relocs.is_empty(), "line_begin must need no Reloc");
+            ExecPage::new(&words_of(&asm)).call2(0, 0);
+        }
+
+        fn ring_append(&self, src: &[u8]) {
+            let asm = build_ring_append(&self.addrs, 0);
+            assert!(asm.relocs.is_empty(), "ring_append must need no Reloc");
+            let page = ExecPage::new(&words_of(&asm));
+            // src lives in its own host buffer so the call passes a real
+            // pointer distinct from the fake "guest RAM" page.
+            let src_ram = HostRam::new(src.len().max(1));
+            unsafe {
+                std::ptr::copy_nonoverlapping(src.as_ptr(), src_ram.ptr, src.len());
+            }
+            page.call2(src_ram.base(), src.len() as u64);
+        }
+
+        fn line_commit(&self) {
+            let asm = build_line_commit(&self.addrs, 0);
+            assert!(asm.relocs.is_empty(), "line_commit must need no Reloc");
+            ExecPage::new(&words_of(&asm)).call2(0, 0);
+        }
+    }
+
+    // Offsets relative to `ram.base()` — `info_base`/`ring_base`/
+    // `data_base` are `ram.base() + 0`/`+ 4096`/`+ 4096*3` (`LineHarness::new`
+    // above; the ring region is 2 pages, matching `console::RING_SIZE`).
+    const INFO: u64 = 0;
+    const RING: u64 = 4096;
+    const DATA: u64 = 4096 * 3;
+
+    #[test]
+    fn one_line_from_several_appends_publishes_exactly_one_descriptor() {
+        let h = LineHarness::new();
+        h.line_begin();
+        h.ring_append(b"test foo: ");
+        h.ring_append(b"ok");
+        h.ring_append(b"\n");
+        h.line_commit();
+
+        // Exactly one descriptor and one data-bump advance for the whole
+        // line, no matter how many `ring_append` calls composed it — the
+        // fix's own central invariant.
+        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DESC_BUMP), 1);
+        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DATA_BUMP), 13);
+
+        let desc_addr = h.ram.read_u64(RING + console::DESC_TABLE_OFFSET);
+        assert_eq!(desc_addr, h.ram.base() + DATA);
+        assert_eq!(
+            h.ram.read_u32(RING + console::DESC_TABLE_OFFSET + 8),
+            13,
+            "desc.len covers the whole composed line, not one append"
+        );
+        assert_eq!(h.ram.read_u32(RING + console::AVAIL_OFFSET), 1u32 << 16);
+        assert_eq!(h.ram.read_u64(RING + console::DOORBELL_OFFSET), 1);
+        assert_eq!(h.ram.read_bytes(DATA, 13), b"test foo: ok\n".to_vec());
     }
 
     #[test]
-    fn ring_write_first_call_publishes_one_descriptor() {
-        let ram = ring_write_call(0, 0, b"hello");
-        let info = 0u64; // info_base == ram.base() (offset 0)
-        assert_eq!(ram.read_u64(info + mi::OFF_RING_DESC_BUMP), 1);
-        assert_eq!(ram.read_u64(info + mi::OFF_RING_DATA_BUMP), 5);
+    fn a_second_line_gets_the_next_descriptor_and_continues_the_data_cursor() {
+        let h = LineHarness::new();
+        h.line_begin();
+        h.ring_append(b"hello\n");
+        h.line_commit();
 
-        let ring = 4096u64;
-        let data = 4096u64 * 2;
-        // desc[0]: addr, len, flags/next.
-        let desc_addr = ram.read_u64(ring + console::DESC_TABLE_OFFSET);
-        assert_eq!(desc_addr, ram.base() + data);
+        h.line_begin();
+        h.ring_append(b"world");
+        h.ring_append(b"!\n");
+        h.line_commit();
+
+        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DESC_BUMP), 2);
+        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DATA_BUMP), 6 + 7);
+
+        let desc0_addr = h.ram.read_u64(RING + console::DESC_TABLE_OFFSET);
+        let desc1_addr = h
+            .ram
+            .read_u64(RING + console::DESC_TABLE_OFFSET + console::DESC_ENTRY_SIZE);
+        assert_eq!(desc0_addr, h.ram.base() + DATA);
+        assert_eq!(desc1_addr, h.ram.base() + DATA + 6);
         assert_eq!(
-            ram.read_u32(ring + console::DESC_TABLE_OFFSET + 8),
-            5,
-            "desc.len"
+            h.ram
+                .read_u32(RING + console::DESC_TABLE_OFFSET + console::DESC_ENTRY_SIZE + 8),
+            7,
+            "second desc.len"
         );
-        assert_eq!(
-            ram.read_u32(ring + console::DESC_TABLE_OFFSET + 12),
-            0,
-            "desc.flags/next"
-        );
-        // avail.idx == 1 (flags stays 0, packed into the same 32-bit word).
-        assert_eq!(ram.read_u32(ring + console::AVAIL_OFFSET), 1u32 << 16);
-        // doorbell rung.
-        assert_eq!(ram.read_u64(ring + console::DOORBELL_OFFSET), 1);
-        // data bytes copied verbatim.
-        assert_eq!(ram.read_bytes(data, 5), b"hello".to_vec());
+        assert_eq!(h.ram.read_bytes(DATA, 6), b"hello\n".to_vec());
+        assert_eq!(h.ram.read_bytes(DATA + 6, 7), b"world!\n".to_vec());
+        assert_eq!(h.ram.read_u32(RING + console::AVAIL_OFFSET), 2u32 << 16);
     }
 
     #[test]
-    fn ring_write_second_call_uses_the_next_descriptor_and_data_slot() {
-        let ram = ring_write_call(1, 5, b"world!");
-        let info = 0u64;
-        assert_eq!(ram.read_u64(info + mi::OFF_RING_DESC_BUMP), 2);
-        assert_eq!(ram.read_u64(info + mi::OFF_RING_DATA_BUMP), 11);
-        let ring = 4096u64;
-        let data = 4096u64 * 2;
-        let desc1_addr = ram.read_u64(ring + console::DESC_TABLE_OFFSET + console::DESC_ENTRY_SIZE);
-        assert_eq!(desc1_addr, ram.base() + data + 5);
-        assert_eq!(ram.read_bytes(data + 5, 6), b"world!".to_vec());
-    }
-
-    #[test]
-    fn ring_write_at_queue_capacity_is_a_silent_no_op() {
-        let ram = ring_write_call(console::QUEUE_SIZE, 0, b"dropped");
-        let info = 0u64;
-        // Bump counters unchanged — the call returned immediately.
-        assert_eq!(
-            ram.read_u64(info + mi::OFF_RING_DESC_BUMP),
-            console::QUEUE_SIZE
-        );
-        assert_eq!(ram.read_u64(info + mi::OFF_RING_DATA_BUMP), 0);
-    }
-
-    #[test]
-    fn ring_write_clamps_to_remaining_data_capacity() {
-        // Only 3 bytes of room left; a 5-byte write must be truncated to 3.
-        let prior_data = console::DATA_SIZE - 3;
-        let ram = ring_write_call(0, prior_data, b"abcde");
-        let info = 0u64;
-        assert_eq!(
-            ram.read_u64(info + mi::OFF_RING_DATA_BUMP),
-            console::DATA_SIZE
-        );
-        let ring = 4096u64;
-        assert_eq!(
-            ram.read_u32(ring + console::DESC_TABLE_OFFSET + 8),
-            3,
-            "clamped desc.len"
-        );
+    fn many_lines_can_exceed_the_old_16_descriptor_bound() {
+        // The M5-G bug's exact shape, at the routine level: the old
+        // combined `__wrela_ring_write` spent a descriptor per *call*, so
+        // 16 short lines already exhausted `console::QUEUE_SIZE` when it
+        // was 16. Composing each line from a `line_begin`/`ring_append`/
+        // `line_commit` triple, one descriptor per line, comfortably
+        // clears the old bound (proving the fix, not just the new
+        // `QUEUE_SIZE`, is what makes this work: 20 > the *old* 16).
+        let h = LineHarness::new();
+        for i in 0..20u8 {
+            h.line_begin();
+            h.ring_append(&[b'A' + i]);
+            h.line_commit();
+        }
+        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DESC_BUMP), 20);
+        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DATA_BUMP), 20);
+        for i in 0..20u8 {
+            assert_eq!(h.ram.read_bytes(DATA + i as u64, 1), vec![b'A' + i]);
+        }
     }
 }
