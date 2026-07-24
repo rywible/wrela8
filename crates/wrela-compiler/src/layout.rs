@@ -676,6 +676,929 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
     push_line(out, 1, &format!("Entry base={:#x}", layout.entry));
 }
 
+// ===========================================================================
+// plans/M5.md item E: the runtime test image's own harness.
+//
+// `layout_program`/`build_entry_stub`/`build_abort_stub` above are the
+// *ordinary* image's entry/abort — `wrela build`/`--stage=report`'s own
+// path, untouched by this item (the four pre-existing report goldens pin
+// that placeholder entry's exact bytes; CLAUDE.md's "existing goldens must
+// not move" wins over the module doc's older, pre-item-E speculation that
+// item E would replace that body wholesale — it does not, for exactly this
+// reason, recorded here instead of silently contradicting the paragraph
+// above).
+//
+// Item E instead adds a **second**, wholly separate placement function,
+// `layout_test_image`, used only by `wrela test`'s runtime tier (`bin/
+// wrela.rs`): a real driver that calls every `@test(runtime)` fn in
+// declaration order, prints each one's own report line over the console
+// ring (decision 12), and an extended `__wrela_abort`/`__wrela_abort_val`
+// that also print before halting — the exact obligation the pre-existing
+// module doc named, now honestly split into its own code path instead of
+// silently changing the shared one.
+//
+// ## The landing pad (the plan's own required mechanism, precisely)
+//
+// Every runtime test's call goes through one fixed continuation slot,
+// `wrela_machine::machine_info::OFF_TEST_CONTINUATION`: right before the
+// entry driver's `BL` to a test fn, it stores the address of *its own next
+// step* (the point right after that test's own "ok" line and passed-
+// counter increment — i.e. the top of the next test's own block, or the
+// summary block for the last test) into that slot. `__wrela_abort`/
+// `__wrela_abort_val`'s own bodies, extended by this item, print the
+// `FAILED ...` line, increment the fail counter, then `LDR` that slot and
+// `BR` to it directly — never `RET` — resuming the driver exactly at the
+// point the aborted test's own "ok" line would have run, skipping it. This
+// is what makes an abort *inside* an arbitrarily deep call chain (a test
+// calling a helper calling a helper whose checked arithmetic overflows)
+// still land back in the flat, straight-line entry driver: the slot is a
+// fixed absolute guest address, not anything SP-relative, so it survives
+// regardless of how many un-popped frames sit between the abort site and
+// the driver's own stack depth at the point of the original `BL`.
+//
+// ## Why the entry driver needs no runtime loop at all
+//
+// Every `@test(runtime)` fn's name is known at compile time (the whole
+// point of `wrela test`'s runtime tier: one fixed image per build), so the
+// driver is fully unrolled — one straight-line block per test, in
+// declaration order, then one summary block — never a real loop over a
+// test list. This is why the landing pad's own continuation address can be
+// a single fixed slot reused test-to-test: only one test is ever "in
+// flight" at a time (M5 is synchronous, one vCPU), so there is never a
+// need to remember more than the *current* test's own resume point.
+//
+// ## The console ring writer and decimal formatter
+//
+// `__wrela_ring_write(x0=src_ptr, x1=len)` and `__wrela_fmt_dec(x0=value,
+// x1=is_signed) -> x0=len` are two more fixed, hand-assembled subroutines
+// (like `__wrela_abort`/`__wrela_abort_val`), placed in the same combined
+// "entry" section so every internal call between driver/abort/ring-write/
+// fmt-dec resolves as a *local*, directly-computed `BL` (both call site and
+// callee live in the same contiguously-assembled word list — no `Reloc`
+// needed for these; only calls that leave this section, an `@test(runtime)`
+// fn's own code or a literal string in the rodata section, use the
+// existing `Reloc::Call`/`Reloc::Rodata` machinery unchanged). Console ring
+// bookkeeping (`OFF_RING_DATA_BUMP`/`OFF_RING_DESC_BUMP`, a bump
+// allocator — decision 12's "drained once, after halt" rule means nothing
+// is ever reclaimed) and the "one `__wrela_ring_write` call per printed
+// report line, capped at `console::QUEUE_SIZE` (16) lines per boot" bound
+// are documented in full at each fn's own doc comment below.
+//
+// **Disclosed simplification of the split-ring contract**: this producer
+// never reorders or skips a descriptor index, so `__wrela_ring_write` never
+// populates `avail.ring[]` at all — the VMM's own console model (item E,
+// `wrela-vmm`) reads descriptors `0..avail.idx` directly by index, which is
+// exactly what a real virtio consumer would get by walking `avail.ring[]`
+// *because* this producer's own `avail.ring[i]` would always equal `i`.
+// The `used` ring is never populated or read either (M5 has no completion
+// tracking to negotiate: the guest never waits on it, and the transcript is
+// read only after the guest halts, decision 12).
+//
+// **Disclosed simplification of the output cap**: `__wrela_ring_write`
+// clamps an over-long write to whatever room remains in `console::
+// DATA_SIZE` (silently truncating the tail) and, if all `console::
+// QUEUE_SIZE` descriptor slots are already spent, is a silent no-op —
+// unlike the plan's own suggested "FAILED (output cap exceeded)" marker
+// line, which would need `__wrela_ring_write` itself to still have ring
+// capacity to print *that* marker, a circularity this module resolves by
+// simply not attempting the marker. Undetected today by any golden (no
+// `@test(runtime)` here prints anywhere near 16 KiB or 16 lines); recorded
+// here as an honest, disclosed M5 bound rather than silently assumed away.
+
+use crate::encode::Cond;
+use wrela_machine::machine_info as mi;
+
+/// Every absolute guest address the harness subroutines below bake in via
+/// `Asm::load_imm` — bundled so the exact same generator functions can be
+/// re-run in a unit test against a host-mmap'd stand-in region instead of
+/// the real (unmapped-in-a-test-process) machine addresses, rather than
+/// hand-verifying the encoded bytes by eye (this module's own oracle for
+/// the hand-assembled routines below: real execution on this machine's own
+/// aarch64 CPU, `#[cfg(test)] mod harness_jit`, below).
+#[derive(Debug, Clone, Copy)]
+struct HarnessAddrs {
+    /// `machine_info::` field base — production: `machine_layout::MACHINE_INFO_BASE`.
+    info_base: u64,
+    /// `console::RING_BASE` (descriptor table + avail ring + doorbell).
+    ring_base: u64,
+    /// `console::DATA_BASE` (the byte buffers descriptors point into).
+    data_base: u64,
+    /// `mmio::EXIT_MMIO_ADDR` — only the entry driver's own summary/halt
+    /// tail uses this (never `ring_write`/`fmt_dec`/the abort stubs);
+    /// unexercised by the JIT self-tests above (which never call the
+    /// entry driver directly — a real MMIO trap needs a real VMM, item
+    /// E's own boot golden is that routine's oracle).
+    exit_mmio_addr: u64,
+}
+
+impl HarnessAddrs {
+    fn production() -> HarnessAddrs {
+        HarnessAddrs {
+            info_base: machine_layout::MACHINE_INFO_BASE,
+            ring_base: console::RING_BASE,
+            data_base: console::DATA_BASE,
+            exit_mmio_addr: mmio::EXIT_MMIO_ADDR,
+        }
+    }
+}
+
+/// A tiny, self-contained word-list builder for the hand-assembled harness
+/// routines below — distinct from `codegen.rs`'s `FnCtx` (which is built
+/// around mwir's own per-instruction two-pass sizing scheme; this module's
+/// code is never generated from mwir at all, just written directly, one
+/// fixed shape per fn) but the same spirit: `start` is this fragment's own
+/// absolute word index within the eventual combined "entry" section (all
+/// of `__wrela_ring_write`/`__wrela_fmt_dec`/`__wrela_abort`/
+/// `__wrela_abort_val`/the entry driver are assembled into *one* combined
+/// word list, in that fixed order, module doc above), so every local call/
+/// branch between them is a directly computed `BL`/`B`/`B.cond` — no
+/// `Reloc` needed for anything that stays inside this one section. Only a
+/// `Reloc::Call` (an `@test(runtime)` fn, elsewhere in the `code` section)
+/// or `Reloc::Rodata` (a literal string, elsewhere in the `rodata` section)
+/// crosses out of it, and those reuse the exact same `Reloc` variants/
+/// resolution already proven by item D.
+struct Asm {
+    start: usize,
+    words: Vec<u32>,
+    relocs: Vec<Reloc>,
+}
+
+impl Asm {
+    fn new(start: usize) -> Asm {
+        Asm {
+            start,
+            words: Vec::new(),
+            relocs: Vec::new(),
+        }
+    }
+
+    /// This fragment's own current absolute word index (its own `start`
+    /// plus how many words it has emitted so far) — the address every
+    /// local branch/call computes its delta against.
+    fn abs(&self) -> usize {
+        self.start + self.words.len()
+    }
+
+    fn push(&mut self, w: u32) {
+        self.words.push(w);
+    }
+
+    /// Materializes a 64-bit constant into `reg`, always exactly four
+    /// words (`MOVZ` + three unconditional `MOVK`s) — `codegen.rs`'s own
+    /// `load_imm`, duplicated here rather than threaded through as a
+    /// shared helper (this module's fragments are not `FnCtx`s; CLAUDE.md's
+    /// "prefer long obvious files" licenses the small duplication over a
+    /// generic seam neither side otherwise needs).
+    fn load_imm(&mut self, reg: u8, value: u64) {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        self.push(encode::enc_movz(reg, h0, 0, true));
+        self.push(encode::enc_movk(reg, h1, 16, true));
+        self.push(encode::enc_movk(reg, h2, 32, true));
+        self.push(encode::enc_movk(reg, h3, 48, true));
+    }
+
+    /// Emits a placeholder `load_imm reg, #0` (four words), remembering
+    /// where it started so `patch_load_imm` can later overwrite it with
+    /// the real value once known — the entry driver's own forward
+    /// reference for the landing pad's continuation address (module doc
+    /// above): the value (the address of the *next* test's own setup)
+    /// isn't known until after this test's whole pass-path block has been
+    /// emitted.
+    fn load_imm_placeholder(&mut self, reg: u8) -> usize {
+        let m = self.words.len();
+        self.load_imm(reg, 0);
+        m
+    }
+
+    fn patch_load_imm(&mut self, marker: usize, reg: u8, value: u64) {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        self.words[marker] = encode::enc_movz(reg, h0, 0, true);
+        self.words[marker + 1] = encode::enc_movk(reg, h1, 16, true);
+        self.words[marker + 2] = encode::enc_movk(reg, h2, 32, true);
+        self.words[marker + 3] = encode::enc_movk(reg, h3, 48, true);
+    }
+
+    /// A local `BL` to another word already placed at absolute index
+    /// `target_abs` within this same combined section — no `Reloc`
+    /// needed (module doc above): both this call site's own position and
+    /// the callee's own start are already known Rust-side values by the
+    /// time any caller of this fn runs (module doc's own fixed emission
+    /// order: ring_write, fmt_dec, abort_fixed, abort_val, entry).
+    fn bl_to(&mut self, target_abs: usize) {
+        let this = self.abs();
+        let delta = (target_abs as i64 - this as i64) * 4;
+        self.push(encode::enc_bl(delta as i32));
+    }
+
+    /// `B` (not `BL`) to `target_abs` — used by the digit/copy loops'
+    /// own backward branch, where the target word is already known
+    /// (it was emitted earlier in this same fragment).
+    fn b_to(&mut self, target_abs: usize) {
+        let this = self.abs();
+        let delta = (target_abs as i64 - this as i64) * 4;
+        self.push(encode::enc_b(delta as i32));
+    }
+
+    /// A `BL` to an `@test(runtime)` fn — a real `Reloc::Call` (the target
+    /// lives in the `code` section, placed elsewhere, base unknown until
+    /// the whole image is laid out) — `layout_test_image`'s own resolution
+    /// loop patches it exactly like an ordinary compiled call.
+    fn bl_call_key(&mut self, key: &str) {
+        let w = self.abs();
+        self.push(encode::enc_bl(0));
+        self.relocs.push(Reloc::Call {
+            word: w,
+            key: key.to_string(),
+        });
+    }
+
+    /// `reg = &rodata[byte_offset]` (symbolic `ADRP`+`ADD`, `Reloc::Rodata`,
+    /// item D's own resolution unchanged) — `byte_offset` is an *already
+    /// interned* rodata entry's own offset (see `RodataAppend`, below);
+    /// this fn only ever emits code, never interns.
+    fn load_rodata_addr_at(&mut self, reg: u8, byte_offset: usize) {
+        let w = self.abs();
+        self.push(encode::enc_adrp(reg, 0));
+        self.push(encode::enc_add_imm(reg, reg, 0, true));
+        self.relocs.push(Reloc::Rodata {
+            word_adrp: w,
+            byte_offset,
+        });
+    }
+
+    /// A forward conditional branch whose target isn't known yet — mirrors
+    /// `codegen.rs`'s own `emit_skip`/`patch_skip` (`SkipKind`), a small,
+    /// deliberate duplicate for the same reason `load_imm` is (this
+    /// module's fragments are not `FnCtx`s).
+    fn skip_placeholder(&mut self) -> usize {
+        let w = self.words.len();
+        self.push(0);
+        w
+    }
+
+    fn patch_cond(&mut self, marker: usize, cond: Cond) {
+        let target = self.abs();
+        let this = self.start + marker;
+        let delta = (target as i64 - this as i64) * 4;
+        self.words[marker] = encode::enc_b_cond(cond, delta as i32);
+    }
+
+    fn patch_cbz(&mut self, marker: usize, reg: u8) {
+        let target = self.abs();
+        let this = self.start + marker;
+        let delta = (target as i64 - this as i64) * 4;
+        self.words[marker] = encode::enc_cbz(reg, delta as i32, true);
+    }
+
+    fn patch_cbnz(&mut self, marker: usize, reg: u8) {
+        let target = self.abs();
+        let this = self.start + marker;
+        let delta = (target as i64 - this as i64) * 4;
+        self.words[marker] = encode::enc_cbnz(reg, delta as i32, true);
+    }
+}
+
+/// Appends one literal byte string to the growing rodata pool (shared
+/// across the whole test image: `program.rodata`'s own already-interned
+/// entries, plus every harness literal this module adds after them) and
+/// returns its own byte offset within the eventual concatenated rodata
+/// section — the same value `Reloc::Rodata::byte_offset` needs, computed
+/// the identical way `codegen.rs`'s private `RodataPool::byte_offset`
+/// does, just against a plain `(Vec<Vec<u8>>, running-total-cursor)` pair
+/// instead of a `BTreeMap` index (no dedup here: every harness string is
+/// already used at most a handful of times and interned at most once by
+/// its own call site below, so content-addressing would add bookkeeping
+/// this module does not need).
+fn append_rodata(rodata: &mut Vec<Vec<u8>>, cursor: &mut usize, bytes: Vec<u8>) -> usize {
+    let off = *cursor;
+    *cursor += bytes.len();
+    rodata.push(bytes);
+    off
+}
+
+/// `__wrela_ring_write(x0=src_ptr, x1=len)`. Copies `len` bytes from
+/// `src_ptr` into the next free slot of `console::DATA_SIZE` (clamping to
+/// whatever room remains — module doc's own disclosed output-cap
+/// simplification), publishes one descriptor covering them, bumps
+/// `avail.idx`, rings the doorbell, and returns (an ordinary leaf `RET`,
+/// unlike the two `noreturn` abort stubs). A silent no-op (immediate
+/// `RET`) if `console::QUEUE_SIZE` descriptor slots are already spent.
+///
+/// Register use (this fragment owns every register it touches — nothing
+/// survives a `BL` to this fn per this ABI's own "caller-saved
+/// everything" convention, module doc above): `x9`-`x18` scratch
+/// throughout, retracing (documented once, precisely, since there is no
+/// assembler to re-derive this from): `x9`/`x10` = the desc-bump address/
+/// value; `x11`/`x12` = the data-bump address/value; `x13` = remaining
+/// capacity (clobbered into other uses once the clamp decision is made);
+/// `x14` = the destination byte address (preserved across the copy loop
+/// for the descriptor's own `addr` field); `x15`/`x16`/`x17` = the copy
+/// loop's src/dst cursors and remaining-count; `x18` = the copy loop's
+/// one-byte transfer register, then reused as the descriptor-table
+/// address scratch once the loop is done.
+fn build_ring_write(addrs: &HarnessAddrs, start: usize) -> Asm {
+    let mut a = Asm::new(start);
+    let desc_bump_addr = addrs.info_base + mi::OFF_RING_DESC_BUMP;
+    let data_bump_addr = addrs.info_base + mi::OFF_RING_DATA_BUMP;
+
+    a.load_imm(9, desc_bump_addr);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = desc_bump
+    a.push(encode::enc_cmp_imm(10, console::QUEUE_SIZE as u16, true));
+    let skip_have_slot = a.skip_placeholder(); // b.lt .have_slot
+    a.push(encode::enc_ret(30)); // no slot left: silent no-op
+    a.patch_cond(skip_have_slot, Cond::Lt);
+    // .have_slot:
+    a.load_imm(11, data_bump_addr);
+    a.push(encode::enc_ldr_x_imm(12, 11, 0)); // x12 = data_bump
+    a.load_imm(13, console::DATA_SIZE);
+    a.push(encode::enc_sub_reg(13, 13, 12, true)); // x13 = remaining
+    a.push(encode::enc_cmp_reg(1, 13, true)); // len vs remaining
+    let skip_len_ok = a.skip_placeholder(); // b.le .len_ok
+    a.push(encode::enc_mov_reg(1, 13, true)); // clamp: len = remaining
+    a.patch_cond(skip_len_ok, Cond::Le);
+    // .len_ok:
+    a.load_imm(14, addrs.data_base);
+    a.push(encode::enc_add_reg(14, 14, 12, true)); // x14 = dst_addr
+    a.push(encode::enc_mov_reg(15, 0, true)); // x15 = src cursor
+    a.push(encode::enc_mov_reg(16, 14, true)); // x16 = dst cursor
+    a.push(encode::enc_mov_reg(17, 1, true)); // x17 = remaining count
+    let loop_top = a.abs();
+    let skip_loop = a.skip_placeholder(); // cbz x17, .copy_done
+    a.push(encode::enc_ldrb_imm(18, 15, 0));
+    a.push(encode::enc_strb_imm(18, 16, 0));
+    a.push(encode::enc_add_imm(15, 15, 1, true));
+    a.push(encode::enc_add_imm(16, 16, 1, true));
+    a.push(encode::enc_sub_imm(17, 17, 1, true));
+    a.b_to(loop_top);
+    a.patch_cbz(skip_loop, 17);
+    // .copy_done: descriptor entry at ring_base+DESC_TABLE_OFFSET+desc_bump*16
+    a.load_imm(9, console::DESC_ENTRY_SIZE);
+    a.push(encode::enc_mul(9, 10, 9, true)); // x9 = desc_bump * 16
+    a.load_imm(18, addrs.ring_base + console::DESC_TABLE_OFFSET);
+    a.push(encode::enc_add_reg(18, 18, 9, true)); // x18 = desc entry addr
+    a.push(encode::enc_str_x_imm(14, 18, 0)); // desc.addr = dst_addr
+    a.push(encode::enc_str_w_imm(1, 18, 8)); // desc.len = clamped len
+    a.push(encode::enc_mov_reg(0, 31, true)); // x0 = 0 (from xzr)
+    a.push(encode::enc_str_w_imm(0, 18, 12)); // desc.flags/next = 0
+    // avail.idx = desc_bump + 1 (avail.ring[] is never populated — module
+    // doc's own disclosed simplification: this producer never reorders or
+    // skips an index, so the VMM reads descriptors 0..avail.idx directly).
+    a.push(encode::enc_add_imm(10, 10, 1, true)); // x10 = desc_bump + 1
+    a.push(encode::enc_lsl_imm(9, 10, 16, true)); // x9 = idx << 16 (flags=0)
+    a.load_imm(18, addrs.ring_base + console::AVAIL_OFFSET);
+    a.push(encode::enc_str_w_imm(9, 18, 0));
+    // bump counters: data_bump += clamped len (x1); desc_bump = x10 (already
+    // desc_bump+1, computed above for the avail.idx write).
+    a.push(encode::enc_add_reg(12, 12, 1, true)); // x12 = data_bump + len
+    a.load_imm(18, data_bump_addr);
+    a.push(encode::enc_str_x_imm(12, 18, 0));
+    a.load_imm(18, desc_bump_addr);
+    a.push(encode::enc_str_x_imm(10, 18, 0));
+    // ring the doorbell: store nonzero (module doc: a shared-memory
+    // doorbell, never a trap — 06 §5).
+    a.load_imm(18, addrs.ring_base + console::DOORBELL_OFFSET);
+    a.load_imm(9, 1);
+    a.push(encode::enc_str_x_imm(9, 18, 0));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// `__wrela_fmt_dec(x0=value, x1=is_signed) -> x0=len`. Renders `value`'s
+/// decimal digits (as a signed 64-bit interpretation when `is_signed !=
+/// 0`, else unsigned) as ASCII text into the fixed scratch buffer
+/// `machine_info::OFF_TEST_LINE_BUF` and returns the byte length written —
+/// used both by the summary line's pass/fail counts and by
+/// `__wrela_abort_val`'s own runtime-value interpolation (module doc
+/// above). A leading `-` is written first when the value is negative and
+/// `is_signed != 0`; the magnitude (computed via `SUB xzr, x9` — correct
+/// even for `i64::MIN`, whose negation wraps back to the exact unsigned
+/// bit pattern of its own magnitude, `2^63`, module doc's own canonical-
+/// slot reasoning mirrored here) is then converted digit-by-digit,
+/// least-significant first, into the buffer past any sign byte, and
+/// reversed in place once the digit count is known.
+///
+/// Register use (leaf fn, no calls, owns every register it touches):
+/// `x9` = the magnitude accumulator (then the reversal loop's second
+/// swap temp, once no longer needed); `x10` = `is_signed`, then the neg
+/// flag; `x11` = the buffer's fixed base address; `x13` = the write
+/// pointer; `x14` = the digits' own start pointer (past any sign byte),
+/// remembered for the final in-place reversal; `x15` = digit count;
+/// `x16` = the divisor constant `10`, then the reversal loop's `lo`
+/// pointer; `x17` = the loop's quotient, then the reversal loop's `hi`
+/// pointer; `x18` = the loop's remainder/digit byte, then the reversal
+/// loop's first swap temp.
+fn build_fmt_dec(addrs: &HarnessAddrs, start: usize) -> Asm {
+    let mut a = Asm::new(start);
+    let buf_addr = addrs.info_base + mi::OFF_TEST_LINE_BUF;
+
+    a.push(encode::enc_mov_reg(9, 0, true)); // x9 = value
+    a.push(encode::enc_mov_reg(10, 1, true)); // x10 = is_signed
+    a.load_imm(11, buf_addr); // x11 = buffer base
+    a.push(encode::enc_movz(12, 0, 0, true)); // x12 = 0 (neg flag)
+    let skip_negcheck = a.skip_placeholder(); // cbz x10, .notneg
+    a.push(encode::enc_cmp_imm(9, 0, true));
+    let skip_notneg2 = a.skip_placeholder(); // b.ge .notneg
+    a.push(encode::enc_movz(12, 1, 0, true)); // neg flag = 1
+    a.push(encode::enc_sub_reg(9, 31, 9, true)); // x9 = 0 - x9 (magnitude)
+    let notneg = a.abs();
+    a.patch_cbz(skip_negcheck, 10);
+    a.patch_cond(skip_notneg2, Cond::Ge);
+    debug_assert_eq!(notneg, a.abs(), "no code between the two forward targets");
+
+    a.push(encode::enc_mov_reg(13, 11, true)); // x13 = write pointer
+    let skip_nosign = a.skip_placeholder(); // cbz x12, .nosign
+    a.push(encode::enc_movz(14, 45, 0, true)); // '-'
+    a.push(encode::enc_strb_imm(14, 13, 0));
+    a.push(encode::enc_add_imm(13, 13, 1, true));
+    a.patch_cbz(skip_nosign, 12);
+    // .nosign:
+    a.push(encode::enc_mov_reg(14, 13, true)); // x14 = digits start
+    a.push(encode::enc_movz(15, 0, 0, true)); // x15 = digit count
+    a.load_imm(16, 10); // x16 = divisor
+    let skip_zero = a.skip_placeholder(); // cbnz x9, .loop
+    a.push(encode::enc_movz(17, 48, 0, true)); // '0'
+    a.push(encode::enc_strb_imm(17, 13, 0));
+    a.push(encode::enc_add_imm(13, 13, 1, true));
+    a.push(encode::enc_add_imm(15, 15, 1, true));
+    let skip_digits_done_1 = a.skip_placeholder(); // b .digits_done
+    let loop_top = a.abs();
+    a.patch_cbnz(skip_zero, 9);
+    let skip_loop_end = a.skip_placeholder(); // cbz x9, .digits_done
+    a.push(encode::enc_udiv(17, 9, 16, true)); // x17 = x9 / 10
+    a.push(encode::enc_msub(18, 17, 16, 9, true)); // x18 = x9 - x17*10
+    a.push(encode::enc_add_imm(18, 18, 48, true)); // ascii digit
+    a.push(encode::enc_strb_imm(18, 13, 0));
+    a.push(encode::enc_add_imm(13, 13, 1, true));
+    a.push(encode::enc_add_imm(15, 15, 1, true));
+    a.push(encode::enc_mov_reg(9, 17, true)); // x9 = quotient
+    a.b_to(loop_top);
+    let digits_done = a.abs();
+    a.patch_cbz(skip_loop_end, 9);
+    // Both "digit count is zero" and "loop exhausted" paths land here.
+    let this = a.start + skip_digits_done_1;
+    let delta = (digits_done as i64 - this as i64) * 4;
+    a.words[skip_digits_done_1] = encode::enc_b(delta as i32);
+    // .digits_done: reverse [x14 .. x14+x15) in place.
+    a.push(encode::enc_mov_reg(16, 14, true)); // x16 = lo
+    a.push(encode::enc_add_reg(17, 14, 15, true)); // x17 = hi = x14+x15
+    a.push(encode::enc_sub_imm(17, 17, 1, true));
+    let rev_top = a.abs();
+    a.push(encode::enc_cmp_reg(16, 17, true));
+    let skip_rev_done = a.skip_placeholder(); // b.ge .rev_done
+    a.push(encode::enc_ldrb_imm(18, 16, 0));
+    a.push(encode::enc_ldrb_imm(9, 17, 0));
+    a.push(encode::enc_strb_imm(9, 16, 0));
+    a.push(encode::enc_strb_imm(18, 17, 0));
+    a.push(encode::enc_add_imm(16, 16, 1, true));
+    a.push(encode::enc_sub_imm(17, 17, 1, true));
+    a.b_to(rev_top);
+    a.patch_cond(skip_rev_done, Cond::Ge);
+    // .rev_done: len = write_ptr(x13) - base(x11).
+    a.push(encode::enc_sub_reg(0, 13, 11, true));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// The shared tail every abort body ends in: increment
+/// `machine_info::OFF_TEST_FAILED` and long-jump to the landing pad's own
+/// continuation address (module doc's own "landing pad" section) — never
+/// `RET`. Clobbers `x9`/`x10`.
+fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
+    a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    a.push(encode::enc_add_imm(10, 10, 1, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+    a.load_imm(9, addrs.info_base + mi::OFF_TEST_CONTINUATION);
+    a.push(encode::enc_ldr_x_imm(9, 9, 0));
+    a.push(encode::enc_br(9));
+}
+
+/// `__wrela_abort(x0=msg_ptr, x1=msg_len) -> noreturn` — the test-image
+/// variant (module doc's "Item E instead adds a second ... `__wrela_abort`"
+/// paragraph): prints `FAILED ` (shared literal) then the caller's own
+/// fixed message, then a newline, over the console ring, then runs the
+/// landing pad's own tail (above). `msg_ptr`/`msg_len` are stashed on the
+/// stack across the two `__wrela_ring_write` calls that need it (`x0`-`x18`
+/// are all caller-saved under this ABI, module doc above — nothing survives
+/// a `BL` on its own).
+fn build_abort_fixed(
+    addrs: &HarnessAddrs,
+    start: usize,
+    ring_write_start: usize,
+    failed_word_off: usize,
+) -> Asm {
+    let mut a = Asm::new(start);
+    a.push(encode::enc_sub_imm(31, 31, 16, true)); // sub sp, sp, #16
+    a.push(encode::enc_str_x_imm(0, 31, 0));
+    a.push(encode::enc_str_x_imm(1, 31, 8));
+
+    a.load_rodata_addr_at(0, failed_word_off);
+    a.load_imm(1, 7);
+    a.bl_to(ring_write_start);
+
+    a.push(encode::enc_ldr_x_imm(0, 31, 0));
+    a.push(encode::enc_ldr_x_imm(1, 31, 8));
+    a.bl_to(ring_write_start);
+
+    a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
+    push_abort_tail(&mut a, addrs);
+    a
+}
+
+/// `__wrela_abort_val(x0=prefix_ptr, x1=prefix_len, x2=value,
+/// x3=value_signed, x4=suffix_ptr, x5=suffix_len) -> noreturn` — the
+/// test-image variant: prints `FAILED `, the prefix, `value` rendered as
+/// decimal (via `__wrela_fmt_dec`), the suffix, then a newline, then the
+/// landing-pad tail. All six incoming args are stashed on the stack up
+/// front (48 bytes) and reloaded around each of the four
+/// `__wrela_ring_write`/one `__wrela_fmt_dec` calls that clobber them.
+fn build_abort_val(
+    addrs: &HarnessAddrs,
+    start: usize,
+    ring_write_start: usize,
+    fmt_dec_start: usize,
+    failed_word_off: usize,
+) -> Asm {
+    let mut a = Asm::new(start);
+    a.push(encode::enc_sub_imm(31, 31, 48, true));
+    for (i, reg) in [0u8, 1, 2, 3, 4, 5].into_iter().enumerate() {
+        a.push(encode::enc_str_x_imm(reg, 31, (i * 8) as u16));
+    }
+
+    a.load_rodata_addr_at(0, failed_word_off);
+    a.load_imm(1, 7);
+    a.bl_to(ring_write_start);
+
+    a.push(encode::enc_ldr_x_imm(0, 31, 0));
+    a.push(encode::enc_ldr_x_imm(1, 31, 8));
+    a.bl_to(ring_write_start); // prefix
+
+    a.push(encode::enc_ldr_x_imm(0, 31, 16));
+    a.push(encode::enc_ldr_x_imm(1, 31, 24));
+    a.bl_to(fmt_dec_start); // x0 = len, written into OFF_TEST_LINE_BUF
+    a.push(encode::enc_mov_reg(1, 0, true));
+    a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
+    a.bl_to(ring_write_start);
+
+    a.push(encode::enc_ldr_x_imm(0, 31, 32));
+    a.push(encode::enc_ldr_x_imm(1, 31, 40));
+    a.bl_to(ring_write_start); // suffix
+
+    a.push(encode::enc_add_imm(31, 31, 48, true));
+    push_abort_tail(&mut a, addrs);
+    a
+}
+
+/// The runtime test image's own entry driver (module doc's "Why the entry
+/// driver needs no runtime loop at all"): installs core 0's stack pointer,
+/// zeroes every harness counter, then one straight-line block per
+/// `@test(runtime)` fn in `runtime_tests`' own order — print `test <name>:
+/// `, arm the landing pad's own continuation slot, `BL` the test, print
+/// `ok\n` and increment the passed counter on an ordinary return (an abort
+/// anywhere inside that `BL`'s own call tree instead lands directly at the
+/// top of the *next* block, module doc's own landing-pad section) — then
+/// the one merged summary line and the exit-code/halt tail. `x8` is set to
+/// the fixed `OFF_TEST_LINE_BUF` scratch address before every test call as
+/// a defensive measure (this ABI's own aggregate-return convention writes
+/// through whatever `x8` holds; a test fn's return value is otherwise
+/// unread, but this guarantees an aggregate return, if one ever exists, has
+/// somewhere harmless to land rather than an arbitrary stale address).
+fn build_entry_driver(
+    addrs: &HarnessAddrs,
+    start: usize,
+    ring_write_start: usize,
+    fmt_dec_start: usize,
+    runtime_tests: &[String],
+    rodata: &mut Vec<Vec<u8>>,
+    rodata_cursor: &mut usize,
+) -> Asm {
+    let mut a = Asm::new(start);
+    let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+
+    a.load_imm(9, sp_top);
+    a.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+
+    a.push(encode::enc_movz(9, 0, 0, true)); // x9 = 0
+    for off in [
+        mi::OFF_TEST_PASSED,
+        mi::OFF_TEST_FAILED,
+        mi::OFF_RING_DATA_BUMP,
+        mi::OFF_RING_DESC_BUMP,
+    ] {
+        a.load_imm(10, addrs.info_base + off);
+        a.push(encode::enc_str_x_imm(9, 10, 0));
+    }
+
+    let ok_off = append_rodata(rodata, rodata_cursor, b"ok\n".to_vec());
+    let passed_comma_off = append_rodata(rodata, rodata_cursor, b" passed, ".to_vec());
+    let failed_tail_off = append_rodata(rodata, rodata_cursor, b" failed\n".to_vec());
+
+    for name in runtime_tests {
+        let prefix_bytes = format!("test {name}: ").into_bytes();
+        let prefix_len = prefix_bytes.len() as u64;
+        let prefix_off = append_rodata(rodata, rodata_cursor, prefix_bytes);
+
+        a.load_rodata_addr_at(0, prefix_off);
+        a.load_imm(1, prefix_len);
+        a.bl_to(ring_write_start);
+
+        let cont_marker = a.load_imm_placeholder(9);
+        a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
+        a.push(encode::enc_str_x_imm(9, 10, 0));
+
+        a.load_imm(8, addrs.info_base + mi::OFF_TEST_LINE_BUF);
+        a.bl_call_key(name);
+
+        a.load_rodata_addr_at(0, ok_off);
+        a.load_imm(1, 3);
+        a.bl_to(ring_write_start);
+
+        a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
+        a.push(encode::enc_ldr_x_imm(10, 9, 0));
+        a.push(encode::enc_add_imm(10, 10, 1, true));
+        a.push(encode::enc_str_x_imm(10, 9, 0));
+
+        let cont_target = a.abs() as u64;
+        a.patch_load_imm(cont_marker, 9, cont_target);
+    }
+
+    // Summary line: "<passed> passed, <failed> failed\n".
+    a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
+    a.push(encode::enc_ldr_x_imm(0, 9, 0));
+    a.push(encode::enc_movz(1, 0, 0, true));
+    a.bl_to(fmt_dec_start);
+    a.push(encode::enc_mov_reg(1, 0, true));
+    a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
+    a.bl_to(ring_write_start);
+
+    a.load_rodata_addr_at(0, passed_comma_off);
+    a.load_imm(1, 9);
+    a.bl_to(ring_write_start);
+
+    a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
+    a.push(encode::enc_ldr_x_imm(0, 9, 0));
+    a.push(encode::enc_movz(1, 0, 0, true));
+    a.bl_to(fmt_dec_start);
+    a.push(encode::enc_mov_reg(1, 0, true));
+    a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
+    a.bl_to(ring_write_start);
+
+    a.load_rodata_addr_at(0, failed_tail_off);
+    a.load_imm(1, 8);
+    a.bl_to(ring_write_start);
+
+    // Exit code: 0 if failed==0, else 1 — stored plainly then via the
+    // trapping MMIO store (the same two-writes-one-trap shape
+    // `push_halt` uses for the ordinary image, decision E's own protocol).
+    a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
+    a.push(encode::enc_ldr_x_imm(9, 9, 0));
+    a.push(encode::enc_cmp_imm(9, 0, true));
+    a.push(encode::enc_cset(10, Cond::Ne, true));
+    a.load_imm(11, addrs.info_base + mi::OFF_EXIT_CODE);
+    a.push(encode::enc_str_x_imm(10, 11, 0));
+    a.load_imm(12, addrs.exit_mmio_addr);
+    a.push(encode::enc_str_x_imm(10, 12, 0));
+    a.push(encode::enc_brk(0));
+    a
+}
+
+/// Places a codegen'd test-image program into the machine's fixed
+/// contract, per module doc above: **one** combined "entry" section
+/// (`__wrela_ring_write`, `__wrela_fmt_dec`, `__wrela_abort`,
+/// `__wrela_abort_val`, the entry driver, in that fixed order — the order
+/// every internal local branch/call above assumes), then `code` (every
+/// codegen'd fn, `@test(runtime)` fns included — they are ordinary fns to
+/// `codegen.rs`, called by name like any other), then `rodata`
+/// (`program.rodata`'s own already-interned entries, followed by every
+/// harness literal this fn appends — `append_rodata`, above). Every
+/// `Reloc` — the harness's own `Call`/`Rodata` entries and every ordinary
+/// compiled fn's `Call`/`Rodata`/`AbortFixed`/`AbortVal` — resolves through
+/// the identical `patch_bl`/`patch_adrp_add` this file's item-D half
+/// already proved; `AbortFixed`/`AbortVal` targets are simply this
+/// section's own `abort_fixed_start`/`abort_val_start` words instead of a
+/// separate section, since the test image's `__wrela_abort`/
+/// `__wrela_abort_val` symbols *are* these words.
+///
+/// `Err` for a genuine internal inconsistency (module doc mirrors
+/// `layout_program`'s own doc here): an out-of-range relocation, or a
+/// name in `runtime_tests` `codegen_program` never produced (an internal
+/// invariant `bin/wrela.rs`'s own caller is expected to have already
+/// checked via `TypedProgram::tests`, kept here anyway as a real `Err`
+/// rather than a silent skip).
+pub fn layout_test_image(
+    program: &CodegenProgram,
+    runtime_tests: &[String],
+) -> Result<ImageLayout, LayoutError> {
+    let image_base = machine_layout::IMAGE_BASE;
+    let addrs = HarnessAddrs::production();
+
+    let mut code_words: Vec<u32> = Vec::new();
+    let mut fn_word_base: BTreeMap<String, usize> = BTreeMap::new();
+    for (key, f) in &program.fns {
+        fn_word_base.insert(key.clone(), code_words.len());
+        for (w, _text) in &f.code {
+            code_words.push(*w);
+        }
+    }
+    for name in runtime_tests {
+        if !fn_word_base.contains_key(name) {
+            return Err(LayoutError::new(format!(
+                "internal error: runtime test `{name}` was never codegen'd"
+            )));
+        }
+    }
+
+    let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
+    let mut rodata_cursor: usize = rodata.iter().map(Vec::len).sum();
+
+    // Shared literal used by both abort bodies, interned once, before
+    // either is built (both need its byte offset).
+    let failed_word_off = append_rodata(&mut rodata, &mut rodata_cursor, b"FAILED ".to_vec());
+
+    let ring_write_asm = build_ring_write(&addrs, 0);
+    let ring_write_start = 0usize;
+    let fmt_dec_start = ring_write_start + ring_write_asm.words.len();
+    let fmt_dec_asm = build_fmt_dec(&addrs, fmt_dec_start);
+    let abort_fixed_start = fmt_dec_start + fmt_dec_asm.words.len();
+    let abort_fixed_asm =
+        build_abort_fixed(&addrs, abort_fixed_start, ring_write_start, failed_word_off);
+    let abort_val_start = abort_fixed_start + abort_fixed_asm.words.len();
+    let abort_val_asm = build_abort_val(
+        &addrs,
+        abort_val_start,
+        ring_write_start,
+        fmt_dec_start,
+        failed_word_off,
+    );
+    let entry_start = abort_val_start + abort_val_asm.words.len();
+    let entry_asm = build_entry_driver(
+        &addrs,
+        entry_start,
+        ring_write_start,
+        fmt_dec_start,
+        runtime_tests,
+        &mut rodata,
+        &mut rodata_cursor,
+    );
+
+    let mut harness_words: Vec<u32> = Vec::new();
+    let mut harness_relocs: Vec<Reloc> = Vec::new();
+    for asm in [
+        ring_write_asm,
+        fmt_dec_asm,
+        abort_fixed_asm,
+        abort_val_asm,
+        entry_asm,
+    ] {
+        debug_assert_eq!(asm.start, harness_words.len());
+        harness_relocs.extend(asm.relocs);
+        harness_words.extend(asm.words);
+    }
+
+    // --- place sections: entry(harness), code, rodata? -------------------
+    let mut cursor = image_base;
+    let harness_base = cursor;
+    let harness_size = (harness_words.len() * 4) as u64;
+    cursor += harness_size;
+
+    cursor = round_up(cursor, 4);
+    let code_base = cursor;
+    let code_size = (code_words.len() * 4) as u64;
+    cursor += code_size;
+
+    let rodata_bytes: Vec<u8> = rodata.iter().flat_map(|e| e.iter().copied()).collect();
+    let rodata_base = if rodata_bytes.is_empty() {
+        None
+    } else {
+        cursor = round_up(cursor, 8);
+        let base = cursor;
+        cursor += rodata_bytes.len() as u64;
+        Some(base)
+    };
+
+    let mut sections = vec![
+        Section {
+            name: "entry",
+            base: harness_base,
+            size: harness_size,
+        },
+        Section {
+            name: "code",
+            base: code_base,
+            size: code_size,
+        },
+    ];
+    if let Some(rb) = rodata_base {
+        sections.push(Section {
+            name: "rodata",
+            base: rb,
+            size: rodata_bytes.len() as u64,
+        });
+    }
+
+    // --- resolve relocs ----------------------------------------------------
+    for reloc in &harness_relocs {
+        match reloc {
+            Reloc::Call { word, key } => {
+                let target_base = *fn_word_base.get(key).ok_or_else(|| {
+                    LayoutError::new(format!(
+                        "internal error: harness call target `{key}` was never codegen'd"
+                    ))
+                })?;
+                let this_addr = harness_base + (*word as u64) * 4;
+                let target_addr = code_base + (target_base as u64) * 4;
+                patch_bl(&mut harness_words, *word, this_addr, target_addr)?;
+            }
+            Reloc::Rodata {
+                word_adrp,
+                byte_offset,
+            } => {
+                let rb = rodata_base.ok_or_else(|| {
+                    LayoutError::new(
+                        "internal error: a harness Reloc::Rodata exists but the rodata section is empty",
+                    )
+                })?;
+                let this_addr = harness_base + (*word_adrp as u64) * 4;
+                let target_addr = rb + *byte_offset as u64;
+                patch_adrp_add(&mut harness_words, *word_adrp, this_addr, target_addr)?;
+            }
+            Reloc::AbortFixed { .. } | Reloc::AbortVal { .. } => {
+                return Err(LayoutError::new(
+                    "internal error: the harness section itself must never emit an AbortFixed/AbortVal reloc",
+                ));
+            }
+        }
+    }
+    for (key, f) in &program.fns {
+        let base = fn_word_base[key];
+        for reloc in &f.relocs {
+            match reloc {
+                Reloc::Call { word, key: target } => {
+                    let target_base = *fn_word_base.get(target).ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: call target `{target}` was never codegen'd"
+                        ))
+                    })?;
+                    let this_addr = code_base + ((base + word) * 4) as u64;
+                    let target_addr = code_base + (target_base * 4) as u64;
+                    patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
+                }
+                Reloc::Rodata {
+                    word_adrp,
+                    byte_offset,
+                } => {
+                    let rb = rodata_base.ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a Reloc::Rodata exists but the rodata section is empty",
+                        )
+                    })?;
+                    let this_addr = code_base + ((base + word_adrp) * 4) as u64;
+                    let target_addr = rb + *byte_offset as u64;
+                    patch_adrp_add(&mut code_words, base + word_adrp, this_addr, target_addr)?;
+                }
+                Reloc::AbortFixed { word } => {
+                    let this_addr = code_base + ((base + word) * 4) as u64;
+                    let target_addr = harness_base + (abort_fixed_start as u64) * 4;
+                    patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
+                }
+                Reloc::AbortVal { word } => {
+                    let this_addr = code_base + ((base + word) * 4) as u64;
+                    let target_addr = harness_base + (abort_val_start as u64) * 4;
+                    patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
+                }
+            }
+        }
+    }
+
+    // --- serialize -----------------------------------------------------
+    let mut blob = Vec::new();
+    for w in &harness_words {
+        blob.extend_from_slice(&w.to_le_bytes());
+    }
+    pad_to(&mut blob, image_base, code_base);
+    for w in &code_words {
+        blob.extend_from_slice(&w.to_le_bytes());
+    }
+    if let Some(rb) = rodata_base {
+        pad_to(&mut blob, image_base, rb);
+        blob.extend_from_slice(&rodata_bytes);
+    }
+
+    verify_section_sizes(&sections, image_base, blob.len() as u64)?;
+
+    Ok(ImageLayout {
+        blob,
+        entry: harness_base + (entry_start as u64) * 4,
+        sections,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -890,5 +1813,371 @@ mod tests {
         let a = layout_program(&program).unwrap();
         let b = layout_program(&program).unwrap();
         assert_eq!(a, b);
+    }
+}
+
+// ===========================================================================
+// Item E's own oracle for the hand-assembled harness routines above: real
+// execution, on this machine's own aarch64 CPU (every development/check
+// host this project targets is either Apple Silicon or aarch64 Linux —
+// CLAUDE.md's own machine — so this is never a cross-architecture
+// emulation trick). No assembler exists to cross-check these bytes
+// against (decision 5), so instead of hand-verifying each encoding by eye
+// the way `encode.rs`'s own unit tests do for single instructions, this
+// writes the generated words into an executable page and calls them as
+// an ordinary `extern "C" fn` — the *behavior* is the oracle, exactly the
+// same principle decision 5 already states for the VMM/`diff-eval` at the
+// whole-image level, applied here one level down, to routines that touch
+// no machine-specific absolute address at all (`fmt_dec`) or that touch
+// only a host-mmap'd stand-in region (`ring_write`, via `HarnessAddrs`'s
+// own test-vs-production split, module doc above) — never the real,
+// unmapped-in-a-test-process `wrela_machine` constants.
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+mod harness_jit {
+    use super::*;
+    use std::ffi::c_void;
+
+    unsafe extern "C" {
+        fn mmap(
+            addr: *mut c_void,
+            len: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            offset: i64,
+        ) -> *mut c_void;
+        fn munmap(addr: *mut c_void, len: usize) -> i32;
+        fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
+    }
+
+    const PROT_READ: i32 = 1;
+    const PROT_WRITE: i32 = 2;
+    const PROT_EXEC: i32 = 4;
+    const MAP_PRIVATE: i32 = 0x0002;
+    const MAP_ANON: i32 = 0x1000;
+
+    /// A host page (or run of pages) holding real, callable machine code —
+    /// written RW, then flipped to R-X before it is ever called (two
+    /// separate `mmap`/`mprotect` steps, never simultaneously W+X, so this
+    /// needs no `MAP_JIT`/hardened-runtime entitlement on macOS).
+    struct ExecPage {
+        ptr: *mut u8,
+        len: usize,
+    }
+
+    impl ExecPage {
+        fn new(words: &[u32]) -> ExecPage {
+            let want = words.len() * 4;
+            let len = want.div_ceil(4096) * 4096;
+            unsafe {
+                let p = mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANON,
+                    -1,
+                    0,
+                );
+                assert!(!p.is_null() && (p as isize) != -1, "mmap failed");
+                let bytes = p as *mut u8;
+                for (i, w) in words.iter().enumerate() {
+                    std::ptr::write_unaligned(bytes.add(i * 4) as *mut u32, *w);
+                }
+                let r = mprotect(p, len, PROT_READ | PROT_EXEC);
+                assert_eq!(r, 0, "mprotect(R-X) failed");
+                ExecPage { ptr: bytes, len }
+            }
+        }
+
+        /// Calls this page as `extern "C" fn(u64, u64) -> u64` — exactly
+        /// the shape every harness routine below has (two integer args,
+        /// one integer return, AAPCS64's own leaf-call convention, which
+        /// is also this internal ABI's convention for these fns, module
+        /// doc above): the host CPU's own C calling convention puts the
+        /// arguments in `x0`/`x1` and reads the result from `x0`, so an
+        /// ordinary Rust `extern "C"` call through a function pointer
+        /// genuinely exercises the exact same register-level contract the
+        /// generated code was written against.
+        fn call2(&self, a0: u64, a1: u64) -> u64 {
+            let f: extern "C" fn(u64, u64) -> u64 = unsafe { std::mem::transmute(self.ptr) };
+            f(a0, a1)
+        }
+    }
+
+    impl Drop for ExecPage {
+        fn drop(&mut self) {
+            unsafe {
+                munmap(self.ptr as *mut c_void, self.len);
+            }
+        }
+    }
+
+    /// A host-mmap'd stand-in for one page of "guest RAM" a harness
+    /// routine reads/writes via absolute addresses baked in at code-gen
+    /// time (`HarnessAddrs`) — real memory a test can inspect afterward,
+    /// standing in for `console::RING_BASE`/`DATA_BASE`/
+    /// `machine_layout::MACHINE_INFO_BASE` without needing those literal,
+    /// unmapped-in-this-process addresses to exist.
+    struct HostRam {
+        ptr: *mut u8,
+        len: usize,
+    }
+
+    impl HostRam {
+        fn new(len: usize) -> HostRam {
+            let len = len.div_ceil(4096) * 4096;
+            unsafe {
+                let p = mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANON,
+                    -1,
+                    0,
+                );
+                assert!(!p.is_null() && (p as isize) != -1, "mmap failed");
+                // Pre-fault every page by writing it once, up front —
+                // exactly what the real VMM does to the whole guest DRAM
+                // region before ever starting the vCPU ("zeroes the
+                // declared reservations", 06-machine.md §3): an untouched
+                // anonymous mapping's pages are backed by the shared,
+                // read-only system zero page until first written, and a
+                // write performed by *JIT'd code running under this same
+                // process* was observed (empirically, chasing down a real
+                // test failure) to not reliably fault such a page in on
+                // this host — pre-touching here removes that difference
+                // between this test harness and the VMM's own always-
+                // zeroed-first memory model, rather than working around a
+                // JIT-only artifact this module's actual production code
+                // path never hits.
+                std::ptr::write_bytes(p as *mut u8, 0, len);
+                HostRam {
+                    ptr: p as *mut u8,
+                    len,
+                }
+            }
+        }
+
+        fn base(&self) -> u64 {
+            self.ptr as u64
+        }
+
+        fn read_u64(&self, off: u64) -> u64 {
+            assert!((off as usize) + 8 <= self.len);
+            unsafe { std::ptr::read_unaligned(self.ptr.add(off as usize) as *const u64) }
+        }
+
+        fn read_u32(&self, off: u64) -> u32 {
+            assert!((off as usize) + 4 <= self.len);
+            unsafe { std::ptr::read_unaligned(self.ptr.add(off as usize) as *const u32) }
+        }
+
+        fn write_u64(&self, off: u64, v: u64) {
+            assert!((off as usize) + 8 <= self.len);
+            unsafe { std::ptr::write_unaligned(self.ptr.add(off as usize) as *mut u64, v) }
+        }
+
+        fn read_bytes(&self, off: u64, n: usize) -> Vec<u8> {
+            assert!((off as usize) + n <= self.len);
+            unsafe { std::slice::from_raw_parts(self.ptr.add(off as usize), n).to_vec() }
+        }
+    }
+
+    impl Drop for HostRam {
+        fn drop(&mut self) {
+            unsafe {
+                munmap(self.ptr as *mut c_void, self.len);
+            }
+        }
+    }
+
+    fn words_of(asm: &Asm) -> Vec<u32> {
+        asm.words.clone()
+    }
+
+    // --- __wrela_fmt_dec ---------------------------------------------------
+    //
+    // No machine address at all beyond the scratch buffer — a plain
+    // `HostRam` page stands in for `machine_info::OFF_TEST_LINE_BUF`
+    // directly (the fn's own `HarnessAddrs::info_base` field), no offset
+    // math needed since `mi::OFF_TEST_LINE_BUF` is folded in by
+    // `build_fmt_dec` itself, exactly as production does it.
+
+    fn fmt_dec_call(value: i64, is_signed: bool) -> (u64, String) {
+        let ram = HostRam::new(4096);
+        // Offset the fake info_base backward so `info_base +
+        // OFF_TEST_LINE_BUF` still lands inside the mmap'd page (a real
+        // guest address would too, by construction — this just avoids
+        // needing a second page).
+        let addrs = HarnessAddrs {
+            info_base: ram.base(),
+            ring_base: ram.base(),
+            data_base: ram.base(),
+            exit_mmio_addr: 0,
+        };
+        let asm = build_fmt_dec(&addrs, 0);
+        assert!(asm.relocs.is_empty(), "fmt_dec must need no Reloc");
+        let page = ExecPage::new(&words_of(&asm));
+        let len = page.call2(value as u64, if is_signed { 1 } else { 0 });
+        let bytes = ram.read_bytes(mi::OFF_TEST_LINE_BUF, len as usize);
+        (len, String::from_utf8(bytes).expect("ascii digits"))
+    }
+
+    #[test]
+    fn fmt_dec_zero() {
+        assert_eq!(fmt_dec_call(0, false), (1, "0".to_string()));
+        assert_eq!(fmt_dec_call(0, true), (1, "0".to_string()));
+    }
+
+    #[test]
+    fn fmt_dec_positive_unsigned() {
+        assert_eq!(fmt_dec_call(1, false), (1, "1".to_string()));
+        assert_eq!(fmt_dec_call(42, false), (2, "42".to_string()));
+        assert_eq!(fmt_dec_call(12345, false), (5, "12345".to_string()));
+    }
+
+    #[test]
+    fn fmt_dec_u64_max() {
+        let (len, s) = fmt_dec_call(u64::MAX as i64, false);
+        assert_eq!(s, u64::MAX.to_string());
+        assert_eq!(len as usize, s.len());
+    }
+
+    #[test]
+    fn fmt_dec_negative_signed() {
+        assert_eq!(fmt_dec_call(-5, true), (2, "-5".to_string()));
+        assert_eq!(fmt_dec_call(-123456, true), (7, "-123456".to_string()));
+    }
+
+    #[test]
+    fn fmt_dec_i64_min_signed() {
+        // The one value whose negation overflows a 64-bit register — the
+        // canonical-slot trick (module doc) must still render the exact
+        // magnitude via unsigned wraparound.
+        let (len, s) = fmt_dec_call(i64::MIN, true);
+        assert_eq!(s, i64::MIN.to_string());
+        assert_eq!(len as usize, s.len());
+    }
+
+    #[test]
+    fn fmt_dec_negative_value_but_unsigned_flag_renders_as_huge_unsigned() {
+        // `is_signed=false` on a bit pattern that looks negative as i64
+        // must render its full *unsigned* magnitude — exactly the
+        // canonical-slot invariant `codegen.rs` documents (an unsigned
+        // register's value is never reinterpreted as signed).
+        let (_len, s) = fmt_dec_call(-1i64, false);
+        assert_eq!(s, u64::MAX.to_string());
+    }
+
+    // --- __wrela_ring_write -------------------------------------------------
+
+    fn ring_write_call(prior_desc_bump: u64, prior_data_bump: u64, src: &[u8]) -> HostRam {
+        // One combined host page stands in for info/ring/data alike (their
+        // real, separate addresses are just three different fields of
+        // `HarnessAddrs` — using the same page for all three here only
+        // works because none of `console`'s own offsets collide with
+        // `machine_info`'s in this synthetic single-page layout; this test
+        // never claims that's true of the real, separate machine regions).
+        let ram = HostRam::new(4096 * 8);
+        let addrs = HarnessAddrs {
+            info_base: ram.base(),
+            ring_base: ram.base() + 4096,
+            data_base: ram.base() + 4096 * 2,
+            exit_mmio_addr: 0,
+        };
+        ram.write_u64(
+            addrs.info_base - ram.base() + mi::OFF_RING_DESC_BUMP,
+            prior_desc_bump,
+        );
+        ram.write_u64(
+            addrs.info_base - ram.base() + mi::OFF_RING_DATA_BUMP,
+            prior_data_bump,
+        );
+
+        let asm = build_ring_write(&addrs, 0);
+        assert!(asm.relocs.is_empty(), "ring_write must need no Reloc");
+        let page = ExecPage::new(&words_of(&asm));
+
+        // src lives in its own host buffer so `call2` can pass a real
+        // pointer distinct from the fake "guest RAM" page.
+        let src_ram = HostRam::new(src.len().max(1));
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), src_ram.ptr, src.len());
+        }
+        page.call2(src_ram.base(), src.len() as u64);
+        ram
+    }
+
+    #[test]
+    fn ring_write_first_call_publishes_one_descriptor() {
+        let ram = ring_write_call(0, 0, b"hello");
+        let info = 0u64; // info_base == ram.base() (offset 0)
+        assert_eq!(ram.read_u64(info + mi::OFF_RING_DESC_BUMP), 1);
+        assert_eq!(ram.read_u64(info + mi::OFF_RING_DATA_BUMP), 5);
+
+        let ring = 4096u64;
+        let data = 4096u64 * 2;
+        // desc[0]: addr, len, flags/next.
+        let desc_addr = ram.read_u64(ring + console::DESC_TABLE_OFFSET);
+        assert_eq!(desc_addr, ram.base() + data);
+        assert_eq!(
+            ram.read_u32(ring + console::DESC_TABLE_OFFSET + 8),
+            5,
+            "desc.len"
+        );
+        assert_eq!(
+            ram.read_u32(ring + console::DESC_TABLE_OFFSET + 12),
+            0,
+            "desc.flags/next"
+        );
+        // avail.idx == 1 (flags stays 0, packed into the same 32-bit word).
+        assert_eq!(ram.read_u32(ring + console::AVAIL_OFFSET), 1u32 << 16);
+        // doorbell rung.
+        assert_eq!(ram.read_u64(ring + console::DOORBELL_OFFSET), 1);
+        // data bytes copied verbatim.
+        assert_eq!(ram.read_bytes(data, 5), b"hello".to_vec());
+    }
+
+    #[test]
+    fn ring_write_second_call_uses_the_next_descriptor_and_data_slot() {
+        let ram = ring_write_call(1, 5, b"world!");
+        let info = 0u64;
+        assert_eq!(ram.read_u64(info + mi::OFF_RING_DESC_BUMP), 2);
+        assert_eq!(ram.read_u64(info + mi::OFF_RING_DATA_BUMP), 11);
+        let ring = 4096u64;
+        let data = 4096u64 * 2;
+        let desc1_addr = ram.read_u64(ring + console::DESC_TABLE_OFFSET + console::DESC_ENTRY_SIZE);
+        assert_eq!(desc1_addr, ram.base() + data + 5);
+        assert_eq!(ram.read_bytes(data + 5, 6), b"world!".to_vec());
+    }
+
+    #[test]
+    fn ring_write_at_queue_capacity_is_a_silent_no_op() {
+        let ram = ring_write_call(console::QUEUE_SIZE, 0, b"dropped");
+        let info = 0u64;
+        // Bump counters unchanged — the call returned immediately.
+        assert_eq!(
+            ram.read_u64(info + mi::OFF_RING_DESC_BUMP),
+            console::QUEUE_SIZE
+        );
+        assert_eq!(ram.read_u64(info + mi::OFF_RING_DATA_BUMP), 0);
+    }
+
+    #[test]
+    fn ring_write_clamps_to_remaining_data_capacity() {
+        // Only 3 bytes of room left; a 5-byte write must be truncated to 3.
+        let prior_data = console::DATA_SIZE - 3;
+        let ram = ring_write_call(0, prior_data, b"abcde");
+        let info = 0u64;
+        assert_eq!(
+            ram.read_u64(info + mi::OFF_RING_DATA_BUMP),
+            console::DATA_SIZE
+        );
+        let ring = 4096u64;
+        assert_eq!(
+            ram.read_u32(ring + console::DESC_TABLE_OFFSET + 8),
+            3,
+            "clamped desc.len"
+        );
     }
 }

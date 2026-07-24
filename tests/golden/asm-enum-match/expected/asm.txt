@@ -118,7 +118,7 @@ Program
     0115: 14000008  b #32
     0116: 90000000  adrp x0, rodata+0x1a
     0117: 91000000  add x0, x0, rodata+0x1a
-    0118: d2800901  movz x1, #0x48
+    0118: d2800b41  movz x1, #0x5a
     0119: f2a00001  movk x1, #0x0, lsl #16
     0120: f2c00001  movk x1, #0x0, lsl #32
     0121: f2e00001  movk x1, #0x0, lsl #48
@@ -129,4 +129,4 @@ Program
     0126: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `*`
-    1: offset=0x1a match: no arm matched (exhaustiveness already proved this cannot happen)
+    1: offset=0x1a assertion failed: match: no arm matched (exhaustiveness already proved this cannot happen)

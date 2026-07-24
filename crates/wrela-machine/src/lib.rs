@@ -134,6 +134,61 @@ pub mod machine_info {
     /// post-mortem) even though the actual "I'm done" signal is the MMIO
     /// trap, not this write.
     pub const OFF_EXIT_CODE: u64 = 0x30;
+
+    /// Offset 0x38 (56): the runtime test harness's own landing-pad
+    /// scratch slot (plans/M5.md item E, `wrela-compiler/src/layout.rs`'s
+    /// `layout_test_image`) — a `u64` guest address the generated entry
+    /// driver stores *right before* calling each `@test(runtime)` fn: the
+    /// address to resume the driver at if that call ever aborts (a
+    /// per-test fixed "continuation" — the next test's own setup step,
+    /// never the aborted call's own `Return`). `__wrela_abort`/
+    /// `__wrela_abort_val`, in the test-image build only, load this
+    /// address and branch to it directly (`BR`, never `RET`) instead of
+    /// unwinding the (arbitrarily deep) aborted call stack — the "landing
+    /// pad" mechanism named in the plan. An ordinary (non-test) image
+    /// never writes this offset at all; only the test-image entry/abort
+    /// bodies reference it.
+    pub const OFF_TEST_CONTINUATION: u64 = 0x38;
+
+    /// Offset 0x40/0x48 (64/72): the runtime harness's own pass/fail
+    /// counters, `u64` each, zeroed by the entry driver at boot and
+    /// incremented by the entry driver (`OFF_TEST_PASSED`, on an ordinary
+    /// return) or by the abort routines (`OFF_TEST_FAILED`, on the
+    /// landing-pad path above) — kept in guest memory, not a register,
+    /// because the landing pad's own `BR` crosses an arbitrary number of
+    /// intervening call frames and nothing about this ABI's `BL`
+    /// preserves a scratch register across that; a fixed memory slot
+    /// survives unconditionally. Read back by the entry driver once, at
+    /// the very end, to render the pinned `<N> passed, <M> failed`
+    /// summary line.
+    pub const OFF_TEST_PASSED: u64 = 0x40;
+    pub const OFF_TEST_FAILED: u64 = 0x48;
+
+    /// Offset 0x50/0x58 (80/88): the runtime harness's own console-ring
+    /// bookkeeping, `u64` each, zeroed at boot — `OFF_RING_DATA_BUMP` is
+    /// the next free byte offset within `console::DATA_SIZE` (a bump
+    /// allocator: M5's console model drains the whole ring once, after
+    /// the guest halts, decision 12, so nothing is ever reclaimed);
+    /// `OFF_RING_DESC_BUMP` is the next free descriptor/avail-ring index
+    /// (`0..console::QUEUE_SIZE`). `__wrela_ring_write` (the test image's
+    /// own harness subroutine) consumes one descriptor per call — the M5
+    /// harness's own documented bound of at most `console::QUEUE_SIZE`
+    /// `__wrela_ring_write` calls (in practice, printed report lines) per
+    /// boot.
+    pub const OFF_RING_DATA_BUMP: u64 = 0x50;
+    pub const OFF_RING_DESC_BUMP: u64 = 0x58;
+
+    /// Offset 0x100 (256), size 256 bytes: a scratch line buffer the
+    /// runtime harness composes a decimal integer's ASCII digits into
+    /// (`__wrela_fmt_dec`, used by the summary line's pass/fail counts and
+    /// by `__wrela_abort_val`'s own runtime-value interpolation) before
+    /// handing the bytes to `__wrela_ring_write` — comfortably larger
+    /// than any digit sequence a 64-bit value ever needs (at most 20
+    /// digits plus a sign). Placed well past every field above, this
+    /// page's own "remainder is unused padding, reserved for later
+    /// fields" convention (module doc, above).
+    pub const OFF_TEST_LINE_BUF: u64 = 0x100;
+    pub const TEST_LINE_BUF_SIZE: u64 = 256;
 }
 
 /// Console: a runtime-owned tx ring, virtio-shaped (plans/M5.md decision
@@ -385,7 +440,16 @@ mod tests {
         );
         assert!(machine_info::OFF_WALL_SEED + 8 <= machine_info::OFF_NEXT_DEADLINE);
         assert!(machine_info::OFF_NEXT_DEADLINE + 8 <= machine_info::OFF_EXIT_CODE);
-        assert!(machine_info::OFF_EXIT_CODE + 8 <= layout::MACHINE_INFO_SIZE);
+        assert!(machine_info::OFF_EXIT_CODE + 8 <= machine_info::OFF_TEST_CONTINUATION);
+        assert!(machine_info::OFF_TEST_CONTINUATION + 8 <= machine_info::OFF_TEST_PASSED);
+        assert!(machine_info::OFF_TEST_PASSED + 8 <= machine_info::OFF_TEST_FAILED);
+        assert!(machine_info::OFF_TEST_FAILED + 8 <= machine_info::OFF_RING_DATA_BUMP);
+        assert!(machine_info::OFF_RING_DATA_BUMP + 8 <= machine_info::OFF_RING_DESC_BUMP);
+        assert!(machine_info::OFF_RING_DESC_BUMP + 8 <= machine_info::OFF_TEST_LINE_BUF);
+        assert!(
+            machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
+                <= layout::MACHINE_INFO_SIZE
+        );
     }
 
     #[test]

@@ -1441,9 +1441,19 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.b_unconditional(f.body.len());
         }
         Inst::AssertFail { message } => {
-            let msg = message
-                .clone()
-                .unwrap_or_else(|| "assertion failed".to_string());
+            // Item E's own exact obligation (module doc, "The abort
+            // contract"): this text must match `interp::exec_stmt`'s own
+            // `TypedStmtKind::Assert` wording byte-for-byte
+            // (`format!("assertion failed{msg}")` where `msg` is `""` or
+            // `": {message}"`) — the comptime and runtime tiers report the
+            // identical failure identically. `lower.rs`'s own
+            // `assert_message_text` already strips the message down to its
+            // raw literal text (no "assertion failed" prefix baked in
+            // there), so this is the one place that prefix belongs.
+            let msg = match message {
+                Some(m) => format!("assertion failed: {m}"),
+                None => "assertion failed".to_string(),
+            };
             ctx.abort_fixed(&msg);
         }
     }
