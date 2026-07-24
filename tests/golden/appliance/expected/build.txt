@@ -1,0 +1,3 @@
+build: name=storage-appliance target=Target.wrela_machine_v1
+build: devices=1 drivers=1 actors=2 pools=1
+build: report written to target/golden-build-tmp/appliance/storage-appliance.report.txt

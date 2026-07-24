@@ -46,3 +46,18 @@ check_golden_median_us = 40000
 # 10x that, rounded up to a clean number — same rationale as
 # full_corpus_median_us/check_golden_median_us above.
 eval_tests_median_us = 120000
+
+[build]
+# `cargo xtask bench build` (plans/M4.md item E): median wall time
+# (microseconds) for one full pass of the whole build pipeline — loader
+# (or the single-file fork) -> sema (`check_typed`/`check_program_typed`)
+# -> `eval::interp::eval_image` -> `eval::image_checks::check_sealed` ->
+# `report::render` — over the M4 example appliance (`tests/golden/appliance`,
+# via `produce_report_text`, no file writes). Measured median on the
+# locking machine, across several runs of 15 timed iterations each:
+# ~1.6-1.8ms (1600-1800us). This threshold is 10x that, rounded up to a
+# clean number — same rationale as the `[compiler]` thresholds above: loose
+# on purpose, so it catches an algorithmic blowup (e.g. an accidental
+# O(n^2) creeping into the loader, sema, or `@image` evaluation) and never
+# a false alarm from ordinary machine noise.
+build_appliance_median_us = 20000

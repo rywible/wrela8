@@ -51,8 +51,8 @@
 //!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
 //!   profile    replay a recorded workload under counters (fails closed today)
-//!   bench      cargo xtask bench compiler|guest; the compiler lane is
-//!              live (plans/M1.md, ROADMAP.md "cleverness budget"): lex +
+//!   bench      cargo xtask bench compiler|build|guest; the compiler lane
+//!              is live (plans/M1.md, ROADMAP.md "cleverness budget"): lex +
 //!              parse, in-process, over every doc/example corpus entry
 //!              plus every tests/golden/*/input.wr (3 warmup + 15 timed
 //!              iterations), reporting min/median/max total wall time and
@@ -68,9 +68,18 @@
 //!              `eval::run_tests` over every test-bearing golden (the
 //!              `check-tests-*` cases with a pinned `test.txt`), same
 //!              3+15 shape, its own locked median (`eval_tests_median_us`).
-//!              Wired into `check`, after roundtrip. `bench guest` and
-//!              bare `bench` still fail closed — the guest lane needs the
-//!              VMM and record/replay, which land at M5.
+//!              plans/M4.md item E adds `bench build`, its own lane in its
+//!              own subcommand rather than a fourth `bench compiler` key:
+//!              the whole build pipeline (loader/single-file fork ->
+//!              sema -> `eval_image` -> graph checks -> report render, no
+//!              file writes — `produce_report_text`, reused from
+//!              `report-determinism`) over the M4 example appliance, same
+//!              3+15 shape, its own locked median (`build_appliance_median_us`
+//!              in `bench/thresholds.toml`'s own `[build]` table). Wired
+//!              into `check`, after roundtrip (`bench compiler` then
+//!              `bench build`). `bench guest` and bare `bench` still fail
+//!              closed — the guest lane needs the VMM and record/replay,
+//!              which land at M5.
 //!
 //! The cleverness budget (ROADMAP.md): optimizations land only with a
 //! profile, a before/after on the same recording, and a lock. `bench
@@ -141,7 +150,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -191,6 +200,7 @@ fn check() -> Result<(), String> {
     fuzz_eval_smoke()?;
     roundtrip()?;
     bench_compiler()?;
+    bench_build_lane()?;
     ledger()?;
     println!("xtask check: ok");
     Ok(())
@@ -471,10 +481,75 @@ fn parse_flag_u64(args: &[String], flag: &str) -> Result<Option<u64>, String> {
     Ok(None)
 }
 
+/// plans/M4.md item E: the four project-shaped golden cases whose own
+/// module files are worth the extra fuzz-seed weight — `appliance`/
+/// `image-project` for the builder-intrinsic/`@image` shapes the
+/// single-file `image-basic`/`image-helper-accept` seeds (already walked
+/// via their own `input.wr`, in `corpus_seed_inputs` below) don't fully
+/// cover on their own, `multi-module-accept`/`import-cycle-accept` for the
+/// loader's own multi-module import machinery. A fixed, named list rather
+/// than a second blanket directory walk: most `tests/golden/*` project
+/// fixtures are `err-import-*`/`err-image-*` cases whose whole point is
+/// one specific rejection, not extra mutation-worthy surface.
+const PROJECT_SEED_CASES: &[&str] = &[
+    "appliance",
+    "image-project",
+    "multi-module-accept",
+    "import-cycle-accept",
+];
+
+/// Every `.wr` file under `dir`, walked recursively (`multi-module-accept`'s
+/// own `src/app/lib/constants.wr` needs this — the other three project
+/// seed cases happen to be flat, but the walk does not assume that),
+/// appended to `out` in whatever order `read_dir` gives — sorted by the
+/// caller, not here, so this stays a pure collector.
+fn collect_wr_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_wr_files(&path, out)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("wr") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// plans/M4.md item E: every `src/*.wr` file (recursively) belonging to
+/// `PROJECT_SEED_CASES`, in deterministic (sorted-by-path, then
+/// sorted-by-case-name) order — each fed to the fuzzer as its own
+/// standalone seed input, one *module* at a time, never assembled back
+/// into a whole closure (the plan's own "do not wire multi-module
+/// closures into the fuzzer itself — that is future work" line). A
+/// mutation of one of these files that carries a `from ... import ...`
+/// line fails closed at `sema::check_typed` exactly like any other
+/// unresolvable import would (an honest, already-covered `SemaErr`
+/// outcome, in the fixed `SEMA_CATEGORIES` set) — not a bug this lane
+/// needs to work around; the real mutation value here is each file's own
+/// `@image`/builder-intrinsic-bearing *shape*.
+fn project_seed_inputs() -> Result<Vec<String>, String> {
+    let golden_dir = root().join("tests/golden");
+    let mut inputs = Vec::new();
+    for case in PROJECT_SEED_CASES {
+        let src_dir = golden_dir.join(case).join("src");
+        let mut files = Vec::new();
+        collect_wr_files(&src_dir, &mut files)?;
+        files.sort();
+        for f in files {
+            inputs.push(
+                std::fs::read_to_string(&f).map_err(|e| format!("read {}: {e}", f.display()))?,
+            );
+        }
+    }
+    Ok(inputs)
+}
+
 /// Every input `xtask corpus` already lexes: doc blocks plus golden
-/// `input.wr` files, in deterministic (sorted) order. This is the corpus
-/// half of the fuzzer's mutation strategy and reuses `extract_doc_blocks`
-/// rather than re-walking the docs.
+/// `input.wr` files, in deterministic (sorted) order — plus, plans/M4.md
+/// item E, every project-shaped seed module `project_seed_inputs` above
+/// collects. This is the corpus half of the fuzzer's mutation strategy
+/// and reuses `extract_doc_blocks` rather than re-walking the docs.
 fn corpus_seed_inputs() -> Result<Vec<String>, String> {
     let (blocks, failures) = extract_doc_blocks()?;
     if let Some(f) = failures.first() {
@@ -491,6 +566,7 @@ fn corpus_seed_inputs() -> Result<Vec<String>, String> {
             );
         }
     }
+    inputs.extend(project_seed_inputs()?);
     if inputs.is_empty() {
         return Err("fuzz: no seed inputs (doc corpus and golden inputs are both empty)".into());
     }
@@ -1551,15 +1627,25 @@ const FUZZ_EVAL_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
 /// One full run of the pipeline the eval fuzzer exercises: lex, then (on
 /// success) parse a whole module, then `sema::check_typed`, then (on a
-/// successful typecheck) `eval::run_tests`. Exactly one of these four
-/// shapes comes back — never a panic, per `check_eval_invariants`'s
-/// `catch_unwind`.
+/// successful typecheck) `eval::run_tests`, then — plans/M4.md item E —
+/// whenever the typechecked module declares exactly one reachable
+/// `@image` fn, the image pipeline too (`run_image_pipeline_once`, below).
+/// Exactly one of these four shapes comes back — never a panic, per
+/// `check_eval_invariants`'s `catch_unwind`.
 enum EvalPipelineOutcome {
     /// A successful typecheck, reduced to `run_tests`'s own report text
     /// (determinism means the *same* input reproduces a byte-identical
     /// report too — including which comptime-legal `@test`s passed,
-    /// failed, or hit their quota).
-    Ok(String),
+    /// failed, or hit their quota), plus — plans/M4.md item E — the image
+    /// pipeline's own outcome text whenever the module has exactly one
+    /// reachable `@image` fn (`None` otherwise: zero or more than one
+    /// `@image` fn is not this extension's concern — decision 6's own
+    /// diagnostic for "more than one" already renders through the
+    /// ordinary `SemaErr`/well-formed-report machinery on a *real*
+    /// multi-`@image` build; a single fuzzed file simply never reaches
+    /// that shape without a second module, which this fuzzer never
+    /// drives).
+    Ok(String, Option<String>),
     LexErr {
         message: String,
         line: u32,
@@ -1578,6 +1664,89 @@ enum EvalPipelineOutcome {
         extra_lines: Vec<String>,
         omit_location: bool,
     },
+}
+
+/// plans/M4.md item E: whenever `program` (the just-typechecked, single
+/// fuzzed module) declares exactly one reachable `@image` fn
+/// (`TypedProgram::image_fn`), runs the identical image pipeline `wrela
+/// build`/`wrela dump --stage=report` do — `eval::interp::eval_image` ->
+/// `eval::image_checks::check_sealed` -> `report::render` — and returns
+/// its outcome as one already fully rendered string: either the rendered
+/// report itself (`"ImageReport v0\n..."`) or a one-line diagnostic in the
+/// exact `error[cat]: message` house style every other stage in this file
+/// already prints (`image_outcome_is_well_formed`, below, checks exactly
+/// this shape). Returns `None` when the module has no `@image` fn at all
+/// — overwhelmingly the common case for both corpus-mutation and
+/// token-soup input, so this stays a rare-cost addition exactly like
+/// `run_tests` itself already is. Runs under the identical quota
+/// discipline every other comptime entry point here already gets
+/// (`eval_image` builds its own fresh `Quota::new()` internally, same as
+/// `run_call`/`eval_test`) and the identical `catch_unwind`/run-twice
+/// coverage `check_eval_invariants` already wraps the whole pipeline in —
+/// no second mechanism, this fn is just one more step inside
+/// `run_eval_pipeline_once`.
+///
+/// There is no real file backing a fuzzed input (`mutate_seed_input`/
+/// `token_soup` only ever produce in-memory bytes), so the one
+/// `report::BuildInput` a report render needs is built from `input`'s own
+/// raw bytes directly (`report::sha256_hex(input.as_bytes())`) rather than
+/// a real file read — a real hash of the real bytes being evaluated, just
+/// not read a second time off disk. `programs` (the map `check_sealed`
+/// needs for cross-module init-arg matching) is built with exactly one
+/// entry, `program` itself, under its own declared module address — this
+/// fuzzer only ever drives a single module, never a whole closure (the
+/// plan's own "do not wire multi-module closures into the fuzzer" line),
+/// so a real cross-module reference inside `program` simply cannot exist
+/// here; `program.clone()` is cheap relative to the rest of this rare
+/// path (`TypedProgram` already derives `Clone`).
+fn run_image_pipeline_once(
+    program: &sema::typed::TypedProgram,
+    module_addr: &str,
+    input: &str,
+) -> Option<String> {
+    let fn_name = program.image_fn.clone()?;
+    let mut programs = BTreeMap::new();
+    programs.insert(module_addr.to_string(), program.clone());
+    let text = match eval::interp::eval_image(program, &fn_name) {
+        Ok(graph) => match eval::image_checks::check_sealed(&graph, program, &programs) {
+            Ok(()) => {
+                let build_input = report::BuildInput {
+                    path: report::address_to_relative_path(module_addr),
+                    digest: report::sha256_hex(input.as_bytes()),
+                };
+                match report::render(&[build_input], &program.enums, &graph) {
+                    Ok(text) => text,
+                    Err(e) => format!("error[build]: {e}\n"),
+                }
+            }
+            Err(e) => render_sema_error_diag(&e),
+        },
+        Err(e) => render_sema_error_diag(&eval::to_sema_error(e)),
+    };
+    Some(text)
+}
+
+/// Renders one `sema::SemaError` as an owned, already-`\n`-terminated
+/// string in the exact one-line `error[cat]: message [at L:C]` house
+/// style `bin/wrela.rs::print_sema_error` prints — this crate's own small
+/// duplicate of that renderer (`produce_report_text`'s own nested
+/// `render_sema_error` is the identical shape, kept local to that
+/// function; this top-level copy is shared by `run_image_pipeline_once`
+/// above, the only other place in this file that needs one).
+fn render_sema_error_diag(e: &sema::SemaError) -> String {
+    let mut s = if e.omit_location {
+        format!("error[{}]: {}\n", e.category, e.message)
+    } else {
+        format!(
+            "error[{}]: {} at {}:{}\n",
+            e.category, e.message, e.line, e.col
+        )
+    };
+    for line in &e.extra_lines {
+        s.push_str(line);
+        s.push('\n');
+    }
+    s
 }
 
 fn run_eval_pipeline_once(input: &str) -> EvalPipelineOutcome {
@@ -1600,7 +1769,9 @@ fn run_eval_pipeline_once(input: &str) -> EvalPipelineOutcome {
             Ok(module) => match sema::check_typed(&module, "<fuzz-eval>") {
                 Ok(program) => {
                     let (report, _any_failed) = eval::run_tests(&program);
-                    EvalPipelineOutcome::Ok(report)
+                    let module_addr = module.path.join(".");
+                    let image_outcome = run_image_pipeline_once(&program, &module_addr, input);
+                    EvalPipelineOutcome::Ok(report, image_outcome)
                 }
                 Err(e) => EvalPipelineOutcome::SemaErr {
                     category: e.category,
@@ -1680,12 +1851,53 @@ fn test_line_well_formed(line: &str) -> bool {
     }
 }
 
+/// plans/M4.md item E's own well-formedness half: `run_image_pipeline_once`'s
+/// returned text is well-formed exactly when it is the versioned report
+/// header (`report::render`'s own `"ImageReport v0"` first line — the rest
+/// is not re-validated line-by-line here, since `report.rs`'s own
+/// `push_line`/`render_value` are already what every report-bearing golden
+/// pins byte-for-byte; this fuzz lane's own job is "never a leaked panic
+/// string", not re-proving the renderer's own shape) or a single
+/// well-formed one-line diagnostic in the fixed `error[cat]: message` house
+/// style, `cat` one of the fixed `SEMA_CATEGORIES` (the identical category
+/// set every `SemaErr` outcome is already checked against above) — a
+/// multi-line diagnostic (the generic-instantiation chain's own
+/// `extra_lines`) is legal too, exactly like an ordinary `SemaErr`, so only
+/// the first line's own shape is checked.
+fn image_outcome_is_well_formed(text: &str) -> Result<(), String> {
+    if text.starts_with("ImageReport v0") {
+        return Ok(());
+    }
+    let Some(first_line) = text.lines().next() else {
+        return Err("eval: image pipeline outcome is empty".to_string());
+    };
+    let Some(rest) = first_line.strip_prefix("error[") else {
+        return Err(format!(
+            "eval: image pipeline outcome is neither a report nor a diagnostic: {first_line:?}"
+        ));
+    };
+    let Some((category, _)) = rest.split_once(']') else {
+        return Err(format!(
+            "eval: image pipeline outcome's diagnostic line is malformed: {first_line:?}"
+        ));
+    };
+    if !SEMA_CATEGORIES.contains(&category) {
+        return Err(format!(
+            "eval: image pipeline outcome produced an unknown diagnostic category `{category}` \
+             (not in the fixed set)"
+        ));
+    }
+    Ok(())
+}
+
 /// Every invariant the eval fuzzer checks, once per iteration, on one
-/// input. Runs the whole lex-then-parse-then-check_typed-then-(run_tests)
-/// pipeline twice under `catch_unwind`, mirroring `check_sema_invariants`'s
-/// shape, plus the well-formedness check (invariant (d)) on a successful
-/// outcome and the fixed-category check (also (d)) on a `SemaErr`
-/// outcome.
+/// input. Runs the whole lex-then-parse-then-check_typed-then-(run_tests,
+/// then — plans/M4.md item E — the image pipeline when exactly one
+/// `@image` fn is declared) pipeline twice under `catch_unwind`, mirroring
+/// `check_sema_invariants`'s shape, plus the well-formedness check
+/// (invariant (d)) on a successful outcome (both `run_tests`'s own report
+/// and, when present, the image pipeline's own outcome) and the
+/// fixed-category check (also (d)) on a `SemaErr` outcome.
 fn check_eval_invariants(input: &str) -> Result<(), String> {
     let first = std::panic::catch_unwind(|| run_eval_pipeline_once(input))
         .map_err(|p| format!("eval panicked: {}", panic_message(&p)))?;
@@ -1699,15 +1911,25 @@ fn check_eval_invariants(input: &str) -> Result<(), String> {
             ));
         }
     }
-    if let EvalPipelineOutcome::Ok(report) = &first {
+    if let EvalPipelineOutcome::Ok(report, image_outcome) = &first {
         report_is_well_formed(report)?;
+        if let Some(text) = image_outcome {
+            image_outcome_is_well_formed(text)?;
+        }
     }
 
     match (&first, &second) {
-        (EvalPipelineOutcome::Ok(r1), EvalPipelineOutcome::Ok(r2)) => {
+        (EvalPipelineOutcome::Ok(r1, image1), EvalPipelineOutcome::Ok(r2, image2)) => {
             if r1 != r2 {
                 return Err(
                     "eval is not deterministic: two runs produced different test reports".into(),
+                );
+            }
+            if image1 != image2 {
+                return Err(
+                    "eval is not deterministic: two runs produced different image pipeline \
+                     outcomes"
+                        .into(),
                 );
             }
             Ok(())
@@ -1888,6 +2110,34 @@ fn golden(update: bool) -> Result<(), String> {
             // into the pinned expectation — failing in any worktree or
             // clone.
             let rel_input = input.strip_prefix(root()).unwrap_or(&input);
+            // plans/M4.md item E: `build.txt`/`build-err.txt` mean "run
+            // `wrela build <input.wr> --out-dir <fixed-repo-relative-dir>`,
+            // compare its stdout" — a third meaning alongside `test.txt`'s,
+            // the golden runner's own "one new case shape" (decision 11).
+            // The out-dir is a fixed, deterministic, repo-relative path
+            // derived from the case's own name (never a random temp name:
+            // its own literal text is what `wrela build`'s stdout prints
+            // back, decision 8's own "print the path exactly as derived
+            // from the argument", so it must be stable across runs to stay
+            // golden-pinnable) — removed and recreated fresh immediately
+            // before every invocation, then removed again after this
+            // expectation's own checks finish, so no build artifact is
+            // ever left behind for git to notice.
+            let case_name = case
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("case")
+                .to_string();
+            let build_out_dir_rel = format!("target/golden-build-tmp/{case_name}");
+            let build_out_dir_abs = root().join(&build_out_dir_rel);
+            if stage == "build" || stage == "build-err" {
+                if build_out_dir_abs.exists() {
+                    std::fs::remove_dir_all(&build_out_dir_abs)
+                        .map_err(|e| format!("remove {}: {e}", build_out_dir_abs.display()))?;
+                }
+                std::fs::create_dir_all(&build_out_dir_abs)
+                    .map_err(|e| format!("create {}: {e}", build_out_dir_abs.display()))?;
+            }
             // `test.txt` means "run `wrela test <input.wr>`, compare its
             // stdout" (plans/M3.md item E) rather than the ordinary
             // `wrela dump --stage=<stage>` every other expectation file
@@ -1906,6 +2156,15 @@ fn golden(update: bool) -> Result<(), String> {
                     .arg(rel_input)
                     .output()
                     .map_err(|e| format!("run wrela: {e}"))?
+            } else if stage == "build" || stage == "build-err" {
+                Command::new(&wrela)
+                    .current_dir(root())
+                    .arg("build")
+                    .arg(rel_input)
+                    .arg("--out-dir")
+                    .arg(&build_out_dir_rel)
+                    .output()
+                    .map_err(|e| format!("run wrela: {e}"))?
             } else {
                 Command::new(&wrela)
                     .current_dir(root())
@@ -1915,12 +2174,29 @@ fn golden(update: bool) -> Result<(), String> {
                     .output()
                     .map_err(|e| format!("run wrela: {e}"))?
             };
-            if stage != "test" && !out.status.success() {
+            // `build-err.txt` requires the opposite of every other
+            // expectation file: `wrela build` exits nonzero exactly when
+            // it printed a diagnostic (decision 11 — unlike `dump`, which
+            // stays exit-0-by-convention), so a *successful* exit here is
+            // itself the failure.
+            if stage == "build-err" {
+                if out.status.success() {
+                    failures.push(format!(
+                        "{} [build-err]: wrela build unexpectedly exited successfully",
+                        case.display()
+                    ));
+                    let _ = std::fs::remove_dir_all(&build_out_dir_abs);
+                    continue;
+                }
+            } else if stage != "test" && !out.status.success() {
                 failures.push(format!(
                     "{} [{stage}]: wrela exited with failure:\n{}",
                     case.display(),
                     String::from_utf8_lossy(&out.stderr)
                 ));
+                if stage == "build" {
+                    let _ = std::fs::remove_dir_all(&build_out_dir_abs);
+                }
                 continue;
             }
             let actual = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1928,6 +2204,9 @@ fn golden(update: bool) -> Result<(), String> {
             if update {
                 std::fs::write(&exp, &actual)
                     .map_err(|e| format!("write {}: {e}", exp.display()))?;
+                if stage == "build" || stage == "build-err" {
+                    let _ = std::fs::remove_dir_all(&build_out_dir_abs);
+                }
                 continue;
             }
             let expected = std::fs::read_to_string(&exp)
@@ -1937,6 +2216,51 @@ fn golden(update: bool) -> Result<(), String> {
                     "{} [{stage}]: output differs from expectation\n--- expected\n{expected}--- actual\n{actual}",
                     case.display()
                 ));
+            }
+            // decision 11: a `build.txt` case additionally proves the
+            // *written* report file — not just `wrela build`'s own stdout
+            // summary — matches the pinned `expected/report.txt`, if the
+            // case carries one (every project-shaped `build.txt` case
+            // does; `err-image-*`'s own `build-err.txt` cases never write
+            // a report at all, so this block never runs for those).
+            if stage == "build" {
+                let report_expected = expected_dir.join("report.txt");
+                if report_expected.is_file() {
+                    let written: Vec<_> = std::fs::read_dir(&build_out_dir_abs)
+                        .map_err(|e| format!("read {}: {e}", build_out_dir_abs.display()))?
+                        .filter_map(Result::ok)
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("txt"))
+                        .filter(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.ends_with(".report.txt"))
+                        })
+                        .collect();
+                    match written.as_slice() {
+                        [one] => {
+                            let written_text = std::fs::read_to_string(one)
+                                .map_err(|e| format!("read {}: {e}", one.display()))?;
+                            let expected_text = std::fs::read_to_string(&report_expected)
+                                .map_err(|e| format!("read {}: {e}", report_expected.display()))?;
+                            if written_text != expected_text {
+                                failures.push(format!(
+                                    "{} [build]: the report file `wrela build` wrote differs from expected/report.txt\n--- expected\n{expected_text}--- actual\n{written_text}",
+                                    case.display()
+                                ));
+                            }
+                        }
+                        other => failures.push(format!(
+                            "{} [build]: expected exactly one `*.report.txt` written to {}, found {}",
+                            case.display(),
+                            build_out_dir_abs.display(),
+                            other.len()
+                        )),
+                    }
+                }
+            }
+            if stage == "build" || stage == "build-err" {
+                let _ = std::fs::remove_dir_all(&build_out_dir_abs);
             }
         }
     }
@@ -2629,7 +2953,7 @@ fn run_eval_bench_workload(entries: &[EvalBenchEntry]) -> Duration {
 /// catch algorithmic blowups, not to track machine noise, so it is set
 /// deliberately (see the file's own comment) rather than recomputed on
 /// every run.
-fn bench_threshold_us(key: &str) -> Result<u128, String> {
+fn bench_threshold_us(section: &str, key: &str) -> Result<u128, String> {
     let path = root().join("bench/thresholds.toml");
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -2637,23 +2961,33 @@ fn bench_threshold_us(key: &str) -> Result<u128, String> {
         .parse()
         .map_err(|e| format!("parse {}: {e}", path.display()))?;
     value
-        .get("compiler")
+        .get(section)
         .and_then(|c| c.get(key))
         .and_then(|v| v.as_integer())
         .map(|v| v as u128)
-        .ok_or_else(|| format!("{}: missing [compiler] {key}", path.display()))
+        .ok_or_else(|| format!("{}: missing [{section}] {key}", path.display()))
 }
 
 fn compiler_bench_threshold_us() -> Result<u128, String> {
-    bench_threshold_us("full_corpus_median_us")
+    bench_threshold_us("compiler", "full_corpus_median_us")
 }
 
 fn check_bench_threshold_us() -> Result<u128, String> {
-    bench_threshold_us("check_golden_median_us")
+    bench_threshold_us("compiler", "check_golden_median_us")
 }
 
 fn eval_bench_threshold_us() -> Result<u128, String> {
-    bench_threshold_us("eval_tests_median_us")
+    bench_threshold_us("compiler", "eval_tests_median_us")
+}
+
+/// plans/M4.md item E: `xtask bench build`'s own locked median, kept in its
+/// own `[build]` table (not `[compiler]`) since this lane times a
+/// different pipeline tail (loader -> sema -> `eval_image` -> graph checks
+/// -> report render) over a single project, not lex/parse/`check`/
+/// `run_tests` over the whole corpus — a distinct measurement deserves its
+/// own section, not a fourth same-named key crowding `[compiler]`.
+fn build_bench_threshold_us() -> Result<u128, String> {
+    bench_threshold_us("build", "build_appliance_median_us")
 }
 
 fn median(sorted: &[Duration]) -> Duration {
@@ -2821,9 +3155,95 @@ fn bench_eval_lane() -> Result<(), String> {
     Ok(())
 }
 
+// --- bench: build lane (plans/M4.md item E) --------------------------------
+//
+// `xtask bench build`: in-process, times the *whole build pipeline* —
+// loader (or the single-file fork) -> `sema::check_program_typed` (or
+// `check_typed`) -> `eval::interp::eval_image` -> `eval::image_checks::
+// check_sealed` -> `report::render` — over the M4 example appliance
+// (`golden/appliance`, the milestone's own flagship project), the same
+// 3-warmup + 15-timed shape every other bench lane already uses. No file
+// writes: this reuses `produce_report_text` verbatim (the same in-process
+// pipeline `report-determinism` already calls twice per case to prove
+// determinism — here it's timed instead, once per iteration), which only
+// ever reads source bytes off disk to hash them, never writes anything —
+// exactly the "loader -> sema -> eval -> checks -> report render, no file
+// writes" the plan asks this lane to measure. A distinct locked median
+// (`build_appliance_median_us`, its own `[build]` table in
+// `bench/thresholds.toml`) rather than folding into any `[compiler]` key,
+// for the same reason the check/eval lanes above keep their own thresholds
+// separate from each other and from the lex+parse lane: one lane's
+// regression must never mask another's.
+
+/// The appliance golden case's own root target
+/// (`tests/golden/appliance/src/image.wr`) — resolved through the same
+/// `golden_case_target` the golden runner and `report-determinism` both
+/// use, rather than a second hardcoded path, so this lane can never point
+/// at a file that has silently stopped existing.
+fn bench_build_target() -> Result<PathBuf, String> {
+    let case = root().join("tests/golden/appliance");
+    golden_case_target(&case)?
+        .ok_or_else(|| "bench build: tests/golden/appliance has no `root`-named target".to_string())
+}
+
+/// One full build-lane workload iteration: `produce_report_text` over the
+/// appliance's root target, discarding the outcome (a rendered report, or
+/// a well-formed diagnostic — either is as valid a timed outcome as the
+/// other, exactly like the compiler bench's check/eval lanes above) —
+/// only wall time is measured.
+fn run_build_bench_workload(target: &Path) -> Duration {
+    let start = Instant::now();
+    let _ = produce_report_text(target);
+    start.elapsed()
+}
+
+fn bench_build_lane() -> Result<(), String> {
+    let target = bench_build_target()?;
+
+    for _ in 0..BENCH_WARMUP_ITERS {
+        run_build_bench_workload(&target);
+    }
+
+    let mut totals = Vec::with_capacity(BENCH_TIMED_ITERS);
+    for _ in 0..BENCH_TIMED_ITERS {
+        totals.push(run_build_bench_workload(&target));
+    }
+    totals.sort();
+
+    let min = totals[0];
+    let max = totals[totals.len() - 1];
+    let med = median(&totals);
+    let median_us = med.as_micros();
+
+    println!(
+        "bench build: {BENCH_WARMUP_ITERS} warmup + {BENCH_TIMED_ITERS} timed iteration(s) over \
+         the example appliance"
+    );
+    println!(
+        "bench build: total: min={}us median={}us max={}us",
+        min.as_micros(),
+        median_us,
+        max.as_micros()
+    );
+
+    let threshold_us = build_bench_threshold_us()?;
+    if median_us > threshold_us {
+        return Err(format!(
+            "bench build: FAIL: measured median {median_us}us exceeds locked threshold \
+             {threshold_us}us (bench/thresholds.toml) — an algorithmic blowup, not machine \
+             noise, is what this lock exists to catch"
+        ));
+    }
+    println!(
+        "bench build: median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
+    );
+    Ok(())
+}
+
 fn bench(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("compiler") => bench_compiler(),
+        Some("build") => bench_build_lane(),
         Some("guest") => fail_closed(
             "bench guest",
             "the guest lane needs the VMM and record/replay and lands at M5; a threshold \
@@ -2831,10 +3251,11 @@ fn bench(args: &[String]) -> Result<(), String> {
         ),
         None => fail_closed(
             "bench",
-            "bare `bench` fails closed; run `bench compiler` (live) or `bench guest` (M5)",
+            "bare `bench` fails closed; run `bench compiler` (live), `bench build` (live), or \
+             `bench guest` (M5)",
         ),
         Some(other) => Err(format!(
-            "bench: unknown lane `{other}` (expected `compiler` or `guest`)"
+            "bench: unknown lane `{other}` (expected `compiler`, `build`, or `guest`)"
         )),
     }
 }

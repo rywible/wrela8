@@ -1,0 +1,2 @@
+error[comptime]: `img.dma_pool(name=Payloads, ...)` is recorded, but DMA pools are not implemented until the hardware milestone: `@layout(dma)` validation does not exist yet (gap `image.graph.dma-pools`)
+  while evaluating `build`
