@@ -1,0 +1,49 @@
+module examples.err_group_start_in_loop
+
+# plans/M6.md item H2 — found by the orchestrator while reproducing the
+# sweep's capacity find, and the reason capacity can be enforced
+# statically at all.
+#
+# A `g.start` inside a loop is ONE static site that runs N times. Every
+# consumer downstream counts static sites: `join_all`'s own array length,
+# the group's admission accounting, and (since H2) the declared capacity
+# check. So this compiled clean, started two children, and then
+# deadlocked in `join_all` waiting on a count of one — a program whose
+# only possible outcome was the runtime deadlock diagnostic.
+#
+# Rejected by name instead, which is the same discipline decision 5
+# already applies to a bare `send`: outside any loop, so each site
+# executes at most once per root turn.
+
+@actor
+pub struct C:
+    n: u64
+
+    pub fn bump(mut self) -> u64:
+        self.n = self.n + 1
+        return self.n
+
+async fn child(c: Actor[C]) -> u64:
+    r = await c.bump()
+    match r:
+        case .Ok(v):
+            return v
+        case .Err(_):
+            return 0
+
+@test(runtime)
+async fn start_in_a_loop(c: Actor[C]):
+    with group(capacity=4) as g:
+        i: u64 = 0
+        while i < 2:
+            g.start(child, c=c)
+            i = i + 1
+        rs = await g.join_all()
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-group-start-in-loop", target=Target.wrela_machine_v1)
+    c = img.actor(C, mailbox=8)
+    img.supervise(children=[c], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

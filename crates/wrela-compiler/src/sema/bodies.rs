@@ -4552,6 +4552,18 @@ pub(crate) fn compute_group_children(
     if starts.is_empty() {
         return Ok(None);
     }
+    if let Some(loop_span) = group_starts_inside_loop(body, gname) {
+        return Err(actor_error(
+            format!(
+                "`{gname}.start` cannot appear inside a loop: a group's child count is the number \
+                 of *static* `g.start` sites (it is what `join_all`'s own array length and the \
+                 group's admission accounting are built from), so one site running twice starts a \
+                 child nothing is waiting for — lift the `g.start` out of the loop (M6 scope, \
+                 plans/M6.md item H2)"
+            ),
+            loop_span,
+        ));
+    }
     let mut result_ty: Option<Type> = None;
     for args in &starts {
         let Some(callee_arg) = args.first() else {
@@ -4586,6 +4598,73 @@ fn scan_group_starts_stmts<'a>(stmts: &'a [Stmt], gname: &str, out: &mut Vec<&'a
     for s in stmts {
         scan_group_starts_stmt(s, gname, out);
     }
+}
+
+/// plans/M6.md item H2: does a `g.start` for `gname` sit inside a loop?
+///
+/// Everything downstream treats the number of *static* `g.start` sites as
+/// the number of child activations — `join_all`'s own array length, the
+/// group arena's admission accounting, and (since H2) the declared
+/// `capacity` check. A `g.start` in a loop breaks that identity: it is one
+/// static site that runs N times, so the program compiled clean, started
+/// two children, and then deadlocked in `join_all` waiting on a count of
+/// one. Rejected by name instead, which is the same discipline decision 5
+/// already applies to a bare `send` ("outside any loop... so each executes
+/// at most once per root turn").
+///
+/// Written as its own walk that delegates to `scan_group_starts_stmts`
+/// once it is inside a loop body, rather than threading a depth counter
+/// through that scanner's fifteen arms: the question is only ever asked
+/// about whole loop bodies, and reusing the existing scanner keeps the two
+/// from disagreeing about what a `g.start` even is.
+fn group_starts_inside_loop(stmts: &[Stmt], gname: &str) -> Option<Span> {
+    fn in_loop_body(body: &[Stmt], gname: &str) -> Option<Span> {
+        let mut found = Vec::new();
+        scan_group_starts_stmts(body, gname, &mut found);
+        // The offending `g.start`'s own first argument carries the only
+        // span this scanner ever sees (`Arg::span`); a zero-argument
+        // `g.start` is already a "needs a callee argument" error one
+        // layer up, so the fallback is unreachable in practice.
+        found
+            .first()
+            .map(|args| args.first().map(|a| a.span).unwrap_or_default())
+    }
+    for s in stmts {
+        let hit = match s {
+            Stmt::While(w) => in_loop_body(&w.body, gname),
+            Stmt::For(f) => in_loop_body(&f.body, gname),
+            Stmt::If(i) => group_starts_inside_loop(&i.then_branch, gname)
+                .or_else(|| {
+                    i.elifs
+                        .iter()
+                        .find_map(|e| group_starts_inside_loop(&e.body, gname))
+                })
+                .or_else(|| {
+                    i.else_branch
+                        .as_ref()
+                        .and_then(|b| group_starts_inside_loop(b, gname))
+                }),
+            Stmt::Match(m) => m
+                .arms
+                .iter()
+                .find_map(|a| group_starts_inside_loop(&a.body, gname)),
+            Stmt::With(w) => group_starts_inside_loop(&w.body, gname),
+            Stmt::Defer(d) => match &d.body {
+                DeferBody::Suite(s) => group_starts_inside_loop(s, gname),
+                DeferBody::Expr(_) => None,
+            },
+            Stmt::ComptimeIf(c) => group_starts_inside_loop(&c.then_branch, gname).or_else(|| {
+                c.else_branch
+                    .as_ref()
+                    .and_then(|b| group_starts_inside_loop(b, gname))
+            }),
+            _ => None,
+        };
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    None
 }
 
 fn scan_group_starts_stmt<'a>(s: &'a Stmt, gname: &str, out: &mut Vec<&'a [Arg]>) {
@@ -4767,15 +4846,18 @@ fn check_with(w: &WithStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedS
             }
         }
     }
+    let mut child_count = 0usize;
     let body = scoped(fctx, |fctx| {
         if let Some(name) = &w.as_name {
             fctx.insert_local(name.clone(), Type::Named("Group".to_string(), vec![]));
             if let Some(children) = compute_group_children(&w.body, name, fctx, mctx)? {
+                child_count = children.1;
                 fctx.group_children.insert(name.clone(), children);
             }
         }
         check_stmts(&w.body, fctx, mctx)
     })?;
+    check_group_capacity(capacity.as_ref(), child_count, w.span)?;
     if let Some(name) = &w.as_name {
         fctx.group_children.remove(name);
     }
@@ -4787,6 +4869,68 @@ fn check_with(w: &WithStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedS
             body,
         },
     })
+}
+
+/// plans/M6.md item H2: a group admits "up to `capacity` child
+/// activations (default zero)" — 02-language.md §9.5, verbatim.
+///
+/// Before this check the declared capacity was inert: it type-checked as
+/// a `Usize` and was stored into the group arena at `OFF_GROUP_CAPACITY`,
+/// which **nothing ever read**, so `capacity=0` (and an omitted capacity,
+/// the documented default) started and completed a child anyway. The
+/// adversarial sweep found it; `boot-group-join` could not, because it
+/// declares `capacity=2` with exactly two children, so enforced and
+/// ignored look identical there.
+///
+/// Enforced statically rather than at admission time, deliberately. The
+/// runtime alternative — refuse the activation and hand back
+/// `NotAdmitted` — needs a `CallError` composition that does not exist at
+/// M6 (item H3 is the same missing piece surfacing at a mailbox), so the
+/// only honest runtime option available today would be an abort. A build
+/// error is both dumber and strictly more useful, and it is exact:
+/// `compute_group_children` rejects a `g.start` in a loop, so the static
+/// site count IS the activation count.
+fn check_group_capacity(
+    capacity: Option<&TypedExpr>,
+    child_count: usize,
+    span: Span,
+) -> Result<(), SemaError> {
+    if child_count == 0 {
+        return Ok(()); // a bare deadline scope: nothing to admit.
+    }
+    let Some(cap_expr) = capacity else {
+        return Err(actor_error(
+            format!(
+                "this `with group` starts {child_count} child activation(s) but declares no \
+                 `capacity=`, and a group's default capacity is zero (02-language.md §9.5) — add \
+                 `capacity={child_count}`"
+            ),
+            span,
+        ));
+    };
+    let TypedExprKind::Int(text) = &cap_expr.kind else {
+        return Err(unimplemented_at(
+            "a `with group` capacity that is not an integer literal is",
+            span,
+        ));
+    };
+    let declared: usize = text.parse().map_err(|_| {
+        type_error(
+            format!("`capacity={text}` is not a valid group capacity"),
+            span,
+        )
+    })?;
+    if child_count > declared {
+        return Err(actor_error(
+            format!(
+                "this `with group` declares `capacity={declared}` but starts {child_count} child \
+                 activation(s) (02-language.md §9.5: a group admits up to `capacity` children) — \
+                 raise the capacity or start fewer children"
+            ),
+            span,
+        ));
+    }
+    Ok(())
 }
 
 /// A group's `deadline=` argument (02-language.md §9.5): `now()` alone,
