@@ -2447,6 +2447,27 @@ impl Parser {
             None
         };
         if let Some(op) = self.assign_op_here() {
+            // The left side of `=`/a compound-assign op must itself be a
+            // place (name, field, index -- same shallow shape `take`/`mut`
+            // operands require above): the precedence chain happily parses
+            // a unary- or binary-wrapped target (`~total = ...`, or
+            // `i + 2 = ...`, which a stray `i +2= 1` typo produces once
+            // `+2` lexes as `+` `2`) with no complaint, and nothing
+            // downstream (sema's `check_assign`) re-derives this --
+            // lower.rs's `lower_place_write` and eval/interp.rs's
+            // `place_mut` both *assume* it and fail with their own
+            // internal-error guard when it does not hold, which is
+            // exactly the fuzzer-found disagreement (`cargo xtask fuzz
+            // lower` seeds 32/33; err-assign-nonplace-unary/-arith pin the
+            // two minimized shapes). Rejecting here, before an
+            // `AssignStmt` with a non-place target can even exist, is
+            // narrower than teaching every later pass to re-check the
+            // same shape.
+            if !is_place_expr(&target) {
+                return Err(self.error_here(
+                    "the left side of an assignment must be a place expression (name, field, index)",
+                ));
+            }
             self.bump();
             let value = self.parse_or()?;
             self.end_of_simple_stmt()?;

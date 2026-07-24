@@ -1,0 +1,4 @@
+module test
+
+fn f(i: u64):
+    i +2= 1

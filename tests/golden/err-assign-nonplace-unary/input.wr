@@ -1,0 +1,4 @@
+module test
+
+fn f(total: u64, a: u64):
+    ~total = a >> 1
