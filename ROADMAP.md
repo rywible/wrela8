@@ -92,6 +92,16 @@ provisions), and the image report as a golden artifact. The virtio example
 "compiles" to a diffable report before any runtime exists. Opens:
 `image.*` clauses.
 
+Settle before goldens pin `with` semantics: should `group` and scoped
+`pool` be one construct? A group already has a bounded region reclaimed
+at its close (04 §3), so a scoped pool is nearly "a group with a memory
+budget and no children" — one scope construct as *the* unit of memory,
+deadline, cancellation, and child work. The thing to check is whether
+pool reset-without-lineage is load-bearing (a reusable DMA arena that
+resets per-request without paying group teardown). A docs decision,
+human-made; recorded here so M4 doesn't pin the two-construct vocabulary
+into goldens by default.
+
 ### M5 — First boot
 Naive A76 backend for synchronous code, minimal runtime, minimal VMM
 (console + clock, hvf first) → a wrela program prints over virtio-console
@@ -110,6 +120,18 @@ is the only delivery mechanism, so determinism is free). Flips:
 `actors.turns.non-reentrant`, `actors.send.statement-requires-proof`,
 `machine.interrupts.checkpoint-injection`.
 
+Design constraint recorded now so the recorder doesn't foreclose it: the
+machine's only scheduling nondeterminism is cross-core admission order
+plus device completion timing, all injected at checkpoints (06 §8) — so
+for a small scenario the schedule space is finite and *enumerable*, and
+a later milestone can systematically explore admission orders and
+completion timings and assert invariants under all of them: model
+checking of the actual image, no bespoke simulator. The dumb version is
+the right version — exhaustive enumeration under a budget, fail closed
+when the space exceeds it; no partial-order reduction without a profile.
+What M6/M8 must preserve: the recorder's schedule representation is an
+enumerable choice sequence, not just a replayable log.
+
 ### M7 — A real device
 virtio-blk model in the VMM + the stdlib driver: capabilities, queues,
 receipts, DMA ownership, reset — chapter 03 end to end on one device.
@@ -123,6 +145,23 @@ recording. Flips: `actors.placement.deterministic`.
 Display + input devices, a dumb scalar tile compositor, golden frame
 digests. SIMD/NEON tuning only after a frame exists to measure. Flips:
 `machine.display.golden-frames`.
+
+### Recorded language intentions (not yet scheduled)
+
+- **Inferred error sets** (stdlib milestone, via doc revision): extend
+  "pub declares, private infers" — the doctrine receiver effects, pool
+  names, generic contracts, and comptime legality already follow — to
+  error types. A private `fn` omits its error type; the compiler infers
+  the exact set from the closed world (it already computes this to erase
+  impossible `CallError` variants, 02 §9.4); `pub` boundaries still
+  demand a declared nominal enum. Lands when `Result`/`from` conversion
+  machinery is real; it is a normative doc change first, human-reviewed.
+- **Deferred until an ingredient exists**: an end-to-end latency
+  assertion (`@latency_assert`) waits for the measured cost model
+  (`compiler.costs.predicted-vs-measured`); graph-level flow policy
+  waits until a concrete image needs a concrete named check — hardcode
+  that check, no policy query language; whole-image snapshot/time-travel
+  is a VMM feature to weigh after M6's recorder exists.
 
 ## The cleverness budget (permanent)
 
