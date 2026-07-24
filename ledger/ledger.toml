@@ -454,6 +454,12 @@ note = "`wrela test <file.wr>` (plans/M3.md item E, decision 9): runs sema (`sem
 # --- M3: comptime if specialization + comptime assert ----------------------
 
 [[clause]]
+id = "values.regions.two-binding-disciplines"
+doc = "04-compiler.md#3"
+status = "gap"
+note = "Groups and pools are one region model with two binding disciplines, deliberately not one construct (04 \u00a73, added 2026-07 with this clause per the house rule, resolving the unification question ROADMAP's M4 note recorded): a pool is nominal and compile-time (`own[P] T` carries the binding through signatures \u2014 the half already partially exercised by values.resource.move-spells-take's own[P] goldens and M2's pool-name plumbing), never in the wait-for graph, with reclaim obligations of its own (DMA reclaim gates on device quiescence, not scope exit; reset touches no concurrency machinery); a group's region is anonymous and inferred, and its close is a join node with cancellation/deadline inheritance. Testable halves land with their milestones: M4's image.graph.pools-bound-once pins pool-name binding (bound exactly once, never a value); M6's group/wait-for clauses pin the group half; this clause flips when both sides exist and a golden demonstrates the asymmetry directly (a pool never appearing in a wait-cycle diagnostic; a group close appearing in one)."
+
+[[clause]]
 id = "comptime.tests.exhaustive"
 doc = "02-language.md#12.2"
 status = "test"

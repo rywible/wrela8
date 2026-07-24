@@ -114,6 +114,22 @@ escape and liveness analysis:
 5. a value's placement cannot depend on a runtime branch — joins take the
    least common enclosing placement.
 
+Groups and pools are one region model with two binding disciplines, and
+they are deliberately not one construct. A group's region is **anonymous
+and inferred**: placement fills it (rule 4 above), its close is a join —
+a node in the wait-for graph, with cancellation and deadline inheritance
+flowing through it — and nothing about it appears in types. A pool is
+**nominal and declared**: source names it, `own[P] T` carries the
+binding through signatures and across actor boundaries at compile time,
+it never participates in the wait-for graph, and its reclaim obligations
+are its own (a DMA pool's reclaim is gated on device quiescence, not on
+scope exit; reset reuses slots without touching any concurrency
+machinery). A scoped pool is a named, typed window over the same region
+machinery a group gets implicitly — not a group with a budget. The two
+constructs encode different promises made at different binding times;
+sharing a surface would either drag pools into the progress analysis or
+hide two semantics behind one keyword.
+
 Frame layout is state-sensitive: values live in mutually exclusive
 suspension states may share storage, and cheap pure values may be recomputed,
 only where completion, cancellation, abandonment, and restart paths are all

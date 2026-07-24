@@ -92,15 +92,15 @@ provisions), and the image report as a golden artifact. The virtio example
 "compiles" to a diffable report before any runtime exists. Opens:
 `image.*` clauses.
 
-Settle before goldens pin `with` semantics: should `group` and scoped
-`pool` be one construct? A group already has a bounded region reclaimed
-at its close (04 §3), so a scoped pool is nearly "a group with a memory
-budget and no children" — one scope construct as *the* unit of memory,
-deadline, cancellation, and child work. The thing to check is whether
-pool reset-without-lineage is load-bearing (a reusable DMA arena that
-resets per-request without paying group teardown). A docs decision,
-human-made; recorded here so M4 doesn't pin the two-construct vocabulary
-into goldens by default.
+Settled (2026-07, human decision): `group` and scoped `pool` stay two
+constructs. They share one region model but differ where it matters —
+pools are nominal and compile-time (`own[P] T` in signatures), groups
+are anonymous and inferred; groups join the wait-for graph at close,
+pools never wait; DMA reclaim is gated on quiescence, not scope exit.
+Unifying the surface would either drag pools into the progress analysis
+or hide two semantics behind one keyword. The relationship is now
+stated normatively in 04 §3; M4's `img.pool` goldens pin the
+two-construct vocabulary deliberately, not by default.
 
 ### M5 — First boot
 Naive A76 backend for synchronous code, minimal runtime, minimal VMM
