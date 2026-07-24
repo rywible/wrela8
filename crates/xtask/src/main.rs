@@ -5,27 +5,48 @@
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
-//!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval] [--iters N]
+//!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower] [--iters N]
 //!              [--seed S]; deterministic in-tree fuzzer (plans/M1.md
-//!              items B/E, plans/M2.md item I, plans/M3.md item F). All
-//!              four targets are live (bare `fuzz` runs `lexer` at the
-//!              deep default budget); each has its own smoke budget wired
-//!              into `check`. `sema` runs lex -> parse -> `sema::check`
-//!              over corpus/golden-input mutations and token-soup, same
-//!              shape as `parser`, plus (on every iteration whose input
-//!              parses, ledger clause sema.check.roundtrip-stable) two
-//!              more invariants: sema roundtrip stability (pretty-print,
-//!              reparse, recheck — the two sema outcomes must agree) and
-//!              item-rotation acceptance invariance (rotating the
-//!              module's top-level items by one must not flip Ok/Err
-//!              either way). `eval` runs lex -> parse ->
-//!              `sema::check_typed` (which already evaluates every const
-//!              initializer and `comptime assert`) -> on success,
+//!              items B/E, plans/M2.md item I, plans/M3.md item F,
+//!              plans/M5.md item G). All five targets are live (bare
+//!              `fuzz` runs `lexer` at the deep default budget); every
+//!              target but `lower` has its own smoke budget wired into
+//!              `check` (`lower`'s own smoke fn exists and runs standalone
+//!              — `fuzz_lower_smoke`'s own doc comment explains exactly why
+//!              it is not yet called from `check()`: it currently
+//!              reproduces a real, pinned, out-of-scope `sema::bodies`
+//!              finding at essentially every seed, well inside any smoke
+//!              budget). `sema` runs lex -> parse -> `sema::check` over
+//!              corpus/golden-input
+//!              mutations and token-soup, same shape as `parser`, plus (on
+//!              every iteration whose input parses, ledger clause
+//!              sema.check.roundtrip-stable) two more invariants: sema
+//!              roundtrip stability (pretty-print, reparse, recheck — the
+//!              two sema outcomes must agree) and item-rotation acceptance
+//!              invariance (rotating the module's top-level items by one
+//!              must not flip Ok/Err either way). `eval` runs lex -> parse
+//!              -> `sema::check_typed` (which already evaluates every
+//!              const initializer and `comptime assert`) -> on success,
 //!              `eval::run_tests` over every comptime-legal `@test`, same
 //!              corpus/token-soup shape again; invariants: never panics,
 //!              deterministic across two runs, and every outcome is a
 //!              well-formed diagnostic or test report (ledger clause
-//!              comptime.eval.no-panics).
+//!              comptime.eval.no-panics). `lower` runs lex -> parse ->
+//!              `sema::check_typed` -> on success, `lower::lower_program`
+//!              -> on success, `codegen::codegen_program`, over the same
+//!              corpus/token-soup shape again (the seed set's own
+//!              `tests/golden/{mwir,asm}-*/boot-hello` input files, already
+//!              collected by `corpus_seed_inputs`, are what actually give
+//!              this lane lowering/codegen-shaped mutation material);
+//!              invariants: never panics anywhere in `lower`/`codegen`,
+//!              deterministic across two runs (the mwir dump text, the
+//!              concatenated codegen'd words, and — whenever the program
+//!              declares an `@test(runtime)` fn — the laid-out test image
+//!              blob, all byte-compared), a lowering/codegen rejection is
+//!              always the fixed `unimplemented` diagnostic category, and
+//!              every successfully codegen'd program passes
+//!              `codegen::validate`'s own structural checks (ledger clause
+//!              compiler.lower.no-panics).
 //!   roundtrip  pretty-print every parseable corpus entry and golden input,
 //!              reparse it, and compare the two AST dumps (spans stripped)
 //!              — the parser's `diff-eval` (plans/M1.md item E). Also runs
@@ -108,6 +129,7 @@ use wrela_compiler::eval;
 use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::lower;
+use wrela_compiler::mwir;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TestKind;
@@ -169,7 +191,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -219,6 +241,18 @@ fn check() -> Result<(), String> {
     fuzz_parser_smoke()?;
     fuzz_sema_smoke()?;
     fuzz_eval_smoke()?;
+    // `fuzz_lower_smoke` is deliberately NOT wired in here yet (unlike every
+    // other lane's own smoke call above) — see that fn's own doc comment:
+    // it currently reproduces a real, pinned, out-of-scope `sema::bodies`
+    // finding (`golden/err-mwir-if-else-scope-leak`) well within any 1000-
+    // iteration budget, at essentially every seed tried. Wiring it in as-is
+    // would either break `check` on a known issue or require picking smoke
+    // seeds specifically to dodge a live, tracked bug — the latter is
+    // exactly the kind of approximation CLAUDE.md's "never fake a pass"
+    // rules out, so this lane stays standalone-only
+    // (`cargo xtask fuzz lower`) until the sema fix lands, mirroring how
+    // `diff-eval`/`profile`/`bench guest` themselves stayed unwired before
+    // their own items landed.
     roundtrip()?;
     bench_compiler()?;
     bench_build_lane()?;
@@ -449,7 +483,7 @@ impl Rng {
 
 fn fuzz(args: &[String]) -> Result<(), String> {
     let (target, rest) = match args.first() {
-        Some(a) if a == "lexer" || a == "parser" || a == "sema" || a == "eval" => {
+        Some(a) if a == "lexer" || a == "parser" || a == "sema" || a == "eval" || a == "lower" => {
             (a.as_str(), &args[1..])
         }
         _ => ("lexer", args),
@@ -475,8 +509,13 @@ fn fuzz(args: &[String]) -> Result<(), String> {
             let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_EVAL_DEEP_SEED);
             fuzz_eval(iters, seed)
         }
+        "lower" => {
+            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_LOWER_DEEP_ITERS);
+            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_LOWER_DEEP_SEED);
+            fuzz_lower(iters, seed)
+        }
         other => Err(format!(
-            "fuzz: unknown target `{other}` (expected `lexer`, `parser`, `sema`, or `eval`)"
+            "fuzz: unknown target `{other}` (expected `lexer`, `parser`, `sema`, `eval`, or `lower`)"
         )),
     }
 }
@@ -2054,6 +2093,569 @@ fn fuzz_eval_smoke() -> Result<(), String> {
     with_silenced_panic_hook(|| {
         for &seed in FUZZ_EVAL_SMOKE_SEEDS {
             run_eval_fuzz(FUZZ_EVAL_SMOKE_ITERS_PER_SEED, seed, &seed_inputs)?;
+        }
+        Ok(())
+    })
+}
+
+// --- fuzz: lower (plans/M5.md item G) ---------------------------------
+//
+// The lowering/codegen fuzz lane: exactly `fuzz eval`'s own two strategies
+// and the same corpus seed inputs (`corpus_seed_inputs`, `mutate_seed_input`,
+// `token_soup`) — that seed set already includes every `tests/golden/*/
+// input.wr`, which since item B/C/E now includes the `mwir-*`/`asm-*`/
+// `boot-hello` golden inputs too (ordinary golden case dirs,
+// `golden_case_dirs` walks them exactly like every other case — confirmed
+// directly, not assumed: `ls tests/golden | grep -E 'mwir-|asm-|boot-hello'`
+// lists all fifteen, each with its own `input.wr` `corpus_seed_inputs`
+// already reads). One more stage beyond `fuzz eval`'s own lex -> parse ->
+// `sema::check_typed`: on a successful typecheck, `lower::lower_program`,
+// then, on success, `codegen::codegen_program` — never `eval::run_tests`
+// or the image pipeline (this lane's whole point is the backend, not the
+// evaluator, which `fuzz eval` already covers).
+//
+// Invariants checked every iteration, under `catch_unwind` (a panic
+// anywhere in `lower`/`codegen` is a finding — this is invariant (a), "no
+// panics anywhere in lower/codegen", detected exactly the way every other
+// lane in this file detects a panic):
+//
+//  (a) never panics;
+//  (b) deterministic: the whole pipeline (lex-parse-check_typed, and, on
+//      Ok, lower+codegen, and, whenever the program declares an
+//      `@test(runtime)` fn, the test-image layout too) is run twice and the
+//      two outcomes are byte-compared — the mwir dump text
+//      (`mwir::dump`), the concatenated codegen'd words (every `CodegenFn`'s
+//      own `(u32, String)` pairs' `u32` half, in `BTreeMap` key order,
+//      *not* the `--stage=asm` dump text a second time — a deliberately
+//      separate, word-level compare so a hypothetical dump-rendering bug
+//      could never mask a real byte-level divergence), and, on a built test
+//      image, the laid-out blob/entry/sections (`layout::layout_test_image`'s
+//      own `ImageLayout`);
+//  (c) a lowering or codegen rejection is always the fixed `unimplemented`
+//      diagnostic category (`bin/wrela.rs`'s own house style prints every
+//      `lower::LowerError`/`codegen::CodegenError` as
+//      `error[unimplemented]: <message>` — neither error type carries a
+//      `category` field at all, unlike `sema::SemaError`, so this lane
+//      checks the one fixed literal is still a member of `SEMA_CATEGORIES`
+//      rather than re-deriving a category from the message text); **except**
+//      a message that starts with `"internal error: "` — both `LowerError`
+//      and `CodegenError` (and `LayoutError`) reserve that exact prefix for
+//      their own "should be unreachable for any `check_typed`-accepted
+//      program" producer-bug guards (`lower.rs`/`codegen.rs`'s own doc
+//      comments on their respective `internal(...)` constructors), so
+//      hitting one is itself an invariant violation, not a legitimate
+//      fail-closed outcome — folded into `LowerFuzzOutcome::Bug` below,
+//      exactly like an unknown `SemaError` category is for `fuzz eval`;
+//  (d) every successfully codegen'd program passes `codegen::validate`'s own
+//      structural checks (that module's own doc comment carries the full
+//      list — non-empty code per fn, every `Reloc` in range and, for
+//      `Reloc::Call`, targeting a fn this same program actually codegen'd);
+//  (e) whenever the typechecked program declares one or more
+//      `@test(runtime)` fns, `layout::layout_test_image` (the exact path
+//      `bin/wrela.rs::test_cmd`'s own runtime tier calls — reused directly,
+//      not reimplemented) is attempted; its own internal
+//      `verify_section_sizes` call already re-derives the section table
+//      from scratch and turns any mismatch into an `Err` before this lane
+//      ever sees a `Ok(ImageLayout)` back, so a successful `Built` outcome
+//      *is* the section-size-verified proof this invariant asks for — no
+//      second, redundant re-verification is needed here. A program with no
+//      `@test(runtime)` fn skips layout entirely (`LayoutOutcome::Skipped`,
+//      counted, never attempted) — booting is diff-eval's/the guest bench
+//      lane's own job, never this in-process loop's (a boot is ~50ms; this
+//      lane's own budget is ~100us/iteration).
+//
+// A find writes the input to `target/fuzz/lower-crash-<n>.wr` (the same
+// `report_fuzz_failure` numbering convention every other lane uses) and
+// reports the seed + iteration so it reproduces; every find is minimized by
+// hand into a `tests/golden/err-mwir-*` case before the underlying bug is
+// fixed, per house rule — fixed here only when the root cause is genuinely
+// in `lower.rs`/`codegen.rs`; a root cause in `sema`/`eval` is pinned and
+// reported instead (out of this lane's own scope).
+//
+// Live finding, disclosed rather than routed around (plans/M5.md item G's
+// own "pin as golden per house rule BEFORE fixing... if the root cause is
+// in sema/eval, pin + report, don't fix out-of-scope"): this lane's very
+// first real exercise found a genuine, reproducible `sema::bodies` over-
+// acceptance bug, pinned at `golden/err-mwir-if-else-scope-leak` — an
+// `if`/`else` whose two branches each declare their own explicitly-typed
+// local under the identical name (`value: u64 = 1` / `value: u64 = 2`,
+// each syntactically its own fresh, block-scoped declaration, not 02
+// §8.1's own documented bare-assignment "definite-init merge" idiom) is
+// wrongly accepted by `check_typed` — its own `--stage=typed` dump shows
+// the `else` branch's declaration demoted to a plain `Assign` onto the
+// `then` branch's local, and the name survives, wrongly, past the end of
+// the whole `if`/`else` for the trailing `return value` to read. This is a
+// real defect in `sema::bodies`'s own scope handling, not a lowering gap:
+// `lower.rs`'s own per-block `LEnv` push/pop is what actually behaves
+// correctly here (its own "should be unreachable for a `check_typed`-
+// accepted program" internal guard is exactly what surfaces the upstream
+// bug). Root cause confirmed out of this session's own permitted scope
+// (`sema/`/`eval/` logic — CLAUDE.md/task rules), so it is pinned and
+// reported, not fixed here.
+//
+// Severity, measured directly rather than assumed: this shape is common
+// enough in the existing corpus (`value` is an extremely frequent local
+// name across the real `tests/golden/*/input.wr` seed set) that a single
+// 1-4-op mutation reaches it almost immediately at *every* seed tried —
+// 1 through 20, inclusive, every one crashed within 3000 iterations (seed
+// 7 crashed at iteration *0*, i.e. the very first mutated input already
+// triggered it). There is consequently no seed/iteration budget, however
+// small, that currently gives an honest "clean" smoke or deep run — every
+// seed reproduces the *same* already-pinned, already-reported bug, not a
+// spread of distinct ones a bigger corpus or a different seed could dodge.
+// Per plans/M5.md item G's own explicit "fix or report finds first"
+// instruction (before the required 3-fresh-seed deep-clean check), this
+// session reports rather than fakes a clean run: `fuzz_lower_smoke` is
+// therefore NOT called from `check()` (see that call site's own comment),
+// and `FUZZ_LOWER_DEEP_ITERS`/`FUZZ_LOWER_DEEP_SEED` below describe the
+// budget this lane is *sized* for once the sema fix lands, not a budget it
+// currently completes.
+//
+// Per-iteration cost, measured anyway (aggregated across seeds 1-30's own
+// pre-crash prefixes, `target/fuzz/xtask` debug build, authoring machine —
+// no seed's own prefix is long enough alone to amortize process/corpus-load
+// startup, so this sums 31_126 total pre-crash iterations across 30 short
+// runs against their own combined 1.69s wall time, then subtracts each
+// invocation's own ~5ms fixed corpus-load/startup cost, measured directly
+// via the seed=7/iteration=0 case's own near-instant `real 0.00`s runs):
+// roughly 50-60us/iteration — close to, and consistent with, `fuzz eval`'s
+// own ~59us/iteration (this pipeline shares the identical lex/parse/
+// check_typed prefix `fuzz eval` already pays for; `lower`+`codegen`
+// replace `run_tests`'s own rare-cost tail with a cost of the same rough
+// order). `FUZZ_LOWER_DEEP_ITERS = 2_000_000` is picked to match `fuzz
+// sema`/`fuzz eval`'s own deep default exactly, landing in the identical
+// "roughly a minute or two" band those two lanes' own comments already
+// target, rather than picking a new number for its own sake — the number
+// this session would run at seeds 21/22/23 once the blocking finding above
+// is fixed.
+const FUZZ_LOWER_DEEP_ITERS: u64 = 2_000_000;
+const FUZZ_LOWER_DEEP_SEED: u64 = 1;
+// `#[allow(dead_code)]`: not yet read by `check()` (`fuzz_lower_smoke`'s own
+// doc comment explains why) — deliberately kept, not deleted, so wiring
+// the smoke call back in once the blocking sema fix lands is a one-line
+// change with its own budget already named here.
+#[allow(dead_code)]
+const FUZZ_LOWER_SMOKE_SEEDS: &[u64] = &[1, 2];
+#[allow(dead_code)]
+const FUZZ_LOWER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
+
+/// What a successful `layout::layout_test_image` attempt contributes to
+/// `LowerFuzzOutcome::Ok`'s own determinism compare — `ImageLayout`'s own
+/// three fields, copied out field-by-field rather than storing `ImageLayout`
+/// itself (which derives no `PartialEq`/`Clone` this crate could reuse
+/// without adding one to `wrela-compiler` for a fuzz-only need).
+#[derive(Debug, Clone, PartialEq)]
+enum LayoutOutcome {
+    /// No `@test(runtime)` fn declared — invariant (e)'s own "skip layout
+    /// entirely, counted" rule; the overwhelmingly common case for both
+    /// corpus-mutation and token-soup input.
+    Skipped,
+    /// `layout::layout_test_image` rejected this program with a legitimate
+    /// (non-`"internal error: "`) `LayoutError` — the only real example this
+    /// module has is "relocation out of range", structurally unreachable at
+    /// this fuzzer's own tiny image sizes but not disclaimed as impossible.
+    Rejected(String),
+    /// `layout::layout_test_image` succeeded; `verify_section_sizes` already
+    /// ran internally (invariant (e)'s own note above).
+    Built {
+        blob: Vec<u8>,
+        entry: u64,
+        sections: Vec<(&'static str, u64, u64)>,
+    },
+}
+
+/// Exactly one of these shapes comes back from one pipeline run — never a
+/// panic, per `check_lower_invariants`'s `catch_unwind`.
+#[derive(Debug, Clone, PartialEq)]
+enum LowerFuzzOutcome {
+    LexErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+    ParseErr {
+        message: String,
+        line: u32,
+        col: u32,
+    },
+    SemaErr {
+        category: &'static str,
+        message: String,
+        line: u32,
+        col: u32,
+        extra_lines: Vec<String>,
+        omit_location: bool,
+    },
+    /// `lower::lower_program` rejected this program with its own fixed
+    /// `error[unimplemented]` diagnostic (decision 2's fail-closed set) —
+    /// never an `"internal error: "`-prefixed message, which is folded into
+    /// `Bug` instead (see that variant).
+    LowerRejected { message: String },
+    /// `codegen::codegen_program` rejected this program the same way
+    /// (frame-size overflow, a floating-point value, more than 8 call
+    /// arguments, ...) — same `"internal error: "` carve-out as above.
+    CodegenRejected { message: String },
+    /// Lowered and codegen'd cleanly.
+    Ok {
+        mwir_dump: String,
+        code_words: Vec<u32>,
+        layout: LayoutOutcome,
+    },
+    /// A genuine bug this lane found — never a legitimate outcome,
+    /// `check_lower_invariants` always rejects this variant as a finding,
+    /// the same way `check_eval_invariants` rejects an unknown `SemaError`
+    /// category. Covers every "should be unreachable for a `check_typed`-
+    /// accepted program" shape this pipeline can hit: an
+    /// `"internal error: "`-prefixed `LowerError`/`CodegenError`/
+    /// `LayoutError`, a `mwir::build_layout_ctx` failure on a module that
+    /// already passed `check_typed` (the identical unreachable-in-theory
+    /// shape one layer up — `build_layout_ctx` only re-runs `specialize`/
+    /// `declare`, both strict subsets of what `check_typed` itself already
+    /// ran clean), or a `codegen::validate` structural-invariant failure.
+    Bug(String),
+}
+
+/// `program.tests`' own `TestKind::Runtime` names, in declaration order
+/// (`program.tests` is a plain `Vec`, never reordered) — exactly the list
+/// `bin/wrela.rs::test_cmd`'s own runtime tier builds before calling
+/// `layout::layout_test_image`.
+fn runtime_test_names(program: &sema::typed::TypedProgram) -> Vec<String> {
+    program
+        .tests
+        .iter()
+        .filter(|t| t.kind == TestKind::Runtime)
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+/// Every emitted `u32` word across every fn in `program`, `BTreeMap`-key
+/// order (deterministic) — invariant (b)'s own separate, word-level
+/// determinism population, kept apart from `codegen::dump`'s text so a
+/// hypothetical dump-rendering bug could never mask a real byte-level
+/// divergence between two runs.
+fn concat_code_words(program: &codegen::CodegenProgram) -> Vec<u32> {
+    let mut words = Vec::new();
+    for f in program.fns.values() {
+        for (w, _text) in &f.code {
+            words.push(*w);
+        }
+    }
+    words
+}
+
+/// Invariant (e): attempts `layout::layout_test_image` exactly the way
+/// `bin/wrela.rs::test_cmd`'s own runtime tier does, whenever `program`
+/// declares one or more `@test(runtime)` fns; `Err` here always means a
+/// genuine bug (folded into `LowerFuzzOutcome::Bug` by the caller), never a
+/// legitimate rejection path this fn itself decides — the one legitimate
+/// `LayoutError` shape (`"relocation out of range"`) is instead carried as
+/// `Ok(LayoutOutcome::Rejected(..))`.
+fn attempt_layout(
+    program: &sema::typed::TypedProgram,
+    codegen_program: &codegen::CodegenProgram,
+) -> Result<LayoutOutcome, String> {
+    let runtime_tests = runtime_test_names(program);
+    if runtime_tests.is_empty() {
+        return Ok(LayoutOutcome::Skipped);
+    }
+    match layout::layout_test_image(codegen_program, &runtime_tests) {
+        Ok(l) => Ok(LayoutOutcome::Built {
+            blob: l.blob,
+            entry: l.entry,
+            sections: l
+                .sections
+                .iter()
+                .map(|s| (s.name, s.base, s.size))
+                .collect(),
+        }),
+        Err(e) => {
+            if e.message.starts_with("internal error: ") {
+                Err(format!("layout::layout_test_image: {}", e.message))
+            } else {
+                Ok(LayoutOutcome::Rejected(e.message))
+            }
+        }
+    }
+}
+
+/// One full run of the pipeline the lower fuzzer exercises: lex, then (on
+/// success) parse a whole module, then `sema::check_typed`, then (on a
+/// successful typecheck) `lower::lower_program`, then (on success)
+/// `codegen::codegen_program`, then (invariant (e)) `attempt_layout`.
+/// "<fuzz-lower>" is not a real file path — same placeholder reasoning as
+/// `run_eval_pipeline_once`'s own `"<fuzz-eval>"`: the determinism check
+/// only ever compares two runs of the *same* input against each other, so
+/// any fixed placeholder works.
+fn run_lower_pipeline_once(input: &str) -> LowerFuzzOutcome {
+    let module = match lexer::lex(input) {
+        Err(e) => {
+            return LowerFuzzOutcome::LexErr {
+                message: e.message,
+                line: e.line,
+                col: e.col,
+            };
+        }
+        Ok(tokens) => match parser::parse(tokens) {
+            Err(e) => {
+                return LowerFuzzOutcome::ParseErr {
+                    message: e.message,
+                    line: e.line,
+                    col: e.col,
+                };
+            }
+            Ok(module) => module,
+        },
+    };
+    let program = match sema::check_typed(&module, "<fuzz-lower>") {
+        Err(e) => {
+            return LowerFuzzOutcome::SemaErr {
+                category: e.category,
+                message: e.message,
+                line: e.line,
+                col: e.col,
+                extra_lines: e.extra_lines,
+                omit_location: e.omit_location,
+            };
+        }
+        Ok(p) => p,
+    };
+    let mwir_program = match lower::lower_program(&program) {
+        Err(e) => {
+            return if e.message.starts_with("internal error: ") {
+                LowerFuzzOutcome::Bug(format!("lower::lower_program: {}", e.message))
+            } else {
+                LowerFuzzOutcome::LowerRejected { message: e.message }
+            };
+        }
+        Ok(p) => p,
+    };
+    let mwir_dump = mwir::dump(&mwir_program);
+    let layout_ctx = match mwir::build_layout_ctx(&module) {
+        Err(e) => {
+            return LowerFuzzOutcome::Bug(format!(
+                "mwir::build_layout_ctx failed after check_typed already accepted this program: \
+                 {e:?}"
+            ));
+        }
+        Ok(c) => c,
+    };
+    let codegen_program = match codegen::codegen_program(&mwir_program, &layout_ctx) {
+        Err(e) => {
+            return if e.message.starts_with("internal error: ") {
+                LowerFuzzOutcome::Bug(format!("codegen::codegen_program: {}", e.message))
+            } else {
+                LowerFuzzOutcome::CodegenRejected { message: e.message }
+            };
+        }
+        Ok(p) => p,
+    };
+    if let Err(reason) = codegen::validate(&codegen_program) {
+        return LowerFuzzOutcome::Bug(format!("codegen::validate: {reason}"));
+    }
+    let code_words = concat_code_words(&codegen_program);
+    let layout = match attempt_layout(&program, &codegen_program) {
+        Ok(l) => l,
+        Err(bug) => return LowerFuzzOutcome::Bug(bug),
+    };
+    LowerFuzzOutcome::Ok {
+        mwir_dump,
+        code_words,
+        layout,
+    }
+}
+
+/// Every invariant the lower fuzzer checks, once per iteration, on one
+/// input. Runs the whole pipeline twice under `catch_unwind`, mirroring
+/// `check_eval_invariants`'s shape exactly: invariant (c)'s category check
+/// on a `SemaErr`/`LowerRejected`/`CodegenRejected` outcome, invariant (a)'s
+/// "never a `Bug`" check, then invariant (b)'s determinism compare,
+/// matched per-shape (rather than one blanket `!=`) so a divergence names
+/// exactly which stage disagreed, mirroring every other lane's own
+/// diagnostic style in this file.
+fn check_lower_invariants(input: &str) -> Result<(), String> {
+    let first = std::panic::catch_unwind(|| run_lower_pipeline_once(input))
+        .map_err(|p| format!("lower/codegen panicked: {}", panic_message(&p)))?;
+    let second = std::panic::catch_unwind(|| run_lower_pipeline_once(input)).map_err(|p| {
+        format!(
+            "lower/codegen panicked on a repeat call: {}",
+            panic_message(&p)
+        )
+    })?;
+
+    if let LowerFuzzOutcome::Bug(msg) = &first {
+        return Err(format!("lower/codegen fuzz found a bug: {msg}"));
+    }
+    if let LowerFuzzOutcome::SemaErr { category, .. } = &first {
+        if !SEMA_CATEGORIES.contains(category) {
+            return Err(format!(
+                "lower: unknown sema diagnostic category `{category}` (not in the fixed set)"
+            ));
+        }
+    }
+    if matches!(
+        &first,
+        LowerFuzzOutcome::LowerRejected { .. } | LowerFuzzOutcome::CodegenRejected { .. }
+    ) && !SEMA_CATEGORIES.contains(&"unimplemented")
+    {
+        return Err(
+            "lower/codegen: the fixed `unimplemented` diagnostic category is missing from \
+             SEMA_CATEGORIES"
+                .into(),
+        );
+    }
+
+    match (&first, &second) {
+        (
+            LowerFuzzOutcome::LexErr {
+                message: m1,
+                line: l1,
+                col: c1,
+            },
+            LowerFuzzOutcome::LexErr {
+                message: m2,
+                line: l2,
+                col: c2,
+            },
+        ) => {
+            if m1 != m2 || l1 != l2 || c1 != c2 {
+                return Err(
+                    "lower is not deterministic: two runs produced different lex errors".into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            LowerFuzzOutcome::ParseErr {
+                message: m1,
+                line: l1,
+                col: c1,
+            },
+            LowerFuzzOutcome::ParseErr {
+                message: m2,
+                line: l2,
+                col: c2,
+            },
+        ) => {
+            if m1 != m2 || l1 != l2 || c1 != c2 {
+                return Err(
+                    "lower is not deterministic: two runs produced different parse errors".into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            LowerFuzzOutcome::SemaErr {
+                category: cat1,
+                message: m1,
+                line: l1,
+                col: c1,
+                extra_lines: e1,
+                omit_location: o1,
+            },
+            LowerFuzzOutcome::SemaErr {
+                category: cat2,
+                message: m2,
+                line: l2,
+                col: c2,
+                extra_lines: e2,
+                omit_location: o2,
+            },
+        ) => {
+            if cat1 != cat2 || m1 != m2 || l1 != l2 || c1 != c2 || e1 != e2 || o1 != o2 {
+                return Err(
+                    "lower is not deterministic: two runs produced different sema diagnostics"
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            LowerFuzzOutcome::LowerRejected { message: m1 },
+            LowerFuzzOutcome::LowerRejected { message: m2 },
+        ) => {
+            if m1 != m2 {
+                return Err(
+                    "lower is not deterministic: two runs produced different lowering rejections"
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+        (
+            LowerFuzzOutcome::CodegenRejected { message: m1 },
+            LowerFuzzOutcome::CodegenRejected { message: m2 },
+        ) => {
+            if m1 != m2 {
+                return Err(
+                    "lower is not deterministic: two runs produced different codegen rejections"
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+        (LowerFuzzOutcome::Ok { .. }, LowerFuzzOutcome::Ok { .. }) => {
+            if first != second {
+                return Err(
+                    "lower is not deterministic: two runs produced a different mwir dump, \
+                     codegen'd words, or laid-out test image for the same input"
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+        _ => Err(
+            "lower is not deterministic: the two runs disagreed on success/failure or which \
+             stage failed"
+                .into(),
+        ),
+    }
+}
+
+fn run_lower_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
+    let mut rng = Rng::new(seed);
+    for i in 0..iters {
+        let input = if i % 2 == 0 {
+            String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
+        } else {
+            token_soup(&mut rng)
+        };
+        if let Err(reason) = check_lower_invariants(&input) {
+            return report_fuzz_failure("lower", "lower-crash-", seed, i, &input, &reason);
+        }
+    }
+    println!("fuzz lower: {iters} iteration(s) clean (seed={seed})");
+    Ok(())
+}
+
+fn fuzz_lower(iters: u64, seed: u64) -> Result<(), String> {
+    let seed_inputs = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| run_lower_fuzz(iters, seed, &seed_inputs))
+}
+
+/// Same shape as every other lane's own `_smoke` fn (2 fixed seeds, 1_000
+/// iterations apiece) — but, unlike every other lane's, **not** called from
+/// `check()` yet (hence `#[allow(dead_code)]` below). `FUZZ_LOWER_DEEP_ITERS`'s
+/// own doc comment (above) records why: this lane's very first real
+/// exercise found a genuine, pinned, out-of-scope `sema::bodies` bug
+/// (`golden/err-mwir-if-else-scope-leak`) that the first of these two fixed
+/// smoke seeds already reproduces well inside 1_000 iterations (seed=1 at
+/// iteration 708, on the corpus as of this commit — `run_lower_fuzz`
+/// returns on that `Err` before `fuzz_lower_smoke`'s own loop ever reaches
+/// seed=2, whose own first reproduction of the identical bug happens to
+/// land at iteration 2134, past this particular smoke budget, on this same
+/// corpus) — and every seed 1 through 20 tried this session reproduces it
+/// within 3_000 iterations regardless, so there is no seed choice here that
+/// would make this call honest today, only ones that happen to delay it
+/// past whatever budget is picked. Callable directly (`cargo xtask fuzz
+/// lower --iters 1000 --seed 1`) for verification; wire it into `check()`
+/// (one line, right where every other `fuzz_*_smoke` call already sits)
+/// the moment the sema fix lands.
+#[allow(dead_code)]
+fn fuzz_lower_smoke() -> Result<(), String> {
+    let seed_inputs = corpus_seed_inputs()?;
+    with_silenced_panic_hook(|| {
+        for &seed in FUZZ_LOWER_SMOKE_SEEDS {
+            run_lower_fuzz(FUZZ_LOWER_SMOKE_ITERS_PER_SEED, seed, &seed_inputs)?;
         }
         Ok(())
     })

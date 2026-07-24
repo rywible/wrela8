@@ -1,0 +1,38 @@
+module examples.err_mwir_if_else_scope_leak
+
+# plans/M5.md item G: found by `cargo xtask fuzz lower` (corpus mutation of
+# a `check-*`-shaped seed, seed=1, iteration=23560), minimized by hand to
+# this eight-line shape. Root cause is a `sema::bodies` scoping bug, NOT a
+# `lower.rs`/`codegen.rs` bug — out of this fuzz lane's own fix scope (task
+# instruction: "if the root cause is in sema/eval, pin + report, don't fix
+# out-of-scope"), so this pins today's real, reproducible behavior rather
+# than either faking a fix or silently dropping the find.
+#
+# The bug: 02-language.md §8.1's own documented "a conditional value is
+# written by assigning in each arm; definite-initialization analysis merges
+# the arms" idiom is for a *plain assignment* (`value = item`) to a name
+# already introduced outside the `if`/`match` — its own worked example
+# never shows the name being *declared with a type* inside an arm. Here,
+# each branch instead uses the full local-declaration form
+# (`value: u64 = ...`), which should be scoped strictly to its own branch
+# block (shadowing nothing, escaping nowhere) — referencing `value` after
+# the `if`/`else` closes should be an ordinary `error[name]: unknown name
+# \`value\`` from `sema::symbols::resolve`, exactly as it would be for a
+# local declared inside a `while`/`for` body and read afterward. Instead,
+# `sema::bodies` incorrectly reuses/merges the two branches' own type-
+# annotated declarations into one enclosing-scope binding — visible in
+# `--stage=typed`'s own dump below: the `else` branch's `value: u64 = 2` is
+# rendered as a plain `Assign` (a *re*-assignment to the `then` branch's
+# already-declared local), not its own `Let` — and `check_typed` accepts
+# the whole fn. `lower.rs`'s own per-block, push/pop `LEnv` scope correctly
+# does NOT see `value` as bound once both branches' own scopes have popped,
+# so `env_lookup` fails and `lower.rs`'s own "should be unreachable for any
+# check_typed-accepted program" internal guard fires — proof this is a
+# sema-level over-acceptance bug, not a lowering gap: lowering's own
+# scoping is the one behaving correctly here.
+pub fn conditional_init(cond: bool) -> u64:
+    if cond:
+        value: u64 = 1
+    else:
+        value: u64 = 2
+    return value

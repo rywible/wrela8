@@ -2133,6 +2133,108 @@ fn render_bytes(bytes: &[u8]) -> String {
     out
 }
 
+// --- structural validation (plans/M5.md item G) -----------------------------
+
+/// A small, pure, cheap structural sanity check over an already-produced
+/// `CodegenProgram` — `cargo xtask fuzz lower`'s own invariant (d). Rejected
+/// as too weak to matter (task note, recorded here rather than silently
+/// dropped): re-decoding every emitted `u32` back into a mnemonic
+/// (`encode::looks_like_valid_a76`-style) would only ever prove this
+/// module's own encoder round-trips against itself, never that the bits are
+/// *correct* — decision 5 (plans/M5.md) already settled that HVF execution
+/// is the one real behavioral oracle for emitted bytes, and the boot golden
+/// (item E's own bug #3, a wrong-bit-field `enc_umulh`) is the concrete
+/// proof a self-consistent decode/encode round-trip would have missed
+/// anyway. What *is* cheap and real: the handful of structural facts a
+/// codegen bug could actually violate without any of the existing per-
+/// instruction unit tests or `--stage=asm` goldens ever seeing it, because
+/// every one of them is a cross-cutting property over the *whole* program
+/// rather than one instruction in isolation:
+///
+/// - every fn's own `code` is non-empty — every `emit_fn` call always
+///   emits at least its own fixed-shape prologue and epilogue, regardless
+///   of how short the mwir body it wraps is, so an empty `code` vector can
+///   only mean a producer bug, never a legitimately tiny fn;
+/// - every `Reloc::Call`'s own `word` index is in range for its own fn's
+///   `code`, and its `key` names another fn this same `CodegenProgram`
+///   actually contains — layout.rs's own `Reloc` resolution (`layout_program`/
+///   `layout_test_image`) would otherwise hit its own `"internal error: call
+///   target ... was never codegen'd"` guard one stage later, a strictly
+///   worse place to first notice this than right here, immediately after
+///   the fn that emitted the dangling reloc finishes;
+/// - every `Reloc::Rodata`'s own `word_adrp`/`word_adrp + 1` pair (the
+///   `ADRP`+`ADD` `codegen.rs` always emits back-to-back, never
+///   independently) is in range, and its `byte_offset` names a real
+///   position inside the concatenation of every `program.rodata` entry;
+/// - every `Reloc::AbortFixed`/`AbortVal`'s own `word` index is in range
+///   (their own *target* — `__wrela_abort`/`__wrela_abort_val` — is a
+///   layout-time fact this stage has no way to check yet; only the
+///   *source* word index is this stage's own responsibility).
+///
+/// `Err` names the first violation found (fn-key iteration order, then
+/// reloc order within that fn) — never a panic, since this exists
+/// specifically so the fuzzer can call it on arbitrary fuzzed-and-codegen'd
+/// programs and report a clean diagnostic rather than an out-of-bounds
+/// index panic reaching all the way out to `catch_unwind`.
+pub fn validate(program: &CodegenProgram) -> Result<(), String> {
+    let rodata_len: usize = program.rodata.iter().map(Vec::len).sum();
+    for (key, f) in &program.fns {
+        if f.code.is_empty() {
+            return Err(format!(
+                "fn `{key}` emitted zero code words (every fn always has at least a \
+                 prologue/epilogue)"
+            ));
+        }
+        for reloc in &f.relocs {
+            match reloc {
+                Reloc::Call { word, key: target } => {
+                    if *word >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::Call word {word} is out of range (code has {} \
+                             word(s))",
+                            f.code.len()
+                        ));
+                    }
+                    if !program.fns.contains_key(target) {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::Call targets `{target}`, which this \
+                             `CodegenProgram` never codegen'd"
+                        ));
+                    }
+                }
+                Reloc::Rodata {
+                    word_adrp,
+                    byte_offset,
+                } => {
+                    if word_adrp + 1 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::Rodata word_adrp {word_adrp} (its paired ADD sits \
+                             at +1) is out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                    if *byte_offset >= rodata_len {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::Rodata byte_offset {byte_offset} is out of range \
+                             (rodata is {rodata_len} byte(s))"
+                        ));
+                    }
+                }
+                Reloc::AbortFixed { word } | Reloc::AbortVal { word } => {
+                    if *word >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::AbortFixed/AbortVal word {word} is out of range \
+                             (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2438,5 +2540,112 @@ mod tests {
         );
         let err = codegen_program(&mwir_program, &layout).unwrap_err();
         assert!(err.message.contains("8 call arguments"));
+    }
+
+    // --- structural validation (plans/M5.md item G, `validate`) -----------
+
+    #[test]
+    fn validate_accepts_a_real_multi_fn_program() {
+        let (mwir_program, layout) = compile(
+            "module examples.codegen_validate_ok\n\npub fn add_one(x: u64) -> u64:\n    return x + 1\n\npub fn use_it(x: u64) -> u64:\n    return add_one(x)\n",
+        );
+        let program = codegen_program(&mwir_program, &layout).expect("codegen_program");
+        // A real program with an actual `Reloc::Call` between two fns and,
+        // via `checked_add`'s own literal abort message, a real
+        // `Reloc::Rodata` too — both `validate`'s own live paths, not just
+        // its empty-program fast path.
+        assert!(program.fns.values().any(|f| !f.relocs.is_empty()));
+        validate(&program).expect("a real codegen'd program must validate");
+    }
+
+    #[test]
+    fn validate_rejects_empty_code() {
+        let mut program = CodegenProgram::default();
+        program.fns.insert(
+            "fn:empty".to_string(),
+            CodegenFn {
+                frame_size: 16,
+                code: Vec::new(),
+                relocs: Vec::new(),
+            },
+        );
+        let err = validate(&program).unwrap_err();
+        assert!(err.contains("emitted zero code words"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_a_call_reloc_to_an_unknown_fn() {
+        let mut program = CodegenProgram::default();
+        program.fns.insert(
+            "fn:caller".to_string(),
+            CodegenFn {
+                frame_size: 16,
+                code: vec![(0, String::new())],
+                relocs: vec![Reloc::Call {
+                    word: 0,
+                    key: "fn:ghost".to_string(),
+                }],
+            },
+        );
+        let err = validate(&program).unwrap_err();
+        assert!(err.contains("never codegen'd"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_a_call_reloc_word_out_of_range() {
+        let mut program = CodegenProgram::default();
+        program.fns.insert(
+            "fn:only".to_string(),
+            CodegenFn {
+                frame_size: 16,
+                code: vec![(0, String::new())],
+                relocs: vec![Reloc::Call {
+                    word: 5,
+                    key: "fn:only".to_string(),
+                }],
+            },
+        );
+        let err = validate(&program).unwrap_err();
+        assert!(err.contains("Reloc::Call word 5 is out of range"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_a_rodata_reloc_byte_offset_out_of_range() {
+        let mut program = CodegenProgram::default();
+        program.fns.insert(
+            "fn:only".to_string(),
+            CodegenFn {
+                frame_size: 16,
+                code: vec![(0, String::new()), (0, String::new())],
+                relocs: vec![Reloc::Rodata {
+                    word_adrp: 0,
+                    byte_offset: 100,
+                }],
+            },
+        );
+        program.rodata.push(b"hi".to_vec());
+        let err = validate(&program).unwrap_err();
+        assert!(
+            err.contains("Reloc::Rodata byte_offset 100 is out of range"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_abort_reloc_word_out_of_range() {
+        let mut program = CodegenProgram::default();
+        program.fns.insert(
+            "fn:only".to_string(),
+            CodegenFn {
+                frame_size: 16,
+                code: vec![(0, String::new())],
+                relocs: vec![Reloc::AbortFixed { word: 3 }],
+            },
+        );
+        let err = validate(&program).unwrap_err();
+        assert!(
+            err.contains("Reloc::AbortFixed/AbortVal word 3 is out of range"),
+            "{err}"
+        );
     }
 }
