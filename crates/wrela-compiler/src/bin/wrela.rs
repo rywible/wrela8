@@ -18,10 +18,12 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use wrela_compiler::eval;
+use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TypedProgram;
+use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
 const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
@@ -160,6 +162,13 @@ struct BuildReport {
     drivers: usize,
     actors: usize,
     pools: usize,
+    /// plans/M5.md item D: `Some(bytes)` exactly when this program's own
+    /// reachable surface fully lowers/codegens/lays out (`layout::
+    /// try_layout_program`'s "all or nothing" rule) — the same condition
+    /// that appends the `Layout` section to `text` above. `wrela build`
+    /// writes this to `<name>.img`; `--stage=report` never writes a file
+    /// at all (dumps never do), so this field is simply unused there.
+    img: Option<Vec<u8>>,
 }
 
 /// The first line of `text` (after trimming leading indentation) that
@@ -173,18 +182,32 @@ fn first_field_value<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
 
 /// The shared pipeline tail `wrela dump --stage=report` (`run_report_stage`,
 /// below) and `wrela build` (`build_cmd`, plans/M4.md item E) both run once
-/// `programs`/`file_paths` exist, whichever single-file/whole-closure fork
-/// produced them: decision 6's one-reachable-`@image` discovery, `eval_image`,
-/// item C's `check_sealed`, the input digests, and `report::render` itself.
-/// `Ok` carries the rendered report text plus the stdout-summary facts
-/// (`BuildReport`); `Err` carries one already fully rendered diagnostic
-/// string (in the exact one-line `error[cat]: msg at L:C` house style,
-/// trailing `\n` included, extra lines already appended) — every rejection
-/// this pipeline can produce, whichever stage it came from, printed exactly
-/// the same way `dump`'s other stages already print it.
+/// `programs`/`file_paths`/`modules` exist, whichever single-file/whole-
+/// closure fork produced them: decision 6's one-reachable-`@image`
+/// discovery, `eval_image`, item C's `check_sealed`, the input digests,
+/// `report::render` itself, and (plans/M5.md item D, new) an attempt to
+/// lower/codegen/lay out the same `@image`-owning module's own program —
+/// `layout::try_layout_program`'s "all or nothing" rule (see that fn's own
+/// doc comment): `Some(image_layout)` appends the `Layout` section to the
+/// rendered text and carries the emitted blob back for `wrela build` to
+/// write; `None` (this program's reachable surface does not fully lower)
+/// leaves the report exactly as M4 left it — no `Layout` section, no
+/// image — for both callers alike (`modules`, keyed the same dotted-
+/// address way as `programs`/`file_paths`, supplies every raw `ast::Module`
+/// in the closure so `layout::merge_layout_ctx` can compute struct/enum
+/// field types across every file, not just the one holding `@image` — a
+/// project case may spread a spliced-in struct's own declaration across a
+/// different file entirely). `Ok` carries the rendered report text plus
+/// the stdout-summary facts (`BuildReport`); `Err` carries one already
+/// fully rendered diagnostic string (in the exact one-line `error[cat]:
+/// msg at L:C` house style, trailing `\n` included, extra lines already
+/// appended) — every rejection this pipeline can produce, whichever stage
+/// it came from, printed exactly the same way `dump`'s other stages
+/// already print it.
 fn build_report(
     programs: &BTreeMap<String, TypedProgram>,
     file_paths: &BTreeMap<String, std::path::PathBuf>,
+    modules: &BTreeMap<String, Module>,
 ) -> Result<BuildReport, String> {
     let candidates: Vec<(&String, &String)> = programs
         .iter()
@@ -209,13 +232,25 @@ fn build_report(
                             });
                         }
                         match report::render(&inputs, &program.enums, &graph) {
-                            Ok(text) => {
+                            Ok(mut text) => {
                                 let name = first_field_value(&text, "Name value=")
                                     .unwrap_or("")
                                     .to_string();
                                 let target = first_field_value(&text, "Target value=")
                                     .unwrap_or("")
                                     .to_string();
+                                let layout_ctx = layout::merge_layout_ctx(modules)
+                                    .map_err(|e| render_sema_error(&e))?;
+                                let img = match layout::try_layout_program(programs, &layout_ctx) {
+                                    Ok(Some(image_layout)) => {
+                                        layout::render_layout_section(&mut text, &image_layout);
+                                        Some(image_layout.blob)
+                                    }
+                                    Ok(None) => None,
+                                    Err(e) => {
+                                        return Err(format!("error[build]: layout: {e}\n"));
+                                    }
+                                };
                                 Ok(BuildReport {
                                     devices: graph.devices.len(),
                                     drivers: graph.drivers.len(),
@@ -224,6 +259,7 @@ fn build_report(
                                     text,
                                     name,
                                     target,
+                                    img,
                                 })
                             }
                             Err(e) => Err(format!("error[build]: {e}\n")),
@@ -273,8 +309,9 @@ fn build_report(
 fn run_report_stage(
     programs: &BTreeMap<String, TypedProgram>,
     file_paths: &BTreeMap<String, std::path::PathBuf>,
+    modules: &BTreeMap<String, Module>,
 ) {
-    match build_report(programs, file_paths) {
+    match build_report(programs, file_paths, modules) {
         Ok(r) => print!("{}", r.text),
         Err(diag) => print!("{diag}"),
     }
@@ -624,10 +661,12 @@ fn dump(args: &[String]) -> ExitCode {
                             Ok(program) => {
                                 let mut programs = BTreeMap::new();
                                 let mut file_paths = BTreeMap::new();
+                                let mut modules_by_addr = BTreeMap::new();
                                 let addr = module.path.join(".");
                                 file_paths.insert(addr.clone(), Path::new(&path).to_path_buf());
+                                modules_by_addr.insert(addr.clone(), module);
                                 programs.insert(addr, program);
-                                run_report_stage(&programs, &file_paths);
+                                run_report_stage(&programs, &file_paths, &modules_by_addr);
                             }
                             Err(e) => print_sema_error(&e),
                         }
@@ -649,13 +688,17 @@ fn dump(args: &[String]) -> ExitCode {
                                 .into_iter()
                                 .map(|(k, m)| (k, m.module))
                                 .collect();
+                            let modules_by_addr: BTreeMap<String, Module> = modules
+                                .iter()
+                                .map(|(k, m)| (k.join("."), m.clone()))
+                                .collect();
                             match sema::check_program_typed(&modules, &paths) {
                                 Ok(programs) => {
                                     let programs: BTreeMap<String, TypedProgram> = programs
                                         .into_iter()
                                         .map(|(k, p)| (k.join("."), p))
                                         .collect();
-                                    run_report_stage(&programs, &file_paths);
+                                    run_report_stage(&programs, &file_paths, &modules_by_addr);
                                 }
                                 Err(e) => print_sema_error(&e),
                             }
@@ -824,68 +867,77 @@ fn build_cmd(args: &[String]) -> ExitCode {
 
     // The identical single-file/whole-closure fork `--stage=check`/`image`/
     // `report` above already make.
-    let (programs, file_paths): (BTreeMap<String, TypedProgram>, BTreeMap<String, PathBuf>) =
-        if module.imports.is_empty() {
-            match sema::check_typed(&module, &path) {
-                Ok(program) => {
-                    let addr = module.path.join(".");
-                    let mut programs = BTreeMap::new();
-                    let mut file_paths = BTreeMap::new();
-                    file_paths.insert(addr.clone(), Path::new(&path).to_path_buf());
-                    programs.insert(addr, program);
-                    (programs, file_paths)
-                }
-                Err(e) => {
-                    print_sema_error(&e);
-                    return ExitCode::FAILURE;
-                }
+    let (programs, file_paths, modules_by_addr): (
+        BTreeMap<String, TypedProgram>,
+        BTreeMap<String, PathBuf>,
+        BTreeMap<String, Module>,
+    ) = if module.imports.is_empty() {
+        match sema::check_typed(&module, &path) {
+            Ok(program) => {
+                let addr = module.path.join(".");
+                let mut programs = BTreeMap::new();
+                let mut file_paths = BTreeMap::new();
+                let mut modules_by_addr = BTreeMap::new();
+                file_paths.insert(addr.clone(), Path::new(&path).to_path_buf());
+                modules_by_addr.insert(addr.clone(), module);
+                programs.insert(addr, program);
+                (programs, file_paths, modules_by_addr)
             }
-        } else {
-            match loader::load_closure(Path::new(&path)) {
-                Ok(loaded) => {
-                    let paths: BTreeMap<Vec<String>, String> = loaded
-                        .modules
-                        .iter()
-                        .map(|(k, m)| (k.clone(), m.file.display().to_string()))
-                        .collect();
-                    let file_paths: BTreeMap<String, PathBuf> = loaded
-                        .modules
-                        .iter()
-                        .map(|(k, m)| (k.join("."), m.file.clone()))
-                        .collect();
-                    let modules: BTreeMap<Vec<String>, _> = loaded
-                        .modules
-                        .into_iter()
-                        .map(|(k, m)| (k, m.module))
-                        .collect();
-                    match sema::check_program_typed(&modules, &paths) {
-                        Ok(progs) => {
-                            let programs: BTreeMap<String, TypedProgram> =
-                                progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
-                            (programs, file_paths)
-                        }
-                        Err(e) => {
-                            print_sema_error(&e);
-                            return ExitCode::FAILURE;
-                        }
+            Err(e) => {
+                print_sema_error(&e);
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        match loader::load_closure(Path::new(&path)) {
+            Ok(loaded) => {
+                let paths: BTreeMap<Vec<String>, String> = loaded
+                    .modules
+                    .iter()
+                    .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                    .collect();
+                let file_paths: BTreeMap<String, PathBuf> = loaded
+                    .modules
+                    .iter()
+                    .map(|(k, m)| (k.join("."), m.file.clone()))
+                    .collect();
+                let modules: BTreeMap<Vec<String>, _> = loaded
+                    .modules
+                    .into_iter()
+                    .map(|(k, m)| (k, m.module))
+                    .collect();
+                let modules_by_addr: BTreeMap<String, Module> = modules
+                    .iter()
+                    .map(|(k, m)| (k.join("."), m.clone()))
+                    .collect();
+                match sema::check_program_typed(&modules, &paths) {
+                    Ok(progs) => {
+                        let programs: BTreeMap<String, TypedProgram> =
+                            progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
+                        (programs, file_paths, modules_by_addr)
+                    }
+                    Err(e) => {
+                        print_sema_error(&e);
+                        return ExitCode::FAILURE;
                     }
                 }
-                Err(loader::LoadError::Lex(e)) => {
-                    print_lex_error(&e);
-                    return ExitCode::FAILURE;
-                }
-                Err(loader::LoadError::Parse(e)) => {
-                    print_parse_error(&e);
-                    return ExitCode::FAILURE;
-                }
-                Err(loader::LoadError::Build(e)) => {
-                    print_sema_error(&e);
-                    return ExitCode::FAILURE;
-                }
             }
-        };
+            Err(loader::LoadError::Lex(e)) => {
+                print_lex_error(&e);
+                return ExitCode::FAILURE;
+            }
+            Err(loader::LoadError::Parse(e)) => {
+                print_parse_error(&e);
+                return ExitCode::FAILURE;
+            }
+            Err(loader::LoadError::Build(e)) => {
+                print_sema_error(&e);
+                return ExitCode::FAILURE;
+            }
+        }
+    };
 
-    let r = match build_report(&programs, &file_paths) {
+    let r = match build_report(&programs, &file_paths, &modules_by_addr) {
         Ok(r) => r,
         Err(diag) => {
             print!("{diag}");
@@ -923,6 +975,27 @@ fn build_cmd(args: &[String]) -> ExitCode {
     if let Err(e) = std::fs::write(&report_path, &r.text) {
         eprintln!("error: cannot write {}: {e}", report_path.display());
         return ExitCode::FAILURE;
+    }
+
+    // plans/M5.md item D: `<name>.img`, next to the report, exactly when
+    // `r.img` is `Some` (the program's own reachable surface fully lowers
+    // — `layout::try_layout_program`'s "all or nothing" rule). No new
+    // stdout line here on purpose: every existing `build.txt` golden's own
+    // pinned stdout stays exactly 3 lines (house rule — only the four M4
+    // report goldens may move, and build.txt is not one of them); the
+    // image's own presence/bytes are golden-covered separately, by
+    // comparing the written file itself (`xtask`'s `golden` runner, "img"
+    // expectation).
+    if let Some(img) = &r.img {
+        let img_path_str = if dir_str.is_empty() {
+            format!("{}.img", r.name)
+        } else {
+            format!("{}/{}.img", dir_str.trim_end_matches('/'), r.name)
+        };
+        if let Err(e) = std::fs::write(&img_path_str, img) {
+            eprintln!("error: cannot write {img_path_str}: {e}");
+            return ExitCode::FAILURE;
+        }
     }
 
     println!("build: name={} target={}", r.name, r.target);

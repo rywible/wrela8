@@ -6,17 +6,13 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/image_helper_accept.wr sha256=778775c518a862679582bb91bb3633bd6b8c3f8ea940a1bd905a9d7dcd68abd0
-  Name value=helper-ok
+  Input path=image_emit.wr sha256=4b955fc5a52fad518b9d68fdbb79235fa208e8002078c6b04a7f45d26b746976
+  Name value=emit-demo
   Target value=Target.wrela_machine_v1
-  Actor index=0 type=Store
-    Mailbox value=16
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
   Section name=pages base=0x40000000 size=24576
   Section name=stacks base=0x40010000 size=4194304
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=268
-  Section name=rodata base=0x40500160 size=26
-  Section name=abort base=0x4050017c size=120
+  Section name=code base=0x40500050 size=348
+  Section name=rodata base=0x405001b0 size=26
+  Section name=abort base=0x405001cc size=120
   Entry base=0x40500000

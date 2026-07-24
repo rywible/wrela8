@@ -31,6 +31,7 @@
 pub mod codegen;
 pub mod encode;
 pub mod eval;
+pub mod layout;
 pub mod loader;
 pub mod lower;
 pub mod mwir;

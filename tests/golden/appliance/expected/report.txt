@@ -1,5 +1,6 @@
 ImageReport v0
   Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
   Target value=Target.wrela_machine_v1
   Quota max_steps=20000
   Quota max_memory=10000000
@@ -32,3 +33,9 @@ ImageReport v0
     Child value=driver#0
     Child value=actor#0
     Child value=actor#1
+  Section name=pages base=0x40000000 size=24576
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=724
+  Section name=abort base=0x40500324 size=120
+  Entry base=0x40500000

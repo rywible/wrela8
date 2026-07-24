@@ -1,0 +1,23 @@
+module image_emit
+
+# plans/M5.md item D's own dedicated image-emit golden: a minimal program
+# whose reachable surface exercises every `codegen::Reloc` variant end to
+# end through real emission — `compute` calling `add_one` (`Reloc::Call`),
+# and both fns' own ordinary (checked) `+` interning the shared overflow
+# message into rodata and calling `__wrela_abort` through it
+# (`Reloc::Rodata` + `Reloc::AbortFixed`). `appliance`/`image-project`/
+# `image-helper-accept` also fully lower (their own report goldens gained
+# a `Layout` section in this same commit) but their own reachable methods
+# happen not to call each other, so this small case is the one golden
+# whose own emitted bytes are worth pinning as a dedicated review surface.
+
+fn add_one(x: u32) -> u32:
+    return x + 1
+
+fn compute(a: u32, b: u32) -> u32:
+    return add_one(a) + b
+
+@image
+pub fn build() -> Image:
+    img = Image(name="emit-demo", target=Target.wrela_machine_v1)
+    return img.seal()

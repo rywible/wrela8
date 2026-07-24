@@ -21,10 +21,13 @@
 //! **Section order** (decision 8, fixed, never reshuffled — this is the
 //! whole "review surface" the golden diff protects):
 //!
-//! 1. Build identity: `Compiler`, `Target` (the build-affecting fact,
-//!    04-compiler.md §7/§8), `Quota` × 4 (`eval::quota`'s own constants,
-//!    cited by 02-language.md §2.1 as "language constants recorded in
-//!    build identity"), `Input` × one per file in the closure.
+//! 1. Build identity: `Compiler`, `Machine revision` (plans/M5.md decision
+//!    6: `wrela_machine::MACHINE_REVISION_STR`, joining build identity —
+//!    added at item D, unconditional, every report), `Target` (the
+//!    build-affecting fact, 04-compiler.md §7/§8), `Quota` × 4
+//!    (`eval::quota`'s own constants, cited by 02-language.md §2.1 as
+//!    "language constants recorded in build identity"), `Input` × one per
+//!    file in the closure.
 //! 2. The image: `Name`, `Target` (the image's own identity from
 //!    `Image(...)`, 02-language.md §12.1 — deliberately the same `Kind`
 //!    name as build identity's own `Target` line above; both are real,
@@ -54,8 +57,11 @@
 //!    cannot name) falls back to an ordinary `Arg` line.
 //! 8. Registered layout asserts: **never actually rendered** — decision
 //!    10's own report-boundary enforcement (`render`'s first act) fails
-//!    the whole report closed, naming M5, the instant even one
-//!    `@layout_assert` is registered, so a *successful* report can never
+//!    the whole report closed, citing the gap `image.report.layout-asserts`
+//!    (plans/M5.md item D's own reword of this diagnostic — the stdlib
+//!    `ImageReport` reflection type a real `@layout_assert` run needs
+//!    still does not exist), the instant even one `@layout_assert` is
+//!    registered, so a *successful* report can never
 //!    reach this section with anything to print. No dead rendering code
 //!    exists for it here for exactly that reason (unlike
 //!    `eval::image_checks::check_construction_dag`'s own unrepresentable-
@@ -234,8 +240,11 @@ fn render_decl_block(
 /// in `BTreeMap`-by-address order, so the report's own `Input` lines come
 /// out deterministically path-sorted with no further sorting needed
 /// here). `Err` is decision 10's own report-boundary enforcement: a
-/// registered `@layout_assert` fails the whole report closed, naming M5
-/// — this is the *only* way `render` ever fails; a sealed, checked graph
+/// registered `@layout_assert` fails the whole report closed, citing the
+/// gap `image.report.layout-asserts` (plans/M5.md item D's own reword,
+/// replacing the earlier "M5" milestone-number wording with the actual
+/// missing capability it names — the stdlib `ImageReport` reflection
+/// type) — this is the *only* way `render` ever fails; a sealed, checked graph
 /// has nothing else left to reject (every other rejection already
 /// happened earlier in the pipeline, at `check_sealed` or before).
 pub fn render(
@@ -251,9 +260,10 @@ pub fn render(
             .collect();
         return Err(format!(
             "the image report cannot be produced: {} registered `@layout_assert` fn(s) ({}) — \
-             layout does not exist until the hardware/placement milestone (M5), and this \
-             compiler never asserts against nothing (decision 10); `--stage=image` still dumps \
-             the raw graph for such an image, only the report itself refuses",
+             registered @layout_assert fns cannot run yet: the stdlib ImageReport reflection \
+             type does not exist (gap image.report.layout-asserts); this compiler never \
+             asserts against nothing (decision 10); `--stage=image` still dumps the raw \
+             graph for such an image, only the report itself refuses",
             graph.layout_asserts.len(),
             names.join(", ")
         ));
@@ -265,6 +275,11 @@ pub fn render(
 
     // --- 1. build identity -------------------------------------------------
     image::push_line(&mut out, 1, &format!("Compiler version={COMPILER_VERSION}"));
+    image::push_line(
+        &mut out,
+        1,
+        &format!("Machine revision={}", wrela_machine::MACHINE_REVISION_STR),
+    );
     if let Some(target) = &graph.target {
         image::push_line(
             &mut out,
@@ -705,6 +720,7 @@ mod tests {
         let expected = format!(
             "ImageReport v0\n\
              \x20 Compiler version={COMPILER_VERSION}\n\
+             \x20 Machine revision={}\n\
              \x20 Target value=Target.wrela_machine_v1\n\
              \x20 Quota max_steps={}\n\
              \x20 Quota max_memory={}\n\
@@ -723,6 +739,7 @@ mod tests {
              \x20 Supervise index=0 strategy=Restart.OneForOne\n\
              \x20   Child value=driver#0\n\
              \x20   Child value=actor#0\n",
+            wrela_machine::MACHINE_REVISION_STR,
             quota::MAX_STEPS,
             quota::MAX_MEMORY,
             quota::MAX_CALL_DEPTH,
@@ -738,7 +755,7 @@ mod tests {
         g.declare_check_layout("check_limits".to_string());
         let err = render(&[], &enums, &g).expect_err("decision 10: never asserted against nothing");
         assert!(err.contains("check_limits"));
-        assert!(err.contains("M5"));
+        assert!(err.contains("image.report.layout-asserts"));
     }
 
     #[test]

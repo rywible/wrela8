@@ -34,21 +34,29 @@
 //!              clause sema.check.roundtrip-stable). Wired into `check`,
 //!              after `corpus`.
 //!   report-determinism
-//!              plans/M4.md item D, decision 9: for every golden case
-//!              carrying an `expected/report.txt`, produces `wrela dump
-//!              --stage=report`'s own output *twice*, in-process (fresh
-//!              lex/parse/sema/eval every call — no caching, no shared
-//!              state, `produce_report_text`), and byte-compares the two
-//!              — the M4 down-payment on 04-compiler.md §8's
-//!              "identical declared inputs ... produce a byte-for-byte
-//!              identical ... report" (`compiler.repro.byte-identical`,
-//!              which stays a gap until the binary image exists, M5).
-//!              Wired into `check`, right after `golden` (the same cases
-//!              `golden` itself just proved match the pinned expectation
-//!              — this oracle instead proves two *fresh* runs agree with
-//!              each other, a distinct property golden alone does not).
+//!              plans/M4.md item D, decision 9, grown by plans/M5.md item D
+//!              (decision 10): for every golden case carrying an
+//!              `expected/report.txt`, produces `wrela dump --stage=report`'s
+//!              own output PLUS whatever `wrela build` would write as
+//!              `<name>.img` *twice*, in-process (fresh lex/parse/sema/
+//!              eval/lower/codegen/layout every call — no caching, no
+//!              shared state, `produce_report_and_image`), and byte-
+//!              compares both the report text and the image bytes (`Some`
+//!              only when the program's own reachable surface fully
+//!              lowers — `layout::try_layout_program`'s "all or nothing"
+//!              rule) — flips `compiler.repro.byte-identical` from gap to
+//!              test (the *unsigned* image + report; the signed triple is
+//!              M8+ territory, noted in the clause itself). Wired into
+//!              `check`, right after `golden` (the same cases `golden`
+//!              itself just proved match the pinned expectation — this
+//!              oracle instead proves two *fresh* runs agree with each
+//!              other, a distinct property golden alone does not).
+//!   repro      plans/M5.md decision 10: the identical oracle as
+//!              `report-determinism` above, runnable standalone (no
+//!              separate "full corpus" form exists yet — every report-
+//!              bearing golden is already the whole population either
+//!              name covers at this milestone's scale).
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
-//!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
 //!   profile    replay a recorded workload under counters (fails closed today)
 //!   bench      cargo xtask bench compiler|build|guest; the compiler lane
@@ -96,6 +104,7 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use wrela_compiler::eval;
+use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::report;
 use wrela_compiler::sema;
@@ -137,7 +146,14 @@ fn main() -> ExitCode {
         Some("roundtrip") => roundtrip(),
         Some("report-determinism") => report_determinism(),
         Some("ledger") => ledger(),
-        Some("repro") => fail_closed("repro", "requires image emission (backend not implemented)"),
+        // plans/M5.md decision 10, item D: `repro` is now the same
+        // twice-fresh-build byte-compare `report_determinism` already runs
+        // in `check` (extended, this item, to cover image bytes as well
+        // as report text) — bare `cargo xtask repro` is simply its own
+        // standalone invocation of the identical oracle, not a separate
+        // "full corpus" pass: every golden case that emits a report is
+        // already the whole population either form covers.
+        Some("repro") => report_determinism(),
         Some("diff-eval") => fail_closed(
             "diff-eval",
             "requires the evaluator and backend (not implemented)",
@@ -2052,6 +2068,24 @@ fn fuzz_eval_smoke() -> Result<(), String> {
 // touch convention, `--update`) is identical. The loader (`wrela dump
 // --stage=check`, plans/M4.md item A) anchors the package root from
 // that file's own path alone — no new flag.
+/// plans/M5.md item D: the review-visible form a golden pins for raw
+/// image bytes (decision: a hexdump, not raw binary in git — "more
+/// reviewable," the task's own instruction) — 16 bytes per line,
+/// `%08x: ` offset prefix, space-separated lowercase hex pairs, no ASCII
+/// column (kept minimal; the offset+hex pairs alone are enough to spot a
+/// one-byte diff in a review, and `--stage=asm`'s own dump already gives
+/// every word a mnemonic elsewhere). Deterministic, a pure function of
+/// `bytes`.
+fn hex_dump(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        let offset = i * 16;
+        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+        out.push_str(&format!("{offset:08x}: {}\n", hex.join(" ")));
+    }
+    out
+}
+
 fn golden_case_target(case: &Path) -> Result<Option<PathBuf>, String> {
     let root_marker = case.join("root");
     if root_marker.is_file() {
@@ -2138,6 +2172,57 @@ fn golden(update: bool) -> Result<(), String> {
                 std::fs::create_dir_all(&build_out_dir_abs)
                     .map_err(|e| format!("create {}: {e}", build_out_dir_abs.display()))?;
             }
+            // plans/M5.md item D: `img.hex` means "hexdump whatever
+            // `<name>.img` the case's own `build.txt` stage already wrote
+            // into `build_out_dir_abs` and compare/update against that" —
+            // a fourth expectation-file meaning, alongside `test.txt`'s/
+            // `build.txt`'s/`build-err.txt`'s, never its own `wrela`
+            // invocation (a case carrying `img.hex` must also carry
+            // `build.txt`, sorted before it alphabetically — `b` < `i` —
+            // so the image already exists on disk by the time this stage
+            // runs; the build-output directory's own removal is deferred
+            // to the end of this case's loop, below, specifically so this
+            // stage can still see it).
+            if stage == "img" {
+                let written: Vec<_> = std::fs::read_dir(&build_out_dir_abs)
+                    .map_err(|e| format!("read {}: {e}", build_out_dir_abs.display()))?
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("img"))
+                    .collect();
+                let img_bytes = match written.as_slice() {
+                    [one] => {
+                        std::fs::read(one).map_err(|e| format!("read {}: {e}", one.display()))?
+                    }
+                    other => {
+                        failures.push(format!(
+                            "{} [img]: expected exactly one `*.img` written to {}, found {} \
+                             (does this case also carry a `build.txt` expectation, sorted \
+                             before `img.hex`?)",
+                            case.display(),
+                            build_out_dir_abs.display(),
+                            other.len()
+                        ));
+                        continue;
+                    }
+                };
+                let actual = hex_dump(&img_bytes);
+                cases += 1;
+                if update {
+                    std::fs::write(&exp, &actual)
+                        .map_err(|e| format!("write {}: {e}", exp.display()))?;
+                    continue;
+                }
+                let expected = std::fs::read_to_string(&exp)
+                    .map_err(|e| format!("read {}: {e}", exp.display()))?;
+                if actual != expected {
+                    failures.push(format!(
+                        "{} [img]: image bytes differ from expectation\n--- expected\n{expected}--- actual\n{actual}",
+                        case.display()
+                    ));
+                }
+                continue;
+            }
             // `test.txt` means "run `wrela test <input.wr>`, compare its
             // stdout" (plans/M3.md item E) rather than the ordinary
             // `wrela dump --stage=<stage>` every other expectation file
@@ -2185,7 +2270,6 @@ fn golden(update: bool) -> Result<(), String> {
                         "{} [build-err]: wrela build unexpectedly exited successfully",
                         case.display()
                     ));
-                    let _ = std::fs::remove_dir_all(&build_out_dir_abs);
                     continue;
                 }
             } else if stage != "test" && !out.status.success() {
@@ -2194,9 +2278,6 @@ fn golden(update: bool) -> Result<(), String> {
                     case.display(),
                     String::from_utf8_lossy(&out.stderr)
                 ));
-                if stage == "build" {
-                    let _ = std::fs::remove_dir_all(&build_out_dir_abs);
-                }
                 continue;
             }
             let actual = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -2204,9 +2285,6 @@ fn golden(update: bool) -> Result<(), String> {
             if update {
                 std::fs::write(&exp, &actual)
                     .map_err(|e| format!("write {}: {e}", exp.display()))?;
-                if stage == "build" || stage == "build-err" {
-                    let _ = std::fs::remove_dir_all(&build_out_dir_abs);
-                }
                 continue;
             }
             let expected = std::fs::read_to_string(&exp)
@@ -2259,9 +2337,22 @@ fn golden(update: bool) -> Result<(), String> {
                     }
                 }
             }
-            if stage == "build" || stage == "build-err" {
-                let _ = std::fs::remove_dir_all(&build_out_dir_abs);
-            }
+        }
+        // plans/M5.md item D: the build-output directory (if any expected
+        // file in this case used one) is removed once, here, after every
+        // expectation file for this case has had its own chance to read
+        // it — `img.hex` (above) needs `build.txt`'s own written `.img`
+        // still on disk, so removal can no longer happen immediately
+        // after the `build`/`build-err` stage itself finishes.
+        let case_name = case
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("case")
+            .to_string();
+        let build_out_dir_abs = root().join(format!("target/golden-build-tmp/{case_name}"));
+        if build_out_dir_abs.exists() {
+            std::fs::remove_dir_all(&build_out_dir_abs)
+                .map_err(|e| format!("remove {}: {e}", build_out_dir_abs.display()))?;
         }
     }
     if update {
@@ -2290,23 +2381,29 @@ fn golden(update: bool) -> Result<(), String> {
 // runs agree byte-for-byte. Dumb on purpose — no caching, no parallelism,
 // a plain sequential loop over every case with a pinned `report.txt`.
 
-/// Reproduces `wrela dump --stage=report <target>`'s own stdout, entirely
-/// in-process — no subprocess, no shared state between calls, so calling
-/// this twice back-to-back for the same `target` is exactly "fresh
-/// loader+sema+eval each time." Mirrors `bin/wrela.rs`'s own `--stage=report`
-/// driver structurally (the single-file/whole-closure fork, one-`@image`
-/// discovery, `eval_image`, `check_sealed`, `report::render`) rather than
-/// calling into it: that binary's own driver functions are not a library
-/// surface this crate can reach, so this is its own small, deliberately
-/// parallel copy (CLAUDE.md: "prefer long obvious files over deep
-/// indirection") — `golden`'s own pinned `report.txt` expectations are the
-/// tripwire that would catch the two ever silently drifting apart. Always
-/// returns `Ok` with the rendered text (a dump, even an error dump, *is*
-/// the stable output — the same house rule `bin/wrela.rs`'s own module doc
-/// states); the outer `Err` path is reserved for this function's own
-/// plumbing failures (a file the closure needs cannot be read), which is
-/// itself part of what determinism means to prove absent across two runs.
-fn produce_report_text(target: &Path) -> Result<String, String> {
+/// Reproduces `wrela dump --stage=report <target>`'s own stdout PLUS
+/// (plans/M5.md item D) whatever `wrela build` would write as `<name>.img`
+/// alongside it, entirely in-process — no subprocess, no shared state
+/// between calls, so calling this twice back-to-back for the same `target`
+/// is exactly "fresh loader+sema+eval+lower+codegen+layout each time."
+/// Mirrors `bin/wrela.rs`'s own `--stage=report`/`build_report` driver
+/// structurally (the single-file/whole-closure fork, one-`@image`
+/// discovery, `eval_image`, `check_sealed`, `report::render`, then
+/// `layout::merge_layout_ctx`/`layout::try_layout_program`'s identical
+/// "all or nothing" attempt) rather than calling into it: that binary's
+/// own driver functions are not a library surface this crate can reach, so
+/// this is its own small, deliberately parallel copy (CLAUDE.md: "prefer
+/// long obvious files over deep indirection") — `golden`'s own pinned
+/// `report.txt`/written-image expectations are the tripwire that would
+/// catch the two ever silently drifting apart. Always returns `Ok` with
+/// the rendered text (a dump, even an error dump, *is* the stable output —
+/// the same house rule `bin/wrela.rs`'s own module doc states) plus
+/// `Some(image bytes)` exactly when layout succeeded; the outer `Err` path
+/// is reserved for this function's own plumbing failures (a file the
+/// closure needs cannot be read, or `layout_program`'s own genuine
+/// internal-consistency failure) — itself part of what determinism means
+/// to prove absent across two runs.
+fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), String> {
     fn render_sema_error(e: &sema::SemaError) -> String {
         let mut s = if e.omit_location {
             format!("error[{}]: {}\n", e.category, e.message)
@@ -2328,36 +2425,39 @@ fn produce_report_text(target: &Path) -> Result<String, String> {
     let tokens = match lexer::lex(&source) {
         Ok(t) => t,
         Err(e) => {
-            return Ok(format!(
-                "error[lex]: {} at {}:{}\n",
-                e.message, e.line, e.col
+            return Ok((
+                format!("error[lex]: {} at {}:{}\n", e.message, e.line, e.col),
+                None,
             ));
         }
     };
     let parsed = match parser::parse(tokens) {
         Ok(m) => m,
         Err(e) => {
-            return Ok(format!(
-                "error[parse]: {} at {}:{}\n",
-                e.message, e.line, e.col
+            return Ok((
+                format!("error[parse]: {} at {}:{}\n", e.message, e.line, e.col),
+                None,
             ));
         }
     };
 
-    let (programs, file_paths): (
+    let (programs, file_paths, modules_by_addr): (
         BTreeMap<String, sema::typed::TypedProgram>,
         BTreeMap<String, PathBuf>,
+        BTreeMap<String, Module>,
     ) = if parsed.imports.is_empty() {
         match sema::check_typed(&parsed, &target.display().to_string()) {
             Ok(program) => {
                 let addr = parsed.path.join(".");
                 let mut programs = BTreeMap::new();
                 let mut file_paths = BTreeMap::new();
+                let mut modules_by_addr = BTreeMap::new();
                 file_paths.insert(addr.clone(), target.to_path_buf());
+                modules_by_addr.insert(addr.clone(), parsed);
                 programs.insert(addr, program);
-                (programs, file_paths)
+                (programs, file_paths, modules_by_addr)
             }
-            Err(e) => return Ok(render_sema_error(&e)),
+            Err(e) => return Ok((render_sema_error(&e), None)),
         }
     } else {
         match loader::load_closure(target) {
@@ -2377,30 +2477,34 @@ fn produce_report_text(target: &Path) -> Result<String, String> {
                     .into_iter()
                     .map(|(k, m)| (k, m.module))
                     .collect();
+                let modules_by_addr: BTreeMap<String, Module> = modules
+                    .iter()
+                    .map(|(k, m)| (k.join("."), m.clone()))
+                    .collect();
                 match sema::check_program_typed(&modules, &paths) {
                     Ok(programs) => {
                         let programs: BTreeMap<String, sema::typed::TypedProgram> = programs
                             .into_iter()
                             .map(|(k, p)| (k.join("."), p))
                             .collect();
-                        (programs, file_paths)
+                        (programs, file_paths, modules_by_addr)
                     }
-                    Err(e) => return Ok(render_sema_error(&e)),
+                    Err(e) => return Ok((render_sema_error(&e), None)),
                 }
             }
             Err(loader::LoadError::Lex(e)) => {
-                return Ok(format!(
-                    "error[lex]: {} at {}:{}\n",
-                    e.message, e.line, e.col
+                return Ok((
+                    format!("error[lex]: {} at {}:{}\n", e.message, e.line, e.col),
+                    None,
                 ));
             }
             Err(loader::LoadError::Parse(e)) => {
-                return Ok(format!(
-                    "error[parse]: {} at {}:{}\n",
-                    e.message, e.line, e.col
+                return Ok((
+                    format!("error[parse]: {} at {}:{}\n", e.message, e.line, e.col),
+                    None,
                 ));
             }
-            Err(loader::LoadError::Build(e)) => return Ok(render_sema_error(&e)),
+            Err(loader::LoadError::Build(e)) => return Ok((render_sema_error(&e), None)),
         }
     };
 
@@ -2409,7 +2513,10 @@ fn produce_report_text(target: &Path) -> Result<String, String> {
         .filter_map(|(m, p)| p.image_fn.as_ref().map(|f| (m, f)))
         .collect();
     match candidates.len() {
-        0 => Ok("error[build]: no `@image` fn found in the build closure\n".to_string()),
+        0 => Ok((
+            "error[build]: no `@image` fn found in the build closure\n".to_string(),
+            None,
+        )),
         1 => {
             let (module, fn_name) = candidates[0];
             let program = &programs[module];
@@ -2426,13 +2533,25 @@ fn produce_report_text(target: &Path) -> Result<String, String> {
                             });
                         }
                         match report::render(&inputs, &program.enums, &graph) {
-                            Ok(text) => Ok(text),
-                            Err(e) => Ok(format!("error[build]: {e}\n")),
+                            Ok(mut text) => {
+                                let layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
+                                    .map_err(|e| render_sema_error(&e))?;
+                                let img = match layout::try_layout_program(&programs, &layout_ctx) {
+                                    Ok(Some(image_layout)) => {
+                                        layout::render_layout_section(&mut text, &image_layout);
+                                        Some(image_layout.blob)
+                                    }
+                                    Ok(None) => None,
+                                    Err(e) => return Err(format!("layout: {e}")),
+                                };
+                                Ok((text, img))
+                            }
+                            Err(e) => Ok((format!("error[build]: {e}\n"), None)),
                         }
                     }
-                    Err(e) => Ok(render_sema_error(&e)),
+                    Err(e) => Ok((render_sema_error(&e), None)),
                 },
-                Err(e) => Ok(render_sema_error(&eval::to_sema_error(e))),
+                Err(e) => Ok((render_sema_error(&eval::to_sema_error(e)), None)),
             }
         }
         _ => {
@@ -2440,14 +2559,32 @@ fn produce_report_text(target: &Path) -> Result<String, String> {
                 .iter()
                 .map(|(m, f)| format!("{m}::{f}"))
                 .collect();
-            Ok(format!(
-                "error[build]: more than one `@image` fn reachable in the build closure ({})\n",
-                names.join(", ")
+            Ok((
+                format!(
+                    "error[build]: more than one `@image` fn reachable in the build closure ({})\n",
+                    names.join(", ")
+                ),
+                None,
             ))
         }
     }
 }
 
+/// plans/M5.md decision 10 (`compiler.repro.byte-identical`): "identical
+/// declared inputs ... produce a byte-for-byte identical ... image and
+/// report." Grown from the M4-era report-only oracle (this fn's own former
+/// name) to cover both halves of that sentence: for every golden case
+/// carrying a pinned `expected/report.txt`, `produce_report_and_image` runs
+/// *twice*, fresh, in-process, and this compares the rendered report text
+/// AND the emitted image bytes (`Some`/`Some`-equal, or `None`/`None` —
+/// never one `Some` and one `None`, which would itself be a determinism
+/// failure) — the same population `golden` itself already pins, so `xtask
+/// check`'s own existing `report-determinism` step is, unchanged in name,
+/// this clause's own in-check wiring; `cargo xtask repro` (below) is the
+/// identical check run standalone. Coverage note (the clause's own
+/// "record what's covered now" instruction): the *unsigned* image + report
+/// only — the signed triple (M8+) is not implemented yet, named nowhere as
+/// covered here.
 fn report_determinism() -> Result<(), String> {
     let golden_dir = root().join("tests/golden");
     let mut cases = 0usize;
@@ -2466,14 +2603,14 @@ fn report_determinism() -> Result<(), String> {
                 continue;
             }
         };
-        let first = produce_report_text(&target)?;
-        let second = produce_report_text(&target)?;
+        let (first_text, first_img) = produce_report_and_image(&target)?;
+        let (second_text, second_img) = produce_report_and_image(&target)?;
         cases += 1;
-        if first != second {
-            let first_line = first.lines().next().unwrap_or("");
-            let mismatch = first
+        if first_text != second_text {
+            let first_line = first_text.lines().next().unwrap_or("");
+            let mismatch = first_text
                 .lines()
-                .zip(second.lines())
+                .zip(second_text.lines())
                 .enumerate()
                 .find(|(_, (a, b))| a != b);
             let where_str = match mismatch {
@@ -2486,9 +2623,19 @@ fn report_determinism() -> Result<(), String> {
                 first_line
             ));
         }
+        if first_img != second_img {
+            failures.push(format!(
+                "{}: two fresh image-emission runs disagree ({} bytes vs {} bytes)",
+                case.display(),
+                first_img.map(|b| b.len()).unwrap_or(0),
+                second_img.map(|b| b.len()).unwrap_or(0),
+            ));
+        }
     }
     if failures.is_empty() {
-        println!("report-determinism: {cases} case(s) reproduced byte-for-byte across two runs");
+        println!(
+            "report-determinism: {cases} case(s) reproduced byte-for-byte (report + image where present) across two runs"
+        );
         Ok(())
     } else {
         for f in &failures {
@@ -3186,14 +3333,14 @@ fn bench_build_target() -> Result<PathBuf, String> {
         .ok_or_else(|| "bench build: tests/golden/appliance has no `root`-named target".to_string())
 }
 
-/// One full build-lane workload iteration: `produce_report_text` over the
-/// appliance's root target, discarding the outcome (a rendered report, or
-/// a well-formed diagnostic — either is as valid a timed outcome as the
+/// One full build-lane workload iteration: `produce_report_and_image` over
+/// the appliance's root target, discarding the outcome (a rendered report,
+/// or a well-formed diagnostic — either is as valid a timed outcome as the
 /// other, exactly like the compiler bench's check/eval lanes above) —
 /// only wall time is measured.
 fn run_build_bench_workload(target: &Path) -> Duration {
     let start = Instant::now();
-    let _ = produce_report_text(target);
+    let _ = produce_report_and_image(target);
     start.elapsed()
 }
 
