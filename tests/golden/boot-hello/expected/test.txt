@@ -1,0 +1,4 @@
+test arith_ok: ok
+test struct_match_ok: ok
+test deliberate_fail: FAILED assertion failed: this test is meant to fail — pins the landing-pad path
+2 passed, 1 failed

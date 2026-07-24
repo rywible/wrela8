@@ -1,5 +1,5 @@
 test test_passes: ok
 test test_fails: FAILED assertion failed: wrong on purpose
 test test_quota_exceeded: FAILED step quota exceeded (20000 steps)
-test test_needs_the_machine: FAILED `@test(runtime)` is not run yet (M5: generated image tests)
-1 passed, 3 failed
+test test_needs_the_machine: ok
+2 passed, 2 failed

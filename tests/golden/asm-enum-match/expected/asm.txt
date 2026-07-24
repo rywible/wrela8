@@ -36,7 +36,7 @@ Program
     0033: f9400be9  ldr x9, [sp, #16]
     0034: f9400bea  ldr x10, [sp, #16]
     0035: 9b0a7d2b  mul x11, x9, x10
-    0036: db4a7d2c  umulh x12, x9, x10
+    0036: 9bca7d2c  umulh x12, x9, x10
     0037: eb1f019f  cmp x12, xzr
     0038: 54000100  b.eq #32
     0039: 90000000  adrp x0, rodata+0x0
@@ -80,7 +80,7 @@ Program
     0077: f9402be9  ldr x9, [sp, #80]
     0078: f9402bea  ldr x10, [sp, #80]
     0079: 9b0a7d2b  mul x11, x9, x10
-    0080: db4a7d2c  umulh x12, x9, x10
+    0080: 9bca7d2c  umulh x12, x9, x10
     0081: eb1f019f  cmp x12, xzr
     0082: 54000100  b.eq #32
     0083: 90000000  adrp x0, rodata+0x0

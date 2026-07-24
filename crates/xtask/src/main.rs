@@ -2104,12 +2104,42 @@ fn golden_case_target(case: &Path) -> Result<Option<PathBuf>, String> {
     Ok(None)
 }
 
+/// plans/M5.md item E: builds the `wrela-vmm` binary and codesigns it
+/// against `crates/wrela-vmm/entitlements.plist` — the smoke probe's own
+/// exact recipe (plans/M5.md's "item zero"), re-run on every `cargo xtask
+/// check`/`golden`. `golden`'s own `test.txt` cases pass the resulting
+/// path via `wrela test --vmm <path>` so a case with an `@test(runtime)`
+/// fn boots on this exact, freshly rebuilt-and-signed binary rather than
+/// whatever `find_vmm_binary`'s own next-to-the-executable fallback might
+/// happen to find on disk. `codesign` itself only exists on macOS
+/// (CLAUDE.md's own target host for this milestone's flagship dev loop);
+/// building still runs everywhere, so a `test.txt` case with no runtime
+/// tests never depends on this step at all, and the boot golden's own
+/// failure on a non-macOS host is an honest, expected gap, not a silent
+/// skip.
+fn build_and_sign_vmm() -> Result<PathBuf, String> {
+    run(
+        Command::new("cargo").args(["build", "--quiet", "-p", "wrela-vmm", "--bin", "wrela-vmm"]),
+        "cargo build wrela-vmm",
+    )?;
+    let bin = root().join("target/debug/wrela-vmm");
+    if cfg!(target_os = "macos") {
+        let mut cmd = Command::new("codesign");
+        cmd.args(["--force", "--sign", "-", "--entitlements"]);
+        cmd.arg(root().join("crates/wrela-vmm/entitlements.plist"));
+        cmd.arg(&bin);
+        run(&mut cmd, "codesign wrela-vmm")?;
+    }
+    Ok(bin)
+}
+
 fn golden(update: bool) -> Result<(), String> {
     run(
         Command::new("cargo").args(["build", "--quiet", "-p", "wrela-compiler", "--bin", "wrela"]),
         "cargo build wrela",
     )?;
     let wrela = root().join("target/debug/wrela");
+    let vmm = build_and_sign_vmm()?;
     let golden_dir = root().join("tests/golden");
     let mut cases = 0usize;
     let mut failures = Vec::new();
@@ -2239,6 +2269,8 @@ fn golden(update: bool) -> Result<(), String> {
                     .current_dir(root())
                     .arg("test")
                     .arg(rel_input)
+                    .arg("--vmm")
+                    .arg(&vmm)
                     .output()
                     .map_err(|e| format!("run wrela: {e}"))?
             } else if stage == "build" || stage == "build-err" {

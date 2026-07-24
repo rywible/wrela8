@@ -54,7 +54,7 @@ Program
     0008: f94003e9  ldr x9, [sp, #0]
     0009: f94007ea  ldr x10, [sp, #8]
     0010: 9b0a7d2b  mul x11, x9, x10
-    0011: db4a7d2c  umulh x12, x9, x10
+    0011: 9bca7d2c  umulh x12, x9, x10
     0012: eb1f019f  cmp x12, xzr
     0013: 54000100  b.eq #32
     0014: 90000000  adrp x0, rodata+0x1a

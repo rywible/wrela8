@@ -471,12 +471,14 @@ pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, Vm
                     }
                     advance_pc(vcpu)?;
                 } else if let Some(imm) = decode_brk(esr) {
+                    let pc = read_pc(vcpu).unwrap_or(0);
                     return Err(VmmError::GuestFault(format!(
-                        "unexpected `BRK #{imm}` (esr={esr:#x}, ipa={ipa:#x})"
+                        "unexpected `BRK #{imm}` (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x})"
                     )));
                 } else {
+                    let pc = read_pc(vcpu).unwrap_or(0);
                     return Err(VmmError::GuestFault(format!(
-                        "unhandled exception (esr={esr:#x}, ipa={ipa:#x})"
+                        "unhandled exception (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x})"
                     )));
                 }
             }
@@ -501,6 +503,18 @@ pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, Vm
         clock_log,
         exits,
     })
+}
+
+/// Reads the vCPU's own current `PC` for a fault diagnostic — best-effort
+/// (`Ok(0)` is never returned; a real HVF failure here still surfaces as
+/// `None` to the caller, which substitutes `0` rather than compounding
+/// one failure with another).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn read_pc(vcpu: u64) -> Option<u64> {
+    use hv::{HV_REG_PC, HV_SUCCESS, hv_vcpu_get_reg};
+    let mut pc = 0u64;
+    let r = unsafe { hv_vcpu_get_reg(vcpu, HV_REG_PC, &mut pc) };
+    if r == HV_SUCCESS { Some(pc) } else { None }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

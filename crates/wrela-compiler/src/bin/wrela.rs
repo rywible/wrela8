@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use wrela_compiler::eval;
@@ -22,11 +22,12 @@ use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::report;
 use wrela_compiler::sema;
-use wrela_compiler::sema::typed::TypedProgram;
+use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
+use wrela_compiler::{codegen, lower};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
 
 /// Renders one `sema::SemaError` exactly the way `print_sema_error` prints
 /// it (decision 1's one-line diagnostic, or item H's one multi-line
@@ -744,22 +745,103 @@ fn dump(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `wrela test <file.wr>` (plans/M3.md item E, decision 9): runs sema
-/// (`check_typed`) then every `@test` fn's own report line
-/// (`eval::run_tests`, which owns the whole pinned report format).
-/// A lex/parse/sema failure prints that stage's own diagnostic — exactly
-/// the `dump --stage=check`/`--stage=typed` house style — and exits
-/// nonzero without ever printing a test report at all: there is no
-/// checked program yet to run `@test` fns out of. `ExitCode::FAILURE`
-/// whenever any test's own line is `FAILED` (`run_tests`'s own second
-/// return value) — the report itself is still the complete, stable dump
-/// either way (decision 9: never fail-fast across tests).
+/// Parses `eval::run_tests`'s own pinned final line, `"<N> passed, <M>
+/// failed"` — the one piece of that stable text format this binary needs
+/// to pick apart (never to reinterpret; `eval::run_tests` still owns the
+/// wording) so the comptime and runtime tiers can be merged into one
+/// summary (plans/M5.md decision 1).
+fn parse_summary_line(line: &str) -> Option<(usize, usize)> {
+    let rest = line.strip_suffix(" failed")?;
+    let (p, f) = rest.split_once(" passed, ")?;
+    Some((p.parse().ok()?, f.parse().ok()?))
+}
+
+/// Locates the codesigned `wrela-vmm` binary the runtime tier shells out
+/// to (plans/M5.md item E: "`wrela` the compiler must not shell to
+/// cargo"). `--vmm <path>` (explicit, always wins — `xtask` passes the
+/// build+signed path for goldens); otherwise a `wrela-vmm` binary sitting
+/// right next to this executable's own directory (the natural place for
+/// it once both binaries are installed together). `None` when neither
+/// exists — the caller's own fail-closed path, never a silent skip.
+fn find_vmm_binary(explicit: Option<&str>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        let pb = PathBuf::from(p);
+        return if pb.is_file() { Some(pb) } else { None };
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidate = dir.join("wrela-vmm");
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// `wrela test <file.wr> [--vmm <path>]` (plans/M3.md item E, decision 9;
+/// grown by plans/M5.md item E, decision 1, into the runtime tier). Runs
+/// sema (`check_typed`) then every `@test` fn's own report line
+/// (`eval::run_tests`, which owns the whole pinned comptime-tier report
+/// format). A lex/parse/sema failure prints that stage's own diagnostic
+/// — exactly the `dump --stage=check`/`--stage=typed` house style — and
+/// exits nonzero without ever printing a test report at all: there is no
+/// checked program yet to run `@test` fns out of.
+///
+/// When the program declares no `@test(runtime)` fns, this is byte-
+/// identical to the pre-M5 behavior (every existing `wrela test` golden
+/// stays pinned, untouched): `eval::run_tests`'s own text, printed
+/// verbatim, `ExitCode::FAILURE` iff any line is `FAILED`.
+///
+/// When it declares one or more: decision 1's own merge rule — "all
+/// comptime lines first, then all runtime lines, then the one summary
+/// line" — is built here, since `eval::run_tests` itself (read-only,
+/// `eval/`) always treats a `TestKind::Runtime` test as an automatic,
+/// fixed-wording `FAILED` line folded into its own summary (the correct
+/// behavior for a build with *no* runtime tier at all, decision 9's own
+/// pre-M5 fallback). This fn instead: (1) recovers the *comptime-only*
+/// lines and counts by stripping every one of those fixed placeholder
+/// lines back out of `run_tests`'s own text (`comptime_passed` is
+/// `run_tests`'s own total — a runtime test never contributes there;
+/// `comptime_failed` is the total minus exactly `runtime_tests.len()`,
+/// since each contributes exactly one placeholder failure, unconditionally);
+/// (2) lowers/codegens/lays out the whole program as one test image
+/// (`layout::layout_test_image`) — a lowering/codegen failure here fails
+/// closed with a named `error[unimplemented]` line, never a panic or a
+/// silent skip; (3) locates and runs the codesigned `wrela-vmm` binary
+/// (`find_vmm_binary`) — its absence is itself a named fail-closed line,
+/// per the plan's own exact wording; (4) verifies the transcript's own
+/// well-formedness (exactly one `test <name>: `-prefixed line per runtime
+/// test, in declaration order, plus one trailing summary line) before
+/// trusting any of it; (5) prints comptime lines, then the transcript's
+/// own per-test lines, then the one merged summary.
 fn test_cmd(args: &[String]) -> ExitCode {
-    let (Some(path), true) = (args.first(), args.len() == 1) else {
+    let mut path: Option<String> = None;
+    let mut vmm_arg: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--vmm" {
+            i += 1;
+            match args.get(i) {
+                Some(p) => vmm_arg = Some(p.clone()),
+                None => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else if path.is_none() {
+            path = Some(args[i].clone());
+        } else {
+            eprintln!("{USAGE}");
+            return ExitCode::FAILURE;
+        }
+        i += 1;
+    }
+    let Some(path) = path else {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    let source = match std::fs::read_to_string(path) {
+
+    let source = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot read {path}: {e}");
@@ -780,16 +862,209 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let program = match sema::check_typed(&module, path) {
+    let program = match sema::check_typed(&module, &path) {
         Ok(p) => p,
         Err(e) => {
             print_sema_error(&e);
             return ExitCode::FAILURE;
         }
     };
-    let (report, any_failed) = wrela_compiler::eval::run_tests(&program);
-    print!("{report}");
-    if any_failed {
+
+    let (comptime_report, _) = eval::run_tests(&program);
+    let runtime_tests: Vec<String> = program
+        .tests
+        .iter()
+        .filter(|t| t.kind == TestKind::Runtime)
+        .map(|t| t.name.clone())
+        .collect();
+
+    if runtime_tests.is_empty() {
+        // Byte-identical to every pre-M5 `wrela test` golden.
+        print!("{comptime_report}");
+        let any_failed = comptime_report
+            .lines()
+            .next_back()
+            .and_then(parse_summary_line)
+            .is_some_and(|(_, f)| f > 0);
+        return if any_failed {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+
+    let mut lines: Vec<&str> = comptime_report.lines().collect();
+    let summary_line = lines.pop().unwrap_or("");
+    let (total_passed, total_failed) = parse_summary_line(summary_line).unwrap_or((0, 0));
+    let comptime_passed = total_passed;
+    let comptime_failed = total_failed.saturating_sub(runtime_tests.len());
+    let placeholder_lines: std::collections::BTreeSet<String> = runtime_tests
+        .iter()
+        .map(|name| {
+            format!(
+                "test {name}: FAILED `@test(runtime)` is not run yet (M5: generated image tests)"
+            )
+        })
+        .collect();
+    let comptime_lines: Vec<&str> = lines
+        .into_iter()
+        .filter(|l| !placeholder_lines.contains(*l))
+        .collect();
+
+    let mut modules: BTreeMap<String, Module> = BTreeMap::new();
+    modules.insert(module.path.join("."), module.clone());
+    let layout_ctx = match layout::merge_layout_ctx(&modules) {
+        Ok(c) => c,
+        Err(e) => {
+            print_sema_error(&e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let mwir_program = match lower::lower_program(&program) {
+        Ok(p) => p,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!(
+                "error[unimplemented]: the runtime test tier could not lower this program: {}",
+                e.message
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let codegen_program = match codegen::codegen_program(&mwir_program, &layout_ctx) {
+        Ok(p) => p,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!(
+                "error[unimplemented]: the runtime test tier could not compile this program: {}",
+                e.message
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let image_layout = match layout::layout_test_image(&codegen_program, &runtime_tests) {
+        Ok(l) => l,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!(
+                "error[build]: the runtime test tier could not lay out the test image: {}",
+                e.message
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let Some(vmm_path) = find_vmm_binary(vmm_arg.as_deref()) else {
+        for l in &comptime_lines {
+            println!("{l}");
+        }
+        println!(
+            "error[unimplemented]: the runtime test tier needs the wrela VMM (macOS/HVF at M5)"
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "wrela-test-{}-{}",
+        std::process::id(),
+        report::sha256_hex(path.as_bytes())
+    ));
+    if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+        eprintln!("error: cannot create {}: {e}", tmp_dir.display());
+        return ExitCode::FAILURE;
+    }
+    let img_path = tmp_dir.join("test.img");
+    let report_path = tmp_dir.join("test.report.txt");
+    if let Err(e) = std::fs::write(&img_path, &image_layout.blob) {
+        eprintln!("error: cannot write {}: {e}", img_path.display());
+        return ExitCode::FAILURE;
+    }
+    let source_digest = report::sha256_hex(source.as_bytes());
+    let mut report_text = format!(
+        "Machine revision={}\nInput path={path} digest={source_digest}\n",
+        wrela_machine::MACHINE_REVISION_STR
+    );
+    for s in &image_layout.sections {
+        report_text.push_str(&format!(
+            "Section name={} base={:#x} size={}\n",
+            s.name, s.base, s.size
+        ));
+    }
+    report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+    if let Err(e) = std::fs::write(&report_path, &report_text) {
+        eprintln!("error: cannot write {}: {e}", report_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    let out = Command::new(&vmm_path)
+        .arg(&report_path)
+        .arg(&img_path)
+        .output();
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    let out = match out {
+        Ok(o) => o,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!(
+                "error[build]: could not run the wrela VMM ({}): {e}",
+                vmm_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    match out.status.code() {
+        Some(0) | Some(1) => {}
+        _ => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!(
+                "error[build]: the wrela VMM did not boot the test image: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let transcript = String::from_utf8_lossy(&out.stdout).into_owned();
+    let t_lines: Vec<&str> = transcript.lines().collect();
+    let well_formed = t_lines.len() == runtime_tests.len() + 1
+        && t_lines
+            .iter()
+            .zip(runtime_tests.iter())
+            .all(|(line, name)| line.starts_with(&format!("test {name}: ")));
+    let Some((runtime_passed, runtime_failed)) =
+        (if well_formed { t_lines.last() } else { None }).and_then(|l| parse_summary_line(l))
+    else {
+        for l in &comptime_lines {
+            println!("{l}");
+        }
+        println!(
+            "error[build]: the wrela VMM's own transcript is not well-formed (expected {} test line(s) then a summary):\n{transcript}",
+            runtime_tests.len()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    for l in &comptime_lines {
+        println!("{l}");
+    }
+    for l in &t_lines[..t_lines.len() - 1] {
+        println!("{l}");
+    }
+    let passed = comptime_passed + runtime_passed;
+    let failed = comptime_failed + runtime_failed;
+    println!("{passed} passed, {failed} failed");
+    if failed > 0 {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
