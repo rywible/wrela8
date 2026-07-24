@@ -28,6 +28,7 @@ pub mod imports;
 pub mod matches;
 pub mod paths;
 pub mod prelude;
+pub mod send_proof;
 pub mod specialize;
 pub mod symbols;
 pub mod typed;
@@ -186,6 +187,17 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     matches::check(&specialized, &decl_items, &mctx)?;
     program.instantiations = generics::check(&specialized, &decl_items, &mctx, path)?;
     crate::eval::check_comptime(&program)?;
+    // plans/M6.md item G, decision 5: the bare `send` statement is the
+    // language's one proof-conditioned form, and the proof is a
+    // *whole-image* fact (a mailbox's declared capacity lives in the
+    // `@image` fn). It therefore runs here — after every pass above has
+    // produced the typed program the proof reads, and before any
+    // consumer of that program exists. `send_proof::check` returns
+    // immediately unless the closure actually contains a bare `send`
+    // statement, so this is a no-op for every other program.
+    // Single-module entry: the "closure" is this one module.
+    let one = BTreeMap::from([(specialized.path.join("."), &program)]);
+    send_proof::check(&one)?;
     Ok(program)
 }
 
@@ -392,6 +404,14 @@ pub fn check_program_typed(
         crate::eval::check_comptime(&program)?;
         programs.insert(key.clone(), program);
     }
+
+    // plans/M6.md item G: the whole-closure half of the send proof (see
+    // `check_typed` above) — every module is typed by now, which is
+    // exactly what "the whole-image count of static send/call sites"
+    // needs. Runs once, over all of them, after the per-module loop.
+    let by_name: BTreeMap<String, &typed::TypedProgram> =
+        programs.iter().map(|(k, p)| (k.join("."), p)).collect();
+    send_proof::check(&by_name)?;
 
     Ok(programs)
 }

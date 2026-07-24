@@ -700,6 +700,14 @@ fn exec_stmt<'a, 'p>(
             "internal error: `with group` reached the comptime evaluator (unreachable — \
              `eval::legal` marks every containing fn illegal for comptime)",
         )),
+        // plans/M6.md item G: identical reasoning to `with group` above —
+        // a `send` is an actor operation, so `eval::legal` already marks
+        // every containing fn illegal for comptime and `require_legal`
+        // refuses to run it. An honest `Err`, never a panic.
+        TypedStmtKind::BareSend { .. } => Err(ctx.abandon(
+            "internal error: a bare `send` statement reached the comptime evaluator \
+             (unreachable — `eval::legal` marks every containing fn illegal for comptime)",
+        )),
     }
 }
 

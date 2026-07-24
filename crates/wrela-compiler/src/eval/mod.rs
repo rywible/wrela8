@@ -640,6 +640,10 @@ fn collect_asserts_stmt<'p>(stmt: &'p TypedStmt, out: &mut Vec<AssertSite<'p>>) 
             TypedDeferBody::Suite(stmts) => collect_asserts_stmts(stmts, out),
         },
         TypedStmtKind::ExprStmt(e) => collect_asserts_expr(e, out),
+        // plans/M6.md item G: a bare `send` statement carries an
+        // ordinary message call whose arguments could embed a
+        // `comptime assert` exactly like any other expression's.
+        TypedStmtKind::BareSend { expr, .. } => collect_asserts_expr(expr, out),
         TypedStmtKind::WithGroup {
             capacity,
             deadline,

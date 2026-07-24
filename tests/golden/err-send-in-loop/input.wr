@@ -1,0 +1,31 @@
+module examples.err_send_in_loop
+
+# plans/M6.md item G, decision 5's second conjunct: "every such site sits
+# outside any loop ... (so each executes at most once per root turn)".
+# The mailbox here is declared far larger than the loop's own trip count,
+# deliberately: the proof counts *static* sites and never tries to bound a
+# loop, so a generous capacity changes nothing (bound proving is deferred
+# cleverness — `sema.bounds.loops` stays a gap).
+
+@actor
+pub struct Logger:
+    total: u64
+
+    pub fn record(mut self, code: u64) -> unit:
+        self.total = self.total + code
+        return unit
+
+@test(runtime)
+async fn in_loop(lg: Actor[Logger]):
+    i: u64 = 0
+    while i < 3:
+        send lg.record(code=i)
+        i = i + 1
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-send-in-loop", target=Target.wrela_machine_v1)
+    lg = img.actor(Logger, mailbox=64)
+    img.supervise(children=[lg], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

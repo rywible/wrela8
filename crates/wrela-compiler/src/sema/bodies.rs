@@ -4357,26 +4357,30 @@ fn check_send_call(
     })
 }
 
-/// The item-A floor (decision 5): every bare `send` statement is an
-/// error demanding the result be consumed — the send-proof analysis that
-/// can make some of them infallible is item G's job. The inner call is
-/// still fully typed first (`check_send`) so a genuine mistake in the
-/// call itself (unknown method, bad message argument, ...) reports that
-/// error instead of this one. Category `actor` (added deliberately to
-/// `SEMA_CATEGORIES`, `xtask`).
+/// A bare `send` statement (02-language.md §9.4's proof-conditioned
+/// form). The call itself is fully typed here, exactly like the
+/// expression form; whether the *bare statement* is legal is the
+/// whole-image question `sema::send_proof` answers once every module is
+/// typed (plans/M6.md item G) — a mailbox capacity lives in the `@image`
+/// fn, which no body-checking pass can see. The `send` keyword's own
+/// span rides along on the node so that late rejection still reports a
+/// real `at L:C` (`TypedStmtKind::BareSend`'s own doc comment).
+///
+/// Item A's floor — reject every bare `send` here, unconditionally —
+/// is what this replaces; a genuine mistake in the call itself (unknown
+/// method, bad message argument, a non-`unit` reply, `send` outside an
+/// `async fn`) still reports its own error from `check_send` first,
+/// before the proof ever runs.
 fn check_send_stmt(
     span: Span,
     e: &Expr,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedStmt, SemaError> {
-    check_send(e, span, fctx, mctx)?;
-    Err(actor_error(
-        "a bare `send` statement must consume its result — bind it or `match` it (admission \
-         cannot yet be proven at build time)"
-            .to_string(),
-        span,
-    ))
+    let expr = check_send(e, span, fctx, mctx)?;
+    Ok(TypedStmt {
+        kind: TypedStmtKind::BareSend { span, expr },
+    })
 }
 
 /// `g.start(callee, args...)`'s own callee argument (02-language.md
@@ -4936,6 +4940,10 @@ fn scan_await_cross_stmt(s: &TypedStmt, seen_await: &mut bool) -> Result<(), Sem
         // straddles a suspension.
         TypedStmtKind::Defer(_) => Ok(()),
         TypedStmtKind::ExprStmt(e) => scan_await_cross_expr(e, seen_await),
+        // plans/M6.md item G: a bare `send`'s message arguments are
+        // ordinary expressions and obey 02-language.md §9.2 exactly like
+        // any other call's.
+        TypedStmtKind::BareSend { expr, .. } => scan_await_cross_expr(expr, seen_await),
         TypedStmtKind::WithGroup {
             capacity,
             deadline,

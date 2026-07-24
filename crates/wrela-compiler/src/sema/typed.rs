@@ -261,12 +261,14 @@ pub enum TypedExprKind {
     /// (none today, but keeps the raw call shape uniform with an
     /// ordinary, non-awaited `Call`).
     Await(Box<TypedExpr>),
-    /// `send actor.method(...)` used as a value (02-language.md §9.4) —
-    /// `match send x.y(...): ...`'s own operand, or (before item G's
-    /// proof lands) every bare `send` statement, which
-    /// `bodies::check_stmt` still rejects unconditionally (decision 5's
-    /// item-A floor) even though the node above types cleanly; this is
-    /// therefore reachable *only* through the expression form today.
+    /// `send actor.method(...)` (02-language.md §9.4) — either used as a
+    /// value (`match send x.y(...): ...`'s own operand) or carried by a
+    /// `TypedStmtKind::BareSend` statement, the proof-conditioned form
+    /// `sema::send_proof` decides on (plans/M6.md item G). The node's own
+    /// type is identical either way: the proof is a *statement legality*
+    /// verdict, never a type refinement — 02 §9.4's "the error type is
+    /// `never`" erasure is not shipped at M6 (decision 8's own "erasure
+    /// shipped: none", recorded in `actors.send.statement-requires-proof`).
     /// `inner` is the raw message `Call` (receiver `Actor[T]`, callee a
     /// `unit`-returning method); `ty` (on the wrapping node) is always
     /// `Result[unit, Rejected]` — `Rejected`'s own payload (the take-args
@@ -429,6 +431,27 @@ pub enum TypedStmtKind {
     },
     Defer(TypedDeferBody),
     ExprStmt(TypedExpr),
+    /// A bare `send actor.method(...)` **statement** — 02-language.md
+    /// §9.4's one proof-conditioned form ("when mailbox analysis proves
+    /// admission cannot fail ... `send` stands as a bare statement;
+    /// otherwise the result must be consumed"). `expr` is always a
+    /// `TypedExprKind::Send` node; the statement discards its
+    /// `Result[unit, Rejected]` value.
+    ///
+    /// Its own node kind rather than an `ExprStmt` wrapping a `Send`
+    /// (plans/M6.md item G): the whole-image proof
+    /// (`sema::send_proof`) runs *after* every module is typed, needs to
+    /// find exactly these statements (never the expression form, which
+    /// is always legal), and — like `ComptimeAssert` — is the second and
+    /// last deliberate exception to decision 1's "no spans anywhere":
+    /// its rejection is produced long after the body walk that could
+    /// have reported a location, so the node carries the `send`
+    /// keyword's own span to keep the diagnostic's `at L:C` real
+    /// instead of omitted.
+    BareSend {
+        span: Span,
+        expr: TypedExpr,
+    },
     /// `with group(capacity=.., deadline=..) [as g]:` (plans/M6.md item
     /// A, 02-language.md §9.5, §10). `capacity`/`deadline` are the
     /// group-constructor's own (optional) labeled arguments, already
@@ -826,6 +849,13 @@ fn dump_stmt(stmt: &TypedStmt, depth: usize, out: &mut String) {
             }
         }
         TypedStmtKind::ExprStmt(e) => dump_expr(e, depth, out),
+        TypedStmtKind::BareSend { expr, .. } => {
+            // The span is deliberately not rendered — every other node in
+            // this dump is span-free (decision 1) and a golden must not
+            // start moving when an unrelated line above it shifts.
+            push_line(out, depth, "BareSend");
+            dump_expr(expr, depth + 1, out);
+        }
         TypedStmtKind::WithGroup {
             capacity,
             deadline,

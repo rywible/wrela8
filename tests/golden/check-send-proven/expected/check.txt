@@ -1,0 +1,7 @@
+Module path=examples.check_send_proven
+  Struct Logger resource
+    field total: u64
+    fn record(mut self, code: read u64) -> unit
+    fn read_total(read self) -> u64
+  AsyncFn proven_sends(lg: read Actor[Logger]) -> unit
+  Fn build() -> Image

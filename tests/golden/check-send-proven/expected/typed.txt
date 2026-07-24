@@ -1,0 +1,85 @@
+Program
+  Fn name=build ret=Image
+    Body
+      Let name=img ty=Image
+        Intrinsic key=Image ty=Image
+          Arg label=name
+            Str text="check-send-proven" ty=Static[Str]
+          Arg label=target
+            EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
+      Let name=lg ty=ImageDecl
+        Intrinsic key=Image.actor type_arg=Logger ty=ImageDecl
+          Arg label=mailbox
+            Int text=4 ty=i64
+      Intrinsic key=Image.supervise ty=unit
+        Arg label=children
+          List ty=[ImageDecl; 1]
+            Local name=lg ty=ImageDecl
+        Arg label=strategy
+          EnumConstruct enum=Restart variant=OneForOne ty=Restart
+        Arg label=intensity
+          Intrinsic key=RestartIntensity ty=RestartIntensity
+            Arg label=max
+              Int text=3 ty=i64
+            Arg label=within
+              Intrinsic key=seconds ty=Duration
+                Arg label=n
+                  Int text=10 ty=u64
+      Return
+        Intrinsic key=Image.seal ty=Image
+  Fn name=proven_sends ret=unit
+    Param name=lg mode=read ty=Actor[Logger]
+    Body
+      BareSend
+        Send ty=Result[unit, Rejected]
+          Call key=Logger.record ty=unit
+            Receiver
+              Local name=lg ty=Actor[Logger]
+            Int text=7 ty=u64
+      BareSend
+        Send ty=Result[unit, Rejected]
+          Call key=Logger.record ty=unit
+            Receiver
+              Local name=lg ty=Actor[Logger]
+            Int text=5 ty=u64
+      Let name=t ty=Result[u64, CallError[never]]
+        Await ty=Result[u64, CallError[never]]
+          Call key=Logger.read_total ty=u64
+            Receiver
+              Local name=lg ty=Actor[Logger]
+      Match
+        Local name=t ty=Result[u64, CallError[never]]
+        Case
+          VariantPattern enum=Result variant=Ok ty=Result[u64, CallError[never]]
+            Binding name=v ty=u64
+          Assert
+            Binary op=== ty=bool
+              Local name=v ty=u64
+              Int text=12 ty=u64
+            Str text="both proven sends were delivered" ty=Static[Str]
+        Case
+          VariantPattern enum=Result variant=Err ty=Result[u64, CallError[never]]
+            Wildcard ty=CallError[never]
+          Assert
+            Bool value=false ty=bool
+            Str text="read_total rejected" ty=Static[Str]
+  Struct name=Logger
+    Method name=read_total ret=u64
+      Receiver mode=read ty=Logger
+      Body
+        Return
+          Field name=total ty=u64
+            Local name=self ty=Logger
+    Method name=record ret=unit
+      Receiver mode=mut ty=Logger
+      Param name=code mode=read ty=u64
+      Body
+        Assign
+          Field name=total ty=u64
+            Local name=self ty=Logger
+          Binary op=+ ty=u64
+            Field name=total ty=u64
+              Local name=self ty=Logger
+            Local name=code ty=u64
+        Return
+          Unit ty=unit

@@ -218,17 +218,10 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sem
         // construct here; `g`'s own binding is re-derived in this pass's
         // own `fctx` the same way `bodies::check_with` bound it (a
         // `match`/`is` scrutinee inside the block may reference it, e.g.
-        // `g.join_all()`'s own receiver). `send` always fails closed in
-        // the bodies pass regardless of position (decision 5's item-A
-        // floor — even the expression form's own composed `Result` is
-        // never itself `match`ed as a bare send statement); reaching a
-        // bare `Stmt::Send` here would mean bodies::check had already
-        // returned `Err`, and `mod.rs::check` is fail-fast — this pass
-        // never runs on such a module. `comptime if` is eliminated by
+        // `g.join_all()`'s own receiver). `comptime if` is eliminated by
         // `sema::specialize` before this pass (or any pass after
         // `declare`) ever runs (plans/M3.md item D) — reaching one here
-        // would mean `specialize` left one behind. Nothing to walk in
-        // either case.
+        // would mean `specialize` left one behind. Nothing to walk there.
         Stmt::With(w) => {
             walk_expr(&w.expr, fctx, mctx)?;
             bodies::scoped(fctx, |fctx| {
@@ -247,7 +240,12 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sem
                 check_stmts(&w.body, fctx, mctx)
             })
         }
-        Stmt::Send(_, _) | Stmt::ComptimeIf(_) => Ok(()),
+        // plans/M6.md item G: a bare `send` statement types now (its
+        // legality is `sema::send_proof`'s whole-image question, decided
+        // after this pass), so its message arguments must be walked for
+        // a nested `match`/`is` exactly like any other call's.
+        Stmt::Send(_, e) => walk_expr(e, fctx, mctx),
+        Stmt::ComptimeIf(_) => Ok(()),
         // `comptime assert`'s condition/message are ordinary typed
         // expressions (decision 8 lifted the fail-closed) — walked here
         // exactly like a plain `assert`'s in case either embeds a nested

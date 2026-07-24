@@ -1254,13 +1254,16 @@ fn walk_stmt<'a>(
             Ok(fallthrough(state.clone()))
         }
         Stmt::With(w) => walk_with(w, state, fctx, wctx, dstack, loop_marker),
-        Stmt::Send(..) => {
-            // A bare `send` statement always fails closed in
-            // `bodies::check` (plans/M6.md item A, decision 5's item-A
-            // floor — every one is rejected, proof or no proof);
-            // `mod.rs::check` is fail-fast, so flow never runs over a
-            // module containing one.
-            unreachable!("bodies.rs always rejects a bare `send` statement before flow runs")
+        Stmt::Send(_, e) => {
+            // plans/M6.md item G: a bare `send` statement now types (its
+            // legality is the whole-image `sema::send_proof` question,
+            // answered after every pass here has run), so flow really
+            // does walk one — exactly like `Stmt::Expr` below: the
+            // message arguments are ordinary operands that move/read
+            // storage paths like any other call's.
+            let mut st = state.clone();
+            walk_expr(e, &mut st, fctx, wctx, dstack, loop_marker)?;
+            Ok(fallthrough(st))
         }
         // plans/M3.md item D: `sema::specialize` eliminates every
         // `comptime if` node before `collect`/`declare`/`bodies` (and so

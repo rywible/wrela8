@@ -1,0 +1,39 @@
+module examples.err_send_in_child
+
+# plans/M6.md item G, decision 5's second conjunct, other half: "every
+# such site sits ... outside any `g.start` child". `child` is a group
+# child, so its own body is excluded from the proof by decision 5
+# regardless of capacity (declared generously here on purpose, exactly as
+# in `golden/err-send-in-loop`).
+
+@actor
+pub struct Logger:
+    total: u64
+
+    pub fn record(mut self, code: u64) -> unit:
+        self.total = self.total + code
+        return unit
+
+async fn child(lg: Actor[Logger]) -> u64:
+    send lg.record(code=1)
+    return 1
+
+@test(runtime)
+async fn in_child(lg: Actor[Logger]):
+    with group(capacity=1) as g:
+        g.start(child, lg=lg)
+        results = await g.join_all()
+        for r in results:
+            match r:
+                case .Ok(_):
+                    pass
+                case .Err(_):
+                    pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-send-in-child", target=Target.wrela_machine_v1)
+    lg = img.actor(Logger, mailbox=64)
+    img.supervise(children=[lg], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

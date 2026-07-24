@@ -483,6 +483,12 @@ fn stmt_illegal_reason(kind: &TypedStmtKind) -> Option<&'static str> {
         | TypedStmtKind::ComptimeAssert { .. }
         | TypedStmtKind::Defer(_)
         | TypedStmtKind::ExprStmt(_) => None,
+        // Plans/M6.md item G: the bare `send` statement form — the same
+        // decision-7 illegal op `TypedExprKind::Send` already is (the
+        // expression inside would flag it anyway; naming it here keeps
+        // the diagnostic's own wording about the statement the author
+        // actually wrote).
+        TypedStmtKind::BareSend { .. } => Some("a `send` statement"),
         // Plans/M6.md item A: `with group(...)` is a decision-7 illegal
         // op (an actor/async construct, 02-language.md §12).
         TypedStmtKind::WithGroup { .. } => Some("a `with group` block"),
@@ -571,6 +577,7 @@ fn scan_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
             TypedDeferBody::Suite(stmts) => scan_stmts(stmts, scan),
         },
         TypedStmtKind::ExprStmt(e) => scan_expr(e, scan),
+        TypedStmtKind::BareSend { expr, .. } => scan_expr(expr, scan),
         TypedStmtKind::WithGroup {
             capacity,
             deadline,

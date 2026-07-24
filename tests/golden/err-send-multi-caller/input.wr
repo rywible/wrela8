@@ -1,0 +1,49 @@
+module examples.err_send_multi_caller
+
+# plans/M6.md item G: the counting rule's soundness case, and the one
+# place this analysis is deliberately stricter than decision 5's own
+# parenthetical. `Fanout.once`'s bare `send` sits outside every loop and
+# every `g.start` child — decision 5's two lexical tests both pass — but
+# `Fanout.once` is itself invoked from two static message sites, so the
+# one static site inside it enqueues *two* messages per root turn.
+# Counting static sites alone would under-count, which is the one failure
+# mode that could let a real image drop a message, so the holder's own
+# execution count is part of the proof (`sema::send_proof::at_most_once`).
+
+@actor
+pub struct Logger:
+    total: u64
+
+    pub fn record(mut self, code: u64) -> unit:
+        self.total = self.total + code
+        return unit
+
+@actor
+pub struct Fanout:
+    lg: Actor[Logger]
+
+    pub async fn once(read self) -> unit:
+        send self.lg.record(code=1)
+        return unit
+
+@test(runtime)
+async fn twice(f: Actor[Fanout]):
+    match send f.once():
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "not admitted"
+    match send f.once():
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "not admitted"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-send-multi-caller", target=Target.wrela_machine_v1)
+    lg = img.actor(Logger, mailbox=64)
+    f = img.actor(Fanout, mailbox=64, lg=lg)
+    img.supervise(children=[lg, f], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

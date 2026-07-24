@@ -610,6 +610,13 @@ fn lower_stmt<'a>(
         TypedStmtKind::WithGroup { .. } => Err(LowerError::unimplemented(
             "`with group` (FlowWir state machines, plans/M6.md item B) is",
         )),
+        // plans/M6.md item G: `send` requires an `async fn` context
+        // (`bodies::check_send`), and this pass only ever lowers sync
+        // fns — unreachable in practice, fail closed rather than
+        // mis-lowering an enqueue as straight-line sync code.
+        TypedStmtKind::BareSend { .. } => Err(LowerError::unimplemented(
+            "a bare `send` statement (FlowWir state machines, plans/M6.md item B) is",
+        )),
     }
 }
 

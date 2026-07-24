@@ -352,6 +352,10 @@ fn stmt_contains_await(s: &TypedStmt) -> bool {
             TypedDeferBody::Suite(s) => block_contains_await(s),
         },
         TypedStmtKind::ExprStmt(e) => expr_contains_await(e),
+        // A `send` never suspends (`emit_send`: a one-way `rt_enqueue`
+        // call, never a park) — but its arguments are ordinary
+        // expressions that may themselves contain an `await`.
+        TypedStmtKind::BareSend { expr, .. } => expr_contains_await(expr),
         TypedStmtKind::WithGroup {
             capacity,
             deadline,
@@ -850,6 +854,18 @@ fn lower_stmt<'a>(
         }
         TypedStmtKind::ExprStmt(e) => {
             lower_expr_stmt(e, b, env)?;
+            Ok(false)
+        }
+        // plans/M6.md item G: a proven bare `send` lowers exactly like the
+        // consumed expression form — `FlowInst::Send` still writes its
+        // `Result[unit, Rejected]` outcome into a fresh temp; the only
+        // difference is that nothing reads that temp. Deliberately NOT a
+        // second lowering path: a proven send and an unproven one must
+        // execute identically (the proof is a legality verdict, never a
+        // codegen switch), so the same instruction is emitted either way
+        // and `codegen::emit_send` never learns the proof exists.
+        TypedStmtKind::BareSend { expr, .. } => {
+            lower_expr_flat(expr, b, env)?;
             Ok(false)
         }
         TypedStmtKind::WithGroup {

@@ -1,0 +1,63 @@
+Program
+  Fn key=proven_sends ret=unit states=2 frame=25 lineage=[group=t0,deadline=t1] params=[t2]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=Actor[Logger]
+    Temp t3 ty=u64
+    Temp t4 ty=Result[unit, Rejected]
+    Temp t5 ty=u64
+    Temp t6 ty=Result[unit, Rejected]
+    Temp t7 ty=Result[u64, CallError[never]]
+    Temp t8 ty=Result[u64, CallError[never]]
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=u64
+    Temp t12 ty=bool
+    Temp t13 ty=u64
+    Temp t14 ty=bool
+    Temp t15 ty=bool
+    Temp t16 ty=u64
+    Temp t17 ty=bool
+    Temp t18 ty=u64
+    Temp t19 ty=u64
+    Temp t20 ty=bool
+    Temp t21 ty=CallError[never]
+    Temp t22 ty=bool
+    Temp t23 ty=bool
+    Temp t24 ty=bool
+    State 0
+      0000: Mwir ConstInt dst=t3 ty=u64 value=7
+      0001: Send dst=t4 target=t2 method=Logger.record args=[t3]
+      0002: Mwir ConstInt dst=t5 ty=u64 value=5
+      0003: Send dst=t6 target=t2 method=Logger.record args=[t5]
+      Transition Await what=ActorCall{target=t2,method=Logger.read_total,args=[]} resume=1 result=t7
+    State 1
+      0000: Mwir Copy dst=t8 src=t7
+      0001: Mwir EnumTag dst=t10 src=t8
+      0002: Mwir ConstInt dst=t11 ty=u64 value=0
+      0003: Mwir Compare op=== ty=u64 dst=t12 lhs=t10 rhs=t11
+      0004: Mwir EnumPayload dst=t13 src=t8 index=0
+      0005: Mwir Copy dst=t9 src=t13
+      0006: Mwir ConstBool dst=t14 value=true
+      0007: Mwir BoolAnd dst=t15 lhs=t12 rhs=t14
+      0008: Mwir JumpIfFalse cond=t15 target=0015
+      0009: Mwir ConstInt dst=t16 ty=u64 value=12
+      0010: Mwir Compare op=== ty=u64 dst=t17 lhs=t9 rhs=t16
+      0011: Mwir JumpIfFalse cond=t17 target=0013
+      0012: Mwir Jump target=0014
+      0013: Mwir AssertFail message="both proven sends were delivered"
+      0014: Mwir Jump target=0028
+      0015: Mwir EnumTag dst=t18 src=t8
+      0016: Mwir ConstInt dst=t19 ty=u64 value=1
+      0017: Mwir Compare op=== ty=u64 dst=t20 lhs=t18 rhs=t19
+      0018: Mwir EnumPayload dst=t21 src=t8 index=0
+      0019: Mwir ConstBool dst=t22 value=true
+      0020: Mwir BoolAnd dst=t23 lhs=t20 rhs=t22
+      0021: Mwir JumpIfFalse cond=t23 target=0027
+      0022: Mwir ConstBool dst=t24 value=false
+      0023: Mwir JumpIfFalse cond=t24 target=0025
+      0024: Mwir Jump target=0026
+      0025: Mwir AssertFail message="read_total rejected"
+      0026: Mwir Jump target=0028
+      0027: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      Transition Return
