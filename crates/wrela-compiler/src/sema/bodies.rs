@@ -1012,6 +1012,7 @@ pub(crate) fn check_struct_members(
     };
     let local_pools = local_pool_names(info);
     let mut fields = Vec::new();
+    let mut field_types = BTreeMap::new();
     let mut field_defaults = BTreeMap::new();
     let mut methods = BTreeMap::new();
     let mut assoc_fns = BTreeMap::new();
@@ -1020,6 +1021,11 @@ pub(crate) fn check_struct_members(
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(df)) => {
                 fields.push(af.name.clone());
+                // The already-resolved declared type, kept by name
+                // (`TypedStruct::field_types`'s own doc comment) — the
+                // same `df.ty` this arm already uses as the expected type
+                // for the field's own default, just below.
+                field_types.insert(af.name.clone(), df.ty.clone());
                 if let Some(def) = &af.default {
                     let mut fctx = FnCtx::new(Type::Unit, local_pools.clone());
                     fctx.insert_local("self".to_string(), self_ty.clone());
@@ -1093,6 +1099,7 @@ pub(crate) fn check_struct_members(
     Ok(TypedStruct {
         name: struct_name,
         fields,
+        field_types,
         field_defaults,
         methods,
         assoc_fns,

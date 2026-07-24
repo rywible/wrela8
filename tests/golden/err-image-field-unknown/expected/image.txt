@@ -1,0 +1,1 @@
+error[build]: `actor#0` passes `queue_depth=...` to `Store`, but `Store` declares no `init` and has no field named `queue_depth`
