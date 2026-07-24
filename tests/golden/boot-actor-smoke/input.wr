@@ -1,0 +1,41 @@
+module examples.boot_actor_smoke
+
+# plans/M6.md item D's own down payment (decision 11b, 02-language.md
+# §12.2): a minimal real image — one actor with a sync `pub` method — and
+# an async `@test(runtime)` root turn that declares an `Actor[Store]`
+# parameter, `await`s a real message through it, and asserts the reply.
+# THE milestone moment: boots for real, on the wrela VMM (Hypervisor.
+# framework on this machine), the whole pipeline exercised end to end —
+# sema's handle-param rule, the image graph's unique-instance resolution,
+# the boot sequence (actor init, zero-arg `init` call), the async fn's own
+# compiled state machine (dispatch header, checkpoints), and `Await`'s own
+# nested-drain suspension mechanism (`codegen.rs`'s own "Await, simplified"
+# module doc — the disclosed departure from a real cross-call suspend/
+# resume, recorded there and in `actors.codegen.state-machines`).
+
+@actor
+pub struct Store:
+    value: u64
+
+    init(mut self):
+        self.value = 7
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@test(runtime)
+async fn smoke(store: Actor[Store]):
+    v = await store.get()
+    match v:
+        case .Ok(n):
+            assert n == 7, "expected 7 from Store"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-actor-smoke", target=Target.wrela_machine_v1)
+    store = img.actor(Store, mailbox=4)
+    img.supervise(children=[store], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

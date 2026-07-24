@@ -595,6 +595,9 @@ pub(crate) fn check(
                 if test_kind == Some(TestKind::Exhaustive) {
                     check_exhaustive_test_params(f, d, mctx)?;
                 }
+                if test_kind == Some(TestKind::Runtime) {
+                    check_runtime_test_params(f, d)?;
+                }
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
                     if is_image_fn(f) {
                         // plans/M4.md item B's own minimal slice of
@@ -760,10 +763,18 @@ pub(crate) fn test_attr_kind(f: &ast::FnItem) -> Result<Option<TestKind>, SemaEr
             ),
             f.span,
         )),
-        TestKind::Comptime | TestKind::Runtime if !f.params.is_empty() => Err(type_error(
+        TestKind::Comptime if !f.params.is_empty() => Err(type_error(
             format!("`@test` fn `{}` takes no arguments", f.name),
             f.span,
         )),
+        // plans/M6.md decision 11b, 02-language.md §12.2 (added at item-D
+        // verification): `@test(runtime)` may now declare `Actor[T]`
+        // params — the runner supplies the image's unique declared `T`
+        // instance's handle. Shape validation (mode `read`, type exactly
+        // `Actor[T]`) runs against the *resolved* declaration
+        // (`check_runtime_test_params`, below), mirroring
+        // `check_exhaustive_test_params`'s own split between "arity here,
+        // shape there" — this fn only sees raw `ast`.
         _ => Ok(Some(kind)),
     }
 }
@@ -808,6 +819,46 @@ fn check_exhaustive_test_params(
                 format!(
                     "`@test(exhaustive)` fn `{}`'s parameter `{}` has no enumerable domain \
                      (supported: `bool`, `u8`, `i8`, a fieldless enum), found `{}`",
+                    f.name,
+                    p.name,
+                    types::render_type(&p.ty)
+                ),
+                f.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `@test(runtime)`'s own parameter validation (02-language.md §12.2,
+/// decision 11b): every parameter must be plain (`read` — a handle is
+/// borrowed for the run, never mutated or consumed) and of type exactly
+/// `Actor[T]`. `T` itself is already guaranteed to name a real
+/// `@actor`/`@driver` struct by this point — `types::validate_actor_handles`
+/// runs at declare time, over every fn's own resolved parameter types
+/// (`validate_fn_actor_types`, unconditional, not test-specific), so this
+/// fn only needs to confirm the *shape* (plain mode, bare `Actor[T]`, not
+/// nested in an array/tuple/aggregate) — re-deriving "is `T` an actor" a
+/// second time would duplicate a check that already ran.
+fn check_runtime_test_params(f: &ast::FnItem, d: &types::DeclFn) -> Result<(), SemaError> {
+    for p in &d.params {
+        if p.mode != AccessMode::Read {
+            return Err(type_error(
+                format!(
+                    "`@test(runtime)` fn `{}`'s parameter `{}` must be a plain (read) `Actor[T]` \
+                     handle",
+                    f.name, p.name
+                ),
+                f.span,
+            ));
+        }
+        let is_handle =
+            matches!(&p.ty, Type::Named(name, targs) if name == "Actor" && targs.len() == 1);
+        if !is_handle {
+            return Err(type_error(
+                format!(
+                    "`@test(runtime)` fn `{}`'s parameter `{}` must be an `Actor[T]` handle, \
+                     found `{}`",
                     f.name,
                     p.name,
                     types::render_type(&p.ty)

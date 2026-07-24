@@ -940,6 +940,39 @@ fn merge_actor_pub_methods(
     Ok(out)
 }
 
+/// plans/M6.md item D (boot-wiring follow-up, decision 11b's own
+/// verification): which actor structs declare a *zero-argument* `init`
+/// (beyond the implicit `mut self` receiver) — the one shape this item's
+/// boot sequence can call safely without a real init-arg materialization
+/// pass (`layout::build_boot_init`'s own doc comment names that pass as
+/// real, further, deferred work). An actor whose own `init` takes
+/// further params is not in this map at all — its own state stays plain
+/// zero-initialized, the documented floor, not a silent narrowing.
+fn actor_zero_arg_init_keys(
+    modules: &BTreeMap<String, Module>,
+) -> Result<BTreeMap<String, String>, LayoutError> {
+    use crate::sema::types::{DeclItem, DeclMember};
+
+    let mut out = BTreeMap::new();
+    for module in modules.values() {
+        let specialized = crate::sema::specialize::specialize(module)
+            .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
+        let items = crate::sema::types::declare(&specialized)
+            .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
+        for item in items {
+            let DeclItem::Struct(s) = item else { continue };
+            for m in &s.members {
+                if let DeclMember::Init(f) = m {
+                    if f.params.is_empty() {
+                        out.insert(s.name.clone(), format!("{}.init", s.name));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// plans/M6.md item D: `(actor name) -> (method name) -> its own 0-based
 /// dispatch index`, in the exact declaration order `merge_actor_pub_methods`
 /// (immediately above) already establishes — the same order
@@ -1754,16 +1787,44 @@ fn build_runtime_glue_block(
 /// follow-up for whichever later item's own flagship boot actually
 /// declares one (recorded in the ledger clause, not silently assumed
 /// solved).
-fn build_boot_init(actor_addrs: &[ActorAddrs], state_sizes: &[u64], start: usize) -> Asm {
+fn build_boot_init(
+    actor_names: &[String],
+    actor_addrs: &[ActorAddrs],
+    state_sizes: &[u64],
+    init_keys: &BTreeMap<String, String>,
+    start: usize,
+) -> Asm {
     let mut a = Asm::new(start);
-    for (addrs, &size) in actor_addrs.iter().zip(state_sizes) {
+    // Called via `bl_to` from `build_entry_driver` and itself calls out
+    // to a real compiled `init` below — `x30` (the link register) is
+    // call-clobbered, so it must be saved/restored around this fn's own
+    // body exactly like `build_rt_select_and_run_core`'s own hard-won
+    // lesson (that fn's own module doc has the full incident report): a
+    // first draft of this fn skipped this and looped the whole entry
+    // driver from its own start forever (`init`'s own correctly-saved/
+    // restored `x30` pointed back at *this* fn's own call site, not this
+    // fn's real caller), caught by exactly the same "behavior is the
+    // oracle" real-boot test this comment now documents.
+    a.push(encode::enc_sub_imm(31, 31, 16, true));
+    a.push(encode::enc_str_x_imm(30, 31, 0));
+    for ((name, addrs), &size) in actor_names.iter().zip(actor_addrs).zip(state_sizes) {
         let mut w = 0u64;
         while w < size {
             a.load_imm(9, addrs.state + w);
             a.push(encode::enc_str_x_imm(31, 9, 0)); // store xzr (unit is Copy/all-zero-valid)
             w += 8;
         }
+        // A zero-argument `init` runs after the zero-fill, overwriting
+        // whichever fields it sets — `build_boot_init`'s own module doc
+        // has the full reasoning for why only this shape is handled here.
+        if let Some(key) = init_keys.get(name) {
+            a.load_imm(0, addrs.state);
+            a.bl_call_key(key);
+        }
     }
+    a.push(encode::enc_ldr_x_imm(30, 31, 0));
+    a.push(encode::enc_add_imm(31, 31, 16, true));
+    a.push(encode::enc_ret(30));
     a
 }
 
@@ -2538,6 +2599,7 @@ fn build_entry_driver(
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
     boot_init_start: Option<usize>,
+    test_args: &BTreeMap<String, Vec<u64>>,
 ) -> Asm {
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
@@ -2590,6 +2652,16 @@ fn build_entry_driver(
         let cont_marker = a.load_imm_placeholder(9);
         a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
         a.push(encode::enc_str_x_imm(9, 10, 0));
+
+        // plans/M6.md decision 11b: a test's own already-resolved
+        // `Actor[T]` handle values (build-time actor indices) load into
+        // x0.., in declared param order — a plain zero-param test (every
+        // pre-decision-11b test) loads nothing here, byte-identical.
+        if let Some(vals) = test_args.get(name) {
+            for (i, v) in vals.iter().enumerate() {
+                a.load_imm(i as u8, *v);
+            }
+        }
 
         a.load_imm(8, addrs.info_base + mi::OFF_TEST_LINE_BUF);
         a.bl_call_key(name);
@@ -2813,6 +2885,12 @@ pub fn layout_test_image(
     program: &CodegenProgram,
     runtime_tests: &[String],
     boot: Option<BootCtx>,
+    // plans/M6.md decision 11b: every runtime test's own already-resolved
+    // `Actor[T]` param values (build-time actor indices, `bin/wrela.rs`'s
+    // own `resolve_runtime_test_args`), in declared param order — empty
+    // for every test with no params (every pre-decision-11b test, byte-
+    // identical).
+    test_args: &BTreeMap<String, Vec<u64>>,
 ) -> Result<ImageLayout, LayoutError> {
     check_transcript_bound(program, runtime_tests)?;
 
@@ -2877,6 +2955,14 @@ pub fn layout_test_image(
         }
         _ => Vec::new(),
     };
+    let init_keys: BTreeMap<String, String> = match &boot {
+        Some(b) if runtime_tables.is_some() => actor_zero_arg_init_keys(b.modules)?,
+        _ => BTreeMap::new(),
+    };
+    let actor_names: Vec<String> = runtime_tables
+        .as_ref()
+        .map(|t| t.actors.iter().map(|a| a.name.clone()).collect())
+        .unwrap_or_default();
 
     let ring_append_asm = build_ring_append(&addrs, 0);
     let ring_append_start = 0usize;
@@ -2942,7 +3028,13 @@ pub fn layout_test_image(
         .unwrap_or_default();
     let glue_words_len: usize = dummy_glue_asms.iter().map(|a| a.words.len()).sum();
     let boot_init_start = glue_start + glue_words_len;
-    let dummy_boot_init_asm = build_boot_init(&dummy_actor_addrs, &state_sizes, boot_init_start);
+    let dummy_boot_init_asm = build_boot_init(
+        &actor_names,
+        &dummy_actor_addrs,
+        &state_sizes,
+        &init_keys,
+        boot_init_start,
+    );
     let boot_init_start_opt = runtime_tables.as_ref().map(|_| boot_init_start);
 
     let entry_start = boot_init_start + dummy_boot_init_asm.words.len();
@@ -2958,6 +3050,7 @@ pub fn layout_test_image(
         &mut rodata,
         &mut rodata_cursor,
         boot_init_start_opt,
+        test_args,
     );
 
     let mut harness_words: Vec<u32> = Vec::new();
@@ -3032,14 +3125,28 @@ pub fn layout_test_image(
                 harness_words[w] = *word;
                 w += 1;
             }
+            // `build_rt_select_and_run_symbolic`'s own dispatch chain
+            // carries real `Reloc::Call`s (a sync method's real compiled
+            // body, or an async method's real state-machine entry) —
+            // these must resolve exactly like every other harness-section
+            // call, or the emitted `BL` stays a self-referencing
+            // placeholder.
+            harness_relocs.extend(asm.relocs.clone());
         }
         debug_assert_eq!(w, boot_init_start);
-        let real_boot_init_asm = build_boot_init(&real_actor_addrs, &state_sizes, boot_init_start);
+        let real_boot_init_asm = build_boot_init(
+            &actor_names,
+            &real_actor_addrs,
+            &state_sizes,
+            &init_keys,
+            boot_init_start,
+        );
         let mut w = boot_init_start;
         for word in &real_boot_init_asm.words {
             harness_words[w] = *word;
             w += 1;
         }
+        harness_relocs.extend(real_boot_init_asm.relocs.clone());
         debug_assert_eq!(w, entry_start);
         glue_symbols
     } else {

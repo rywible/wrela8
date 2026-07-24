@@ -516,10 +516,32 @@ fn strip_wrappers(ty: &Type) -> &Type {
 }
 
 fn is_aggregate(ty: &Type) -> bool {
-    matches!(
-        strip_wrappers(ty),
-        Type::Named(..) | Type::Tuple(_) | Type::Array(..) | Type::Option(_) | Type::Result(..)
-    )
+    match strip_wrappers(ty) {
+        // plans/M6.md item D (verification fix, decision 11b's own boot
+        // exercised this for the first time): the M6 builtin-pseudo-type
+        // vehicle (`mwir::size_of`'s own doc comment has the full list) is
+        // always one opaque 8-byte scalar slot, never a real aggregate —
+        // `Actor[T]` in particular is passed by *value* in a register
+        // (the handle itself, a build-time-constant index) everywhere a
+        // scalar param/return already is, never by pointer. Before this
+        // fix, `Type::Named(..)`'s own blanket aggregate classification
+        // silently mis-treated it as a by-pointer aggregate — invisible
+        // until item D's first real boot of an `Actor[T]`-typed
+        // `@test(runtime)` parameter, which faulted dereferencing the
+        // handle's own small integer value as if it were an address.
+        Type::Named(name, _)
+            if matches!(
+                name.as_str(),
+                "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
+            ) =>
+        {
+            false
+        }
+        Type::Named(..) | Type::Tuple(_) | Type::Array(..) | Type::Option(_) | Type::Result(..) => {
+            true
+        }
+        _ => false,
+    }
 }
 
 /// `(bit width, signed)` for the ten integer scalar types — a small,
@@ -2546,10 +2568,12 @@ fn emit_flow_op(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn emit_await(
     what: &AwaitKind,
     resume_state: usize,
     result_temp: Temp,
+    f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     state_temp: Temp,
@@ -2577,7 +2601,29 @@ fn emit_await(
                 scratch0,
                 scratch1,
             )?;
-            ctx.store_slot(0, ctx.frame.off(result_temp));
+            // `result_temp`'s own type is always the composed
+            // `Result[T, CallError[E]]` (02 §9.4's own CallError
+            // composition table, `sema::bodies::compose_call_error`) —
+            // never the bare scalar reply on its own. A successful
+            // dispatch (the only outcome `__await_actor_*`'s own
+            // disclosed floor produces — a rejected admission aborts
+            // there instead, `layout.rs`'s own module doc) composes as
+            // `Ok(reply)`: tag `0` at the temp's own offset, the scalar
+            // reply (still live in `x0`) at the payload offset
+            // immediately past the 8-byte tag. Every message reply in
+            // today's whole corpus is scalar (item C's own established
+            // floor); an aggregate reply is a disclosed, unexercised gap
+            // this fn does not widen.
+            let composed_ty = &f.temp_types[result_temp.0];
+            if !matches!(composed_ty, Type::Result(_, _)) {
+                return Err(CodegenError::internal(format!(
+                    "Await's own result_temp is not a composed Result type: {composed_ty:?}"
+                )));
+            }
+            let result_off = ctx.frame.off(result_temp);
+            ctx.store_slot(0, result_off + 8); // payload = the live reply value
+            ctx.load_imm(X_A, 0);
+            ctx.store_slot(X_A, result_off); // tag = Ok
             // "await resume points are checkpoints by construction"
             // (decision 6) — this fn's own inline resume runs the
             // identical sequence a loop back-edge gets.
@@ -2642,6 +2688,7 @@ fn emit_transition(
             what,
             *resume_state,
             *result_temp,
+            f,
             ctx,
             method_index,
             state_temp,

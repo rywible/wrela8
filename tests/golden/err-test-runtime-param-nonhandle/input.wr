@@ -1,0 +1,8 @@
+module examples.err_test_runtime_param_nonhandle
+
+# plans/M6.md decision 11b: a @test(runtime) fn's own parameters must be
+# Actor[T] handles — the only thing the runner knows how to supply. A
+# plain scalar param has no such source and is named-rejected.
+@test(runtime)
+fn test_bad(x: u64):
+    assert x == x
