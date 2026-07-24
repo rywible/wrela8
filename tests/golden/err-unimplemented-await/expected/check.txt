@@ -1,1 +1,1 @@
-error[unimplemented]: await is not checked yet at 7:13
+error[actor]: `await` requires a method call through an actor handle or a group's `join_all()` (M6 scope) at 7:24

@@ -590,6 +590,7 @@ fn subst_decl_struct(d: &DeclStruct, subst: &Subst, mctx: &ModuleCtx) -> DeclStr
         classification,
         members,
         is_resource_fiat: d.is_resource_fiat,
+        is_actor: d.is_actor,
         component_types,
         span: d.span,
     }

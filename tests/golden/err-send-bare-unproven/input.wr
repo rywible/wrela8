@@ -1,0 +1,11 @@
+module examples.err_send_bare_unproven
+
+@actor
+pub struct Logger:
+    count: u64
+
+    pub fn record(mut self, code: u64):
+        self.count = self.count + code
+
+async fn emit(target: Actor[Logger], code: u64) -> unit:
+    send target.record(code=code)

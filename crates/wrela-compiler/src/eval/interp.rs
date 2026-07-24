@@ -689,6 +689,17 @@ fn exec_stmt<'a, 'p>(
             eval_expr(e, env, dstack, loop_marker, ctx)?;
             Ok(())
         }
+        // Plans/M6.md item A: `with group(...)` is an actor/async
+        // construct — `eval::legal` marks every containing fn illegal
+        // for comptime unconditionally, so `require_legal` (`eval/mod.rs`)
+        // already refuses to run this fn before this arm is ever reached.
+        // The evaluator's own scope stays unchanged (no async execution,
+        // per this item's own rule) — an honest `Err`, not a panic, in
+        // case that invariant is ever broken.
+        TypedStmtKind::WithGroup { .. } => Err(ctx.abandon(
+            "internal error: `with group` reached the comptime evaluator (unreachable — \
+             `eval::legal` marks every containing fn illegal for comptime)",
+        )),
     }
 }
 
@@ -1567,6 +1578,25 @@ fn eval_expr<'a, 'p>(
             args,
         } => eval_intrinsic(key, receiver, type_arg, args, env, dstack, loop_marker, ctx),
         TypedExprKind::PoolName(name) => Ok(Value::Str(name.clone().into_bytes())),
+        // Plans/M6.md item A: `await`/`send`/a group-child reference are
+        // all actor/async constructs — `eval::legal` marks every
+        // containing fn illegal for comptime unconditionally (decision
+        // 7), so `require_legal` already refuses to run this fn before
+        // any of these three is ever reached. The evaluator's own scope
+        // stays unchanged (no async execution) — an honest `Err`, not a
+        // panic, in case that invariant is ever broken.
+        TypedExprKind::Await(_) => Err(ctx.abandon(
+            "internal error: `await` reached the comptime evaluator (unreachable — \
+             `eval::legal` marks every containing fn illegal for comptime)",
+        )),
+        TypedExprKind::Send(_) => Err(ctx.abandon(
+            "internal error: `send` reached the comptime evaluator (unreachable — \
+             `eval::legal` marks every containing fn illegal for comptime)",
+        )),
+        TypedExprKind::GroupChild(_) => Err(ctx.abandon(
+            "internal error: a group child reference reached the comptime evaluator \
+             (unreachable — `eval::legal` marks every containing fn illegal for comptime)",
+        )),
     }
 }
 
@@ -1773,8 +1803,28 @@ fn eval_intrinsic<'a, 'p>(
                 .ok_or_else(|| ctx.abandon("`seconds(...)` overflowed a duration"))?;
             Ok(Value::U64(nanos as u64))
         }
+        // Plans/M6.md item A, decision 11: `ms(n)` is comptime-legal
+        // (unlike `now()`, which `eval::legal` bars from every comptime
+        // context, so it never reaches this dispatch at all — the
+        // fallback below is what it hits, honestly, if that invariant is
+        // ever broken) — mirrors `seconds`'s own evaluation exactly, one
+        // order of magnitude down (milliseconds, not seconds).
+        "ms" => {
+            let Some((_, n_expr)) = args.first() else {
+                return Err(ctx.abandon("internal error: `ms` is missing its argument"));
+            };
+            let nv = eval_expr(n_expr, env, dstack, loop_marker, ctx)?;
+            let n = value::as_i128(&nv)
+                .ok_or_else(|| ctx.abandon("internal error: `ms`'s argument is not an integer"))?;
+            let nanos = n
+                .checked_mul(1_000_000)
+                .filter(|v| *v >= 0 && *v <= u64::MAX as i128)
+                .ok_or_else(|| ctx.abandon("`ms(...)` overflowed a duration"))?;
+            Ok(Value::U64(nanos as u64))
+        }
         other => Err(ctx.abandon(format!(
-            "internal error: unknown builder intrinsic `{other}`"
+            "internal error: unknown/runtime-only builder intrinsic `{other}` reached the \
+             comptime evaluator"
         ))),
     }
 }

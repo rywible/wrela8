@@ -1,0 +1,13 @@
+module examples.err_actor_msg_mut_loan
+
+@actor
+pub struct Sink:
+    total: u64
+
+    pub fn add(mut self, mut amount: u64):
+        amount = amount + 1
+        self.total = self.total + amount
+
+async fn feed(target: Actor[Sink]) -> unit:
+    x = 5
+    send target.add(amount=mut x)

@@ -1,0 +1,54 @@
+Program
+  Fn name=fetch_part ret=u64
+    Param name=index mode=read ty=u64
+    Body
+      Return
+        Binary op=* ty=u64
+          Local name=index ty=u64
+          Int text=2 ty=u64
+  Fn name=run_group ret=u64
+    Body
+      Let name=total ty=u64
+        Int text=0 ty=u64
+      WithGroup as=g
+        Capacity
+          Int text=4 ty=usize
+        Body
+          Intrinsic key=Group.start ty=unit
+            Receiver
+              Local name=g ty=Group
+            Arg label=callee
+              GroupChild key=fetch_part ty=fn(read u64) -> u64
+            Arg label=index
+              Int text=0 ty=u64
+          Intrinsic key=Group.start ty=unit
+            Receiver
+              Local name=g ty=Group
+            Arg label=callee
+              GroupChild key=fetch_part ty=fn(read u64) -> u64
+            Arg label=index
+              Int text=1 ty=u64
+          Let name=results ty=[Result[u64, CallError[never]]; 2]
+            Await ty=[Result[u64, CallError[never]]; 2]
+              Intrinsic key=Group.join_all ty=[u64; 2]
+                Receiver
+                  Local name=g ty=Group
+          For name=r elem_ty=Result[u64, CallError[never]]
+            Local name=results ty=[Result[u64, CallError[never]]; 2]
+            Body
+              Match
+                Local name=r ty=Result[u64, CallError[never]]
+                Case
+                  VariantPattern enum=Result variant=Ok ty=Result[u64, CallError[never]]
+                    Binding name=v ty=u64
+                  Assign
+                    Local name=total ty=u64
+                    Binary op=+ ty=u64
+                      Local name=total ty=u64
+                      Local name=v ty=u64
+                Case
+                  VariantPattern enum=Result variant=Err ty=Result[u64, CallError[never]]
+                    Wildcard ty=CallError[never]
+                  Pass
+      Return
+        Local name=total ty=u64

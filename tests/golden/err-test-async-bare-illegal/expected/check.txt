@@ -1,0 +1,2 @@
+error[comptime]: `@test` requires a comptime-legal closure, but `test_needs_runtime_marker` is not comptime-callable at 0:0
+  `test_needs_runtime_marker` uses an `async fn`

@@ -1,0 +1,16 @@
+module examples.err_await_outside_async
+
+@actor
+pub struct Upstream:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+fn poll(target: Actor[Upstream]) -> u64:
+    result = await target.get()
+    match result:
+        case .Ok(v):
+            return v
+        case .Err(_):
+            return 0

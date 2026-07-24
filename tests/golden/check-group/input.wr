@@ -1,0 +1,18 @@
+module examples.check_group
+
+async fn fetch_part(index: u64) -> u64:
+    return index * 2
+
+async fn run_group() -> u64:
+    total: u64 = 0
+    with group(capacity=4) as g:
+        g.start(fetch_part, index=0)
+        g.start(fetch_part, index=1)
+        results = await g.join_all()
+        for r in results:
+            match r:
+                case .Ok(v):
+                    total = total + v
+                case .Err(_):
+                    pass
+    return total

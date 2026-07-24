@@ -577,6 +577,15 @@ fn lower_stmt<'a>(
             lower_expr(e, b, env)?;
             Ok(false)
         }
+        // Plans/M6.md item A: sema now types `with group(...)` (real
+        // node, no longer fail-closed at the sema layer) but this pass
+        // (M5's sync-fn-only lowering) is not that lowering — item B
+        // (FlowWir) owns state-machine lowering for every async/actor
+        // construct; fail closed, named, here rather than mis-lowering a
+        // suspension point as if it were straight-line sync code.
+        TypedStmtKind::WithGroup { .. } => Err(LowerError::unimplemented(
+            "`with group` (FlowWir state machines, plans/M6.md item B) is",
+        )),
     }
 }
 
@@ -1698,6 +1707,21 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         )),
         TypedExprKind::PoolName(_) => Err(LowerError::unimplemented(
             "a bare pool name (the `@image` builder surface) is",
+        )),
+        // Plans/M6.md item A: `await`/`send`/a group-child reference are
+        // all suspension-bearing constructs — FlowWir (item B) is the
+        // typed, suspension-explicit IR between the typed tree and mwir
+        // that actually lowers them; this pass (M5's straight-line sync
+        // lowering) fails closed, named, rather than mis-lowering one as
+        // ordinary sync code.
+        TypedExprKind::Await(_) => Err(LowerError::unimplemented(
+            "an `await` expression (FlowWir, plans/M6.md item B) is",
+        )),
+        TypedExprKind::Send(_) => Err(LowerError::unimplemented(
+            "a `send` expression (FlowWir, plans/M6.md item B) is",
+        )),
+        TypedExprKind::GroupChild(_) => Err(LowerError::unimplemented(
+            "a group-child reference (FlowWir, plans/M6.md item B) is",
         )),
     }
 }

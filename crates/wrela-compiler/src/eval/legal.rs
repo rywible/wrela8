@@ -351,6 +351,17 @@ fn build_nodes(program: &TypedProgram) -> BTreeMap<String, NodeInfo> {
 fn insert_fn_node(nodes: &mut BTreeMap<String, NodeInfo>, key: String, f: &TypedFn) {
     let mut scan = BodyScan::default();
     scan_stmts(&f.body, &mut scan);
+    // Plans/M6.md item A: an `async fn`'s own color is itself an async
+    // operation (02-language.md §12: "free of ... async/actor
+    // operations" names the fn, not merely its statements) —
+    // unconditionally illegal for comptime, independent of what its body
+    // contains (an async fn with no internal `await`/`send`/`with group`
+    // is still illegal). `note_illegal` only sets this when the body scan
+    // itself found nothing more specific, so a real internal reason
+    // (e.g. an `await`) still wins the diagnostic's own wording.
+    if f.is_async {
+        scan.note_illegal("an `async fn`");
+    }
     nodes.insert(
         key.clone(),
         NodeInfo {
@@ -427,10 +438,32 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
         TypedExprKind::Intrinsic { key, .. } => {
             if crate::sema::typed::is_restricted_intrinsic(key) {
                 Some("an `@image` builder intrinsic")
+            } else if key == "now" {
+                // Plans/M6.md item A, decision 11: `now()` is
+                // runtime-only (illegal in every comptime context) — the
+                // new illegal-reason arm decision 11 asks for, mirroring
+                // the intrinsic-outside-`@image` precedent just above.
+                // `ms(n)` shares this node kind but stays comptime-legal
+                // (falls through to `None`, same as `seconds`/
+                // `RestartIntensity`).
+                Some("`now()` (a runtime-only clock read)")
+            } else if key.starts_with("Group.") {
+                // `Group.start`/`Group.join_all` (plans/M6.md item A):
+                // actor/async operations, illegal in every comptime
+                // context (02-language.md §12).
+                Some("a `group` construct")
             } else {
                 None
             }
         }
+        // Plans/M6.md item A: `await`/`send` are both decision-7 illegal
+        // ops (02-language.md §12: "free of ... async/actor operations").
+        TypedExprKind::Await(_) => Some("an `await` expression"),
+        TypedExprKind::Send(_) => Some("a `send` expression"),
+        // Never independently illegal — the enclosing `Group.start`
+        // intrinsic (above) already flags illegal; this is only ever a
+        // leaf naming that intrinsic's own callee argument.
+        TypedExprKind::GroupChild(_) => None,
     }
 }
 
@@ -450,6 +483,9 @@ fn stmt_illegal_reason(kind: &TypedStmtKind) -> Option<&'static str> {
         | TypedStmtKind::ComptimeAssert { .. }
         | TypedStmtKind::Defer(_)
         | TypedStmtKind::ExprStmt(_) => None,
+        // Plans/M6.md item A: `with group(...)` is a decision-7 illegal
+        // op (an actor/async construct, 02-language.md §12).
+        TypedStmtKind::WithGroup { .. } => Some("a `with group` block"),
     }
 }
 
@@ -535,6 +571,20 @@ fn scan_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
             TypedDeferBody::Suite(stmts) => scan_stmts(stmts, scan),
         },
         TypedStmtKind::ExprStmt(e) => scan_expr(e, scan),
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                scan_expr(c, scan);
+            }
+            if let Some(d) = deadline {
+                scan_expr(d, scan);
+            }
+            scan_stmts(body, scan);
+        }
     }
 }
 
@@ -647,6 +697,15 @@ fn scan_expr(e: &TypedExpr, scan: &mut BodyScan) {
             }
         }
         TypedExprKind::PoolName(_) => {}
+        TypedExprKind::Await(inner) | TypedExprKind::Send(inner) => scan_expr(inner, scan),
+        TypedExprKind::GroupChild(key) => {
+            // Mirrors `FnRef`'s own arm: names a callee edge (the
+            // enclosing fn is already independently marked illegal by
+            // the `Group.start` intrinsic itself, above — this edge is
+            // only for the graph's own completeness, same reasoning as
+            // `FnRef`).
+            scan.callees.insert(key.spelling());
+        }
     }
 }
 

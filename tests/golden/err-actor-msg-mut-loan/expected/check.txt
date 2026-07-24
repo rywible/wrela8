@@ -1,0 +1,1 @@
+error[actor]: a message argument cannot be a `mut` loan (02-language.md §9.3) at 13:21

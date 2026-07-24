@@ -184,6 +184,13 @@ pub struct DeclStruct {
     /// `classify_named` below uses, just recomputed once per concrete
     /// instantiation instead of once per declaration.
     pub(crate) is_resource_fiat: bool,
+    /// Plans/M6.md item A's own addition: `@actor`/`@driver` specifically
+    /// (not `resource struct` in general — `is_resource_fiat` conflates
+    /// the two) — the one fact `Actor[T]`'s own validation
+    /// (`validate_actor_handles`, below) and `sema::bodies`'s async-surface
+    /// checks need that `is_resource_fiat` alone cannot answer (a plain
+    /// `resource struct` is not an actor).
+    pub(crate) is_actor: bool,
     /// Every field's resolved type + the field's own span, for the
     /// classification/infinite-size pass below — methods/init/pool
     /// members carry no data and do not contribute. `pub(crate)`: see
@@ -312,7 +319,157 @@ pub fn declare(module: &Module) -> Result<Vec<DeclItem>, SemaError> {
         }
     }
     classify_all(&mut items)?;
+    validate_actor_handles(module, &items)?;
     Ok(items)
+}
+
+// --- `Actor[T]` validation (plans/M6.md item A) ---------------------------
+//
+// `Actor[T]` resolves structurally for any `T` (`resolve_named`, above —
+// forward references must work, and no struct's own `is_actor` bit is even
+// computed until every item in the module has been declared); this pass
+// runs once, after every `DeclItem` exists, and rejects any `Actor[T]`
+// whose `T` does not name an `@actor`/`@driver` struct (02-language.md
+// §9.1: "Other actors hold generated `Actor[T]` handles"). Struct field
+// types are already flattened onto `component_types`; a fn/method/init's
+// own parameter/return types are not (they are not classification
+// components), so this walks the raw `ast::Module` alongside the resolved
+// `DeclItem`s (mirroring `bodies::build_module_ctx`'s own zip) for those.
+
+fn validate_actor_type(
+    ty: &Type,
+    span: Span,
+    structs: &BTreeMap<String, &DeclStruct>,
+) -> Result<(), SemaError> {
+    match ty {
+        Type::Named(name, targs) if name == "Actor" => {
+            let inner = match targs.first() {
+                Some(TypeArg::Type(t)) => t,
+                _ => {
+                    return Err(SemaError::at(
+                        "type",
+                        "`Actor` requires a type argument".to_string(),
+                        span,
+                    ));
+                }
+            };
+            let Type::Named(actor_name, _) = inner else {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`Actor[{}]` must name an `@actor`/`@driver` struct",
+                        render_type(inner)
+                    ),
+                    span,
+                ));
+            };
+            match structs.get(actor_name.as_str()) {
+                Some(s) if s.is_actor => Ok(()),
+                _ => Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`Actor[{actor_name}]` requires `{actor_name}` to be an \
+                         `@actor`/`@driver` struct"
+                    ),
+                    span,
+                )),
+            }
+        }
+        Type::Array(elem, _) => validate_actor_type(elem, span, structs),
+        Type::Tuple(elems) => {
+            for e in elems {
+                validate_actor_type(e, span, structs)?;
+            }
+            Ok(())
+        }
+        Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+            validate_actor_type(inner, span, structs)
+        }
+        Type::Result(ok, err) => {
+            validate_actor_type(ok, span, structs)?;
+            validate_actor_type(err, span, structs)
+        }
+        Type::Fn(params, ret) => {
+            for (_, t) in params {
+                validate_actor_type(t, span, structs)?;
+            }
+            validate_actor_type(ret, span, structs)
+        }
+        Type::Named(_, targs) => {
+            for a in targs {
+                if let TypeArg::Type(t) = a {
+                    validate_actor_type(t, span, structs)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_fn_actor_types(
+    span: Span,
+    params: &[DeclParam],
+    ret: &Type,
+    structs: &BTreeMap<String, &DeclStruct>,
+) -> Result<(), SemaError> {
+    for p in params {
+        validate_actor_type(&p.ty, span, structs)?;
+    }
+    validate_actor_type(ret, span, structs)
+}
+
+fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), SemaError> {
+    let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
+    for item in items {
+        if let DeclItem::Struct(s) = item {
+            structs.insert(s.name.clone(), s);
+        }
+    }
+    let ast_items: Vec<&Item> = module
+        .items
+        .iter()
+        .filter(|i| !matches!(i, Item::ComptimeIf(_)))
+        .collect();
+    for (ai, di) in ast_items.iter().zip(items.iter()) {
+        match (ai, di) {
+            (Item::Fn(f), DeclItem::Fn(d)) => {
+                validate_fn_actor_types(f.span, &d.params, &d.ret, &structs)?;
+            }
+            (Item::Struct(s), DeclItem::Struct(d)) => {
+                for (ty, span) in &d.component_types {
+                    validate_actor_type(ty, *span, &structs)?;
+                }
+                for m in &s.members {
+                    match m {
+                        Member::Fn(f) => {
+                            let Some(DeclMember::Fn(fd)) = d
+                                .members
+                                .iter()
+                                .find(|dm| matches!(dm, DeclMember::Fn(x) if x.name == f.name))
+                            else {
+                                continue;
+                            };
+                            validate_fn_actor_types(f.span, &fd.params, &fd.ret, &structs)?;
+                        }
+                        Member::Init(i) => {
+                            let Some(DeclMember::Init(id)) = d
+                                .members
+                                .iter()
+                                .find(|dm| matches!(dm, DeclMember::Init(_)))
+                            else {
+                                continue;
+                            };
+                            validate_fn_actor_types(i.span, &id.params, &id.ret, &structs)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // --- type resolution -----------------------------------------------------
@@ -603,6 +760,7 @@ fn declare_struct(
         classification: Classification::Data, // placeholder; classify_all fills this in
         members,
         is_resource_fiat: s.is_resource || has_actor_or_driver(&s.attrs),
+        is_actor: has_actor_or_driver(&s.attrs),
         component_types,
         span: s.span,
     })
@@ -873,6 +1031,21 @@ fn resolve_named(
             return Ok(Type::Static(Box::new(inner)));
         }
         "Bytes" => return resolve_bytes(n, param_position),
+        // `Actor[T]` (plans/M6.md item A, 02-language.md §9.1): the
+        // generated handle type — `T` is structurally resolved here
+        // exactly like `Option`/`Static`'s own inner argument; *which*
+        // structs `T` may legally name (`@actor`/`@driver` only) is a
+        // whole-module question this per-annotation resolver cannot ask
+        // (a forward reference to a struct declared later in the file is
+        // legal, mirroring `shapes`'s own forward-reference story) — validated
+        // once, after every item is declared, by `validate_actor_handles`
+        // below (called from `declare`). Retires the M4-C placeholder
+        // comment in golden `image-basic` (`Store.disk`'s own `u32` stand-in).
+        "Actor" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named("Actor".to_string(), vec![TypeArg::Type(inner)]));
+        }
         _ => {}
     }
     if let Some(kind) = generics.get(&n.name) {

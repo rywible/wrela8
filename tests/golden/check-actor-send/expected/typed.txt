@@ -1,0 +1,37 @@
+Program
+  Struct name=Auditor
+    Method name=observe ret=u64
+      Receiver mode=mut ty=Auditor
+      Param name=code mode=read ty=u64
+      Body
+        Let name=outcome ty=Result[unit, Rejected]
+          Send ty=Result[unit, Rejected]
+            Call key=Logger.record ty=unit
+              Receiver
+                Field name=logger ty=Actor[Logger]
+                  Local name=self ty=Auditor
+              Local name=code ty=u64
+        Match
+          Local name=outcome ty=Result[unit, Rejected]
+          Case
+            VariantPattern enum=Result variant=Ok ty=Result[unit, Rejected]
+              Wildcard ty=unit
+            Pass
+          Case
+            VariantPattern enum=Result variant=Err ty=Result[unit, Rejected]
+              Binding name=_rejected ty=Rejected
+            Pass
+        Return
+          Local name=code ty=u64
+  Struct name=Logger
+    Method name=record ret=unit
+      Receiver mode=mut ty=Logger
+      Param name=code mode=read ty=u64
+      Body
+        Assign
+          Field name=count ty=u64
+            Local name=self ty=Logger
+          Binary op=+ ty=u64
+            Field name=count ty=u64
+              Local name=self ty=Logger
+            Local name=code ty=u64

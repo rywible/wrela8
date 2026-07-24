@@ -1,0 +1,1 @@
+error[actor]: a bare `send` statement must consume its result — bind it or `match` it (admission cannot yet be proven at build time) at 11:5

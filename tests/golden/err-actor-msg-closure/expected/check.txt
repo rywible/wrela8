@@ -1,0 +1,1 @@
+error[actor]: a message argument cannot be a closure (`f`, 02-language.md §9.3) at 11:34

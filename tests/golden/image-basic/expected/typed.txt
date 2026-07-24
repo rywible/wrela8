@@ -88,13 +88,13 @@ Program
             Local name=self ty=Store
     Init ret=unit
       Receiver mode=mut ty=Store
-      Param name=disk mode=read ty=u32
+      Param name=disk mode=read ty=Actor[Blk]
       Body
         Assign
           Field name=count ty=u32
             Local name=self ty=Store
           Int text=0 ty=u32
         Assign
-          Field name=disk ty=u32
+          Field name=disk ty=Actor[Blk]
             Local name=self ty=Store
-          Local name=disk ty=u32
+          Local name=disk ty=Actor[Blk]

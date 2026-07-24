@@ -57,7 +57,7 @@ use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
     DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, NamedType,
-    Pattern, Span, Stmt, UnaryOp, WhileStmt,
+    Pattern, Span, Stmt, UnaryOp, WhileStmt, WithStmt,
 };
 
 // --- item H: the generic-instantiation queue ------------------------------
@@ -387,6 +387,28 @@ pub(crate) struct FnCtx {
     pub(crate) ret_ty: Type,
     locals: Vec<BTreeMap<String, Type>>,
     pub(crate) local_pools: BTreeSet<String>,
+    /// Plans/M6.md item A: one `with group(...) as g:` block's own
+    /// children so far — `g`'s bare name to `(unified child return type,
+    /// count of static `g.start` call sites seen)`. Not scoped by
+    /// `push_scope`/`pop_scope` (a separate, flat map: `g`'s own *type*
+    /// binding already lives in `locals` and gets that ordinary scope
+    /// discipline) — `bodies::check_with` removes this entry itself once
+    /// the `with`-block's body is fully checked, so a *different*
+    /// `with group(...) as g:` later in the same fn never sees a stale
+    /// entry under the same reused variable name.
+    pub(crate) group_children: BTreeMap<String, (Type, usize)>,
+    /// Plans/M6.md item A: is the body currently being checked an
+    /// `async fn`/method's own? `await`/`send`/`with group` all require
+    /// this (the whole actor/async statement surface is only meaningful
+    /// inside a body that can actually suspend — a plain `fn` "never
+    /// suspends", 02-language.md §5) — set once, right after `FnCtx::new`,
+    /// by `check_top_fn`/`check_struct_members`, never toggled mid-walk
+    /// (a closure body shares its enclosing fn's own `fctx`, so a closure
+    /// inside an async method still sees `in_async = true`, matching "a
+    /// lending call is synchronous" being about cross-await *paths*,
+    /// §9.2, not about whether `await` may textually appear there at all
+    /// — out of scope to refine further at M6).
+    pub(crate) in_async: bool,
 }
 
 impl FnCtx {
@@ -395,6 +417,8 @@ impl FnCtx {
             ret_ty,
             locals: vec![BTreeMap::new()],
             local_pools,
+            group_children: BTreeMap::new(),
+            in_async: false,
         }
     }
 
@@ -857,6 +881,7 @@ pub(crate) fn check_top_fn(
         return Ok(None); // generic body: item H's job, not checked here.
     }
     let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
+    fctx.in_async = f.is_async;
     let params = check_params_with_defaults(&f.params, &d.params, &mut fctx, mctx)?;
     let body = match &f.body {
         Some(body) => check_stmts(body, &mut fctx, mctx)?,
@@ -866,11 +891,15 @@ pub(crate) fn check_top_fn(
         // closed rather than treating it as an empty body.
         None => return Err(unimplemented_at("bodyless functions are", f.span)),
     };
+    if f.is_async {
+        check_cross_await(&body)?;
+    }
     Ok(Some(TypedFn {
         receiver: None,
         params,
         ret: d.ret.clone(),
         body,
+        is_async: f.is_async,
     }))
 }
 
@@ -951,7 +980,21 @@ pub(crate) fn check_struct_members(
                 if !f.generics.is_empty() {
                     continue; // generic method: item H's job.
                 }
+                // Plans/M6.md item A: an `async fn` with no receiver
+                // (an associated fn) is not a documented shape — 02
+                // §9.1/§9.5's whole async surface is methods (through
+                // `self` or `Actor[T]`) and top-level fns (group
+                // children); an associated fn is neither. Fail closed,
+                // named, rather than silently accepting an uncallable
+                // declaration.
+                if f.is_async && f.receiver.is_none() {
+                    return Err(unimplemented_at(
+                        "an `async fn` with no receiver (associated fn) is",
+                        f.span,
+                    ));
+                }
                 let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
+                fctx.in_async = f.is_async;
                 fctx.insert_local("self".to_string(), self_ty.clone());
                 let params = check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
                 let body = match &f.body {
@@ -963,12 +1006,16 @@ pub(crate) fn check_struct_members(
                     // golden err-unimplemented-bodyless pins it).
                     None => return Err(unimplemented_at("bodyless functions are", f.span)),
                 };
+                if f.is_async {
+                    check_cross_await(&body)?;
+                }
                 let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
                 let tf = TypedFn {
                     receiver,
                     params,
                     ret: fd.ret.clone(),
                     body,
+                    is_async: f.is_async,
                 };
                 if f.receiver.is_some() {
                     methods.insert(f.name.clone(), tf);
@@ -986,6 +1033,7 @@ pub(crate) fn check_struct_members(
                     params,
                     ret: fd.ret.clone(),
                     body,
+                    is_async: false,
                 });
             }
             _ => {}
@@ -1034,8 +1082,8 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
         Stmt::Return(span, e) => check_return(*span, e, fctx, mctx),
         Stmt::Assert(a) => check_assert(a, fctx, mctx),
         Stmt::Defer(d) => check_defer(d, fctx, mctx),
-        Stmt::With(w) => Err(unimplemented_at("`with` is", w.span)),
-        Stmt::Send(span, _e) => Err(unimplemented_at("`send` is", *span)),
+        Stmt::With(w) => check_with(w, fctx, mctx),
+        Stmt::Send(span, e) => check_send_stmt(*span, e, fctx, mctx),
         Stmt::Expr(_span, e) => Ok(TypedStmt {
             kind: TypedStmtKind::ExprStmt(check_expr(e, None, fctx, mctx)?),
         }),
@@ -1580,6 +1628,11 @@ fn resolved_enum_name(ty: &Type) -> String {
     match ty {
         Type::Option(_) => "Option".to_string(),
         Type::Result(_, _) => "Result".to_string(),
+        // `CallError[E]` (plans/M6.md item A): carried as `Type::Named`
+        // (not a dedicated `Type` variant like `Option`/`Result` — see
+        // `compose_call_error`'s own doc comment), so this falls straight
+        // through the `Type::Named` arm below already — no special case
+        // needed here.
         Type::Named(name, _) => name.clone(),
         other => unreachable!(
             "resolved_enum_name: `{}` is not an enum-shaped type",
@@ -1644,6 +1697,39 @@ fn variant_payload_types_for(
                 "Err" => Ok(vec![(**err).clone()]),
                 other => Err(type_error(
                     format!("`Result` has no variant `{other}`"),
+                    span,
+                )),
+            }
+        }
+        // `CallError[E]` (plans/M6.md item A, 02-language.md §9.4): a
+        // fixed, compiler-known five-variant sum (the
+        // `builtin_enum_variants` precedent, extended to carry payload
+        // types — `Target`/`Restart`'s own fieldless variants need none).
+        // `Admission`/`Peer` are opaque builtin payload types (M7 grows
+        // their fields; pattern-matching the *variant* is all M6 needs).
+        Type::Named(name, targs) if name == "CallError" => {
+            if let Some(n) = enum_name {
+                if n != "CallError" {
+                    return Err(type_error(
+                        format!("expected a `CallError` pattern, found `{n}`"),
+                        span,
+                    ));
+                }
+            }
+            let Some(TypeArg::Type(e_ty)) = targs.first() else {
+                return Err(type_error(
+                    "`CallError` is missing its error argument".to_string(),
+                    span,
+                ));
+            };
+            match variant {
+                "Op" => Ok(vec![e_ty.clone()]),
+                "Cancelled" => Ok(vec![]),
+                "DeadlineExceeded" => Ok(vec![]),
+                "NotAdmitted" => Ok(vec![Type::Named("Admission".to_string(), vec![])]),
+                "PeerFailed" => Ok(vec![Type::Named("Peer".to_string(), vec![])]),
+                other => Err(type_error(
+                    format!("`CallError` has no variant `{other}`"),
                     span,
                 )),
             }
@@ -1796,7 +1882,7 @@ fn synth_expr(
                 kind: TypedExprKind::BitNot(Box::new(it)),
             })
         }
-        Expr::Unary(span, UnaryOp::Await, _inner) => Err(unimplemented_at("await is", *span)),
+        Expr::Unary(span, UnaryOp::Await, inner) => check_await(inner, *span, fctx, mctx),
         Expr::Unary(_span, UnaryOp::Take, inner) => {
             let it = check_expr(inner, expected, fctx, mctx)?;
             let ty = it.ty.clone();
@@ -1864,7 +1950,7 @@ fn synth_expr(
             })
         }
         Expr::Closure(c) => check_closure(c, expected, fctx, mctx),
-        Expr::Send(span, _inner) => Err(unimplemented_at("send is", *span)),
+        Expr::Send(span, inner) => check_send(inner, *span, fctx, mctx),
         Expr::Tuple(span, items) => synth_tuple(*span, items, expected, fctx, mctx),
         Expr::List(span, items) => synth_list(*span, items, expected, fctx, mctx),
     }
@@ -3591,6 +3677,56 @@ fn check_call_by_name(
                 },
             })
         }
+        // Plans/M6.md item A, decision 11 (02-language.md §9.5's own
+        // vocabulary): `ms(n)` is a pure, comptime-legal duration
+        // constructor — shares `seconds`'s exact node shape (a
+        // `Duration`-typed `Intrinsic`), just a different fixed `n`-to-
+        // duration scale (lowering — item D — is the only place that
+        // actually differs). `eval::legal` never restricts it (mirrors
+        // `seconds`/`RestartIntensity`'s own "ordinary comptime-legal
+        // value" doc note above).
+        "ms" => {
+            if args.len() != 1 || args[0].label.is_some() {
+                return Err(type_error(
+                    "`ms` takes exactly one positional argument".to_string(),
+                    call_span,
+                ));
+            }
+            let n = check_expr(&args[0].value, Some(&Type::U64), fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Named("Duration".to_string(), vec![]),
+                kind: TypedExprKind::Intrinsic {
+                    key: "ms".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: vec![("n".to_string(), n)],
+                },
+            })
+        }
+        // `now()` (decision 11): runtime-only — the one new
+        // `eval::legal` illegal-reason arm decision 11 asks for (mirrors
+        // the intrinsic-outside-`@image` precedent: recognized by bare
+        // callee spelling, restricted by a dedicated `eval::legal` check
+        // rather than by failing here — `now`'s own *type* is legal
+        // everywhere the language type-checks; only *evaluating* it at
+        // build time is illegal).
+        "now" => {
+            if !args.is_empty() {
+                return Err(type_error(
+                    "`now` takes no arguments".to_string(),
+                    call_span,
+                ));
+            }
+            Ok(TypedExpr {
+                ty: Type::Named("Instant".to_string(), vec![]),
+                kind: TypedExprKind::Intrinsic {
+                    key: "now".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: vec![],
+                },
+            })
+        }
         _ => Err(type_error(format!("`{name}` is not callable"), call_span)),
     }
 }
@@ -3657,6 +3793,37 @@ fn check_call_by_field(
     }
     let base_t = check_expr(base, None, fctx, mctx)?;
     let base_ty = unwrap_own(base_t.ty.clone());
+    // Plans/M6.md item A (02-language.md §9.4/§9.5): a bare (non-`await`/
+    // `send`) call through an `Actor[T]` handle names a message method —
+    // the language gives that no synchronous meaning, so it is rejected
+    // here, named, rather than falling through to "no method" below.
+    // `g.start(...)` is the one `Group` method callable bare (it does not
+    // suspend — it only registers a child); `g.join_all()` bare falls to
+    // the same "must be awaited" rejection as an actor call.
+    if let Type::Named(outer, _) = &base_ty {
+        if outer == "Actor" {
+            return Err(type_error(
+                format!(
+                    "calling `{name}` through an `Actor[T]` handle requires `await` or `send`, \
+                     not a bare call"
+                ),
+                call_span,
+            ));
+        }
+        if outer == "Group" {
+            return match name {
+                "start" => check_group_start(base_t, args, call_span, fctx, mctx),
+                "join_all" => Err(type_error(
+                    "`join_all` must be `await`ed".to_string(),
+                    call_span,
+                )),
+                other => Err(type_error(
+                    format!("`Group` has no method `{other}`"),
+                    fspan,
+                )),
+            };
+        }
+    }
     if base_ty == image_type() {
         return check_image_method_intrinsic(name, args, call_span, fctx, mctx);
     }
@@ -3726,6 +3893,1134 @@ fn check_call_by_field(
                 fspan,
             ))
         }
+    }
+}
+
+// --- plans/M6.md item A: the actor/async surface --------------------------
+//
+// `Actor[T]` calls (`await`/`send`), `with group(...)`/`g.start`/
+// `g.join_all`, and the cross-await path rule (02-language.md §9.2/§9.4/
+// §9.5). Every construct outside this exact shape stays fail-closed,
+// named, exactly like the rest of decision 7's set.
+
+fn actor_error(message: String, span: Span) -> SemaError {
+    SemaError::at("actor", message, span)
+}
+
+/// The CallError composition table, verbatim (02-language.md §9.4):
+/// `declared R -> Result[R, CallError[never]]`; `declared Result[T, E] ->
+/// Result[T, CallError[E]]`. `CallError` is carried as a plain
+/// `Type::Named("CallError", [TypeArg::Type(E)])` — the `Option`/`Result`
+/// precedent stops at two fixed builtin sums; `CallError`'s own five
+/// variants (`Op`/`Cancelled`/`DeadlineExceeded`/`NotAdmitted`/
+/// `PeerFailed`) are instead recognized directly wherever a scrutinee's
+/// type says `CallError` by name (`variant_payload_types_for`/
+/// `matches::shape_of`), the same "builtin_enum_variants precedent" the
+/// plan names — a fixed, compiler-known variant/payload table, just with
+/// non-empty payloads unlike `Target`/`Restart`'s fieldless ones.
+/// Variant erasure (decision 8) ships nothing at M6: no whole-image
+/// analysis proves any variant unreachable yet, so every composition
+/// keeps the full five-variant `CallError[E]` — recorded, not silently
+/// approximated (the plan's own "record what you shipped").
+pub(crate) fn compose_call_error(raw: &Type) -> Type {
+    match raw {
+        Type::Result(t, e) => Type::Result(
+            t.clone(),
+            Box::new(Type::Named(
+                "CallError".to_string(),
+                vec![TypeArg::Type((**e).clone())],
+            )),
+        ),
+        other => Type::Result(
+            Box::new(other.clone()),
+            Box::new(Type::Named(
+                "CallError".to_string(),
+                vec![TypeArg::Type(Type::Never)],
+            )),
+        ),
+    }
+}
+
+/// Message-value restrictions (02-language.md §9.3): a `mut` loan or a
+/// lent closure is rejected, named; `take` of a resource is M7 (fail
+/// closed, named, distinct from the flat rejection — the plan's own
+/// "distinct message from the flat rejection"); `take` of plain data (not
+/// a resource) and a bare `Static[T]`/plain-data argument are both fine,
+/// same as an ordinary call. Otherwise identical to `check_call_args`
+/// (label/positional binding, defaults) — duplicated rather than
+/// threaded through it because `check_call_args` does not return which
+/// source `Arg` (and so which `AccessMode`) filled which slot, and this
+/// needs exactly that to apply the restriction per argument.
+fn check_message_args(
+    ast_params: &[ast::Param],
+    decl_params: &[DeclParam],
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<Vec<Option<TypedExpr>>, SemaError> {
+    let mut bound = vec![false; decl_params.len()];
+    let mut slots: Vec<Option<TypedExpr>> = (0..decl_params.len()).map(|_| None).collect();
+    let mut cursor = 0usize;
+    for a in args {
+        if a.mode == AccessMode::Mut {
+            return Err(actor_error(
+                "a message argument cannot be a `mut` loan (02-language.md §9.3)".to_string(),
+                a.span,
+            ));
+        }
+        let idx = match &a.label {
+            Some(lbl) => {
+                let Some(i) = decl_params.iter().position(|p| &p.name == lbl) else {
+                    return Err(type_error(
+                        format!("unknown parameter label `{lbl}`"),
+                        a.span,
+                    ));
+                };
+                i
+            }
+            None => {
+                while cursor < bound.len() && bound[cursor] {
+                    cursor += 1;
+                }
+                if cursor >= decl_params.len() {
+                    return Err(type_error("too many arguments".to_string(), a.span));
+                }
+                let i = cursor;
+                cursor += 1;
+                i
+            }
+        };
+        if bound[idx] {
+            return Err(type_error(
+                format!("argument `{}` bound more than once", decl_params[idx].name),
+                a.span,
+            ));
+        }
+        bound[idx] = true;
+        let pty = decl_params[idx].ty.clone();
+        let vt = check_expr(&a.value, Some(&pty), fctx, mctx)?;
+        if matches!(vt.ty, Type::Fn(..)) {
+            return Err(actor_error(
+                format!(
+                    "a message argument cannot be a closure (`{}`, 02-language.md §9.3)",
+                    decl_params[idx].name
+                ),
+                a.span,
+            ));
+        }
+        if matches!(&vt.ty, Type::Named(n, _) if n == "Actor") {
+            return Err(actor_error(
+                format!(
+                    "an `Actor[T]` handle cannot appear in a message (`{}`, 02-language.md §9.1)",
+                    decl_params[idx].name
+                ),
+                a.span,
+            ));
+        }
+        if a.mode == AccessMode::Take && is_resource_type(&vt.ty, mctx) {
+            return Err(unimplemented_at(
+                "`take` of a resource in a message is",
+                a.span,
+            ));
+        }
+        slots[idx] = Some(vt);
+    }
+    for (i, p) in decl_params.iter().enumerate() {
+        if !bound[i] && ast_params[i].default.is_none() {
+            return Err(type_error(
+                format!("missing argument for parameter `{}`", p.name),
+                call_span,
+            ));
+        }
+    }
+    Ok(slots)
+}
+
+/// `await expr` (02-language.md §9.4/§9.5): `expr` must be exactly a
+/// method call through an `Actor[T]` handle, or `g.join_all()` on a
+/// `with group(...) as g:` binding — the plan's own "actor-call
+/// awaitable or group join". Nothing else is an awaitable at M6 (a
+/// self-call to an async method, or a bare free async fn call, is
+/// out of scope — see the module's own "only invocation forms" note on
+/// `TypedExprKind::GroupChild`).
+fn check_await(
+    inner: &Expr,
+    await_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if !fctx.in_async {
+        return Err(actor_error(
+            "`await` requires an `async fn`/method — a plain `fn` never suspends \
+             (02-language.md §5)"
+                .to_string(),
+            await_span,
+        ));
+    }
+    let Expr::Call(callee_expr, call_span, args) = inner else {
+        return Err(actor_error(
+            "`await` requires an actor call or a group's `join_all()` (M6 scope)".to_string(),
+            await_span,
+        ));
+    };
+    let Expr::Field(base, fspan, method_name) = callee_expr.as_ref() else {
+        return Err(actor_error(
+            "`await` requires a method call through an actor handle or a group's `join_all()` \
+             (M6 scope)"
+                .to_string(),
+            *call_span,
+        ));
+    };
+    if method_name == "join_all" {
+        if let Expr::Name(_, gname) = base.as_ref() {
+            if fctx.lookup_local(gname) == Some(Type::Named("Group".to_string(), vec![])) {
+                return check_await_group_join(gname, args, *call_span, fctx);
+            }
+        }
+    }
+    check_await_actor_call(base, *fspan, method_name, args, *call_span, fctx, mctx)
+}
+
+fn check_await_actor_call(
+    base: &Expr,
+    fspan: Span,
+    method_name: &str,
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let base_t = check_expr(base, None, fctx, mctx)?;
+    let Type::Named(outer, targs) = &base_t.ty else {
+        return Err(actor_error(
+            "`await` requires a method call through an `Actor[T]` handle".to_string(),
+            call_span,
+        ));
+    };
+    if outer != "Actor" {
+        return Err(actor_error(
+            "`await` requires a method call through an `Actor[T]` handle".to_string(),
+            call_span,
+        ));
+    }
+    let Some(TypeArg::Type(Type::Named(actor_name, _))) = targs.first() else {
+        return Err(actor_error(
+            "`await` requires a method call through an `Actor[T]` handle".to_string(),
+            call_span,
+        ));
+    };
+    let Some(s) = mctx.structs.get(actor_name.as_str()) else {
+        return Err(actor_error(
+            format!("unknown actor type `{actor_name}`"),
+            fspan,
+        ));
+    };
+    let Some((mf, d)) = s.method(method_name) else {
+        return Err(missing_method_error(
+            format!("type `{actor_name}` has no method `{method_name}`"),
+            actor_name,
+            method_name,
+            fspan,
+        ));
+    };
+    if !mf.is_pub {
+        return Err(actor_error(
+            format!(
+                "`{method_name}` on `{actor_name}` is not `pub` — only a public method is \
+                 callable through `Actor[T]`"
+            ),
+            fspan,
+        ));
+    }
+    if !d.generics.is_empty() {
+        return Err(unimplemented_at("generic instantiation is", call_span));
+    }
+    let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+    let call = TypedExpr {
+        ty: d.ret.clone(),
+        kind: TypedExprKind::Call {
+            callee: CalleeKey::Method(actor_name.clone(), method_name.to_string()),
+            receiver: Some(Box::new(base_t)),
+            args: typed_args,
+        },
+    };
+    let composed = compose_call_error(&d.ret);
+    Ok(TypedExpr {
+        ty: composed,
+        kind: TypedExprKind::Await(Box::new(call)),
+    })
+}
+
+fn check_await_group_join(
+    gname: &str,
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+) -> Result<TypedExpr, SemaError> {
+    if !args.is_empty() {
+        return Err(type_error(
+            "`join_all` takes no arguments".to_string(),
+            call_span,
+        ));
+    }
+    let Some((child_ty, count)) = fctx.group_children.get(gname).cloned() else {
+        return Err(actor_error(
+            format!("group `{gname}` has no children started (`g.start`) before `join_all`"),
+            call_span,
+        ));
+    };
+    let len_expr = Expr::Int(call_span, count.to_string());
+    let group_ty = Type::Named("Group".to_string(), vec![]);
+    let receiver = Box::new(TypedExpr {
+        ty: group_ty.clone(),
+        kind: TypedExprKind::Local(gname.to_string()),
+    });
+    let raw = Type::Array(Box::new(child_ty.clone()), Box::new(len_expr.clone()));
+    let intrinsic = TypedExpr {
+        ty: raw,
+        kind: TypedExprKind::Intrinsic {
+            key: "Group.join_all".to_string(),
+            receiver: Some(receiver),
+            type_arg: None,
+            args: vec![],
+        },
+    };
+    let composed = Type::Array(Box::new(compose_call_error(&child_ty)), Box::new(len_expr));
+    Ok(TypedExpr {
+        ty: composed,
+        kind: TypedExprKind::Await(Box::new(intrinsic)),
+    })
+}
+
+/// `send actor.method(...)` (02-language.md §9.4), reached both from the
+/// expression form (`Expr::Send`) and, for diagnostics only, from the
+/// always-rejected bare statement form (`check_send_stmt`). `inner` is
+/// always a call (the ast's own comment on both `Expr::Send`/`Stmt::Send`).
+fn check_send(
+    inner: &Expr,
+    send_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if !fctx.in_async {
+        return Err(actor_error(
+            "`send` requires an `async fn`/method context (M6 scope)".to_string(),
+            send_span,
+        ));
+    }
+    let Expr::Call(callee_expr, call_span, args) = inner else {
+        return Err(actor_error(
+            "`send` requires a call expression".to_string(),
+            send_span,
+        ));
+    };
+    let Expr::Field(base, fspan, method_name) = callee_expr.as_ref() else {
+        return Err(actor_error(
+            "`send` requires a method call through an actor handle".to_string(),
+            *call_span,
+        ));
+    };
+    check_send_call(base, *fspan, method_name, args, *call_span, fctx, mctx)
+}
+
+fn check_send_call(
+    base: &Expr,
+    fspan: Span,
+    method_name: &str,
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let base_t = check_expr(base, None, fctx, mctx)?;
+    let Type::Named(outer, targs) = &base_t.ty else {
+        return Err(actor_error(
+            "`send` requires a method call through an `Actor[T]` handle".to_string(),
+            call_span,
+        ));
+    };
+    if outer != "Actor" {
+        return Err(actor_error(
+            "`send` requires a method call through an `Actor[T]` handle".to_string(),
+            call_span,
+        ));
+    }
+    let Some(TypeArg::Type(Type::Named(actor_name, _))) = targs.first() else {
+        return Err(actor_error(
+            "`send` requires a method call through an `Actor[T]` handle".to_string(),
+            call_span,
+        ));
+    };
+    let Some(s) = mctx.structs.get(actor_name.as_str()) else {
+        return Err(actor_error(
+            format!("unknown actor type `{actor_name}`"),
+            fspan,
+        ));
+    };
+    let Some((mf, d)) = s.method(method_name) else {
+        return Err(missing_method_error(
+            format!("type `{actor_name}` has no method `{method_name}`"),
+            actor_name,
+            method_name,
+            fspan,
+        ));
+    };
+    if !mf.is_pub {
+        return Err(actor_error(
+            format!(
+                "`{method_name}` on `{actor_name}` is not `pub` — only a public method is \
+                 callable through `Actor[T]`"
+            ),
+            fspan,
+        ));
+    }
+    if d.ret != Type::Unit {
+        return Err(actor_error(
+            format!(
+                "`send`'s target method must return `unit`, found `{}` (02-language.md §9.4)",
+                types::render_type(&d.ret)
+            ),
+            fspan,
+        ));
+    }
+    if !d.generics.is_empty() {
+        return Err(unimplemented_at("generic instantiation is", call_span));
+    }
+    let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+    let call = TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Call {
+            callee: CalleeKey::Method(actor_name.clone(), method_name.to_string()),
+            receiver: Some(Box::new(base_t)),
+            args: typed_args,
+        },
+    };
+    let ty = Type::Result(
+        Box::new(Type::Unit),
+        Box::new(Type::Named("Rejected".to_string(), vec![])),
+    );
+    Ok(TypedExpr {
+        ty,
+        kind: TypedExprKind::Send(Box::new(call)),
+    })
+}
+
+/// The item-A floor (decision 5): every bare `send` statement is an
+/// error demanding the result be consumed — the send-proof analysis that
+/// can make some of them infallible is item G's job. The inner call is
+/// still fully typed first (`check_send`) so a genuine mistake in the
+/// call itself (unknown method, bad message argument, ...) reports that
+/// error instead of this one. Category `actor` (added deliberately to
+/// `SEMA_CATEGORIES`, `xtask`).
+fn check_send_stmt(
+    span: Span,
+    e: &Expr,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedStmt, SemaError> {
+    check_send(e, span, fctx, mctx)?;
+    Err(actor_error(
+        "a bare `send` statement must consume its result — bind it or `match` it (admission \
+         cannot yet be proven at build time)"
+            .to_string(),
+        span,
+    ))
+}
+
+/// `g.start(callee, args...)`'s own callee argument (02-language.md
+/// §9.5) — the dumbest doc-consistent callee set (recorded, per the
+/// plan's own "decide the dumbest doc-consistent callee set"): a bare
+/// same-module top-level `async fn` name, or `self.method` naming an
+/// `async fn` method on the enclosing struct. Both are recognized
+/// directly (not through `synth_name`'s ordinary lookup — an async
+/// fn/method is never otherwise a callable value, see `TypedExprKind::GroupChild`'s
+/// own doc comment) so no bound-method-value machinery is needed.
+fn resolve_group_child_callee(
+    callee_expr: &Expr,
+    fctx: &FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<(CalleeKey, Vec<ast::Param>, Vec<DeclParam>, Type), SemaError> {
+    match callee_expr {
+        Expr::Name(span, fname) => {
+            let Some(fi) = mctx.fns.get(fname) else {
+                return Err(actor_error(
+                    format!("`{fname}` is not a fn in this module"),
+                    *span,
+                ));
+            };
+            if !fi.decl.is_async {
+                return Err(unimplemented_at(
+                    "`g.start`'s callee must be `async fn` (a sync fn as a group child) is",
+                    *span,
+                ));
+            }
+            if !fi.decl.generics.is_empty() {
+                return Err(unimplemented_at("generic instantiation is", *span));
+            }
+            Ok((
+                CalleeKey::Fn(fname.clone()),
+                fi.ast.params.clone(),
+                fi.decl.params.clone(),
+                fi.decl.ret.clone(),
+            ))
+        }
+        Expr::Field(recv, span, method) if matches!(recv.as_ref(), Expr::Name(_, n) if n == "self") =>
+        {
+            let Some(self_ty) = fctx.lookup_local("self") else {
+                return Err(actor_error("`self` is not bound here".to_string(), *span));
+            };
+            let Type::Named(sname, _) = &self_ty else {
+                return Err(actor_error(
+                    "`self` is not a struct here".to_string(),
+                    *span,
+                ));
+            };
+            let Some(s) = mctx.structs.get(sname.as_str()) else {
+                return Err(actor_error(format!("unknown type `{sname}`"), *span));
+            };
+            let Some((mf, d)) = s.method(method) else {
+                return Err(missing_method_error(
+                    format!("type `{sname}` has no method `{method}`"),
+                    sname,
+                    method,
+                    *span,
+                ));
+            };
+            if !d.is_async {
+                return Err(unimplemented_at(
+                    "`g.start`'s callee must be `async fn` (a sync method as a group child) is",
+                    *span,
+                ));
+            }
+            if !d.generics.is_empty() {
+                return Err(unimplemented_at("generic instantiation is", *span));
+            }
+            Ok((
+                CalleeKey::Method(sname.clone(), method.clone()),
+                mf.params.clone(),
+                d.params.clone(),
+                d.ret.clone(),
+            ))
+        }
+        other => Err(unimplemented_at(
+            "`g.start`'s callee must be a bare fn name or `self.method` — anything else is",
+            other.span(),
+        )),
+    }
+}
+
+fn check_group_start(
+    base_t: TypedExpr,
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let Some((callee_arg, rest)) = args.split_first() else {
+        return Err(type_error(
+            "`g.start` needs a callee argument".to_string(),
+            call_span,
+        ));
+    };
+    if callee_arg.label.is_some() {
+        return Err(type_error(
+            "`g.start`'s callee argument must not be labeled".to_string(),
+            callee_arg.span,
+        ));
+    }
+    if !matches!(&base_t.kind, TypedExprKind::Local(_)) {
+        return Err(actor_error(
+            "`g.start`'s receiver must be a group local".to_string(),
+            call_span,
+        ));
+    }
+    // The running child count/unified return type is *not* accumulated
+    // here (a mutation every pass that re-invokes `bodies::check_expr`
+    // on just this one call — `matches.rs`/`flow.rs`'s own re-derived
+    // `fctx`, neither of which replays the whole preceding body through
+    // `bodies::check_expr` — would have to reproduce identically): it is
+    // computed once, up front, by `compute_group_children` (a pure
+    // static scan over the raw `with`-body), and `check_with` seeds
+    // `fctx.group_children` with that *before* this body is ever walked.
+    // This call only needs its own callee's shape to build its own typed
+    // node.
+    let (callee_key, ast_params, decl_params, ret) =
+        resolve_group_child_callee(&callee_arg.value, fctx, mctx)?;
+    let typed_args = check_call_args(&ast_params, &decl_params, rest, call_span, fctx, mctx)?;
+    let callee_fn_ty = Type::Fn(
+        decl_params.iter().map(|p| (p.mode, p.ty.clone())).collect(),
+        Box::new(ret),
+    );
+    let child_node = TypedExpr {
+        ty: callee_fn_ty,
+        kind: TypedExprKind::GroupChild(callee_key),
+    };
+    let mut iargs = vec![("callee".to_string(), child_node)];
+    for (p, slot) in decl_params.iter().zip(typed_args.into_iter()) {
+        if let Some(v) = slot {
+            iargs.push((p.name.clone(), v));
+        }
+    }
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "Group.start".to_string(),
+            receiver: Some(Box::new(base_t)),
+            type_arg: None,
+            args: iargs,
+        },
+    })
+}
+
+/// One `with group(...) as g:` block's own children, computed once, up
+/// front, as a **pure** static scan over the raw `with`-body (no
+/// dependence on walk order or on `fctx`'s own mutable state, besides a
+/// read-only `self`-type lookup for a `self.method` callee) — see
+/// `check_group_start`'s own doc comment for why this must not be
+/// incremental: `matches.rs`/`flow.rs` both re-derive their own separate
+/// `fctx` and re-invoke `bodies::check_expr` on individual sub-
+/// expressions out of full sequence (a plain assignment's inferred
+/// type, a `match` scrutinee), never replaying the whole preceding body
+/// through it — a pure, order-independent scan is the one shape every
+/// pass can call identically and get the same answer. `Ok(None)` means
+/// no `g.start` call addressing `gname` was found in `body` at all
+/// (`join_all`'s own "no children started" error, not this function's).
+pub(crate) fn compute_group_children(
+    body: &[Stmt],
+    gname: &str,
+    fctx: &FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<Option<(Type, usize)>, SemaError> {
+    let mut starts: Vec<&[Arg]> = Vec::new();
+    scan_group_starts_stmts(body, gname, &mut starts);
+    if starts.is_empty() {
+        return Ok(None);
+    }
+    let mut result_ty: Option<Type> = None;
+    for args in &starts {
+        let Some(callee_arg) = args.first() else {
+            return Err(type_error(
+                "`g.start` needs a callee argument".to_string(),
+                Span::default(),
+            ));
+        };
+        let (_, _, _, ret) = resolve_group_child_callee(&callee_arg.value, fctx, mctx)?;
+        match &result_ty {
+            Some(existing) if *existing != ret => {
+                return Err(actor_error(
+                    format!(
+                        "group `{gname}`'s children must share one return type (M6 scope); \
+                         found `{}` and `{}`",
+                        types::render_type(existing),
+                        types::render_type(&ret)
+                    ),
+                    callee_arg.span,
+                ));
+            }
+            _ => result_ty = Some(ret),
+        }
+    }
+    Ok(Some((
+        result_ty.expect("starts is non-empty"),
+        starts.len(),
+    )))
+}
+
+fn scan_group_starts_stmts<'a>(stmts: &'a [Stmt], gname: &str, out: &mut Vec<&'a [Arg]>) {
+    for s in stmts {
+        scan_group_starts_stmt(s, gname, out);
+    }
+}
+
+fn scan_group_starts_stmt<'a>(s: &'a Stmt, gname: &str, out: &mut Vec<&'a [Arg]>) {
+    match s {
+        Stmt::Assign(a) => {
+            scan_group_starts_expr(&a.target, gname, out);
+            scan_group_starts_expr(&a.value, gname, out);
+        }
+        Stmt::If(i) => {
+            scan_group_starts_expr(&i.cond, gname, out);
+            scan_group_starts_stmts(&i.then_branch, gname, out);
+            for elif in &i.elifs {
+                scan_group_starts_expr(&elif.cond, gname, out);
+                scan_group_starts_stmts(&elif.body, gname, out);
+            }
+            if let Some(b) = &i.else_branch {
+                scan_group_starts_stmts(b, gname, out);
+            }
+        }
+        Stmt::Match(m) => {
+            scan_group_starts_expr(&m.scrutinee, gname, out);
+            for arm in &m.arms {
+                if let Some(g) = &arm.guard {
+                    scan_group_starts_expr(g, gname, out);
+                }
+                scan_group_starts_stmts(&arm.body, gname, out);
+            }
+        }
+        Stmt::For(f) => {
+            scan_group_starts_expr(&f.iterable, gname, out);
+            scan_group_starts_stmts(&f.body, gname, out);
+        }
+        Stmt::While(w) => {
+            scan_group_starts_expr(&w.cond, gname, out);
+            scan_group_starts_stmts(&w.body, gname, out);
+        }
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => {}
+        Stmt::Return(_, e) => {
+            if let Some(e) = e {
+                scan_group_starts_expr(e, gname, out);
+            }
+        }
+        Stmt::Assert(a) => {
+            scan_group_starts_expr(&a.cond, gname, out);
+            if let Some(m) = &a.message {
+                scan_group_starts_expr(m, gname, out);
+            }
+        }
+        Stmt::Defer(d) => match &d.body {
+            DeferBody::Expr(e) => scan_group_starts_expr(e, gname, out),
+            DeferBody::Suite(s) => scan_group_starts_stmts(s, gname, out),
+        },
+        Stmt::With(w) => {
+            scan_group_starts_expr(&w.expr, gname, out);
+            scan_group_starts_stmts(&w.body, gname, out);
+        }
+        Stmt::Send(_, e) => scan_group_starts_expr(e, gname, out),
+        Stmt::Expr(_, e) => scan_group_starts_expr(e, gname, out),
+        Stmt::ComptimeIf(c) => {
+            scan_group_starts_expr(&c.cond, gname, out);
+            scan_group_starts_stmts(&c.then_branch, gname, out);
+            if let Some(b) = &c.else_branch {
+                scan_group_starts_stmts(b, gname, out);
+            }
+        }
+        Stmt::ComptimeAssert(_, e, m) => {
+            scan_group_starts_expr(e, gname, out);
+            if let Some(m) = m {
+                scan_group_starts_expr(m, gname, out);
+            }
+        }
+    }
+}
+
+fn scan_group_starts_expr<'a>(e: &'a Expr, gname: &str, out: &mut Vec<&'a [Arg]>) {
+    if let Expr::Call(callee, _, args) = e {
+        if let Expr::Field(base, _, method) = callee.as_ref() {
+            if method == "start" {
+                if let Expr::Name(_, bn) = base.as_ref() {
+                    if bn == gname {
+                        out.push(args);
+                    }
+                }
+            }
+        }
+    }
+    match e {
+        Expr::Field(b, _, _) => scan_group_starts_expr(b, gname, out),
+        Expr::Index(b, _, args) => {
+            scan_group_starts_expr(b, gname, out);
+            for a in args {
+                scan_group_starts_expr(a, gname, out);
+            }
+        }
+        Expr::Call(callee, _, args) => {
+            scan_group_starts_expr(callee, gname, out);
+            for a in args {
+                scan_group_starts_expr(&a.value, gname, out);
+            }
+        }
+        Expr::Unary(_, _, i) => scan_group_starts_expr(i, gname, out),
+        Expr::Try(_, i) => scan_group_starts_expr(i, gname, out),
+        Expr::Binary(_, _, l, r) => {
+            scan_group_starts_expr(l, gname, out);
+            scan_group_starts_expr(r, gname, out);
+        }
+        Expr::Range(_, a, b, _) => {
+            scan_group_starts_expr(a, gname, out);
+            scan_group_starts_expr(b, gname, out);
+        }
+        Expr::Is(_, s, _) => scan_group_starts_expr(s, gname, out),
+        Expr::Not(_, i) => scan_group_starts_expr(i, gname, out),
+        Expr::And(_, l, r) | Expr::Or(_, l, r) => {
+            scan_group_starts_expr(l, gname, out);
+            scan_group_starts_expr(r, gname, out);
+        }
+        Expr::DotVariant(_, _, args) => {
+            for a in args {
+                scan_group_starts_expr(&a.value, gname, out);
+            }
+        }
+        Expr::Closure(c) => match &c.body {
+            ClosureBody::Expr(e) => scan_group_starts_expr(e, gname, out),
+            ClosureBody::Suite(s) => scan_group_starts_stmts(s, gname, out),
+        },
+        Expr::Send(_, i) => scan_group_starts_expr(i, gname, out),
+        Expr::Tuple(_, items) | Expr::List(_, items) => {
+            for i in items {
+                scan_group_starts_expr(i, gname, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `with group(capacity=.., deadline=..) [as g]:` (02-language.md §9.5,
+/// §10). The scoped `pool` form of `with` (02-language.md §10's other
+/// intrinsic scope) stays fail-closed — the M6 honest-scope line only
+/// lifts `group`.
+fn check_with(w: &WithStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    let Expr::Call(ctor, _cspan, cargs) = &w.expr else {
+        return Err(unimplemented_at("`with` is", w.span));
+    };
+    let Expr::Name(_, ctor_name) = ctor.as_ref() else {
+        return Err(unimplemented_at("`with` is", w.span));
+    };
+    if ctor_name != "group" {
+        return Err(unimplemented_at("`with pool` (scoped pools) is", w.span));
+    }
+    if !fctx.in_async {
+        return Err(actor_error(
+            "`with group` requires an `async fn`/method context — a plain `fn` never \
+             suspends (02-language.md §5)"
+                .to_string(),
+            w.span,
+        ));
+    }
+    let mut capacity = None;
+    let mut deadline = None;
+    for a in cargs {
+        match a.label.as_deref() {
+            Some("capacity") => {
+                capacity = Some(check_expr(&a.value, Some(&Type::Usize), fctx, mctx)?);
+            }
+            Some("deadline") => {
+                deadline = Some(check_deadline_expr(&a.value, fctx, mctx)?);
+            }
+            Some(other) => {
+                return Err(type_error(
+                    format!("`group` has no argument `{other}`"),
+                    a.span,
+                ));
+            }
+            None => {
+                return Err(type_error(
+                    "`group`'s arguments must be labeled (`capacity=`/`deadline=`)".to_string(),
+                    a.span,
+                ));
+            }
+        }
+    }
+    let body = scoped(fctx, |fctx| {
+        if let Some(name) = &w.as_name {
+            fctx.insert_local(name.clone(), Type::Named("Group".to_string(), vec![]));
+            if let Some(children) = compute_group_children(&w.body, name, fctx, mctx)? {
+                fctx.group_children.insert(name.clone(), children);
+            }
+        }
+        check_stmts(&w.body, fctx, mctx)
+    })?;
+    if let Some(name) = &w.as_name {
+        fctx.group_children.remove(name);
+    }
+    Ok(TypedStmt {
+        kind: TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            as_name: w.as_name.clone(),
+            body,
+        },
+    })
+}
+
+/// A group's `deadline=` argument (02-language.md §9.5): `now()` alone,
+/// or `now() + ms(...)` — the only two shapes the docs' own examples use.
+/// Handled directly rather than through `check_binary`/`build_binop_expr`
+/// (which require both operands to share one type, decision 4's own
+/// same-type-operand rule — `Instant + Duration` is deliberately not a
+/// uniform-type op): the primitive `Binary` node is reused for the sum
+/// (mirrors its own doc comment's "builtin scalar op" precedent, extended
+/// here to the two other builtin primitive-shaped types this milestone
+/// adds), confined to this one call site.
+fn check_deadline_expr(
+    e: &Expr,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let instant_ty = Type::Named("Instant".to_string(), vec![]);
+    match e {
+        Expr::Binary(_span, BinOp::Add, l, r) => {
+            let lt = check_expr(l, None, fctx, mctx)?;
+            if lt.ty != instant_ty {
+                return Err(type_error(
+                    "a group deadline must start from `now()`".to_string(),
+                    l.span(),
+                ));
+            }
+            let rt = check_expr(r, None, fctx, mctx)?;
+            if rt.ty != Type::Named("Duration".to_string(), vec![]) {
+                return Err(type_error(
+                    "a group deadline's offset must be a duration (`ms(...)`)".to_string(),
+                    r.span(),
+                ));
+            }
+            Ok(TypedExpr {
+                ty: instant_ty,
+                kind: TypedExprKind::Binary(BinOp::Add, Box::new(lt), Box::new(rt)),
+            })
+        }
+        other => {
+            let t = check_expr(other, None, fctx, mctx)?;
+            if t.ty != instant_ty {
+                return Err(type_error(
+                    format!(
+                        "a group deadline must be an `Instant` (`now()` or `now() + ms(...)`), \
+                         found `{}`",
+                        types::render_type(&t.ty)
+                    ),
+                    other.span(),
+                ));
+            }
+            Ok(t)
+        }
+    }
+}
+
+/// Cross-await access rule (02-language.md §9.2): "a whole-value access
+/// rooted at the current actor (`self.fs.cache`) may live across `await`
+/// ... but an access rooted in an external argument may not." Shipped as
+/// the dumbest sound approximation: a straight-line forward scan over an
+/// async body's already-typed statements, threading one `seen_await`
+/// flag (conservatively shared across sibling branches — an `await` in
+/// one `if` arm taints every statement lexically after the whole `if`,
+/// even along a sibling arm that itself had none; over-rejects a little,
+/// never under-rejects). Any `Field`-chain expression (`x.a.b`, one or
+/// more levels) whose root local is not exactly `self`, found once
+/// `seen_await` is set, is rejected — a bare local reference (no field)
+/// is unaffected, since only a *nested* access is the "whole-value
+/// access" 02-language.md §9.2 restricts.
+fn check_cross_await(body: &[TypedStmt]) -> Result<(), SemaError> {
+    let mut seen_await = false;
+    scan_await_cross_stmts(body, &mut seen_await)
+}
+
+fn scan_await_cross_stmts(stmts: &[TypedStmt], seen_await: &mut bool) -> Result<(), SemaError> {
+    for s in stmts {
+        scan_await_cross_stmt(s, seen_await)?;
+    }
+    Ok(())
+}
+
+fn scan_await_cross_stmt(s: &TypedStmt, seen_await: &mut bool) -> Result<(), SemaError> {
+    match &s.kind {
+        TypedStmtKind::Let { value, .. } => scan_await_cross_expr(value, seen_await),
+        TypedStmtKind::Assign { target, value } => {
+            scan_await_cross_expr(target, seen_await)?;
+            scan_await_cross_expr(value, seen_await)
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            scan_await_cross_expr(cond, seen_await)?;
+            scan_await_cross_stmts(then_branch, seen_await)?;
+            for elif in elifs {
+                scan_await_cross_expr(&elif.cond, seen_await)?;
+                scan_await_cross_stmts(&elif.body, seen_await)?;
+            }
+            if let Some(b) = else_branch {
+                scan_await_cross_stmts(b, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            scan_await_cross_expr(scrutinee, seen_await)?;
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_await_cross_expr(g, seen_await)?;
+                }
+                scan_await_cross_stmts(&arm.body, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(a, b, _) => {
+                    scan_await_cross_expr(a, seen_await)?;
+                    scan_await_cross_expr(b, seen_await)?;
+                }
+                TypedForIter::Expr(e) => scan_await_cross_expr(e, seen_await)?,
+            }
+            scan_await_cross_stmts(body, seen_await)
+        }
+        TypedStmtKind::While { cond, body } => {
+            scan_await_cross_expr(cond, seen_await)?;
+            scan_await_cross_stmts(body, seen_await)
+        }
+        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => Ok(()),
+        TypedStmtKind::Return(value) => match value {
+            Some(e) => scan_await_cross_expr(e, seen_await),
+            None => Ok(()),
+        },
+        TypedStmtKind::Assert { cond, message } => {
+            scan_await_cross_expr(cond, seen_await)?;
+            if let Some(m) = message {
+                scan_await_cross_expr(m, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            scan_await_cross_expr(cond, seen_await)?;
+            if let Some(m) = message {
+                scan_await_cross_expr(m, seen_await)?;
+            }
+            Ok(())
+        }
+        // A `defer` body runs at cleanup time, not inline in the forward
+        // sequence this scan tracks — 02-language.md §10 already forbids
+        // `await` inside one (`scan_defer_forbidden`), so it never itself
+        // straddles a suspension.
+        TypedStmtKind::Defer(_) => Ok(()),
+        TypedStmtKind::ExprStmt(e) => scan_await_cross_expr(e, seen_await),
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                scan_await_cross_expr(c, seen_await)?;
+            }
+            if let Some(d) = deadline {
+                scan_await_cross_expr(d, seen_await)?;
+            }
+            scan_await_cross_stmts(body, seen_await)
+        }
+    }
+}
+
+fn root_local_name(e: &TypedExpr) -> Option<&str> {
+    match &e.kind {
+        TypedExprKind::Local(name) => Some(name.as_str()),
+        TypedExprKind::Field(base, _) => root_local_name(base),
+        _ => None,
+    }
+}
+
+fn scan_await_cross_expr(e: &TypedExpr, seen_await: &mut bool) -> Result<(), SemaError> {
+    match &e.kind {
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::Local(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::FnRef(_)
+        | TypedExprKind::PoolName(_)
+        | TypedExprKind::GroupChild(_) => Ok(()),
+        TypedExprKind::Field(base, _) => {
+            if *seen_await {
+                if let Some(root) = root_local_name(e) {
+                    if root != "self" {
+                        // No real `L:C` is available here (decision 1:
+                        // the typed tree carries no spans at all) —
+                        // `omit_location` (`SemaError`'s own multi-line
+                        // exception field, `sema::mod`'s doc comment)
+                        // suppresses the misleading `at 0:0` a bare
+                        // `SemaError::at` would otherwise print.
+                        return Err(SemaError {
+                            category: "actor",
+                            message: format!(
+                                "`{root}`-rooted access cannot span an `await` — only a \
+                                 self-rooted path may (02-language.md §9.2)"
+                            ),
+                            line: 0,
+                            col: 0,
+                            extra_lines: Vec::new(),
+                            omit_location: true,
+                            missing_method: None,
+                        });
+                    }
+                }
+            }
+            scan_await_cross_expr(base, seen_await)
+        }
+        TypedExprKind::Index(base, idx) => {
+            scan_await_cross_expr(base, seen_await)?;
+            scan_await_cross_expr(idx, seen_await)
+        }
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                scan_await_cross_expr(r, seen_await)?;
+            }
+            for a in args.iter().flatten() {
+                scan_await_cross_expr(a, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedExprKind::CallValue(callee, args) => {
+            scan_await_cross_expr(callee, seen_await)?;
+            for a in args {
+                scan_await_cross_expr(a, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedExprKind::ToScalar(inner)
+        | TypedExprKind::Neg(inner)
+        | TypedExprKind::BitNot(inner)
+        | TypedExprKind::Take(inner)
+        | TypedExprKind::Not(inner) => scan_await_cross_expr(inner, seen_await),
+        TypedExprKind::Try(inner, _) => scan_await_cross_expr(inner, seen_await),
+        TypedExprKind::Binary(_, l, r) | TypedExprKind::OpCall(_, l, r) => {
+            scan_await_cross_expr(l, seen_await)?;
+            scan_await_cross_expr(r, seen_await)
+        }
+        TypedExprKind::Is(inner, _) => scan_await_cross_expr(inner, seen_await),
+        TypedExprKind::And(l, r) | TypedExprKind::Or(l, r) => {
+            scan_await_cross_expr(l, seen_await)?;
+            scan_await_cross_expr(r, seen_await)
+        }
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args {
+                scan_await_cross_expr(a, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedExprKind::Closure { .. } => Ok(()), // a lending call is synchronous (02 §9.2) — never itself spans an await.
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                scan_await_cross_expr(i, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                scan_await_cross_expr(v, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedExprKind::Panic(msg) => scan_await_cross_expr(msg, seen_await),
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                scan_await_cross_expr(r, seen_await)?;
+            }
+            for (_, a) in args {
+                scan_await_cross_expr(a, seen_await)?;
+            }
+            Ok(())
+        }
+        TypedExprKind::Await(inner) => {
+            scan_await_cross_expr(inner, seen_await)?;
+            *seen_await = true;
+            Ok(())
+        }
+        TypedExprKind::Send(inner) => scan_await_cross_expr(inner, seen_await),
     }
 }
 
@@ -4389,6 +5684,202 @@ mod tests {
         assert!(
             types_eq(&named_a, &named_b),
             "Ring[3] at two different spans must compare equal under types_eq"
+        );
+    }
+
+    // --- plans/M6.md item A: the CallError composition table + path-
+    // rooting classification (pure logic, unit-tested directly per the
+    // item's own instruction) --------------------------------------------
+
+    fn call_error_of(e: &Type) -> Type {
+        Type::Named("CallError".to_string(), vec![TypeArg::Type(e.clone())])
+    }
+
+    /// The table verbatim (02-language.md §9.4): "declared R -> Result[R,
+    /// CallError[never]]".
+    #[test]
+    fn compose_call_error_wraps_a_plain_declared_type() {
+        let composed = compose_call_error(&Type::U64);
+        assert_eq!(
+            composed,
+            Type::Result(Box::new(Type::U64), Box::new(call_error_of(&Type::Never)))
+        );
+    }
+
+    /// "declared Result[T, E] -> Result[T, CallError[E]]".
+    #[test]
+    fn compose_call_error_rewraps_a_declared_result() {
+        let declared = Type::Result(
+            Box::new(Type::U32),
+            Box::new(Type::Named("FsError".to_string(), vec![])),
+        );
+        let composed = compose_call_error(&declared);
+        assert_eq!(
+            composed,
+            Type::Result(
+                Box::new(Type::U32),
+                Box::new(call_error_of(&Type::Named("FsError".to_string(), vec![])))
+            )
+        );
+    }
+
+    /// `Option`/`Static`/a bare user struct all fall through the same
+    /// "declared R" branch as any other non-`Result` type — the table has
+    /// only two cases, not one per shape.
+    #[test]
+    fn compose_call_error_treats_every_non_result_type_uniformly() {
+        let cases = vec![
+            Type::Unit,
+            Type::Option(Box::new(Type::U8)),
+            Type::Named("Widget".to_string(), vec![]),
+            Type::Static(Box::new(Type::Str)),
+        ];
+        for ty in cases {
+            let composed = compose_call_error(&ty);
+            match composed {
+                Type::Result(ok, err) => {
+                    assert_eq!(*ok, ty, "the declared type itself must be the Ok payload");
+                    assert_eq!(
+                        *err,
+                        call_error_of(&Type::Never),
+                        "error side is CallError[never]"
+                    );
+                }
+                other => panic!("composition must always be a Result, got {other:?}"),
+            }
+        }
+    }
+
+    /// Applying the table twice must not collapse or double-wrap (a
+    /// sanity check that the function is a pure, idempotent-shaped
+    /// mapping over its input, not a stateful rewrite).
+    #[test]
+    fn compose_call_error_is_a_pure_function_of_its_input() {
+        let a = compose_call_error(&Type::U64);
+        let b = compose_call_error(&Type::U64);
+        assert_eq!(a, b);
+    }
+
+    /// `root_local_name` (the cross-await path-rooting classifier,
+    /// 02-language.md §9.2): a bare local's own root is itself; a nested
+    /// field chain's root is whatever `Local` sits at the bottom,
+    /// regardless of chain depth; anything else (a literal, a call) has
+    /// no local root at all.
+    #[test]
+    fn root_local_name_finds_the_bottom_of_a_field_chain() {
+        let self_local = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Local("self".to_string()),
+        };
+        assert_eq!(root_local_name(&self_local), Some("self"));
+
+        let one_level = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Field(Box::new(self_local.clone()), "fs".to_string()),
+        };
+        assert_eq!(
+            root_local_name(&one_level),
+            Some("self"),
+            "a one-level field access still roots at self"
+        );
+
+        let two_level = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Field(Box::new(one_level), "cache".to_string()),
+        };
+        assert_eq!(
+            root_local_name(&two_level),
+            Some("self"),
+            "self.fs.cache must still root at self regardless of chain depth"
+        );
+
+        let external = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Local("input".to_string()),
+        };
+        let external_field = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Field(Box::new(external), "value".to_string()),
+        };
+        assert_eq!(root_local_name(&external_field), Some("input"));
+
+        let no_root = TypedExpr {
+            ty: Type::U64,
+            kind: TypedExprKind::Int("1".to_string()),
+        };
+        assert_eq!(
+            root_local_name(&no_root),
+            None,
+            "a literal has no local root at all"
+        );
+    }
+
+    /// `check_cross_await` (02-language.md §9.2): a self-rooted access on
+    /// both sides of an `await` is legal; the identical shape rooted at a
+    /// non-self local is rejected the moment it appears after the
+    /// `await`, never before it.
+    #[test]
+    fn check_cross_await_accepts_self_and_rejects_external_paths() {
+        fn field(base_name: &str, field_name: &str) -> TypedExpr {
+            TypedExpr {
+                ty: Type::U64,
+                kind: TypedExprKind::Field(
+                    Box::new(TypedExpr {
+                        ty: Type::Unit,
+                        kind: TypedExprKind::Local(base_name.to_string()),
+                    }),
+                    field_name.to_string(),
+                ),
+            }
+        }
+        fn let_stmt(name: &str, value: TypedExpr) -> TypedStmt {
+            TypedStmt {
+                kind: TypedStmtKind::Let {
+                    name: name.to_string(),
+                    ty: value.ty.clone(),
+                    value,
+                },
+            }
+        }
+        let await_node = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Await(Box::new(TypedExpr {
+                ty: Type::Unit,
+                kind: TypedExprKind::Local("dummy".to_string()),
+            })),
+        };
+
+        // self-rooted before and after the await: legal.
+        let self_ok = vec![
+            let_stmt("before", field("self", "cache")),
+            let_stmt("suspend", await_node.clone()),
+            let_stmt("after", field("self", "cache")),
+        ];
+        assert!(
+            check_cross_await(&self_ok).is_ok(),
+            "a self-rooted access spanning an await must be accepted"
+        );
+
+        // external-rooted, only *after* the await: rejected.
+        let external_after = vec![
+            let_stmt("suspend", await_node.clone()),
+            let_stmt("bad", field("input", "value")),
+        ];
+        assert!(
+            check_cross_await(&external_after).is_err(),
+            "an external-rooted access after an await must be rejected"
+        );
+
+        // external-rooted, but entirely *before* the await: legal (the
+        // rule is about spanning the suspension, not about touching an
+        // external root at all).
+        let external_before = vec![
+            let_stmt("fine", field("input", "value")),
+            let_stmt("suspend", await_node),
+        ];
+        assert!(
+            check_cross_await(&external_before).is_ok(),
+            "an external-rooted access entirely before an await must be accepted"
         );
     }
 }

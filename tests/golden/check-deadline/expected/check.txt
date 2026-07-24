@@ -1,0 +1,5 @@
+Module path=examples.check_deadline
+  Struct Storage resource
+    field value: u64
+    fn load(read self) -> u64
+  AsyncFn bounded_read(storage: read Actor[Storage]) -> u64

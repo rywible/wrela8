@@ -1,0 +1,8 @@
+Module path=examples.check_actor_methods
+  Struct Counter resource
+    field value: u64
+    fn get(read self) -> u64
+    async fn bump(mut self, by: read u64) -> u64
+  Struct Coordinator resource
+    field counter: Actor[Counter]
+    async fn run(mut self) -> u64

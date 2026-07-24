@@ -100,6 +100,13 @@ pub(crate) fn check_top_fn(
         return Ok(());
     }
     let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
+    // Plans/M6.md item A: this pass re-derives its own `FnCtx` per body
+    // (module doc) rather than sharing `bodies::check`'s own — `in_async`
+    // must be set here too, exactly like `bodies::check_top_fn`, so this
+    // pass's own `bodies::check_expr` re-invocations (`check_assign`'s own
+    // type-inference call, `check_match_stmt`'s scrutinee) see the same
+    // gate bodies.rs already enforced.
+    fctx.in_async = f.is_async;
     walk_params_with_defaults(&f.params, &d.params, &mut fctx, mctx)?;
     if let Some(body) = &f.body {
         check_stmts(body, &mut fctx, mctx)?;
@@ -154,6 +161,7 @@ pub(crate) fn check_struct_members(
                     continue; // generic method: item H's job.
                 }
                 let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
+                fctx.in_async = f.is_async; // mirrors bodies::check_struct_members
                 fctx.insert_local("self".to_string(), self_ty.clone());
                 walk_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
                 if let Some(body) = &f.body {
@@ -204,15 +212,42 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sem
             DeferBody::Expr(e) => walk_expr(e, fctx, mctx),
             DeferBody::Suite(stmts) => check_stmts(stmts, fctx, mctx),
         },
-        // `with`/`send` always fail closed in the bodies pass (plans/M2.md
-        // decision 7); reaching one here would mean bodies::check had
-        // already returned Err, and mod.rs's `check` is fail-fast — this
-        // pass never runs on such a module. `comptime if` is eliminated
-        // by `sema::specialize` before this pass (or any pass after
+        // Plans/M6.md item A: `with group(...) [as g]:` now type-checks
+        // (bodies.rs lifted the fail-closed) — its body must still be
+        // walked for nested `match`/`is`, exactly like every other block
+        // construct here; `g`'s own binding is re-derived in this pass's
+        // own `fctx` the same way `bodies::check_with` bound it (a
+        // `match`/`is` scrutinee inside the block may reference it, e.g.
+        // `g.join_all()`'s own receiver). `send` always fails closed in
+        // the bodies pass regardless of position (decision 5's item-A
+        // floor — even the expression form's own composed `Result` is
+        // never itself `match`ed as a bare send statement); reaching a
+        // bare `Stmt::Send` here would mean bodies::check had already
+        // returned `Err`, and `mod.rs::check` is fail-fast — this pass
+        // never runs on such a module. `comptime if` is eliminated by
+        // `sema::specialize` before this pass (or any pass after
         // `declare`) ever runs (plans/M3.md item D) — reaching one here
         // would mean `specialize` left one behind. Nothing to walk in
         // either case.
-        Stmt::With(_) | Stmt::Send(_, _) | Stmt::ComptimeIf(_) => Ok(()),
+        Stmt::With(w) => {
+            walk_expr(&w.expr, fctx, mctx)?;
+            bodies::scoped(fctx, |fctx| {
+                if let Some(name) = &w.as_name {
+                    fctx.insert_local(name.clone(), Type::Named("Group".to_string(), vec![]));
+                    // Mirrors `bodies::check_with`'s own seeding — see
+                    // `bodies::compute_group_children`'s own doc comment
+                    // for why this must be a pure re-computation rather
+                    // than shared mutable state.
+                    if let Some(children) =
+                        bodies::compute_group_children(&w.body, name, fctx, mctx)?
+                    {
+                        fctx.group_children.insert(name.clone(), children);
+                    }
+                }
+                check_stmts(&w.body, fctx, mctx)
+            })
+        }
+        Stmt::Send(_, _) | Stmt::ComptimeIf(_) => Ok(()),
         // `comptime assert`'s condition/message are ordinary typed
         // expressions (decision 8 lifted the fail-closed) — walked here
         // exactly like a plain `assert`'s in case either embeds a nested
@@ -364,6 +399,29 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
             ("Ok".to_string(), vec![(**ok).clone()]),
             ("Err".to_string(), vec![(**err).clone()]),
         ]),
+        // `CallError[E]` (plans/M6.md item A): a fixed five-variant sum,
+        // mirroring `bodies::variant_payload_types_for`'s own new arm —
+        // exhaustiveness over a `match`ed `CallError` needs the identical
+        // fixed shape that pass uses to type each arm's payload.
+        Type::Named(name, targs) if name == "CallError" => {
+            let e_ty = match targs.first() {
+                Some(types::TypeArg::Type(t)) => t.clone(),
+                _ => Type::Never,
+            };
+            TyShape::Sum(vec![
+                ("Op".to_string(), vec![e_ty]),
+                ("Cancelled".to_string(), vec![]),
+                ("DeadlineExceeded".to_string(), vec![]),
+                (
+                    "NotAdmitted".to_string(),
+                    vec![Type::Named("Admission".to_string(), vec![])],
+                ),
+                (
+                    "PeerFailed".to_string(),
+                    vec![Type::Named("Peer".to_string(), vec![])],
+                ),
+            ])
+        }
         Type::Named(name, targs) if targs.is_empty() => match mctx.enums.get(name) {
             Some(e) => TyShape::Sum(
                 e.variants

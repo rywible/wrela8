@@ -1,0 +1,19 @@
+module examples.check_deadline
+
+@actor
+pub struct Storage:
+    value: u64
+
+    pub fn load(read self) -> u64:
+        return self.value
+
+async fn bounded_read(storage: Actor[Storage]) -> u64:
+    result: u64 = 0
+    with group(deadline=now() + ms(50)):
+        outcome = await storage.load()
+        match outcome:
+            case .Ok(v):
+                result = v
+            case .Err(_):
+                pass
+    return result

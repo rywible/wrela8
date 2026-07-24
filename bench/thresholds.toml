@@ -24,12 +24,24 @@ full_corpus_median_us = 60000
 # over every tests/golden/*/input.wr that lexes and parses (both
 # sema-success and sema-error outcomes are timed and counted; the golden
 # inputs that are themselves lex/parse errors are excluded — see
-# `bench_check_entries` in crates/xtask/src/main.rs; 25 entries as of this
-# lock). Measured median on the locking machine, across several runs of 15
-# timed iterations each: ~3.9-4.0ms (3900-4000us). This threshold is 10x
-# that, rounded up to a clean number — same rationale as
+# `bench_check_entries` in crates/xtask/src/main.rs; 154 entries as of
+# this re-lock). Re-measured and re-locked at plans/M6.md item A
+# (2026-07-24): the corpus's own legitimate growth across every milestone
+# since the original 25-entry lock (now 154 check-lane entries — this
+# item alone added 14: five `check-actor-*`/`check-group`/`check-deadline`/
+# `check-await-self-path` accept goldens plus nine `err-*` async/actor
+# rejection cases) pushed the debug-build median right to the edge of the
+# old 40000us lock on this machine (several runs measured 39200-40400us,
+# occasionally tripping it — ordinary corpus-size growth, not an
+# algorithmic blowup: `cargo xtask bench compiler` itself, release-mode,
+# stays comfortably under 13000us for the identical corpus). Per this
+# file's own header ("if the corpus grows enormously and legitimately
+# needs more time, re-measure and re-lock deliberately, in its own
+# commit, citing why"): re-measured median on this machine, several runs
+# of 15 timed iterations each: ~39.2-40.3ms (39200-40300us). This
+# threshold is 10x that, rounded up to a clean number — same rationale as
 # full_corpus_median_us above.
-check_golden_median_us = 40000
+check_golden_median_us = 400000
 
 # `cargo xtask bench compiler`'s eval lane (plans/M3.md item F): median
 # wall time (microseconds) for one full pass of lex+parse+

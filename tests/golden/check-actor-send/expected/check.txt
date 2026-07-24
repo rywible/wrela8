@@ -1,0 +1,7 @@
+Module path=examples.check_actor_send
+  Struct Logger resource
+    field count: u64
+    fn record(mut self, code: read u64) -> unit
+  Struct Auditor resource
+    field logger: Actor[Logger]
+    async fn observe(mut self, code: read u64) -> u64

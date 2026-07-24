@@ -1,0 +1,63 @@
+Program
+  Struct name=Coordinator
+    Method name=run ret=u64
+      Receiver mode=mut ty=Coordinator
+      Body
+        Let name=first ty=Result[u64, CallError[never]]
+          Await ty=Result[u64, CallError[never]]
+            Call key=Counter.bump ty=u64
+              Receiver
+                Field name=counter ty=Actor[Counter]
+                  Local name=self ty=Coordinator
+              Int text=1 ty=u64
+        Match
+          Local name=first ty=Result[u64, CallError[never]]
+          Case
+            VariantPattern enum=Result variant=Ok ty=Result[u64, CallError[never]]
+              Binding name=v ty=u64
+            Let name=second ty=Result[u64, CallError[never]]
+              Await ty=Result[u64, CallError[never]]
+                Call key=Counter.get ty=u64
+                  Receiver
+                    Field name=counter ty=Actor[Counter]
+                      Local name=self ty=Coordinator
+            Match
+              Local name=second ty=Result[u64, CallError[never]]
+              Case
+                VariantPattern enum=Result variant=Ok ty=Result[u64, CallError[never]]
+                  Binding name=v2 ty=u64
+                Return
+                  Binary op=+ ty=u64
+                    Local name=v ty=u64
+                    Local name=v2 ty=u64
+              Case
+                VariantPattern enum=Result variant=Err ty=Result[u64, CallError[never]]
+                  Wildcard ty=CallError[never]
+                Return
+                  Local name=v ty=u64
+          Case
+            VariantPattern enum=Result variant=Err ty=Result[u64, CallError[never]]
+              Wildcard ty=CallError[never]
+            Return
+              Int text=0 ty=u64
+  Struct name=Counter
+    Method name=bump ret=u64
+      Receiver mode=mut ty=Counter
+      Param name=by mode=read ty=u64
+      Body
+        Assign
+          Field name=value ty=u64
+            Local name=self ty=Counter
+          Binary op=+ ty=u64
+            Field name=value ty=u64
+              Local name=self ty=Counter
+            Local name=by ty=u64
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Counter
+    Method name=get ret=u64
+      Receiver mode=read ty=Counter
+      Body
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Counter

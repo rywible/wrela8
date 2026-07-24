@@ -1,0 +1,23 @@
+module examples.err_await_external_path
+
+struct Payload:
+    value: u64
+
+@actor
+pub struct Upstream:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Store:
+    upstream: Actor[Upstream]
+
+    pub async fn combine(mut self, input: Payload) -> u64:
+        fetched = await self.upstream.get()
+        match fetched:
+            case .Ok(v):
+                return input.value + v
+            case .Err(_):
+                return input.value

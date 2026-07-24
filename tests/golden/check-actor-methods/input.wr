@@ -1,0 +1,29 @@
+module examples.check_actor_methods
+
+@actor
+pub struct Counter:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+    pub async fn bump(mut self, by: u64) -> u64:
+        self.value = self.value + by
+        return self.value
+
+@actor
+pub struct Coordinator:
+    counter: Actor[Counter]
+
+    pub async fn run(mut self) -> u64:
+        first = await self.counter.bump(by=1)
+        match first:
+            case .Ok(v):
+                second = await self.counter.get()
+                match second:
+                    case .Ok(v2):
+                        return v + v2
+                    case .Err(_):
+                        return v
+            case .Err(_):
+                return 0

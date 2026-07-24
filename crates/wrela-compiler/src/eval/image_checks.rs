@@ -623,6 +623,7 @@ mod tests {
                     params,
                     ret: Type::Unit,
                     body: vec![],
+                    is_async: false,
                 }),
                 ..TypedStruct::default()
             },

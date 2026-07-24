@@ -46,7 +46,7 @@ use crate::sema::types::{self, Type};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssignOp, AssignStmt, ClosureBody, ClosureExpr, DeferBody, DeferStmt,
     Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, Pattern, Span, Stmt, UnaryOp,
-    WhileStmt,
+    WhileStmt, WithStmt,
 };
 
 /// Dumb, fixed cap on loop fixed-point iteration (mirrors
@@ -839,7 +839,11 @@ fn walk_expr<'a>(
             Ok(())
         }
         Expr::Closure(c) => walk_closure(c, state, fctx, wctx, dstack, loop_marker),
-        Expr::Send(span, _) => Err(bodies_send_unreachable(*span)),
+        // Plans/M6.md item A: `send`'s expression form (`match send x.y(...):`)
+        // now type-checks (bodies.rs lifted the fail-closed) — its
+        // operand is always a call (the ast's own doc comment), walked
+        // exactly like an ordinary `Unary`'s inner expression above.
+        Expr::Send(_, inner) => walk_expr(inner, state, fctx, wctx, dstack, loop_marker),
         Expr::Tuple(_, items) | Expr::List(_, items) => {
             let mut activated = Vec::new();
             for i in items {
@@ -859,14 +863,6 @@ fn walk_expr<'a>(
             Ok(())
         }
     }
-}
-
-/// `send` always fails closed in `bodies.rs` before `flow` ever runs
-/// (plans/M2.md decision 7); this is unreachable in practice — a fail-
-/// closed diagnostic rather than a panic, per the item's own "never
-/// approximation" instruction, in case that invariant is ever broken.
-fn bodies_send_unreachable(span: Span) -> SemaError {
-    crate::sema::unimplemented_at("`send` is", span)
 }
 
 fn walk_closure<'a>(
@@ -1257,11 +1253,14 @@ fn walk_stmt<'a>(
             dstack.push(d);
             Ok(fallthrough(state.clone()))
         }
-        Stmt::With(_) | Stmt::Send(..) => {
-            // Both still fail closed in `bodies::check` (plans/M2.md
-            // decision 7); `mod.rs::check` is fail-fast, so flow never
-            // runs over a module containing one.
-            unreachable!("bodies.rs already rejects this construct before flow runs")
+        Stmt::With(w) => walk_with(w, state, fctx, wctx, dstack, loop_marker),
+        Stmt::Send(..) => {
+            // A bare `send` statement always fails closed in
+            // `bodies::check` (plans/M6.md item A, decision 5's item-A
+            // floor — every one is rejected, proof or no proof);
+            // `mod.rs::check` is fail-fast, so flow never runs over a
+            // module containing one.
+            unreachable!("bodies.rs always rejects a bare `send` statement before flow runs")
         }
         // plans/M3.md item D: `sema::specialize` eliminates every
         // `comptime if` node before `collect`/`declare`/`bodies` (and so
@@ -1353,6 +1352,39 @@ fn walk_block<'a>(
 /// (err-mwir-if-else-scope-leak). `state`'s own per-branch clone already
 /// keeps definite-init merging correct; this only fixes the parallel
 /// name/type map flow keeps for `bodies::check_expr` calls.
+/// `with group(...) [as g]:` (plans/M6.md item A, 02-language.md §9.5):
+/// an unconditional single-body block — unlike `if`'s multi-branch meet,
+/// there is exactly one path through, so the post-`with` state is simply
+/// whatever the body's own walk produces. `g`'s own local binding (mirrors
+/// `bodies::check_with`'s own `fctx.insert_local`) is scoped to the body
+/// via `bodies::scoped`, same as `walk_if`'s own per-branch scope.
+fn walk_with<'a>(
+    w: &'a WithStmt,
+    state: &StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx,
+    dstack: &mut DStack<'a>,
+    loop_marker: usize,
+) -> Result<Outcome, SemaError> {
+    let mut st = state.clone();
+    walk_expr(&w.expr, &mut st, fctx, wctx, dstack, loop_marker)?;
+    bodies::scoped(fctx, |fctx| {
+        if let Some(name) = &w.as_name {
+            fctx.insert_local(name.clone(), Type::Named("Group".to_string(), vec![]));
+            st.insert(StoragePath::root(name.clone()), PathState::Init);
+            // Mirrors `bodies::check_with`'s own seeding — see
+            // `bodies::compute_group_children`'s own doc comment for why
+            // this must be a pure re-computation rather than shared
+            // mutable state.
+            if let Some(children) = bodies::compute_group_children(&w.body, name, fctx, wctx.mctx)?
+            {
+                fctx.group_children.insert(name.clone(), children);
+            }
+        }
+        walk_block(&w.body, &mut st, fctx, wctx, dstack, loop_marker)
+    })
+}
+
 fn walk_if<'a>(
     i: &'a IfStmt,
     state: &StateMap,
@@ -1683,6 +1715,12 @@ pub(crate) fn check_top_fn(
     let mut modes = BTreeMap::new();
     let mut state = StateMap::new();
     let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
+    // Plans/M6.md item A: this pass re-derives its own `FnCtx` per body
+    // too (module doc) — `in_async` must be set here, mirroring
+    // `bodies::check_top_fn`, so this pass's own `bodies::check_expr`/
+    // `check_pattern` re-invocations (`Expr::Is`, `walk_match_stmt`'s
+    // scrutinee, a plain assignment's inferred type) see the same gate.
+    fctx.in_async = f.is_async;
     for (_ap, dp) in f.params.iter().zip(d.params.iter()) {
         modes.insert(dp.name.clone(), dp.mode);
         state.insert(StoragePath::root(dp.name.clone()), PathState::Init);
@@ -1739,6 +1777,7 @@ pub(crate) fn check_struct_members(
                 let mut modes = BTreeMap::new();
                 let mut state = StateMap::new();
                 let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
+                fctx.in_async = f.is_async; // mirrors bodies::check_struct_members
                 fctx.insert_local("self".to_string(), self_ty.clone());
                 modes.insert("self".to_string(), self_mode);
                 state.insert(StoragePath::root("self"), PathState::Init);

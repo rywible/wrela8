@@ -1,0 +1,43 @@
+Program
+  Struct name=Cache
+  Struct name=Store
+    Method name=refresh ret=u64
+      Receiver mode=mut ty=Store
+      Body
+        Let name=before ty=u64
+          Field name=value ty=u64
+            Field name=cache ty=Cache
+              Local name=self ty=Store
+        Let name=fetched ty=Result[u64, CallError[never]]
+          Await ty=Result[u64, CallError[never]]
+            Call key=Upstream.get ty=u64
+              Receiver
+                Field name=upstream ty=Actor[Upstream]
+                  Local name=self ty=Store
+        Match
+          Local name=fetched ty=Result[u64, CallError[never]]
+          Case
+            VariantPattern enum=Result variant=Ok ty=Result[u64, CallError[never]]
+              Binding name=v ty=u64
+            Let name=after ty=u64
+              Field name=value ty=u64
+                Field name=cache ty=Cache
+                  Local name=self ty=Store
+            Return
+              Binary op=+ ty=u64
+                Binary op=+ ty=u64
+                  Local name=before ty=u64
+                  Local name=after ty=u64
+                Local name=v ty=u64
+          Case
+            VariantPattern enum=Result variant=Err ty=Result[u64, CallError[never]]
+              Wildcard ty=CallError[never]
+            Return
+              Local name=before ty=u64
+  Struct name=Upstream
+    Method name=get ret=u64
+      Receiver mode=read ty=Upstream
+      Body
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Upstream

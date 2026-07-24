@@ -1,0 +1,1 @@
+error[actor]: `await` requires an `async fn`/method — a plain `fn` never suspends (02-language.md §5) at 11:14

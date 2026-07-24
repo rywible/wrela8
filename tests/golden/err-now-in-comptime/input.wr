@@ -1,0 +1,9 @@
+module examples.err_now_in_comptime
+
+fn is_ready() -> bool:
+    t = now()
+    return true
+
+pub fn check() -> bool:
+    comptime assert is_ready(), "clock must be ready"
+    return true

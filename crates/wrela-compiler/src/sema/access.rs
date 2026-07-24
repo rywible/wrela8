@@ -788,6 +788,21 @@ fn check_stmt(stmt: &Stmt, actx: &mut ACtx) -> Result<(), SemaError> {
         },
         Stmt::With(w) => {
             check_expr(&w.expr, actx)?;
+            // Plans/M6.md item A: mirrors `bodies::check_with`'s own
+            // local binding (`g`'s type, `Type::Named("Group", [])`) so
+            // this pass's own best-effort tracker (`ACtx::locals`, never
+            // scoped/popped — module doc) can answer a later `g.start`/
+            // `g.join_all` at all instead of falling through to the
+            // "mirroring... is not checked yet" fail-closed below.
+            if let Some(name) = &w.as_name {
+                actx.locals.insert(
+                    name.clone(),
+                    LocalInfo {
+                        ty: Some(Type::Named("Group".to_string(), vec![])),
+                        mode: None,
+                    },
+                );
+            }
             check_stmts(&w.body, actx)
         }
         Stmt::Send(_, e) => {
@@ -1702,6 +1717,29 @@ fn check_call_by_field(
             fspan,
         ));
     };
+    // Plans/M6.md item A: `Actor[T]`/`Group` are both opaque builtin
+    // types, never real declared structs (mirrors the `Image`/`ImageDecl`
+    // dispatch just above) — best-effort only: `Group`'s own methods
+    // (`start`/`join_all`) have no declared param list to mirror against
+    // at all, so this returns `None` (no further chaining) rather than
+    // erroring; an `Actor[T]` call resolves its real method (arguments
+    // were already mirrored above, uniformly, before this dispatch) for
+    // a decent best-effort result type.
+    if let Type::Named(n, targs) = &base_ty {
+        if n == "Actor" {
+            if let Some(types::TypeArg::Type(Type::Named(actor_name, _))) = targs.first() {
+                if let Some(s) = actx.mctx.structs.get(actor_name.as_str()) {
+                    if let Some((_mf, d)) = s.method(name) {
+                        return Ok(Some(d.ret.clone()));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+        if n == "Group" {
+            return Ok(None);
+        }
+    }
     let Type::Named(sname, _targs) = &base_ty else {
         return Err(unimplemented_at(
             "mirroring a method call through this base expression is",

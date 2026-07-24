@@ -1,0 +1,26 @@
+module examples.check_await_self_path
+
+struct Cache:
+    value: u64
+
+@actor
+pub struct Upstream:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Store:
+    cache: Cache
+    upstream: Actor[Upstream]
+
+    pub async fn refresh(mut self) -> u64:
+        before = self.cache.value
+        fetched = await self.upstream.get()
+        match fetched:
+            case .Ok(v):
+                after = self.cache.value
+                return before + after + v
+            case .Err(_):
+                return before

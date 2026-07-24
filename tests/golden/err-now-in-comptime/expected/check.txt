@@ -1,0 +1,2 @@
+error[comptime]: `comptime assert` requires a comptime-legal closure, but `is_ready` is not comptime-callable at 8:5
+  `is_ready` uses `now()` (a runtime-only clock read)

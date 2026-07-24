@@ -11,8 +11,8 @@ Module path=examples.image_basic
     fn ping(read self) -> u32
   Struct Store resource
     field count: u32
-    field disk: u32
-    init(mut self, disk: read u32) -> unit
+    field disk: Actor[Blk]
+    init(mut self, disk: read Actor[Blk]) -> unit
     fn get(read self) -> u32
   Pool Buffers
   Fn check_limits() -> unit

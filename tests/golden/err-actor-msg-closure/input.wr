@@ -1,0 +1,16 @@
+module examples.err_actor_msg_closure
+
+@actor
+pub struct Worker:
+    total: u64
+
+    pub async fn apply(mut self, f: fn(u64) -> u64) -> u64:
+        return f(self.total)
+
+async fn dispatch(target: Actor[Worker]) -> u64:
+    outcome = await target.apply(f=|x: u64| x + 1)
+    match outcome:
+        case .Ok(v):
+            return v
+        case .Err(_):
+            return 0

@@ -248,6 +248,42 @@ pub enum TypedExprKind {
     /// local/const/fn lookup (which would, correctly, reject it). `ty` is
     /// always the builder surface's own opaque `PoolName` type.
     PoolName(String),
+    /// `await expr` (plans/M6.md item A, 02-language.md §9.4/§9.2):
+    /// `inner` is the "raw" (uncomposed) call this await resolves —
+    /// either an actor-handle method `Call` (receiver typed `Actor[T]`)
+    /// or a `Group.join_all` `Intrinsic` — and `ty` (on the wrapping
+    /// node) is the *composed* result: the CallError table applied
+    /// directly for an actor call, or mapped element-wise over the raw
+    /// `[R; N]`/`[Result[T,E]; N]` for a group join (`bodies::compose_call_error`,
+    /// `bodies::check_await`). One dedicated node rather than folding
+    /// composition into `Call`/`Intrinsic` directly: the *uncomposed*
+    /// type is still needed wherever `inner` is inspected on its own
+    /// (none today, but keeps the raw call shape uniform with an
+    /// ordinary, non-awaited `Call`).
+    Await(Box<TypedExpr>),
+    /// `send actor.method(...)` used as a value (02-language.md §9.4) —
+    /// `match send x.y(...): ...`'s own operand, or (before item G's
+    /// proof lands) every bare `send` statement, which
+    /// `bodies::check_stmt` still rejects unconditionally (decision 5's
+    /// item-A floor) even though the node above types cleanly; this is
+    /// therefore reachable *only* through the expression form today.
+    /// `inner` is the raw message `Call` (receiver `Actor[T]`, callee a
+    /// `unit`-returning method); `ty` (on the wrapping node) is always
+    /// `Result[unit, Rejected]` — `Rejected`'s own payload (the take-args
+    /// handed back) is opaque at M6 (02 §9.4, the moved-payloads story).
+    Send(Box<TypedExpr>),
+    /// `g.start(callee, args...)`'s own first (callee) argument
+    /// (plans/M6.md item A, 02-language.md §9.5) — the one `Group.start`
+    /// argument that is not an ordinary value expression: a group
+    /// child's callee is a same-module `async fn` or a `self` method,
+    /// recognized directly (`bodies::resolve_group_child_callee`) rather
+    /// than resolved through `synth_name`'s ordinary lookup (an async
+    /// fn/method is never otherwise a callable value — see the module's
+    /// own "only invocation forms" note). Mirrors `PoolName`'s own doc
+    /// comment exactly. `ty` is the callee's own structural `fn` type
+    /// (`bodies::fn_value_type`), for display only — nothing calls it as
+    /// a value.
+    GroupChild(CalleeKey),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -393,6 +429,23 @@ pub enum TypedStmtKind {
     },
     Defer(TypedDeferBody),
     ExprStmt(TypedExpr),
+    /// `with group(capacity=.., deadline=..) [as g]:` (plans/M6.md item
+    /// A, 02-language.md §9.5, §10). `capacity`/`deadline` are the
+    /// group-constructor's own (optional) labeled arguments, already
+    /// typed; `as_name`, when present, is bound (`Type::Named("Group",
+    /// [])`, an opaque builtin resource) inside `body` only — the
+    /// group's own `with`-scoping (decision: consumed at block end,
+    /// 02-language.md §10) — `bodies::check_with` pops the binding
+    /// itself, `TypedFn`'s own scope stack carries no trace of it past
+    /// this node. The scoped-`pool` `with` form stays fail-closed
+    /// (02-language.md §10's other intrinsic scope — out of the M6
+    /// honest-scope line); this node is `group` only.
+    WithGroup {
+        capacity: Option<TypedExpr>,
+        deadline: Option<TypedExpr>,
+        as_name: Option<String>,
+        body: Vec<TypedStmt>,
+    },
 }
 
 // --- declarations --------------------------------------------------------
@@ -413,6 +466,18 @@ pub struct TypedFn {
     pub params: Vec<TypedParam>,
     pub ret: Type,
     pub body: Vec<TypedStmt>,
+    /// Plans/M6.md item A's own addition: mirrors `types::DeclFn::is_async`
+    /// (already recorded at declaration time, M2) onto the checked body —
+    /// `eval::legal::classify` reads this directly (an `async fn`'s own
+    /// node is illegal for comptime unconditionally, regardless of what
+    /// its body contains: 02-language.md §12's "free of ... async/actor
+    /// operations" names the fn's own color, not merely its statements).
+    /// Not rendered by `dump` below — same bookkeeping-only reasoning as
+    /// `TypedStruct::fields`/`TypedProgram::enums` (the `--stage=check`
+    /// dump, `types.rs`, already prints `AsyncFn`; this is `--stage=typed`'s
+    /// own tree, whose existing `Fn`/`Method` line text must not move for
+    /// any already-checked async fn, e.g. golden `check-decls`'s `fetch`).
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -761,6 +826,28 @@ fn dump_stmt(stmt: &TypedStmt, depth: usize, out: &mut String) {
             }
         }
         TypedStmtKind::ExprStmt(e) => dump_expr(e, depth, out),
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            as_name,
+            body,
+        } => {
+            let mut header = "WithGroup".to_string();
+            if let Some(name) = as_name {
+                header.push_str(&format!(" as={name}"));
+            }
+            push_line(out, depth, &header);
+            if let Some(c) = capacity {
+                push_line(out, depth + 1, "Capacity");
+                dump_expr(c, depth + 2, out);
+            }
+            if let Some(d) = deadline {
+                push_line(out, depth + 1, "Deadline");
+                dump_expr(d, depth + 2, out);
+            }
+            push_line(out, depth + 1, "Body");
+            dump_stmts(body, depth + 2, out);
+        }
     }
 }
 
@@ -1019,6 +1106,21 @@ fn dump_expr(e: &TypedExpr, depth: usize, out: &mut String) {
         }
         TypedExprKind::PoolName(name) => {
             push_line(out, depth, &format!("PoolName name={name} ty={t}"));
+        }
+        TypedExprKind::Await(inner) => {
+            push_line(out, depth, &format!("Await ty={t}"));
+            dump_expr(inner, depth + 1, out);
+        }
+        TypedExprKind::Send(inner) => {
+            push_line(out, depth, &format!("Send ty={t}"));
+            dump_expr(inner, depth + 1, out);
+        }
+        TypedExprKind::GroupChild(key) => {
+            push_line(
+                out,
+                depth,
+                &format!("GroupChild key={} ty={t}", key.spelling()),
+            );
         }
     }
 }

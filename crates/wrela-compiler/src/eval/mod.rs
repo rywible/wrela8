@@ -640,6 +640,20 @@ fn collect_asserts_stmt<'p>(stmt: &'p TypedStmt, out: &mut Vec<AssertSite<'p>>) 
             TypedDeferBody::Suite(stmts) => collect_asserts_stmts(stmts, out),
         },
         TypedStmtKind::ExprStmt(e) => collect_asserts_expr(e, out),
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                collect_asserts_expr(c, out);
+            }
+            if let Some(d) = deadline {
+                collect_asserts_expr(d, out);
+            }
+            collect_asserts_stmts(body, out);
+        }
     }
 }
 
@@ -719,5 +733,15 @@ fn collect_asserts_expr<'p>(e: &'p TypedExpr, out: &mut Vec<AssertSite<'p>>) {
             }
         }
         TypedExprKind::PoolName(_) => {}
+        // Plans/M6.md item A: a `comptime assert` is evaluated
+        // unconditionally (decision 8, `check_comptime_asserts`'s own doc
+        // comment) independent of whether the fn it lives in is itself
+        // comptime-legal — so this collection walk must still find one
+        // nested inside an `await`/`send`/group construct, exactly like
+        // every other expression shape above.
+        TypedExprKind::Await(inner) | TypedExprKind::Send(inner) => {
+            collect_asserts_expr(inner, out)
+        }
+        TypedExprKind::GroupChild(_) => {}
     }
 }

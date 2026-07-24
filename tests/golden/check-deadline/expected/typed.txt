@@ -1,0 +1,40 @@
+Program
+  Fn name=bounded_read ret=u64
+    Param name=storage mode=read ty=Actor[Storage]
+    Body
+      Let name=result ty=u64
+        Int text=0 ty=u64
+      WithGroup
+        Deadline
+          Binary op=+ ty=Instant
+            Intrinsic key=now ty=Instant
+            Intrinsic key=ms ty=Duration
+              Arg label=n
+                Int text=50 ty=u64
+        Body
+          Let name=outcome ty=Result[u64, CallError[never]]
+            Await ty=Result[u64, CallError[never]]
+              Call key=Storage.load ty=u64
+                Receiver
+                  Local name=storage ty=Actor[Storage]
+          Match
+            Local name=outcome ty=Result[u64, CallError[never]]
+            Case
+              VariantPattern enum=Result variant=Ok ty=Result[u64, CallError[never]]
+                Binding name=v ty=u64
+              Assign
+                Local name=result ty=u64
+                Local name=v ty=u64
+            Case
+              VariantPattern enum=Result variant=Err ty=Result[u64, CallError[never]]
+                Wildcard ty=CallError[never]
+              Pass
+      Return
+        Local name=result ty=u64
+  Struct name=Storage
+    Method name=load ret=u64
+      Receiver mode=read ty=Storage
+      Body
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Storage

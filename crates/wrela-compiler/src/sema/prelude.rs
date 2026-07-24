@@ -39,12 +39,25 @@ const LITERAL_SURFACE: &[&str] = &["Static", "Str", "Bytes"];
 /// `.` — so they need no entry here.
 const IMAGE_BUILDER: &[&str] = &["Image", "RestartIntensity", "seconds", "Target", "Restart"];
 
+/// The actor/async surface's own bare prelude names (plans/M6.md item A,
+/// 02-language.md §9): `Actor` (a type name, `Actor[T]` — `sema::types::resolve_named`'s
+/// own new arm), `group` (`with group(...)`'s constructor-shaped call
+/// name), and the two clock intrinsics `now`/`ms` (decision 11,
+/// `sema::bodies`'s own `now`/`ms`/`seconds` dispatch). Every other new
+/// M6 name (`CallError`, `Rejected`, `Admission`, `Peer`, `Group`,
+/// `Instant`, `Duration`) is never spelled by source directly — only ever
+/// synthesized by the compiler (await/send composition, `with group`'s
+/// own binder, `now`/`seconds`'s own return type) — so none of them need
+/// an entry here, mirroring `Duration`/`ImageDecl`'s own precedent above.
+const ACTOR_SURFACE: &[&str] = &["Actor", "group", "now", "ms"];
+
 /// Is `name` one of the fixed prelude names above?
 pub fn is_builtin(name: &str) -> bool {
     SCALARS.contains(&name)
         || OPTION_RESULT.contains(&name)
         || LITERAL_SURFACE.contains(&name)
         || IMAGE_BUILDER.contains(&name)
+        || ACTOR_SURFACE.contains(&name)
 }
 
 /// The `@image` builder surface's own fixed prelude enums (plans/M4.md

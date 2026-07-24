@@ -1179,6 +1179,11 @@ const SEMA_CATEGORIES: &[&str] = &[
     // fuzzer never drives the loader; it exercises `sema::check`
     // directly on a single fuzzed file).
     "build",
+    // plans/M6.md item A: the actor surface's own diagnostics (message-
+    // value restrictions, the bare-`send`-statement floor, ...) —
+    // 02-language.md §9's own vocabulary, deliberately added like `build`
+    // above.
+    "actor",
 ];
 
 /// One full run of the pipeline the sema fuzzer exercises: lex, then (on
