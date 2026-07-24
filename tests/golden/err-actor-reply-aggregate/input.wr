@@ -1,0 +1,37 @@
+module examples.err_actor_reply_aggregate
+
+# plans/M6.md item H1 — the adversarial sweep's priority-1 find, pinned
+# before the fix landed.
+#
+# A `pub` actor method declaring `Result[T, E]` is exactly 02 §9.4's own
+# composition case (`declared Result[T, E] -> Result[T, CallError[E]]`).
+# It compiled clean, and then BOTH paths arrived as `.Ok`: the turn
+# record carries one scalar reply word, an aggregate return is passed by
+# pointer under this machine's calling convention, and the caller's
+# composition re-labelled that pointer as `Ok(<guest address>)`. A
+# declared `Err(FsError.Bad(107))` was observed as a success carrying an
+# address — a wrong answer, the worst class this repo recognizes.
+#
+# The comptime evaluator runs the identical program correctly, so the two
+# tiers genuinely disagreed; no oracle spanned them, because
+# `actors.calls.callerror-composition`'s cited tests are all `check-*`
+# dumps that prove the *typing* and never the runtime value.
+#
+# This pins the fail-closed rejection until the reply transport can carry
+# more than one word. Counterexample, run and confirmed: the same actor
+# with `-> u64` compiles and boots.
+
+pub enum FsError deriving(From):
+    Bad(u64)
+
+@actor
+pub struct Store:
+    seed: u64
+
+    init(mut self):
+        self.seed = 0
+
+    pub fn load(read self, key: u64) -> Result[u64, FsError]:
+        if key == 1:
+            return Ok(42)
+        return Err(FsError.Bad(key + 100))

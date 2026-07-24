@@ -1,0 +1,1 @@
+error[actor]: `Store.load` replies `Result[u64, FsError]`, which does not fit the one-word reply slot a turn record carries; an actor method's reply must be a scalar at M6 (02-language.md §9.4's `Result[T, E]` composition needs a wider reply transport, which is not implemented — plans/M6.md item H1) at 34:5

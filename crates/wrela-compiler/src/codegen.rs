@@ -547,7 +547,7 @@ fn strip_wrappers(ty: &Type) -> &Type {
     }
 }
 
-fn is_aggregate(ty: &Type) -> bool {
+pub(crate) fn is_aggregate(ty: &Type) -> bool {
     match strip_wrappers(ty) {
         // plans/M6.md item D (verification fix, decision 11b's own boot
         // exercised this for the first time): the M6 builtin-pseudo-type

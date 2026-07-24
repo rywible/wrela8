@@ -478,6 +478,20 @@ impl Parser {
                 }
                 break;
             }
+            // plans/M6.md item H, a soak find (sema lane, seed 72): the
+            // parenthesized form accepted an EMPTY list, so `from a
+            // import()` parsed into an `Import` node with no names, which
+            // the pretty-printer faithfully rendered as `from a import `
+            // — and that cannot reparse, breaking the roundtrip oracle.
+            // 02-language.md §2's grammar is `from path import Name [as
+            // Alias]`: at least one name, always. Rejected by name rather
+            // than by letting an unspellable node exist.
+            if names.is_empty() {
+                return Err(self.error_here(
+                    "an import list cannot be empty (`from <path> import <Name>` needs at least \
+                     one name — 02-language.md §2)",
+                ));
+            }
             self.expect_op(")")?;
             Ok(names)
         } else {

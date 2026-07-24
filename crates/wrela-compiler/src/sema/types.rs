@@ -557,6 +557,35 @@ fn validate_message_shape(
             span,
         ));
     }
+    // plans/M6.md item H1: the reply transport is ONE scalar word (the
+    // turn record's own reply slot, `actors.runtime.static-tables`), and
+    // an aggregate return is passed by pointer under this machine's
+    // calling convention. Before this check, a `pub` method declaring
+    // `Result[u64, FsError]` (or any struct) compiled clean, and the
+    // caller's `Await` composition re-labelled the returned *pointer* as
+    // `Ok(<address>)` — so a declared `Err` was observed as a success
+    // carrying a guest address. A wrong answer, not a missing feature,
+    // and the worst class this repo recognizes; it fails closed here
+    // until the transport can carry more than one word.
+    //
+    // The predicate is `codegen::is_aggregate` itself, not a copy of it:
+    // the rule exists *because* of the ABI, so the two must never drift,
+    // and one shared definition is the only way to guarantee that.
+    // (Rejected alternative: a sema-local predicate plus a unit test
+    // asserting the two agree — more machinery for a weaker guarantee.)
+    if crate::codegen::is_aggregate(ret) {
+        return Err(SemaError::at(
+            "actor",
+            format!(
+                "`{struct_name}.{method_name}` replies `{}`, which does not fit the one-word reply \
+                 slot a turn record carries; an actor method's reply must be a scalar at M6 \
+                 (02-language.md §9.4's `Result[T, E]` composition needs a wider reply transport, \
+                 which is not implemented — plans/M6.md item H1)",
+                render_type(ret)
+            ),
+            span,
+        ));
+    }
     Ok(())
 }
 
