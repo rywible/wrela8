@@ -267,6 +267,32 @@ impl Parser {
         }
     }
 
+    /// Like `expect_newline`, but tolerant of a declaration's value
+    /// expression ending in a nested suite (a closure's `|params|: suite`
+    /// body, `parse_closure`) whose own `Dedent`/trailing `Newline` already
+    /// closed out this logical line — mirrors `end_of_simple_stmt`'s own
+    /// depth-0 fallback (same reasoning, ast-expressions golden), minus
+    /// that one's statement-only bracket/`,` tolerances: a declaration's
+    /// value is never parsed inside an embedded `()[]{}` context, so those
+    /// never apply here. Without this, a `const`/field initializer whose
+    /// value is a suite-bodied closure round-trips through the printer
+    /// (which always renders `ClosureBody::Suite` as an indented `:` block,
+    /// print_closure's own doc comment) into something that fails to
+    /// reparse — sema.check.roundtrip-stable's fuzz-sema finding, seed=11.
+    fn expect_declaration_terminator(&mut self) -> Result<(), ParseError> {
+        if self.at_kind(TokenKind::Newline) {
+            self.bump();
+            return Ok(());
+        }
+        if self.pos > 0 && self.tokens[self.pos - 1].kind == TokenKind::Newline {
+            return Ok(());
+        }
+        Err(self.error_here(format!(
+            "expected end of line, found `{}`",
+            self.peek_display()
+        )))
+    }
+
     fn expect_indent(&mut self) -> Result<(), ParseError> {
         if self.at_kind(TokenKind::Indent) {
             self.bump();
@@ -665,7 +691,7 @@ impl Parser {
         };
         self.expect_op("=")?;
         let value = self.parse_or()?;
-        self.expect_newline()?;
+        self.expect_declaration_terminator()?;
         Ok(ConstItem {
             span: start,
             name,
@@ -1077,7 +1103,7 @@ impl Parser {
         } else {
             None
         };
-        self.expect_newline()?;
+        self.expect_declaration_terminator()?;
         Ok(Member::Field(FieldItem {
             span: start,
             name,

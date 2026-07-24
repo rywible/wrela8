@@ -1,0 +1,14 @@
+Module @1:1 path=examples.ast_const_closure_suite
+  Const @3:1 name=F
+    Closure @3:11
+      ClosureParam @3:12 name=x mode=read
+        TypeName @3:15 name=u64
+      Body
+        Assign @3:20 op==
+          Name @3:20 name=x
+          Bool @3:24 value=true
+  Fn @5:1 name=g pub=true
+    TypeName @5:15 name=u64
+    Body
+      Return @6:5
+        Int @6:12 text=1
