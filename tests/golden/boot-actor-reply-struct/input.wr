@@ -1,0 +1,178 @@
+module examples.boot_actor_reply_struct
+
+# plans/M7.md item Z1 (decisions 9a/9b), the reply transport's own flip
+# witness: a declared reply that is an **aggregate** — a plain struct,
+# not a `Result[T, E]`, which additionally needs Z2's
+# `Err(e) -> Err(CallError.Op(e))` retagging and still fails closed —
+# travels intact from the callee's own frame into the awaiting turn's
+# composed `Ok(reply)`.
+#
+# The mechanism under test, end to end: the awaiting turn stores the
+# address of its own reply staging slot into its turn record
+# (`codegen::OFF_TURN_REPLY_SLOT`) before enqueueing; the callee's
+# dispatch arm loads that address into `x8` — this machine's
+# aggregate-return-pointer register — before calling the method; the
+# method writes its declared reply straight into the awaiting frame; and
+# the resume stub composes `Ok(<those bytes>)`. The record's own scalar
+# reply word carries a deliberate 0 for such a method and is never read.
+#
+# BOTH dispatch arms are separately wired, so both are exercised:
+#   - `Ledger.origin` and `Store.snapshot` are **sync** — their return IS
+#     their turn's completion, and they spill `x8` in the ordinary sync
+#     prologue.
+#   - `Store.tally` is **async**: it parks on its own inner `await` and
+#     only then returns its aggregate. That is the load-bearing case —
+#     `x8` is spilled into the persistent frame on the FRESH entry only,
+#     and the address must survive the park, because the scheduler
+#     re-enters the resume path with no `x8` at all.
+#
+# `Store.tally` is also a *caller* of an aggregate-reply method, so the
+# reply crosses the wide transport twice on its way to the root:
+# `Ledger.origin` -> `Store.tally`'s staging slot -> (as `Store.tally`'s
+# own declared reply) -> `Probe.fetch`'s staging slot. `Probe.fetch`'s
+# two await sites share one slot (decision 9b: one per fn, not one per
+# site — a turn has at most one outstanding await, so it cannot be
+# aliased).
+#
+# Every field carries its own hand-computed, distinct value, so a
+# swapped, truncated or half-copied field is a failed assertion rather
+# than a plausible-looking number:
+#   - `Ledger.n` is 500 (from `init`), never touched again.
+#   - `Ledger.origin()`  -> Pair(lo = 500 + 7      = 507,
+#                                hi = 500 * 2 + 7  = 1007)
+#     which `Store.tally()` relays unchanged.
+#   - `Store.snapshot(key=41)`
+#                        -> Pair(lo = 41 + 1       = 42,
+#                                hi = 41 * 100 + 3 = 4103)
+# The four numbers are pairwise distinct, and no pair of them survives a
+# `lo`/`hi` swap, so exchanged fields cannot pass unnoticed.
+#
+# Why the assertions read each struct back through `Probe`'s own *sync*
+# methods instead of inline in the awaiting fn: 02-language.md §9.2's
+# cross-await path rule rejects every non-`self`-rooted field access
+# anywhere after an `await` in the same fn, and an awaiting fn has one by
+# construction. Storing the whole reply into `self` (a self-rooted
+# assignment, which the rule permits) and reading its fields from a plain
+# sync method is the rule-abiding shape — and it proves the same fact:
+# the bytes are correct where the *caller* can see them, not merely where
+# the callee wrote them.
+
+pub struct Pair:
+    lo: u64
+    hi: u64
+
+    init(mut self, lo: u64, hi: u64):
+        self.lo = lo
+        self.hi = hi
+
+@actor
+pub struct Ledger:
+    n: u64
+
+    init(mut self):
+        self.n = 500
+
+    pub fn origin(read self) -> Pair:
+        return Pair(lo=self.n + 7, hi=self.n * 2 + 7)
+
+@actor
+pub struct Store:
+    led: Actor[Ledger]
+    # Only ever returned on the `Err` arm below, which no boot of this
+    # image reaches (nothing here fills a mailbox or cancels anything);
+    # it exists because the arm must return a `Pair` and an async body
+    # cannot construct one. Zero-initialized like every actor's state, so
+    # if it ever DID arrive it would read as (0, 0) — distinct from all
+    # four expected values above, never a plausible pass.
+    fallback: Pair
+
+    # The sync arm: one complete, unsuspendable turn whose aggregate
+    # reply is written through the caller-supplied pointer.
+    pub fn snapshot(read self, key: u64) -> Pair:
+        return Pair(lo=key + 1, hi=key * 100 + 3)
+
+    # The async arm: parks on a real await, then returns an aggregate it
+    # itself received over the same transport.
+    pub async fn tally(read self) -> Pair:
+        t = await self.led.origin()
+        match t:
+            case .Ok(p):
+                return p
+            case .Err(_):
+                return self.fallback
+
+@actor
+pub struct Probe:
+    store: Actor[Store]
+    from_sync: Pair
+    from_async: Pair
+
+    pub async fn fetch(mut self) -> unit:
+        a = await self.store.snapshot(key=41)
+        match a:
+            case .Ok(p):
+                self.from_sync = p
+            case .Err(_):
+                pass
+        b = await self.store.tally()
+        match b:
+            case .Ok(q):
+                self.from_async = q
+            case .Err(_):
+                pass
+        return unit
+
+    pub fn sync_lo(read self) -> u64:
+        return self.from_sync.lo
+
+    pub fn sync_hi(read self) -> u64:
+        return self.from_sync.hi
+
+    pub fn async_lo(read self) -> u64:
+        return self.from_async.lo
+
+    pub fn async_hi(read self) -> u64:
+        return self.from_async.hi
+
+@test(runtime)
+async fn struct_replies(pr: Actor[Probe]):
+    f = await pr.fetch()
+    match f:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "fetch rejected"
+    a_lo = await pr.sync_lo()
+    match a_lo:
+        case .Ok(v):
+            assert v == 42, "sync struct reply: lo is key + 1"
+        case .Err(_):
+            assert false, "sync_lo rejected"
+    a_hi = await pr.sync_hi()
+    match a_hi:
+        case .Ok(v):
+            assert v == 4103, "sync struct reply: hi is key * 100 + 3"
+        case .Err(_):
+            assert false, "sync_hi rejected"
+    b_lo = await pr.async_lo()
+    match b_lo:
+        case .Ok(v):
+            assert v == 507, "async struct reply: lo is n + 7, relayed"
+        case .Err(_):
+            assert false, "async_lo rejected"
+    b_hi = await pr.async_hi()
+    match b_hi:
+        case .Ok(v):
+            assert v == 1007, "async struct reply: hi is n * 2 + 7, relayed"
+        case .Err(_):
+            assert false, "async_hi rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-actor-reply-struct", target=Target.wrela_machine_v1)
+    led = img.actor(Ledger, mailbox=4)
+    store = img.actor(Store, mailbox=4, led=led)
+    probe = img.actor(Probe, mailbox=4, store=store)
+    img.supervise(children=[led, store, probe], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

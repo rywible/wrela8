@@ -557,30 +557,46 @@ fn validate_message_shape(
             span,
         ));
     }
-    // plans/M6.md item H1: the reply transport is ONE scalar word (the
-    // turn record's own reply slot, `actors.runtime.static-tables`), and
-    // an aggregate return is passed by pointer under this machine's
-    // calling convention. Before this check, a `pub` method declaring
-    // `Result[u64, FsError]` (or any struct) compiled clean, and the
-    // caller's `Await` composition re-labelled the returned *pointer* as
-    // `Ok(<address>)` — so a declared `Err` was observed as a success
-    // carrying a guest address. A wrong answer, not a missing feature,
-    // and the worst class this repo recognizes; it fails closed here
-    // until the transport can carry more than one word.
+    // plans/M6.md item H1 rejected EVERY aggregate reply here: the turn
+    // record carried one scalar word, an aggregate return travels by
+    // pointer under this machine's calling convention, and the caller's
+    // `Await` composition re-labelled that returned *pointer* as
+    // `Ok(<guest address>)` — so a declared `Err` was observed as a
+    // success carrying an address. A wrong answer, not a missing feature.
     //
-    // The predicate is `codegen::is_aggregate` itself, not a copy of it:
-    // the rule exists *because* of the ABI, so the two must never drift,
-    // and one shared definition is the only way to guarantee that.
-    // (Rejected alternative: a sema-local predicate plus a unit test
-    // asserting the two agree — more machinery for a weaker guarantee.)
-    if crate::codegen::is_aggregate(ret) {
+    // plans/M7.md item Z1 built the transport that rule was waiting on:
+    // the awaiting turn's own record now carries the address of a
+    // caller-owned, statically sized staging slot
+    // (`codegen::OFF_TURN_REPLY_SLOT`), the callee's dispatch hands it to
+    // the method in `x8`, and the declared reply is written straight into
+    // the awaiting frame. So a *plain* aggregate reply — a struct, a
+    // tuple, an array, an `Option[T]` — now compiles and arrives intact
+    // (`golden/boot-actor-reply-struct`, a real boot asserting every
+    // field of a two-field struct through both a sync and an async
+    // method).
+    //
+    // What is still rejected is exactly the one shape that needs more
+    // than transport: a declared `Result[T, E]`. 02-language.md §9.4 maps
+    // its `Err(e)` to `Err(CallError.Op(e))` — a re-*tagging*, so the
+    // delivered value and the caller's composed value genuinely have
+    // different shapes and a straight copy through the staging slot would
+    // be wrong in precisely the way M6-H1 found. That recomposition is
+    // plans/M7.md item Z2.
+    //
+    // The aggregate predicate is `codegen::is_aggregate` itself, not a
+    // copy of it: the rule exists *because* of the ABI, so the two must
+    // never drift, and one shared definition is the only way to guarantee
+    // that. (Rejected alternative: a sema-local predicate plus a unit
+    // test asserting the two agree — more machinery for a weaker
+    // guarantee.)
+    if crate::codegen::is_aggregate(ret) && matches!(ret, Type::Result(_, _)) {
         return Err(SemaError::at(
             "actor",
             format!(
-                "`{struct_name}.{method_name}` replies `{}`, which does not fit the one-word reply \
-                 slot a turn record carries; an actor method's reply must be a scalar at M6 \
-                 (02-language.md §9.4's `Result[T, E]` composition needs a wider reply transport, \
-                 which is not implemented — plans/M6.md item H1)",
+                "`{struct_name}.{method_name}` replies `{}`; 02-language.md §9.4 maps a declared \
+                 `Err(e)` to `Err(CallError.Op(e))`, and that recomposition is not implemented \
+                 (plans/M7.md item Z2 — item Z1 widened the reply transport itself, so a \
+                 non-`Result` aggregate reply now travels intact)",
                 render_type(ret)
             ),
             span,

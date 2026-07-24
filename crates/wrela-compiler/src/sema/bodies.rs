@@ -3992,6 +3992,45 @@ pub(crate) fn compose_call_error(raw: &Type) -> Type {
     }
 }
 
+/// `compose_call_error`'s exact inverse — the declared reply type behind
+/// an already-composed `await` result: `Result[T, CallError[never]]` ->
+/// `T`; `Result[T, CallError[E]]` (E != `never`) -> `Result[T, E]`.
+/// `None` for anything that is not a composed actor-call result at all.
+///
+/// plans/M7.md item Z1 (decision 9b) needs this to size an async fn's own
+/// reply staging slot (`codegen::Frame::reply_stage_off`) and to decide,
+/// per `await` site, whether the wide transport is needed at all: the
+/// composed type is already in the FlowWir frame, so inverting it is
+/// strictly cheaper than threading the declared type through
+/// `flowwir_lower` as a second, drift-prone copy of the same fact.
+///
+/// It lives here, immediately under the composition it inverts, for the
+/// same "one shared definition" reason `sema::types::validate_message_shape`
+/// calls `codegen::is_aggregate` directly rather than copying it: the day
+/// the table above changes, both halves are on the same screen and cannot
+/// silently disagree. The pair is total in the direction that matters —
+/// `decompose_call_error(&compose_call_error(t)) == Some(t)` for every
+/// `t` (both arms), which is the only property either caller relies on.
+pub(crate) fn decompose_call_error(composed: &Type) -> Option<Type> {
+    let Type::Result(t, e) = composed else {
+        return None;
+    };
+    let Type::Named(name, targs) = &**e else {
+        return None;
+    };
+    if name != "CallError" {
+        return None;
+    }
+    let Some(TypeArg::Type(inner)) = targs.first() else {
+        return None;
+    };
+    if matches!(inner, Type::Never) {
+        Some((**t).clone())
+    } else {
+        Some(Type::Result(t.clone(), Box::new(inner.clone())))
+    }
+}
+
 /// Message-value restrictions (02-language.md §9.3): a `mut` loan or a
 /// lent closure is rejected, named; `take` of a resource is M7 (fail
 /// closed, named, distinct from the flat rejection — the plan's own

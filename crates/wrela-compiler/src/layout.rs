@@ -1645,6 +1645,14 @@ struct ActorMethodShape {
     /// `codegen::TURN_STATUS_*`), so every dispatch entry carries this
     /// flag alongside its call target.
     is_async: bool,
+    /// plans/M7.md item Z1 (decision 9a): whether this method's own
+    /// *declared* reply is an aggregate (`codegen::is_aggregate`, the one
+    /// shared ABI predicate — never a copy of it, exactly as
+    /// `sema::types::validate_message_shape` already calls it). Such a
+    /// method is handed its caller's staging-slot address in `x8` by the
+    /// dispatch arm below and writes its reply straight into the awaiting
+    /// frame; a scalar-reply method's arm is untouched, down to the word.
+    reply_is_aggregate: bool,
     param_sizes: Vec<u64>,
 }
 
@@ -1682,6 +1690,7 @@ fn merge_actor_pub_methods(
                 methods.push(ActorMethodShape {
                     name: f.name.clone(),
                     is_async: f.is_async,
+                    reply_is_aggregate: crate::codegen::is_aggregate(&f.ret),
                     param_sizes,
                 });
             }
@@ -2306,9 +2315,26 @@ pub fn build_rt_enqueue(
 ///     own turn record (`[waker + OFF_TURN_REPLY]`, then
 ///     `resume_ready = 1`) — waker 0 (a `send`) delivers nowhere; then
 ///     `busy = 0`.
+///   - **Aggregate replies** (plans/M7.md item Z1, decision 9a): an arm
+///     whose method declares an aggregate reply first loads the parked
+///     caller's staging-slot address out of the turn record
+///     (`[waker + OFF_TURN_REPLY_SLOT]`) into `x8`, this machine's
+///     aggregate-return-pointer register, so the method writes its reply
+///     straight into the awaiting frame. Such an arm then delivers a
+///     deterministic 0 in the scalar reply word — the value already went
+///     through `x8`, and nothing else is copied.
 ///
 /// `dispatch[i]` = (call target, is_async). Register use: `x9..x13`
-/// scratch; `x15` = method_idx, live across the dispatch chain.
+/// scratch; `x15` = method_idx, live across the dispatch chain; `x0`
+/// (self ptr) / `x1`/`x2` (args) are set before `.dispatch` and must
+/// survive every arm's own preamble.
+///
+/// This JIT/HVF-facing entry point carries no aggregate-reply flags: every
+/// dispatch target it is ever given is a hand-built conformance stub with
+/// a scalar reply (`wrela-vmm`'s own harness pair, and this file's own
+/// `harness_jit` suite), so the flag is `false` by construction rather
+/// than by convention. The real image path is
+/// `build_rt_select_and_run_symbolic` below, which carries the real ones.
 pub fn build_rt_select_and_run(
     addrs: &ActorAddrs,
     capacity: u64,
@@ -2317,7 +2343,10 @@ pub fn build_rt_select_and_run(
     frame_area_size: u64,
     start: usize,
 ) -> Vec<u32> {
-    let colors: Vec<bool> = dispatch.iter().map(|(_, is_async)| *is_async).collect();
+    let colors: Vec<(bool, bool)> = dispatch
+        .iter()
+        .map(|(_, is_async)| (*is_async, false))
+        .collect();
     build_rt_select_and_run_core(
         addrs,
         capacity,
@@ -2342,11 +2371,14 @@ fn build_rt_select_and_run_symbolic(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
-    dispatch: &[(String, bool)],
+    dispatch: &[(String, bool, bool)],
     frame_area_size: u64,
     start: usize,
 ) -> Asm {
-    let colors: Vec<bool> = dispatch.iter().map(|(_, is_async)| *is_async).collect();
+    let colors: Vec<(bool, bool)> = dispatch
+        .iter()
+        .map(|(_, is_async, reply_is_aggregate)| (*is_async, *reply_is_aggregate))
+        .collect();
     build_rt_select_and_run_core(
         addrs,
         capacity,
@@ -2358,12 +2390,27 @@ fn build_rt_select_and_run_symbolic(
     )
 }
 
+/// plans/M7.md item Z1: the dispatch arm's own should-be-unreachable
+/// guard — a method whose declared reply is an aggregate was selected on
+/// a turn with **no waker**. Unreachable by construction: the only
+/// waker-less admission is `send`, and 02-language.md §9.4 makes `send`'s
+/// target a unit-returning method (enforced at `sema::bodies`'
+/// `check_send_call`), so no aggregate-reply method can ever be enqueued
+/// without one. A 0 here is a producer bug in this compiler, not a
+/// program's doing — the same class as the dispatch table's own
+/// no-arm-matched `brk 0xACD0` right below it, and deliberately the same
+/// treatment.
+const BRK_REPLY_SLOT_NO_WAKER: u16 = 0xACD6;
+
 #[allow(clippy::too_many_arguments)]
 fn build_rt_select_and_run_core(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
-    method_is_async: &[bool],
+    // Per dispatch index, in declaration order: `(is_async,
+    // reply_is_aggregate)` — the two build-time facts an arm's own shape
+    // depends on (`ActorMethodShape`).
+    methods: &[(bool, bool)],
     // This actor's own whole turn-area size (`ActorRuntimeLayout::frame_size`)
     // — the turn record plus its widest async frame. An actor with no async
     // method has exactly the record and no frame slots at all.
@@ -2372,9 +2419,9 @@ fn build_rt_select_and_run_core(
     mut call_dispatch: impl FnMut(&mut Asm, usize),
 ) -> Asm {
     use crate::codegen::{
-        BRK_ACTOR_TURN_CANCELLED, OFF_TURN_CUR_METHOD, OFF_TURN_REPLY, OFF_TURN_RESUME_READY,
-        OFF_TURN_SUSPENDED, OFF_TURN_WAKER, TURN_RECORD_SIZE, TURN_STATUS_CANCELLED,
-        TURN_STATUS_SUSPENDED,
+        BRK_ACTOR_TURN_CANCELLED, OFF_TURN_CUR_METHOD, OFF_TURN_REPLY, OFF_TURN_REPLY_SLOT,
+        OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED, OFF_TURN_WAKER, TURN_RECORD_SIZE,
+        TURN_STATUS_CANCELLED, TURN_STATUS_SUSPENDED,
     };
     let mut a = Asm::new(start);
     // Unlike most other hand-assembled fragments in this file (leaf fns,
@@ -2515,12 +2562,28 @@ fn build_rt_select_and_run_core(
         let delta = (dispatch as i64 - this as i64) * 4;
         a.words[to_dispatch_from_resume] = encode::enc_b(delta as i32);
     }
-    for (idx, &is_async) in method_is_async.iter().enumerate() {
+    for (idx, &(is_async, reply_is_aggregate)) in methods.iter().enumerate() {
         a.push(encode::enc_cmp_imm(15, idx as u16, true));
         let skip_next = a.skip_placeholder(); // b.ne .next
+        if reply_is_aggregate {
+            // plans/M7.md item Z1 (decision 9a): hand the method its
+            // caller's own staging slot in `x8`. The waker is this turn
+            // record's own (stored at fresh selection, still there on a
+            // resume — it is only cleared at delivery), and the parked
+            // caller wrote `OFF_TURN_REPLY_SLOT` immediately before
+            // enqueueing this very message. `x9`/`x10` only: `x0` (self),
+            // `x1`/`x2` (args) and `x15` (method index) are all live
+            // across this preamble.
+            a.load_imm(9, addrs.turn);
+            a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_WAKER as u16));
+            let skip_have_waker = a.skip_placeholder(); // cbnz x10, .have_waker
+            a.push(encode::enc_brk(BRK_REPLY_SLOT_NO_WAKER));
+            a.patch_cbnz(skip_have_waker, 10);
+            a.push(encode::enc_ldr_x_imm(8, 10, OFF_TURN_REPLY_SLOT as u16));
+        }
         call_dispatch(&mut a, idx);
         if is_async {
-            // x0 = status; on completion x1 = reply.
+            // x0 = status; on completion x1 = the scalar reply.
             a.push(encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true));
             let skip_not_suspended = a.skip_placeholder(); // b.ne .not_suspended
             // Suspended: a real slice ran; busy stays set; x0 is
@@ -2546,13 +2609,23 @@ fn build_rt_select_and_run_core(
             let completed = a.abs();
             a.patch_cond(skip_completed, Cond::Ne);
             debug_assert_eq!(completed, a.abs());
-            a.push(encode::enc_mov_reg(9, 1, true)); // x9 = reply
-            to_deliver.push(a.skip_placeholder());
-        } else {
-            // A sync method's return IS completion; reply in x0.
-            a.push(encode::enc_mov_reg(9, 0, true)); // x9 = reply
-            to_deliver.push(a.skip_placeholder());
         }
+        // The one word that differs between the three method shapes —
+        // what `.deliver` will store into the waker's own reply slot.
+        // A sync method's return IS completion (reply in x0); an async
+        // one that got here completed (reply in x1); and an
+        // aggregate-reply method of either color already wrote its whole
+        // reply through `x8` into the awaiting frame, so its scalar word
+        // is a deliberate, deterministic 0 — that word is image-visible,
+        // and a stable 0 beats whatever register state the method
+        // happened to leave behind.
+        let reply_reg = match (reply_is_aggregate, is_async) {
+            (true, _) => 31, // xzr
+            (false, true) => 1,
+            (false, false) => 0,
+        };
+        a.push(encode::enc_mov_reg(9, reply_reg, true)); // x9 = reply
+        to_deliver.push(a.skip_placeholder());
         let next = a.abs();
         a.patch_cond(skip_next, Cond::Ne);
         debug_assert_eq!(next, a.abs());
@@ -2819,7 +2892,7 @@ struct RuntimeGlue {
 
 fn build_runtime_glue_block(
     tables: &RuntimeTables,
-    actor_dispatch: &[(String, Vec<(String, bool)>)],
+    actor_dispatch: &[(String, Vec<(String, bool, bool)>)],
     placement: &RuntimePlacement,
     // plans/M6.md item F: every static `g.start` call site's own
     // `(callee_key, child_index)` — `BootCtx::group_child_index`, sorted
@@ -3073,8 +3146,9 @@ struct RuntimeWiring {
     tables: RuntimeTables,
     /// Per actor, in `tables.actors` order: its own name and its `pub`
     /// method dispatch keys (`"{Actor}.{method}"`, `program.fns` keys) with
-    /// each one's asyncness.
-    dispatch: Vec<(String, Vec<(String, bool)>)>,
+    /// each one's asyncness and (plans/M7.md item Z1) whether its declared
+    /// reply is an aggregate.
+    dispatch: Vec<(String, Vec<(String, bool, bool)>)>,
     /// Actor name -> its zero-argument `init`'s own `program.fns` key.
     init_keys: BTreeMap<String, String>,
     actor_names: Vec<String>,
@@ -3099,7 +3173,13 @@ impl RuntimeWiring {
                 let methods = shapes.get(&a.name).cloned().unwrap_or_default();
                 let keys = methods
                     .iter()
-                    .map(|m| (format!("{}.{}", a.name, m.name), m.is_async))
+                    .map(|m| {
+                        (
+                            format!("{}.{}", a.name, m.name),
+                            m.is_async,
+                            m.reply_is_aggregate,
+                        )
+                    })
                     .collect();
                 (a.name.clone(), keys)
             })

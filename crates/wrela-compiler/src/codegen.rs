@@ -623,6 +623,22 @@ struct Frame {
     temp_size: Vec<usize>,
     self_ptr_off: Option<usize>,
     ret_ptr_off: Option<usize>,
+    /// plans/M7.md item Z1 (decision 9b): this async fn's own **reply
+    /// staging slot** — where a callee writes the aggregate reply of an
+    /// actor `await` this fn performs. `None` for a sync fn and for any
+    /// async fn none of whose own `await` sites has an aggregate declared
+    /// reply, which is what keeps every M6 frame byte-for-byte identical
+    /// (decision 9c).
+    ///
+    /// One slot per *fn*, not per await site, sized to the widest declared
+    /// reply over that fn's own `Await{ActorCall}` sites: a turn has at
+    /// most one outstanding await, so one slot can never be aliased by
+    /// two live replies. A sibling of `ret_ptr_off` in both senses — same
+    /// register (`x8`), same "who owns the destination memory" answer —
+    /// except that this one is the address a *callee* is handed, while
+    /// `ret_ptr_off` is where this fn spills the address its own caller
+    /// handed it.
+    reply_stage_off: Option<usize>,
     lr_off: usize,
     size: usize,
 }
@@ -631,7 +647,14 @@ fn round_up_16(n: usize) -> usize {
     (n + 15) & !15
 }
 
-fn build_frame(f: &MwirFn, layout: &LayoutCtx) -> Result<Frame, CodegenError> {
+/// `reply_stage_size` is 0 for every sync fn and for any async fn with no
+/// aggregate-reply `await` site (`build_frame_flow` derives the real
+/// number); a nonzero value reserves `Frame::reply_stage_off`.
+fn build_frame(
+    f: &MwirFn,
+    layout: &LayoutCtx,
+    reply_stage_size: usize,
+) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
     let mut temp_offset = Vec::with_capacity(f.temp_types.len());
     let mut temp_size = Vec::with_capacity(f.temp_types.len());
@@ -655,6 +678,13 @@ fn build_frame(f: &MwirFn, layout: &LayoutCtx) -> Result<Frame, CodegenError> {
     } else {
         None
     };
+    let reply_stage_off = if reply_stage_size > 0 {
+        let o = offset;
+        offset += reply_stage_size;
+        Some(o)
+    } else {
+        None
+    };
     let lr_off = offset;
     offset += 8;
     let size = round_up_16(offset);
@@ -668,6 +698,7 @@ fn build_frame(f: &MwirFn, layout: &LayoutCtx) -> Result<Frame, CodegenError> {
         temp_size,
         self_ptr_off,
         ret_ptr_off,
+        reply_stage_off,
         lr_off,
         size,
     })
@@ -2130,7 +2161,8 @@ fn emit_fn(
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
 ) -> Result<CodegenFn, CodegenError> {
-    let frame = build_frame(f, layout)?;
+    // A sync fn never awaits, so it never stages a reply (0).
+    let frame = build_frame(f, layout, 0)?;
 
     let empty: [usize; 0] = [];
     let mut probe_pro = FnCtx {
@@ -2342,7 +2374,8 @@ const RT_ENQUEUE_PREFIX: &str = "rt_enqueue ";
 //
 // Every turn-capable entity — each declared actor, and each free async fn
 // (a `@test(runtime)` root foremost) — owns one fixed **turn area** in the
-// image's `rtdata` section: a fixed-shape 48-byte record (offsets below)
+// image's `rtdata` section: a fixed-shape `TURN_RECORD_SIZE`-byte record
+// (56 bytes as of plans/M7.md item Z1; offsets below)
 // followed by that entity's own statically reserved frame slots (the
 // widest of its async fns' `Frame`s — one area per entity, never one per
 // queued message, because non-reentrancy caps in-flight activations at
@@ -2383,13 +2416,51 @@ const RT_ENQUEUE_PREFIX: &str = "rt_enqueue ";
 //   +40 cur_method    the in-flight method's dispatch index (actors
 //                     only) — saved at fresh selection so the resume
 //                     path can re-enter the same compiled method.
+//   +48 reply_slot    plans/M7.md item Z1 (decision 9a): the address of
+//                     THIS turn's own reply staging slot (`Frame::
+//                     reply_stage_off`, an area-interior address) while
+//                     it is parked on an actor `await` whose declared
+//                     reply is an *aggregate* — the value the callee's
+//                     dispatch hands its method in `x8`, this machine's
+//                     aggregate-return-pointer register, so the callee
+//                     writes its declared reply straight into the
+//                     awaiting frame and nothing is copied at delivery.
+//                     `reply` (+24) still carries every scalar reply,
+//                     unchanged and byte-for-byte identically.
+//
+//                     The invariant, exactly (decision 9a): **written
+//                     only by its own suspend path, read only by its
+//                     callee's dispatch while it is parked.** That holds
+//                     because a parked turn cannot begin a second await
+//                     — the fn has genuinely `ret`urned to the scheduler
+//                     at its one suspension point, and non-reentrancy
+//                     (`busy`) admits no second activation — so between
+//                     the store and the callee's load there is exactly
+//                     one writer and one reader of this word.
+//
+//                     Why a stale value is never read (the one subtlety;
+//                     nothing ever clears this word back to 0, and
+//                     nothing needs to): the dispatch arm loads it *only*
+//                     in an arm whose method's own declared reply is an
+//                     aggregate. That is a build-time property of the
+//                     CALLEE, and every caller that can reach that arm is
+//                     a turn awaiting exactly that method — so its
+//                     suspend path stored this word immediately before
+//                     `rt_enqueue`, on the same activation. A scalar-
+//                     reply arm never reads it at all, so whatever an
+//                     older aggregate-reply await left behind is dead,
+//                     not dangerous. (The `rtdata` section starts zeroed,
+//                     so the word is 0 until the first aggregate-reply
+//                     suspend writes it; the record's own boot state is
+//                     still fully deterministic.)
 pub const OFF_TURN_BUSY: u64 = 0;
 pub const OFF_TURN_SUSPENDED: u64 = 8;
 pub const OFF_TURN_RESUME_READY: u64 = 16;
 pub const OFF_TURN_REPLY: u64 = 24;
 pub const OFF_TURN_WAKER: u64 = 32;
 pub const OFF_TURN_CUR_METHOD: u64 = 40;
-pub const TURN_RECORD_SIZE: u64 = 48;
+pub const OFF_TURN_REPLY_SLOT: u64 = 48;
+pub const TURN_RECORD_SIZE: u64 = 56;
 
 // A compiled async fn's own return-status ABI (distinct from a sync fn's,
 // which returns its value in x0 with no status — the dispatch arms in
@@ -2705,8 +2776,47 @@ fn build_frame_flow(
         temp_types,
         body: Vec::new(),
     };
-    let frame = build_frame(&synthetic, layout)?;
+    let frame = build_frame(&synthetic, layout, flow_reply_stage_size(f, layout)?)?;
     Ok((frame, state_temp, scratch0, scratch1))
+}
+
+/// plans/M7.md item Z1 (decision 9b): how many bytes this fn's own reply
+/// staging slot needs — the widest *declared* reply over its own
+/// `Await{ActorCall}` sites that is an aggregate, or 0 if it has none (by
+/// far the common case, and the one that keeps every M6 frame identical).
+///
+/// The declared type is recovered by inverting the composition sema
+/// already applied (`sema::bodies::decompose_call_error`), never by a
+/// second lowering-time channel: `result_temp`'s own frame type is
+/// `Result[T, CallError[E]]`, and `T`/`Result[T, E]` is exactly what the
+/// callee will write. An await whose composed type is not that shape
+/// contributes nothing here — `emit_await_suspend`/`emit_await_resume`
+/// read the identical predicate, so the three can never disagree about
+/// whether a given site uses the wide transport, and `emit_await_resume`
+/// still fails closed loudly on the malformed shape.
+fn flow_reply_stage_size(f: &FlowWirFn, layout: &LayoutCtx) -> Result<usize, CodegenError> {
+    let mut widest = 0usize;
+    for s in &f.states {
+        let Transition::Await {
+            what: AwaitKind::ActorCall { .. },
+            result_temp,
+            ..
+        } = &s.transition
+        else {
+            continue;
+        };
+        let Some(declared) =
+            crate::sema::bodies::decompose_call_error(&f.frame.temp_types[result_temp.0])
+        else {
+            continue;
+        };
+        if !is_aggregate(&declared) {
+            continue;
+        }
+        let sz = mwir::size_of(&declared, layout).map_err(|e| CodegenError::unimplemented(&e))?;
+        widest = widest.max(sz);
+    }
+    Ok(widest)
 }
 
 /// The resume dispatch chain's own trailing guard: a should-be-
@@ -2792,6 +2902,21 @@ fn emit_async_entry(
         }
         next_reg += 1;
     }
+    // plans/M7.md item Z1: an aggregate-returning async method is handed
+    // its caller's destination address in `x8` (this machine's shared
+    // aggregate-return ABI, `is_aggregate`/`emit_prologue`), and
+    // `Inst::Return` writes the value through it. Spill it into the
+    // persistent frame exactly like the sync prologue does — but only on
+    // the FRESH path: on a resume there is no `x8` to spill (the
+    // scheduler re-enters through `rt_select_and_run`'s own dispatch,
+    // which reloads the pointer from the parked caller's record but at a
+    // point this fn cannot depend on), and none is needed — the
+    // persistent frame still holds the address the fresh entry spilled,
+    // and the caller cannot have changed it while parked (it is parked;
+    // decision 9a's own invariant).
+    if let Some(ret_ptr_off) = ctx.frame.ret_ptr_off {
+        ctx.store_slot(8, ret_ptr_off);
+    }
     // state = 0 (hygiene: a completed prior activation leaves its last
     // state index behind; a fresh turn's own record is deterministic).
     ctx.load_imm(X_A, 0);
@@ -2830,7 +2955,21 @@ fn emit_async_entry(
 /// `x0 = TURN_STATUS_COMPLETED`, reload the caller's `x30` from the
 /// frame's lr slot, `ret`.
 fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> {
-    ctx.push(encode::enc_mov_reg(1, 0, true), "mov x1, x0".to_string());
+    if is_aggregate(&f.ret) {
+        // plans/M7.md item Z1: an aggregate reply never travels in `x1`.
+        // `Inst::Return` has already written the whole value through this
+        // fn's spilled `x8` (the awaiting caller's own staging slot), so
+        // `x0` holds nothing meaningful here — report a deterministic 0
+        // in the scalar reply word rather than whatever register state
+        // the body happened to leave behind, since the dispatch arm
+        // stores that word into an image-visible turn record.
+        ctx.push(
+            encode::enc_mov_reg(1, X_ZR, true),
+            "mov x1, xzr".to_string(),
+        );
+    } else {
+        ctx.push(encode::enc_mov_reg(1, 0, true), "mov x1, x0".to_string());
+    }
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
             let self_ptr_off = ctx
@@ -4168,6 +4307,22 @@ fn emit_group_addr_from_temp(ctx: &mut FnCtx, group_temp: Temp, dst_reg: u8, scr
     );
 }
 
+/// plans/M7.md item Z1: the declared reply type of one `Await{ActorCall}`
+/// site, but only when it is an aggregate — i.e. exactly when that site
+/// uses the wide reply transport (a staging slot + `x8`) instead of the
+/// turn record's own scalar reply word. `None` means "scalar reply,"
+/// which is every M6 await site and the case that must keep emitting the
+/// identical instruction sequence (decision 9c).
+///
+/// The single predicate `flow_reply_stage_size` (which reserves the slot),
+/// `emit_await_suspend` (which publishes its address) and
+/// `emit_await_resume` (which reads the staged value back) all share, so
+/// no two of them can disagree about one site.
+fn aggregate_reply_of_await(f: &MwirFn, result_temp: Temp) -> Option<Type> {
+    let declared = crate::sema::bodies::decompose_call_error(&f.temp_types[result_temp.0])?;
+    is_aggregate(&declared).then_some(declared)
+}
+
 /// The suspend half of an `Await{ActorCall}`/`Await{GroupJoin}` (module doc's
 /// own "park-and-resume" step 1): save `resume_state`, then either enqueue
 /// a message with this turn's own waker (`ActorCall`) or, for
@@ -4182,6 +4337,7 @@ fn emit_await_suspend(
     what: &AwaitKind,
     resume_state: usize,
     result_temp: Temp,
+    f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
@@ -4199,6 +4355,30 @@ fn emit_await_suspend(
             let (actor, idx) = lookup_method_idx(method_key, method_index)?;
             ctx.load_imm(X_A, resume_state as i64);
             ctx.store_slot(X_A, ctx.frame.off(state_temp));
+            // plans/M7.md item Z1 (decision 9a/9c): publish this turn's own
+            // staging-slot address for the callee's dispatch to pick up —
+            // ONLY when the declared reply is an aggregate. A scalar reply
+            // emits nothing at all here, so every M6 await site keeps its
+            // instruction sequence byte-for-byte. It must land before the
+            // `bl rt_enqueue` below, because a same-core callee can be
+            // dispatched the moment this turn returns to the scheduler.
+            if aggregate_reply_of_await(f, result_temp).is_some() {
+                let stage_off = ctx.frame.reply_stage_off.ok_or_else(|| {
+                    CodegenError::internal(
+                        "an `await` with an aggregate declared reply but no reply staging slot \
+                         (`build_frame_flow`/`flow_reply_stage_size` disagree with this site)",
+                    )
+                })?;
+                ctx.addr_of_slot(X_A, stage_off);
+                ctx.push(
+                    encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16),
+                    format!(
+                        "str {}, [{}, #{OFF_TURN_REPLY_SLOT}]",
+                        reg_name(X_A),
+                        reg_name(X_FRAME)
+                    ),
+                );
+            }
             emit_marshal_and_call(
                 idx,
                 arg_temps,
@@ -4298,6 +4478,36 @@ fn emit_await_suspend(
     }
 }
 
+/// plans/M7.md item Z1: the `Ok` half of an aggregate reply's own resume
+/// composition — copy the callee-written staging slot into `result_temp`'s
+/// payload area (past the 8-byte tag), then zero whatever payload bytes
+/// the composed `Result`'s *error* arm makes wider than the declared reply
+/// itself, so the whole temp is deterministic no matter which arm is live.
+/// The tag is written by the caller (both call sites want `Ok`, but they
+/// reach it differently).
+fn emit_copy_staged_reply(
+    ctx: &mut FnCtx,
+    stage_off: usize,
+    staged_size: usize,
+    result_off: usize,
+    result_size: usize,
+) {
+    let mut w = 0;
+    while w < staged_size {
+        ctx.load_slot(X_A, stage_off + w);
+        ctx.store_slot(X_A, result_off + 8 + w);
+        w += 8;
+    }
+    // The payload area is `result_size - 8` bytes wide (the tag is the
+    // first word), so the last writable word starts at `w == result_size
+    // - 16` — hence `+ 16`, not `+ 8`: an off-by-one here would scribble
+    // one word past the temp, onto whatever frame slot follows it.
+    while w + 16 <= result_size {
+        ctx.store_slot(X_ZR, result_off + 8 + w);
+        w += 8;
+    }
+}
+
 /// The resume half (module doc's step 3) — the dispatch chain's landing
 /// site for `resume_state`: for `ActorCall`, compose `Ok(reply)` into
 /// `result_temp` from the turn record's own reply slot; for `GroupJoin`
@@ -4325,10 +4535,8 @@ fn emit_await_resume(
         AwaitKind::ActorCall { .. } => {
             // `result_temp`'s own type is always the composed
             // `Result[T, CallError[E]]` (02 §9.4's composition table,
-            // `sema::bodies::compose_call_error`) — never the bare scalar
-            // reply. Every message reply in today's whole corpus is
-            // scalar (item C's established floor); an aggregate reply is
-            // a disclosed, unexercised gap this fn does not widen.
+            // `sema::bodies::compose_call_error`) — never the bare
+            // declared reply.
             let composed_ty = &f.temp_types[result_temp.0];
             if !matches!(composed_ty, Type::Result(_, _)) {
                 return Err(CodegenError::internal(format!(
@@ -4337,7 +4545,57 @@ fn emit_await_resume(
             }
             let result_off = ctx.frame.off(result_temp);
             let result_size = ctx.frame.size_of_temp(result_temp);
-            if gctx.arena_capacity == 0 {
+            // plans/M7.md item Z1: where the declared reply actually is.
+            // Scalar (`None`) — the turn record's own reply word, exactly
+            // as M6 left it. Aggregate (`Some`) — this fn's own staging
+            // slot, which the callee wrote through `x8` before it ever
+            // completed, so the record's scalar reply word carries a
+            // deliberate 0 for such a method and is not read here at all.
+            let staged = match aggregate_reply_of_await(f, result_temp) {
+                None => None,
+                Some(declared) => {
+                    let off = ctx.frame.reply_stage_off.ok_or_else(|| {
+                        CodegenError::internal(
+                            "an `await` resume with an aggregate declared reply but no reply \
+                             staging slot (`flow_reply_stage_size` disagrees with this site)",
+                        )
+                    })?;
+                    let size = mwir::size_of(&declared, ctx.layout)
+                        .map_err(|e| CodegenError::unimplemented(&e))?;
+                    Some((off, size))
+                }
+            };
+            if let Some((stage_off, staged_size)) = staged {
+                if gctx.arena_capacity == 0 {
+                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size);
+                    ctx.store_slot(X_ZR, result_off); // tag = Ok
+                } else {
+                    // Same rule the scalar path below applies (02 §9.5:
+                    // "Cancellation becomes observable at `await`"), but
+                    // an aggregate cannot ride a `csel`: the `Ok` payload
+                    // is several words and the `Err` payload is one tag
+                    // word, so the two compositions are written whole,
+                    // one branch apart. Compose the *cancelled* answer
+                    // unconditionally first, then skip the `Ok` overwrite
+                    // when the flag is set — one forward branch, and both
+                    // outcomes leave every payload word deterministic
+                    // rather than half-overwritten.
+                    emit_group_cancelled_flags(ctx);
+                    ctx.load_imm(X_A, CALL_ERROR_TAG_CANCELLED as i64);
+                    ctx.store_slot(X_A, result_off + 8);
+                    let mut w = 16;
+                    while w < result_size {
+                        ctx.store_slot(X_ZR, result_off + w);
+                        w += 8;
+                    }
+                    ctx.load_imm(X_A, 1); // tag = Err (`value::RESULT_ERR`)
+                    ctx.store_slot(X_A, result_off);
+                    let skip_ok = ctx.emit_skip(SkipKind::Cbnz(X_C));
+                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size);
+                    ctx.store_slot(X_ZR, result_off); // tag = Ok
+                    ctx.patch_skip(skip_ok, SkipKind::Cbnz(X_C));
+                }
+            } else if gctx.arena_capacity == 0 {
                 // No group exists anywhere in this build, so no await can
                 // ever resolve `Cancelled` — emit exactly the pre-item-F
                 // sequence, byte-identical (`emit_checkpoint_cancellation_test`'s
@@ -4471,6 +4729,7 @@ fn emit_transition(
             what,
             *resume_state,
             *result_temp,
+            f,
             ctx,
             method_index,
             gctx,
@@ -4544,12 +4803,22 @@ fn emit_flowwir_fn(
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
 ) -> Result<CodegenFn, CodegenError> {
-    if is_aggregate(&f.ret) {
-        // The reply-delivery path carries one scalar reply word
-        // (`OFF_TURN_REPLY`) — the same scalar floor every message reply
-        // already has (item C). Fail closed, never a silent truncation.
+    if is_aggregate(&f.ret) && f.receiver.is_none() {
+        // plans/M7.md item Z1 (decision 9d) narrowed this from "any async
+        // fn" to "a *free* async fn". An aggregate-returning async
+        // **method** now works: its caller parks with a staging slot whose
+        // address the callee's own dispatch arm hands it in `x8`
+        // (`OFF_TURN_REPLY_SLOT`). A free async fn has no such caller —
+        // it is a `@test(runtime)` root, driven by the entry driver, or a
+        // `g.start` child, harvested into the group arena's own child
+        // result slots, and both of those destinations are exactly one
+        // word wide with no staging slot to offer. Fail closed, never a
+        // silent truncation; widening THAT is separate, real work.
         return Err(CodegenError::unimplemented(
-            "an async fn returning an aggregate (scalar replies are the M6 reply-slot floor)",
+            "a free (non-method) async fn returning an aggregate — a `@test(runtime)` root's own \
+             driver has no reply staging slot to hand it, and a `g.start` child's result slot in \
+             the group arena is one word wide (plans/M7.md item Z1 widened the actor-*method* \
+             case; this one is not implemented)",
         ));
     }
     let (frame, state_temp, scratch0, scratch1) = build_frame_flow(f, layout)?;
@@ -4986,7 +5255,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0).expect("build_frame");
         // Every scalar is one 8-byte slot regardless of its own declared
         // width (mwir's own "no packing, ever" rule) — offsets are a
         // plain running sum, never sub-word-aligned.
@@ -5013,7 +5282,7 @@ mod tests {
         layout
             .structs
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
-        let frame = build_frame(&f, &layout).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0).expect("build_frame");
         // temps: t0 (Point, 16 bytes) at [0,16); self_ptr at 16; ret_ptr
         // at 24 (the receiver's own aggregate type is also the return
         // type here, but the two slots are still distinct — self_write_
@@ -5024,6 +5293,31 @@ mod tests {
         assert_eq!(frame.ret_ptr_off, Some(24));
         assert_eq!(frame.lr_off, 32);
         assert_eq!(frame.size, 48);
+    }
+
+    /// plans/M7.md item Z1: the reply staging slot is a sibling of
+    /// `ret_ptr_off` — reserved only when asked for, sized exactly as
+    /// asked, and pushing `lr` (and so the frame size) out by that much.
+    /// The `0` case is the one every M6 frame takes, and it must leave
+    /// the frame byte-for-byte as it was (decision 9c).
+    #[test]
+    fn frame_reserves_the_reply_staging_slot_only_when_sized() {
+        let f = MwirFn {
+            receiver: None,
+            params: vec![],
+            ret: Type::U64,
+            temp_types: vec![Type::U64],
+            body: vec![Inst::Return { value: None }],
+        };
+        let layout = LayoutCtx::default();
+        let none = build_frame(&f, &layout, 0).expect("build_frame");
+        assert_eq!(none.reply_stage_off, None);
+        assert_eq!(none.lr_off, 8);
+        assert_eq!(none.size, 16);
+        let staged = build_frame(&f, &layout, 24).expect("build_frame");
+        assert_eq!(staged.reply_stage_off, Some(8));
+        assert_eq!(staged.lr_off, 32);
+        assert_eq!(staged.size, 48);
     }
 
     #[test]
@@ -5039,7 +5333,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        assert!(build_frame(&f, &layout).is_err());
+        assert!(build_frame(&f, &layout, 0).is_err());
     }
 
     // --- end-to-end: exact word sequences for tiny fns ------------------
