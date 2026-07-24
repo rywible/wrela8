@@ -1,0 +1,8 @@
+module main
+
+from other import MARKER
+
+@image
+pub fn build_main() -> Image:
+    img = Image(name="main-appliance", target=Target.wrela_machine_v1)
+    return img.seal()

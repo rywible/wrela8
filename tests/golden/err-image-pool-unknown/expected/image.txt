@@ -1,0 +1,1 @@
+error[name]: unknown name `Ghost` at 6:28

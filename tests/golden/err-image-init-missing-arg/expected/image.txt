@@ -1,0 +1,1 @@
+error[build]: `driver#0` is missing `Blk.init`'s own `queue_depth: u32` — no `queue_depth=...` argument and no wiring substitution source

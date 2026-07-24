@@ -1,0 +1,1 @@
+error[build]: more than one `@image` fn reachable in the build closure (main::build_main, other::build_other)

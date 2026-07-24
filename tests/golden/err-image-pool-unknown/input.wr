@@ -1,0 +1,7 @@
+module examples.err_image_pool_unknown
+
+@image
+pub fn build() -> Image:
+    img = Image(name="unknown-pool", target=Target.wrela_machine_v1)
+    a = img.pool[u32](name=Ghost, slots=4, max_payload=64)
+    return img.seal()

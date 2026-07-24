@@ -26,6 +26,7 @@
 //! implement is the only guard item B needs.
 
 pub mod image;
+pub mod image_checks;
 pub mod interp;
 pub mod legal;
 pub mod quota;

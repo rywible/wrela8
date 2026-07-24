@@ -1,0 +1,10 @@
+module examples.err_image_pool_double_bind
+
+pool Buffers
+
+@image
+pub fn build() -> Image:
+    img = Image(name="dup-pool", target=Target.wrela_machine_v1)
+    a = img.pool[u32](name=Buffers, slots=4, max_payload=64)
+    b = img.pool[u32](name=Buffers, slots=8, max_payload=128)
+    return img.seal()

@@ -5,9 +5,11 @@ from actor import Store
 @driver
 pub struct Blk:
     id: u32
+    queue_depth: u32
 
-    init(mut self):
+    init(mut self, queue_depth: u32):
         self.id = 1
+        self.queue_depth = queue_depth
 
 pool Buffers
 

@@ -68,11 +68,16 @@ Program
             Local name=self ty=Blk
     Init ret=unit
       Receiver mode=mut ty=Blk
+      Param name=queue_depth mode=read ty=u32
       Body
         Assign
           Field name=id ty=u32
             Local name=self ty=Blk
           Int text=1 ty=u32
+        Assign
+          Field name=queue_depth ty=u32
+            Local name=self ty=Blk
+          Local name=queue_depth ty=u32
   Struct name=NicHw
   Struct name=Store
     Method name=get ret=u32
@@ -83,8 +88,13 @@ Program
             Local name=self ty=Store
     Init ret=unit
       Receiver mode=mut ty=Store
+      Param name=disk mode=read ty=u32
       Body
         Assign
           Field name=count ty=u32
             Local name=self ty=Store
           Int text=0 ty=u32
+        Assign
+          Field name=disk ty=u32
+            Local name=self ty=Store
+          Local name=disk ty=u32

@@ -492,6 +492,12 @@ pub(crate) fn check(
         .filter(|i| !matches!(i, Item::ComptimeIf(_)))
         .collect();
     let mut program = TypedProgram::default();
+    // plans/M4.md item C (`image.graph.pools-bound-once`/`seal-fully-bound`):
+    // this module's own module-scoped `pool` declarations, kept verbatim
+    // for the post-seal graph check (`eval::image_checks::check_pools_bound`)
+    // to name one that never got bound — see `TypedProgram::declared_pools`'s
+    // own doc comment.
+    program.declared_pools = mctx.module_pools.clone();
     // plans/M4.md item B: the builder surface's own two fixed prelude
     // enums (`sema::prelude::builtin_enum_variants`) are injected into
     // every module's own `TypedProgram` unconditionally — the dumbest

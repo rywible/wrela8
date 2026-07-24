@@ -6,11 +6,13 @@ Module path=examples.image_basic
     field id: u32
   Struct Blk resource
     field id: u32
-    init(mut self) -> unit
+    field queue_depth: u32
+    init(mut self, queue_depth: read u32) -> unit
     fn ping(read self) -> u32
   Struct Store resource
     field count: u32
-    init(mut self) -> unit
+    field disk: u32
+    init(mut self, disk: read u32) -> unit
     fn get(read self) -> u32
   Pool Buffers
   Fn check_limits() -> unit

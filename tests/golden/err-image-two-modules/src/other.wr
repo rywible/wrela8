@@ -1,0 +1,8 @@
+module other
+
+pub const MARKER: u32 = 1
+
+@image
+pub fn build_other() -> Image:
+    img = Image(name="other-appliance", target=Target.wrela_machine_v1)
+    return img.seal()

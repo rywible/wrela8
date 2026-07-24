@@ -1,0 +1,18 @@
+module examples.err_image_init_missing_arg
+
+@driver
+pub struct Blk:
+    id: u32
+    queue_depth: u32
+
+    init(mut self, queue_depth: u32):
+        self.id = 1
+        self.queue_depth = queue_depth
+
+@image
+pub fn build() -> Image:
+    img = Image(name="missing-arg", target=Target.wrela_machine_v1)
+    disk = img.driver(Blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

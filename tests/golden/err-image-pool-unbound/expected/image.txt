@@ -1,0 +1,1 @@
+error[build]: pool `Buffers` is declared but never bound by `img.pool`/`img.dma_pool` before `img.seal()`

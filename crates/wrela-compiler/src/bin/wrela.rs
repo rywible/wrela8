@@ -75,18 +75,24 @@ fn main() -> ExitCode {
     }
 }
 
-/// `wrela dump --stage=image`'s own driver (plans/M4.md item B):
-/// `programs` is every module the build closure checked, keyed by its
-/// own dotted module path (a single entry for the no-imports case).
-/// Decision 6's own "exactly one reachable `@image`" rule gets its
-/// minimal item-B version here — zero or more than one is a named
-/// `error[build]` listing every candidate found; item C pins the fuller
-/// diagnostic. Exactly one runs on the M3 evaluator
-/// (`eval::interp::eval_image`) and prints the resulting `ImageGraph`'s
-/// own stable dump (`eval::image::dump`) — an `EvalError` (a blown quota,
-/// `img.dma_pool`'s own fail-closed gap, an unsealed return, ...) renders
-/// through the identical `error[comptime]` path every other comptime
-/// failure already uses (`eval::to_sema_error`).
+/// `wrela dump --stage=image`'s own driver (plans/M4.md item B, grown by
+/// item C): `programs` is every module the build closure checked, keyed
+/// by its own dotted module path (a single entry for the no-imports
+/// case). Decision 6's own "exactly one reachable `@image`" rule: zero or
+/// more than one is a named `error[build]` listing every candidate found,
+/// `module.path::fn_name` each, in the same BTree order `programs` itself
+/// is keyed by (item C's own full form — item B's slice only handled the
+/// same-module duplicate, `sema::bodies::check`'s own guard). Exactly one
+/// runs on the M3 evaluator (`eval::interp::eval_image`); once it returns
+/// a sealed `ImageGraph`, item C's own post-seal pass
+/// (`eval::image_checks::check_sealed`) runs before the graph is ever
+/// printed — a graph check failure prints its own `error[build]`
+/// diagnostic in place of the dump, exactly like every other rejection
+/// here. An `EvalError` (a blown quota, `img.dma_pool`'s own fail-closed
+/// gap, an unsealed return, ...) still renders through the identical
+/// `error[comptime]` path every other comptime failure already uses
+/// (`eval::to_sema_error`) — graph checks never run at all in that case,
+/// since there is no sealed graph to check.
 fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
     let candidates: Vec<(&String, &String)> = programs
         .iter()
@@ -98,14 +104,17 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
             let (module, fn_name) = candidates[0];
             let program = &programs[module];
             match eval::interp::eval_image(program, fn_name) {
-                Ok(graph) => print!("{}", eval::image::dump(&program.enums, &graph)),
+                Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
+                    Ok(()) => print!("{}", eval::image::dump(&program.enums, &graph)),
+                    Err(e) => print_sema_error(&e),
+                },
                 Err(e) => print_sema_error(&eval::to_sema_error(e)),
             }
         }
         _ => {
             let names: Vec<String> = candidates
                 .iter()
-                .map(|(module, fn_name)| format!("{module}.{fn_name}"))
+                .map(|(module, fn_name)| format!("{module}::{fn_name}"))
                 .collect();
             println!(
                 "error[build]: more than one `@image` fn reachable in the build closure ({})",

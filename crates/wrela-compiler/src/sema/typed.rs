@@ -39,7 +39,7 @@
 //! literal's un-supplied, defaulted fields are elided the same way
 //! (`TypedStruct::field_defaults` carries the field's own default once).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::types::{self, Type};
 use crate::syntax::ast::{AccessMode, BinOp, Span};
@@ -525,6 +525,17 @@ pub struct TypedProgram {
     /// every checked module, decision 6: exactly one reachable `@image`
     /// in the whole build) to find the fn to evaluate.
     pub image_fn: Option<String>,
+    /// This module's own module-scoped `pool Name` declarations
+    /// (plans/M4.md item C, `image.graph.pools-bound-once`/`seal-fully-bound`):
+    /// `sema::bodies::check`'s own copy of `ModuleCtx::module_pools`, kept
+    /// only so `eval::image_checks`'s post-seal pass can name a pool the
+    /// `@image` fn's own module declared but never bound by `img.pool`/
+    /// `img.dma_pool` before `img.seal()` — the graph itself only ever
+    /// records *bound* pools (`ImageGraph::pools`/`dma_pools`), so an
+    /// unbound one leaves no trace there at all. Not rendered by `dump`
+    /// below — evaluator-only bookkeeping, same reasoning as
+    /// `TypedStruct::fields`/`TypedProgram::enums`.
+    pub declared_pools: BTreeSet<String>,
 }
 
 // --- the `--stage=typed` dump (decision 2) --------------------------------

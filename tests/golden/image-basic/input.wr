@@ -10,9 +10,11 @@ struct NicHw:
 @driver
 pub struct Blk:
     id: u32
+    queue_depth: u32
 
-    init(mut self):
+    init(mut self, queue_depth: u32):
         self.id = 1
+        self.queue_depth = queue_depth
 
     pub fn ping(read self) -> u32:
         return self.id
@@ -20,9 +22,17 @@ pub struct Blk:
 @actor
 pub struct Store:
     count: u32
+    # A driver handle: `Actor[T]`/a real capability type does not resolve
+    # as a type annotation yet (plans/M4.md item C, image.graph.init-args-match's
+    # own ledger note), so this is a plain placeholder id honestly
+    # standing in for it — `img.actor`'s own `disk=disk.handle()` argument
+    # is accepted here through decl-reference substitution, not by
+    # matching this declared type.
+    disk: u32
 
-    init(mut self):
+    init(mut self, disk: u32):
         self.count = 0
+        self.disk = disk
 
     pub fn get(read self) -> u32:
         return self.count
