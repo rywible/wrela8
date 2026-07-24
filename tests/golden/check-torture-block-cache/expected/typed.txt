@@ -346,8 +346,7 @@ Program
           Case
             VariantPattern enum=CacheState variant=Clean ty=CacheState
               Binding name=lba ty=u64
-            Assign
-              Local name=block ty=own[BlockPayloads] DmaBlock
+            Let name=block ty=own[BlockPayloads] DmaBlock
               Take ty=own[BlockPayloads] DmaBlock
                 Field name=block ty=own[BlockPayloads] DmaBlock
                   Local name=self ty=CacheLine
@@ -364,8 +363,7 @@ Program
           Case
             VariantPattern enum=CacheState variant=Dirty ty=CacheState
               Binding name=lba ty=u64
-            Assign
-              Local name=block ty=own[BlockPayloads] DmaBlock
+            Let name=block ty=own[BlockPayloads] DmaBlock
               Take ty=own[BlockPayloads] DmaBlock
                 Field name=block ty=own[BlockPayloads] DmaBlock
                   Local name=self ty=CacheLine

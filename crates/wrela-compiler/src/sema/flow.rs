@@ -1112,7 +1112,21 @@ fn walk_assign<'a>(
     }
 
     if let Expr::Name(_, name) = &a.target {
-        if fctx.lookup_innermost(name).is_none() {
+        // Mirrors `bodies::check_assign`'s own scoping exactly (see its
+        // doc comment): a typed declaration only reuses a same-block
+        // binding (`lookup_innermost`); a plain assignment reuses one
+        // from any scope still open (`lookup_local`), which is how the
+        // arm-merge idiom's name survives to be read after the
+        // construct. `walk_if`/`walk_while`/`walk_for`/`walk_match` push
+        // a scope per branch/body/arm to match, so a name first bound
+        // inside one no longer leaks into `fctx` past it
+        // (err-mwir-if-else-scope-leak).
+        let already_bound = if a.ty.is_some() {
+            fctx.lookup_innermost(name).is_some()
+        } else {
+            fctx.lookup_local(name).is_some()
+        };
+        if !already_bound {
             let ty = match &a.ty {
                 Some(ann) => wctx.mctx.resolve_type(ann, &fctx.local_pools)?,
                 None => bodies::check_expr(&a.value, None, fctx, wctx.mctx)?.ty,
@@ -1332,6 +1346,13 @@ fn walk_block<'a>(
     })
 }
 
+/// Each branch gets its own `fctx` scope (`bodies::scoped`), popped
+/// again before the next branch is walked — mirrors `bodies::check_if`
+/// exactly, so a typed declaration inside one branch never leaks into a
+/// sibling or past the whole `if` in flow's own re-walk of `fctx`
+/// (err-mwir-if-else-scope-leak). `state`'s own per-branch clone already
+/// keeps definite-init merging correct; this only fixes the parallel
+/// name/type map flow keeps for `bodies::check_expr` calls.
 fn walk_if<'a>(
     i: &'a IfStmt,
     state: &StateMap,
@@ -1344,32 +1365,24 @@ fn walk_if<'a>(
 
     let mut st = state.clone();
     walk_expr(&i.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
-    outcomes.push(walk_block(
-        &i.then_branch,
-        &mut st,
-        fctx,
-        wctx,
-        dstack,
-        loop_marker,
-    )?);
+    outcomes.push(bodies::scoped(fctx, |fctx| {
+        walk_block(&i.then_branch, &mut st, fctx, wctx, dstack, loop_marker)
+    })?);
 
     for elif in &i.elifs {
         let mut st = state.clone();
         walk_expr(&elif.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
-        outcomes.push(walk_block(
-            &elif.body,
-            &mut st,
-            fctx,
-            wctx,
-            dstack,
-            loop_marker,
-        )?);
+        outcomes.push(bodies::scoped(fctx, |fctx| {
+            walk_block(&elif.body, &mut st, fctx, wctx, dstack, loop_marker)
+        })?);
     }
 
     match &i.else_branch {
         Some(body) => {
             let mut st = state.clone();
-            outcomes.push(walk_block(body, &mut st, fctx, wctx, dstack, loop_marker)?);
+            outcomes.push(bodies::scoped(fctx, |fctx| {
+                walk_block(body, &mut st, fctx, wctx, dstack, loop_marker)
+            })?);
         }
         None => outcomes.push(fallthrough(state.clone())),
     }
@@ -1399,20 +1412,20 @@ fn walk_match<'a>(
     let mut outcomes = Vec::new();
     for arm in &m.arms {
         let mut st = entry.clone();
-        apply_pattern_move(&m.scrutinee, &arm.pattern, &mut st, fctx, wctx, arm.span)?;
-        bodies::check_pattern(&arm.pattern, &sty, fctx, wctx.mctx)?;
-        seed_pattern_bindings(&arm.pattern, &mut st);
-        if let Some(g) = &arm.guard {
-            walk_expr(g, &mut st, fctx, wctx, dstack, loop_marker)?;
-        }
-        outcomes.push(walk_block(
-            &arm.body,
-            &mut st,
-            fctx,
-            wctx,
-            dstack,
-            loop_marker,
-        )?);
+        // One scope per arm (`bodies::scoped`), covering the pattern's
+        // own bindings too — mirrors `bodies::check_match` exactly, so a
+        // binding from one arm's pattern never leaks into a sibling arm
+        // or past the whole `match`.
+        let outcome = bodies::scoped(fctx, |fctx| {
+            apply_pattern_move(&m.scrutinee, &arm.pattern, &mut st, fctx, wctx, arm.span)?;
+            bodies::check_pattern(&arm.pattern, &sty, fctx, wctx.mctx)?;
+            seed_pattern_bindings(&arm.pattern, &mut st);
+            if let Some(g) = &arm.guard {
+                walk_expr(g, &mut st, fctx, wctx, dstack, loop_marker)?;
+            }
+            walk_block(&arm.body, &mut st, fctx, wctx, dstack, loop_marker)
+        })?;
+        outcomes.push(outcome);
     }
     Ok(merge_outcomes(outcomes))
 }
@@ -1472,19 +1485,28 @@ fn walk_while<'a>(
     let baseline_roots: BTreeSet<String> = state.keys().map(|p| p.root.clone()).collect();
     let mut candidate = state.clone();
     let mut out = fallthrough(state.clone());
-    for _ in 0..LOOP_FIXED_POINT_CAP {
-        let mut st = candidate.clone();
-        prune_loop_locals(&mut st, &baseline_roots);
-        walk_expr(&w.cond, &mut st, fctx, wctx, dstack, body_marker)?;
-        let o = walk_block(&w.body, &mut st, fctx, wctx, dstack, body_marker)?;
-        let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
-        let converged = next == candidate;
-        candidate = next;
-        out = o;
-        if converged {
-            break;
+    // One `fctx` scope for the whole fixed-point re-walk (mirrors
+    // `bodies::check_while`'s single push/pop around the body): a
+    // typed declaration inside the body is re-seen on every fixed-point
+    // pass exactly as before (this only stops it from surviving past the
+    // loop once the fixed point is reached).
+    let fixed_point = bodies::scoped(fctx, |fctx| {
+        for _ in 0..LOOP_FIXED_POINT_CAP {
+            let mut st = candidate.clone();
+            prune_loop_locals(&mut st, &baseline_roots);
+            walk_expr(&w.cond, &mut st, fctx, wctx, dstack, body_marker)?;
+            let o = walk_block(&w.body, &mut st, fctx, wctx, dstack, body_marker)?;
+            let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
+            let converged = next == candidate;
+            candidate = next;
+            out = o;
+            if converged {
+                break;
+            }
         }
-    }
+        Ok(())
+    });
+    fixed_point?;
     let mut exit_states = vec![state.clone()];
     if let Some(s) = out.fallthrough {
         exit_states.push(s);
@@ -1533,7 +1555,6 @@ fn walk_for<'a>(
 ) -> Result<Outcome, SemaError> {
     let mut entry = state.clone();
     let elem_ty = for_elem_type(f, fctx, wctx)?;
-    fctx.insert_local(f.name.clone(), elem_ty);
 
     // The iterable is evaluated exactly once (02-language.md §8.1),
     // before the loop; `for take x in take arr` consumes the array
@@ -1556,19 +1577,29 @@ fn walk_for<'a>(
     let baseline_roots: BTreeSet<String> = entry.keys().map(|p| p.root.clone()).collect();
     let mut candidate = entry.clone();
     let mut out = fallthrough(entry.clone());
-    for _ in 0..LOOP_FIXED_POINT_CAP {
-        let mut st = candidate.clone();
-        prune_loop_locals(&mut st, &baseline_roots);
-        st.insert(StoragePath::root(f.name.clone()), PathState::Init);
-        let o = walk_block(&f.body, &mut st, fctx, wctx, dstack, body_marker)?;
-        let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
-        let converged = next == candidate;
-        candidate = next;
-        out = o;
-        if converged {
-            break;
+    // The loop binding and the fixed-point re-walk of the body share one
+    // `fctx` scope (mirrors `bodies::check_for`'s single push/pop around
+    // both): a typed declaration inside the body is re-seen on every
+    // fixed-point pass exactly as before, but neither it nor the loop
+    // binding itself survives past the loop.
+    let fixed_point = bodies::scoped(fctx, |fctx| {
+        fctx.insert_local(f.name.clone(), elem_ty);
+        for _ in 0..LOOP_FIXED_POINT_CAP {
+            let mut st = candidate.clone();
+            prune_loop_locals(&mut st, &baseline_roots);
+            st.insert(StoragePath::root(f.name.clone()), PathState::Init);
+            let o = walk_block(&f.body, &mut st, fctx, wctx, dstack, body_marker)?;
+            let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
+            let converged = next == candidate;
+            candidate = next;
+            out = o;
+            if converged {
+                break;
+            }
         }
-    }
+        Ok(())
+    });
+    fixed_point?;
 
     let mut exit_states = vec![entry.clone()];
     if let Some(s) = out.fallthrough {

@@ -1,1 +1,1 @@
-error[move]: `x` is a `read` parameter; it cannot be taken at 15:9
+error[move]: `x` is a `read` parameter; it cannot be taken at 16:9

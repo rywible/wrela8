@@ -1,2 +1,1 @@
-Module path=examples.err_mwir_if_else_scope_leak
-  Fn conditional_init(cond: read bool) -> u64
+error[name]: unknown name `value` at 54:12

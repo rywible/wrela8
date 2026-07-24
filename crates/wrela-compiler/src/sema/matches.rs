@@ -228,22 +228,26 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sem
     }
 }
 
+/// One `fctx` scope per branch (`bodies::scoped`) — mirrors
+/// `bodies::check_if` exactly, so this pass's own re-walk keeps a typed
+/// declaration inside one branch from leaking into a sibling or past the
+/// whole `if` (err-mwir-if-else-scope-leak).
 fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
     walk_expr(&i.cond, fctx, mctx)?;
-    check_stmts(&i.then_branch, fctx, mctx)?;
+    bodies::scoped(fctx, |fctx| check_stmts(&i.then_branch, fctx, mctx))?;
     for elif in &i.elifs {
         walk_expr(&elif.cond, fctx, mctx)?;
-        check_stmts(&elif.body, fctx, mctx)?;
+        bodies::scoped(fctx, |fctx| check_stmts(&elif.body, fctx, mctx))?;
     }
     if let Some(b) = &i.else_branch {
-        check_stmts(b, fctx, mctx)?;
+        bodies::scoped(fctx, |fctx| check_stmts(b, fctx, mctx))?;
     }
     Ok(())
 }
 
 fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
     walk_expr(&w.cond, fctx, mctx)?;
-    check_stmts(&w.body, fctx, mctx)
+    bodies::scoped(fctx, |fctx| check_stmts(&w.body, fctx, mctx))
 }
 
 /// Mirrors `bodies::check_for`'s own elem-type derivation (range vs fixed
@@ -273,14 +277,27 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), Sema
             other_ty => other_ty, // unreachable given bodies already validated `for`.
         },
     };
-    fctx.insert_local(f.name.clone(), elem_ty);
-    check_stmts(&f.body, fctx, mctx)
+    // Loop binding + body share one scope, same as `bodies::check_for`.
+    bodies::scoped(fctx, |fctx| {
+        fctx.insert_local(f.name.clone(), elem_ty);
+        check_stmts(&f.body, fctx, mctx)
+    })
 }
 
+/// Mirrors `bodies::check_assign`'s own scoping exactly (see its doc
+/// comment): a typed declaration only reuses a same-block binding
+/// (`lookup_innermost`); a plain assignment reuses one from any scope
+/// still open (`lookup_local`), the arm-merge idiom (02-language.md
+/// §8.1).
 fn check_assign(a: &AssignStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaError> {
     walk_expr(&a.value, fctx, mctx)?;
     if let Expr::Name(_, name) = &a.target {
-        if fctx.lookup_innermost(name).is_some() {
+        let already_bound = if a.ty.is_some() {
+            fctx.lookup_innermost(name).is_some()
+        } else {
+            fctx.lookup_local(name).is_some()
+        };
+        if already_bound {
             return Ok(()); // reassignment/compound-assign: type unchanged.
         }
         // A fresh local (bodies already validated this can only be a
@@ -810,13 +827,23 @@ fn check_match_stmt(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result
     let sty = bodies::check_expr(&m.scrutinee, None, fctx, mctx)?.ty;
     let mut covered: Vec<RPat> = Vec::new();
     for arm in &m.arms {
-        // Bind (and re-validate, harmlessly) the pattern first, exactly
-        // like the bodies pass's own `check_match` — this also means any
-        // pattern this pass cannot itself reason about safely (a generic
-        // instantiation) has already failed closed via
-        // `bodies::check_pattern` before `flatten_pattern`/`shape_of`
-        // below ever look at it.
-        bodies::check_pattern(&arm.pattern, &sty, fctx, mctx)?;
+        // One `fctx` scope per arm (`bodies::scoped`), covering the
+        // pattern's own bindings too — mirrors `bodies::check_match`
+        // exactly, so a binding from one arm's pattern never leaks into
+        // a sibling arm or past the whole `match`.
+        bodies::scoped(fctx, |fctx| {
+            // Bind (and re-validate, harmlessly) the pattern first,
+            // exactly like the bodies pass's own `check_match` — this
+            // also means any pattern this pass cannot itself reason
+            // about safely (a generic instantiation) has already failed
+            // closed via `bodies::check_pattern` before
+            // `flatten_pattern`/`shape_of` below ever look at it.
+            bodies::check_pattern(&arm.pattern, &sty, fctx, mctx)?;
+            if let Some(guard) = &arm.guard {
+                walk_expr(guard, fctx, mctx)?;
+            }
+            check_stmts(&arm.body, fctx, mctx)
+        })?;
         check_or_consistency(&arm.pattern, &sty, mctx)?;
         if arm.guard.is_none() {
             for (span, row) in arm_rows(&arm.pattern, &sty, mctx) {
@@ -826,10 +853,6 @@ fn check_match_stmt(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result
                 covered.push(row);
             }
         }
-        if let Some(guard) = &arm.guard {
-            walk_expr(guard, fctx, mctx)?;
-        }
-        check_stmts(&arm.body, fctx, mctx)?;
     }
     if let Some(witness) = first_uncovered(&sty, &covered, mctx) {
         return Err(match_error(

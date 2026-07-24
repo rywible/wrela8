@@ -1,0 +1,17 @@
+module examples.check_if_else_scoping
+
+# plans/M2.md item E/F (ledger `sema.init.definite`): sibling branches are
+# independent scopes. Each arm of this `if`/`else` declares its own
+# `value: u64` — a typed declaration, not a reassignment — and each only
+# ever reads its own. `err-mwir-if-else-scope-leak` is the same shape
+# with `return value` moved *outside* the construct instead (rejected);
+# this is its accepted sibling, pinning that reusing a name across
+# sibling branches this way is fine as long as neither branch's own
+# binding needs to survive past it.
+pub fn conditional_use(cond: bool) -> u64:
+    if cond:
+        value: u64 = 1
+        return value
+    else:
+        value: u64 = 2
+        return value
