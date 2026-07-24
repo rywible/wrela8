@@ -1063,19 +1063,24 @@ mod tests {
     /// method already uses) stand in for `Store.bump`-shaped `pub fn`s.
     /// The guest's own entry: writes `10`/`20`/`30` in turn into one
     /// shared arg-scratch word, calls `rt_enqueue` three times (method 0,
-    /// method 1, method 0 again — the third over `capacity=2`), then
-    /// calls `rt_select_and_run` three times, and finally folds every
+    /// method 1, method 0 again — the third over `capacity=2`; every
+    /// admission names a stand-in **waker record**, the park-and-resume
+    /// delivery target), then calls `rt_select_and_run` three times
+    /// (reading each delivered reply from the waker record's own
+    /// `OFF_TURN_REPLY` slot — the placeholder-era `last_result` side
+    /// channel no longer exists), and finally folds every
     /// expected-vs-actual comparison into one exit code via
     /// `check_eq_into` (branch-free) before the trapping exit store.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn actor_runtime_enqueue_select_fifo_and_ring_full_over_hvf() {
+        use wrela_compiler::codegen::OFF_TURN_REPLY;
         use wrela_compiler::encode;
         use wrela_compiler::layout::{ActorAddrs, build_rt_enqueue, build_rt_select_and_run};
         use wrela_machine::layout as machine_layout;
 
         let capacity: u64 = 2;
-        let slot_size: u64 = 16; // 8-byte method tag + one 8-byte scalar arg
+        let slot_size: u64 = 24; // method tag + waker + one 8-byte scalar arg
         let state_size: u64 = 8;
         let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
 
@@ -1093,7 +1098,7 @@ mod tests {
         fn build_entry(
             sp_top: u64,
             arg_scratch_addr: u64,
-            last_result_addr: u64,
+            waker_addr: u64,
             enqueue_word_idx: usize,
             select_word_idx: usize,
         ) -> Vec<u32> {
@@ -1108,6 +1113,7 @@ mod tests {
                 w.push(encode::enc_movz(0, method_idx, 0, true));
                 w.extend(load_imm_words(1, arg_scratch_addr));
                 w.push(encode::enc_movz(2, 1, 0, true));
+                w.extend(load_imm_words(3, waker_addr));
                 let this = w.len();
                 let delta = (enqueue_word_idx as i64 - this as i64) * 4;
                 w.push(encode::enc_bl(delta as i32));
@@ -1122,21 +1128,21 @@ mod tests {
                 let delta = (select_word_idx as i64 - this as i64) * 4;
                 w.push(encode::enc_bl(delta as i32));
                 w.push(encode::enc_mov_reg(save_ran_to, 0, true));
-                w.extend(load_imm_words(9, last_result_addr));
+                w.extend(load_imm_words(9, waker_addr + OFF_TURN_REPLY));
                 w.push(encode::enc_ldr_x_imm(save_result_to, 9, 0));
             };
-            select_call(&mut w, 22, 23); // x22 = ran1, x23 = result1
-            select_call(&mut w, 24, 25); // x24 = ran2, x25 = result2
-            select_call(&mut w, 26, 27); // x26 = ran3 (idle expected); result unread
+            select_call(&mut w, 22, 23); // x22 = ran1, x23 = delivered reply 1
+            select_call(&mut w, 24, 25); // x24 = ran2, x25 = delivered reply 2
+            select_call(&mut w, 26, 27); // x26 = ran3 (idle expected); reply unread
 
             w.push(encode::enc_movz(9, 0, 0, true)); // x9 = fail accumulator
             w.extend(check_eq_into(9, 10, 19, 0, 0)); // outcome0 == 0 (admitted)
             w.extend(check_eq_into(9, 10, 20, 0, 1)); // outcome1 == 0 (admitted)
             w.extend(check_eq_into(9, 10, 21, 1, 2)); // outcome2 == 1 (rejected: ring full)
             w.extend(check_eq_into(9, 10, 22, 1, 3)); // ran1 == 1
-            w.extend(check_eq_into(9, 10, 23, 11, 4)); // result1 == 11 (method 0, arg 10)
+            w.extend(check_eq_into(9, 10, 23, 11, 4)); // reply1 == 11 (method 0, arg 10), delivered to the waker
             w.extend(check_eq_into(9, 10, 24, 1, 5)); // ran2 == 1
-            w.extend(check_eq_into(9, 10, 25, 22, 6)); // result2 == 22 (method 1, arg 20) — FIFO order
+            w.extend(check_eq_into(9, 10, 25, 22, 6)); // reply2 == 22 (method 1, arg 20) — FIFO order
             w.extend(check_eq_into(9, 10, 26, 0, 7)); // ran3 == 0 (mailbox now empty)
 
             w.extend(load_imm_words(11, wrela_machine::mmio::EXIT_MMIO_ADDR));
@@ -1154,12 +1160,17 @@ mod tests {
             head: 0,
             tail: 0,
             count: 0,
-            last_result: 0,
-            busy: 0,
+            turn: 0,
         };
         let enqueue_len = build_rt_enqueue(&placeholder, capacity, slot_size, 0).len();
-        let select_len =
-            build_rt_select_and_run(&placeholder, capacity, slot_size, &[0, 0], 0).len();
+        let select_len = build_rt_select_and_run(
+            &placeholder,
+            capacity,
+            slot_size,
+            &[(0, false), (0, false)],
+            0,
+        )
+        .len();
 
         let method0_word_idx = entry_len;
         let method1_word_idx = method0_word_idx + method0.len();
@@ -1174,16 +1185,17 @@ mod tests {
             head: rtdata_base + state_size + capacity * slot_size,
             tail: rtdata_base + state_size + capacity * slot_size + 8,
             count: rtdata_base + state_size + capacity * slot_size + 16,
-            last_result: rtdata_base + state_size + capacity * slot_size + 24,
-            busy: rtdata_base + state_size + capacity * slot_size + 32,
+            turn: rtdata_base + state_size + capacity * slot_size + 24,
         };
-        let arg_scratch_addr = addrs.busy + 8; // one more scratch word past the ring's own bookkeeping.
+        let turn_area_end = addrs.turn + wrela_compiler::codegen::TURN_RECORD_SIZE;
+        let waker_addr = turn_area_end; // a detached stand-in waker record
+        let arg_scratch_addr = waker_addr + wrela_compiler::codegen::TURN_RECORD_SIZE;
         let rtdata_bytes = (arg_scratch_addr + 8 - rtdata_base) as usize;
 
         let entry = build_entry(
             sp_top,
             arg_scratch_addr,
-            addrs.last_result,
+            waker_addr,
             enqueue_word_idx,
             select_word_idx,
         );
@@ -1197,7 +1209,7 @@ mod tests {
             &addrs,
             capacity,
             slot_size,
-            &[method0_word_idx, method1_word_idx],
+            &[(method0_word_idx, false), (method1_word_idx, false)],
             select_word_idx,
         );
 
@@ -1217,7 +1229,7 @@ mod tests {
         assert_eq!(
             outcome.exit_code, 0,
             "every check bit must be 0 (a nonzero bit names which check failed, decoded: \
-             1=admit#1 2=admit#2 4=ring-full 8=ran#1 16=result#1 32=ran#2 64=result#2/FIFO 128=idle#3)"
+             1=admit#1 2=admit#2 4=ring-full 8=ran#1 16=reply#1 32=ran#2 64=reply#2/FIFO 128=idle#3)"
         );
     }
 
@@ -1242,7 +1254,7 @@ mod tests {
 
         const ABANDON_EXIT_CODE: u64 = 0x7;
         let capacity: u64 = 1;
-        let slot_size: u64 = 8; // no-arg method: tag only
+        let slot_size: u64 = 16; // no-arg method: tag + waker only
         let state_size: u64 = 8;
         let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
 
@@ -1261,10 +1273,12 @@ mod tests {
             w.extend(load_imm_words(9, sp_top));
             w.push(encode::enc_add_imm(31, 9, 0, true));
 
-            // enqueue(method_idx=0, args_ptr=arg_scratch, nargs=0)
+            // enqueue(method_idx=0, args_ptr=arg_scratch, nargs=0,
+            // waker=0 — a one-way message; nothing awaits it)
             w.extend(load_imm_words(0, 0));
             w.extend(load_imm_words(1, arg_scratch_addr));
             w.extend(load_imm_words(2, 0));
+            w.extend(load_imm_words(3, 0));
             let this = w.len();
             let delta = (enqueue_word_idx as i64 - this as i64) * 4;
             w.push(encode::enc_bl(delta as i32));
@@ -1290,11 +1304,11 @@ mod tests {
             head: 0,
             tail: 0,
             count: 0,
-            last_result: 0,
-            busy: 0,
+            turn: 0,
         };
         let enqueue_len = build_rt_enqueue(&placeholder, capacity, slot_size, 0).len();
-        let select_len = build_rt_select_and_run(&placeholder, capacity, slot_size, &[0], 0).len();
+        let select_len =
+            build_rt_select_and_run(&placeholder, capacity, slot_size, &[(0, false)], 0).len();
 
         let method0_word_idx = entry_len;
         let enqueue_word_idx = method0_word_idx + aborting_method.len();
@@ -1308,10 +1322,9 @@ mod tests {
             head: rtdata_base + state_size + capacity * slot_size,
             tail: rtdata_base + state_size + capacity * slot_size + 8,
             count: rtdata_base + state_size + capacity * slot_size + 16,
-            last_result: rtdata_base + state_size + capacity * slot_size + 24,
-            busy: rtdata_base + state_size + capacity * slot_size + 32,
+            turn: rtdata_base + state_size + capacity * slot_size + 24,
         };
-        let arg_scratch_addr = addrs.busy + 8;
+        let arg_scratch_addr = addrs.turn + wrela_compiler::codegen::TURN_RECORD_SIZE;
         let rtdata_bytes = (arg_scratch_addr + 8 - rtdata_base) as usize;
 
         let entry = build_entry(sp_top, arg_scratch_addr, enqueue_word_idx, select_word_idx);
@@ -1321,7 +1334,7 @@ mod tests {
             &addrs,
             capacity,
             slot_size,
-            &[method0_word_idx],
+            &[(method0_word_idx, false)],
             select_word_idx,
         );
 
@@ -1342,5 +1355,447 @@ mod tests {
             "the aborting method's own exit code must win — the guest must never resume \
              `rt_select_and_run` (which would instead halt with the unreachable 0xBAD marker)"
         );
+    }
+
+    // =======================================================================
+    // Park-and-resume conformance (the M6 turn-suspension mandate): real
+    // `.wr` sources compiled through the identical pipeline
+    // `bin/wrela.rs::test_cmd` runs (sema -> image graph -> mwir + FlowWir
+    // -> codegen -> `layout_test_image`), booted for real on
+    // Hypervisor.framework, transcript asserted. These are the semantic
+    // witnesses 04-compiler.md §2 demands structurally: awaiting lets ALL
+    // ready actors run; one turn owns an actor until completion; FIFO per
+    // mailbox; replies land in the awaiting turn's own reply slot; the
+    // root test turn parks/resumes through the same machinery; and
+    // nothing-ready + root-incomplete aborts with the named deadlock
+    // diagnostic.
+
+    /// Compiles `src` exactly the way `test_cmd` does and returns the
+    /// laid-out image + the report text `boot_image` needs. `patch_rtdata`
+    /// lets the deadlock test corrupt the (normally all-zero) rtdata
+    /// bytes before boot — a hand-built table state, disclosed as such.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn compile_test_image(src: &str) -> (wrela_compiler::layout::ImageLayout, String) {
+        use std::collections::{BTreeMap, BTreeSet};
+        use wrela_compiler::sema::typed::TestKind;
+        use wrela_compiler::sema::types::{Type, TypeArg};
+        use wrela_compiler::{codegen, layout};
+
+        let tokens = wrela_compiler::syntax::lexer::lex(src).expect("conformance source must lex");
+        let module = wrela_compiler::syntax::parser::parse(tokens).expect("must parse");
+        let program =
+            wrela_compiler::sema::check_typed(&module, "<conformance>").expect("must check");
+        let runtime_tests: Vec<String> = program
+            .tests
+            .iter()
+            .filter(|t| t.kind == TestKind::Runtime)
+            .map(|t| t.name.clone())
+            .collect();
+        assert!(
+            !runtime_tests.is_empty(),
+            "a conformance source declares runtime tests"
+        );
+
+        let mut modules = BTreeMap::new();
+        modules.insert(module.path.join("."), module.clone());
+        let layout_ctx = layout::merge_layout_ctx(&modules).expect("layout ctx");
+        let mwir_program = wrela_compiler::lower::lower_program(&program).expect("sync lower");
+        let flow_program =
+            wrela_compiler::flowwir_lower::lower_program(&program).expect("flowwir lower");
+        let graph = match &program.image_fn {
+            Some(fn_name) => {
+                wrela_compiler::eval::interp::eval_image(&program, fn_name).expect("image graph")
+            }
+            None => Default::default(),
+        };
+        let method_index =
+            layout::actor_method_index_tables(&modules, &layout_ctx).expect("method index");
+        let codegen_program = codegen::codegen_program_with_async(
+            &mwir_program,
+            &flow_program,
+            &layout_ctx,
+            &method_index,
+        )
+        .expect("codegen");
+        let async_frames =
+            codegen::async_frame_sizes(&flow_program, &layout_ctx).expect("async frames");
+        let async_tests: BTreeSet<String> = runtime_tests
+            .iter()
+            .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
+            .cloned()
+            .collect();
+        // The unique-instance resolution `bin/wrela.rs::resolve_runtime_test_args`
+        // performs, at the subset these conformance sources need (every
+        // param is `Actor[T]` with exactly one declared `T` instance).
+        let mut test_args: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        for name in &runtime_tests {
+            let f = &program.fns[name];
+            let mut args = Vec::new();
+            for p in &f.params {
+                let Type::Named(_, targs) = &p.ty else {
+                    panic!("Actor[T] param")
+                };
+                let Some(TypeArg::Type(inner)) = targs.first() else {
+                    panic!("Actor[T] param")
+                };
+                let target = wrela_compiler::sema::types::render_type(inner);
+                let idx = graph
+                    .actors
+                    .iter()
+                    .position(|a| wrela_compiler::sema::types::render_type(&a.actor_type) == target)
+                    .expect("unique declared instance");
+                args.push(idx as u64);
+            }
+            test_args.insert(name.clone(), args);
+        }
+        let boot = layout::BootCtx {
+            graph: &graph,
+            modules: &modules,
+            layout_ctx: &layout_ctx,
+            async_frames: &async_frames,
+        };
+        let image = layout::layout_test_image(
+            &codegen_program,
+            &runtime_tests,
+            &async_tests,
+            Some(boot),
+            &test_args,
+        )
+        .expect("layout_test_image");
+
+        let mut report = format!(
+            "Machine revision={}\nInput path=<conformance> digest=deadbeef\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        for s in &image.sections {
+            report.push_str(&format!(
+                "Section name={} base={:#x} size={}\n",
+                s.name, s.base, s.size
+            ));
+        }
+        report.push_str(&format!("Entry base={:#x}\n", image.entry));
+        (image, report)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn boot_blob(blob: &[u8], report: &str, tag: &str) -> BootOutcome {
+        let dir = std::env::temp_dir().join(format!("wrela-vmm-conf-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let img_path = dir.join("test.img");
+        let report_path = dir.join("test.report.txt");
+        std::fs::write(&img_path, blob).expect("write img");
+        std::fs::write(&report_path, report).expect("write report");
+        let outcome = boot_image(&report_path, &img_path).expect("boot");
+        let _ = std::fs::remove_dir_all(&dir);
+        outcome
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn boot_source(src: &str, tag: &str) -> BootOutcome {
+        let (image, report) = compile_test_image(src);
+        boot_blob(&image.blob, &report, tag)
+    }
+
+    /// (a) The two-hop await chain: root -> Outer -> Inner. The root
+    /// turn parks awaiting `Outer.relay`; Outer's turn parks awaiting
+    /// `Inner.get` (a nested suspension — Outer's own waker chain is
+    /// root's area, Inner's message carries Outer's); Inner's sync turn
+    /// completes; Outer resumes and completes; root resumes and asserts.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn park_and_resume_two_hop_await_chain_over_hvf() {
+        let src = r#"module conformance.chain
+
+@actor
+pub struct Inner:
+    value: u64
+
+    init(mut self):
+        self.value = 41
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Outer:
+    inner: Actor[Inner]
+
+    pub async fn relay(read self) -> u64:
+        v = await self.inner.get()
+        match v:
+            case .Ok(n):
+                return n + 1
+            case .Err(_):
+                return 0
+
+@test(runtime)
+async fn chain(outer: Actor[Outer]):
+    v = await outer.relay()
+    match v:
+        case .Ok(n):
+            assert n == 42, "expected 42 through the two-hop chain"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="chain", target=Target.wrela_machine_v1)
+    inner = img.actor(Inner, mailbox=4)
+    outer = img.actor(Outer, mailbox=4, inner=inner)
+    img.supervise(children=[inner, outer], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
+"#;
+        let outcome = boot_source(src, "chain");
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.transcript),
+            "test chain: ok\n1 passed, 0 failed\n"
+        );
+        assert_eq!(outcome.exit_code, 0);
+    }
+
+    /// (b) FIFO + non-reentrancy under suspension (decision 4's flip
+    /// witness shape — item F pins the golden; this proves it now): two
+    /// one-way messages queue to Worker while its first turn is
+    /// busy-SUSPENDED awaiting Stamper; the second turn starts only
+    /// after the first fully completes. The log encodings prove
+    /// completion order: Worker's own log writes happen *after* each
+    /// turn's await resumes, so `job(1)`'s write preceding `job(2)`'s —
+    /// and Stamper's log seeing 1 before 2 — pins turn-at-a-time FIFO.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn park_and_resume_fifo_second_message_waits_for_the_suspended_turn_over_hvf() {
+        let src = r#"module conformance.fifo
+
+@actor
+pub struct Stamper:
+    log: u64
+
+    pub fn stamp(mut self, v: u64) -> u64:
+        self.log = self.log * 10 + v
+        return v
+
+@actor
+pub struct Worker:
+    stamps: Actor[Stamper]
+    log: u64
+
+    pub async fn job(mut self, v: u64):
+        r = await self.stamps.stamp(v=v)
+        match r:
+            case .Ok(n):
+                self.log = self.log * 10 + n
+            case .Err(_):
+                pass
+
+    pub fn log_value(read self) -> u64:
+        return self.log
+
+@test(runtime)
+async fn fifo(worker: Actor[Worker]):
+    r1 = send worker.job(v=1)
+    match r1:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "send 1 rejected"
+    r2 = send worker.job(v=2)
+    match r2:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "send 2 rejected"
+    wl = await worker.log_value()
+    match wl:
+        case .Ok(n):
+            assert n == 12, "worker turns must complete in FIFO admission order"
+        case .Err(_):
+            assert false, "log_value rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="fifo", target=Target.wrela_machine_v1)
+    stamps = img.actor(Stamper, mailbox=4)
+    worker = img.actor(Worker, mailbox=4, stamps=stamps)
+    img.supervise(children=[stamps, worker], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
+"#;
+        let outcome = boot_source(src, "fifo");
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.transcript),
+            "test fifo: ok\n1 passed, 0 failed\n"
+        );
+        assert_eq!(outcome.exit_code, 0);
+    }
+
+    /// (c) Interleaving — the property the deleted nested-drain
+    /// placeholder faked: while ChainActor's turn is parked awaiting the
+    /// Log, a `send`-queued turn on Third RUNS (scheduler-mediated,
+    /// 04 §2's "awaiting a dependency lets other actors run"), proven by
+    /// its stamp (99) landing in the Log BETWEEN the chain's own two
+    /// stamps (10, then 20): final log = ((10)*100+99)*100+20 = 109920.
+    /// Under the old synchronous drain, Third's turn could never run
+    /// during the chain's suspension, and the 99 could not interleave.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn park_and_resume_interleaves_a_third_actor_while_suspended_over_hvf() {
+        let src = r#"module conformance.interleave
+
+@actor
+pub struct Log:
+    log: u64
+
+    pub fn mark(mut self, v: u64) -> u64:
+        self.log = self.log * 100 + v
+        return v
+
+    pub fn value(read self) -> u64:
+        return self.log
+
+@actor
+pub struct ChainActor:
+    log: Actor[Log]
+
+    pub async fn chain(read self) -> u64:
+        a = await self.log.mark(v=10)
+        match a:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                return 0
+        b = await self.log.mark(v=20)
+        match b:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0
+
+@actor
+pub struct Third:
+    log: Actor[Log]
+
+    pub async fn poke(read self):
+        r = await self.log.mark(v=99)
+        match r:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+
+@test(runtime)
+async fn interleave(chain: Actor[ChainActor], third: Actor[Third], log: Actor[Log]):
+    s = send third.poke()
+    match s:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "send rejected"
+    r = await chain.chain()
+    match r:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "chain rejected"
+    v = await log.value()
+    match v:
+        case .Ok(n):
+            assert n == 109920, "the third actor's stamp must interleave between the chain's two"
+        case .Err(_):
+            assert false, "value rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="interleave", target=Target.wrela_machine_v1)
+    log = img.actor(Log, mailbox=8)
+    chain = img.actor(ChainActor, mailbox=4, log=log)
+    third = img.actor(Third, mailbox=4, log=log)
+    img.supervise(children=[log, chain, third], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
+"#;
+        let outcome = boot_source(src, "interleave");
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.transcript),
+            "test interleave: ok\n1 passed, 0 failed\n"
+        );
+        assert_eq!(outcome.exit_code, 0);
+    }
+
+    /// (d) The deadlock diagnostic. NOT constructible from source at
+    /// M6's surface (the report records why: `@image` wiring is the only
+    /// way to hand out `Actor[T]` handles, its arguments are evaluated
+    /// in declaration order with no post-hoc rebinding, so the handle
+    /// graph is acyclic and every await chain bottoms out; messages
+    /// cannot carry handles; groups fail closed until item F) — so the
+    /// diagnostic is pinned via a hand-built table state, exactly as the
+    /// mandate's fallback prescribes: a REAL compiled image (root awaits
+    /// Stuck.nudge) whose rtdata is patched pre-boot to mark Stuck's
+    /// turn record busy+suspended with no reply ever coming. The root's
+    /// message queues behind the phantom parked turn; nothing is ever
+    /// ready; the driver prints the named line and the image exits
+    /// nonzero.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn deadlock_diagnostic_prints_the_named_line_and_exits_nonzero_over_hvf() {
+        use wrela_compiler::codegen::{OFF_TURN_BUSY, OFF_TURN_SUSPENDED};
+        use wrela_compiler::layout::{DEADLOCK_MSG, place_runtime_tables};
+        use wrela_machine::layout as machine_layout;
+
+        let src = r#"module conformance.deadlock
+
+@actor
+pub struct Stuck:
+    value: u64
+
+    pub fn nudge(read self) -> u64:
+        return self.value
+
+@test(runtime)
+async fn stuck(target: Actor[Stuck]):
+    v = await target.nudge()
+    match v:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="deadlock", target=Target.wrela_machine_v1)
+    s = img.actor(Stuck, mailbox=4)
+    img.supervise(children=[s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
+"#;
+        let (image, report) = compile_test_image(src);
+        let tables = image.runtime.as_ref().expect("actor image has tables");
+        let rtdata = image
+            .sections
+            .iter()
+            .find(|s| s.name == "rtdata")
+            .expect("rtdata section");
+        let placement = place_runtime_tables(rtdata.base, tables);
+        let stuck = &placement.actors[0];
+        let mut blob = image.blob.clone();
+        let patch = |blob: &mut Vec<u8>, addr: u64, v: u64| {
+            let off = (addr - machine_layout::IMAGE_BASE) as usize;
+            blob[off..off + 8].copy_from_slice(&v.to_le_bytes());
+        };
+        // The hand-built state: Stuck's one turn is parked forever (busy
+        // + suspended, resume_ready never set — as if awaiting a reply
+        // that cannot come). boot_init only zero-fills actor STATE
+        // slots, so the patched record survives boot untouched.
+        patch(&mut blob, stuck.turn + OFF_TURN_BUSY, 1);
+        patch(&mut blob, stuck.turn + OFF_TURN_SUSPENDED, 1);
+
+        let outcome = boot_blob(&blob, &report, "deadlock");
+        let transcript = String::from_utf8_lossy(&outcome.transcript).into_owned();
+        assert_eq!(
+            transcript,
+            format!("test stuck: FAILED {DEADLOCK_MSG}\n0 passed, 1 failed\n"),
+            "the named deadlock line, on the failing root turn's own test line"
+        );
+        assert_eq!(outcome.exit_code, 1, "fail closed: the image exits nonzero");
     }
 }

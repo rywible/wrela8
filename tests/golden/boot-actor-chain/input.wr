@@ -1,0 +1,52 @@
+module examples.boot_actor_chain
+
+# The two-hop await chain (park-and-resume's own flagship shape, pinned
+# as a transcript golden): the root test turn parks awaiting
+# `Outer.relay`; Outer's turn parks awaiting `Inner.get` — a nested
+# suspension, each turn carrying its own waker (root's area in Outer's
+# message, Outer's area in Inner's) — Inner's sync turn completes as one
+# unsuspendable turn, Outer resumes at its saved state with the reply in
+# its own reply slot and completes, and the root resumes the same way.
+# Every hop goes through the one real scheduler (`rt_select_and_run`/
+# `rt_run_one` + the entry driver's root loop): no turn ever nests on
+# another's native call stack (04-compiler.md §2).
+
+@actor
+pub struct Inner:
+    value: u64
+
+    init(mut self):
+        self.value = 41
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Outer:
+    inner: Actor[Inner]
+
+    pub async fn relay(read self) -> u64:
+        v = await self.inner.get()
+        match v:
+            case .Ok(n):
+                return n + 1
+            case .Err(_):
+                return 0
+
+@test(runtime)
+async fn chain(outer: Actor[Outer]):
+    v = await outer.relay()
+    match v:
+        case .Ok(n):
+            assert n == 42, "expected 42 through the two-hop chain"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-actor-chain", target=Target.wrela_machine_v1)
+    inner = img.actor(Inner, mailbox=4)
+    outer = img.actor(Outer, mailbox=4, inner=inner)
+    img.supervise(children=[inner, outer], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

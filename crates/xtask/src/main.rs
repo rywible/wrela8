@@ -2387,7 +2387,13 @@ fn attempt_layout(
     // `mailbox=` capacity, a matching `@image`, ...), so `None` is exactly
     // as scoped as this lane already was pre-item-D; a real actor-bearing
     // fuzz case is named, future work, not silently claimed here.
-    match layout::layout_test_image(codegen_program, &runtime_tests, None, &BTreeMap::new()) {
+    match layout::layout_test_image(
+        codegen_program,
+        &runtime_tests,
+        &std::collections::BTreeSet::new(),
+        None,
+        &BTreeMap::new(),
+    ) {
         Ok(l) => Ok(LayoutOutcome::Built {
             blob: l.blob,
             entry: l.entry,
@@ -3536,9 +3542,14 @@ fn build_runtime_test_image(
     // plans/M6.md item D: `None` — this harness's own case list declares
     // no actor yet; a real actor-bearing determinism case is named,
     // future work (`layout::BootCtx`'s own doc comment).
-    let image_layout =
-        layout::layout_test_image(&codegen_program, test_names, None, &BTreeMap::new())
-            .map_err(|e| e.message)?;
+    let image_layout = layout::layout_test_image(
+        &codegen_program,
+        test_names,
+        &std::collections::BTreeSet::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .map_err(|e| e.message)?;
     let source_digest = report::sha256_hex(source.as_bytes());
     let mut report_text = format!(
         "Machine revision={}\nInput path={path} digest={source_digest}\n",
@@ -4063,9 +4074,14 @@ fn profile() -> Result<(), String> {
     // plans/M6.md item D: `None` — `bench guest` always times `boot-hello`
     // (no actors); a real actor-bearing guest bench case is named, future
     // work.
-    let image_layout =
-        layout::layout_test_image(&codegen_program, &runtime_names, None, &BTreeMap::new())
-            .map_err(|e| e.message)?;
+    let image_layout = layout::layout_test_image(
+        &codegen_program,
+        &runtime_names,
+        &std::collections::BTreeSet::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .map_err(|e| e.message)?;
     let image_time = image_start.elapsed();
 
     let total_time = total_start.elapsed();

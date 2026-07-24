@@ -312,6 +312,18 @@ fn patch_bl(
     Ok(())
 }
 
+/// Patches the four-word `load_imm` starting at `word` (a
+/// `Reloc::TurnFrameAddr` site — `MOVZ` + three `MOVK`s) with `value`,
+/// preserving the destination register the emitter already encoded
+/// (bits [4:0], identical in both instruction forms).
+fn patch_load_imm_words(words: &mut [u32], word: usize, value: u64) {
+    let rd = (words[word] & 0x1F) as u8;
+    words[word] = encode::enc_movz(rd, (value & 0xFFFF) as u16, 0, true);
+    words[word + 1] = encode::enc_movk(rd, ((value >> 16) & 0xFFFF) as u16, 16, true);
+    words[word + 2] = encode::enc_movk(rd, ((value >> 32) & 0xFFFF) as u16, 32, true);
+    words[word + 3] = encode::enc_movk(rd, ((value >> 48) & 0xFFFF) as u16, 48, true);
+}
+
 fn patch_adrp_add(
     words: &mut [u32],
     word_adrp: usize,
@@ -519,6 +531,11 @@ pub fn layout_program(
     };
 
     // --- resolve every Reloc against the now-known section bases --------
+    let runtime_live = runtime.filter(|t| t.total_bytes > 0);
+    let placement = match (rtdata_base, runtime_live) {
+        (Some(base), Some(tables)) => Some(place_runtime_tables(base, tables)),
+        _ => None,
+    };
     let mut all_code_words = code_words;
     for (key, f) in &program.fns {
         let base = fn_word_base[key];
@@ -568,6 +585,19 @@ pub fn layout_program(
                 Reloc::CheckpointService { word } => {
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     patch_bl(&mut all_code_words, base + word, this_addr, checkpoint_base)?;
+                }
+                Reloc::TurnFrameAddr { word, key: fn_key } => {
+                    let addr = placement
+                        .as_ref()
+                        .zip(runtime_live)
+                        .and_then(|(p, t)| p.turn_area_for(fn_key, t))
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: async fn `{fn_key}` needs a turn area but this \
+                                 image's runtime tables never sized one"
+                            ))
+                        })?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
             }
         }
@@ -737,11 +767,33 @@ pub fn try_layout_program(
         }
     }
     let merged = merge_mwir_programs(mwir_programs);
-    let codegen_program = match crate::codegen::codegen_program(&merged, layout_ctx) {
-        Ok(p) => p,
+    // The async half (park-and-resume): every module's own async fns
+    // lower through FlowWir and compile alongside the sync half, so a
+    // build image's `Actor`/`Turn` accounting and its compiled state
+    // machines can never disagree with the test-image path's.
+    let mut flow_fns = BTreeMap::new();
+    for typed in programs.values() {
+        match crate::flowwir_lower::lower_program(typed) {
+            Ok(p) => flow_fns.extend(p.fns),
+            Err(_) => return Ok(None),
+        }
+    }
+    let flow = crate::flowwir::FlowWirProgram { fns: flow_fns };
+    let method_index = match actor_method_index_tables(modules, layout_ctx) {
+        Ok(m) => m,
         Err(_) => return Ok(None),
     };
-    let runtime_tables = compute_runtime_tables(graph, modules, layout_ctx)?;
+    let async_frames = match crate::codegen::async_frame_sizes(&flow, layout_ctx) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    let codegen_program =
+        match crate::codegen::codegen_program_with_async(&merged, &flow, layout_ctx, &method_index)
+        {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+    let runtime_tables = compute_runtime_tables(graph, modules, layout_ctx, &async_frames)?;
     layout_program(&codegen_program, runtime_tables.as_ref())
         .map(Some)
         .map_err(|e| e.message)
@@ -770,30 +822,30 @@ pub struct ActorRuntimeLayout {
     /// plans/M6.md, mailbox capacity *derivation* is explicitly OUT of
     /// M6's own scope line).
     pub mailbox_capacity: u64,
-    /// One ring slot's own byte size: 8 (the method-index tag, a plain
-    /// `u64`) plus the widest of this actor's own `pub` methods' param
-    /// blobs (each param's own `mwir::size_of`, summed, one 8-byte-tag
-    /// method index shared by every slot regardless of which method it
-    /// ends up holding — item C's own "method index + args blob" slot
-    /// layout, plans/M6.md's own item-C task text). A method with zero
-    /// params (or an actor with no `pub` methods at all) still costs the
-    /// 8-byte tag alone — the minimum a slot can ever be.
+    /// One ring slot's own byte size: 16 (the method-index tag plus the
+    /// admitted message's own **waker** word — the awaiting turn's turn
+    /// area address, or 0 for a one-way `send`; `codegen::OFF_TURN_*`'s
+    /// own module doc has the whole park-and-resume contract) plus the
+    /// widest of this actor's own `pub` methods' param blobs (each
+    /// param's own `mwir::size_of`, summed). A method with zero params
+    /// (or an actor with no `pub` methods at all) still costs the
+    /// 16-byte tag+waker pair alone — the minimum a slot can ever be.
     pub slot_size: u64,
     /// This actor struct's own field storage (`mwir::size_of` over the
     /// struct's own field list, `LayoutCtx`) — where the actor instance
     /// itself lives (decision 3's own "fixed data-section slot per
     /// declared actor instance" answer, recorded in plans/M6.md).
     pub state_size: u64,
-    /// The one suspended-turn frame slot this actor ever needs (plans/
-    /// M6.md item C's own frame-arena reading: non-reentrancy means at
-    /// most one active/suspended turn per actor, so exactly one frame
-    /// slot, never one per queued message). Fixed at
-    /// `TURN_FRAME_BOOKKEEPING_SIZE` for now: no `async fn` body lowers to
-    /// a real state-machine frame yet (FlowWir->mwir frame layout is item
-    /// D's own job), so this is the real, used-today size of the turn-
-    /// bookkeeping this item's own `rt_select_and_run` actually reads/
-    /// writes (the in-use flag) — never a fake placeholder number, just
-    /// not yet the union of async locals item D will grow it to.
+    /// This actor's own **turn area**: the fixed 48-byte turn record
+    /// (`codegen::TURN_RECORD_SIZE` — busy/suspended/resume_ready/reply/
+    /// waker/cur_method) plus the widest persistent frame any of its own
+    /// `pub async fn` methods needs (`codegen::async_frame_sizes` — 04
+    /// §2's "statically reserved frame slots", where a parked turn's
+    /// live temps actually survive its `ret` to the scheduler). One area
+    /// per actor, never one per queued message: non-reentrancy caps
+    /// in-flight activations at one (item C's frame-arena reading,
+    /// unchanged — now finally holding real async locals, the growth
+    /// item C's own note predicted).
     pub frame_size: u64,
 }
 
@@ -806,6 +858,15 @@ pub struct ActorRuntimeLayout {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimeTables {
     pub actors: Vec<ActorRuntimeLayout>,
+    /// One turn area per **free** async fn (every `FlowWirProgram::fns`
+    /// key that is not a declared actor's own method — `@test(runtime)`
+    /// roots foremost; a compiled-but-unreachable free `async fn` still
+    /// gets one so its own `Reloc::TurnFrameAddr` resolves): `(fn key,
+    /// area bytes)` where area = `codegen::TURN_RECORD_SIZE` + that fn's
+    /// own persistent frame. The root test turn parks/resumes through
+    /// its own area via the identical machinery an actor turn uses —
+    /// decision 3's "+1 root" ready-queue slot, now made concrete.
+    pub free_turns: Vec<(String, u64)>,
     /// Ready-queue capacity: every actor plus the one root test turn
     /// (decision 3's own "fixed capacity = actor count + 1 root").
     /// Reserved as a real `u64`-per-slot table; `rt_select_and_run` (below)
@@ -832,22 +893,13 @@ pub struct RuntimeTables {
     pub total_bytes: u64,
 }
 
-/// Fixed size of the one turn-bookkeeping word `rt_select_and_run`
-/// actually reads/writes per actor today (the in-use/busy flag) —
-/// `ActorRuntimeLayout::frame_size`'s own doc comment explains why this is
-/// real, not a placeholder, and why it is expected to grow once item D
-/// lowers real async locals into frame storage.
-pub const TURN_FRAME_BOOKKEEPING_SIZE: u64 = 8;
-
 /// Per-actor ring bookkeeping beyond the ring bytes themselves: head,
-/// tail, count (3 `u64`s) plus the busy/in-use flag folded into
-/// `TURN_FRAME_BOOKKEEPING_SIZE` above, plus one `u64` "last result" slot
-/// a dispatched sync method's own scalar return value is stored into
-/// (`build_rt_select_and_run`'s own doc comment) — this item's own
-/// deliberately minimal reply-plumbing floor; a real per-actor reply-slot
-/// ABI covering every awaiting caller is item D/E's job once suspension
-/// exists.
-const MAILBOX_BOOKKEEPING_SIZE: u64 = 3 * 8 + 8; // head, tail, count, last_result
+/// tail, count (3 `u64`s). Reply plumbing no longer lives here at all —
+/// M6-C's own `last_result` slot (the nested-drain placeholder's side
+/// channel) is deleted with the placeholder itself: a completing turn's
+/// reply is delivered to the *awaiting turn's* own reply slot
+/// (`codegen::OFF_TURN_REPLY`, via the waker carried in the message).
+const MAILBOX_BOOKKEEPING_SIZE: u64 = 3 * 8; // head, tail, count
 
 fn value_as_u64(v: &crate::eval::value::Value) -> Option<u64> {
     use crate::eval::value::Value;
@@ -886,13 +938,12 @@ struct ActorMethodShape {
     /// declaration order `dispatch: &[usize]` (`build_rt_select_and_run`)
     /// already numbers methods in.
     name: String,
-    /// Not read by this item's own sizing pass (an async method's own
-    /// message slot is sized identically to a sync one's — 02 §9.1's
-    /// message shape says nothing about the method's own color); kept for
-    /// item D's own dispatch-table wiring, which must route an async
-    /// method's own entry at its real compiled state-machine address
-    /// instead of the item-C-era abort stub.
-    #[allow(dead_code)]
+    /// The method's own color — the dispatch arms in
+    /// `rt_select_and_run` read the two return ABIs differently (a sync
+    /// method returns its reply in `x0`; an async state machine returns
+    /// status in `x0` and, when completed, its reply in `x1` —
+    /// `codegen::TURN_STATUS_*`), so every dispatch entry carries this
+    /// flag alongside its call target.
     is_async: bool,
     param_sizes: Vec<u64>,
 }
@@ -1080,20 +1131,45 @@ fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
     count
 }
 
-/// The whole item-C static-sizing pass (module doc above). `Ok(None)`
-/// (via `RuntimeTables::default()`'s own emptiness, wrapped `None`) when
-/// `graph.actors` is empty — the no-placeholder rule: a sync-only image
-/// gets no `rtdata` section and no report accounting at all, never a
-/// zeroed `RuntimeTables` rendered as if it meant something.
+/// Which turn area an async fn's own `Reloc::TurnFrameAddr` (and its
+/// sizing) belongs to: a `Struct.method` key whose struct is a declared
+/// actor shares that actor's one turn area (non-reentrancy: one turn per
+/// actor, whichever method it runs); every other key — free fns
+/// (`@test(runtime)` roots foremost), plus any non-actor-owned method
+/// key — gets its own dedicated free-turn area. One shared rule so
+/// `compute_runtime_tables`'s sizing and `layout`'s reloc resolution can
+/// never classify a key differently.
+fn turn_owner<'k>(key: &'k str, actor_names: &[String]) -> Option<&'k str> {
+    key.split_once('.')
+        .map(|(prefix, _)| prefix)
+        .filter(|prefix| actor_names.iter().any(|a| a == prefix))
+}
+
+/// The whole static-sizing pass (module doc above). `Ok(None)` when the
+/// image declares no actors AND no async fn exists — the no-placeholder
+/// rule: a fully sync image gets no `rtdata` section and no report
+/// accounting at all, never a zeroed `RuntimeTables` rendered as if it
+/// meant something. `async_frames` is `codegen::async_frame_sizes`'s own
+/// result (fn key -> persistent frame bytes), the park-and-resume
+/// redesign's one new input: each actor's turn area is sized as the
+/// 48-byte record plus the widest of its own async methods' frames, and
+/// every non-actor-owned async fn gets its own free-turn area
+/// (`RuntimeTables::free_turns`).
 pub fn compute_runtime_tables(
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
     layout_ctx: &LayoutCtx,
+    async_frames: &BTreeMap<String, u64>,
 ) -> Result<Option<RuntimeTables>, String> {
-    if graph.actors.is_empty() {
+    if graph.actors.is_empty() && async_frames.is_empty() {
         return Ok(None);
     }
     let shapes = merge_actor_pub_methods(modules, layout_ctx).map_err(|e| e.message)?;
+    let actor_names: Vec<String> = graph
+        .actors
+        .iter()
+        .map(|d| crate::sema::types::render_type(&d.actor_type))
+        .collect();
 
     let mut actors = Vec::with_capacity(graph.actors.len());
     for decl in &graph.actors {
@@ -1121,15 +1197,27 @@ pub fn compute_runtime_tables(
             .map(|m| m.param_sizes.iter().sum::<u64>())
             .max()
             .unwrap_or(0);
-        let slot_size = 8 + max_args_bytes;
+        let slot_size = 16 + max_args_bytes; // method idx + waker + args
+        let max_async_frame = async_frames
+            .iter()
+            .filter(|(key, _)| turn_owner(key, &actor_names) == Some(name.as_str()))
+            .map(|(_, &bytes)| bytes)
+            .max()
+            .unwrap_or(0);
         actors.push(ActorRuntimeLayout {
             name,
             mailbox_capacity,
             slot_size,
             state_size,
-            frame_size: TURN_FRAME_BOOKKEEPING_SIZE,
+            frame_size: crate::codegen::TURN_RECORD_SIZE + max_async_frame,
         });
     }
+
+    let free_turns: Vec<(String, u64)> = async_frames
+        .iter()
+        .filter(|(key, _)| turn_owner(key, &actor_names).is_none())
+        .map(|(key, &bytes)| (key.clone(), crate::codegen::TURN_RECORD_SIZE + bytes))
+        .collect();
 
     let ready_queue_capacity = graph.actors.len() as u64 + 1;
     let group_arena_capacity = count_with_group_sites(modules);
@@ -1143,11 +1231,15 @@ pub fn compute_runtime_tables(
             + MAILBOX_BOOKKEEPING_SIZE
             + a.frame_size;
     }
+    for (_, area) in &free_turns {
+        total_bytes += area;
+    }
     total_bytes +=
         ready_queue_capacity * 8 + RR_CURSOR_SIZE + group_arena_capacity * GROUP_SLOT_SIZE;
 
     Ok(Some(RuntimeTables {
         actors,
+        free_turns,
         ready_queue_capacity,
         group_arena_capacity,
         total_bytes,
@@ -1218,6 +1310,12 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
                 ),
             );
         }
+        // Free-turn areas (park-and-resume: one per non-actor-owned
+        // async fn — `RuntimeTables::free_turns`'s own doc comment) —
+        // facts only, absent when no free async fn exists.
+        for (key, area) in &tables.free_turns {
+            push_line(out, 1, &format!("Turn fn={key} frame={area}"));
+        }
         push_line(
             out,
             1,
@@ -1233,21 +1331,23 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
 }
 
 // ===========================================================================
-// plans/M6.md item C: emitted runtime routines — `rt_enqueue`/
-// `rt_select_and_run`, the turn driver, park/wake's own C-level skeleton,
-// and the abandon path. Hand-assembled via `Asm` (defined below, M5-E's
-// own tool), the identical M5-E style: no asm strings, one instruction
-// encoder call at a time, conformance established by real execution
-// (JIT'd against host-mmap'd stand-in memory, `harness_jit` below, plus a
-// real HVF boot in `wrela-vmm`'s own conformance tests) rather than by
-// hand-verifying encoded bytes.
+// Emitted runtime routines (plans/M6.md item C, redesigned by the
+// park-and-resume mandate): `rt_enqueue` (admission), `rt_select_and_run`
+// (per-actor readiness/selection/dispatch/reply-delivery), `rt_run_one`
+// (the round-robin scheduler tick over every actor), and the abandon
+// path. Hand-assembled via `Asm` (defined below, M5-E's own tool), the
+// identical M5-E style: no asm strings, one instruction encoder call at a
+// time, conformance established by real execution (JIT'd against
+// host-mmap'd stand-in memory, `harness_jit` below, plus real HVF boots
+// in `wrela-vmm`'s own conformance tests) rather than by hand-verifying
+// encoded bytes.
 //
 // ## Why one hand-assembled pair *per actor*, not one generic pair indexed
 // by a runtime `actor_idx`
 //
 // Every actor's own ring/state/bookkeeping address is already a build-time
-// constant (`RuntimeTables`/`place_actor_addrs`, above/below) — there is no
-// `actor_idx` a real caller would ever need to pass at runtime, so a
+// constant (`RuntimeTables`/`place_runtime_tables`, above/below) — there is
+// no `actor_idx` a real caller would ever need to pass at runtime, so a
 // generic address-indexed pair would only add a layer of register-offset
 // indirection this milestone's own actor counts never need. 04-compiler.md
 // §6's own "Actor as-if" license says exactly this is allowed: "the
@@ -1256,38 +1356,28 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
 // specialized `rt_enqueue_actor`/`rt_select_actor` pair per actor is that
 // license exercised at its simplest.
 //
-// ## Why no source-compiled `.wr` program exercises these routines yet
-//
-// `async fn` bodies do not lower past typed sema yet (FlowWir is item B's
-// own in-flight work; FlowWir->mwir/codegen is item D's) — so no
-// `Actor[T]` handle call anywhere in today's corpus can possibly reach
-// `rt_enqueue`/`rt_select_and_run` through ordinary compilation. This
-// item's own conformance tests (this module's `harness_jit` additions,
-// below, plus `wrela-vmm`'s own HVF-boot tests) therefore hand-assemble
-// tiny stand-in "actor method" bodies directly, the identical M5-E
-// precedent for testing generated machinery that has no compiled-source
-// exerciser yet.
-//
-// ## Slot layout (decision 3's own "method index + args blob")
+// ## Slot layout (decision 3's "method index + args blob", grown a waker)
 //
 // `[0..8)`: the admitted message's own method index, a plain `u64`.
-// `[8..slot_size)`: the method's own argument blob, raw 8-byte-per-scalar-
-// param words in declared parameter order (`ActorRuntimeLayout::slot_size`'s
-// own doc comment) — every param here is assumed to fit one 8-byte slot
-// (a disclosed, real simplification: a message-legal aggregate wider than
-// one slot is out of scope for this item's own hand-assembled dispatch;
-// every `pub` actor method in today's whole corpus takes only scalar
-// params, so this never silently narrows a real case — item D's own real
-// state-machine lowering is expected to generalize this the moment a
-// wider message argument exists).
+// `[8..16)`: the message's own waker — the awaiting turn's turn-area
+// address, or 0 for a one-way `send` (`codegen::OFF_TURN_*`'s module doc
+// carries the whole contract).
+// `[16..slot_size)`: the method's own argument blob, raw 8-byte-per-
+// scalar-param words in declared parameter order
+// (`ActorRuntimeLayout::slot_size`'s own doc comment) — every param here
+// is assumed to fit one 8-byte slot (a disclosed, real simplification: a
+// message-legal aggregate wider than one slot is out of scope for this
+// hand-assembled dispatch; every `pub` actor method in today's whole
+// corpus takes only scalar params, so this never silently narrows a real
+// case).
 
 /// One actor's own absolute runtime-table addresses, placed sequentially
 /// from a given base (`rtdata_base` for a real image, or a host-mmap'd
 /// stand-in base for a JIT/HVF test) — the exact byte order
 /// `compute_runtime_tables`'s own `RuntimeTables::total_bytes` already
-/// accounts for (state, ring, head/tail/count/last_result, busy/frame),
-/// so a real image's `rtdata` section and this fn's own addresses can
-/// never disagree.
+/// accounts for (state, ring, head/tail/count, turn area), so a real
+/// image's `rtdata` section and this fn's own addresses can never
+/// disagree.
 #[derive(Debug, Clone, Copy)]
 pub struct ActorAddrs {
     pub state: u64,
@@ -1295,22 +1385,54 @@ pub struct ActorAddrs {
     pub head: u64,
     pub tail: u64,
     pub count: u64,
-    pub last_result: u64,
-    pub busy: u64,
+    /// This actor's own turn area base — the fixed 48-byte turn record
+    /// (`codegen::OFF_TURN_*`: busy/suspended/resume_ready/reply/waker/
+    /// cur_method) followed by its persistent async frame slots. The
+    /// address every message this actor's turns *send* carries as their
+    /// waker, and the address `Reloc::TurnFrameAddr` resolves to for its
+    /// own async methods.
+    pub turn: u64,
 }
 
-/// Places every actor's own `ActorAddrs` sequentially from `base` (module
-/// doc above) — the scheduler-table region (ready queue, RR cursor, group
-/// arena) follows immediately after the last actor, at
-/// `place_actor_addrs`'s own returned `next` cursor plus each table's own
-/// fixed size (`RuntimeTables::ready_queue_capacity`/`group_arena_capacity`),
-/// not computed by this fn since M6-C's own `rt_select_and_run` never
-/// reads them yet (`RuntimeTables::ready_queue_capacity`'s own doc
-/// comment) — callers that need them derive their own address the same
-/// way this fn does, from the same `RuntimeTables`.
-pub fn place_actor_addrs(base: u64, tables: &RuntimeTables) -> Vec<ActorAddrs> {
+/// Every runtime-table address, placed from one `base` (`rtdata_base` for
+/// a real image, a host-mmap'd stand-in for a JIT/HVF test) in the exact
+/// byte order `compute_runtime_tables::total_bytes` accounts for: each
+/// actor's region (state, ring, head/tail/count, turn area), then every
+/// free-turn area, then the ready-queue table, the round-robin cursor
+/// word, and the group arena.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimePlacement {
+    pub actors: Vec<ActorAddrs>,
+    /// fn key -> free-turn area base (`RuntimeTables::free_turns` order).
+    pub free_turns: BTreeMap<String, u64>,
+    /// The deterministic round-robin cursor word `rt_run_one` reads/
+    /// advances (04 §2's tie-breaker; at M6 every scheduling key is
+    /// equal, so the cursor is the whole selection order among ready
+    /// actors).
+    pub rr_cursor: u64,
+}
+
+impl RuntimePlacement {
+    /// The turn area for async fn `key` (`turn_owner`'s own rule):
+    /// an actor method's area is its actor's; anything else its own
+    /// free-turn area. `None` only for a key the tables never sized —
+    /// an internal inconsistency the caller reports loudly.
+    pub fn turn_area_for(&self, key: &str, tables: &RuntimeTables) -> Option<u64> {
+        let actor_names: Vec<String> = tables.actors.iter().map(|a| a.name.clone()).collect();
+        match turn_owner(key, &actor_names) {
+            Some(actor) => tables
+                .actors
+                .iter()
+                .position(|a| a.name == actor)
+                .map(|i| self.actors[i].turn),
+            None => self.free_turns.get(key).copied(),
+        }
+    }
+}
+
+pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlacement {
     let mut cursor = base;
-    let mut out = Vec::with_capacity(tables.actors.len());
+    let mut actors = Vec::with_capacity(tables.actors.len());
     for a in &tables.actors {
         let state = cursor;
         cursor += a.state_size;
@@ -1322,38 +1444,52 @@ pub fn place_actor_addrs(base: u64, tables: &RuntimeTables) -> Vec<ActorAddrs> {
         cursor += 8;
         let count = cursor;
         cursor += 8;
-        let last_result = cursor;
-        cursor += 8;
-        let busy = cursor;
+        let turn = cursor;
         cursor += a.frame_size;
-        out.push(ActorAddrs {
+        actors.push(ActorAddrs {
             state,
             ring,
             head,
             tail,
             count,
-            last_result,
-            busy,
+            turn,
         });
     }
-    out
+    let mut free_turns = BTreeMap::new();
+    for (key, area) in &tables.free_turns {
+        free_turns.insert(key.clone(), cursor);
+        cursor += area;
+    }
+    cursor += tables.ready_queue_capacity * 8;
+    let rr_cursor = cursor;
+    RuntimePlacement {
+        actors,
+        free_turns,
+        rr_cursor,
+    }
 }
 
-/// `rt_enqueue_actor(x0=method_idx, x1=args_ptr, x2=nargs_words) ->
-/// x0 (0=admitted, 1=rejected — the `send`/call admission outcome,
-/// 02 §9.4's `NotAdmitted`/`Rejected` path, this item's own minimal
-/// encoding of it)`. Admission alone: a bounded ring insert, FIFO by
-/// construction (always appended at `tail`, always drained from `head`,
-/// below) — 04 §2's "admission occupies one logical mailbox slot until
-/// selection; selection is FIFO per mailbox by admission order". A full
-/// ring (`count == capacity`) is rejected without touching `tail`/`count`
-/// at all — the caller's own `args_ptr` blob is left exactly where it
-/// was, mirroring 02 §9.4's "an outcome that did not consume [arguments]
-/// hands them back" at this item's own ABI granularity (a real
-/// `NotAdmitted(..)` payload carry-back is item D/G's job, once real
-/// message types exist to carry).
+/// `rt_enqueue_actor(x0=method_idx, x1=args_ptr, x2=nargs_words,
+/// x3=waker) -> x0 (0=admitted, 1=rejected — the `send`/call admission
+/// outcome, 02 §9.4's `NotAdmitted`/`Rejected` path, the minimal
+/// encoding of it)`. Admission alone — never selection, never dispatch,
+/// never readiness: a bounded ring insert, FIFO by construction (always
+/// appended at `tail`, always drained from `head` by
+/// `rt_select_and_run`) — 04 §2's "admission occupies one logical
+/// mailbox slot until selection; selection is FIFO per mailbox by
+/// admission order". `waker` (the awaiting turn's own turn-area address,
+/// or 0 for a one-way `send`) is stored into the slot's second word and
+/// carried to selection, where the dispatched turn's completion delivers
+/// its reply there. Admission is deliberately independent of the
+/// target's `busy` flag: a message to a busy(-suspended) actor QUEUES —
+/// decision 4's non-reentrancy lives entirely in selection, never here.
+/// A full ring (`count == capacity`) is rejected without touching
+/// `tail`/`count` at all — the caller's own `args_ptr` blob is left
+/// exactly where it was, mirroring 02 §9.4's "an outcome that did not
+/// consume [arguments] hands them back" at this ABI granularity (a real
+/// `NotAdmitted(..)` payload carry-back is item G's job).
 ///
-/// Register use (leaf fn, owns every register it touches, never `x0..x2`
+/// Register use (leaf fn, owns every register it touches, never `x0..x3`
 /// until the outcome/scratch reuse below): `x9`/`x10` = count addr/value,
 /// then reused as scratch after the branch; `x11` = capacity, then a
 /// scratch; `x12`/`x13` = tail addr/value; `x14`/`x15` = slot-size scratch,
@@ -1387,8 +1523,9 @@ pub fn build_rt_enqueue(
     a.push(encode::enc_add_reg(15, 15, 14, true));
 
     a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.method_idx = method_idx
+    a.push(encode::enc_str_x_imm(3, 15, 8)); // slot.waker = waker
 
-    a.push(encode::enc_add_imm(16, 15, 8, true)); // dst cursor = slot + 8
+    a.push(encode::enc_add_imm(16, 15, 16, true)); // dst cursor = slot + 16 (past idx+waker)
     a.push(encode::enc_mov_reg(17, 1, true)); // src cursor = args_ptr
     a.push(encode::enc_mov_reg(18, 2, true)); // remaining = nargs_words
     let loop_top = a.abs();
@@ -1430,141 +1567,148 @@ pub fn build_rt_enqueue(
     a.words
 }
 
-/// `rt_select_actor() -> x0 (1 = ran one turn this call, 0 = idle —
-/// either busy-suspended, decision 4's own non-reentrancy, or its own
-/// mailbox is empty)`. One "tick" of 04 §2's event loop for one actor:
-/// non-reentrant admission-to-dispatch (a busy actor admits nothing new
-/// into a turn — the second queued message stays queued, `count`
-/// untouched), FIFO pop from `head`, dispatch (a direct `BL` to a
-/// specialized target per `dispatch[method_idx]` — sync methods dispatch
-/// to their own compiled body's own address; an async method's own entry
-/// is built pointing at a shared abort stub instead, module doc above:
-/// "at C, an async dispatch aborts named item D"), store the scalar
-/// result, clear busy, advance `head`/`count`. M6-C's own loop never truly
-/// parks (module doc, decision 7): the caller (a hand-assembled test
-/// driver at C; a real turn driver at E) calls this repeatedly until it
-/// returns `0` for every actor — "the loop idles ... until all mailboxes
-/// empty and the root turn completes" is exactly this repeated-call
-/// shape, not a real `wfe`/park.
+/// `rt_select_actor() -> x0 (1 = ran one turn-slice this call, 0 = not
+/// ready — busy with its awaited reply still outstanding, or its own
+/// mailbox is empty)`. One "tick" of 04 §2's event loop for one actor,
+/// carrying the whole selection half of the park-and-resume contract
+/// (`codegen::OFF_TURN_*`'s own module doc; admission is `rt_enqueue`'s
+/// entirely separate job):
 ///
-/// `dispatch[i]`'s own absolute *word index* (not byte address) within
-/// this fragment's own combined section (`Asm::abs`'s own convention,
-/// mirrored from the M5 harness's `bl_call_key`/`bl_to`) — every method
-/// target must already be placed in the same combined word buffer this
-/// fragment itself is assembled into (JIT/HVF conformance tests place
-/// their own stand-in method bodies there directly; wiring this into a
-/// real compiled program's own `code` section via `Reloc::Call` is item
-/// D's own follow-up, recorded in plans/M6.md, not silently done here).
+///   - **Readiness**: a busy actor whose turn is parked AND whose reply
+///     has been delivered (`suspended && resume_ready`) is ready to
+///     *resume*; a non-busy actor with a queued message is ready for a
+///     *fresh* turn; anything else reports 0. Decision 4's
+///     non-reentrancy is exactly the busy check: a queued second message
+///     stays queued until the owning turn fully completes.
+///   - **Fresh dispatch**: FIFO pop from `head` — method idx, waker, and
+///     args read from the slot; `cur_method`/`waker` saved into the turn
+///     record; `head`/`count` advanced HERE, at selection ("admission
+///     occupies one logical mailbox slot until selection", 04 §2 — the
+///     slot is released the moment the turn starts, not when it ends);
+///     `busy = 1`; `BL` the method.
+///   - **Resume dispatch**: re-`BL` the SAME compiled method
+///     (`cur_method`, the saved dispatch index) — the fn's own entry
+///     discriminant routes itself to its saved `resume_state`.
+///   - **Status**: each dispatch arm knows its method's color at build
+///     time. A sync method's return IS completion (its reply in `x0`) —
+///     a sync `pub` method runs as one complete, unsuspendable turn. An
+///     async method returns `x0 = TURN_STATUS_*`: suspended means this
+///     call ran a real slice (return 1, busy stays set — the park);
+///     completed carries the reply in `x1`.
+///   - **Delivery**: on completion, the reply is written to the waker's
+///     own turn record (`[waker + OFF_TURN_REPLY]`, then
+///     `resume_ready = 1`) — waker 0 (a `send`) delivers nowhere; then
+///     `busy = 0`.
 ///
-/// Register use: `x9`/`x10` = busy/count addr+value, reused as scratch
-/// throughout; `x11`/`x12` = head addr/value; `x13` = slot-size scratch,
-/// then slot address; `x15` = method_idx (loaded from the slot, kept live
-/// across the whole dispatch chain below).
+/// `dispatch[i]` = (call target, is_async). Register use: `x9..x13`
+/// scratch; `x15` = method_idx, live across the dispatch chain.
 pub fn build_rt_select_and_run(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
-    dispatch: &[usize],
+    dispatch: &[(usize, bool)],
     start: usize,
 ) -> Vec<u32> {
-    build_rt_select_and_run_core(
-        addrs,
-        capacity,
-        slot_size,
-        dispatch.len(),
-        start,
-        |a, idx| a.bl_to(dispatch[idx]),
-    )
+    let colors: Vec<bool> = dispatch.iter().map(|(_, is_async)| *is_async).collect();
+    build_rt_select_and_run_core(addrs, capacity, slot_size, &colors, start, |a, idx| {
+        a.bl_to(dispatch[idx].0)
+    })
     .words
 }
 
-/// plans/M6.md item D: the exact same routine as `build_rt_select_and_run`
-/// above, but dispatching to a *real compiled program's own `code`
-/// section* by fn key (a `Reloc::Call`, resolved by `layout_test_image`
-/// exactly like an ordinary compiled call) instead of a same-buffer
-/// absolute word index — item C's own module doc named this "item D's own
-/// follow-up" and this is it: an async method's own dispatch entry is now
-/// its real compiled state-machine address, a sync method's is its real
-/// compiled body's address, with no special-casing by color at all (both
-/// simply live in `program.fns`, keyed identically). Shares every byte of
-/// hand-assembly with the JIT-tested original above via
+/// The exact same routine as `build_rt_select_and_run` above, but
+/// dispatching to a *real compiled program's own `code` section* by fn
+/// key (a `Reloc::Call`, resolved by `layout_test_image` exactly like an
+/// ordinary compiled call) instead of a same-buffer absolute word index —
+/// a sync method's real compiled body and an async method's real compiled
+/// state-machine entry are both ordinary `program.fns` entries. Shares
+/// every byte of hand-assembly with the JIT-tested original above via
 /// `build_rt_select_and_run_core` — never a forked copy.
 fn build_rt_select_and_run_symbolic(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
-    dispatch: &[String],
+    dispatch: &[(String, bool)],
     start: usize,
 ) -> Asm {
-    build_rt_select_and_run_core(
-        addrs,
-        capacity,
-        slot_size,
-        dispatch.len(),
-        start,
-        |a, idx| a.bl_call_key(&dispatch[idx]),
-    )
+    let colors: Vec<bool> = dispatch.iter().map(|(_, is_async)| *is_async).collect();
+    build_rt_select_and_run_core(addrs, capacity, slot_size, &colors, start, |a, idx| {
+        a.bl_call_key(&dispatch[idx].0)
+    })
 }
 
 fn build_rt_select_and_run_core(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
-    num_methods: usize,
+    method_is_async: &[bool],
     start: usize,
     mut call_dispatch: impl FnMut(&mut Asm, usize),
 ) -> Asm {
+    use crate::codegen::{
+        OFF_TURN_CUR_METHOD, OFF_TURN_REPLY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED,
+        OFF_TURN_WAKER,
+    };
     let mut a = Asm::new(start);
-    // Unlike every other hand-assembled fragment in this file (all leaf
-    // fns, or noreturn like the abort stubs), this one both calls out
-    // (`bl_to` into a dispatched method) *and* returns via an ordinary
-    // `ret` — so it must save/restore its own `x30` (link register)
-    // around the stack, exactly the ABI's own "x30 is call-clobbered"
-    // rule `codegen.rs`'s real prologues already apply: a first draft of
-    // this fn skipped this, called the dispatched method, and hung
-    // forever (the dispatched method's own `RET x30` correctly returned
-    // *into* this fn right after its own `BL`, but this fn's *own* final
-    // `ret x30` then read that same, now-stale value instead of its
-    // original caller's address, jumping back into itself in an infinite
-    // loop — caught by a real JIT execution test hanging, exactly what
-    // this module's own "behavior is the oracle" doc paragraph is for).
+    // Unlike most other hand-assembled fragments in this file (leaf fns,
+    // or noreturn like the abort stubs), this one both calls out (`BL`
+    // into a dispatched method) *and* returns via an ordinary `ret` — so
+    // it must save/restore its own `x30` (link register), exactly the
+    // ABI's own "x30 is call-clobbered" rule `codegen.rs`'s real
+    // prologues already apply: a first draft of the item-C original
+    // skipped this, called the dispatched method, and hung forever (the
+    // dispatched method's own `RET x30` correctly returned *into* this
+    // fn right after its own `BL`, but this fn's *own* final `ret x30`
+    // then read that same, now-stale value instead of its original
+    // caller's address, jumping back into itself in an infinite loop —
+    // caught by a real JIT execution test hanging, exactly what this
+    // module's own "behavior is the oracle" doc paragraph is for).
     a.push(encode::enc_sub_imm(31, 31, 16, true)); // sub sp, sp, #16
     a.push(encode::enc_str_x_imm(30, 31, 0)); // str x30, [sp]
-    // Two distinct exit shapes, never conflated: `to_idle_ret` (busy/empty)
-    // returns `x0=0` immediately, running no epilogue at all (no turn ever
-    // started — `head`/`count`/`busy` must stay exactly as they were);
-    // `to_dispatch_done` (after a method call returns) runs the shared
-    // epilogue below (clear busy, advance `head`, decrement `count`) and
-    // returns `x0=1`. Conflating the two was this fn's own first-draft bug
-    // (caught before landing, recorded here rather than silently fixed
-    // away): an empty/busy early-out must never fall into the epilogue,
-    // or an idle tick would wrongly decrement an already-zero `count`.
-    let mut to_idle_ret: Vec<usize> = Vec::new();
-    let mut to_dispatch_done: Vec<usize> = Vec::new();
+    let mut to_idle_ret: Vec<usize> = Vec::new(); // b .epilogue with x0 already 0
+    let mut to_epilogue: Vec<usize> = Vec::new(); // b .epilogue with x0 already set
+    let mut to_deliver: Vec<usize> = Vec::new(); // b .deliver with x9 = reply
 
-    // busy check: non-reentrancy (decision 4) — a busy actor admits no
-    // new turn; the queued message(s) stay queued.
-    a.load_imm(9, addrs.busy);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    let skip_notbusy = a.skip_placeholder(); // cbz x10, .notbusy
+    // --- readiness -----------------------------------------------------
+    // busy?
+    a.load_imm(9, addrs.turn);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = busy (OFF_TURN_BUSY = 0)
+    let skip_fresh_check = a.skip_placeholder(); // cbz x10, .fresh_check
+    // busy: resumable only if suspended && resume_ready.
+    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16));
+    let skip_idle_a = a.skip_placeholder(); // cbz x10, .idle
+    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_RESUME_READY as u16));
+    let skip_idle_b = a.skip_placeholder(); // cbz x10, .idle
+    // resume: x15 = cur_method; x0 = self ptr (harmless on resume — the
+    // fn's own resume path reads nothing from the arg registers).
+    a.push(encode::enc_ldr_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16));
+    a.load_imm(0, addrs.state);
+    let to_dispatch_from_resume = a.skip_placeholder(); // b .dispatch
+
+    // .idle (busy but not resumable): x0 = 0, epilogue.
+    let idle = a.abs();
+    a.patch_cbz(skip_idle_a, 10);
+    a.patch_cbz(skip_idle_b, 10);
+    debug_assert_eq!(idle, a.abs());
     a.push(encode::enc_movz(0, 0, 0, true));
     to_idle_ret.push(a.skip_placeholder());
-    let notbusy = a.abs();
-    a.patch_cbz(skip_notbusy, 10);
-    debug_assert_eq!(notbusy, a.abs());
 
-    // empty check
+    // .fresh_check: mailbox empty?
+    let fresh_check = a.abs();
+    a.patch_cbz(skip_fresh_check, 10);
+    debug_assert_eq!(fresh_check, a.abs());
     a.load_imm(9, addrs.count);
     a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    let skip_nonempty = a.skip_placeholder(); // cbnz x10, .nonempty
+    let skip_have_msg = a.skip_placeholder(); // cbnz x10, .have_msg
     a.push(encode::enc_movz(0, 0, 0, true));
     to_idle_ret.push(a.skip_placeholder());
-    let nonempty = a.abs();
-    a.patch_cbnz(skip_nonempty, 10);
-    debug_assert_eq!(nonempty, a.abs());
+    let have_msg = a.abs();
+    a.patch_cbnz(skip_have_msg, 10);
+    debug_assert_eq!(have_msg, a.abs());
 
+    // --- fresh selection ------------------------------------------------
     // busy = 1
-    a.load_imm(9, addrs.busy);
+    a.load_imm(9, addrs.turn);
     a.load_imm(10, 1);
     a.push(encode::enc_str_x_imm(10, 9, 0));
 
@@ -1577,56 +1721,27 @@ fn build_rt_select_and_run_core(
     a.push(encode::enc_add_reg(13, 9, 13, true)); // x13 = slot addr
 
     a.push(encode::enc_ldr_x_imm(15, 13, 0)); // x15 = method_idx
+    a.push(encode::enc_ldr_x_imm(10, 13, 8)); // x10 = waker
+    a.load_imm(9, addrs.turn);
+    a.push(encode::enc_str_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16));
+    a.push(encode::enc_str_x_imm(10, 9, OFF_TURN_WAKER as u16));
     // Load only as many 8-byte arg words as this ring's own `slot_size`
-    // actually reserves past the method-index tag (never unconditionally
-    // 2): the smallest legal slot is `slot_size=8` (a no-arg message,
-    // `ActorRuntimeLayout::slot_size`'s own doc comment) — reading a
-    // fixed two words regardless would read *past* the ring into
-    // `head`/`tail` themselves for any slot narrower than 24 bytes. A
-    // real HVF boot at exactly this `capacity=1`/`slot_size=8` shape
-    // caught this (this fn's own module doc, the "smallest possible ring"
-    // JIT test below); bounding the load here is the fix, not a
-    // documented quirk to work around at every call site.
-    let arg_words = ((slot_size.saturating_sub(8)) / 8).min(2);
+    // actually reserves past the 16-byte idx+waker pair (never
+    // unconditionally 2): the smallest legal slot is `slot_size=16` (a
+    // no-arg message) — reading fixed words regardless would read *past*
+    // the ring into `head`/`tail` themselves for a narrower slot. A real
+    // HVF boot caught the item-C ancestor of exactly this bug (module
+    // doc note); the bound stays load-bearing here.
+    let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
     if arg_words >= 1 {
-        a.push(encode::enc_ldr_x_imm(1, 13, 8)); // x1 = arg0
+        a.push(encode::enc_ldr_x_imm(1, 13, 16)); // x1 = arg0
     }
     if arg_words >= 2 {
-        a.push(encode::enc_ldr_x_imm(2, 13, 16)); // x2 = arg1
+        a.push(encode::enc_ldr_x_imm(2, 13, 24)); // x2 = arg1
     }
-    a.load_imm(0, addrs.state); // x0 = self ptr (the receiver ABI)
-
-    for idx in 0..num_methods {
-        a.push(encode::enc_cmp_imm(15, idx as u16, true));
-        let skip_next = a.skip_placeholder(); // b.ne .next
-        call_dispatch(&mut a, idx);
-        a.load_imm(9, addrs.last_result);
-        a.push(encode::enc_str_x_imm(0, 9, 0));
-        to_dispatch_done.push(a.skip_placeholder()); // b .done (unconditional)
-        let next = a.abs();
-        a.patch_cond(skip_next, Cond::Ne);
-        debug_assert_eq!(next, a.abs());
-    }
-    // No dispatch entry matched `method_idx` — an internal-error guard:
-    // `rt_enqueue` only ever admits a `method_idx` this same `dispatch`
-    // slice was built from, so this should be unreachable in practice,
-    // exactly like the M5 harness's own `BRK_LINE_*_OVERFLOW` guards.
-    a.push(encode::enc_brk(0xACD0));
-
-    // .done: busy = 0; head = (head + 1) % capacity; count -= 1; return 1.
-    let done = a.abs();
-    for m in &to_dispatch_done {
-        let this = a.start + m;
-        let delta = (done as i64 - this as i64) * 4;
-        a.words[*m] = encode::enc_b(delta as i32);
-    }
-    debug_assert_eq!(done, a.abs());
-
-    a.load_imm(9, addrs.busy);
-    a.push(encode::enc_str_x_imm(31, 9, 0)); // busy = 0 (xzr)
-
-    a.load_imm(11, addrs.head);
-    a.push(encode::enc_ldr_x_imm(12, 11, 0));
+    // Release the slot NOW — selection, not completion, frees it
+    // (04 §2): head = (head + 1) % capacity; count -= 1. `x12` still
+    // holds the head value from the slot computation above.
     a.push(encode::enc_add_imm(12, 12, 1, true));
     a.load_imm(9, capacity);
     a.push(encode::enc_cmp_reg(12, 9, true));
@@ -1637,22 +1752,76 @@ fn build_rt_select_and_run_core(
     debug_assert_eq!(nowrap, a.abs());
     a.load_imm(11, addrs.head);
     a.push(encode::enc_str_x_imm(12, 11, 0));
-
     a.load_imm(9, addrs.count);
     a.push(encode::enc_ldr_x_imm(10, 9, 0));
     a.push(encode::enc_sub_imm(10, 10, 1, true));
     a.push(encode::enc_str_x_imm(10, 9, 0));
 
-    a.push(encode::enc_movz(0, 1, 0, true)); // ran a turn
-    // .epilogue: the busy/empty early-outs land here too (both return with
-    // `x0` already set and touch nothing else) — one shared restore-and-
-    // return, mirroring the one shared `sub sp, #16`/`str x30` prologue
-    // above (module doc's own "must save/restore its own x30" paragraph).
+    a.load_imm(0, addrs.state); // x0 = self ptr (the receiver ABI)
+
+    // --- dispatch (shared by fresh and resume; x15 = method index) -----
+    let dispatch = a.abs();
+    {
+        let this = a.start + to_dispatch_from_resume;
+        let delta = (dispatch as i64 - this as i64) * 4;
+        a.words[to_dispatch_from_resume] = encode::enc_b(delta as i32);
+    }
+    for (idx, &is_async) in method_is_async.iter().enumerate() {
+        a.push(encode::enc_cmp_imm(15, idx as u16, true));
+        let skip_next = a.skip_placeholder(); // b.ne .next
+        call_dispatch(&mut a, idx);
+        if is_async {
+            // x0 = status; on completion x1 = reply.
+            let skip_completed = a.skip_placeholder(); // cbz x0, .completed
+            // Suspended: a real slice ran; busy stays set; x0 is
+            // already 1 (TURN_STATUS_SUSPENDED) — the "ran" report.
+            to_epilogue.push(a.skip_placeholder());
+            let completed = a.abs();
+            a.patch_cbz(skip_completed, 0);
+            debug_assert_eq!(completed, a.abs());
+            a.push(encode::enc_mov_reg(9, 1, true)); // x9 = reply
+            to_deliver.push(a.skip_placeholder());
+        } else {
+            // A sync method's return IS completion; reply in x0.
+            a.push(encode::enc_mov_reg(9, 0, true)); // x9 = reply
+            to_deliver.push(a.skip_placeholder());
+        }
+        let next = a.abs();
+        a.patch_cond(skip_next, Cond::Ne);
+        debug_assert_eq!(next, a.abs());
+    }
+    // No dispatch entry matched — an internal-error guard: `rt_enqueue`
+    // only ever admits a `method_idx` this same table was built from,
+    // and `cur_method` is only ever one it stored itself.
+    a.push(encode::enc_brk(0xACD0));
+
+    // --- .deliver: reply (x9) -> waker's record; busy = 0; return 1 ----
+    let deliver = a.abs();
+    for m in &to_deliver {
+        let this = a.start + m;
+        let delta = (deliver as i64 - this as i64) * 4;
+        a.words[*m] = encode::enc_b(delta as i32);
+    }
+    debug_assert_eq!(deliver, a.abs());
+    a.load_imm(10, addrs.turn);
+    a.push(encode::enc_ldr_x_imm(11, 10, OFF_TURN_WAKER as u16));
+    let skip_no_waker = a.skip_placeholder(); // cbz x11, .no_waker
+    a.push(encode::enc_str_x_imm(9, 11, OFF_TURN_REPLY as u16));
+    a.push(encode::enc_movz(12, 1, 0, true));
+    a.push(encode::enc_str_x_imm(12, 11, OFF_TURN_RESUME_READY as u16));
+    let no_waker = a.abs();
+    a.patch_cbz(skip_no_waker, 11);
+    debug_assert_eq!(no_waker, a.abs());
+    a.push(encode::enc_str_x_imm(31, 10, 0)); // busy = 0 (xzr)
+    a.push(encode::enc_str_x_imm(31, 10, OFF_TURN_WAKER as u16)); // waker = 0 (hygiene)
+    a.push(encode::enc_movz(0, 1, 0, true)); // ran a turn(-slice)
+
+    // --- .epilogue (every exit; x0 already holds the report) -----------
     let epilogue = a.abs();
     a.push(encode::enc_ldr_x_imm(30, 31, 0)); // ldr x30, [sp]
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
     a.push(encode::enc_ret(30));
-    for m in &to_idle_ret {
+    for m in to_idle_ret.iter().chain(to_epilogue.iter()) {
         let this = a.start + m;
         let delta = (epilogue as i64 - this as i64) * 4;
         a.words[*m] = encode::enc_b(delta as i32);
@@ -1660,88 +1829,98 @@ fn build_rt_select_and_run_core(
     a
 }
 
-/// `__await_actor_<Actor>(x0=method_idx, x1=args_ptr, x2=nargs_words) ->
-/// x0=reply_value`. plans/M6.md item D's own disclosed simplification of
-/// decision 1's "park the turn... return to scheduler" wording
-/// (`codegen.rs`'s own module doc, "Await, simplified" section, has the
-/// full reasoning): rather than a real cross-native-call suspend/resume,
-/// this glue enqueues the caller's own message into the target actor's
-/// mailbox, then *synchronously drains* that target (repeated
-/// `rt_select_and_run` ticks) until it goes idle, then reads back the one
-/// scalar reply `rt_select_and_run` already stashes at `addrs.last_result`
-/// (M6-C's own "deliberately minimal reply-plumbing floor" — this is the
-/// first thing that ever actually consumes it). The awaiting actor's own
-/// `busy` flag (set by whichever `rt_select_and_run` call dispatched the
-/// awaiting turn in the first place) stays set for this whole nested
-/// span, so decision 4's own non-reentrancy proof holds structurally
-/// regardless of which suspension mechanic implements the park.
-///
-/// A rejected admission aborts (`BRK`) rather than composing a real
-/// `CallError[Rejected(..)]` value — a disclosed floor, item G's own
-/// send-proof job to replace; no required M6-D conformance boot ever
-/// fills a mailbox.
-pub const BRK_AWAIT_ACTOR_REJECTED: u16 = 0xACD3;
-
-fn build_await_actor_glue(
-    addrs: &ActorAddrs,
-    enqueue_start: usize,
-    select_start: usize,
-    start: usize,
-) -> Asm {
+/// `rt_run_one() -> x0 (1 = ran one ready turn-slice, 0 = nothing
+/// ready)` — 04 §2's selection across every actor on the core, made
+/// concrete at M6's defaults: every mailbox head shares one (priority,
+/// deadline) key (all normal band, deadline = infinity), so selection is
+/// exactly the deterministic round-robin cursor over the per-actor
+/// readiness `rt_select_and_run` already encodes. Fully unrolled, two
+/// passes over the build-time actor list — pass one tries every actor at
+/// or after the cursor, pass two the rest — and the first actor that
+/// reports "ran" advances the cursor to its own successor and returns 1.
+/// The entry driver loops this between a root turn's own suspend points;
+/// "nothing ready" with the root still incomplete is the deadlock
+/// condition (`DEADLOCK_MSG`).
+fn build_rt_run_one(select_starts: &[usize], rr_cursor_addr: u64, start: usize) -> Asm {
     let mut a = Asm::new(start);
     a.push(encode::enc_sub_imm(31, 31, 16, true));
     a.push(encode::enc_str_x_imm(30, 31, 0));
-
-    a.bl_to(enqueue_start); // x0 = outcome (0 admitted, 1 rejected)
-    let skip_abort = a.skip_placeholder(); // cbz x0, .ok
-    a.push(encode::enc_brk(BRK_AWAIT_ACTOR_REJECTED));
-    let ok = a.abs();
-    a.patch_cbz(skip_abort, 0);
-    debug_assert_eq!(ok, a.abs());
-
-    // Drain the target's own mailbox until idle — our own just-enqueued
-    // message is guaranteed to be in there (M6's own single-core, one-
-    // root-turn-at-a-time scope: nothing else can have admitted to this
-    // target between our own enqueue and this loop).
-    let loop_top = a.abs();
-    a.bl_to(select_start); // x0 = 1 ran / 0 idle
-    let skip_loop = a.skip_placeholder(); // cbz x0, .done
-    a.b_to(loop_top);
-    let done = a.abs();
-    a.patch_cbz(skip_loop, 0);
-    debug_assert_eq!(done, a.abs());
-
-    a.load_imm(9, addrs.last_result);
-    a.push(encode::enc_ldr_x_imm(0, 9, 0));
-
+    let n = select_starts.len();
+    let mut to_out: Vec<usize> = Vec::new();
+    for pass in 0..2 {
+        for (i, &sel) in select_starts.iter().enumerate() {
+            // Reload the cursor each arm — the BL below clobbers scratch.
+            a.load_imm(9, rr_cursor_addr);
+            a.push(encode::enc_ldr_x_imm(10, 9, 0));
+            a.push(encode::enc_cmp_imm(10, i as u16, true));
+            let skip = a.skip_placeholder(); // pass 0: b.gt (cursor > i -> not yet); pass 1: b.le (already tried)
+            a.bl_to(sel);
+            let skip_notran = a.skip_placeholder(); // cbz x0, .skip
+            // Ran: cursor = (i + 1) % n, report 1.
+            a.load_imm(9, rr_cursor_addr);
+            a.load_imm(10, ((i + 1) % n) as u64);
+            a.push(encode::enc_str_x_imm(10, 9, 0));
+            a.push(encode::enc_movz(0, 1, 0, true));
+            to_out.push(a.skip_placeholder());
+            let skip_to = a.abs();
+            a.patch_cond(skip, if pass == 0 { Cond::Gt } else { Cond::Le });
+            a.patch_cbz(skip_notran, 0);
+            debug_assert_eq!(skip_to, a.abs());
+        }
+    }
+    a.push(encode::enc_movz(0, 0, 0, true)); // nothing ready
+    let out = a.abs();
+    for m in &to_out {
+        let this = a.start + m;
+        let delta = (out as i64 - this as i64) * 4;
+        a.words[*m] = encode::enc_b(delta as i32);
+    }
     a.push(encode::enc_ldr_x_imm(30, 31, 0));
     a.push(encode::enc_add_imm(31, 31, 16, true));
     a.push(encode::enc_ret(30));
     a
 }
 
-/// plans/M6.md item D: every actor's own `rt_enqueue`/`rt_select_and_run`/
-/// `__await_actor_*` triple, placed sequentially from `start` — the exact
-/// per-actor hand-assembled routines `layout_test_image` registers under
-/// `rt_enqueue_symbol`/`codegen::await_actor_symbol` so a compiled
-/// `Send`/`Await{ActorCall}` op's own `Reloc::Call` resolves to them.
-/// Word counts here never depend on `actor_addrs`' own field *values*
-/// (every `load_imm` is a fixed four words regardless) — only on
-/// `tables`/`actor_dispatch`'s own shapes — so this fn is safe to call
-/// once with a placeholder `actor_addrs` purely to learn the total word
-/// count (sizing the `rtdata` section itself needs), then again with the
+/// The deadlock diagnostic's exact transcript wording (printed through
+/// the ordinary `__wrela_abort` path onto the failing root turn's own
+/// test line, then counted as that test's failure — the image exits
+/// nonzero): nothing is ready to run and the root turn has not
+/// completed, so no progress is possible — fail closed, deterministic,
+/// never a hang.
+pub const DEADLOCK_MSG: &str =
+    "runtime deadlock: no turn is ready and the root turn has not completed";
+
+/// Every actor's own `rt_enqueue`/`rt_select_and_run` pair, placed
+/// sequentially from `start`, then the one shared `rt_run_one` scheduler
+/// tick over all of them — `layout_test_image` registers each enqueue
+/// under `rt_enqueue_symbol` so a compiled `Send`/`Await{ActorCall}`
+/// op's own `Reloc::Call` resolves to it; the entry driver reaches
+/// `rt_run_one` by the returned word index. Word counts here never
+/// depend on `placement`'s own address *values* (every `load_imm` is a
+/// fixed four words regardless) — only on `tables`/`actor_dispatch`'s
+/// own shapes — so this fn is safe to call once with a placeholder
+/// placement purely to learn the total word count, then again with the
 /// real, now-known addresses for the bytes that actually ship.
+struct RuntimeGlue {
+    asms: Vec<Asm>,
+    symbols: BTreeMap<String, usize>,
+    /// `rt_run_one`'s own absolute word index (the entry driver's
+    /// scheduler-tick target). Present whenever any glue exists at all.
+    rt_run_one_start: usize,
+}
+
 fn build_runtime_glue_block(
     tables: &RuntimeTables,
-    actor_dispatch: &[(String, Vec<String>)],
-    actor_addrs: &[ActorAddrs],
+    actor_dispatch: &[(String, Vec<(String, bool)>)],
+    placement: &RuntimePlacement,
     start: usize,
-) -> (Vec<Asm>, BTreeMap<String, usize>) {
+) -> RuntimeGlue {
     let mut asms = Vec::new();
     let mut symbols = BTreeMap::new();
+    let mut select_starts = Vec::with_capacity(tables.actors.len());
     let mut cursor = start;
     for (i, a) in tables.actors.iter().enumerate() {
-        let addrs = &actor_addrs[i];
+        let addrs = &placement.actors[i];
         let (_, dispatch_keys) = &actor_dispatch[i];
 
         let enqueue_start = cursor;
@@ -1763,15 +1942,17 @@ fn build_runtime_glue_block(
             select_start,
         );
         cursor += select_asm.words.len();
+        select_starts.push(select_start);
         asms.push(select_asm);
-
-        let glue_start = cursor;
-        let glue_asm = build_await_actor_glue(addrs, enqueue_start, select_start, glue_start);
-        cursor += glue_asm.words.len();
-        symbols.insert(crate::codegen::await_actor_symbol(&a.name), glue_start);
-        asms.push(glue_asm);
     }
-    (asms, symbols)
+    let rt_run_one_start = cursor;
+    let run_one_asm = build_rt_run_one(&select_starts, placement.rr_cursor, rt_run_one_start);
+    asms.push(run_one_asm);
+    RuntimeGlue {
+        asms,
+        symbols,
+        rt_run_one_start,
+    }
 }
 
 /// plans/M6.md item D: the real boot sequence's own actor-state half —
@@ -1826,24 +2007,6 @@ fn build_boot_init(
     a.push(encode::enc_add_imm(31, 31, 16, true));
     a.push(encode::enc_ret(30));
     a
-}
-
-/// The named abort stub `rt_select_and_run`'s own `dispatch` table points
-/// an `async` method's entry at (module doc above: "at C, an async
-/// dispatch aborts named item D"). Prints nothing on its own (this fn only
-/// builds the *fragment*; a caller wiring it into a real report/console
-/// path is the same `__wrela_abort`-family machinery the M5 harness
-/// already has) — at C, its whole job is to `BRK` with a distinct,
-/// documented immediate so a post-mortem register/memory dump can tell
-/// "an async actor method was dispatched before item D exists" apart from
-/// every other guard in this file.
-pub const BRK_ASYNC_DISPATCH_UNIMPLEMENTED: u16 = 0xACD1;
-
-pub fn build_async_dispatch_abort_stub(start: usize) -> Vec<u32> {
-    let mut a = Asm::new(start);
-    a.push(encode::enc_brk(BRK_ASYNC_DISPATCH_UNIMPLEMENTED));
-    a.push(encode::enc_ret(30)); // unreachable in practice; documented defense.
-    a.words
 }
 
 // ===========================================================================
@@ -2595,7 +2758,17 @@ fn build_entry_driver(
     append_start: usize,
     commit_start: usize,
     fmt_dec_start: usize,
+    abort_fixed_start: usize,
     runtime_tests: &[String],
+    // The park-and-resume additions: which tests are async (compiled
+    // state machines whose calls return TURN_STATUS_* — a sync test's
+    // return value must never be misread as a status), and where the
+    // scheduler tick lives. `rt_run_one_start` is `None` only when no
+    // runtime glue exists at all — in which case no test can be async
+    // either (an async test is itself a flow fn, which forces the glue
+    // block into existence via its own free-turn area).
+    async_tests: &std::collections::BTreeSet<String>,
+    rt_run_one_start: Option<usize>,
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
     boot_init_start: Option<usize>,
@@ -2618,6 +2791,19 @@ fn build_entry_driver(
         a.load_imm(10, addrs.info_base + off);
         a.push(encode::enc_str_x_imm(9, 10, 0));
     }
+
+    // The deadlock diagnostic's message, interned once for every async
+    // test's own scheduler loop below (`DEADLOCK_MSG`;
+    // `compute_transcript_bound` accounts for it explicitly).
+    let deadlock_off = if async_tests.is_empty() {
+        None
+    } else {
+        Some(append_rodata(
+            rodata,
+            rodata_cursor,
+            DEADLOCK_MSG.as_bytes().to_vec(),
+        ))
+    };
 
     // plans/M6.md item D: the real boot sequence C deferred — every
     // actor's own state gets zero-initialized (`build_boot_init`) before
@@ -2665,6 +2851,63 @@ fn build_entry_driver(
 
         a.load_imm(8, addrs.info_base + mi::OFF_TEST_LINE_BUF);
         a.bl_call_key(name);
+
+        // The root turn's own scheduler loop (async tests only — the
+        // root test turn parks/resumes through the IDENTICAL turn-record
+        // machinery an actor turn uses, via its own free-turn area):
+        // while the test reports TURN_STATUS_SUSPENDED, drive the
+        // scheduler — re-enter the test the moment its reply arrives
+        // (`resume_ready`), otherwise run one ready actor turn-slice
+        // (`rt_run_one` — this interleaving is exactly 04 §2's "awaiting
+        // a dependency lets other actors run"), and if NOTHING is ready
+        // while the root is still incomplete, no progress is possible:
+        // abort with the named deadlock diagnostic (prints `FAILED
+        // <DEADLOCK_MSG>` on this test's own line, lands at the next
+        // test block via the ordinary landing pad, image exits nonzero).
+        // A sync test never enters this loop: its return value in x0 is
+        // an ordinary value, not a status word.
+        if async_tests.contains(name) {
+            let rt_run_one = rt_run_one_start
+                .expect("an async test forces the runtime glue block into existence");
+            let ddl_off =
+                deadlock_off.expect("deadlock message interned whenever async tests exist");
+            let status_loop_top = a.abs();
+            let skip_done = a.skip_placeholder(); // cbz x0, .done
+            let drive_top = a.abs();
+            // NB: `Asm` relocs carry ABSOLUTE word indices (the
+            // `bl_call_key` convention) — `abs()`, not `words.len()`.
+            let root_area_word = a.abs();
+            a.load_imm(9, 0); // patched: x9 = &this test's own turn area
+            a.relocs.push(Reloc::TurnFrameAddr {
+                word: root_area_word,
+                key: name.clone(),
+            });
+            a.push(encode::enc_ldr_x_imm(
+                10,
+                9,
+                crate::codegen::OFF_TURN_RESUME_READY as u16,
+            ));
+            let skip_reenter = a.skip_placeholder(); // cbnz x10, .reenter
+            a.bl_to(rt_run_one);
+            {
+                // cbnz x0, .drive_top (backward — a slice ran; try again)
+                let this = a.abs();
+                let delta = (drive_top as i64 - this as i64) * 4;
+                a.push(encode::enc_cbnz(0, delta as i32, true));
+            }
+            // Deadlock: root not ready, nothing else ready either.
+            a.load_rodata_addr_at(0, ddl_off);
+            a.load_imm(1, DEADLOCK_MSG.len() as u64);
+            a.bl_to(abort_fixed_start); // noreturn (landing pad)
+            let reenter = a.abs();
+            a.patch_cbnz(skip_reenter, 10);
+            debug_assert_eq!(reenter, a.abs());
+            a.bl_call_key(name); // resume (the fn's own discriminant routes)
+            a.b_to(status_loop_top);
+            let done = a.abs();
+            a.patch_cbz(skip_done, 0);
+            debug_assert_eq!(done, a.abs());
+        }
 
         a.load_rodata_addr_at(0, ok_off);
         a.load_imm(1, 3);
@@ -2804,7 +3047,12 @@ pub fn compute_transcript_bound(
     program: &CodegenProgram,
     runtime_tests: &[String],
 ) -> TranscriptBound {
-    let longest_msg = longest_rodata_len(program);
+    // The deadlock diagnostic (`DEADLOCK_MSG`) is a FAILED-line message
+    // the *harness* interns, after this bound has already been checked —
+    // so it must be accounted for here explicitly, not discovered via
+    // `program.rodata` (the park-and-resume redesign's one addition to
+    // this bound; still an over-approximation, never an undercount).
+    let longest_msg = longest_rodata_len(program).max(DEADLOCK_MSG.len() as u64);
     let mut worst_case_bytes = worst_case_summary_line_bytes();
     for name in runtime_tests {
         worst_case_bytes += worst_case_test_line_bytes(name, longest_msg);
@@ -2879,11 +3127,19 @@ pub struct BootCtx<'a> {
     pub graph: &'a ImageGraph,
     pub modules: &'a BTreeMap<String, Module>,
     pub layout_ctx: &'a LayoutCtx,
+    /// `codegen::async_frame_sizes`' result for this same build — every
+    /// async fn's own persistent frame bytes, the park-and-resume
+    /// redesign's sizing input (`compute_runtime_tables`'s own doc).
+    pub async_frames: &'a BTreeMap<String, u64>,
 }
 
 pub fn layout_test_image(
     program: &CodegenProgram,
     runtime_tests: &[String],
+    // Which of `runtime_tests` are async (state machines with the
+    // TURN_STATUS_* return ABI) — the entry driver's own scheduler loop
+    // wraps exactly these (`build_entry_driver`'s own doc comment).
+    async_tests: &std::collections::BTreeSet<String>,
     boot: Option<BootCtx>,
     // plans/M6.md decision 11b: every runtime test's own already-resolved
     // `Actor[T]` param values (build-time actor indices, `bin/wrela.rs`'s
@@ -2932,12 +3188,12 @@ pub fn layout_test_image(
     // the build declares no actors — every pre-M6 call site's own
     // behavior, byte-identical.
     let runtime_tables: Option<RuntimeTables> = match &boot {
-        Some(b) => compute_runtime_tables(b.graph, b.modules, b.layout_ctx)
+        Some(b) => compute_runtime_tables(b.graph, b.modules, b.layout_ctx, b.async_frames)
             .map_err(LayoutError::new)?
             .filter(|t| t.total_bytes > 0),
         None => None,
     };
-    let actor_dispatch: Vec<(String, Vec<String>)> = match (&runtime_tables, &boot) {
+    let actor_dispatch: Vec<(String, Vec<(String, bool)>)> = match (&runtime_tables, &boot) {
         (Some(tables), Some(b)) => {
             let shapes = merge_actor_pub_methods(b.modules, b.layout_ctx)?;
             tables
@@ -2947,7 +3203,7 @@ pub fn layout_test_image(
                     let methods = shapes.get(&a.name).cloned().unwrap_or_default();
                     let keys = methods
                         .iter()
-                        .map(|m| format!("{}.{}", a.name, m.name))
+                        .map(|m| (format!("{}.{}", a.name, m.name), m.is_async))
                         .collect();
                     (a.name.clone(), keys)
                 })
@@ -3013,24 +3269,25 @@ pub fn layout_test_image(
     // computed below, replacing the placeholder-valued bytes in the final
     // buffer at the identical word offsets.
     let glue_start = checkpoint_start + checkpoint_asm.words.len();
-    let (dummy_actor_addrs, state_sizes): (Vec<ActorAddrs>, Vec<u64>) = match &runtime_tables {
+    let (dummy_placement, state_sizes): (RuntimePlacement, Vec<u64>) = match &runtime_tables {
         Some(tables) => (
-            place_actor_addrs(0, tables),
+            place_runtime_tables(0, tables),
             tables.actors.iter().map(|a| a.state_size).collect(),
         ),
-        None => (Vec::new(), Vec::new()),
+        None => (RuntimePlacement::default(), Vec::new()),
     };
-    let (dummy_glue_asms, _) = runtime_tables
+    let dummy_glue = runtime_tables.as_ref().map(|tables| {
+        build_runtime_glue_block(tables, &actor_dispatch, &dummy_placement, glue_start)
+    });
+    let glue_words_len: usize = dummy_glue
         .as_ref()
-        .map(|tables| {
-            build_runtime_glue_block(tables, &actor_dispatch, &dummy_actor_addrs, glue_start)
-        })
-        .unwrap_or_default();
-    let glue_words_len: usize = dummy_glue_asms.iter().map(|a| a.words.len()).sum();
+        .map(|g| g.asms.iter().map(|a| a.words.len()).sum())
+        .unwrap_or(0);
+    let rt_run_one_start = dummy_glue.as_ref().map(|g| g.rt_run_one_start);
     let boot_init_start = glue_start + glue_words_len;
     let dummy_boot_init_asm = build_boot_init(
         &actor_names,
-        &dummy_actor_addrs,
+        &dummy_placement.actors,
         &state_sizes,
         &init_keys,
         boot_init_start,
@@ -3046,7 +3303,10 @@ pub fn layout_test_image(
         ring_append_start,
         line_commit_start,
         fmt_dec_start,
+        abort_fixed_start,
         runtime_tests,
+        async_tests,
+        rt_run_one_start,
         &mut rodata,
         &mut rodata_cursor,
         boot_init_start_opt,
@@ -3069,8 +3329,10 @@ pub fn layout_test_image(
         harness_words.extend(asm.words);
     }
     debug_assert_eq!(glue_start, harness_words.len());
-    for asm in &dummy_glue_asms {
-        harness_words.extend(asm.words.clone());
+    if let Some(g) = &dummy_glue {
+        for asm in &g.asms {
+            harness_words.extend(asm.words.clone());
+        }
     }
     debug_assert_eq!(boot_init_start, harness_words.len());
     harness_words.extend(dummy_boot_init_asm.words.clone());
@@ -3114,43 +3376,62 @@ pub fn layout_test_image(
     // fragments (glue routines + boot-init) at the identical word offsets
     // the placeholder pass already reserved — replacing their
     // placeholder-valued bytes in `harness_words` in place.
-    let glue_symbols: BTreeMap<String, usize> = if let Some(tables) = &runtime_tables {
-        let real_base = rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
-        let real_actor_addrs = place_actor_addrs(real_base, tables);
-        let (real_glue_asms, glue_symbols) =
-            build_runtime_glue_block(tables, &actor_dispatch, &real_actor_addrs, glue_start);
-        let mut w = glue_start;
-        for asm in &real_glue_asms {
-            for word in &asm.words {
+    let (glue_symbols, real_placement): (BTreeMap<String, usize>, Option<RuntimePlacement>) =
+        if let Some(tables) = &runtime_tables {
+            let real_base =
+                rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
+            let placement = place_runtime_tables(real_base, tables);
+            let real_glue =
+                build_runtime_glue_block(tables, &actor_dispatch, &placement, glue_start);
+            let mut w = glue_start;
+            for asm in &real_glue.asms {
+                for word in &asm.words {
+                    harness_words[w] = *word;
+                    w += 1;
+                }
+                // `build_rt_select_and_run_symbolic`'s own dispatch chain
+                // carries real `Reloc::Call`s (a sync method's real compiled
+                // body, or an async method's real state-machine entry) —
+                // these must resolve exactly like every other harness-section
+                // call, or the emitted `BL` stays a self-referencing
+                // placeholder.
+                harness_relocs.extend(asm.relocs.clone());
+            }
+            debug_assert_eq!(w, boot_init_start);
+            let real_boot_init_asm = build_boot_init(
+                &actor_names,
+                &placement.actors,
+                &state_sizes,
+                &init_keys,
+                boot_init_start,
+            );
+            let mut w = boot_init_start;
+            for word in &real_boot_init_asm.words {
                 harness_words[w] = *word;
                 w += 1;
             }
-            // `build_rt_select_and_run_symbolic`'s own dispatch chain
-            // carries real `Reloc::Call`s (a sync method's real compiled
-            // body, or an async method's real state-machine entry) —
-            // these must resolve exactly like every other harness-section
-            // call, or the emitted `BL` stays a self-referencing
-            // placeholder.
-            harness_relocs.extend(asm.relocs.clone());
-        }
-        debug_assert_eq!(w, boot_init_start);
-        let real_boot_init_asm = build_boot_init(
-            &actor_names,
-            &real_actor_addrs,
-            &state_sizes,
-            &init_keys,
-            boot_init_start,
-        );
-        let mut w = boot_init_start;
-        for word in &real_boot_init_asm.words {
-            harness_words[w] = *word;
-            w += 1;
-        }
-        harness_relocs.extend(real_boot_init_asm.relocs.clone());
-        debug_assert_eq!(w, entry_start);
-        glue_symbols
-    } else {
-        BTreeMap::new()
+            harness_relocs.extend(real_boot_init_asm.relocs.clone());
+            debug_assert_eq!(w, entry_start);
+            (real_glue.symbols, Some(placement))
+        } else {
+            (BTreeMap::new(), None)
+        };
+
+    // Resolves a `Reloc::TurnFrameAddr` key to its real turn-area
+    // address (`RuntimePlacement::turn_area_for`'s own rule) — an
+    // internal error if no tables exist or the key was never sized.
+    let turn_area_addr = |key: &str| -> Result<u64, LayoutError> {
+        let (Some(tables), Some(placement)) = (&runtime_tables, &real_placement) else {
+            return Err(LayoutError::new(format!(
+                "internal error: async fn `{key}` needs a turn area but this image has no \
+                 runtime tables"
+            )));
+        };
+        placement.turn_area_for(key, tables).ok_or_else(|| {
+            LayoutError::new(format!(
+                "internal error: async fn `{key}`'s own turn area was never sized"
+            ))
+        })
     };
 
     let mut sections = vec![
@@ -3206,6 +3487,12 @@ pub fn layout_test_image(
                 let target_addr = rb + *byte_offset as u64;
                 patch_adrp_add(&mut harness_words, *word_adrp, this_addr, target_addr)?;
             }
+            Reloc::TurnFrameAddr { word, key } => {
+                // The entry driver's own root-turn-area loads (the
+                // scheduler loop reads `resume_ready` through them).
+                let addr = turn_area_addr(key)?;
+                patch_load_imm_words(&mut harness_words, *word, addr);
+            }
             Reloc::AbortFixed { .. } | Reloc::AbortVal { .. } | Reloc::CheckpointService { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit an AbortFixed/AbortVal/CheckpointService reloc",
@@ -3224,8 +3511,8 @@ pub fn layout_test_image(
                     // rather than an ordinary `program.fns` entry
                     // (`fn_word_base`, code-section-relative) — checked
                     // second, never both at once for the same key (the two
-                    // naming schemes, `rt_enqueue_symbol`/`await_actor_symbol`
-                    // vs. plain `Struct.method`, never collide).
+                    // naming schemes, `rt_enqueue_symbol` vs. plain
+                    // `Struct.method`, never collide).
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4
@@ -3266,6 +3553,13 @@ pub fn layout_test_image(
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = harness_base + (checkpoint_start as u64) * 4;
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
+                }
+                Reloc::TurnFrameAddr { word, key: fn_key } => {
+                    // The compiled async fn's own persistent-frame base
+                    // load (its X_FRAME setup) — patched with its turn
+                    // area's real `rtdata` address.
+                    let addr = turn_area_addr(fn_key)?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
                 }
             }
         }
@@ -3351,8 +3645,11 @@ mod tests {
         let modules = one_module("m", "module m\n\nfn f():\n    pass\n");
         let graph = ImageGraph::default();
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let out = compute_runtime_tables(&graph, &modules, &ctx).unwrap();
-        assert!(out.is_none(), "no actors -> no runtime tables at all");
+        let out = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new()).unwrap();
+        assert!(
+            out.is_none(),
+            "no actors and no async fns -> no runtime tables at all"
+        );
     }
 
     #[test]
@@ -3380,7 +3677,7 @@ pub struct Store:
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", Some(4)));
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let tables = compute_runtime_tables(&graph, &modules, &ctx)
+        let tables = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new())
             .unwrap()
             .expect("one actor -> Some");
         assert_eq!(tables.actors.len(), 1);
@@ -3390,13 +3687,15 @@ pub struct Store:
         // state: two u32/u64 fields, each one 8-byte slot (mwir's own
         // "one 8-byte-slot layout rule") -> 16 bytes.
         assert_eq!(a.state_size, 16);
-        // slot: 8-byte method tag + the widest pub method's own args
-        // (`bump`'s one `u32` param, one slot) -> 16; `get` has none.
-        assert_eq!(a.slot_size, 16);
-        assert_eq!(a.frame_size, TURN_FRAME_BOOKKEEPING_SIZE);
+        // slot: 8-byte method tag + 8-byte waker + the widest pub
+        // method's own args (`bump`'s one `u32` param, one slot) -> 24;
+        // `get` has none.
+        assert_eq!(a.slot_size, 24);
+        // No async method -> the turn area is exactly the 48-byte record.
+        assert_eq!(a.frame_size, crate::codegen::TURN_RECORD_SIZE);
         assert_eq!(tables.ready_queue_capacity, 2); // 1 actor + root
         assert_eq!(tables.group_arena_capacity, 0);
-        let expect_total = a.state_size + a.mailbox_capacity as u64 * a.slot_size + 32 /* bookkeeping */ + a.frame_size
+        let expect_total = a.state_size + a.mailbox_capacity as u64 * a.slot_size + 24 /* head/tail/count */ + a.frame_size
                 + tables.ready_queue_capacity * 8
                 + 8; // rr cursor
         assert_eq!(tables.total_bytes, expect_total);
@@ -3411,7 +3710,7 @@ pub struct Store:
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", None));
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let err = compute_runtime_tables(&graph, &modules, &ctx).unwrap_err();
+        let err = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new()).unwrap_err();
         assert!(err.contains("mailbox"));
     }
 
@@ -3437,12 +3736,13 @@ pub struct Store:
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", Some(2)));
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let tables = compute_runtime_tables(&graph, &modules, &ctx)
+        let tables = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new())
             .unwrap()
             .unwrap();
         // `get` (pub, no params) is the only message shape; the private
-        // `helper`'s own three-`u64`-param body never widens the slot.
-        assert_eq!(tables.actors[0].slot_size, 8);
+        // `helper`'s own three-`u64`-param body never widens the slot
+        // past the 16-byte idx+waker floor.
+        assert_eq!(tables.actors[0].slot_size, 16);
     }
 
     #[test]
@@ -3698,15 +3998,17 @@ fn two():
         let long_bound = compute_transcript_bound(&long, &tests);
         assert!(long_bound.worst_case_bytes > short_bound.worst_case_bytes);
         // The over-approximation counts the longest message *twice* (an
-        // AbortVal's prefix+suffix pair) plus up to 20 interpolated digits.
+        // AbortVal's prefix+suffix pair) plus up to 20 interpolated
+        // digits. The short program's own floor is `DEADLOCK_MSG` (a
+        // harness-interned FAILED-line message, accounted explicitly).
         assert_eq!(
             long_bound.worst_case_bytes - short_bound.worst_case_bytes,
-            2 * (500 - 1)
+            2 * (500 - DEADLOCK_MSG.len() as u64)
         );
     }
 
     #[test]
-    fn transcript_bound_with_no_rodata_is_just_the_fixed_harness_text() {
+    fn transcript_bound_with_no_rodata_still_covers_the_deadlock_message() {
         let program = CodegenProgram {
             fns: BTreeMap::new(),
             rodata: Vec::new(),
@@ -3714,9 +4016,11 @@ fn two():
         let tests = vec!["only_test".to_string()];
         let bound = compute_transcript_bound(&program, &tests);
         // "test " (5) + "only_test" (9) + ": " (2) = 16, plus
-        // max(3, 7+0+20+1=28) = 28, so 44 for the one test line, plus the
-        // summary's own exact 2*20+9+8=57.
-        assert_eq!(bound.worst_case_bytes, 44 + 57);
+        // max(3, 7 + 2*len(DEADLOCK_MSG) + 20 + 1) for the one test line
+        // (the deadlock diagnostic is the longest message even with an
+        // empty rodata pool), plus the summary's own exact 2*20+9+8=57.
+        let failed_len = 7 + 2 * DEADLOCK_MSG.len() as u64 + 20 + 1;
+        assert_eq!(bound.worst_case_bytes, 16 + failed_len + 57);
     }
 
     #[test]
@@ -3853,11 +4157,11 @@ mod harness_jit {
             f()
         }
 
-        fn call3_at(&self, byte_offset: usize, a0: u64, a1: u64, a2: u64) -> u64 {
+        fn call4_at(&self, byte_offset: usize, a0: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             assert!(byte_offset < self.len);
-            let f: extern "C" fn(u64, u64, u64) -> u64 =
+            let f: extern "C" fn(u64, u64, u64, u64) -> u64 =
                 unsafe { std::mem::transmute(self.ptr.add(byte_offset)) };
-            f(a0, a1, a2)
+            f(a0, a1, a2, a3)
         }
     }
 
@@ -4180,14 +4484,21 @@ mod harness_jit {
         }
     }
 
-    // --- plans/M6.md item C: rt_enqueue / rt_select_and_run -----------------
+    // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
     //
-    // Two stand-in "actor method" bodies (`add x0, x1, #N; ret` — self in
-    // x0 unread, one scalar arg in x1, result in x0, the identical ABI
-    // shape `codegen.rs`'s own real method calls already use) stand in
-    // for a compiled actor's own `pub fn`s, combined into one JIT'd page
-    // alongside `rt_enqueue`/`rt_select_and_run` themselves — the M5
-    // harness's own combined-section technique, one level up.
+    // Stand-in "actor method" bodies (hand-assembled, the identical ABI a
+    // real compiled method uses) stand in for compiled `pub fn`s /
+    // `pub async fn` state machines, combined into one JIT'd page
+    // alongside the real runtime routines — the M5 harness's own
+    // combined-section technique, one level up. Sync stand-ins:
+    // `add x0, x1, #N; ret` (self in x0 unread, one scalar arg in x1,
+    // reply in x0). The async stand-in below implements the full
+    // park-and-resume fn contract (`codegen::OFF_TURN_*`) by hand.
+
+    use crate::codegen::{
+        OFF_TURN_BUSY, OFF_TURN_REPLY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED, TURN_RECORD_SIZE,
+        TURN_STATUS_COMPLETED, TURN_STATUS_SUSPENDED,
+    };
 
     fn stand_in_method(add_const: u16) -> Vec<u32> {
         vec![
@@ -4196,31 +4507,62 @@ mod harness_jit {
         ]
     }
 
-    #[test]
-    fn rt_enqueue_admits_fifo_and_rejects_when_the_ring_is_full() {
-        let capacity: u64 = 2;
-        let slot_size: u64 = 16; // 8-byte method tag + one 8-byte scalar arg
-        let state_size: u64 = 8;
-        let ram = HostRam::new(4096);
-        let base = ram.base();
-        let addrs = ActorAddrs {
-            state: base,
-            ring: base + state_size,
-            head: base + state_size + capacity * slot_size,
-            tail: base + state_size + capacity * slot_size + 8,
-            count: base + state_size + capacity * slot_size + 16,
-            last_result: base + state_size + capacity * slot_size + 24,
-            busy: base + state_size + capacity * slot_size + 32,
-        };
+    /// One actor's own region in a `HostRam` page, laid out exactly the
+    /// way `place_runtime_tables` places a real actor (state, ring,
+    /// head/tail/count, turn area), plus one detached stand-in **waker
+    /// record** (`waker`) an enqueued message can name so a test can
+    /// observe reply delivery — standing in for the awaiting turn's own
+    /// turn area.
+    struct ActorFixture {
+        ram: HostRam,
+        addrs: ActorAddrs,
+        waker: u64,
+    }
 
-        let method0 = stand_in_method(1); // arg0 + 1
-        let method1 = stand_in_method(2); // arg0 + 2
+    impl ActorFixture {
+        fn new(capacity: u64, slot_size: u64) -> ActorFixture {
+            let state_size: u64 = 8;
+            let ram = HostRam::new(4096);
+            let base = ram.base();
+            let ring = base + state_size;
+            let head = ring + capacity * slot_size;
+            let addrs = ActorAddrs {
+                state: base,
+                ring,
+                head,
+                tail: head + 8,
+                count: head + 16,
+                turn: head + 24,
+            };
+            let waker = addrs.turn + TURN_RECORD_SIZE + 64; // detached record, well past the turn area
+            ActorFixture { ram, addrs, waker }
+        }
+
+        fn rel(&self, addr: u64) -> u64 {
+            addr - self.ram.base()
+        }
+
+        fn read(&self, addr: u64) -> u64 {
+            self.ram.read_u64(self.rel(addr))
+        }
+
+        fn write(&self, addr: u64, v: u64) {
+            self.ram.write_u64(self.rel(addr), v);
+        }
+    }
+
+    #[test]
+    fn rt_enqueue_admits_fifo_carries_the_waker_and_rejects_when_full() {
+        let capacity: u64 = 2;
+        let slot_size: u64 = 24; // idx + waker + one scalar arg
+        let f = ActorFixture::new(capacity, slot_size);
+        let addrs = f.addrs;
 
         let mut combined: Vec<u32> = Vec::new();
         let method0_start = combined.len();
-        combined.extend(method0);
+        combined.extend(stand_in_method(1)); // arg + 1
         let method1_start = combined.len();
-        combined.extend(method1);
+        combined.extend(stand_in_method(2)); // arg + 2
         let enqueue_start = combined.len();
         combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
         let select_start = combined.len();
@@ -4228,7 +4570,7 @@ mod harness_jit {
             &addrs,
             capacity,
             slot_size,
-            &[method0_start, method1_start],
+            &[(method0_start, false), (method1_start, false)],
             select_start,
         ));
 
@@ -4240,53 +4582,59 @@ mod harness_jit {
         let arg20: u64 = 20;
         let arg30: u64 = 30;
 
-        // Two admissions, FIFO order preserved by construction (always
-        // appended at `tail`).
         assert_eq!(
-            page.call3_at(enqueue_off, 0, &arg10 as *const u64 as u64, 1),
+            page.call4_at(enqueue_off, 0, &arg10 as *const u64 as u64, 1, f.waker),
             0,
             "first enqueue admitted"
         );
         assert_eq!(
-            page.call3_at(enqueue_off, 1, &arg20 as *const u64 as u64, 1),
+            page.call4_at(enqueue_off, 1, &arg20 as *const u64 as u64, 1, f.waker),
             0,
             "second enqueue admitted"
         );
-        assert_eq!(ram.read_u64(addrs.count - base), 2);
+        assert_eq!(f.read(addrs.count), 2);
 
-        // A third, over capacity=2: rejected, and the ring's own state
-        // (`count`) is left untouched (02 §9.4: an outcome that did not
-        // consume arguments hands them back — this item's own minimal
-        // encoding of that is simply "never mutated").
+        // A third, over capacity=2: rejected, ring state untouched
+        // (02 §9.4: an outcome that did not consume arguments hands them
+        // back — the minimal encoding is simply "never mutated").
         assert_eq!(
-            page.call3_at(enqueue_off, 0, &arg30 as *const u64 as u64, 1),
+            page.call4_at(enqueue_off, 0, &arg30 as *const u64 as u64, 1, f.waker),
             1,
             "ring full -> rejected"
         );
         assert_eq!(
-            ram.read_u64(addrs.count - base),
+            f.read(addrs.count),
             2,
             "a rejected enqueue must not touch count"
         );
 
-        // Non-reentrancy has nothing to suspend yet at C (sync dispatch
-        // only): each `rt_select_actor` call fully completes one turn.
-        assert_eq!(ram.read_u64(addrs.busy - base), 0);
+        // FIFO dispatch; each completion delivers to the waker record.
         assert_eq!(page.call0_at(select_off), 1, "ran the first queued turn");
         assert_eq!(
-            ram.read_u64(addrs.last_result - base),
+            f.read(f.waker + OFF_TURN_REPLY),
             11,
-            "FIFO: (method 0, arg 10), enqueued first, dispatched first"
+            "FIFO: (method 0, arg 10) enqueued first, dispatched first; reply delivered to the waker"
         );
         assert_eq!(
-            ram.read_u64(addrs.busy - base),
+            f.read(f.waker + OFF_TURN_RESUME_READY),
+            1,
+            "delivery marks the waker ready to resume"
+        );
+        assert_eq!(
+            f.read(addrs.turn + OFF_TURN_BUSY),
             0,
             "busy cleared after the turn"
         );
+        assert_eq!(
+            f.read(addrs.count),
+            1,
+            "selection released the dispatched slot (04 §2) — only the second message remains"
+        );
 
+        f.write(f.waker + OFF_TURN_RESUME_READY, 0);
         assert_eq!(page.call0_at(select_off), 1, "ran the second queued turn");
         assert_eq!(
-            ram.read_u64(addrs.last_result - base),
+            f.read(f.waker + OFF_TURN_REPLY),
             22,
             "(method 1, arg 20) dispatched second, in admission order"
         );
@@ -4299,27 +4647,55 @@ mod harness_jit {
     }
 
     #[test]
+    fn a_send_with_no_waker_delivers_nowhere() {
+        let capacity: u64 = 2;
+        let slot_size: u64 = 24;
+        let f = ActorFixture::new(capacity, slot_size);
+        let addrs = f.addrs;
+
+        let mut combined: Vec<u32> = Vec::new();
+        let method0_start = combined.len();
+        combined.extend(stand_in_method(1));
+        let enqueue_start = combined.len();
+        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
+        let select_start = combined.len();
+        combined.extend(build_rt_select_and_run(
+            &addrs,
+            capacity,
+            slot_size,
+            &[(method0_start, false)],
+            select_start,
+        ));
+        let page = ExecPage::new(&combined);
+
+        let arg: u64 = 7;
+        assert_eq!(
+            page.call4_at(enqueue_start * 4, 0, &arg as *const u64 as u64, 1, 0),
+            0,
+            "send admitted (waker = 0)"
+        );
+        assert_eq!(page.call0_at(select_start * 4), 1, "the send's turn ran");
+        assert_eq!(
+            f.read(f.waker + OFF_TURN_RESUME_READY),
+            0,
+            "no waker -> nothing marked ready anywhere"
+        );
+        assert_eq!(f.read(addrs.turn + OFF_TURN_BUSY), 0);
+    }
+
+    #[test]
     fn rt_select_and_run_never_admits_a_second_turn_while_busy() {
-        // A direct exercise of decision 4's own non-reentrancy flag: with
-        // `busy` pre-set (as a real suspended awaiting turn would leave
-        // it, once item D wires real suspension), `rt_select_actor` must
-        // do nothing at all — not even peek at `count` — and report idle.
+        // Decision 4's structural non-reentrancy: with `busy` set (a real
+        // parked awaiting turn's state) and no delivered reply, the actor
+        // must do nothing — the queued message stays queued.
         let capacity: u64 = 1;
-        let slot_size: u64 = 16;
-        let state_size: u64 = 8;
-        let ram = HostRam::new(4096);
-        let base = ram.base();
-        let addrs = ActorAddrs {
-            state: base,
-            ring: base + state_size,
-            head: base + state_size + capacity * slot_size,
-            tail: base + state_size + capacity * slot_size + 8,
-            count: base + state_size + capacity * slot_size + 16,
-            last_result: base + state_size + capacity * slot_size + 24,
-            busy: base + state_size + capacity * slot_size + 32,
-        };
-        ram.write_u64(addrs.busy - base, 1);
-        ram.write_u64(addrs.count - base, 1); // a message is queued...
+        let slot_size: u64 = 24;
+        let f = ActorFixture::new(capacity, slot_size);
+        let addrs = f.addrs;
+        f.write(addrs.turn + OFF_TURN_BUSY, 1);
+        f.write(addrs.turn + OFF_TURN_SUSPENDED, 1); // parked...
+        // ...but resume_ready stays 0: the awaited reply has not arrived.
+        f.write(addrs.count, 1); // a second message is queued...
 
         let mut combined: Vec<u32> = Vec::new();
         let method0_start = combined.len();
@@ -4329,7 +4705,7 @@ mod harness_jit {
             &addrs,
             capacity,
             slot_size,
-            &[method0_start],
+            &[(method0_start, false)],
             select_start,
         ));
         let page = ExecPage::new(&combined);
@@ -4337,53 +4713,32 @@ mod harness_jit {
         assert_eq!(
             page.call0_at(select_start * 4),
             0,
-            "busy actor admits no new turn, even with a message queued"
+            "busy-suspended actor admits no new turn, even with a message queued"
         );
-        assert_eq!(ram.read_u64(addrs.count - base), 1, "count untouched");
+        assert_eq!(f.read(addrs.count), 1, "count untouched");
         assert_eq!(
-            ram.read_u64(addrs.last_result - base),
-            0,
-            "no dispatch happened"
+            f.read(addrs.turn + OFF_TURN_BUSY),
+            1,
+            "still owned by the parked turn"
         );
     }
 
-    /// A minimum-size ring (`capacity=1`, `slot_size=8` — the "tag only,
-    /// no args" floor `ActorRuntimeLayout::slot_size`'s own doc comment
-    /// names as the smallest a slot can ever be) still dispatches
-    /// correctly: this is exactly the shape `rt_select_and_run`'s own
-    /// out-of-bounds arg-word read (module doc note, `build_rt_select_and_run`)
-    /// reads *past* the ring into `head`/`tail` themselves — harmlessly
-    /// here (the stand-in method ignores its args), but real enough a
-    /// case that a real HVF boot at this exact shape (`wrela-vmm`'s own
-    /// abandon-path conformance test) once surfaced an unrelated
-    /// alignment bug in that test's *own* address layout before this
-    /// exact scenario was isolated and proven sound at the JIT level.
     #[test]
     fn rt_select_and_run_dispatches_correctly_at_the_smallest_possible_ring() {
+        // capacity=1, slot_size=16 (idx + waker, no args) — the smallest
+        // legal slot; the bounded arg load must never read past the ring.
         let capacity: u64 = 1;
-        let slot_size: u64 = 8; // tag only, no args
-        let state_size: u64 = 8;
-        let ram = HostRam::new(4096);
-        let base = ram.base();
-        let addrs = ActorAddrs {
-            state: base,
-            ring: base + state_size,
-            head: base + state_size + capacity * slot_size,
-            tail: base + state_size + capacity * slot_size + 8,
-            count: base + state_size + capacity * slot_size + 16,
-            last_result: base + state_size + capacity * slot_size + 24,
-            busy: base + state_size + capacity * slot_size + 32,
-        };
-        // Enqueue one message (method 0, no args) via write directly.
-        ram.write_u64(addrs.ring - base, 0); // method_idx = 0
-        ram.write_u64(addrs.tail - base, 1);
-        ram.write_u64(addrs.count - base, 1);
+        let slot_size: u64 = 16;
+        let f = ActorFixture::new(capacity, slot_size);
+        let addrs = f.addrs;
+        // Hand-seed one message (method 0, waker = the stand-in record).
+        f.write(addrs.ring, 0);
+        f.write(addrs.ring + 8, f.waker);
+        f.write(addrs.tail, 1);
+        f.write(addrs.count, 1);
 
         // A genuine no-arg method: returns a fixed constant, never reads
-        // x1/x2 at all (module doc above — at `slot_size=8` neither is
-        // ever loaded, so a method that *did* read them would see
-        // whatever the caller happened to leave there, not a message
-        // argument).
+        // x1/x2 at all.
         let no_arg_method = vec![encode::enc_movz(0, 42, 0, true), encode::enc_ret(30)];
 
         let mut combined: Vec<u32> = Vec::new();
@@ -4394,47 +4749,68 @@ mod harness_jit {
             &addrs,
             capacity,
             slot_size,
-            &[method0_start],
+            &[(method0_start, false)],
             select_start,
         ));
         let page = ExecPage::new(&combined);
-        let ran = page.call0_at(select_start * 4);
-        assert_eq!(ran, 1, "should have dispatched");
-        assert_eq!(ram.read_u64(addrs.last_result - base), 42);
+        assert_eq!(page.call0_at(select_start * 4), 1, "should have dispatched");
+        assert_eq!(f.read(f.waker + OFF_TURN_REPLY), 42);
     }
 
-    /// plans/M6.md item D: `build_await_actor_glue`'s own conformance
-    /// proof — the one genuinely new runtime mechanism this item adds
-    /// (`codegen.rs`'s own "Await, simplified" module doc has the full
-    /// design). Real execution (JIT, this module's own established
-    /// oracle), combining a stand-in sync "actor method" with the real
-    /// `rt_enqueue`/`rt_select_and_run` this same fixture already proves
-    /// sound, plus the new glue on top: `rt_enqueue` admits a no-arg
-    /// message, the glue's own drain loop ticks `rt_select_and_run` until
-    /// idle, and the reply it hands back is the dispatched method's own
-    /// real return value read straight out of `last_result` — the exact
-    /// slot item C built but never consumed.
+    /// A hand-assembled stand-in that implements the full compiled-async-
+    /// fn contract (`codegen.rs`'s park-and-resume module doc) against a
+    /// baked-in turn record address: fresh entry parks immediately (as if
+    /// its first op were an `await` of something external), a resumed
+    /// entry consumes the discriminant + delivered reply and completes
+    /// with `reply + 100`.
+    fn stand_in_async_method(rec: u64) -> Vec<u32> {
+        let mut w: Vec<u32> = Vec::new();
+        // load_imm x9, rec (4 words)
+        for word in load_imm4(9, rec) {
+            w.push(word);
+        }
+        w.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16));
+        // cbnz x10, +5 words -> .resume
+        w.push(encode::enc_cbnz(10, 5 * 4, true));
+        // fresh: suspended = 1; return TURN_STATUS_SUSPENDED.
+        w.push(encode::enc_movz(11, 1, 0, true));
+        w.push(encode::enc_str_x_imm(11, 9, OFF_TURN_SUSPENDED as u16));
+        w.push(encode::enc_movz(0, TURN_STATUS_SUSPENDED as u16, 0, true));
+        w.push(encode::enc_ret(30));
+        // .resume: clear discriminant + ready, complete with reply + 100.
+        w.push(encode::enc_str_x_imm(31, 9, OFF_TURN_SUSPENDED as u16));
+        w.push(encode::enc_str_x_imm(31, 9, OFF_TURN_RESUME_READY as u16));
+        w.push(encode::enc_ldr_x_imm(1, 9, OFF_TURN_REPLY as u16));
+        w.push(encode::enc_add_imm(1, 1, 100, true));
+        w.push(encode::enc_movz(0, TURN_STATUS_COMPLETED as u16, 0, true));
+        w.push(encode::enc_ret(30));
+        w
+    }
+
+    fn load_imm4(reg: u8, value: u64) -> [u32; 4] {
+        [
+            encode::enc_movz(reg, (value & 0xFFFF) as u16, 0, true),
+            encode::enc_movk(reg, ((value >> 16) & 0xFFFF) as u16, 16, true),
+            encode::enc_movk(reg, ((value >> 32) & 0xFFFF) as u16, 32, true),
+            encode::enc_movk(reg, ((value >> 48) & 0xFFFF) as u16, 48, true),
+        ]
+    }
+
+    /// The whole park-and-resume turn lifecycle through the real
+    /// scheduler primitives: fresh dispatch parks (a slice ran, busy
+    /// stays), the parked turn is not re-entered until its reply is
+    /// delivered, resume completes it, and the completion is delivered to
+    /// the ORIGINAL message's waker.
     #[test]
-    fn await_actor_glue_enqueues_drains_and_returns_the_dispatched_reply() {
-        let capacity: u64 = 4;
-        let slot_size: u64 = 8; // tag only, no args
-        let state_size: u64 = 8;
-        let ram = HostRam::new(4096);
-        let base = ram.base();
-        let addrs = ActorAddrs {
-            state: base,
-            ring: base + state_size,
-            head: base + state_size + capacity * slot_size,
-            tail: base + state_size + capacity * slot_size + 8,
-            count: base + state_size + capacity * slot_size + 16,
-            last_result: base + state_size + capacity * slot_size + 24,
-            busy: base + state_size + capacity * slot_size + 32,
-        };
-        let no_arg_method = vec![encode::enc_movz(0, 42, 0, true), encode::enc_ret(30)];
+    fn a_parked_turn_resumes_only_after_delivery_and_then_completes_to_its_waker() {
+        let capacity: u64 = 2;
+        let slot_size: u64 = 16; // no-arg async method
+        let f = ActorFixture::new(capacity, slot_size);
+        let addrs = f.addrs;
 
         let mut combined: Vec<u32> = Vec::new();
         let method0_start = combined.len();
-        combined.extend(no_arg_method);
+        combined.extend(stand_in_async_method(addrs.turn));
         let enqueue_start = combined.len();
         combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
         let select_start = combined.len();
@@ -4442,79 +4818,131 @@ mod harness_jit {
             &addrs,
             capacity,
             slot_size,
-            &[method0_start],
+            &[(method0_start, true)],
             select_start,
         ));
-        let glue_start = combined.len();
-        let glue_asm = build_await_actor_glue(&addrs, enqueue_start, select_start, glue_start);
-        combined.extend(glue_asm.words);
-
         let page = ExecPage::new(&combined);
-        let reply = page.call3_at(glue_start * 4, 0, 0, 0);
+
         assert_eq!(
-            reply, 42,
-            "the glue's own reply is the target's real dispatched result"
-        );
-        assert_eq!(
-            ram.read_u64(addrs.count - base),
+            page.call4_at(enqueue_start * 4, 0, 0, 0, f.waker),
             0,
-            "the message was fully drained, not left queued"
+            "admitted"
+        );
+        // Fresh dispatch: the turn parks — a real slice ran.
+        assert_eq!(
+            page.call0_at(select_start * 4),
+            1,
+            "fresh slice ran (then parked)"
         );
         assert_eq!(
-            ram.read_u64(addrs.busy - base),
-            0,
-            "the target actor is idle again once drained"
+            f.read(addrs.turn + OFF_TURN_BUSY),
+            1,
+            "parked turn still owns the actor"
         );
+        assert_eq!(f.read(addrs.turn + OFF_TURN_SUSPENDED), 1);
+        assert_eq!(f.read(addrs.count), 0, "slot released at selection");
+        // Not resumable yet: nothing delivered.
+        assert_eq!(
+            page.call0_at(select_start * 4),
+            0,
+            "parked + no reply -> not ready"
+        );
+        // Deliver (what a completing awaited turn's scheduler would do).
+        f.write(addrs.turn + OFF_TURN_REPLY, 5);
+        f.write(addrs.turn + OFF_TURN_RESUME_READY, 1);
+        // Resume: completes with 105, delivered to the waker.
+        assert_eq!(page.call0_at(select_start * 4), 1, "resumed and completed");
+        assert_eq!(f.read(addrs.turn + OFF_TURN_BUSY), 0);
+        assert_eq!(f.read(f.waker + OFF_TURN_REPLY), 105);
+        assert_eq!(f.read(f.waker + OFF_TURN_RESUME_READY), 1);
+        assert_eq!(page.call0_at(select_start * 4), 0, "idle again");
     }
 
-    /// The same scenario, but for a message carrying one scalar argument —
-    /// proves the glue's own `arg_temps` marshaling path (`codegen.rs`'s
-    /// `emit_marshal_and_call`) reaches the dispatched method correctly
-    /// through the full enqueue -> select -> glue chain, not just the
-    /// no-arg case above.
+    /// `rt_run_one`'s deterministic round-robin: with several actors
+    /// ready, the cursor decides who runs, and advances past the actor
+    /// that ran.
     #[test]
-    fn await_actor_glue_carries_one_scalar_argument_through_to_the_dispatched_method() {
-        let capacity: u64 = 4;
-        let slot_size: u64 = 16; // tag + one scalar arg
+    fn rt_run_one_selects_ready_actors_round_robin_from_the_cursor() {
+        let capacity: u64 = 2;
+        let slot_size: u64 = 16;
         let state_size: u64 = 8;
         let ram = HostRam::new(4096);
         let base = ram.base();
-        let addrs = ActorAddrs {
-            state: base,
-            ring: base + state_size,
-            head: base + state_size + capacity * slot_size,
-            tail: base + state_size + capacity * slot_size + 8,
-            count: base + state_size + capacity * slot_size + 16,
-            last_result: base + state_size + capacity * slot_size + 24,
-            busy: base + state_size + capacity * slot_size + 32,
+        let region = |i: u64| -> ActorAddrs {
+            let b = base + i * 256;
+            let ring = b + state_size;
+            let head = ring + capacity * slot_size;
+            ActorAddrs {
+                state: b,
+                ring,
+                head,
+                tail: head + 8,
+                count: head + 16,
+                turn: head + 24,
+            }
         };
+        let a0 = region(0);
+        let a1 = region(1);
+        let cursor_addr = base + 4096 - 8;
+        let waker0 = base + 2048;
+        let waker1 = base + 2048 + 128;
+
+        // Hand-seed one no-arg message per actor.
+        for (a, w) in [(a0, waker0), (a1, waker1)] {
+            ram.write_u64(a.ring - base, 0);
+            ram.write_u64(a.ring + 8 - base, w);
+            ram.write_u64(a.tail - base, 1);
+            ram.write_u64(a.count - base, 1);
+        }
+
+        let m0 = vec![encode::enc_movz(0, 10, 0, true), encode::enc_ret(30)];
+        let m1 = vec![encode::enc_movz(0, 20, 0, true), encode::enc_ret(30)];
 
         let mut combined: Vec<u32> = Vec::new();
-        let method0_start = combined.len();
-        combined.extend(stand_in_method(1)); // x0 = x1(arg0) + 1
-        let enqueue_start = combined.len();
-        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
-        let select_start = combined.len();
+        let m0_start = combined.len();
+        combined.extend(m0);
+        let m1_start = combined.len();
+        combined.extend(m1);
+        let sel0_start = combined.len();
         combined.extend(build_rt_select_and_run(
-            &addrs,
+            &a0,
             capacity,
             slot_size,
-            &[method0_start],
-            select_start,
+            &[(m0_start, false)],
+            sel0_start,
         ));
-        let glue_start = combined.len();
-        let glue_asm = build_await_actor_glue(&addrs, enqueue_start, select_start, glue_start);
-        combined.extend(glue_asm.words);
+        let sel1_start = combined.len();
+        combined.extend(build_rt_select_and_run(
+            &a1,
+            capacity,
+            slot_size,
+            &[(m1_start, false)],
+            sel1_start,
+        ));
+        let run_one_start = combined.len();
+        let run_one = build_rt_run_one(&[sel0_start, sel1_start], cursor_addr, run_one_start);
+        combined.extend(run_one.words);
 
-        // args_ptr must point at real, readable host memory holding the
-        // one arg word `rt_enqueue` will copy — a second small region of
-        // the same host RAM, distinct from the actor's own tables.
-        ram.write_u64(4096 - 8, 41); // arg0 = 41, tucked at the very end of the page
         let page = ExecPage::new(&combined);
-        let reply = page.call3_at(glue_start * 4, 0, base + 4096 - 8, 1);
+        let run = || page.call0_at(run_one_start * 4);
+
+        // cursor starts at 1 (hand-set): actor 1 must run FIRST even
+        // though actor 0 is also ready — the tie-breaker is the cursor.
+        ram.write_u64(cursor_addr - base, 1);
+        assert_eq!(run(), 1, "one ready turn ran");
         assert_eq!(
-            reply, 42,
-            "41 + 1, computed inside the real dispatched method"
+            ram.read_u64(waker1 + OFF_TURN_REPLY - base),
+            20,
+            "cursor=1 -> actor 1 ran first"
         );
+        assert_eq!(
+            ram.read_u64(cursor_addr - base),
+            0,
+            "cursor advanced past actor 1 (wrap)"
+        );
+        assert_eq!(run(), 1, "second tick runs the remaining ready actor");
+        assert_eq!(ram.read_u64(waker0 + OFF_TURN_REPLY - base), 10);
+        assert_eq!(ram.read_u64(cursor_addr - base), 1);
+        assert_eq!(run(), 0, "nothing ready");
     }
 }

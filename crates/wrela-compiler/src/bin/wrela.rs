@@ -1171,25 +1171,54 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Park-and-resume wiring: each async fn's persistent frame bytes
+    // (sizes every turn area) and which runtime tests are async (the
+    // entry driver's scheduler loop wraps exactly those — a sync test's
+    // return value must never be misread as a TURN_STATUS_* word).
+    let async_frames = match codegen::async_frame_sizes(&flow_program, &layout_ctx) {
+        Ok(m) => m,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!(
+                "error[unimplemented]: the runtime test tier could not size this program's \
+                 async frames: {}",
+                e.message
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let async_tests: std::collections::BTreeSet<String> = runtime_tests
+        .iter()
+        .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
+        .cloned()
+        .collect();
     let boot = layout::BootCtx {
         graph: &graph,
         modules: &modules,
         layout_ctx: &layout_ctx,
+        async_frames: &async_frames,
     };
-    let image_layout =
-        match layout::layout_test_image(&codegen_program, &runtime_tests, Some(boot), &test_args) {
-            Ok(l) => l,
-            Err(e) => {
-                for l in &comptime_lines {
-                    println!("{l}");
-                }
-                println!(
-                    "error[build]: the runtime test tier could not lay out the test image: {}",
-                    e.message
-                );
-                return ExitCode::FAILURE;
+    let image_layout = match layout::layout_test_image(
+        &codegen_program,
+        &runtime_tests,
+        &async_tests,
+        Some(boot),
+        &test_args,
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
             }
-        };
+            println!(
+                "error[build]: the runtime test tier could not lay out the test image: {}",
+                e.message
+            );
+            return ExitCode::FAILURE;
+        }
+    };
 
     let Some(vmm_path) = find_vmm_binary(vmm_arg.as_deref()) else {
         for l in &comptime_lines {

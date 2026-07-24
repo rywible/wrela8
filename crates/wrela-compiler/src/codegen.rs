@@ -385,6 +385,15 @@ const X_C: u8 = 11;
 const X_D: u8 = 12;
 const X_E: u8 = 13;
 const X_F: u8 = 14;
+/// The persistent-turn-frame base register (async state machines only,
+/// `Reloc::TurnFrameAddr`'s own doc comment): loaded fresh at every
+/// entry — fresh dispatch or resume — from the fn's own baked-in area
+/// address, never live across a turn boundary. Chosen well clear of the
+/// argument registers (`x0..x8`), this module's own scratch set
+/// (`x9..x14`), and every register the hand-assembled runtime routines
+/// in `layout.rs` use (`x9..x17`) — so an `rt_enqueue`/checkpoint call
+/// from inside an async body can never clobber it mid-turn.
+const X_FRAME: u8 = 28;
 
 fn reg_name(r: u8) -> String {
     match r {
@@ -443,6 +452,21 @@ pub enum Reloc {
     /// flavor (vectors are unraisable until item E) — resolved the same
     /// way `AbortFixed`/`AbortVal` are, one shared symbol per image.
     CheckpointService { word: usize },
+    /// The four-word `load_imm` starting at `word` materializes the
+    /// absolute address of this async fn's own persistent turn area
+    /// (turn record + statically reserved frame slots, `layout.rs`'s
+    /// `rtdata` section) — the real turn-suspension mechanism (plans/
+    /// M6.md item D verification follow-up, 04-compiler.md §2's "state
+    /// machines in statically reserved frame slots" made literal): an
+    /// async fn's own locals must survive its own `ret`-to-scheduler
+    /// suspension, so they live in this per-turn area (addressed via a
+    /// dedicated base register, `X_FRAME`) instead of an SP-relative
+    /// stack frame that dies with the call. `key` is the fn's own
+    /// `program.fns` key; `layout.rs` resolves it to the owning actor's
+    /// turn area (a `Struct.method` key whose struct is a declared
+    /// actor) or the fn's own dedicated free-turn area (every other
+    /// async fn — `@test(runtime)` roots foremost).
+    TurnFrameAddr { word: usize, key: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -765,6 +789,16 @@ struct FnCtx<'a> {
     word_offsets: &'a [usize],
     words: Vec<(u32, String)>,
     relocs: Vec<Reloc>,
+    /// The base register every frame-slot access goes through: `X_SP`
+    /// for a sync fn's ordinary stack frame; `X_FRAME` (x28, holding the
+    /// fn's own persistent turn area address) for an async state
+    /// machine, whose locals must survive a suspension's `ret` to the
+    /// scheduler (`Reloc::TurnFrameAddr`'s own doc comment).
+    slot_base: u8,
+    /// A fixed byte bias added to every slot offset: `0` for sync fns;
+    /// `TURN_RECORD_SIZE` for async fns (the frame slots sit immediately
+    /// past the 48-byte turn record within the turn area).
+    slot_bias: usize,
 }
 
 impl<'a> FnCtx<'a> {
@@ -779,18 +813,20 @@ impl<'a> FnCtx<'a> {
     // --- loads/stores between a frame slot and a scratch register -----
 
     fn load_slot(&mut self, reg: u8, off: usize) {
-        let off = off as u16;
+        let off = (off + self.slot_bias) as u16;
+        let base = self.slot_base;
         self.push(
-            encode::enc_ldr_x_imm(reg, X_SP, off),
-            format!("ldr {}, [sp, #{off}]", reg_name(reg)),
+            encode::enc_ldr_x_imm(reg, base, off),
+            format!("ldr {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
         );
     }
 
     fn store_slot(&mut self, reg: u8, off: usize) {
-        let off = off as u16;
+        let off = (off + self.slot_bias) as u16;
+        let base = self.slot_base;
         self.push(
-            encode::enc_str_x_imm(reg, X_SP, off),
-            format!("str {}, [sp, #{off}]", reg_name(reg)),
+            encode::enc_str_x_imm(reg, base, off),
+            format!("str {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
         );
     }
 
@@ -822,14 +858,16 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// `reg = sp + #off` — the address of a frame slot, for a call's own
-    /// aggregate-by-pointer argument/result, or an array's own base
-    /// address before index-scaling.
+    /// `reg = <slot base> + #off` — the address of a frame slot, for a
+    /// call's own aggregate-by-pointer argument/result, or an array's own
+    /// base address before index-scaling (`slot_base`/`slot_bias`: sp for
+    /// sync fns, the persistent turn area for async fns).
     fn addr_of_slot(&mut self, reg: u8, off: usize) {
-        let off = off as u16;
+        let off = (off + self.slot_bias) as u16;
+        let base = self.slot_base;
         self.push(
-            encode::enc_add_imm(reg, X_SP, off, true),
-            format!("add {}, sp, #{off}", reg_name(reg)),
+            encode::enc_add_imm(reg, base, off, true),
+            format!("add {}, {}, #{off}", reg_name(reg), reg_name(base)),
         );
     }
 
@@ -1102,6 +1140,10 @@ fn invert_cond(c: Cond) -> Cond {
 enum SkipKind {
     Cond(Cond),
     Cbz(u8),
+    /// The async entry's own fresh-vs-resume fork (the one consumer):
+    /// skip forward over the fresh prologue when the suspended
+    /// discriminant is nonzero.
+    Cbnz(u8),
 }
 
 impl FnCtx<'_> {
@@ -1122,6 +1164,10 @@ impl FnCtx<'_> {
             SkipKind::Cbz(r) => (
                 encode::enc_cbz(r, delta, true),
                 format!("cbz {}, #{delta}", reg_name(r)),
+            ),
+            SkipKind::Cbnz(r) => (
+                encode::enc_cbnz(r, delta, true),
+                format!("cbnz {}, #{delta}", reg_name(r)),
             ),
         };
         self.words[word] = (enc, text);
@@ -2086,6 +2132,8 @@ fn emit_fn(
         word_offsets: &empty,
         words: Vec::new(),
         relocs: Vec::new(),
+        slot_base: X_SP,
+        slot_bias: 0,
     };
     emit_prologue(f, &frame, &mut probe_pro)?;
     let prologue_len = probe_pro.words.len();
@@ -2100,6 +2148,8 @@ fn emit_fn(
             word_offsets: &dummy_targets,
             words: Vec::new(),
             relocs: Vec::new(),
+            slot_base: X_SP,
+            slot_bias: 0,
         };
         if is_loop_back_edge(inst, i) {
             probe.checkpoint();
@@ -2122,6 +2172,8 @@ fn emit_fn(
         word_offsets: &word_offsets,
         words: Vec::new(),
         relocs: Vec::new(),
+        slot_base: X_SP,
+        slot_bias: 0,
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -2182,62 +2234,135 @@ fn emit_fn(
 //      `b.here()` convention — lands exactly on the transition's own
 //      compiled code, never needing a special case).
 //
-// ## Await, simplified (the one disclosed departure from the task text's
-// own literal wording, recorded here rather than silently substituted)
+// ## Await: genuine park-and-resume (the M6 mandate; replaces item D's
+// disclosed nested-drain placeholder, which is deleted, not kept as a
+// second mechanism)
 //
-// The task text asks for `Await{ActorCall}` to "save resume_state into
-// the frame... park the turn... return to scheduler" — a real
-// cross-native-call suspension, resumed later by a *separate* top-level
-// scheduler tick re-entering this same fn's own dispatch header at a
-// nonzero state. Building that faithfully needs a real reply-addressed
-// mailbox extension, a per-actor persisted resume frame, and a genuine
-// event-loop driver — substantially more runtime machinery than M6-C
-// shipped (`layout.rs`'s own module doc: "M6-C's own loop never truly
-// parks... a caller ticks it repeatedly"). This item ships the dumbest
-// mechanism that is still honestly a *state machine with a real dispatch
-// header* (task 1's own deliverable, unit-tested in isolation below) while
-// making `Await{ActorCall}` itself an ordinary **nested, synchronous
-// call**: `resume_state` genuinely is stored into the frame slot (so the
-// header's own compare-and-branch chain is not dead ceremony — a
-// hypothetical *external* re-entry at that state would resume correctly),
-// but instead of returning to a caller, the awaiting fn calls a small,
-// per-target-actor glue routine (`layout.rs::build_await_actor_glue`) that
-// enqueues the message and synchronously drains the target's own mailbox
-// (via `rt_select_and_run`) until idle, then reads back the scalar reply
-// M6-C's own `last_result` slot already holds — then this fn jumps
-// straight to `resume_state`'s own flat position itself, in the same
-// native call. This preserves every M6 exit criterion the flagship
-// non-reentrancy golden needs: the *awaiting* actor's own `busy` flag
-// (decision 4) stays set for the whole nested duration exactly as it
-// would under a real suspend/resume, so a second message to it still only
-// queues — the structural proof does not depend on which of the two
-// mechanics implements the park. `with group`/`g.start`/`g.join_all`
-// genuinely are item F's own runtime pieces (no group arena consumer
-// exists anywhere yet, `layout.rs`'s own `RuntimeTables::group_arena_capacity`
-// doc comment) — those four ops fail closed, named, below; nothing here
-// half-implements cancellation.
+// `Transition::Await{ActorCall}` now compiles to a real suspension, so
+// 04-compiler.md §2's semantics hold structurally rather than by
+// simulation:
 //
-// ## Checkpoints at await resume points (decision 6: "await resume points
-// are checkpoints by construction")
+//   1. **Suspend** (the transition's own flat position): save
+//      `resume_state` into the persistent state slot; marshal the args;
+//      call the target actor's own `rt_enqueue` with a fourth argument —
+//      the awaiting turn's own **waker** (`x3 = X_FRAME`, this turn's
+//      area address; `OFF_TURN_*` above); mark `suspended = 1`; then
+//      **return to the caller** (`x0 = TURN_STATUS_SUSPENDED`) — the
+//      caller is always the scheduler (`rt_select_and_run`'s dispatch
+//      arm for an actor turn; the entry driver's own loop for the root
+//      test turn), which is exactly what lets EVERY ready actor run
+//      while this turn is parked, not just the awaited target.
+//   2. **Deliver** (in `layout.rs`'s `rt_select_and_run`): when the
+//      awaited turn completes, the scheduler writes its reply into
+//      `[waker + OFF_TURN_REPLY]` and sets `[waker + OFF_TURN_RESUME_READY]`.
+//   3. **Resume** (a dedicated second flat position per await, the
+//      dispatch target for `resume_state`): the scheduler re-enters this
+//      same compiled fn; the entry's fresh-vs-resume discriminant
+//      (`suspended != 0`) routes to the resume dispatch chain, which
+//      lands on this await's own resume stub — compose `Ok(reply)` into
+//      `result_temp` from `[X_FRAME + OFF_TURN_REPLY]`, run decision 6's
+//      checkpoint ("await resume points are checkpoints by
+//      construction"), and jump to `resume_state`'s own flat position.
 //
-// Every `Transition::Await`'s own inline resume — right after the nested
-// call above reads its reply — runs the identical `FnCtx::checkpoint`
-// sequence a loop back-edge gets, before jumping on to `resume_state`.
+// The whole reason this works across a native `ret`: an async fn's frame
+// slots are NOT SP-relative — every temp lives in the fn's own persistent
+// turn area (`Reloc::TurnFrameAddr`, `FnCtx::slot_base = X_FRAME`), so
+// item B's all-temps-in-frame rule is precisely what makes suspension
+// need to save nothing but the state index. The fn's own custom entry/
+// exit (no `sub sp` at all): load `X_FRAME`, save `x30` into the frame's
+// own lr slot, fork on the discriminant; every exit (suspend or
+// complete) reloads `x30` from that slot and `ret`s. A completing return
+// reports `x0 = TURN_STATUS_COMPLETED` with the scalar value in `x1`
+// (the shared async epilogue below), and the mut-receiver writeback runs
+// there — only at completion, never at a suspension (nothing can observe
+// actor state mid-turn: the actor is busy for the whole span).
+//
+// `with group`/`g.start`/`g.join_all` genuinely are item F's own runtime
+// pieces (no group arena consumer exists anywhere yet, `layout.rs`'s own
+// `RuntimeTables::group_arena_capacity` doc comment) — those four ops
+// fail closed, named, below; nothing here half-implements cancellation.
 
 use crate::flowwir::{AwaitKind, FlowInst, FlowWirFn, FlowWirProgram, Transition};
 
-/// The two per-actor runtime-glue symbol names `layout.rs` hand-assembles
-/// (`build_rt_enqueue`'s own routine, and the new `build_await_actor_glue`)
-/// and registers into the very same call-target table `Reloc::Call`
-/// already resolves against — from codegen's own point of view, an async
-/// fn's compiled `Send`/`Await{ActorCall}` op is just another symbolic
-/// call to one of these two fixed names, never a new `Reloc` kind.
+/// The per-actor admission symbol `layout.rs` hand-assembles
+/// (`build_rt_enqueue`'s own routine) and registers into the very same
+/// call-target table `Reloc::Call` already resolves against — from
+/// codegen's own point of view, a compiled `Send`/`Await{ActorCall}`
+/// op's enqueue is just a symbolic call to this fixed name. (The old
+/// `__await_actor_*` glue symbol died with the nested-drain placeholder
+/// it belonged to.)
 pub fn rt_enqueue_symbol(actor: &str) -> String {
     format!("__rt_enqueue_{actor}")
 }
-pub fn await_actor_symbol(actor: &str) -> String {
-    format!("__await_actor_{actor}")
-}
+
+// --- the turn record (the real park-and-resume contract) --------------------
+//
+// Every turn-capable entity — each declared actor, and each free async fn
+// (a `@test(runtime)` root foremost) — owns one fixed **turn area** in the
+// image's `rtdata` section: a fixed-shape 48-byte record (offsets below)
+// followed by that entity's own statically reserved frame slots (the
+// widest of its async fns' `Frame`s — one area per entity, never one per
+// queued message, because non-reentrancy caps in-flight activations at
+// one). These constants are the shared vocabulary between three parties
+// that must never disagree: the compiled async fn (this module — reads/
+// writes its own record through `X_FRAME`), the hand-assembled
+// `rt_enqueue`/`rt_select_and_run`/`rt_run_one` routines (`layout.rs` —
+// dispatch, reply delivery, readiness), and the entry driver (`layout.rs`
+// — the root turn's own scheduler loop). They live here (not in
+// `wrela-machine`) deliberately: the record is `rtdata`-interior compiler
+// bookkeeping the VMM never reads — not machine contract.
+//
+// Record layout (all `u64` words):
+//   +0  busy          1 while a turn owns this entity (active OR parked) —
+//                     decision 4's structural non-reentrancy flag.
+//   +8  suspended     1 while the current activation is parked on an
+//                     `await` (set by the fn's own suspend tail; cleared
+//                     by its own resume path). Doubles as the
+//                     fresh-vs-resume entry discriminant: the compiled
+//                     fn's entry reads it and either runs the fresh
+//                     prologue (spill args, state=0) or the resume
+//                     dispatch (re-enter at the saved state index).
+//   +16 resume_ready  1 once the awaited reply has been delivered — the
+//                     scheduler re-enters the fn only when
+//                     busy && suspended && resume_ready.
+//   +24 reply         the delivered scalar reply value (read by the fn's
+//                     own per-await resume stub, composed into
+//                     `Ok(reply)` there).
+//   +32 waker         the turn area address of whichever turn awaits
+//                     THIS turn's completion (0 = none: a `send`, or the
+//                     root). The waker is the suspended turn's identity:
+//                     at M6 turn identity and turn-area address are in
+//                     static bijection (one area per entity, all placed
+//                     at build time), so the address itself is the
+//                     dumbest correct representation — an index would
+//                     need a runtime index->address table nothing else
+//                     requires. Recorded in the ledger clause.
+//   +40 cur_method    the in-flight method's dispatch index (actors
+//                     only) — saved at fresh selection so the resume
+//                     path can re-enter the same compiled method.
+pub const OFF_TURN_BUSY: u64 = 0;
+pub const OFF_TURN_SUSPENDED: u64 = 8;
+pub const OFF_TURN_RESUME_READY: u64 = 16;
+pub const OFF_TURN_REPLY: u64 = 24;
+pub const OFF_TURN_WAKER: u64 = 32;
+pub const OFF_TURN_CUR_METHOD: u64 = 40;
+pub const TURN_RECORD_SIZE: u64 = 48;
+
+// A compiled async fn's own return-status ABI (distinct from a sync fn's,
+// which returns its value in x0 with no status — the dispatch arms in
+// `rt_select_and_run` know each method's color at build time and read
+// accordingly): x0 = status (0 completed / 1 suspended); when completed,
+// x1 = the scalar return value.
+pub const TURN_STATUS_COMPLETED: u64 = 0;
+pub const TURN_STATUS_SUSPENDED: u64 = 1;
+
+/// A rejected admission on an `await`'s own enqueue aborts (`BRK`) rather
+/// than composing a real `CallError[NotAdmitted(..)]` value — the same
+/// disclosed floor the nested-drain placeholder carried, unchanged by the
+/// park-and-resume redesign; item G's send-proof/err-corpus work owns the
+/// real composition. No required M6 conformance boot ever fills a mailbox
+/// on an awaited call.
+pub const BRK_AWAIT_ACTOR_REJECTED: u16 = 0xACD3;
 
 fn actor_of_method_key(key: &str) -> &str {
     key.split('.').next().unwrap_or(key)
@@ -2253,12 +2378,23 @@ fn method_name_of_key(key: &str) -> &str {
 /// the two can never number a method differently.
 pub type ActorMethodIndex = BTreeMap<String, BTreeMap<String, usize>>;
 
-/// One flattened position: either a state's own straight-line op
-/// (`FlowInst`, jump targets already remapped to flat indices) or a
-/// state's own `Transition`, compiled last within its state.
+/// One flattened position: a state's own straight-line op (`FlowInst`,
+/// jump targets already remapped to flat indices), a state's own
+/// `Transition` (compiled last within its state), or an await's own
+/// dedicated **resume stub** — its own flat position immediately after
+/// the await transition itself, so the resume dispatch chain has a real,
+/// word-offset-addressable landing site per await (module doc's own
+/// "Resume" step).
 enum FlatEntry {
     Op(FlowInst),
     Trans(Transition),
+    /// The park-and-resume re-entry point for the await whose
+    /// `resume_state`/`result_temp` these are: compose `Ok(reply)` from
+    /// the turn record, checkpoint, jump to `resume_state`'s flat base.
+    AwaitResume {
+        resume_state: usize,
+        result_temp: Temp,
+    },
 }
 
 /// Remaps a *local* (this-state-relative) `Jump`/`JumpIfFalse` target to
@@ -2279,23 +2415,47 @@ fn remap_local_jumps(op: &FlowInst, state_base: usize) -> FlowInst {
 
 /// `state_flat_base[i]` is state `i`'s own first flat position (its first
 /// op, or its own `Transition` when `ops` is empty) — every inter-state
-/// transition (`Jump`/`Branch`/`Await::resume_state`) targets exactly this
-/// position for its own target state(s).
-fn flatten(f: &FlowWirFn) -> (Vec<usize>, Vec<FlatEntry>) {
+/// transition (`Jump`/`Branch`) targets exactly this position for its own
+/// target state(s). `resume_target[i]` is where the **resume dispatch
+/// chain** re-enters for state `i`: for an await's own `resume_state`,
+/// its dedicated `AwaitResume` stub (which composes the reply before
+/// falling on to the state proper); for every other state, the state's
+/// own flat base — a resume can only ever legitimately target an await's
+/// resume state, but keeping every arm real keeps the chain's shape dumb
+/// and uniform.
+fn flatten(f: &FlowWirFn) -> (Vec<usize>, Vec<usize>, Vec<FlatEntry>) {
     let mut state_flat_base = Vec::with_capacity(f.states.len());
     let mut cursor = 0usize;
     for s in &f.states {
         state_flat_base.push(cursor);
-        cursor += s.ops.len() + 1; // +1 for this state's own Transition.
+        // +1 for this state's own Transition; an Await transition owns a
+        // second flat position (its resume stub) immediately after.
+        cursor += s.ops.len() + 1;
+        if matches!(s.transition, Transition::Await { .. }) {
+            cursor += 1;
+        }
     }
+    let mut resume_target = state_flat_base.clone();
     let mut flat = Vec::with_capacity(cursor);
     for (i, s) in f.states.iter().enumerate() {
         for op in &s.ops {
             flat.push(FlatEntry::Op(remap_local_jumps(op, state_flat_base[i])));
         }
         flat.push(FlatEntry::Trans(s.transition.clone()));
+        if let Transition::Await {
+            resume_state,
+            result_temp,
+            ..
+        } = &s.transition
+        {
+            resume_target[*resume_state] = flat.len();
+            flat.push(FlatEntry::AwaitResume {
+                resume_state: *resume_state,
+                result_temp: *result_temp,
+            });
+        }
     }
-    (state_flat_base, flat)
+    (state_flat_base, resume_target, flat)
 }
 
 /// Builds the `Frame` for a FlowWir fn: `f.frame.temp_types` plus three
@@ -2332,20 +2492,105 @@ fn build_frame_flow(
     Ok((frame, state_temp, scratch0, scratch1))
 }
 
-/// The dispatch header's own fixed word count for `num_states` states:
-/// one `ldr` (the state slot) plus, per state, one `cmp`+one `b.eq`, plus
-/// one trailing `brk` (a should-be-unreachable producer-bug guard —
-/// `rt_enqueue`'s own real dispatch already proves `state_temp` is always
-/// one of the compiled states' own indices).
+/// The resume dispatch chain's own trailing guard: a should-be-
+/// unreachable producer-bug `BRK` — a resume can only ever be scheduled
+/// with a state index this same fn's own suspend path stored.
 const BRK_ASYNC_DISPATCH_NO_STATE_MATCHED: u16 = 0xACD4;
 
-fn dispatch_header_word_count(num_states: usize) -> usize {
-    1 + num_states * 2 + 1
-}
+/// The whole async entry sequence (module doc's "Await: genuine
+/// park-and-resume"): persistent-frame base load, lr save, the
+/// fresh-vs-resume discriminant fork, the fresh prologue (arg/self spill
+/// into the persistent frame, state = 0, jump to state 0), and the
+/// resume dispatch chain (clear the discriminant + ready flag, re-enter
+/// at the saved state's own resume target). Replaces both
+/// `emit_prologue` and the old always-run dispatch header for async fns
+/// — a sync fn's prologue/epilogue are untouched.
+fn emit_async_entry(
+    f: &MwirFn,
+    fn_key: &str,
+    ctx: &mut FnCtx,
+    state_temp: Temp,
+    resume_target: &[usize],
+) -> Result<(), CodegenError> {
+    // X_FRAME = &turn area (4 words, patched by layout via TurnFrameAddr).
+    let word = ctx.cur_word();
+    ctx.load_imm(X_FRAME, 0);
+    // Overwrite the rendered text so the dump names the symbolic target
+    // (the raw words stay the placeholder zeros layout patches).
+    for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+        w.1 = format!("turn-frame[{i}] {} <{fn_key}>", reg_name(X_FRAME));
+    }
+    ctx.relocs.push(Reloc::TurnFrameAddr {
+        word,
+        key: fn_key.to_string(),
+    });
+    // Save the caller's return address into the frame's own lr slot —
+    // every exit (suspend or complete) reloads it from there.
+    ctx.store_slot(X_LR, ctx.frame.lr_off);
+    // Fresh-vs-resume fork on the suspended discriminant.
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_TURN_SUSPENDED}]",
+            reg_name(X_A),
+            reg_name(X_FRAME)
+        ),
+    );
+    let fork = ctx.emit_skip(SkipKind::Cbnz(X_A));
 
-fn emit_dispatch_header(ctx: &mut FnCtx, state_temp: Temp, state_flat_base: &[usize]) {
+    // --- fresh path: spill self/params into the persistent frame -------
+    let mut next_reg = 0u8;
+    if let Some((self_temp, _mode)) = f.receiver {
+        let self_ptr_off = ctx
+            .frame
+            .self_ptr_off
+            .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
+        ctx.store_slot(next_reg, self_ptr_off);
+        let size = ctx.frame.size_of_temp(self_temp);
+        let dst_off = ctx.frame.off(self_temp);
+        let mut w = 0;
+        while w < size {
+            ctx.load_ptr(X_A, next_reg, w);
+            ctx.store_slot(X_A, dst_off + w);
+            w += 8;
+        }
+        next_reg += 1;
+    }
+    for p in &f.params {
+        if next_reg > 8 {
+            return Err(CodegenError::unimplemented("more than 8 call arguments"));
+        }
+        let ty = &f.temp_types[p.0];
+        if is_aggregate(ty) {
+            let size = ctx.frame.size_of_temp(*p);
+            let dst_off = ctx.frame.off(*p);
+            let mut w = 0;
+            while w < size {
+                ctx.load_ptr(X_A, next_reg, w);
+                ctx.store_slot(X_A, dst_off + w);
+                w += 8;
+            }
+        } else {
+            ctx.store_slot(next_reg, ctx.frame.off(*p));
+        }
+        next_reg += 1;
+    }
+    // state = 0 (hygiene: a completed prior activation leaves its last
+    // state index behind; a fresh turn's own record is deterministic).
+    ctx.load_imm(X_A, 0);
+    ctx.store_slot(X_A, ctx.frame.off(state_temp));
+    ctx.b_unconditional(0); // state 0's own flat base is always flat index 0.
+
+    // --- resume path: consume the discriminant, dispatch --------------
+    ctx.patch_skip(fork, SkipKind::Cbnz(X_A));
+    for off in [OFF_TURN_SUSPENDED, OFF_TURN_RESUME_READY] {
+        ctx.push(
+            encode::enc_str_x_imm(X_ZR, X_FRAME, off as u16),
+            format!("str xzr, [{}, #{off}]", reg_name(X_FRAME)),
+        );
+    }
     ctx.load_slot(X_A, ctx.frame.off(state_temp));
-    for (i, &flat_idx) in state_flat_base.iter().enumerate() {
+    for (i, &flat_idx) in resume_target.iter().enumerate() {
         ctx.push(
             encode::enc_cmp_imm(X_A, i as u16, true),
             format!("cmp {}, #{i}", reg_name(X_A)),
@@ -2356,6 +2601,40 @@ fn emit_dispatch_header(ctx: &mut FnCtx, state_temp: Temp, state_flat_base: &[us
         encode::enc_brk(BRK_ASYNC_DISPATCH_NO_STATE_MATCHED),
         format!("brk #{BRK_ASYNC_DISPATCH_NO_STATE_MATCHED:#x}"),
     );
+    Ok(())
+}
+
+/// The shared async completion epilogue, at `word_offsets[total]` — the
+/// sentinel every embedded `Inst::Return`/`Transition::Return` already
+/// branches to via `emit_one`'s ordinary path (which leaves the scalar
+/// return value in `x0`): move the value to `x1`, run the mut-receiver
+/// writeback (completion is the one moment actor state becomes
+/// observable again — the turn is over), report
+/// `x0 = TURN_STATUS_COMPLETED`, reload the caller's `x30` from the
+/// frame's lr slot, `ret`.
+fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> {
+    ctx.push(encode::enc_mov_reg(1, 0, true), "mov x1, x0".to_string());
+    if let Some((self_temp, mode)) = f.receiver {
+        if mode == AccessMode::Mut {
+            let self_ptr_off = ctx
+                .frame
+                .self_ptr_off
+                .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
+            ctx.load_slot(X_A, self_ptr_off);
+            let size = ctx.frame.size_of_temp(self_temp);
+            let src_off = ctx.frame.off(self_temp);
+            let mut w = 0;
+            while w < size {
+                ctx.load_slot(X_B, src_off + w);
+                ctx.store_ptr(X_B, X_A, w);
+                w += 8;
+            }
+        }
+    }
+    ctx.load_imm(0, TURN_STATUS_COMPLETED as i64);
+    ctx.load_slot(X_LR, ctx.frame.lr_off);
+    ctx.push(encode::enc_ret(X_LR), "ret".to_string());
+    Ok(())
 }
 
 impl FnCtx<'_> {
@@ -2373,9 +2652,11 @@ impl FnCtx<'_> {
 
 /// Marshals `arg_temps` (at most 2, item C's own hand-assembled-dispatch
 /// floor — `layout.rs`'s own module doc) into the dedicated scratch pair
-/// and calls `symbol` — `rt_enqueue_<Actor>`'s own real ABI (`x0=method_idx,
-/// x1=args_ptr, x2=nargs_words`), shared verbatim by `Send` and
-/// `Await{ActorCall}`.
+/// and calls `symbol` — `rt_enqueue_<Actor>`'s own real ABI
+/// (`x0=method_idx, x1=args_ptr, x2=nargs_words, x3=waker`), shared
+/// verbatim by `Send` (waker = 0: one-way, nobody to resume, the sender
+/// never suspends) and `Await{ActorCall}` (waker = this turn's own area
+/// address, already live in `X_FRAME`).
 fn emit_marshal_and_call(
     method_idx: usize,
     arg_temps: &[Temp],
@@ -2383,6 +2664,7 @@ fn emit_marshal_and_call(
     symbol: &str,
     scratch0: Temp,
     scratch1: Temp,
+    waker_is_self_turn: bool,
 ) -> Result<(), CodegenError> {
     if arg_temps.len() > 2 {
         return Err(CodegenError::unimplemented(
@@ -2398,6 +2680,14 @@ fn emit_marshal_and_call(
         ctx.addr_of_slot(1, scratch_offs[0]);
     }
     ctx.load_imm(2, arg_temps.len() as i64);
+    if waker_is_self_turn {
+        ctx.push(
+            encode::enc_mov_reg(3, X_FRAME, true),
+            format!("mov x3, {}", reg_name(X_FRAME)),
+        );
+    } else {
+        ctx.load_imm(3, 0);
+    }
     ctx.load_imm(0, method_idx as i64);
     ctx.bl_symbolic_call(symbol);
     Ok(())
@@ -2447,6 +2737,7 @@ fn emit_send(
         &rt_enqueue_symbol(&actor),
         scratch0,
         scratch1,
+        false, // one-way: no reply slot, no waker — the sender never suspends.
     )?;
     let dst_off = ctx.frame.off(dst);
     ctx.store_slot(0, dst_off); // x0 already holds rt_enqueue's own outcome.
@@ -2567,19 +2858,18 @@ fn emit_flow_op(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn emit_await(
+/// The suspend half of an `Await{ActorCall}` (module doc's own
+/// "park-and-resume" step 1): save `resume_state`, enqueue the message
+/// with this turn's own waker, mark the turn suspended, and return
+/// `TURN_STATUS_SUSPENDED` to the scheduler.
+fn emit_await_suspend(
     what: &AwaitKind,
     resume_state: usize,
-    result_temp: Temp,
-    f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     state_temp: Temp,
     scratch0: Temp,
     scratch1: Temp,
-    state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match what {
         AwaitKind::ActorCall {
@@ -2588,54 +2878,89 @@ fn emit_await(
             arg_temps,
         } => {
             let (actor, idx) = lookup_method_idx(method_key, method_index)?;
-            // "save resume_state into the frame" (module doc above: real,
-            // not dead ceremony — a hypothetical external re-entry at this
-            // state would resume correctly from it).
             ctx.load_imm(X_A, resume_state as i64);
             ctx.store_slot(X_A, ctx.frame.off(state_temp));
             emit_marshal_and_call(
                 idx,
                 arg_temps,
                 ctx,
-                &await_actor_symbol(&actor),
+                &rt_enqueue_symbol(&actor),
                 scratch0,
                 scratch1,
+                true, // waker = this turn's own area (X_FRAME).
             )?;
-            // `result_temp`'s own type is always the composed
-            // `Result[T, CallError[E]]` (02 §9.4's own CallError
-            // composition table, `sema::bodies::compose_call_error`) —
-            // never the bare scalar reply on its own. A successful
-            // dispatch (the only outcome `__await_actor_*`'s own
-            // disclosed floor produces — a rejected admission aborts
-            // there instead, `layout.rs`'s own module doc) composes as
-            // `Ok(reply)`: tag `0` at the temp's own offset, the scalar
-            // reply (still live in `x0`) at the payload offset
-            // immediately past the 8-byte tag. Every message reply in
-            // today's whole corpus is scalar (item C's own established
-            // floor); an aggregate reply is a disclosed, unexercised gap
-            // this fn does not widen.
-            let composed_ty = &f.temp_types[result_temp.0];
-            if !matches!(composed_ty, Type::Result(_, _)) {
-                return Err(CodegenError::internal(format!(
-                    "Await's own result_temp is not a composed Result type: {composed_ty:?}"
-                )));
-            }
-            let result_off = ctx.frame.off(result_temp);
-            ctx.store_slot(0, result_off + 8); // payload = the live reply value
-            ctx.load_imm(X_A, 0);
-            ctx.store_slot(X_A, result_off); // tag = Ok
-            // "await resume points are checkpoints by construction"
-            // (decision 6) — this fn's own inline resume runs the
-            // identical sequence a loop back-edge gets.
-            ctx.checkpoint();
-            ctx.b_unconditional(state_flat_base[resume_state]);
+            // A rejected admission aborts — the disclosed floor
+            // (`BRK_AWAIT_ACTOR_REJECTED`'s own doc comment; item G owns
+            // the real NotAdmitted composition).
+            let skip = ctx.emit_skip(SkipKind::Cbz(0));
+            ctx.push(
+                encode::enc_brk(BRK_AWAIT_ACTOR_REJECTED),
+                format!("brk #{BRK_AWAIT_ACTOR_REJECTED:#x}"),
+            );
+            ctx.patch_skip(skip, SkipKind::Cbz(0));
+            // Park: suspended = 1, status = suspended, return to the
+            // scheduler (the real park — control genuinely leaves this
+            // fn; every other ready actor can now run).
+            ctx.load_imm(X_A, 1);
+            ctx.push(
+                encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+                format!(
+                    "str {}, [{}, #{OFF_TURN_SUSPENDED}]",
+                    reg_name(X_A),
+                    reg_name(X_FRAME)
+                ),
+            );
+            ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
+            ctx.load_slot(X_LR, ctx.frame.lr_off);
+            ctx.push(encode::enc_ret(X_LR), "ret".to_string());
             Ok(())
         }
         AwaitKind::GroupJoin { .. } => Err(CodegenError::unimplemented(
-            "`g.join_all()` codegen — plans/M6.md item F owns group join/cancellation; item D \
-             does not half-implement it",
+            "`g.join_all()` codegen — plans/M6.md item F owns group join/cancellation; this \
+             item does not half-implement it",
         )),
     }
+}
+
+/// The resume half (module doc's step 3) — the dispatch chain's landing
+/// site for `resume_state`: compose `Ok(reply)` into `result_temp` from
+/// the turn record's own reply slot, run decision 6's checkpoint ("await
+/// resume points are checkpoints by construction"), jump on to the
+/// resumed state's own flat base.
+fn emit_await_resume(
+    resume_state: usize,
+    result_temp: Temp,
+    f: &MwirFn,
+    ctx: &mut FnCtx,
+    state_flat_base: &[usize],
+) -> Result<(), CodegenError> {
+    // `result_temp`'s own type is always the composed
+    // `Result[T, CallError[E]]` (02 §9.4's composition table,
+    // `sema::bodies::compose_call_error`) — never the bare scalar reply.
+    // Every message reply in today's whole corpus is scalar (item C's
+    // established floor); an aggregate reply is a disclosed, unexercised
+    // gap this fn does not widen.
+    let composed_ty = &f.temp_types[result_temp.0];
+    if !matches!(composed_ty, Type::Result(_, _)) {
+        return Err(CodegenError::internal(format!(
+            "Await's own result_temp is not a composed Result type: {composed_ty:?}"
+        )));
+    }
+    let result_off = ctx.frame.off(result_temp);
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_TURN_REPLY}]",
+            reg_name(X_A),
+            reg_name(X_FRAME)
+        ),
+    );
+    ctx.store_slot(X_A, result_off + 8); // payload = the delivered reply
+    ctx.load_imm(X_A, 0);
+    ctx.store_slot(X_A, result_off); // tag = Ok
+    ctx.checkpoint();
+    ctx.b_unconditional(state_flat_base[resume_state]);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2683,18 +3008,15 @@ fn emit_transition(
         Transition::Await {
             what,
             resume_state,
-            result_temp,
-        } => emit_await(
+            result_temp: _,
+        } => emit_await_suspend(
             what,
             *resume_state,
-            *result_temp,
-            f,
             ctx,
             method_index,
             state_temp,
             scratch0,
             scratch1,
-            state_flat_base,
         ),
     }
 }
@@ -2724,23 +3046,38 @@ fn emit_flat_entry(
             scratch1,
             state_flat_base,
         ),
+        FlatEntry::AwaitResume {
+            resume_state,
+            result_temp,
+        } => emit_await_resume(*resume_state, *result_temp, f, ctx, state_flat_base),
     }
 }
 
-/// The whole item-D driver for one async fn/method: dispatch header +
-/// flattened state bodies/transitions, two-pass sized exactly like
-/// `emit_fn`'s own sync-fn driver (module doc above; never a forked copy
-/// of the per-instruction emission itself).
+/// The whole driver for one async fn/method: the custom park-and-resume
+/// entry (`emit_async_entry`) + flattened state bodies/transitions/
+/// await-resume stubs + the shared async completion epilogue, two-pass
+/// sized exactly like `emit_fn`'s own sync-fn driver (module doc above;
+/// never a forked copy of the per-instruction emission itself). Every
+/// frame slot is addressed through `X_FRAME` (the fn's own persistent
+/// turn area) — an SP frame would die at the suspension's own `ret`.
 fn emit_flowwir_fn(
+    fn_key: &str,
     f: &FlowWirFn,
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
     method_index: &ActorMethodIndex,
 ) -> Result<CodegenFn, CodegenError> {
+    if is_aggregate(&f.ret) {
+        // The reply-delivery path carries one scalar reply word
+        // (`OFF_TURN_REPLY`) — the same scalar floor every message reply
+        // already has (item C). Fail closed, never a silent truncation.
+        return Err(CodegenError::unimplemented(
+            "an async fn returning an aggregate (scalar replies are the M6 reply-slot floor)",
+        ));
+    }
     let (frame, state_temp, scratch0, scratch1) = build_frame_flow(f, layout)?;
-    let (state_flat_base, flat) = flatten(f);
+    let (state_flat_base, resume_target, flat) = flatten(f);
     let total = flat.len();
-    let header_len = dispatch_header_word_count(f.states.len());
 
     let synthetic = MwirFn {
         receiver: f.receiver,
@@ -2756,21 +3093,29 @@ fn emit_flowwir_fn(
         body: vec![Inst::AssertFail { message: None }; total],
     };
 
-    let empty: [usize; 0] = [];
+    // The entry probe needs real-length dummy targets (unlike a sync
+    // prologue, the async entry emits branches — the fresh path's jump to
+    // state 0 and the resume chain's arms — whose widths are fixed but
+    // whose emission indexes `word_offsets`).
+    let dummy_targets = vec![0usize; total + 1];
     let mut probe_pro = FnCtx {
         frame: &frame,
         layout,
         rodata,
-        word_offsets: &empty,
+        word_offsets: &dummy_targets,
         words: Vec::new(),
         relocs: Vec::new(),
+        slot_base: X_FRAME,
+        slot_bias: TURN_RECORD_SIZE as usize,
     };
-    emit_prologue(&synthetic, &frame, &mut probe_pro)?;
-    probe_pro.load_imm(X_A, 0);
-    probe_pro.store_slot(X_A, frame.off(state_temp));
+    emit_async_entry(
+        &synthetic,
+        fn_key,
+        &mut probe_pro,
+        state_temp,
+        &resume_target,
+    )?;
     let prologue_len = probe_pro.words.len();
-
-    let dummy_targets = vec![0usize; total + 1];
     let mut counts = Vec::with_capacity(total);
     for (i, entry) in flat.iter().enumerate() {
         let mut probe = FnCtx {
@@ -2780,6 +3125,8 @@ fn emit_flowwir_fn(
             word_offsets: &dummy_targets,
             words: Vec::new(),
             relocs: Vec::new(),
+            slot_base: X_FRAME,
+            slot_bias: TURN_RECORD_SIZE as usize,
         };
         emit_flat_entry(
             entry,
@@ -2795,7 +3142,7 @@ fn emit_flowwir_fn(
         counts.push(probe.words.len());
     }
     let mut word_offsets = vec![0usize; total + 1];
-    let mut acc = prologue_len + header_len;
+    let mut acc = prologue_len;
     for (i, c) in counts.iter().enumerate() {
         word_offsets[i] = acc;
         acc += c;
@@ -2809,13 +3156,11 @@ fn emit_flowwir_fn(
         word_offsets: &word_offsets,
         words: Vec::new(),
         relocs: Vec::new(),
+        slot_base: X_FRAME,
+        slot_bias: TURN_RECORD_SIZE as usize,
     };
-    emit_prologue(&synthetic, &frame, &mut ctx)?;
-    ctx.load_imm(X_A, 0);
-    ctx.store_slot(X_A, frame.off(state_temp));
+    emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
-    emit_dispatch_header(&mut ctx, state_temp, &state_flat_base);
-    debug_assert_eq!(ctx.words.len(), prologue_len + header_len);
     for (i, entry) in flat.iter().enumerate() {
         emit_flat_entry(
             entry,
@@ -2830,13 +3175,31 @@ fn emit_flowwir_fn(
         )?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[total]);
-    emit_epilogue(&synthetic, &frame, &mut ctx)?;
+    emit_async_epilogue(&synthetic, &mut ctx)?;
 
     Ok(CodegenFn {
         frame_size: frame.size,
         code: ctx.words,
         relocs: ctx.relocs,
     })
+}
+
+/// Every async fn's own persistent frame byte count (its `Frame::size` —
+/// the statically reserved slots its activation lives in, past the
+/// 48-byte turn record), keyed exactly like `FlowWirProgram::fns` — the
+/// one fact `layout::compute_runtime_tables` needs from this module to
+/// size each turn area, computed by the identical `build_frame_flow` the
+/// real emission uses so the two can never disagree.
+pub fn async_frame_sizes(
+    flow: &FlowWirProgram,
+    layout: &LayoutCtx,
+) -> Result<BTreeMap<String, u64>, CodegenError> {
+    let mut out = BTreeMap::new();
+    for (key, f) in &flow.fns {
+        let (frame, _, _, _) = build_frame_flow(f, layout)?;
+        out.insert(key.clone(), frame.size as u64);
+    }
+    Ok(out)
 }
 
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
@@ -2860,7 +3223,7 @@ pub fn codegen_program_with_async(
     for (key, f) in &flow.fns {
         fns.insert(
             key.clone(),
-            emit_flowwir_fn(f, layout, &mut rodata, method_index)?,
+            emit_flowwir_fn(key, f, layout, &mut rodata, method_index)?,
         );
     }
     Ok(CodegenProgram {
@@ -3041,6 +3404,18 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                         return Err(format!(
                             "fn `{key}`: Reloc::CheckpointService word {word} is out of range \
                              (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::TurnFrameAddr { word, .. } => {
+                    // A four-word `load_imm`: the last patched word sits
+                    // at `word + 3` (its *target* — a turn area address —
+                    // is a layout-time fact this stage cannot check).
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::TurnFrameAddr word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
                             f.code.len()
                         ));
                     }

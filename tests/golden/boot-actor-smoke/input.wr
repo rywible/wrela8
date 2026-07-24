@@ -8,10 +8,11 @@ module examples.boot_actor_smoke
 # framework on this machine), the whole pipeline exercised end to end —
 # sema's handle-param rule, the image graph's unique-instance resolution,
 # the boot sequence (actor init, zero-arg `init` call), the async fn's own
-# compiled state machine (dispatch header, checkpoints), and `Await`'s own
-# nested-drain suspension mechanism (`codegen.rs`'s own "Await, simplified"
-# module doc — the disclosed departure from a real cross-call suspend/
-# resume, recorded there and in `actors.codegen.state-machines`).
+# compiled state machine (entry discriminant, checkpoints), and `Await`'s
+# real park-and-resume suspension (the root turn genuinely parks on its
+# own turn record and is re-entered by the driver's scheduler loop —
+# `actors.codegen.state-machines` carries the full mechanism; the original
+# nested-drain placeholder this golden first booted with is deleted).
 
 @actor
 pub struct Store:
