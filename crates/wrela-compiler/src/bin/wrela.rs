@@ -19,11 +19,12 @@ use std::time::{Duration, Instant};
 
 use wrela_compiler::eval;
 use wrela_compiler::loader;
+use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TypedProgram;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|image> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|image|report> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela version";
 
 /// Prints one `sema::SemaError` (decision 1's one-line diagnostic, or
 /// item H's one multi-line exception, decision 2): `extra_lines` is
@@ -106,6 +107,82 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
                     Ok(()) => print!("{}", eval::image::dump(&program.enums, &graph)),
+                    Err(e) => print_sema_error(&e),
+                },
+                Err(e) => print_sema_error(&eval::to_sema_error(e)),
+            }
+        }
+        _ => {
+            let names: Vec<String> = candidates
+                .iter()
+                .map(|(module, fn_name)| format!("{module}::{fn_name}"))
+                .collect();
+            println!(
+                "error[build]: more than one `@image` fn reachable in the build closure ({})",
+                names.join(", ")
+            );
+        }
+    }
+}
+
+/// `wrela dump --stage=report`'s own driver (plans/M4.md item D): the
+/// identical one-`@image`-in-the-closure discovery as `run_image_stage`
+/// above, kept as its own small duplicate rather than refactored out from
+/// underneath item C's own already-golden-pinned behavior (CLAUDE.md:
+/// "prefer long obvious files over deep indirection; keep behavior
+/// local"). Once a sealed, checked `ImageGraph` exists, this renders the
+/// versioned report artifact (`report::render`) instead of the raw graph
+/// dump: `file_paths` (module address -> the real file the loader/single-
+/// file path read it from) is this stage's own extra input beyond
+/// `run_image_stage`'s — read straight off disk and hashed with
+/// `report::sha256_hex`, one `report::BuildInput` per file, keyed by the
+/// package-root-relative path `report::address_to_relative_path` derives
+/// from the module's own address (never the real path in `file_paths`
+/// itself, which can be absolute or working-directory-relative —
+/// `report.rs`'s own module doc explains why that would break byte-
+/// stability). `report::render`'s own decision-10 boundary (a registered
+/// `@layout_assert` fails the *report*, never the raw `--stage=image`
+/// dump) surfaces here as an ordinary `error[build]` diagnostic, exactly
+/// like every other rejection this stage can produce.
+fn run_report_stage(
+    programs: &BTreeMap<String, TypedProgram>,
+    file_paths: &BTreeMap<String, std::path::PathBuf>,
+) {
+    let candidates: Vec<(&String, &String)> = programs
+        .iter()
+        .filter_map(|(module, p)| p.image_fn.as_ref().map(|f| (module, f)))
+        .collect();
+    match candidates.len() {
+        0 => println!("error[build]: no `@image` fn found in the build closure"),
+        1 => {
+            let (module, fn_name) = candidates[0];
+            let program = &programs[module];
+            match eval::interp::eval_image(program, fn_name) {
+                Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
+                    Ok(()) => {
+                        let mut inputs = Vec::with_capacity(file_paths.len());
+                        let mut read_err = None;
+                        for (addr, path) in file_paths {
+                            match std::fs::read(path) {
+                                Ok(bytes) => inputs.push(report::BuildInput {
+                                    path: report::address_to_relative_path(addr),
+                                    digest: report::sha256_hex(&bytes),
+                                }),
+                                Err(e) => {
+                                    read_err =
+                                        Some(format!("cannot read `{}`: {e}", path.display()));
+                                    break;
+                                }
+                            }
+                        }
+                        match read_err {
+                            Some(e) => println!("error[build]: {e}"),
+                            None => match report::render(&inputs, &program.enums, &graph) {
+                                Ok(text) => print!("{text}"),
+                                Err(e) => println!("error[build]: {e}"),
+                            },
+                        }
+                    }
                     Err(e) => print_sema_error(&e),
                 },
                 Err(e) => print_sema_error(&eval::to_sema_error(e)),
@@ -347,6 +424,73 @@ fn dump(args: &[String]) -> ExitCode {
                                         .map(|(k, p)| (k.join("."), p))
                                         .collect();
                                     run_image_stage(&programs);
+                                }
+                                Err(e) => print_sema_error(&e),
+                            }
+                        }
+                        Err(loader::LoadError::Lex(e)) => print_lex_error(&e),
+                        Err(loader::LoadError::Parse(e)) => print_parse_error(&e),
+                        Err(loader::LoadError::Build(e)) => print_sema_error(&e),
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        "report" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                // Sema + `@image` evaluation + report rendering have no
+                // phase timer of their own yet, exactly like `image`
+                // above; everything folds into "dump".
+                let dump_start = Instant::now();
+                match parsed {
+                    // The identical single-file/whole-closure fork
+                    // `check`/`image` above already make.
+                    Ok(module) if module.imports.is_empty() => {
+                        match sema::check_typed(&module, &path) {
+                            Ok(program) => {
+                                let mut programs = BTreeMap::new();
+                                let mut file_paths = BTreeMap::new();
+                                let addr = module.path.join(".");
+                                file_paths.insert(addr.clone(), Path::new(&path).to_path_buf());
+                                programs.insert(addr, program);
+                                run_report_stage(&programs, &file_paths);
+                            }
+                            Err(e) => print_sema_error(&e),
+                        }
+                    }
+                    Ok(_) => match loader::load_closure(Path::new(&path)) {
+                        Ok(loaded) => {
+                            let paths: BTreeMap<Vec<String>, String> = loaded
+                                .modules
+                                .iter()
+                                .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                                .collect();
+                            let file_paths: BTreeMap<String, std::path::PathBuf> = loaded
+                                .modules
+                                .iter()
+                                .map(|(k, m)| (k.join("."), m.file.clone()))
+                                .collect();
+                            let modules: BTreeMap<Vec<String>, _> = loaded
+                                .modules
+                                .into_iter()
+                                .map(|(k, m)| (k, m.module))
+                                .collect();
+                            match sema::check_program_typed(&modules, &paths) {
+                                Ok(programs) => {
+                                    let programs: BTreeMap<String, TypedProgram> = programs
+                                        .into_iter()
+                                        .map(|(k, p)| (k.join("."), p))
+                                        .collect();
+                                    run_report_stage(&programs, &file_paths);
                                 }
                                 Err(e) => print_sema_error(&e),
                             }

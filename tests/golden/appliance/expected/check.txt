@@ -1,0 +1,28 @@
+Module path=cache
+  Struct CacheActor resource
+    field disk: u32
+    field capacity: u32
+    field hits: u32
+    init(mut self, disk: read u32, capacity: read u32) -> unit
+    fn touch(mut self) -> u32
+Module path=driver
+  Struct StorageDriver resource
+    field id: u32
+    field sector_count: u32
+    init(mut self, sector_count: read u32) -> unit
+    fn capacity(read self) -> u32
+Module path=image
+  Enum Feature data
+    variant Flush
+    variant RingReset
+  Struct BlockHw data
+    field id: u32
+  Pool CacheBuffers
+  Fn build() -> Image
+Module path=stats
+  Struct StatsActor resource
+    field cache: u32
+    field window: u32
+    field total: u32
+    init(mut self, cache: read u32, window: read u32) -> unit
+    fn record(mut self, n: read u32) -> u32

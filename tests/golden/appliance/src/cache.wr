@@ -1,0 +1,26 @@
+module cache
+
+# The block cache actor: wired to the storage driver by a `disk=
+# disk.handle()` argument in the image below — a logical actor edge
+# (04-compiler.md §7), the report's own `Edge from=actor#0 to=driver#0`
+# line. `disk`'s own declared type is a plain `u32` placeholder, not a
+# real capability type: `Actor[T]` cannot be spelled as a type
+# annotation yet (plans/M4.md item C's own disclosed gap,
+# `image.graph.init-args-match`'s ledger note) — `img.actor`'s own
+# `disk=disk.handle()` argument is accepted here through decl-reference
+# substitution, matching on the parameter's *name*, not its declared
+# type (see tests/golden/image-basic's identical fixture note).
+@actor
+pub struct CacheActor:
+    disk: u32
+    capacity: u32
+    hits: u32
+
+    init(mut self, disk: u32, capacity: u32):
+        self.disk = disk
+        self.capacity = capacity
+        self.hits = 0
+
+    pub fn touch(mut self) -> u32:
+        self.hits = self.hits +% 1
+        return self.hits

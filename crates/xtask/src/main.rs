@@ -33,6 +33,20 @@
 //!              whenever the entry parses as a whole `Module` (ledger
 //!              clause sema.check.roundtrip-stable). Wired into `check`,
 //!              after `corpus`.
+//!   report-determinism
+//!              plans/M4.md item D, decision 9: for every golden case
+//!              carrying an `expected/report.txt`, produces `wrela dump
+//!              --stage=report`'s own output *twice*, in-process (fresh
+//!              lex/parse/sema/eval every call — no caching, no shared
+//!              state, `produce_report_text`), and byte-compares the two
+//!              — the M4 down-payment on 04-compiler.md §8's
+//!              "identical declared inputs ... produce a byte-for-byte
+//!              identical ... report" (`compiler.repro.byte-identical`,
+//!              which stays a gap until the binary image exists, M5).
+//!              Wired into `check`, right after `golden` (the same cases
+//!              `golden` itself just proved match the pinned expectation
+//!              — this oracle instead proves two *fresh* runs agree with
+//!              each other, a distinct property golden alone does not).
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
 //!   repro      build an image twice, compare bytes   (fails closed today)
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
@@ -67,11 +81,14 @@
 //! Golden discipline: an expectation file changes only together with a
 //! ledger clause that justifies it. The golden diff is the review surface.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use wrela_compiler::eval;
+use wrela_compiler::loader;
+use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
@@ -109,6 +126,7 @@ fn main() -> ExitCode {
         Some("golden") => golden(args.iter().any(|a| a == "--update")),
         Some("corpus") => corpus(),
         Some("roundtrip") => roundtrip(),
+        Some("report-determinism") => report_determinism(),
         Some("ledger") => ledger(),
         Some("repro") => fail_closed("repro", "requires image emission (backend not implemented)"),
         Some("diff-eval") => fail_closed(
@@ -123,7 +141,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval] [--iters N] [--seed S]|roundtrip|ledger|repro|diff-eval|profile|bench <compiler|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -165,6 +183,7 @@ fn check() -> Result<(), String> {
         "cargo test",
     )?;
     golden(false)?;
+    report_determinism()?;
     corpus()?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
@@ -1936,6 +1955,225 @@ fn golden(update: bool) -> Result<(), String> {
     }
 }
 
+// --- report determinism (plans/M4.md item D, decision 9) -------------------
+//
+// `04-compiler.md` §8: "identical declared inputs, compiler revision,
+// machine revision, and quotas produce a byte-for-byte identical ...
+// report." The full binary-image half of that claim
+// (`compiler.repro.byte-identical`) stays a gap until M5's linker exists,
+// but the *report* half is provable today, right now, on every project-
+// shaped golden case: produce it twice, from scratch, and demand the two
+// runs agree byte-for-byte. Dumb on purpose — no caching, no parallelism,
+// a plain sequential loop over every case with a pinned `report.txt`.
+
+/// Reproduces `wrela dump --stage=report <target>`'s own stdout, entirely
+/// in-process — no subprocess, no shared state between calls, so calling
+/// this twice back-to-back for the same `target` is exactly "fresh
+/// loader+sema+eval each time." Mirrors `bin/wrela.rs`'s own `--stage=report`
+/// driver structurally (the single-file/whole-closure fork, one-`@image`
+/// discovery, `eval_image`, `check_sealed`, `report::render`) rather than
+/// calling into it: that binary's own driver functions are not a library
+/// surface this crate can reach, so this is its own small, deliberately
+/// parallel copy (CLAUDE.md: "prefer long obvious files over deep
+/// indirection") — `golden`'s own pinned `report.txt` expectations are the
+/// tripwire that would catch the two ever silently drifting apart. Always
+/// returns `Ok` with the rendered text (a dump, even an error dump, *is*
+/// the stable output — the same house rule `bin/wrela.rs`'s own module doc
+/// states); the outer `Err` path is reserved for this function's own
+/// plumbing failures (a file the closure needs cannot be read), which is
+/// itself part of what determinism means to prove absent across two runs.
+fn produce_report_text(target: &Path) -> Result<String, String> {
+    fn render_sema_error(e: &sema::SemaError) -> String {
+        let mut s = if e.omit_location {
+            format!("error[{}]: {}\n", e.category, e.message)
+        } else {
+            format!(
+                "error[{}]: {} at {}:{}\n",
+                e.category, e.message, e.line, e.col
+            )
+        };
+        for line in &e.extra_lines {
+            s.push_str(line);
+            s.push('\n');
+        }
+        s
+    }
+
+    let source =
+        std::fs::read_to_string(target).map_err(|e| format!("read {}: {e}", target.display()))?;
+    let tokens = match lexer::lex(&source) {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok(format!(
+                "error[lex]: {} at {}:{}\n",
+                e.message, e.line, e.col
+            ));
+        }
+    };
+    let parsed = match parser::parse(tokens) {
+        Ok(m) => m,
+        Err(e) => {
+            return Ok(format!(
+                "error[parse]: {} at {}:{}\n",
+                e.message, e.line, e.col
+            ));
+        }
+    };
+
+    let (programs, file_paths): (
+        BTreeMap<String, sema::typed::TypedProgram>,
+        BTreeMap<String, PathBuf>,
+    ) = if parsed.imports.is_empty() {
+        match sema::check_typed(&parsed, &target.display().to_string()) {
+            Ok(program) => {
+                let addr = parsed.path.join(".");
+                let mut programs = BTreeMap::new();
+                let mut file_paths = BTreeMap::new();
+                file_paths.insert(addr.clone(), target.to_path_buf());
+                programs.insert(addr, program);
+                (programs, file_paths)
+            }
+            Err(e) => return Ok(render_sema_error(&e)),
+        }
+    } else {
+        match loader::load_closure(target) {
+            Ok(loaded) => {
+                let paths: BTreeMap<Vec<String>, String> = loaded
+                    .modules
+                    .iter()
+                    .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                    .collect();
+                let file_paths: BTreeMap<String, PathBuf> = loaded
+                    .modules
+                    .iter()
+                    .map(|(k, m)| (k.join("."), m.file.clone()))
+                    .collect();
+                let modules: BTreeMap<Vec<String>, Module> = loaded
+                    .modules
+                    .into_iter()
+                    .map(|(k, m)| (k, m.module))
+                    .collect();
+                match sema::check_program_typed(&modules, &paths) {
+                    Ok(programs) => {
+                        let programs: BTreeMap<String, sema::typed::TypedProgram> = programs
+                            .into_iter()
+                            .map(|(k, p)| (k.join("."), p))
+                            .collect();
+                        (programs, file_paths)
+                    }
+                    Err(e) => return Ok(render_sema_error(&e)),
+                }
+            }
+            Err(loader::LoadError::Lex(e)) => {
+                return Ok(format!(
+                    "error[lex]: {} at {}:{}\n",
+                    e.message, e.line, e.col
+                ));
+            }
+            Err(loader::LoadError::Parse(e)) => {
+                return Ok(format!(
+                    "error[parse]: {} at {}:{}\n",
+                    e.message, e.line, e.col
+                ));
+            }
+            Err(loader::LoadError::Build(e)) => return Ok(render_sema_error(&e)),
+        }
+    };
+
+    let candidates: Vec<(&String, &String)> = programs
+        .iter()
+        .filter_map(|(m, p)| p.image_fn.as_ref().map(|f| (m, f)))
+        .collect();
+    match candidates.len() {
+        0 => Ok("error[build]: no `@image` fn found in the build closure\n".to_string()),
+        1 => {
+            let (module, fn_name) = candidates[0];
+            let program = &programs[module];
+            match eval::interp::eval_image(program, fn_name) {
+                Ok(graph) => match eval::image_checks::check_sealed(&graph, program, &programs) {
+                    Ok(()) => {
+                        let mut inputs = Vec::with_capacity(file_paths.len());
+                        for (addr, path) in &file_paths {
+                            let bytes = std::fs::read(path)
+                                .map_err(|e| format!("read {}: {e}", path.display()))?;
+                            inputs.push(report::BuildInput {
+                                path: report::address_to_relative_path(addr),
+                                digest: report::sha256_hex(&bytes),
+                            });
+                        }
+                        match report::render(&inputs, &program.enums, &graph) {
+                            Ok(text) => Ok(text),
+                            Err(e) => Ok(format!("error[build]: {e}\n")),
+                        }
+                    }
+                    Err(e) => Ok(render_sema_error(&e)),
+                },
+                Err(e) => Ok(render_sema_error(&eval::to_sema_error(e))),
+            }
+        }
+        _ => {
+            let names: Vec<String> = candidates
+                .iter()
+                .map(|(m, f)| format!("{m}::{f}"))
+                .collect();
+            Ok(format!(
+                "error[build]: more than one `@image` fn reachable in the build closure ({})\n",
+                names.join(", ")
+            ))
+        }
+    }
+}
+
+fn report_determinism() -> Result<(), String> {
+    let golden_dir = root().join("tests/golden");
+    let mut cases = 0usize;
+    let mut failures = Vec::new();
+    for case in golden_case_dirs(&golden_dir)? {
+        if !case.join("expected/report.txt").exists() {
+            continue;
+        }
+        let target = match golden_case_target(&case)? {
+            Some(t) if t.exists() => t,
+            _ => {
+                failures.push(format!(
+                    "{}: expected/report.txt exists but no input.wr/`root` target found",
+                    case.display()
+                ));
+                continue;
+            }
+        };
+        let first = produce_report_text(&target)?;
+        let second = produce_report_text(&target)?;
+        cases += 1;
+        if first != second {
+            let first_line = first.lines().next().unwrap_or("");
+            let mismatch = first
+                .lines()
+                .zip(second.lines())
+                .enumerate()
+                .find(|(_, (a, b))| a != b);
+            let where_str = match mismatch {
+                Some((i, (a, b))) => format!("first differing line {}: {a:?} vs {b:?}", i + 1),
+                None => "outputs differ only in length".to_string(),
+            };
+            failures.push(format!(
+                "{}: two fresh --stage=report runs disagree ({where_str}); first run began {:?}",
+                case.display(),
+                first_line
+            ));
+        }
+    }
+    if failures.is_empty() {
+        println!("report-determinism: {cases} case(s) reproduced byte-for-byte across two runs");
+        Ok(())
+    } else {
+        for f in &failures {
+            eprintln!("{f}\n");
+        }
+        Err(format!("report-determinism: {} failure(s)", failures.len()))
+    }
+}
+
 // --- roundtrip --------------------------------------------------------
 //
 // plans/M1.md item E's second oracle, the parser's `diff-eval`: for every
@@ -2666,6 +2904,7 @@ fn ledger() -> Result<(), String> {
                                 | "bench"
                                 | "fuzz"
                                 | "roundtrip"
+                                | "report-determinism"
                         ) {
                             return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
                         }

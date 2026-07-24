@@ -30,5 +30,6 @@
 
 pub mod eval;
 pub mod loader;
+pub mod report;
 pub mod sema;
 pub mod syntax;

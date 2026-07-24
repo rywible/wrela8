@@ -1,0 +1,34 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=cache.wr sha256=1a924c897defb3a7ba6ca57e4d38aaae95bba87c419486d9078ef3df0519e2a2
+  Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
+  Input path=image.wr sha256=5778ef86a97edc7c4856fd70f343db253e77283c61dda63b4ca8a024d43ccddc
+  Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee
+  Name value=storage-appliance
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=BlockHw
+    Arg label=transport value=8192
+    Arg label=required_features value=[Feature.Flush]
+  Driver index=0 type=StorageDriver
+    Arg label=sector_count value=131072
+  Actor index=0 type=CacheActor
+    Arg label=capacity value=64
+    Mailbox value=8
+  Actor index=1 type=StatsActor
+    Arg label=window value=16
+    Mailbox value=4
+  Edge from=driver#0 to=device#0
+  Edge from=actor#0 to=driver#0
+  Edge from=actor#1 to=actor#0
+  Pool name=CacheBuffers type=u32
+    Arg label=slots value=8
+    Arg label=max_payload value=4096
+  Supervise index=0 strategy=Restart.OneForAll intensity=(3, 10000000000)
+    Child value=driver#0
+    Child value=actor#0
+    Child value=actor#1

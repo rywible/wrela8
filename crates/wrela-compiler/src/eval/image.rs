@@ -225,7 +225,11 @@ impl ImageGraph {
 // (program order for devices/drivers/actors/supervisions/layout
 // asserts, `BTreeMap` order for pools/dma pools). -------------------------
 
-fn push_line(out: &mut String, depth: usize, line: &str) {
+/// `pub(crate)`, not private: `report.rs` (plans/M4.md item D) reuses this
+/// exact line-writer so the report's own `Kind key=value` lines are
+/// byte-identical in style to this stage's — one indentation mechanism,
+/// not two.
+pub(crate) fn push_line(out: &mut String, depth: usize, line: &str) {
     out.push_str(&"  ".repeat(depth));
     out.push_str(line);
     out.push('\n');
@@ -237,7 +241,12 @@ fn push_line(out: &mut String, depth: usize, line: &str) {
 /// module doc: "the typed tree names variants, not indices"), and a
 /// `Value::Array`'s own element type is needed to render nested enums by
 /// name too (`required_features=[...]`, `children=[...]`).
-fn render_value(program: &TypedProgramEnums, ty: &Type, v: &Value) -> String {
+///
+/// `pub(crate)`: `report.rs` (plans/M4.md item D) reuses this verbatim so
+/// every `Arg`/`Name`/`Target` fact in the report renders identically to
+/// the raw `--stage=image` dump — the report is a superset of facts, not
+/// a second rendering mechanism.
+pub(crate) fn render_value(program: &TypedProgramEnums, ty: &Type, v: &Value) -> String {
     match (ty, v) {
         (Type::Named(name, _), Value::Enum(idx, payload)) => {
             let variant = match name.as_str() {
@@ -299,7 +308,10 @@ pub struct TypedProgramEnums<'p> {
 /// reference, a nested tuple/struct with no further enum/list
 /// information to render by name) — the fallback every typed case above
 /// still recurses into for payloads/leaves.
-fn render_bare_value(v: &Value) -> String {
+///
+/// `pub(crate)`: `report.rs` reuses this for the same reason
+/// `render_value`/`push_line` above are `pub(crate)` now.
+pub(crate) fn render_bare_value(v: &Value) -> String {
     match v {
         Value::U8(n) => n.to_string(),
         Value::U16(n) => n.to_string(),

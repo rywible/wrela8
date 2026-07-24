@@ -1,0 +1,25 @@
+ImageGraph v0
+  Name value=storage-appliance
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=BlockHw
+    Arg label=transport value=8192
+    Arg label=required_features value=[Feature.Flush]
+  Driver index=0 type=StorageDriver
+    Arg label=device value=device#0
+    Arg label=sector_count value=131072
+  Actor index=0 type=CacheActor
+    Arg label=disk value=driver#0
+    Arg label=capacity value=64
+    Arg label=mailbox value=8
+  Actor index=1 type=StatsActor
+    Arg label=cache value=actor#0
+    Arg label=window value=16
+    Arg label=mailbox value=4
+  Pool name=CacheBuffers type=u32
+    Arg label=slots value=8
+    Arg label=max_payload value=4096
+  Supervise index=0
+    Arg label=children value=[driver#0, actor#0, actor#1]
+    Arg label=strategy value=Restart.OneForAll
+    Arg label=intensity value=(3, 10000000000)
+  Sealed value=true
