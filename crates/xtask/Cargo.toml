@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 toml.workspace = true
 wrela-compiler = { path = "../wrela-compiler" }
+wrela-machine = { path = "../wrela-machine" }

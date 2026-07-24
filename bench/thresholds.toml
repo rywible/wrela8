@@ -61,3 +61,27 @@ eval_tests_median_us = 120000
 # O(n^2) creeping into the loader, sema, or `@image` evaluation) and never
 # a false alarm from ordinary machine noise.
 build_appliance_median_us = 20000
+
+[guest]
+# `cargo xtask bench guest` (plans/M5.md item F, decision 14): median
+# wall time (microseconds) for one boot of `tests/golden/boot-hello`'s
+# own `@test(runtime)` image via the codesigned `wrela-vmm` binary (2
+# warmup + 5 timed iterations — fewer than the compiler lanes' 3+15,
+# since each iteration is a real `hv_vm_create`/1 GiB zeroed allocation/
+# `hv_vm_map`/vCPU run/`hv_vm_destroy` cycle, not an in-process function
+# call — see `bench_guest_lane` in crates/xtask/src/main.rs). Measured
+# median on the locking machine (macOS/Apple Silicon, Hypervisor.
+# framework): ~50-52ms (50000-52000us) across several runs of 5 timed
+# iterations each — almost entirely `hv_vm_create`/the 1 GiB
+# `alloc_zeroed`/`hv_vm_map`/`hv_vcpu_create`/`hv_vm_destroy` overhead,
+# not the guest's own handful of instructions. This threshold is 10x that,
+# rounded up to a clean number — same rationale as every other locked
+# bench threshold in this file: loose on purpose, so it catches a real
+# regression in the boot path (an accidental extra allocation, a VMM
+# loop doing needless work per exit) and never a false alarm from
+# ordinary machine noise. `bench guest` also asserts, across all 5 timed
+# boots, byte-identical transcripts and identical exit codes/vCPU exit
+# counts (decision 14's own "exact replay counts" half) — a threshold
+# alone would miss a nondeterminism regression that happened to stay
+# fast.
+boot_hello_median_us = 600000

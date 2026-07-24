@@ -5,3 +5,15 @@ edition.workspace = true
 
 [dependencies]
 wrela-machine = { path = "../wrela-machine" }
+
+[dev-dependencies]
+# plans/M5.md item F: the clock-reading test image (record.rs's own unit
+# tests) needs a handful of pinned A76 encodings to hand-assemble a tiny
+# guest program that reads CLOCK_MMIO_ADDR twice — `wrela-compiler`'s
+# `encode.rs` already has these, unit-tested and golden-pinned, so
+# reusing them here (test-only, in-workspace, never linked into the
+# production `wrela-vmm` binary) is strictly less risk than re-deriving
+# the same bit patterns a second time by hand. CLAUDE.md's "a dependency
+# is a liability" rule is about *external* liabilities; this is neither
+# external nor shipped.
+wrela-compiler = { path = "../wrela-compiler" }

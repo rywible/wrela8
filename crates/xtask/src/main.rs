@@ -103,11 +103,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
+use wrela_compiler::codegen;
 use wrela_compiler::eval;
 use wrela_compiler::layout;
 use wrela_compiler::loader;
+use wrela_compiler::lower;
 use wrela_compiler::report;
 use wrela_compiler::sema;
+use wrela_compiler::sema::typed::TestKind;
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
 use wrela_compiler::syntax::parser::{self, Parsed};
@@ -146,22 +149,22 @@ fn main() -> ExitCode {
         Some("roundtrip") => roundtrip(),
         Some("report-determinism") => report_determinism(),
         Some("ledger") => ledger(),
-        // plans/M5.md decision 10, item D: `repro` is now the same
+        // plans/M5.md decision 10, item D: `repro` is the same
         // twice-fresh-build byte-compare `report_determinism` already runs
-        // in `check` (extended, this item, to cover image bytes as well
-        // as report text) — bare `cargo xtask repro` is simply its own
-        // standalone invocation of the identical oracle, not a separate
-        // "full corpus" pass: every golden case that emits a report is
-        // already the whole population either form covers.
-        Some("repro") => report_determinism(),
-        Some("diff-eval") => fail_closed(
-            "diff-eval",
-            "requires the evaluator and backend (not implemented)",
-        ),
-        Some("profile") => fail_closed(
-            "profile",
-            "requires record/replay on the VMM (lands at M5); no profile may be faked",
-        ),
+        // in `check` (grown, item D, to cover image bytes as well as
+        // report text) — every golden case that emits a `report.txt` is
+        // the whole `@image`/`wrela build` population either form covers.
+        // Item F grows the *standalone* form one population further:
+        // `report_determinism` alone has no way to reach
+        // `tests/golden/boot-hello`'s own image at all (a runtime-test
+        // image has no `@image` fn, so it never goes through the
+        // `wrela build` pipeline `report_determinism` walks) — `repro`
+        // additionally proves that image's own byte-reproducibility,
+        // making bare `cargo xtask repro` a strict superset of `cargo
+        // xtask report-determinism` rather than a bare synonym for it.
+        Some("repro") => repro(),
+        Some("diff-eval") => diff_eval(),
+        Some("profile") => profile(),
         Some("fuzz") => fuzz(&args[1..]),
         Some("bench") => bench(&args[1..]),
         _ => {
@@ -204,11 +207,13 @@ fn check() -> Result<(), String> {
         "cargo fmt --check",
     )?;
     run(
-        Command::new("cargo").args(["test", "--workspace", "--quiet"]),
+        Command::new("cargo").args(["test", "--workspace", "--exclude", "wrela-vmm", "--quiet"]),
         "cargo test",
     )?;
+    test_wrela_vmm_signed()?;
     golden(false)?;
     report_determinism()?;
+    diff_eval_smoke()?;
     corpus()?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
@@ -217,6 +222,7 @@ fn check() -> Result<(), String> {
     roundtrip()?;
     bench_compiler()?;
     bench_build_lane()?;
+    bench_guest_lane()?;
     ledger()?;
     println!("xtask check: ok");
     Ok(())
@@ -2133,6 +2139,82 @@ fn build_and_sign_vmm() -> Result<PathBuf, String> {
     Ok(bin)
 }
 
+/// `cargo test --workspace` never codesigns anything — the test binaries
+/// `cargo test` builds under `target/debug/deps/` are ordinary,
+/// unsigned executables, exactly like any other `cargo build` output
+/// (`build_and_sign_vmm`'s own doc comment: codesigning is this xtask's
+/// own, deliberate, post-build step, never something Cargo does for
+/// free). That was harmless before this item — `wrela-vmm`'s own
+/// pre-item-F unit tests (the ESR decoder, `parse_report`) are pure
+/// functions, no HVF calls anywhere — but item F's own hand-built
+/// clock-reading test (`lib.rs`) is the first `#[test]` in this
+/// workspace that calls `hv_vm_create` for real, so its test binary
+/// needs the identical entitlement `build_and_sign_vmm` already gives
+/// the ordinary `wrela-vmm` binary. `check`'s own plain `cargo test
+/// --workspace` step therefore excludes `wrela-vmm` (above); this
+/// function is `wrela-vmm`'s own replacement: build its test binaries
+/// with `--no-run`, codesign each one (parsed off cargo's own
+/// `Executable ... (path)` stderr lines — no `--message-format=json`/
+/// `serde_json` dependency needed for two lines of known shape), then
+/// run each directly, single-threaded (`--test-threads=1`) — the same
+/// "no two calls into HVF's one process-wide VM context are ever
+/// concurrent" reasoning the hand-built test's own doc comment gives,
+/// now enforced at the process level too, not just within one `#[test]`
+/// fn.
+fn test_wrela_vmm_signed() -> Result<(), String> {
+    // Deliberately no `--quiet` here (unlike every other `cargo`
+    // invocation in this file): cargo only ever prints its own
+    // `Executable ... (path)` lines — this function's one source of
+    // truth for which binaries to sign — under the default verbosity;
+    // `--quiet` suppresses them even on a rebuild, and a cached (already
+    // up to date) build prints nothing else either way, so there is no
+    // extra noise being traded away here.
+    let output = Command::new("cargo")
+        .current_dir(root())
+        .args(["test", "-p", "wrela-vmm", "--no-run"])
+        .output()
+        .map_err(|e| format!("cargo test -p wrela-vmm --no-run: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo test -p wrela-vmm --no-run failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut executables: Vec<PathBuf> = Vec::new();
+    for line in stderr.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("Executable ") else {
+            continue;
+        };
+        let (Some(open), Some(close)) = (rest.rfind('('), rest.rfind(')')) else {
+            continue;
+        };
+        if close > open {
+            executables.push(root().join(&rest[open + 1..close]));
+        }
+    }
+    if executables.is_empty() {
+        return Err(
+            "cargo test -p wrela-vmm --no-run: found no test executable(s) to sign".to_string(),
+        );
+    }
+    for exe in &executables {
+        if cfg!(target_os = "macos") {
+            let mut cmd = Command::new("codesign");
+            cmd.args(["--force", "--sign", "-", "--entitlements"]);
+            cmd.arg(root().join("crates/wrela-vmm/entitlements.plist"));
+            cmd.arg(exe);
+            run(&mut cmd, "codesign wrela-vmm test binary")?;
+        }
+        run(
+            Command::new(exe).arg("--test-threads=1"),
+            &format!("run {}", exe.display()),
+        )?;
+    }
+    Ok(())
+}
+
 fn golden(update: bool) -> Result<(), String> {
     run(
         Command::new("cargo").args(["build", "--quiet", "-p", "wrela-compiler", "--bin", "wrela"]),
@@ -2675,6 +2757,746 @@ fn report_determinism() -> Result<(), String> {
         }
         Err(format!("report-determinism: {} failure(s)", failures.len()))
     }
+}
+
+/// plans/M5.md item F: grows `repro`'s own full-corpus form beyond
+/// `report_determinism`'s scope (below) to also prove
+/// `tests/golden/boot-hello`'s own `@test(runtime)` test image is
+/// byte-reproducible — two fresh, in-process `boot_hello_test_image`
+/// calls (itself `build_runtime_test_image` over that case's own
+/// runtime tests, `diff-eval`'s/`bench guest`'s shared helper), byte-
+/// compared, image bytes and report text alike. The identical "two
+/// fresh builds must agree" property `report_determinism` already
+/// proves for the `@image`/`wrela build` pipeline, proved here for the
+/// separate runtime-test-image pipeline decision 1 introduced (a
+/// runtime-test image has no `@image` fn at all, so it never goes
+/// through `report_determinism`'s own walk).
+fn repro_test_image() -> Result<(), String> {
+    let (img_bytes, report_text) = boot_hello_test_image()?;
+    let (img_bytes2, report_text2) = boot_hello_test_image()?;
+    if img_bytes != img_bytes2 {
+        return Err(format!(
+            "repro: tests/golden/boot-hello: two fresh test-image builds disagree ({} bytes vs {} bytes)",
+            img_bytes.len(),
+            img_bytes2.len()
+        ));
+    }
+    if report_text != report_text2 {
+        return Err(
+            "repro: tests/golden/boot-hello: two fresh test-image report builds disagree"
+                .to_string(),
+        );
+    }
+    println!(
+        "repro: tests/golden/boot-hello's own test image reproduced byte-for-byte (image + report) across two runs"
+    );
+    Ok(())
+}
+
+/// `cargo xtask repro` (plans/M5.md decision 10, item F): the standalone,
+/// full-corpus form — `report_determinism`'s own `@image`/`wrela build`
+/// population plus `repro_test_image`'s one runtime-test-image case,
+/// so bare `repro` covers every image-emitting path this milestone has,
+/// not only the one `report_determinism` alone can reach.
+fn repro() -> Result<(), String> {
+    report_determinism()?;
+    repro_test_image()
+}
+
+// --- diff-eval (plans/M5.md decision 9, item F) -----------------------------
+//
+// The evaluator-vs-backend differential oracle (flips `compiler.eval.
+// matches-backend`): for every golden case whose input typechecks and
+// declares at least one bare `@test` (`TestKind::Comptime` — decision 9's
+// own "the comptime tier's own set"; `@test(exhaustive)` is deliberately
+// excluded from the comparison itself and counted in its own skip
+// category instead, decision 2's sub-note), this compiles those same
+// test fns into one runtime-test image (reusing item E's own harness —
+// `layout::layout_test_image` — since a bare `@test` fn is exactly the
+// zero-arg shape the harness already runs; naming it `runtime_tests`
+// there is a harness-internal detail, not a claim about the test's own
+// declared kind), boots it once via the codesigned `wrela-vmm` binary,
+// and compares each guest-printed report line against `eval::run_tests`'
+// own line for the same fn, byte for byte. Every skip (a case with zero
+// comptime-legal tests, an exhaustive test, a program whose lowering
+// fails closed) is counted AND printed as it happens — never silent, per
+// the plan's own instruction — and any real disagreement fails the whole
+// command loudly with both lines and the case name.
+
+/// This oracle's own running tally, printed as the final summary line
+/// (`diff-eval: <N> test(s) agree across <C> case(s), <S1>
+/// lowering-skips, <S2> exhaustive-skips`).
+#[derive(Default)]
+struct DiffEvalTally {
+    agree: usize,
+    cases_agreed: usize,
+    lowering_skips: usize,
+    exhaustive_skips: usize,
+    /// A third, plan-unanticipated skip category found while implementing
+    /// this oracle (recorded here, not silently folded into
+    /// `lowering_skips`, per the "never silent" house rule):
+    /// `comptime.eval.quotas`' own step/memory quota is a *comptime-tier*
+    /// resource bound (`eval::quota::MAX_STEPS`/`MAX_MEMORY`) with no
+    /// backend equivalent whatsoever — the naive A76 codegen has no step
+    /// counter, so a test the evaluator fails with "step/memory quota
+    /// exceeded" (`check-tests-mixed`'s own `test_quota_exceeded`, a bare
+    /// `while true: total = total + 1`) does not fail closed at lowering
+    /// (an unbounded loop is perfectly ordinary mwir) — it lowers and
+    /// codegens cleanly, then **spins forever** on real hardware, since
+    /// nothing in the compiled image ever enforces the evaluator's own
+    /// 20_000-step budget. Booting it would either hang for the VMM's own
+    /// `WALL_CAP` (30s) on every `diff-eval` run or, worse, be
+    /// indistinguishable from a genuine backend bug. Detected before ever
+    /// building an image: a comptime test whose own `eval::run_tests` line
+    /// contains the fixed substring `"quota exceeded"` is excluded from
+    /// the image entirely and counted here instead of compiled/booted.
+    quota_skips: usize,
+}
+
+/// Lex+parse+typecheck a single-module program — mirrors `wrela test`'s
+/// own scope exactly (`sema::check_typed`'s own "imports through the
+/// single-module entry ... are [unimplemented]" refusal, `bin/
+/// wrela.rs::test_cmd` never attempts `loader::load_closure` either).
+/// `None` for anything out of this oracle's scope: a lex/parse/sema
+/// failure (an `err-*` golden — an expected rejection, never a bug this
+/// oracle should report on) or a program with imports (multi-module, out
+/// of `wrela test`'s own scope) — never treated as a plumbing `Err`,
+/// since both are ordinary, expected exclusions.
+fn typecheck_single_module(
+    source: &str,
+    path: &str,
+) -> Option<(Module, sema::typed::TypedProgram)> {
+    let tokens = lexer::lex(source).ok()?;
+    let module = parser::parse(tokens).ok()?;
+    if !module.imports.is_empty() {
+        return None;
+    }
+    let program = sema::check_typed(&module, path).ok()?;
+    Some((module, program))
+}
+
+/// Builds a runtime-test image out of `test_names` (in the order given —
+/// the guest's own transcript lines come out in this same order,
+/// `layout::layout_test_image`'s own doc) plus the report text
+/// `wrela-vmm` needs to boot it. Mirrors `bin/wrela.rs::test_cmd`'s own
+/// image+report construction exactly: those driver internals are not a
+/// library surface this crate can call into, so this is its own small,
+/// deliberately parallel copy — the identical "own small, deliberately
+/// parallel copy" reasoning `produce_report_and_image`'s own doc comment
+/// already gives for `report-determinism`, one call chain later.
+fn build_runtime_test_image(
+    module: &Module,
+    program: &sema::typed::TypedProgram,
+    source: &str,
+    path: &str,
+    test_names: &[String],
+) -> Result<(Vec<u8>, String), String> {
+    let mut modules: BTreeMap<String, Module> = BTreeMap::new();
+    modules.insert(module.path.join("."), module.clone());
+    let layout_ctx = layout::merge_layout_ctx(&modules).map_err(|e| e.message)?;
+    let mwir_program = lower::lower_program(program).map_err(|e| e.message)?;
+    let codegen_program =
+        codegen::codegen_program(&mwir_program, &layout_ctx).map_err(|e| e.message)?;
+    let image_layout =
+        layout::layout_test_image(&codegen_program, test_names).map_err(|e| e.message)?;
+    let source_digest = report::sha256_hex(source.as_bytes());
+    let mut report_text = format!(
+        "Machine revision={}\nInput path={path} digest={source_digest}\n",
+        wrela_machine::MACHINE_REVISION_STR
+    );
+    for s in &image_layout.sections {
+        report_text.push_str(&format!(
+            "Section name={} base={:#x} size={}\n",
+            s.name, s.base, s.size
+        ));
+    }
+    report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+    Ok((image_layout.blob, report_text))
+}
+
+/// Shells out to the codesigned `wrela-vmm` binary exactly like `bin/
+/// wrela.rs::test_cmd`/`golden`'s own `test.txt` stage do — `xtask`
+/// itself stays unsigned throughout (plans/M5.md decision 11: the only
+/// binary that ever touches Hypervisor.framework is `wrela-vmm`).
+/// `exit_code_class` is the wrapper process's own exit code: `0`/`1`
+/// mirror the guest's own reported outcome (decision 9's normal pass/
+/// fail range), anything else names a genuine VMM-level failure.
+struct VmmBoot {
+    transcript: String,
+    exit_code_class: i32,
+}
+
+fn run_vmm(vmm: &Path, report_path: &Path, img_path: &Path) -> Result<VmmBoot, String> {
+    let out = Command::new(vmm)
+        .arg(report_path)
+        .arg(img_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm: {e}"))?;
+    Ok(VmmBoot {
+        transcript: String::from_utf8_lossy(&out.stdout).into_owned(),
+        exit_code_class: out.status.code().unwrap_or(-1),
+    })
+}
+
+/// One golden case's own recorded facts from `--record <path>` (`wrela-
+/// vmm`'s own hand-rolled `key=value` text format, `wrela-vmm/src/
+/// record.rs::RecordFile::to_text`) — `xtask` deliberately does not
+/// depend on the `wrela-vmm` *crate* to parse this (CLAUDE.md: a
+/// dependency is a liability, and plans/M5.md decision 11's own "keeps
+/// xtask itself unsigned and the signed surface one small binary" reads
+/// as a design boundary worth keeping crisp at the crate-graph level too,
+/// not only at the "who calls HVF" level) — a few `strip_prefix` calls
+/// over a handful of known keys is simpler than a real dependency for
+/// the three fields `bench guest`/`profile` actually need.
+struct GuestRecord {
+    exit_code: u64,
+    exits: u64,
+    clock_log_len: usize,
+}
+
+fn parse_guest_record(text: &str) -> Result<GuestRecord, String> {
+    let mut exit_code = None;
+    let mut exits = None;
+    let mut clock_log_len = None;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("exit_code=") {
+            exit_code = Some(v.parse().map_err(|e| format!("bad exit_code {v:?}: {e}"))?);
+        } else if let Some(v) = line.strip_prefix("exits=") {
+            exits = Some(v.parse().map_err(|e| format!("bad exits {v:?}: {e}"))?);
+        } else if let Some(v) = line.strip_prefix("clock_log_len=") {
+            clock_log_len = Some(
+                v.parse()
+                    .map_err(|e| format!("bad clock_log_len {v:?}: {e}"))?,
+            );
+        }
+    }
+    Ok(GuestRecord {
+        exit_code: exit_code.ok_or("record file: missing exit_code")?,
+        exits: exits.ok_or("record file: missing exits")?,
+        clock_log_len: clock_log_len.ok_or("record file: missing clock_log_len")?,
+    })
+}
+
+/// The oracle itself, over whichever golden cases `filter` selects
+/// (`None` = the whole corpus, `cargo xtask diff-eval`'s own standalone
+/// form; `Some(names)` = the in-`check` smoke subset, below). Every case
+/// visited prints its own contribution as it happens; any real
+/// disagreement returns `Err` immediately (decision 9: "ANY disagreement
+/// ... fails"), never accumulated past the first one found.
+fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalTally, String> {
+    let golden_dir = root().join("tests/golden");
+    let mut tally = DiffEvalTally::default();
+    for case in golden_case_dirs(&golden_dir)? {
+        let name = case
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("case")
+            .to_string();
+        if let Some(names) = filter {
+            if !names.contains(&name.as_str()) {
+                continue;
+            }
+        }
+        let Some(target) = golden_case_target(&case)? else {
+            continue;
+        };
+        if !target.exists() {
+            continue;
+        }
+        let source = std::fs::read_to_string(&target)
+            .map_err(|e| format!("read {}: {e}", target.display()))?;
+        let path_display = target.display().to_string();
+        let Some((module, program)) = typecheck_single_module(&source, &path_display) else {
+            continue; // out of scope: lex/parse/sema error, or multi-module
+        };
+        if program.tests.is_empty() {
+            continue; // fully out of scope: no @test fn of any kind
+        }
+
+        let comptime_names: Vec<String> = program
+            .tests
+            .iter()
+            .filter(|t| t.kind == TestKind::Comptime)
+            .map(|t| t.name.clone())
+            .collect();
+        let exhaustive_count = program
+            .tests
+            .iter()
+            .filter(|t| t.kind == TestKind::Exhaustive)
+            .count();
+        tally.exhaustive_skips += exhaustive_count;
+
+        if comptime_names.is_empty() {
+            println!(
+                "diff-eval: case {name}: no comptime-legal @test fn(s) ({exhaustive_count} \
+                 exhaustive skipped) — out of scope"
+            );
+            continue;
+        }
+
+        // `eval::run_tests` first: every comptime test's own line is
+        // needed both to filter out quota-exhaustion outcomes (below)
+        // and, later, as the comparison oracle itself — one call covers
+        // both, exactly the shape `wrela test`'s own comptime tier
+        // already produces.
+        let (eval_report, _) = eval::run_tests(&program);
+        let eval_line_for = |test_name: &str| -> Option<&str> {
+            let prefix = format!("test {test_name}: ");
+            eval_report.lines().find(|l| l.starts_with(&prefix))
+        };
+
+        // `comptime.eval.quotas`' own step/memory quota is a comptime-tier
+        // resource bound with no backend equivalent (`DiffEvalTally::
+        // quota_skips`' own doc comment) — a test the evaluator only
+        // fails via quota exhaustion is excluded from the image entirely,
+        // never compiled/booted, since a real image would just spin
+        // forever rather than disagree meaningfully.
+        let mut backend_names: Vec<String> = Vec::new();
+        let mut quota_skipped: Vec<String> = Vec::new();
+        for test_name in &comptime_names {
+            match eval_line_for(test_name) {
+                Some(line) if line.contains("quota exceeded") => {
+                    quota_skipped.push(test_name.clone());
+                }
+                _ => backend_names.push(test_name.clone()),
+            }
+        }
+        tally.quota_skips += quota_skipped.len();
+        if !quota_skipped.is_empty() {
+            println!(
+                "diff-eval: case {name}: {} comptime test(s) skipped (evaluator-only quota \
+                 exhaustion, no backend equivalent): {}",
+                quota_skipped.len(),
+                quota_skipped.join(", ")
+            );
+        }
+        if backend_names.is_empty() {
+            continue; // every comptime test in this case was quota-skipped
+        }
+
+        let (img_bytes, report_text) = match build_runtime_test_image(
+            &module,
+            &program,
+            &source,
+            &path_display,
+            &backend_names,
+        ) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tally.lowering_skips += backend_names.len();
+                println!(
+                    "diff-eval: case {name}: lowering failed closed ({e}) — {} comptime test(s) skipped",
+                    backend_names.len()
+                );
+                continue;
+            }
+        };
+
+        let tmp_dir = root().join(format!("target/diff-eval-tmp/{name}"));
+        if tmp_dir.exists() {
+            std::fs::remove_dir_all(&tmp_dir)
+                .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+        }
+        std::fs::create_dir_all(&tmp_dir)
+            .map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+        let img_path = tmp_dir.join("test.img");
+        let report_path = tmp_dir.join("test.report.txt");
+        std::fs::write(&img_path, &img_bytes)
+            .map_err(|e| format!("write {}: {e}", img_path.display()))?;
+        std::fs::write(&report_path, &report_text)
+            .map_err(|e| format!("write {}: {e}", report_path.display()))?;
+        let boot_result = run_vmm(vmm, &report_path, &img_path);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let boot = boot_result?;
+        if boot.exit_code_class != 0 && boot.exit_code_class != 1 {
+            return Err(format!(
+                "diff-eval: case {name}: the wrela VMM did not boot the test image (exit {})",
+                boot.exit_code_class
+            ));
+        }
+
+        let t_lines: Vec<&str> = boot.transcript.lines().collect();
+        if t_lines.len() != backend_names.len() + 1 {
+            return Err(format!(
+                "diff-eval: case {name}: guest transcript is not well-formed (expected {} test \
+                 line(s) then a summary, got {} line(s)):\n{}",
+                backend_names.len(),
+                t_lines.len(),
+                boot.transcript
+            ));
+        }
+
+        for (i, test_name) in backend_names.iter().enumerate() {
+            let guest_line = t_lines[i];
+            let prefix = format!("test {test_name}: ");
+            if !guest_line.starts_with(&prefix) {
+                return Err(format!(
+                    "diff-eval: case {name}: guest transcript line {} does not name test \
+                     `{test_name}` (got {guest_line:?})",
+                    i + 1
+                ));
+            }
+            let eval_line = eval_line_for(test_name).ok_or_else(|| {
+                format!("diff-eval: case {name}: no evaluator line found for test `{test_name}`")
+            })?;
+            if guest_line != eval_line {
+                return Err(format!(
+                    "diff-eval: DISAGREEMENT in case {name}, test `{test_name}`:\n  evaluator: {eval_line}\n  backend:   {guest_line}"
+                ));
+            }
+            tally.agree += 1;
+        }
+        tally.cases_agreed += 1;
+        println!(
+            "diff-eval: case {name}: {} comptime test(s) agree ({exhaustive_count} exhaustive skipped)",
+            backend_names.len()
+        );
+    }
+    Ok(tally)
+}
+
+/// `cargo xtask diff-eval`: the unrestricted, full-corpus form (decision
+/// 9's own "the full corpus on demand").
+fn diff_eval() -> Result<(), String> {
+    let vmm = build_and_sign_vmm()?;
+    let tally = diff_eval_over_cases(&vmm, None)?;
+    println!(
+        "diff-eval: {} test(s) agree across {} case(s), {} lowering-skips, {} exhaustive-skips, \
+         {} quota-skips",
+        tally.agree,
+        tally.cases_agreed,
+        tally.lowering_skips,
+        tally.exhaustive_skips,
+        tally.quota_skips
+    );
+    Ok(())
+}
+
+/// The in-`check` smoke subset (plans/M5.md item F: "the boot golden +
+/// one arithmetic-heavy case", item F's own text naming three specific
+/// cases to pick from): `boot-hello` (exercises the whole build+sign+
+/// boot chain end to end on every `check` run — it declares zero
+/// comptime-legal tests of its own, decision 1's own runtime-only scope,
+/// so it never contributes to the agree/skip counters, only to proving
+/// the pipeline itself still boots) plus the two arithmetic-heavy
+/// comptime suites `check-tests-arith`/`check-tests-program` (15
+/// comptime tests between them, exercising checked/wrapping arithmetic,
+/// structs, enums, `match`, loops, and a generic fn) — the closest
+/// existing cases to the plan's own naming, used verbatim rather than
+/// substituted.
+const DIFF_EVAL_SMOKE_CASES: [&str; 3] = ["boot-hello", "check-tests-arith", "check-tests-program"];
+
+fn diff_eval_smoke() -> Result<(), String> {
+    let vmm = build_and_sign_vmm()?;
+    let tally = diff_eval_over_cases(&vmm, Some(&DIFF_EVAL_SMOKE_CASES))?;
+    println!(
+        "diff-eval (smoke): {} test(s) agree across {} case(s), {} lowering-skips, {} \
+         exhaustive-skips, {} quota-skips",
+        tally.agree,
+        tally.cases_agreed,
+        tally.lowering_skips,
+        tally.exhaustive_skips,
+        tally.quota_skips
+    );
+    Ok(())
+}
+
+// --- bench: guest lane + profile (plans/M5.md item F, decision 14) ---------
+//
+// `cargo xtask bench guest`: boots `tests/golden/boot-hello`'s own test
+// image (built once, outside the timed loop — only the *boot* itself is
+// the measured workload, not compilation) via the codesigned `wrela-vmm`
+// binary, `--record`ed every time so the exact per-boot counts
+// (`RecordFile`'s own `exits`/`clock_log_len`/`exit_code`, plus the
+// transcript bytes captured on stdout) are available for the "exact
+// replay counts" half of decision 14 without a second, separately-timed
+// invocation. Same warmup+timed shape as every other bench lane, its own
+// locked median in `bench/thresholds.toml`'s `[guest]` table.
+
+const BENCH_GUEST_WARMUP_ITERS: usize = 2;
+const BENCH_GUEST_TIMED_ITERS: usize = 5;
+
+fn guest_bench_threshold_us() -> Result<u128, String> {
+    bench_threshold_us("guest", "boot_hello_median_us")
+}
+
+/// Builds `tests/golden/boot-hello`'s own `@test(runtime)` image once —
+/// shared by `bench_guest_lane` and `profile`, below, so the "which
+/// program, which tests" decision lives in exactly one place.
+fn boot_hello_test_image() -> Result<(Vec<u8>, String), String> {
+    let case = root().join("tests/golden/boot-hello");
+    let target = golden_case_target(&case)?
+        .ok_or_else(|| "tests/golden/boot-hello has no input.wr".to_string())?;
+    let source =
+        std::fs::read_to_string(&target).map_err(|e| format!("read {}: {e}", target.display()))?;
+    let path_display = target.display().to_string();
+    let (module, program) = typecheck_single_module(&source, &path_display)
+        .ok_or_else(|| "tests/golden/boot-hello failed to typecheck".to_string())?;
+    let runtime_names: Vec<String> = program
+        .tests
+        .iter()
+        .filter(|t| t.kind == TestKind::Runtime)
+        .map(|t| t.name.clone())
+        .collect();
+    if runtime_names.is_empty() {
+        return Err("tests/golden/boot-hello declares no @test(runtime) fns".to_string());
+    }
+    build_runtime_test_image(&module, &program, &source, &path_display, &runtime_names)
+}
+
+fn bench_guest_lane() -> Result<(), String> {
+    let vmm = build_and_sign_vmm()?;
+    let (img_bytes, report_text) = boot_hello_test_image()?;
+
+    let tmp_dir = root().join("target/bench-guest-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    std::fs::write(&img_path, &img_bytes)
+        .map_err(|e| format!("write {}: {e}", img_path.display()))?;
+    std::fs::write(&report_path, &report_text)
+        .map_err(|e| format!("write {}: {e}", report_path.display()))?;
+    let record_path = tmp_dir.join("boot.record.txt");
+
+    let boot_one = || -> Result<(Duration, String, i32, GuestRecord), String> {
+        let start = Instant::now();
+        let out = Command::new(&vmm)
+            .arg(&report_path)
+            .arg(&img_path)
+            .arg("--record")
+            .arg(&record_path)
+            .output()
+            .map_err(|e| format!("run wrela-vmm: {e}"))?;
+        let elapsed = start.elapsed();
+        let exit_code_class = out.status.code().unwrap_or(-1);
+        let transcript = String::from_utf8_lossy(&out.stdout).into_owned();
+        let record_text = std::fs::read_to_string(&record_path)
+            .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+        let record = parse_guest_record(&record_text)?;
+        Ok((elapsed, transcript, exit_code_class, record))
+    };
+
+    for _ in 0..BENCH_GUEST_WARMUP_ITERS {
+        boot_one()?;
+    }
+
+    let mut totals = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
+    let mut transcripts = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
+    let mut exit_codes = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
+    let mut exits_counts = Vec::with_capacity(BENCH_GUEST_TIMED_ITERS);
+    for _ in 0..BENCH_GUEST_TIMED_ITERS {
+        let (elapsed, transcript, exit_code_class, record) = boot_one()?;
+        if exit_code_class != 0 && exit_code_class != 1 {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Err(format!(
+                "bench guest: the wrela VMM did not boot the test image (exit {exit_code_class})"
+            ));
+        }
+        totals.push(elapsed);
+        transcripts.push(transcript);
+        exit_codes.push(record.exit_code);
+        exits_counts.push(record.exits);
+    }
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    // decision 14's own "exact counts" half: every timed boot of the
+    // identical image must produce byte-identical transcripts and
+    // identical exit codes/exit counts — anything else is a real
+    // nondeterminism bug (the generated runtime or the VMM), never
+    // ordinary machine noise.
+    let first_transcript = transcripts[0].clone();
+    for (i, t) in transcripts.iter().enumerate() {
+        if *t != first_transcript {
+            return Err(format!(
+                "bench guest: transcript differs on timed iteration {i} (expected byte-identical \
+                 transcripts across every boot of the same image)"
+            ));
+        }
+    }
+    let first_exit_code = exit_codes[0];
+    if exit_codes.iter().any(|&e| e != first_exit_code) {
+        return Err("bench guest: exit code differs across timed boots".to_string());
+    }
+    let first_exits = exits_counts[0];
+    if exits_counts.iter().any(|&e| e != first_exits) {
+        return Err("bench guest: vCPU exit count differs across timed boots".to_string());
+    }
+
+    totals.sort();
+    let min = totals[0];
+    let max = totals[totals.len() - 1];
+    let med = median(&totals);
+    let median_us = med.as_micros();
+
+    println!(
+        "bench guest: {BENCH_GUEST_WARMUP_ITERS} warmup + {BENCH_GUEST_TIMED_ITERS} timed boot(s) \
+         of tests/golden/boot-hello"
+    );
+    println!(
+        "bench guest: wall time: min={}us median={}us max={}us",
+        min.as_micros(),
+        median_us,
+        max.as_micros()
+    );
+    println!(
+        "bench guest: exact counts across every timed boot: transcript={} byte(s), \
+         exit_code={first_exit_code}, exits={first_exits}",
+        first_transcript.len()
+    );
+
+    let threshold_us = guest_bench_threshold_us()?;
+    if median_us > threshold_us {
+        return Err(format!(
+            "bench guest: FAIL: measured median {median_us}us exceeds locked threshold \
+             {threshold_us}us (bench/thresholds.toml) — an algorithmic/HVF-path regression, not \
+             machine noise, is what this lock exists to catch"
+        ));
+    }
+    println!(
+        "bench guest: median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
+    );
+    Ok(())
+}
+
+/// `cargo xtask profile` (plans/M5.md item F, decision 14): the compiler's
+/// own per-phase wall time building `tests/golden/boot-hello` (the "in-
+/// process equivalent" of `--timings` — that flag lives on `wrela dump`,
+/// which never builds a runtime-test image, so this fn instruments the
+/// same phases by hand around the identical build call chain
+/// `build_runtime_test_image` makes) plus the guest counts from one real
+/// boot of the resulting image. No PMU, no flamegraphs — wall time and
+/// exact counts, the plan's own "dumb sufficient version".
+fn profile() -> Result<(), String> {
+    let vmm = build_and_sign_vmm()?;
+    let case = root().join("tests/golden/boot-hello");
+    let target = golden_case_target(&case)?
+        .ok_or_else(|| "profile: tests/golden/boot-hello has no input.wr".to_string())?;
+
+    let total_start = Instant::now();
+
+    let read_start = Instant::now();
+    let source =
+        std::fs::read_to_string(&target).map_err(|e| format!("read {}: {e}", target.display()))?;
+    let read_time = read_start.elapsed();
+
+    let lex_start = Instant::now();
+    let tokens = lexer::lex(&source).map_err(|e| format!("lex error: {}", e.message))?;
+    let lex_time = lex_start.elapsed();
+
+    let parse_start = Instant::now();
+    let module = parser::parse(tokens).map_err(|e| format!("parse error: {}", e.message))?;
+    let parse_time = parse_start.elapsed();
+
+    let path_display = target.display().to_string();
+    let check_start = Instant::now();
+    let program = sema::check_typed(&module, &path_display)
+        .map_err(|e| format!("sema error: {}", e.message))?;
+    let check_time = check_start.elapsed();
+
+    let runtime_names: Vec<String> = program
+        .tests
+        .iter()
+        .filter(|t| t.kind == TestKind::Runtime)
+        .map(|t| t.name.clone())
+        .collect();
+
+    let mut modules: BTreeMap<String, Module> = BTreeMap::new();
+    modules.insert(module.path.join("."), module.clone());
+    let layout_ctx_start = Instant::now();
+    let layout_ctx = layout::merge_layout_ctx(&modules).map_err(|e| e.message)?;
+    let layout_ctx_time = layout_ctx_start.elapsed();
+
+    let lower_start = Instant::now();
+    let mwir_program = lower::lower_program(&program).map_err(|e| e.message)?;
+    let lower_time = lower_start.elapsed();
+
+    let codegen_start = Instant::now();
+    let codegen_program =
+        codegen::codegen_program(&mwir_program, &layout_ctx).map_err(|e| e.message)?;
+    let codegen_time = codegen_start.elapsed();
+
+    let image_start = Instant::now();
+    let image_layout =
+        layout::layout_test_image(&codegen_program, &runtime_names).map_err(|e| e.message)?;
+    let image_time = image_start.elapsed();
+
+    let total_time = total_start.elapsed();
+
+    println!(
+        "profile: compiler (tests/golden/boot-hello) read={}us lex={}us parse={}us check={}us \
+         layout_ctx={}us lower={}us codegen={}us image={}us total={}us",
+        read_time.as_micros(),
+        lex_time.as_micros(),
+        parse_time.as_micros(),
+        check_time.as_micros(),
+        layout_ctx_time.as_micros(),
+        lower_time.as_micros(),
+        codegen_time.as_micros(),
+        image_time.as_micros(),
+        total_time.as_micros()
+    );
+
+    let source_digest = report::sha256_hex(source.as_bytes());
+    let mut report_text = format!(
+        "Machine revision={}\nInput path={path_display} digest={source_digest}\n",
+        wrela_machine::MACHINE_REVISION_STR
+    );
+    for s in &image_layout.sections {
+        report_text.push_str(&format!(
+            "Section name={} base={:#x} size={}\n",
+            s.name, s.base, s.size
+        ));
+    }
+    report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+
+    let tmp_dir = root().join("target/profile-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    std::fs::write(&img_path, &image_layout.blob)
+        .map_err(|e| format!("write {}: {e}", img_path.display()))?;
+    std::fs::write(&report_path, &report_text)
+        .map_err(|e| format!("write {}: {e}", report_path.display()))?;
+    let record_path = tmp_dir.join("boot.record.txt");
+
+    let guest_start = Instant::now();
+    let out = Command::new(&vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm: {e}"))?;
+    let guest_wall = guest_start.elapsed();
+    let exit_code_class = out.status.code().unwrap_or(-1);
+    if exit_code_class != 0 && exit_code_class != 1 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "profile: the wrela VMM did not boot the test image (exit {exit_code_class})"
+        ));
+    }
+    let transcript_len = out.stdout.len();
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    let record = parse_guest_record(&record_text)?;
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    println!(
+        "profile: guest (tests/golden/boot-hello) wall={}us exits={} transcript_bytes={} clock_reads={}",
+        guest_wall.as_micros(),
+        record.exits,
+        transcript_len,
+        record.clock_log_len
+    );
+    Ok(())
 }
 
 // --- roundtrip --------------------------------------------------------
@@ -3423,15 +4245,11 @@ fn bench(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("compiler") => bench_compiler(),
         Some("build") => bench_build_lane(),
-        Some("guest") => fail_closed(
-            "bench guest",
-            "the guest lane needs the VMM and record/replay and lands at M5; a threshold \
-             without a measurement is a lie",
-        ),
+        Some("guest") => bench_guest_lane(),
         None => fail_closed(
             "bench",
-            "bare `bench` fails closed; run `bench compiler` (live), `bench build` (live), or \
-             `bench guest` (M5)",
+            "bare `bench` fails closed; run `bench compiler`, `bench build`, or `bench guest` \
+             (all live)",
         ),
         Some(other) => Err(format!(
             "bench: unknown lane `{other}` (expected `compiler`, `build`, or `guest`)"

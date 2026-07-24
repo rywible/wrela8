@@ -168,6 +168,7 @@ version = "0.1.0"
 name = "wrela-vmm"
 version = "0.1.0"
 dependencies = [
+ "wrela-compiler",
  "wrela-machine",
 ]
 
@@ -177,4 +178,5 @@ version = "0.1.0"
 dependencies = [
  "toml",
  "wrela-compiler",
+ "wrela-machine",
 ]

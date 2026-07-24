@@ -200,6 +200,30 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
 /// affect a real guest write to a freshly mapped page.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, VmmError> {
+    boot_image_core(report_path, img_path, None).map(|(outcome, _underrun)| outcome)
+}
+
+/// The shared boot core (plans/M5.md item F): identical to `boot_image`
+/// above in every respect but one — when `clock_feed` is `Some(values)`,
+/// every guest read of `CLOCK_MMIO_ADDR` is answered from `values`, in
+/// order, instead of `monotonic_ns()` (06 §8's replay half: "replay feeds
+/// the log from virtual device models" — the clock trap is this
+/// machine's one live "device" at M5). `boot_image` itself is simply this
+/// function called with `clock_feed: None` (live clock) and the second
+/// return value discarded — a live boot can never underrun a log it
+/// isn't consuming. The second return value is `Some(read_index)` the
+/// *first* time a replayed guest reads the clock more times than
+/// `clock_feed` has entries for (a log **underrun** — `record::replay`'s
+/// own divergence check, below); such a read is answered with `0` so the
+/// guest keeps running normally (a wrong value is exactly as informative
+/// a divergence signal as a hung boot, and far more useful for a
+/// post-mortem transcript) rather than aborting the boot outright.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn boot_image_core(
+    report_path: &Path,
+    img_path: &Path,
+    clock_feed: Option<&[u64]>,
+) -> Result<(BootOutcome, Option<usize>), VmmError> {
     use hv::*;
     use std::alloc::{Layout, alloc_zeroed, dealloc};
     use std::ffi::c_void;
@@ -403,6 +427,12 @@ pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, Vm
     let mut clock_log = Vec::new();
     let mut exits: u64 = 0;
     let exit_code: u64;
+    // `clock_feed`'s own read cursor, and the first read index (if any)
+    // that ran past the end of it — a replay log **underrun**
+    // (`record::replay`'s own divergence check reads this back via this
+    // function's second return value).
+    let mut clock_feed_idx: usize = 0;
+    let mut clock_underrun: Option<usize> = None;
 
     loop {
         let r = unsafe { hv_vcpu_run(vcpu) };
@@ -458,7 +488,19 @@ pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, Vm
                                 .to_string(),
                         ));
                     }
-                    let ns = monotonic_ns();
+                    let ns = match clock_feed {
+                        None => monotonic_ns(),
+                        Some(values) => match values.get(clock_feed_idx) {
+                            Some(&v) => v,
+                            None => {
+                                if clock_underrun.is_none() {
+                                    clock_underrun = Some(clock_feed_idx);
+                                }
+                                0
+                            }
+                        },
+                    };
+                    clock_feed_idx += 1;
                     clock_log.push(ns);
                     if let Some(reg) = da.reg {
                         let r = unsafe { hv_vcpu_set_reg(vcpu, hv_reg_xn(reg), ns) };
@@ -497,12 +539,15 @@ pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, Vm
     // decision 12: the transcript is read from the ring pages only after the
     // guest halts.
     let transcript = drain_console(host_ram);
-    Ok(BootOutcome {
-        transcript,
-        exit_code,
-        clock_log,
-        exits,
-    })
+    Ok((
+        BootOutcome {
+            transcript,
+            exit_code,
+            clock_log,
+            exits,
+        },
+        clock_underrun,
+    ))
 }
 
 /// Reads the vCPU's own current `PC` for a fault diagnostic — best-effort
@@ -619,6 +664,21 @@ pub fn boot_image(_report_path: &Path, _img_path: &Path) -> Result<BootOutcome, 
     ))
 }
 
+/// Non-HVF-host stub for `boot_image_core` (`record::replay`'s own
+/// dependency) — fails closed exactly like `boot_image` above, so
+/// `record::replay` is callable (and fails the same honest way) on every
+/// host, not only the one this milestone actually boots on.
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn boot_image_core(
+    _report_path: &Path,
+    _img_path: &Path,
+    _clock_feed: Option<&[u64]>,
+) -> Result<(BootOutcome, Option<usize>), VmmError> {
+    Err(VmmError::Unsupported(
+        "the wrela VMM needs Hypervisor.framework (macOS/aarch64 at M5); no other host is implemented yet",
+    ))
+}
+
 #[cfg(target_os = "linux")]
 pub mod kvm {
     //! Linux/KVM backend. May build on the rust-vmm crates. Unimplemented
@@ -634,12 +694,7 @@ pub mod devices {
     //! there is more than one device model each to justify it.
 }
 
-pub mod record {
-    //! Recorder/replayer for the determinism boundary (06 §8).
-    //! `BootOutcome::clock_log` is this milestone's own down payment (the
-    //! clock-read log half of the record boundary); a real replay harness
-    //! arrives with plans/M5.md item F.
-}
+pub mod record;
 
 #[cfg(test)]
 mod tests {
@@ -709,5 +764,144 @@ mod tests {
             parse_report(&text),
             Err(VmmError::MalformedReport(_))
         ));
+    }
+
+    /// plans/M5.md item F: "a hand-built image in wrela-vmm's tests that
+    /// DOES read CLOCK_MMIO twice" — this milestone's only exerciser of
+    /// the clock trap and the whole `record`/`replay` machinery, since no
+    /// real `@test(runtime)` program can issue a clock read yet
+    /// (`machine.clock.trap-logged`'s own gap note). A ~12-word
+    /// hand-assembled guest program, reusing `wrela-compiler::encode`'s
+    /// own pinned A76 encodings (this crate's one test-only dependency —
+    /// see `Cargo.toml`'s own comment) rather than re-deriving the same
+    /// bit patterns a second time by hand:
+    ///
+    /// ```text
+    /// movz x9,  #lo16(CLOCK_MMIO_ADDR)
+    /// movk x9,  #bits[16:31](CLOCK_MMIO_ADDR), lsl #16
+    /// movk x9,  #0, lsl #32
+    /// movk x9,  #0, lsl #48
+    /// ldr  x0,  [x9]                 ; clock read #1 (discarded)
+    /// ldr  x1,  [x9]                 ; clock read #2 (discarded)
+    /// movz x2,  #0                   ; exit code = 0
+    /// movz x10, #lo16(EXIT_MMIO_ADDR)
+    /// movk x10, #bits[16:31](EXIT_MMIO_ADDR), lsl #16
+    /// movk x10, #0, lsl #32
+    /// movk x10, #0, lsl #48
+    /// str  x2,  [x10]                ; trapping store: guest is done
+    /// ```
+    ///
+    /// One `#[test]` fn, not several: every real boot below happens
+    /// sequentially within it (record once, then five replays reusing the
+    /// same recording/image), so no two calls into Hypervisor.framework's
+    /// one process-wide VM context are ever concurrent — the same reason
+    /// `boot_image`'s own `VmGuard`/`VcpuGuard` tear down fully on every
+    /// return path, `Drop`-ordered, before the next call in this fn can
+    /// begin.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn record_replay_roundtrips_and_detects_every_divergence_shape() {
+        use wrela_compiler::encode;
+
+        fn load_imm_words(reg: u8, value: u64) -> Vec<u32> {
+            let h0 = (value & 0xFFFF) as u16;
+            let h1 = ((value >> 16) & 0xFFFF) as u16;
+            let h2 = ((value >> 32) & 0xFFFF) as u16;
+            let h3 = ((value >> 48) & 0xFFFF) as u16;
+            vec![
+                encode::enc_movz(reg, h0, 0, true),
+                encode::enc_movk(reg, h1, 16, true),
+                encode::enc_movk(reg, h2, 32, true),
+                encode::enc_movk(reg, h3, 48, true),
+            ]
+        }
+
+        let mut words = Vec::new();
+        words.extend(load_imm_words(9, wrela_machine::mmio::CLOCK_MMIO_ADDR));
+        words.push(encode::enc_ldr_x_imm(0, 9, 0));
+        words.push(encode::enc_ldr_x_imm(1, 9, 0));
+        words.push(encode::enc_movz(2, 0, 0, true));
+        words.extend(load_imm_words(10, wrela_machine::mmio::EXIT_MMIO_ADDR));
+        words.push(encode::enc_str_x_imm(2, 10, 0));
+
+        let img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let report_text = format!(
+            "Machine revision={}\nInput path=clock-test.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            wrela_machine::layout::IMAGE_BASE,
+            img_bytes.len(),
+            wrela_machine::layout::IMAGE_BASE,
+        );
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "wrela-vmm-record-replay-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+        let img_path = tmp_dir.join("clock.img");
+        let report_path = tmp_dir.join("clock.report.txt");
+        std::fs::write(&img_path, &img_bytes).expect("write image");
+        std::fs::write(&report_path, &report_text).expect("write report");
+
+        // --- record: one live boot -------------------------------------
+        let recorded = record::record(&report_path, &img_path).expect("live boot");
+        assert_eq!(
+            recorded.clock_log.len(),
+            2,
+            "the guest reads the clock exactly twice"
+        );
+        assert_eq!(recorded.exit_code, 0);
+
+        // --- replay with the real recording: no divergence --------------
+        let divergences = record::replay(&report_path, &img_path, &recorded).expect("replay boot");
+        assert!(
+            divergences.is_empty(),
+            "expected no divergence, got {divergences:?}"
+        );
+
+        // --- tampered transcript digest: caught --------------------------
+        let mut bad_digest = recorded.clone();
+        bad_digest.transcript_digest = "not-the-real-digest".to_string();
+        let divergences =
+            record::replay(&report_path, &img_path, &bad_digest).expect("replay boot");
+        assert!(matches!(
+            divergences.as_slice(),
+            [record::Divergence::TranscriptDigestMismatch { .. }]
+        ));
+
+        // --- tampered exit code: caught -----------------------------------
+        let mut bad_exit = recorded.clone();
+        bad_exit.exit_code = 99;
+        let divergences = record::replay(&report_path, &img_path, &bad_exit).expect("replay boot");
+        assert!(divergences.contains(&record::Divergence::ExitCodeMismatch {
+            expected: 99,
+            actual: 0,
+        }));
+
+        // --- truncated clock log: an underrun, caught ---------------------
+        let mut short_log = recorded.clone();
+        short_log.clock_log.truncate(1);
+        let divergences = record::replay(&report_path, &img_path, &short_log).expect("replay boot");
+        assert!(divergences.iter().any(|d| matches!(
+            d,
+            record::Divergence::ClockLogUnderrun {
+                read_index: 1,
+                recorded: 1
+            }
+        )));
+
+        // --- padded clock log: an overrun, caught -------------------------
+        let mut long_log = recorded.clone();
+        long_log.clock_log.push(424242);
+        let divergences = record::replay(&report_path, &img_path, &long_log).expect("replay boot");
+        assert!(divergences.iter().any(|d| matches!(
+            d,
+            record::Divergence::ClockLogOverrun {
+                consumed: 2,
+                recorded: 3
+            }
+        )));
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }
