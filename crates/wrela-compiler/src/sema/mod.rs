@@ -161,6 +161,20 @@ pub fn check(module: &Module, path: &str) -> Result<(), SemaError> {
 /// `eval::legal::classify` call (item C×D's own legality wiring) rather
 /// than each computing the whole-program callee graph separately.
 pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, SemaError> {
+    // plans/M4.md item A (orchestrator verification fix): this is the
+    // *single-module* entry — only `check_program` (fed by the loader's
+    // closure) can bind imports, so an import-bearing module here must
+    // fail closed with an honest diagnostic, exactly as it did before
+    // item A. Without this arm, the empty `ImportBindings` below would
+    // let resolution reach the use site and misreport the import as
+    // `error[name]: unknown name` — a diagnostic that names the wrong
+    // cause, which is an approximation, not a fail-closed error.
+    if let Some(import) = module.imports.first() {
+        return Err(unimplemented_at(
+            "imports through the single-module entry (`--stage=typed`, `wrela test`) are",
+            import.span,
+        ));
+    }
     let specialized = specialize::specialize(module)?;
     let symtab = symbols::collect(&specialized)?;
     symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
