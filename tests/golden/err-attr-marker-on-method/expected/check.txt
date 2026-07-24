@@ -1,0 +1,1 @@
+error[type]: `@test` is only valid on a top-level fn, not a struct member (`t`) at 9:5

@@ -1,0 +1,7 @@
+module examples.err_attr_duplicate_marker
+
+@image
+@image
+pub fn build() -> Image:
+    img = Image(name="t", target=Target.wrela_machine_v1)
+    return img.seal()

@@ -534,6 +534,7 @@ pub(crate) fn check(
                 // whole-declaration fail-closed a few lines up) — done
                 // *before* `check_top_fn` so the diagnostic fires even
                 // when the body itself would otherwise check cleanly.
+                check_marker_attr_shape(f, true)?;
                 let test_kind = test_attr_kind(f)?;
                 if test_kind == Some(TestKind::Exhaustive) {
                     check_exhaustive_test_params(f, d, mctx)?;
@@ -573,6 +574,16 @@ pub(crate) fn check(
                 }
             }
             (Item::Struct(s), types::DeclItem::Struct(_)) => {
+                // M4-F sweep fix: `@test`/`@image` markers on a struct's
+                // own fn members were silently ignored (the fn simply
+                // never registered as a test or image candidate). Checked
+                // on the raw ast so it fires for generic structs too,
+                // whose bodies `check_struct_bodies` otherwise skips.
+                for m in &s.members {
+                    if let ast::Member::Fn(mf) = m {
+                        check_marker_attr_shape(mf, false)?;
+                    }
+                }
                 if let Some(ts) = check_struct_bodies(s, mctx)? {
                     program.structs.insert(s.name.clone(), ts);
                 }
@@ -594,6 +605,46 @@ pub(crate) fn check(
         }
     }
     Ok(program)
+}
+
+/// M4-F sweep fix (plans/M4.md item F): the `@test`/`@image` marker
+/// attributes were previously read through `find`/`any`, so a duplicate
+/// (`@image @image fn ...`) or a conflicting pair (`@test @image`)
+/// silently collapsed to one — a silent approximation of a declaration
+/// shape the docs never define. The dumb rule, pinned by goldens: at
+/// most one marker from the {`@test`, `@image`} family per fn, and the
+/// family is only valid on a *top-level* fn — on a struct's method or
+/// assoc fn the marker used to be ignored entirely (the fn just never
+/// registered), which was a silent accept, not a decision. Category
+/// `type` (a bad declaration shape), same as `test_attr_kind`'s own
+/// diagnostics.
+pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Result<(), SemaError> {
+    let markers: Vec<&ast::Attr> = f
+        .attrs
+        .iter()
+        .filter(|a| a.name == "test" || a.name == "image")
+        .collect();
+    if let Some(first) = markers.first() {
+        if !top_level {
+            return Err(type_error(
+                format!(
+                    "`@{}` is only valid on a top-level fn, not a struct member (`{}`)",
+                    first.name, f.name
+                ),
+                first.span,
+            ));
+        }
+        if markers.len() > 1 {
+            return Err(type_error(
+                format!(
+                    "fn `{}` carries more than one `@test`/`@image` marker attribute (`@{}` and `@{}`) — at most one is valid",
+                    f.name, markers[0].name, markers[1].name
+                ),
+                markers[1].span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn is_image_fn(f: &ast::FnItem) -> bool {

@@ -1,0 +1,11 @@
+module examples.err_attr_marker_on_method
+
+pub struct S:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    @test
+    pub fn t(read self) -> u32:
+        return self.n
