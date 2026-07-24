@@ -786,6 +786,32 @@ fn enum_payload_offset(
     let variants: Vec<Vec<Type>> = match strip_wrappers(base_ty) {
         Type::Option(inner) => vec![Vec::new(), vec![(**inner).clone()]],
         Type::Result(ok, err) => vec![vec![(**ok).clone()], vec![(**err).clone()]],
+        // plans/M7.md item Z2: `CallError[E]` (02-language.md §9.4's own
+        // five-variant composition, `sema::bodies::compose_call_error`) is
+        // the one enum this machine carries as an *instantiated*
+        // `Type::Named`, so the generic-instantiation rejection in the arm
+        // below would refuse it — leaving the offset authority a hole in
+        // exactly the place the `Err(e) -> Err(CallError.Op(e))`
+        // recomposition needs one. Its variant list is compiler-known and
+        // fixed: the identical order `sema::matches::shape_of` builds,
+        // which is what `CALL_ERROR_TAG_CANCELLED` is numbered against and
+        // what `mwir::size_of`'s own `CallError` arm sizes. Named here so
+        // the recomposition derives `Op`'s payload offset instead of
+        // assuming it.
+        Type::Named(name, targs) if name == "CallError" => {
+            let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
+                return Err(CodegenError::internal(
+                    "`CallError` with no error type argument",
+                ));
+            };
+            vec![
+                vec![e_ty.clone()],                                     // Op(E)
+                Vec::new(),                                             // Cancelled
+                Vec::new(),                                             // DeadlineExceeded
+                vec![Type::Named("Admission".to_string(), Vec::new())], // NotAdmitted
+                vec![Type::Named("Peer".to_string(), Vec::new())],      // PeerFailed
+            ]
+        }
         Type::Named(name, targs) => {
             if !targs.is_empty() {
                 return Err(CodegenError::unimplemented(
@@ -4530,6 +4556,162 @@ fn emit_copy_staged_reply(
     Ok(())
 }
 
+/// plans/M7.md item Z2: the composition for a declared reply that is
+/// itself a `Result[T, E]` — the one shape M6-H1 got *wrong* (both arms
+/// arrived as `.Ok`, an `Err` observed as a success carrying a guest
+/// address).
+///
+/// 02-language.md §9.4 maps `declared Result[T, E]` to
+/// `Result[T, CallError[E]]`, and that is a **re-tagging, not a copy**:
+///
+/// ```text
+///   staged Ok(v)   ->  composed Ok(v)
+///   staged Err(e)  ->  composed Err(CallError.Op(e))
+/// ```
+///
+/// The two values genuinely have different shapes — the staged declared
+/// value is `8 + max(size(T), size(E))` bytes and the composed temp's own
+/// payload area is only `max(size(T), 8 + max(size(E), 8))`, so for a wide
+/// `T` and a narrow `E` the staged value is *wider than its destination*
+/// (`T` = 24, `E` = 16: 32 staged bytes into a 24-byte payload area, which
+/// `golden/boot-actor-reply-result`'s own `Triple` method is exactly).
+/// Routing this through `emit_copy_staged_reply` would therefore be both
+/// wrong (the staged tag word would land where the payload belongs) and,
+/// for that shape, a buffer overrun — which is what that fn's own bounds
+/// check exists to turn into a loud build failure. Nothing here copies the
+/// staged value whole; every arm is recomposed field-wise.
+///
+/// **Every offset comes from the offset authority**, never from a hand-
+/// assumed `+8`: `enum_payload_offset` places the staged `Result`'s own
+/// payload slot, the composed `Result`'s payload slot, and `Op`'s payload
+/// slot inside the `CallError[E]` that occupies it; `mwir::size_of` sizes
+/// `T` and `E`.
+///
+/// The emitted shape is the same one `emit_await_resume`'s own
+/// group-cancelled arm uses, and for the same reason: an `Ok` payload of several words and an `Err`
+/// payload of a tag plus `E` cannot share one `csel`, so the `Err` answer
+/// is composed *unconditionally* and the `Ok` overwrite is skipped when
+/// the staged tag says `Err` — one forward branch, and both outcomes leave
+/// every word of the composed temp deterministic rather than half-written.
+/// Composed inside the cancelled path's own skip, so cancellation still
+/// wins over whatever the callee staged (02 §9.5).
+///
+/// Clobbers `X_A` (the copy shuttle) and `X_B` (the staged tag). `X_C`,
+/// the group-cancelled flag, is already consumed by the branch that guards
+/// this call, and `emit_checkpoint_cancellation_test` recomputes both flags
+/// for itself afterwards.
+fn emit_recompose_staged_result(
+    ctx: &mut FnCtx,
+    stage_off: usize,
+    declared: &Type,
+    composed_ty: &Type,
+    result_off: usize,
+    result_size: usize,
+) -> Result<(), CodegenError> {
+    let Type::Result(ok_ty, err_ty) = strip_wrappers(declared) else {
+        return Err(CodegenError::internal(format!(
+            "the staged declared reply is not a `Result`: {declared:?}"
+        )));
+    };
+    let Type::Result(_, composed_err_ty) = strip_wrappers(composed_ty) else {
+        return Err(CodegenError::internal(format!(
+            "an actor await's composed result is not a `Result`: {composed_ty:?}"
+        )));
+    };
+    let staged_payload_off = stage_off + enum_payload_offset(declared, 0, ctx.layout)?;
+    let ok_payload_off = result_off + enum_payload_offset(composed_ty, 0, ctx.layout)?;
+    let op_payload_off = ok_payload_off + enum_payload_offset(composed_err_ty, 0, ctx.layout)?;
+    let ok_size = mwir::size_of(ok_ty, ctx.layout).map_err(|e| CodegenError::unimplemented(&e))?;
+    let err_size =
+        mwir::size_of(err_ty, ctx.layout).map_err(|e| CodegenError::unimplemented(&e))?;
+    let result_end = result_off + result_size;
+    // Both hold by construction — `size_of(Result[T, CallError[E]])` is
+    // `8 + max(size(T), 8 + max(size(E), 8))`, so the payload area is never
+    // narrower than `T` nor than `8 + size(E)`. Checked anyway, in the same
+    // spirit as `emit_copy_staged_reply`'s own bound: a layout change that
+    // broke either one would otherwise scribble past this temp onto the
+    // next frame slot, silently.
+    if ok_payload_off + ok_size > result_end || op_payload_off + err_size > result_end {
+        return Err(CodegenError::internal(format!(
+            "a recomposed `Result` reply does not fit its composed temp: ok {ok_size} byte(s) at \
+             +{}, `CallError.Op` {err_size} byte(s) at +{}, temp {result_size} byte(s) \
+             (plans/M7.md item Z2)",
+            ok_payload_off - result_off,
+            op_payload_off - result_off
+        )));
+    }
+    // --- staged `Err(e)` -> composed `Err(CallError.Op(e))`, unconditional.
+    // `Op` is `CallError[E]`'s own variant 0 (02 §9.4's declared order,
+    // the same numbering `CALL_ERROR_TAG_CANCELLED = 1` belongs to).
+    ctx.store_slot(X_ZR, ok_payload_off);
+    let mut w = 0;
+    while w < err_size {
+        ctx.load_slot(X_A, staged_payload_off + w);
+        ctx.store_slot(X_A, op_payload_off + w);
+        w += 8;
+    }
+    while op_payload_off + w + 8 <= result_end {
+        ctx.store_slot(X_ZR, op_payload_off + w);
+        w += 8;
+    }
+    ctx.load_imm(X_A, 1); // tag = Err (`value::RESULT_ERR`)
+    ctx.store_slot(X_A, result_off);
+    // --- staged `Ok(v)` -> composed `Ok(v)`, overwriting the above.
+    ctx.load_slot(X_B, stage_off); // the staged declared `Result`'s own tag
+    let skip_ok = ctx.emit_skip(SkipKind::Cbnz(X_B));
+    let mut w = 0;
+    while w < ok_size {
+        ctx.load_slot(X_A, staged_payload_off + w);
+        ctx.store_slot(X_A, ok_payload_off + w);
+        w += 8;
+    }
+    while ok_payload_off + w + 8 <= result_end {
+        ctx.store_slot(X_ZR, ok_payload_off + w);
+        w += 8;
+    }
+    ctx.store_slot(X_ZR, result_off); // tag = Ok (`value::RESULT_OK`)
+    ctx.patch_skip(skip_ok, SkipKind::Cbnz(X_B));
+    Ok(())
+}
+
+/// plans/M7.md items Z1/Z2: the one place a *staged* declared reply
+/// becomes the caller's composed `Result[T, CallError[E]]`. Two shapes,
+/// one predicate (`decompose_call_error`'s own output):
+///
+/// - a non-`Result` declared reply `T` (item Z1) is a straight copy into
+///   the composed `Ok` payload — the delivered value and the composed
+///   payload have the same shape;
+/// - a declared `Result[T, E]` (item Z2) is a re-tagging, and is
+///   recomposed field-wise (`emit_recompose_staged_result`).
+///
+/// Both `emit_await_resume` call sites — the no-group one and the one
+/// inside the group-cancelled skip — go through here, so the two can never
+/// disagree about which shape a given await site has.
+fn emit_compose_staged_reply(
+    ctx: &mut FnCtx,
+    stage_off: usize,
+    declared: &Type,
+    composed_ty: &Type,
+    result_off: usize,
+    result_size: usize,
+) -> Result<(), CodegenError> {
+    if matches!(strip_wrappers(declared), Type::Result(_, _)) {
+        return emit_recompose_staged_result(
+            ctx,
+            stage_off,
+            declared,
+            composed_ty,
+            result_off,
+            result_size,
+        );
+    }
+    let staged_size =
+        mwir::size_of(declared, ctx.layout).map_err(|e| CodegenError::unimplemented(&e))?;
+    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size)?;
+    ctx.store_slot(X_ZR, result_off); // tag = Ok
+    Ok(())
+}
+
 /// The resume half (module doc's step 3) — the dispatch chain's landing
 /// site for `resume_state`: for `ActorCall`, compose `Ok(reply)` into
 /// `result_temp` from the turn record's own reply slot; for `GroupJoin`
@@ -4582,15 +4764,19 @@ fn emit_await_resume(
                              staging slot (`flow_reply_stage_size` disagrees with this site)",
                         )
                     })?;
-                    let size = mwir::size_of(&declared, ctx.layout)
-                        .map_err(|e| CodegenError::unimplemented(&e))?;
-                    Some((off, size))
+                    Some((off, declared))
                 }
             };
-            if let Some((stage_off, staged_size)) = staged {
+            if let Some((stage_off, declared)) = staged {
                 if gctx.arena_capacity == 0 {
-                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size)?;
-                    ctx.store_slot(X_ZR, result_off); // tag = Ok
+                    emit_compose_staged_reply(
+                        ctx,
+                        stage_off,
+                        &declared,
+                        composed_ty,
+                        result_off,
+                        result_size,
+                    )?;
                 } else {
                     // Same rule the scalar path below applies (02 §9.5:
                     // "Cancellation becomes observable at `await`"), but
@@ -4602,19 +4788,46 @@ fn emit_await_resume(
                     // when the flag is set — one forward branch, and both
                     // outcomes leave every payload word deterministic
                     // rather than half-overwritten.
+                    //
+                    // plans/M7.md item Z2: cancellation wins over whatever
+                    // the callee staged, including a staged declared `Err`
+                    // — the whole composition sits inside this skip, so a
+                    // cancelled await resolves `Err(CallError.Cancelled)`
+                    // and never `Err(CallError.Op(e))`.
+                    //
+                    // Both offsets below come from the offset authority
+                    // rather than a hand-assumed `+8`/`+16`: the composed
+                    // `Result`'s own payload slot holds the whole
+                    // `CallError[E]` (whose tag is its first word), and
+                    // `Op`'s payload slot follows that tag.
+                    let Type::Result(_, composed_err_ty) = strip_wrappers(composed_ty) else {
+                        return Err(CodegenError::internal(format!(
+                            "an actor await's composed result is not a `Result`: {composed_ty:?}"
+                        )));
+                    };
+                    let call_error_off =
+                        result_off + enum_payload_offset(composed_ty, 0, ctx.layout)?;
+                    let op_payload_off =
+                        call_error_off + enum_payload_offset(composed_err_ty, 0, ctx.layout)?;
                     emit_group_cancelled_flags(ctx);
                     ctx.load_imm(X_A, CALL_ERROR_TAG_CANCELLED as i64);
-                    ctx.store_slot(X_A, result_off + 8);
-                    let mut w = 16;
-                    while w < result_size {
-                        ctx.store_slot(X_ZR, result_off + w);
+                    ctx.store_slot(X_A, call_error_off);
+                    let mut w = op_payload_off;
+                    while w < result_off + result_size {
+                        ctx.store_slot(X_ZR, w);
                         w += 8;
                     }
                     ctx.load_imm(X_A, 1); // tag = Err (`value::RESULT_ERR`)
                     ctx.store_slot(X_A, result_off);
                     let skip_ok = ctx.emit_skip(SkipKind::Cbnz(X_C));
-                    emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size)?;
-                    ctx.store_slot(X_ZR, result_off); // tag = Ok
+                    emit_compose_staged_reply(
+                        ctx,
+                        stage_off,
+                        &declared,
+                        composed_ty,
+                        result_off,
+                        result_size,
+                    )?;
                     ctx.patch_skip(skip_ok, SkipKind::Cbnz(X_C));
                 }
             } else if gctx.arena_capacity == 0 {

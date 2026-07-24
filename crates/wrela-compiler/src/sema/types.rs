@@ -557,51 +557,35 @@ fn validate_message_shape(
             span,
         ));
     }
-    // plans/M6.md item H1 rejected EVERY aggregate reply here: the turn
-    // record carried one scalar word, an aggregate return travels by
-    // pointer under this machine's calling convention, and the caller's
+    // No reply-shape rule beyond the `Actor[T]` one above survives here,
+    // and the history is worth keeping because it was a *wrong answer*,
+    // not a missing feature.
+    //
+    // plans/M6.md item H1 rejected EVERY aggregate reply at this point:
+    // the turn record carried one scalar word, an aggregate return travels
+    // by pointer under this machine's calling convention, and the caller's
     // `Await` composition re-labelled that returned *pointer* as
     // `Ok(<guest address>)` — so a declared `Err` was observed as a
-    // success carrying an address. A wrong answer, not a missing feature.
+    // success carrying an address.
     //
     // plans/M7.md item Z1 built the transport that rule was waiting on:
-    // the awaiting turn's own record now carries the address of a
-    // caller-owned, statically sized staging slot
-    // (`codegen::OFF_TURN_REPLY_SLOT`), the callee's dispatch hands it to
-    // the method in `x8`, and the declared reply is written straight into
-    // the awaiting frame. So a *plain* aggregate reply — a struct, a
-    // tuple, an array, an `Option[T]` — now compiles and arrives intact
-    // (`golden/boot-actor-reply-struct`, a real boot asserting every
-    // field of a two-field struct through both a sync and an async
-    // method).
+    // the awaiting turn's own record carries the address of a caller-owned,
+    // statically sized staging slot (`codegen::OFF_TURN_REPLY_SLOT`), the
+    // callee's dispatch hands it to the method in `x8`, and the declared
+    // reply is written straight into the awaiting frame. Item Z2 then
+    // added the one thing transport alone could not give a declared
+    // `Result[T, E]`: 02-language.md §9.4 maps its `Err(e)` to
+    // `Err(CallError.Op(e))` — a re-*tagging*, not a copy, so the resume
+    // stub recomposes it field-wise (`codegen::emit_recompose_staged_result`)
+    // instead of copying the staged bytes over. `golden/boot-actor-reply-result`
+    // is the flip witness: M6-H1's own `Store.load -> Result[u64, FsError]`
+    // program, both arms asserted by value through a real boot, plus a
+    // `Result[Triple, FsError]` method whose declared `T` is *wider* than
+    // its whole composed payload area — the shape a bulk copy would have
+    // corrupted.
     //
-    // What is still rejected is exactly the one shape that needs more
-    // than transport: a declared `Result[T, E]`. 02-language.md §9.4 maps
-    // its `Err(e)` to `Err(CallError.Op(e))` — a re-*tagging*, so the
-    // delivered value and the caller's composed value genuinely have
-    // different shapes and a straight copy through the staging slot would
-    // be wrong in precisely the way M6-H1 found. That recomposition is
-    // plans/M7.md item Z2.
-    //
-    // The aggregate predicate is `codegen::is_aggregate` itself, not a
-    // copy of it: the rule exists *because* of the ABI, so the two must
-    // never drift, and one shared definition is the only way to guarantee
-    // that. (Rejected alternative: a sema-local predicate plus a unit
-    // test asserting the two agree — more machinery for a weaker
-    // guarantee.)
-    if crate::codegen::is_aggregate(ret) && matches!(ret, Type::Result(_, _)) {
-        return Err(SemaError::at(
-            "actor",
-            format!(
-                "`{struct_name}.{method_name}` replies `{}`; 02-language.md §9.4 maps a declared \
-                 `Err(e)` to `Err(CallError.Op(e))`, and that recomposition is not implemented \
-                 (plans/M7.md item Z2 — item Z1 widened the reply transport itself, so a \
-                 non-`Result` aggregate reply now travels intact)",
-                render_type(ret)
-            ),
-            span,
-        ));
-    }
+    // So the reply rules that remain are exactly the pre-existing ones:
+    // no `Actor[T]` at any nesting, in a parameter or a reply.
     Ok(())
 }
 

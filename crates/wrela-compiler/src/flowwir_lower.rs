@@ -403,6 +403,17 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
                 "unknown Result variant `{other}`"
             ))),
         },
+        // plans/M7.md item Z2: `CallError[E]` is compiler-known rather than
+        // declared — it is carried as an instantiated
+        // `Type::Named("CallError", [E])` and so appears in no
+        // `TypedProgram::enums` map, which means the generic-instantiation
+        // rejection below used to swallow the one `match` a caller needs to
+        // observe `Err(CallError.Op(e))` at all. sema already types such an
+        // arm (`bodies::variant_payload_types_for`); only the numbering was
+        // missing here. It is not restated: `bodies::call_error_variant_index`
+        // is the single table, beside the composition it belongs to.
+        "CallError" => crate::sema::bodies::call_error_variant_index(variant)
+            .ok_or_else(|| FlowError::internal(format!("unknown CallError variant `{variant}`"))),
         _ => {
             let variants = prog.enums.get(enum_name).ok_or_else(|| {
                 FlowError::unimplemented("matching a generic enum instantiation's variant is")

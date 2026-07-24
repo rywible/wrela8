@@ -1,1 +1,0 @@
-error[actor]: `Store.load` replies `Result[u64, FsError]`; 02-language.md §9.4 maps a declared `Err(e)` to `Err(CallError.Op(e))`, and that recomposition is not implemented (plans/M7.md item Z2 — item Z1 widened the reply transport itself, so a non-`Result` aggregate reply now travels intact) at 34:5

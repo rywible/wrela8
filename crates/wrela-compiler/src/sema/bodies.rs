@@ -4031,6 +4031,34 @@ pub(crate) fn decompose_call_error(composed: &Type) -> Option<Type> {
     }
 }
 
+/// `CallError[E]`'s own variant *numbering* — 02-language.md §9.4 declares
+/// the order (`Op`, `Cancelled`, `DeadlineExceeded`, `NotAdmitted`,
+/// `PeerFailed`) and `variant_payload_types_for`/`matches::shape_of` above
+/// build exactly that order when they type an arm's payload; this is the
+/// same table read as an index, which is what a lowered `match`'s own tag
+/// comparison needs. `None` for a name that is not a `CallError` variant
+/// at all (sema has already rejected those, so a lowering caller treats it
+/// as a producer bug).
+///
+/// It lives here, beside the composition, because `CallError` is the one
+/// enum this compiler knows *without* a declaration: it is carried as an
+/// instantiated `Type::Named("CallError", [E])` and therefore appears in
+/// no `TypedProgram::enums` map, so every consumer that would otherwise
+/// look the numbering up has to be told it. Consumers, all cross-checked
+/// against this order: `codegen::CALL_ERROR_TAG_CANCELLED` (= 1),
+/// `codegen::enum_payload_offset`'s own `CallError` arm, and
+/// `flowwir_lower::variant_index`.
+pub(crate) fn call_error_variant_index(variant: &str) -> Option<usize> {
+    match variant {
+        "Op" => Some(0),
+        "Cancelled" => Some(1),
+        "DeadlineExceeded" => Some(2),
+        "NotAdmitted" => Some(3),
+        "PeerFailed" => Some(4),
+        _ => None,
+    }
+}
+
 /// Message-value restrictions (02-language.md §9.3): a `mut` loan or a
 /// lent closure is rejected, named; `take` of a resource is M7 (fail
 /// closed, named, distinct from the flat rejection — the plan's own
