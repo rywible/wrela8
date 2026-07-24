@@ -1776,9 +1776,9 @@ pub fn layout_test_image(
         None
     } else {
         cursor = round_up(cursor, 8);
-        let base = cursor;
-        cursor += rodata_bytes.len() as u64;
-        Some(base)
+        // rodata is this image shape's final section — nothing consumes
+        // the cursor past it, so it is not advanced further here.
+        Some(cursor)
     };
 
     let mut sections = vec![

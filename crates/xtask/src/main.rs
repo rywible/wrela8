@@ -241,13 +241,14 @@ fn check() -> Result<(), String> {
     fuzz_parser_smoke()?;
     fuzz_sema_smoke()?;
     fuzz_eval_smoke()?;
-    // `fuzz_lower_smoke` is deliberately NOT wired in here yet (unlike every
-    // other lane's own smoke call above) — see that fn's own doc comment:
-    // it currently reproduces a real, pinned, out-of-scope `sema::bodies`
-    // finding (`golden/err-mwir-if-else-scope-leak`) well within any 1000-
-    // iteration budget, at essentially every seed tried. Wiring it in as-is
-    // would either break `check` on a known issue or require picking smoke
-    // seeds specifically to dodge a live, tracked bug — the latter is
+    // Wired in at M5-G finalization: the sema branch-scoping fix landed
+    // (commit 5766861, sema.names.resolution), the lane runs clean at its
+    // deep budget on fresh seeds, and the smoke joins every other lane's.
+    fuzz_lower_smoke()?;
+    // (Historical note, kept for the record: this call was briefly and
+    // deliberately absent — the lane's first exercise reproduced a real,
+    // pinned `sema::bodies` finding, golden/err-mwir-if-else-scope-leak,
+    // within any 1000-iteration budget, and wiring it in before the fix
     // exactly the kind of approximation CLAUDE.md's "never fake a pass"
     // rules out, so this lane stays standalone-only
     // (`cargo xtask fuzz lower`) until the sema fix lands, mirroring how
