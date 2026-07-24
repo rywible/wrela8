@@ -1,0 +1,7 @@
+Module path=examples.flowwir_basic
+  Struct Counter resource
+    field value: u64
+    fn get(read self) -> u64
+  Struct Caller resource
+    field counter: Actor[Counter]
+    async fn run(mut self) -> u64

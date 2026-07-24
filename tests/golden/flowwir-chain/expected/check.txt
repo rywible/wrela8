@@ -1,0 +1,9 @@
+Module path=examples.flowwir_chain
+  Struct Alpha resource
+    field value: u64
+    fn step(read self) -> u64
+  Struct Chain resource
+    field a: Actor[Alpha]
+    field b: Actor[Alpha]
+    field c: Actor[Alpha]
+    async fn run(mut self) -> u64

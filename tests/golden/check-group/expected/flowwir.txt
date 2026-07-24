@@ -1,0 +1,87 @@
+Program
+  Fn key=fetch_part ret=u64 states=1 frame=5 lineage=[group=t0,deadline=t1] params=[t2]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    State 0
+      0000: Mwir ConstInt dst=t3 ty=u64 value=2
+      0001: Mwir ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0002: Mwir Return value=t4
+      Transition Return
+  Fn key=run_group ret=u64 states=2 frame=30 lineage=[group=t0,deadline=t1]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=usize
+    Temp t5 ty=Group
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=[Result[u64, CallError[never]]; 2]
+    Temp t9 ty=[Result[u64, CallError[never]]; 2]
+    Temp t10 ty=usize
+    Temp t11 ty=usize
+    Temp t12 ty=bool
+    Temp t13 ty=Result[u64, CallError[never]]
+    Temp t14 ty=u64
+    Temp t15 ty=u64
+    Temp t16 ty=u64
+    Temp t17 ty=bool
+    Temp t18 ty=u64
+    Temp t19 ty=bool
+    Temp t20 ty=bool
+    Temp t21 ty=u64
+    Temp t22 ty=u64
+    Temp t23 ty=u64
+    Temp t24 ty=bool
+    Temp t25 ty=CallError[never]
+    Temp t26 ty=bool
+    Temp t27 ty=bool
+    Temp t28 ty=usize
+    Temp t29 ty=usize
+    State 0
+      0000: Mwir ConstInt dst=t2 ty=u64 value=0
+      0001: Mwir Copy dst=t3 src=t2
+      0002: Mwir ConstInt dst=t4 ty=usize value=4
+      0003: GroupCreate group=t5 capacity=t4
+      0004: Mwir ConstInt dst=t6 ty=u64 value=0
+      0005: GroupStart group=t5 callee=fetch_part args=[t6]
+      0006: Mwir ConstInt dst=t7 ty=u64 value=1
+      0007: GroupStart group=t5 callee=fetch_part args=[t7]
+      Transition Await what=GroupJoin{group=t5,children=2} resume=1 result=t8
+    State 1
+      0000: Mwir Copy dst=t9 src=t8
+      0001: Mwir ConstInt dst=t10 ty=usize value=0
+      0002: Mwir ConstInt dst=t11 ty=usize value=2
+      0003: Mwir Compare op=< ty=usize dst=t12 lhs=t10 rhs=t11
+      0004: Mwir JumpIfFalse cond=t12 target=0030
+      0005: Mwir IndexGet dst=t13 base=t9 index=t10 len=2
+      0006: Mwir EnumTag dst=t15 src=t13
+      0007: Mwir ConstInt dst=t16 ty=u64 value=0
+      0008: Mwir Compare op=== ty=u64 dst=t17 lhs=t15 rhs=t16
+      0009: Mwir EnumPayload dst=t18 src=t13 index=0
+      0010: Mwir Copy dst=t14 src=t18
+      0011: Mwir ConstBool dst=t19 value=true
+      0012: Mwir BoolAnd dst=t20 lhs=t17 rhs=t19
+      0013: Mwir JumpIfFalse cond=t20 target=0017
+      0014: Mwir ArithChecked op=+ ty=u64 dst=t21 lhs=t3 rhs=t14 abort="arithmetic overflow in `+`"
+      0015: Mwir Copy dst=t3 src=t21
+      0016: Mwir Jump target=0026
+      0017: Mwir EnumTag dst=t22 src=t13
+      0018: Mwir ConstInt dst=t23 ty=u64 value=1
+      0019: Mwir Compare op=== ty=u64 dst=t24 lhs=t22 rhs=t23
+      0020: Mwir EnumPayload dst=t25 src=t13 index=0
+      0021: Mwir ConstBool dst=t26 value=true
+      0022: Mwir BoolAnd dst=t27 lhs=t24 rhs=t26
+      0023: Mwir JumpIfFalse cond=t27 target=0025
+      0024: Mwir Jump target=0026
+      0025: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0026: Mwir ConstInt dst=t28 ty=usize value=1
+      0027: Mwir ArithWrapping op=+% ty=usize dst=t29 lhs=t10 rhs=t28
+      0028: Mwir Copy dst=t10 src=t29
+      0029: Mwir Jump target=0003
+      0030: GroupClose group=t5 cleanup=[]
+      0031: Mwir Return value=t3
+      Transition Return

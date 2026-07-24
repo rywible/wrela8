@@ -1,0 +1,141 @@
+Program
+  Fn key=Chain.run ret=u64 states=4 frame=59 lineage=[group=t0,deadline=t1] receiver=t2:mut
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=Chain
+    Temp t3 ty=Actor[Alpha]
+    Temp t4 ty=Result[u64, CallError[never]]
+    Temp t5 ty=Result[u64, CallError[never]]
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=bool
+    Temp t12 ty=u64
+    Temp t13 ty=bool
+    Temp t14 ty=bool
+    Temp t15 ty=u64
+    Temp t16 ty=u64
+    Temp t17 ty=bool
+    Temp t18 ty=CallError[never]
+    Temp t19 ty=bool
+    Temp t20 ty=bool
+    Temp t21 ty=Actor[Alpha]
+    Temp t22 ty=Result[u64, CallError[never]]
+    Temp t23 ty=Result[u64, CallError[never]]
+    Temp t24 ty=u64
+    Temp t25 ty=u64
+    Temp t26 ty=u64
+    Temp t27 ty=u64
+    Temp t28 ty=u64
+    Temp t29 ty=bool
+    Temp t30 ty=u64
+    Temp t31 ty=bool
+    Temp t32 ty=bool
+    Temp t33 ty=u64
+    Temp t34 ty=u64
+    Temp t35 ty=bool
+    Temp t36 ty=CallError[never]
+    Temp t37 ty=bool
+    Temp t38 ty=bool
+    Temp t39 ty=Actor[Alpha]
+    Temp t40 ty=Result[u64, CallError[never]]
+    Temp t41 ty=Result[u64, CallError[never]]
+    Temp t42 ty=u64
+    Temp t43 ty=u64
+    Temp t44 ty=u64
+    Temp t45 ty=u64
+    Temp t46 ty=u64
+    Temp t47 ty=bool
+    Temp t48 ty=u64
+    Temp t49 ty=bool
+    Temp t50 ty=bool
+    Temp t51 ty=u64
+    Temp t52 ty=u64
+    Temp t53 ty=bool
+    Temp t54 ty=CallError[never]
+    Temp t55 ty=bool
+    Temp t56 ty=bool
+    Temp t57 ty=u64
+    Temp t58 ty=u64
+    State 0
+      0000: Mwir Project dst=t3 base=t2 index=0
+      Transition Await what=ActorCall{target=t3,method=Alpha.step,args=[]} resume=1 result=t4
+    State 1
+      0000: Mwir Copy dst=t5 src=t4
+      0001: Mwir ConstInt dst=t6 ty=u64 value=0
+      0002: Mwir Copy dst=t7 src=t6
+      0003: Mwir EnumTag dst=t9 src=t5
+      0004: Mwir ConstInt dst=t10 ty=u64 value=0
+      0005: Mwir Compare op=== ty=u64 dst=t11 lhs=t9 rhs=t10
+      0006: Mwir EnumPayload dst=t12 src=t5 index=0
+      0007: Mwir Copy dst=t8 src=t12
+      0008: Mwir ConstBool dst=t13 value=true
+      0009: Mwir BoolAnd dst=t14 lhs=t11 rhs=t13
+      0010: Mwir JumpIfFalse cond=t14 target=0013
+      0011: Mwir Copy dst=t7 src=t8
+      0012: Mwir Jump target=0022
+      0013: Mwir EnumTag dst=t15 src=t5
+      0014: Mwir ConstInt dst=t16 ty=u64 value=1
+      0015: Mwir Compare op=== ty=u64 dst=t17 lhs=t15 rhs=t16
+      0016: Mwir EnumPayload dst=t18 src=t5 index=0
+      0017: Mwir ConstBool dst=t19 value=true
+      0018: Mwir BoolAnd dst=t20 lhs=t17 rhs=t19
+      0019: Mwir JumpIfFalse cond=t20 target=0021
+      0020: Mwir Jump target=0022
+      0021: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0022: Mwir Project dst=t21 base=t2 index=1
+      Transition Await what=ActorCall{target=t21,method=Alpha.step,args=[]} resume=2 result=t22
+    State 2
+      0000: Mwir Copy dst=t23 src=t22
+      0001: Mwir ConstInt dst=t24 ty=u64 value=0
+      0002: Mwir Copy dst=t25 src=t24
+      0003: Mwir EnumTag dst=t27 src=t23
+      0004: Mwir ConstInt dst=t28 ty=u64 value=0
+      0005: Mwir Compare op=== ty=u64 dst=t29 lhs=t27 rhs=t28
+      0006: Mwir EnumPayload dst=t30 src=t23 index=0
+      0007: Mwir Copy dst=t26 src=t30
+      0008: Mwir ConstBool dst=t31 value=true
+      0009: Mwir BoolAnd dst=t32 lhs=t29 rhs=t31
+      0010: Mwir JumpIfFalse cond=t32 target=0013
+      0011: Mwir Copy dst=t25 src=t26
+      0012: Mwir Jump target=0022
+      0013: Mwir EnumTag dst=t33 src=t23
+      0014: Mwir ConstInt dst=t34 ty=u64 value=1
+      0015: Mwir Compare op=== ty=u64 dst=t35 lhs=t33 rhs=t34
+      0016: Mwir EnumPayload dst=t36 src=t23 index=0
+      0017: Mwir ConstBool dst=t37 value=true
+      0018: Mwir BoolAnd dst=t38 lhs=t35 rhs=t37
+      0019: Mwir JumpIfFalse cond=t38 target=0021
+      0020: Mwir Jump target=0022
+      0021: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0022: Mwir Project dst=t39 base=t2 index=2
+      Transition Await what=ActorCall{target=t39,method=Alpha.step,args=[]} resume=3 result=t40
+    State 3
+      0000: Mwir Copy dst=t41 src=t40
+      0001: Mwir ConstInt dst=t42 ty=u64 value=0
+      0002: Mwir Copy dst=t43 src=t42
+      0003: Mwir EnumTag dst=t45 src=t41
+      0004: Mwir ConstInt dst=t46 ty=u64 value=0
+      0005: Mwir Compare op=== ty=u64 dst=t47 lhs=t45 rhs=t46
+      0006: Mwir EnumPayload dst=t48 src=t41 index=0
+      0007: Mwir Copy dst=t44 src=t48
+      0008: Mwir ConstBool dst=t49 value=true
+      0009: Mwir BoolAnd dst=t50 lhs=t47 rhs=t49
+      0010: Mwir JumpIfFalse cond=t50 target=0013
+      0011: Mwir Copy dst=t43 src=t44
+      0012: Mwir Jump target=0022
+      0013: Mwir EnumTag dst=t51 src=t41
+      0014: Mwir ConstInt dst=t52 ty=u64 value=1
+      0015: Mwir Compare op=== ty=u64 dst=t53 lhs=t51 rhs=t52
+      0016: Mwir EnumPayload dst=t54 src=t41 index=0
+      0017: Mwir ConstBool dst=t55 value=true
+      0018: Mwir BoolAnd dst=t56 lhs=t53 rhs=t55
+      0019: Mwir JumpIfFalse cond=t56 target=0021
+      0020: Mwir Jump target=0022
+      0021: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0022: Mwir ArithChecked op=+ ty=u64 dst=t57 lhs=t7 rhs=t25 abort="arithmetic overflow in `+`"
+      0023: Mwir ArithChecked op=+ ty=u64 dst=t58 lhs=t57 rhs=t43 abort="arithmetic overflow in `+`"
+      0024: Mwir Return value=t58
+      Transition Return

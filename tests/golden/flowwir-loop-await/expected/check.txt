@@ -1,0 +1,5 @@
+Module path=examples.flowwir_loop_await
+  Struct Store resource
+    field value: u64
+    fn load(read self) -> u64
+  AsyncFn poll_until(target: read Actor[Store], tries: read u64) -> u64

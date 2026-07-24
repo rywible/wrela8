@@ -1,0 +1,21 @@
+module examples.flowwir_defer
+
+@actor
+pub struct Store:
+    value: u64
+
+    pub fn load(read self) -> u64:
+        return self.value
+
+async fn helper(target: Actor[Store]) -> u64:
+    result: u64 = 0
+    with group(deadline=now() + ms(10)):
+        defer:
+            result = result + 1
+        outcome = await target.load()
+        match outcome:
+            case .Ok(v):
+                result = v
+            case .Err(_):
+                pass
+    return result

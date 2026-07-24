@@ -1,0 +1,60 @@
+Program
+  Fn key=bounded_read ret=u64 states=2 frame=25 lineage=[group=t0,deadline=t1] params=[t2]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=Actor[Storage]
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=Instant
+    Temp t6 ty=u64
+    Temp t7 ty=Duration
+    Temp t8 ty=Instant
+    Temp t9 ty=Group
+    Temp t10 ty=Result[u64, CallError[never]]
+    Temp t11 ty=Result[u64, CallError[never]]
+    Temp t12 ty=u64
+    Temp t13 ty=u64
+    Temp t14 ty=u64
+    Temp t15 ty=bool
+    Temp t16 ty=u64
+    Temp t17 ty=bool
+    Temp t18 ty=bool
+    Temp t19 ty=u64
+    Temp t20 ty=u64
+    Temp t21 ty=bool
+    Temp t22 ty=CallError[never]
+    Temp t23 ty=bool
+    Temp t24 ty=bool
+    State 0
+      0000: Mwir ConstInt dst=t3 ty=u64 value=0
+      0001: Mwir Copy dst=t4 src=t3
+      0002: Now dst=t5
+      0003: Mwir ConstInt dst=t6 ty=u64 value=50
+      0004: Duration dst=t7 n=t6
+      0005: Mwir ArithWrapping op=+% ty=u64 dst=t8 lhs=t5 rhs=t7
+      0006: GroupCreate group=t9 deadline=t8
+      Transition Await what=ActorCall{target=t2,method=Storage.load,args=[]} resume=1 result=t10
+    State 1
+      0000: Mwir Copy dst=t11 src=t10
+      0001: Mwir EnumTag dst=t13 src=t11
+      0002: Mwir ConstInt dst=t14 ty=u64 value=0
+      0003: Mwir Compare op=== ty=u64 dst=t15 lhs=t13 rhs=t14
+      0004: Mwir EnumPayload dst=t16 src=t11 index=0
+      0005: Mwir Copy dst=t12 src=t16
+      0006: Mwir ConstBool dst=t17 value=true
+      0007: Mwir BoolAnd dst=t18 lhs=t15 rhs=t17
+      0008: Mwir JumpIfFalse cond=t18 target=0011
+      0009: Mwir Copy dst=t4 src=t12
+      0010: Mwir Jump target=0020
+      0011: Mwir EnumTag dst=t19 src=t11
+      0012: Mwir ConstInt dst=t20 ty=u64 value=1
+      0013: Mwir Compare op=== ty=u64 dst=t21 lhs=t19 rhs=t20
+      0014: Mwir EnumPayload dst=t22 src=t11 index=0
+      0015: Mwir ConstBool dst=t23 value=true
+      0016: Mwir BoolAnd dst=t24 lhs=t21 rhs=t23
+      0017: Mwir JumpIfFalse cond=t24 target=0019
+      0018: Mwir Jump target=0020
+      0019: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0020: GroupClose group=t9 cleanup=[]
+      0021: Mwir Return value=t4
+      Transition Return

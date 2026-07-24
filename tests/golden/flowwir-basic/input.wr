@@ -1,0 +1,20 @@
+module examples.flowwir_basic
+
+@actor
+pub struct Counter:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Caller:
+    counter: Actor[Counter]
+
+    pub async fn run(mut self) -> u64:
+        v = await self.counter.get()
+        match v:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0

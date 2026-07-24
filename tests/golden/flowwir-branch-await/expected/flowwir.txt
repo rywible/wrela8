@@ -1,0 +1,59 @@
+Program
+  Fn key=maybe_fetch ret=u64 states=5 frame=22 lineage=[group=t0,deadline=t1] params=[t2,t3]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=Actor[Store]
+    Temp t3 ty=bool
+    Temp t4 ty=u64
+    Temp t5 ty=u64
+    Temp t6 ty=Result[u64, CallError[never]]
+    Temp t7 ty=Result[u64, CallError[never]]
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=bool
+    Temp t12 ty=u64
+    Temp t13 ty=bool
+    Temp t14 ty=bool
+    Temp t15 ty=u64
+    Temp t16 ty=u64
+    Temp t17 ty=bool
+    Temp t18 ty=CallError[never]
+    Temp t19 ty=bool
+    Temp t20 ty=bool
+    Temp t21 ty=u64
+    State 0
+      0000: Mwir ConstInt dst=t4 ty=u64 value=0
+      0001: Mwir Copy dst=t5 src=t4
+      Transition Branch cond=t3 then=1 else=2
+    State 1
+      Transition Await what=ActorCall{target=t2,method=Store.load,args=[]} resume=3 result=t6
+    State 2
+      0000: Mwir ConstInt dst=t21 ty=u64 value=7
+      0001: Mwir Copy dst=t5 src=t21
+      Transition Jump target=4
+    State 3
+      0000: Mwir Copy dst=t7 src=t6
+      0001: Mwir EnumTag dst=t9 src=t7
+      0002: Mwir ConstInt dst=t10 ty=u64 value=0
+      0003: Mwir Compare op=== ty=u64 dst=t11 lhs=t9 rhs=t10
+      0004: Mwir EnumPayload dst=t12 src=t7 index=0
+      0005: Mwir Copy dst=t8 src=t12
+      0006: Mwir ConstBool dst=t13 value=true
+      0007: Mwir BoolAnd dst=t14 lhs=t11 rhs=t13
+      0008: Mwir JumpIfFalse cond=t14 target=0011
+      0009: Mwir Copy dst=t5 src=t8
+      0010: Mwir Jump target=0020
+      0011: Mwir EnumTag dst=t15 src=t7
+      0012: Mwir ConstInt dst=t16 ty=u64 value=1
+      0013: Mwir Compare op=== ty=u64 dst=t17 lhs=t15 rhs=t16
+      0014: Mwir EnumPayload dst=t18 src=t7 index=0
+      0015: Mwir ConstBool dst=t19 value=true
+      0016: Mwir BoolAnd dst=t20 lhs=t17 rhs=t19
+      0017: Mwir JumpIfFalse cond=t20 target=0019
+      0018: Mwir Jump target=0020
+      0019: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      Transition Jump target=4
+    State 4
+      0000: Mwir Return value=t5
+      Transition Return

@@ -1,0 +1,21 @@
+module examples.flowwir_loop_await
+
+@actor
+pub struct Store:
+    value: u64
+
+    pub fn load(read self) -> u64:
+        return self.value
+
+async fn poll_until(target: Actor[Store], tries: u64) -> u64:
+    total: u64 = 0
+    i: u64 = 0
+    while i < tries:
+        outcome = await target.load()
+        match outcome:
+            case .Ok(v):
+                total = total + v
+            case .Err(_):
+                pass
+        i = i + 1
+    return total

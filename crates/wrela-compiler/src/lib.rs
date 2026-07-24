@@ -31,6 +31,8 @@
 pub mod codegen;
 pub mod encode;
 pub mod eval;
+pub mod flowwir;
+pub mod flowwir_lower;
 pub mod layout;
 pub mod loader;
 pub mod lower;
