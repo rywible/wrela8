@@ -1630,11 +1630,14 @@ mod tests {
             }
             test_args.insert(name.clone(), args);
         }
+        let group_child_index =
+            codegen::compute_group_child_indices(&flow_program).expect("group child index");
         let boot = layout::BootCtx {
             graph: &graph,
             modules: &modules,
             layout_ctx: &layout_ctx,
             async_frames: &async_frames,
+            group_child_index: &group_child_index,
         };
         let image = layout::layout_test_image(
             &codegen_program,

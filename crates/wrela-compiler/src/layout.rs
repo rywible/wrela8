@@ -1985,10 +1985,21 @@ fn build_rt_select_and_run_core(
 /// passes over the build-time actor list — pass one tries every actor at
 /// or after the cursor, pass two the rest — and the first actor that
 /// reports "ran" advances the cursor to its own successor and returns 1.
-/// The entry driver loops this between a root turn's own suspend points;
-/// "nothing ready" with the root still incomplete is the deadlock
-/// condition (`DEADLOCK_MSG`).
-fn build_rt_run_one(select_starts: &[usize], rr_cursor_addr: u64, start: usize) -> Asm {
+/// plans/M6.md item F: once no actor reports "ran," this fn also tries
+/// every group-child poll routine in fixed program order (`child_poll_starts`,
+/// below) — a `g.start`ed child is never part of the round-robin cursor at
+/// all (there is no admission-ordering fairness question between a
+/// group's own children the way there is between actors' mailboxes;
+/// `RuntimePlacement`'s own per-child free-turn area already gives each
+/// one a fixed, unique poll site). The entry driver loops this between a
+/// root turn's own suspend points; "nothing ready" with the root still
+/// incomplete is the deadlock condition (`DEADLOCK_MSG`).
+fn build_rt_run_one(
+    select_starts: &[usize],
+    child_poll_starts: &[usize],
+    rr_cursor_addr: u64,
+    start: usize,
+) -> Asm {
     let mut a = Asm::new(start);
     a.push(encode::enc_sub_imm(31, 31, 16, true));
     a.push(encode::enc_str_x_imm(30, 31, 0));
@@ -2015,11 +2026,141 @@ fn build_rt_run_one(select_starts: &[usize], rr_cursor_addr: u64, start: usize) 
             debug_assert_eq!(skip_to, a.abs());
         }
     }
+    for &poll in child_poll_starts {
+        a.bl_to(poll);
+        let skip_notran = a.skip_placeholder(); // cbz x0, .skip
+        to_out.push(a.skip_placeholder());
+        let skip_to = a.abs();
+        a.patch_cbz(skip_notran, 0);
+        debug_assert_eq!(skip_to, a.abs());
+    }
     a.push(encode::enc_movz(0, 0, 0, true)); // nothing ready
     let out = a.abs();
     for m in &to_out {
         let this = a.start + m;
         let delta = (out as i64 - this as i64) * 4;
+        a.words[*m] = encode::enc_b(delta as i32);
+    }
+    a.push(encode::enc_ldr_x_imm(30, 31, 0));
+    a.push(encode::enc_add_imm(31, 31, 16, true));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// One static `g.start` call site's own poll routine (item F #2): checks
+/// its own callee's fixed free-turn area for `busy && suspended &&
+/// resume_ready` and, if ready, resumes it (an ordinary `BL` to the
+/// callee's own compiled entry — the fresh-vs-resume discriminant is the
+/// callee's own job, `codegen::emit_async_entry`'s doc). `x0 -> 1` iff this
+/// call made real progress (either a resumed slice ran, whether it went on
+/// to suspend again or finished, or nothing here was ready at all reports
+/// `x0 -> 0`) — `build_rt_run_one`'s own "did anything run this tick"
+/// convention, shared with `rt_select_and_run`. On completion/cancellation:
+/// writes this child's own `(tag, payload)` into the group arena
+/// (`group_child_tag_off`/`group_child_payload_off` at `child_index`),
+/// decrements `active_children`, clears the child's own `busy` (harvested —
+/// available for a later loop iteration of the same `with`-site to reuse),
+/// and — iff `active_children` reaches zero and a `join_waiter` is
+/// registered — wakes it (`OFF_TURN_RESUME_READY = 1`, the identical
+/// generic "something changed, re-check the root" signal the entry driver
+/// already polls for). `child_turn_addr`/`group_arena_base` are real,
+/// already-placed addresses (this fn is built twice, placeholder then
+/// real, exactly like every other runtime-glue routine in this module).
+fn build_group_child_poll(
+    child_turn_addr: u64,
+    child_key: &str,
+    group_arena_base: u64,
+    child_index: usize,
+    start: usize,
+) -> Asm {
+    use crate::codegen::{
+        GROUP_SLOT_SIZE, OFF_GROUP_ACTIVE_CHILDREN, OFF_GROUP_JOIN_WAITER, OFF_TURN_BUSY,
+        OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED, TURN_RECORD_SIZE, TURN_STATUS_CANCELLED,
+        TURN_STATUS_SUSPENDED, group_child_payload_off, group_child_tag_off,
+    };
+    let mut a = Asm::new(start);
+    a.push(encode::enc_sub_imm(31, 31, 16, true));
+    a.push(encode::enc_str_x_imm(30, 31, 0));
+
+    let mut to_out: Vec<usize> = Vec::new(); // x0 already set; jump to epilogue.
+
+    a.load_imm(9, child_turn_addr);
+    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_BUSY as u16));
+    let skip_a = a.skip_placeholder(); // cbz -> not ready
+    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16));
+    let skip_b = a.skip_placeholder(); // cbz -> not ready
+    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_RESUME_READY as u16));
+    let skip_c = a.skip_placeholder(); // cbz -> not ready
+
+    // Ready: resume (x0 arbitrary — the resume path ignores incoming args).
+    a.load_imm(0, 0);
+    a.bl_call_key(child_key);
+    a.push(encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true));
+    let skip_still_susp = a.skip_placeholder(); // b.eq -> still suspended (ran a slice, nothing to harvest yet)
+
+    // Completed or cancelled: harvest into the group arena.
+    a.push(encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true));
+    a.push(encode::enc_cset(11, Cond::Eq, true)); // x11 = tag (0 Ok / 1 Cancelled)
+    a.load_imm(12, child_turn_addr + TURN_RECORD_SIZE); // &this child's own Temp(0) (its ambient group)
+    a.push(encode::enc_ldr_x_imm(13, 12, 0)); // x13 = group id, encoded (arena_index + 1)
+    a.push(encode::enc_sub_imm(13, 13, 1, true));
+    a.load_imm(14, GROUP_SLOT_SIZE);
+    a.push(encode::enc_mul(13, 13, 14, true));
+    a.load_imm(12, group_arena_base);
+    a.push(encode::enc_add_reg(12, 12, 13, true)); // x12 = group addr
+    a.push(encode::enc_str_x_imm(
+        11,
+        12,
+        group_child_tag_off(child_index) as u16,
+    ));
+    a.push(encode::enc_str_x_imm(
+        1,
+        12,
+        group_child_payload_off(child_index) as u16,
+    ));
+    a.push(encode::enc_ldr_x_imm(
+        13,
+        12,
+        OFF_GROUP_ACTIVE_CHILDREN as u16,
+    ));
+    a.push(encode::enc_sub_imm(13, 13, 1, true));
+    a.push(encode::enc_str_x_imm(
+        13,
+        12,
+        OFF_GROUP_ACTIVE_CHILDREN as u16,
+    ));
+    a.load_imm(9, child_turn_addr);
+    a.push(encode::enc_str_x_imm(31, 9, OFF_TURN_BUSY as u16)); // busy = 0 (harvested)
+
+    let skip_still_active = a.skip_placeholder(); // cbnz x13 -> no wake yet
+    a.push(encode::enc_ldr_x_imm(10, 12, OFF_GROUP_JOIN_WAITER as u16));
+    let skip_no_waiter = a.skip_placeholder(); // cbz x10 -> nothing waiting
+    a.load_imm(11, 1);
+    a.push(encode::enc_str_x_imm(11, 10, OFF_TURN_RESUME_READY as u16));
+    let no_wake = a.abs();
+    a.patch_cbnz(skip_still_active, 13);
+    a.patch_cbz(skip_no_waiter, 10);
+    debug_assert_eq!(no_wake, a.abs());
+    a.push(encode::enc_movz(0, 1, 0, true)); // ran
+    to_out.push(a.skip_placeholder());
+
+    let still_susp = a.abs();
+    a.patch_cond(skip_still_susp, Cond::Eq);
+    debug_assert_eq!(still_susp, a.abs());
+    a.push(encode::enc_movz(0, 1, 0, true)); // ran a slice, still parked
+    to_out.push(a.skip_placeholder());
+
+    let not_ready = a.abs();
+    a.patch_cbz(skip_a, 10);
+    a.patch_cbz(skip_b, 10);
+    a.patch_cbz(skip_c, 10);
+    debug_assert_eq!(not_ready, a.abs());
+    a.push(encode::enc_movz(0, 0, 0, true)); // nothing to do
+
+    let epilogue = a.abs();
+    for m in &to_out {
+        let this = a.start + m;
+        let delta = (epilogue as i64 - this as i64) * 4;
         a.words[*m] = encode::enc_b(delta as i32);
     }
     a.push(encode::enc_ldr_x_imm(30, 31, 0));
@@ -2060,6 +2201,11 @@ fn build_runtime_glue_block(
     tables: &RuntimeTables,
     actor_dispatch: &[(String, Vec<(String, bool)>)],
     placement: &RuntimePlacement,
+    // plans/M6.md item F: every static `g.start` call site's own
+    // `(callee_key, child_index)` — `BootCtx::group_child_index`, sorted
+    // (`BTreeMap`'s own iteration order, CLAUDE.md's determinism rule) so
+    // poll-routine placement never depends on hash order.
+    group_child_index: &BTreeMap<String, usize>,
     start: usize,
 ) -> RuntimeGlue {
     let mut asms = Vec::new();
@@ -2092,8 +2238,35 @@ fn build_runtime_glue_block(
         select_starts.push(select_start);
         asms.push(select_asm);
     }
+    let mut child_poll_starts = Vec::with_capacity(group_child_index.len());
+    for (callee_key, &child_index) in group_child_index {
+        let Some(&child_turn_addr) = placement.free_turns.get(callee_key) else {
+            // A callee this pass never sized a free-turn area for — an
+            // internal inconsistency (`compute_group_child_indices` and
+            // `RuntimeTables::free_turns` must agree on every async fn key);
+            // skip rather than panic, `layout_program`'s own reloc
+            // resolution catches the real underlying disagreement loudly.
+            continue;
+        };
+        let poll_start = cursor;
+        let poll_asm = build_group_child_poll(
+            child_turn_addr,
+            callee_key,
+            placement.group_arena,
+            child_index,
+            poll_start,
+        );
+        cursor += poll_asm.words.len();
+        child_poll_starts.push(poll_start);
+        asms.push(poll_asm);
+    }
     let rt_run_one_start = cursor;
-    let run_one_asm = build_rt_run_one(&select_starts, placement.rr_cursor, rt_run_one_start);
+    let run_one_asm = build_rt_run_one(
+        &select_starts,
+        &child_poll_starts,
+        placement.rr_cursor,
+        rt_run_one_start,
+    );
     asms.push(run_one_asm);
     RuntimeGlue {
         asms,
@@ -3317,6 +3490,13 @@ pub struct BootCtx<'a> {
     /// async fn's own persistent frame bytes, the park-and-resume
     /// redesign's sizing input (`compute_runtime_tables`'s own doc).
     pub async_frames: &'a BTreeMap<String, u64>,
+    /// `codegen::compute_group_child_indices`' result for this same build
+    /// (plans/M6.md item F): every `g.start`-able callee's own fixed
+    /// child-slot ordinal — the one fact `build_runtime_glue_block` needs
+    /// to build each static call site's own poll routine
+    /// (`build_group_child_poll`) alongside the actor glue. Empty for a
+    /// build with no `with group(...)` sites at all.
+    pub group_child_index: &'a BTreeMap<String, usize>,
 }
 
 pub fn layout_test_image(
@@ -3401,6 +3581,13 @@ pub fn layout_test_image(
         Some(b) if runtime_tables.is_some() => actor_zero_arg_init_keys(b.modules)?,
         _ => BTreeMap::new(),
     };
+    // plans/M6.md item F: empty for a sync-only image or one with no
+    // `with group(...)` sites, byte-identical to every pre-item-F caller.
+    let empty_group_child_index = BTreeMap::new();
+    let group_child_index: &BTreeMap<String, usize> = boot
+        .as_ref()
+        .map(|b| b.group_child_index)
+        .unwrap_or(&empty_group_child_index);
     let actor_names: Vec<String> = runtime_tables
         .as_ref()
         .map(|t| t.actors.iter().map(|a| a.name.clone()).collect())
@@ -3473,7 +3660,13 @@ pub fn layout_test_image(
         None => (RuntimePlacement::default(), Vec::new()),
     };
     let dummy_glue = runtime_tables.as_ref().map(|tables| {
-        build_runtime_glue_block(tables, &actor_dispatch, &dummy_placement, glue_start)
+        build_runtime_glue_block(
+            tables,
+            &actor_dispatch,
+            &dummy_placement,
+            group_child_index,
+            glue_start,
+        )
     });
     let glue_words_len: usize = dummy_glue
         .as_ref()
@@ -3578,8 +3771,13 @@ pub fn layout_test_image(
             let real_base =
                 rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
             let placement = place_runtime_tables(real_base, tables);
-            let real_glue =
-                build_runtime_glue_block(tables, &actor_dispatch, &placement, glue_start);
+            let real_glue = build_runtime_glue_block(
+                tables,
+                &actor_dispatch,
+                &placement,
+                group_child_index,
+                glue_start,
+            );
             let mut w = glue_start;
             for asm in &real_glue.asms {
                 for word in &asm.words {
@@ -5133,7 +5331,7 @@ mod harness_jit {
             sel1_start,
         ));
         let run_one_start = combined.len();
-        let run_one = build_rt_run_one(&[sel0_start, sel1_start], cursor_addr, run_one_start);
+        let run_one = build_rt_run_one(&[sel0_start, sel1_start], &[], cursor_addr, run_one_start);
         combined.extend(run_one.words);
 
         let page = ExecPage::new(&combined);

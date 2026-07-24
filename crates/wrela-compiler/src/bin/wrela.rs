@@ -1201,11 +1201,22 @@ fn test_cmd(args: &[String]) -> ExitCode {
         .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
         .cloned()
         .collect();
+    let group_child_index = match codegen::compute_group_child_indices(&flow_program) {
+        Ok(m) => m,
+        Err(e) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!("error[unimplemented]: {}", e.message);
+            return ExitCode::FAILURE;
+        }
+    };
     let boot = layout::BootCtx {
         graph: &graph,
         modules: &modules,
         layout_ctx: &layout_ctx,
         async_frames: &async_frames,
+        group_child_index: &group_child_index,
     };
     let image_layout = match layout::layout_test_image(
         &codegen_program,
