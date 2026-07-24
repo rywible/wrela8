@@ -1,0 +1,97 @@
+module examples.boot_actors
+
+# plans/M6.md item F flagship, decision 4's own flip witness for
+# `actors.turns.non-reentrant` (02-language.md §9.2: "An external message
+# starts a turn. The actor keeps it until the handler returns, errors, or
+# abandons; awaiting a dependency lets other actors run but admits no new
+# message into this actor.").
+#
+# `Ledger.marks` is a decimal trace: every `mark(n)` appends one digit, and
+# each `mark` is its own complete sync turn, so the digit order IS the order
+# the Ledger's mailbox admitted them (04-compiler.md §2: "selection is FIFO
+# per mailbox by admission order").
+#
+# The root `send`s TWO messages to `Worker` before awaiting anything, so
+# `quick` is sitting in Worker's mailbox for the whole span `slow` is parked
+# on its first await. Non-reentrancy says `quick` cannot start until `slow`
+# returns, giving marks = 123. A reentrant actor would have admitted `quick`
+# while `slow` was parked, and its `mark(3)` would have been enqueued behind
+# `mark(1)` but ahead of `mark(2)` — marks = 132. The two schedules are
+# distinguishable by exactly one assertion.
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks * 10 + n
+        return unit
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@actor
+pub struct Worker:
+    led: Actor[Ledger]
+
+    pub async fn slow(mut self) -> unit:
+        m1 = await self.led.mark(n=1)
+        match m1:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        m2 = await self.led.mark(n=2)
+        match m2:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
+
+    pub async fn quick(mut self) -> unit:
+        m3 = await self.led.mark(n=3)
+        match m3:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
+
+    # Admitted third, so it runs only once both turns above have completed —
+    # the root's own synchronization point.
+    pub async fn report(read self) -> u64:
+        r = await self.led.read_marks()
+        match r:
+            case .Ok(v):
+                return v
+            case .Err(_):
+                return 0
+
+@test(runtime)
+async fn turns(w: Actor[Worker]):
+    match send w.slow():
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "slow was not admitted"
+    match send w.quick():
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "quick was not admitted"
+    r = await w.report()
+    match r:
+        case .Ok(t):
+            assert t == 123, "non-reentrancy: marks are 123, never 132"
+        case .Err(_):
+            assert false, "report rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-actors", target=Target.wrela_machine_v1)
+    led = img.actor(Ledger, mailbox=8)
+    w = img.actor(Worker, mailbox=8, led=led)
+    img.supervise(children=[led, w], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
