@@ -3019,72 +3019,6 @@ fn async_sema_outcome(stage: &'static str, e: sema::SemaError) -> AsyncFuzzOutco
     }
 }
 
-/// `codegen::validate`, minus the one arm it cannot decide on its own for
-/// an *async* program, plus that arm decided the way `layout.rs` actually
-/// decides it.
-///
-/// `validate`'s own doc comment predates M6-D: it asserts that every
-/// `Reloc::Call`'s key "names another fn this same `CodegenProgram`
-/// actually contains". That is exactly true of the sync pipeline the
-/// `lower` lane drives, and *not* true of the async one — `codegen`
-/// emits a symbolic `bl <rt_enqueue X>` for every `await`/`send` through
-/// an `Actor[X]` handle (`codegen::rt_enqueue_symbol`), and the routine it
-/// names is hand-assembled by `layout.rs` into the harness section, not
-/// codegen'd into `program.fns` at all. `layout_test_image`'s own reloc
-/// resolution knows both naming schemes (`fn_word_base`, then
-/// `glue_symbols`, then `unresolved_call_target`), and this lane's very
-/// first exercise hit `validate`'s stale arm within 13 iterations on a
-/// perfectly ordinary mutated `boot-*` program.
-///
-/// So: the call-target arm is re-implemented here with layout's own rule
-/// (in `program.fns` **or** a `codegen::rt_enqueue_actor` glue symbol —
-/// anything else is still a finding, and a *stricter* one, since it is
-/// caught a stage before layout's own `internal error:` guard), the word
-/// index is range-checked exactly as `validate` does it, and every other
-/// arm is left to `validate` itself by handing it a clone with only the
-/// glue relocs stripped. Nothing is skipped, and nothing is duplicated
-/// beyond the single arm that has to move. The honest fix lives one crate
-/// over — `codegen::validate` growing the glue arm itself — which is
-/// compiler surface this item does not own.
-fn async_validate(program: &codegen::CodegenProgram) -> Result<(), String> {
-    let mut glue_calls = 0usize;
-    for (key, f) in &program.fns {
-        for reloc in &f.relocs {
-            let codegen::Reloc::Call { word, key: target } = reloc else {
-                continue;
-            };
-            if *word >= f.code.len() {
-                return Err(format!(
-                    "fn `{key}`: Reloc::Call word {word} is out of range (code has {} word(s))",
-                    f.code.len()
-                ));
-            }
-            if program.fns.contains_key(target) {
-                continue;
-            }
-            if codegen::rt_enqueue_actor(target).is_some() {
-                glue_calls += 1;
-                continue;
-            }
-            return Err(format!(
-                "fn `{key}`: Reloc::Call targets `{target}`, which is neither a fn this \
-                 `CodegenProgram` codegen'd nor a runtime-glue symbol `layout.rs` could ever \
-                 resolve"
-            ));
-        }
-    }
-    if glue_calls == 0 {
-        return codegen::validate(program);
-    }
-    let mut stripped = program.clone();
-    for f in stripped.fns.values_mut() {
-        f.relocs.retain(
-            |r| !matches!(r, codegen::Reloc::Call { key, .. } if !program.fns.contains_key(key)),
-        );
-    }
-    codegen::validate(&stripped)
-}
-
 /// One stage's `Err`, split the one way that matters: an
 /// `"internal error: "` prefix is a bug (invariant (d)), anything else is a
 /// legitimate fail-closed rejection carrying the category that stage prints
@@ -3244,7 +3178,7 @@ fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncReach) {
         }
         Ok(p) => p,
     };
-    if let Err(reason) = async_validate(&codegen_program) {
+    if let Err(reason) = codegen::validate(&codegen_program) {
         return (
             AsyncFuzzOutcome::Bug(format!("codegen::validate (async-aware): {reason}")),
             reach,

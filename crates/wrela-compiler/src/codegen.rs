@@ -5350,8 +5350,12 @@ fn render_bytes(bytes: &[u8]) -> String {
 ///   of how short the mwir body it wraps is, so an empty `code` vector can
 ///   only mean a producer bug, never a legitimately tiny fn;
 /// - every `Reloc::Call`'s own `word` index is in range for its own fn's
-///   `code`, and its `key` names another fn this same `CodegenProgram`
-///   actually contains — layout.rs's own `Reloc` resolution (`layout_program`/
+///   `code`, and its `key` resolves — either to another fn this same
+///   `CodegenProgram` contains, or (since M6-D, and corrected here by
+///   plans/M7.md item Y) to one of the `rt_enqueue <Actor>` glue symbols
+///   `layout.rs` hand-assembles, which a compiled `await`/`send` through
+///   an `Actor[T]` handle legitimately calls — layout.rs's own `Reloc`
+///   resolution (`layout_program`/
 ///   `layout_test_image`) would otherwise hit its own `"internal error: call
 ///   target ... was never codegen'd"` guard one stage later, a strictly
 ///   worse place to first notice this than right here, immediately after
@@ -5389,10 +5393,33 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                             f.code.len()
                         ));
                     }
-                    if !program.fns.contains_key(target) {
+                    // plans/M7.md item Y's own find: this arm predates the
+                    // async pipeline and used to demand that every call
+                    // target be a compiled fn in this same program. That
+                    // has been false since M6-D — a compiled `await`/`send`
+                    // through an `Actor[X]` handle emits a symbolic
+                    // `bl <rt_enqueue X>`, and that routine is hand-
+                    // assembled by `layout.rs` into the harness section,
+                    // never codegen'd here. `layout_test_image` already
+                    // resolves both naming schemes deliberately
+                    // (`fn_word_base` -> glue symbols), so the shape is
+                    // legitimate, not a dangling reloc. It went unnoticed
+                    // because `validate` has no production caller at all —
+                    // only the fuzz lanes reach it, and until item Y there
+                    // was no lane that drove the async pipeline.
+                    //
+                    // A synthesized symbol is checked for being a *real*
+                    // glue target rather than waved through on being
+                    // synthetic-shaped: `rt_enqueue_actor` must name an
+                    // actor, so a garbled `rt_enqueue ` key is still a
+                    // finding here, one stage before layout's own guard.
+                    let resolvable = program.fns.contains_key(target)
+                        || rt_enqueue_actor(target).is_some_and(|a| !a.is_empty());
+                    if !resolvable {
                         return Err(format!(
                             "fn `{key}`: Reloc::Call targets `{target}`, which this \
-                             `CodegenProgram` never codegen'd"
+                             `CodegenProgram` never codegen'd and which is not an \
+                             `rt_enqueue` glue symbol either"
                         ));
                     }
                 }
