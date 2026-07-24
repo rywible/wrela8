@@ -1,0 +1,7 @@
+Module path=examples.image_helper_accept
+  Struct Store resource
+    field count: u32
+    init(mut self) -> unit
+  Const BASE_MAILBOX: u32
+  Fn mailbox_size() -> u32
+  Fn build() -> Image

@@ -1,0 +1,9 @@
+module image
+
+from helper import add_actor
+
+@image
+pub fn build() -> Image:
+    img = Image(name="h", target=Target.wrela_machine_v1)
+    add_actor(img)
+    return img.seal()

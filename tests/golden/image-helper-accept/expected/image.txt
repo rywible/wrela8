@@ -1,0 +1,6 @@
+ImageGraph v0
+  Name value=helper-ok
+  Target value=Target.wrela_machine_v1
+  Actor index=0 type=Store
+    Arg label=mailbox value=16
+  Sealed value=true

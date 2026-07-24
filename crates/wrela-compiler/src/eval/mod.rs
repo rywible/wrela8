@@ -79,7 +79,73 @@ pub fn check_comptime(program: &TypedProgram) -> Result<(), SemaError> {
     let legality = legal::classify(program);
     check_comptime_asserts(program, &legality)?;
     check_consts(program, &legality)?;
-    check_test_legality(program, &legality)
+    check_test_legality(program, &legality)?;
+    check_image_legality(program, &legality)
+}
+
+/// plans/M4.md item B, post-review fix: the one reachable `@image` fn
+/// must itself be a comptime-legal closure exactly like a `@test` is
+/// (`check_test_legality` above) — `legal::classify` exempts that fn's
+/// own node from being marked illegal by an intrinsic it *directly*
+/// writes (decision 5's whole point), but that exemption alone never
+/// required the fn's own verdict to be checked at all, so a transitively
+/// illegal callee (an ordinary helper fn that itself calls a builder
+/// intrinsic on a `mut img: Image` parameter, say) evaluated anyway —
+/// the disclosed "helper fns are not exempted" boundary was true of the
+/// classification but not of anything that consulted it. Fixed here: the
+/// `@image` fn's own direct callees (`legal::direct_callees_of_body` —
+/// intrinsics contribute no callee key at all, only ordinary `Call`/
+/// `FnRef`/`OpCall`/`Try` targets do, so this is exactly "everything the
+/// `@image` fn calls that lives in a graph node") are checked before
+/// `require_legal` ever runs on the fn's own (whole-transitive-closure)
+/// verdict — reusing the identical chain diagnostic every other context
+/// already gets. A callee this module's own `Legality` has no node for
+/// at all (an imported/spliced fn or struct method: `sema::bodies::check`'s
+/// own per-item loop only ever populates `TypedProgram::fns`/`structs`
+/// from `module.items`, never from an import binding, so a cross-module
+/// callee is invisible to `legal::classify` here) is **not** silently
+/// treated as legal (`Legality::verdict`'s own documented default for an
+/// unknown key, which is a `@image`-day-1 statement of "nothing illegal
+/// is representable yet", not a promise this new intrinsic-bearing case
+/// should reuse) — it fails closed instead, naming the callee and the
+/// real reason: this module's own build cannot yet prove or disprove a
+/// cross-module callee's comptime legality. A no-op for every existing
+/// golden (each `@image` fn's own direct callees are either intrinsics,
+/// which contribute no callee key, or ordinary same-module helper fns,
+/// which are always classifiable).
+fn check_image_legality(
+    program: &TypedProgram,
+    legality: &legal::Legality,
+) -> Result<(), SemaError> {
+    let Some(image_fn) = &program.image_fn else {
+        return Ok(());
+    };
+    let Some(f) = program.fns.get(image_fn) else {
+        return Ok(()); // internal invariant: `image_fn` always names a checked fn.
+    };
+    for callee in legal::direct_callees_of_body(&f.body) {
+        if !legality.verdicts.contains_key(&callee) {
+            return Err(SemaError {
+                category: "unimplemented",
+                message: format!(
+                    "`@image` fn `{image_fn}` calls `{callee}`, declared in another module; \
+                     checking a cross-module callee's comptime legality from an `@image` fn is \
+                     not supported yet"
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        }
+    }
+    legal::require_legal(
+        legality,
+        image_fn,
+        &format!("@image fn {image_fn}"),
+        Span::default(),
+    )
 }
 
 /// plans/M4.md item B: every comptime-run `@test` (`TestKind::Comptime`/

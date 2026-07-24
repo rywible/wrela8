@@ -189,6 +189,24 @@ pub fn scan_standalone(expr: &TypedExpr) -> StandaloneScan {
     }
 }
 
+/// Scans one whole statement body (a fn/method's own, never a nested
+/// closure's — decision 4 folds a closure's body into whichever
+/// enclosing fn constructed it, exactly like `classify`'s own
+/// `insert_fn_node`) for its direct callees, reusing the identical
+/// exhaustive `scan_stmts` `classify` builds every node from. plans/M4.md
+/// item B's own `eval::check_image_legality` uses this on the one
+/// reachable `@image` fn's body directly: `classify` already exempts
+/// that fn's own node from being marked illegal by a *directly*-written
+/// intrinsic (decision 5), but nothing before this call site ever
+/// actually required that fn's own verdict to be legal — this is what
+/// lets a transitively-illegal callee (one this fn merely calls) still
+/// reject the build, exactly like a `const`/`@test` already would.
+pub fn direct_callees_of_body(body: &[TypedStmt]) -> BTreeSet<String> {
+    let mut scan = BodyScan::default();
+    scan_stmts(body, &mut scan);
+    scan.callees
+}
+
 /// Classifies every fn/method/instantiation key the typed program
 /// carries (decision 7): builds the whole-program callee graph directly
 /// from typed callee keys, scans each node's own body for a decision-7

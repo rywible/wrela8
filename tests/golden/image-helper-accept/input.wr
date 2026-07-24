@@ -1,0 +1,19 @@
+module examples.image_helper_accept
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+const BASE_MAILBOX: u32 = 8
+
+fn mailbox_size() -> u32:
+    return BASE_MAILBOX * 2
+
+@image
+pub fn build() -> Image:
+    img = Image(name="helper-ok", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, mailbox=mailbox_size())
+    return img.seal()

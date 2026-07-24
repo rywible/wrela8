@@ -1,0 +1,11 @@
+module helper
+
+@actor
+pub struct A:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+pub fn add_actor(mut img: Image) -> unit:
+    img.actor(A, mailbox=4)
