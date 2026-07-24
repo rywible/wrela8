@@ -1,0 +1,1113 @@
+//! MachineWir (plans/M5.md item B, decision 3): the typed tree's lowered
+//! target — one plain enum instruction list per fn, flat and linear, no
+//! basic-block graph. This module owns the shape (`MwirProgram`/`MwirFn`/
+//! `Inst`), its stable text dump (`--stage=mwir`), and the aggregate
+//! layout rule (`size_of`/`LayoutCtx`) codegen (plans/M5.md item C) will
+//! share. `lower.rs` owns the typed-tree walk that produces a
+//! `MwirProgram`; this file never inspects `sema::typed` itself.
+//!
+//! ## Shape (decided here, plan's own suggestion finalized)
+//!
+//! - `MwirProgram { fns, rodata }`: `fns` is keyed by the *exact* string
+//!   `sema::typed::CalleeKey::spelling()` produces for whatever declared
+//!   the fn/method/instantiation — a plain top-level fn's bare name, a
+//!   method's `Struct.member`, an instantiated generic's own
+//!   `"fn:name[args]"`/`"struct:name[args].member"` spelling — so a
+//!   `Call` instruction's own `key` field is always copied verbatim from
+//!   the typed tree's own `CalleeKey::spelling()`, never re-derived or
+//!   re-matched a second way. `rodata` is every `Str`/`BStr` literal's
+//!   decoded bytes, deduplicated by first occurrence, referenced by
+//!   `ConstText::data` (an index) — `Call`/`ConstText`/every instruction
+//!   below is "yours to finalize" per the plan; this is that finalization,
+//!   recorded once, here.
+//! - `MwirFn { receiver, params, ret, temp_types, body }`: every value
+//!   (scalar or aggregate) lives in a numbered `Temp` — a virtual slot,
+//!   *not* a machine register or stack offset (codegen, item C, decides
+//!   that). `temp_types[t.0]` is temp `t`'s own static type (`sema::types::Type`,
+//!   reused directly, decision: no duplicate type representation, exactly
+//!   like the typed tree itself). `receiver`/`params` name which temps
+//!   are bound at entry (`receiver` also carries the declared
+//!   `AccessMode` — `Mut` is what makes a call site expect the callee to
+//!   hand a final self value back, see `Inst::Call::self_write_back`
+//!   below). `ret` is the declared return type; a plain `Type` rather
+//!   than the plan's own suggested `ret_size: usize` — a byte size is a
+//!   *layout* fact (`size_of` below), derivable from `ret` whenever
+//!   codegen actually needs it, and computing it here would force this
+//!   module's lowering entry point to also carry a whole-program
+//!   struct/enum field-type table it otherwise never needs (every value
+//!   this module manipulates already carries its own `Type` from the
+//!   typed tree; nothing here ever needs one value's *byte size* to
+//!   decide what instruction to emit).
+//!
+//! ## Aggregate layout (decision 3's "documented dumb layout")
+//!
+//! One rule, `size_of` below, shared by codegen/runtime later:
+//! - Every scalar (`bool`/every integer width/`char`/`f32`/`f64`/`unit`/
+//!   `never`) occupies exactly one 8-byte slot — no packing, ever, at any
+//!   width (decision 4's "fixed frame layout"/"every mwir temp lives in a
+//!   fixed stack slot" starts here: a slot is always 8 bytes, so codegen
+//!   never computes a sub-word offset).
+//! - `[T; N]`: `size_of(T) * N` (element stride × len, per the plan).
+//! - `(A, B, ...)`: the sum of each component's own size, in order — a
+//!   tuple is an anonymous struct.
+//! - A struct: the sum of its fields' own sizes, in declaration order.
+//! - An enum (`Option`/`Result`/a user enum): one 8-byte tag slot plus
+//!   the *widest* variant's own payload size (payload fields summed like
+//!   a struct, then the max taken across variants) — "tag u64 + max-
+//!   payload union", the plan's own words, so every variant's payload
+//!   lives at the identical fixed offset (tag first, payload immediately
+//!   after) regardless of which variant is actually live; reading a
+//!   variant's payload while a *different* tag is live is always
+//!   in-bounds (garbage, never a fault) — `lower.rs` relies on exactly
+//!   this fact to compute pattern-match sub-tests unconditionally,
+//!   documented at `lower::lower_pattern_test`.
+//!
+//! `size_of` needs one whole-program fact `sema::typed::TypedProgram`
+//! does not keep: a plain (non-generic) struct's/enum's own field/
+//! variant-payload *types* (the typed tree only keeps `TypedStruct::fields`'s
+//! *names*, decision 5's own producer-gap note — enough for `lower.rs`'s
+//! instruction emission, since every value there already carries its own
+//! type from the expression that produced it, but not enough to add up a
+//! *whole aggregate's* byte size independently). `LayoutCtx`/
+//! `build_layout_ctx` below recompute that one fact the same dumb way
+//! `sema::dump`/`sema::check` already recompute `specialize`/`declare`
+//! from the raw `ast::Module` rather than threading extra state through
+//! `check_typed` (`sema::mod.rs`'s own `dump` doc comment: "dumb, no
+//! state threaded from check") — callers who need real sizes (item C)
+//! build one `LayoutCtx` per module once, the same way they already
+//! parse the module once. Lowering itself (`lower.rs`) never needs a
+//! `LayoutCtx` at all (see above); it is exercised here only by this
+//! module's own unit tests plus whatever item C ends up needing.
+//!
+//! **Known gap, disclosed rather than faked**: `size_of`/`LayoutCtx`
+//! cover every *plain* (non-generic) struct/enum and every array whose
+//! length is a literal or a plain module `const` reference (the same
+//! literal-or-const scope `lower.rs`'s own `eval_array_len` accepts).
+//! An *instantiated* generic struct/enum's own substituted field/variant
+//! types are not reconstructed here — `sema::generics`'s own
+//! substitution machinery (`Subst`/`subst_type`) is private to that
+//! module and re-deriving it independently here would duplicate real
+//! logic rather than a dumb fact, so `size_of` fails closed
+//! (`Err("sizing an instantiated generic struct/enum is not implemented yet")`)
+//! for a `Type::Named` naming an instantiation key. None of item B's own
+//! required goldens need it (the "generic instantiation" case lowers a
+//! generic *fn* instantiated at a concrete scalar type, never a generic
+//! struct/enum) — recorded here as the honest boundary, not silently
+//! routed around.
+//!
+//! ## Instruction set (decided here; the plan's own list finalized)
+//!
+//! Every arithmetic/shift/negation abort message that never embeds a
+//! *runtime* value (every ordinary-overflow, division-by-zero,
+//! remainder-by-zero, unary-negation-overflow, and `<<`-lost-bits case)
+//! is precomputed once at lowering time via `abort_message`/
+//! `neg_abort_message` below and carried on the instruction verbatim —
+//! codegen prints it unchanged at its abort path (decision 4: "prints
+//! the evaluator's own abandonment message shape"). The two cases whose
+//! own wording embeds a value only known at *runtime* — a shift's own
+//! out-of-range count, an index's own out-of-bounds value — carry just
+//! the compile-time half instead (`bits`, `len`): codegen (item C) is
+//! responsible for interpolating the live register value into the exact
+//! same template `eval::value`/`eval::interp` use (documented on
+//! `Inst::Shift`/`Inst::IndexGet` below).
+//!
+//! `assert`/`panic`'s own message is precomputed the same way, but only
+//! when it is a literal string (`sema::typed::TypedExprKind::Str`) —
+//! `lower.rs` fails closed on a non-literal assert/panic message (see
+//! its own module doc's fail-closed enumeration): the evaluator falls
+//! back to Rust's own `{:?}` `Debug` formatting for a non-`Str` message
+//! value (`eval::interp::render_message`), and reproducing that in
+//! machine code is not a real lowering, it is a fake one.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+use crate::sema::types::{self, Type};
+use crate::syntax::ast::BinOp;
+
+// --- temps -------------------------------------------------------------
+
+/// A virtual value slot, numbered in allocation order within one
+/// `MwirFn` — never a register or stack offset (codegen's own job, item
+/// C). `Copy`/`PartialEq`/`Ord` so a temp is as cheap to carry around and
+/// as easy to put in a `BTreeMap` key (pattern-binding tables, `lower.rs`)
+/// as a bare integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Temp(pub usize);
+
+impl std::fmt::Display for Temp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "t{}", self.0)
+    }
+}
+
+// --- program/fn shape ----------------------------------------------------
+
+/// The whole lowered program: every lowered fn/method/`init`/generic
+/// instantiation, keyed by `sema::typed::CalleeKey::spelling()`
+/// (`BTreeMap`, CLAUDE.md), plus every `Str`/`BStr` literal's decoded
+/// bytes (`rodata`, index-addressed by `Inst::ConstText::data`, in first-
+/// occurrence order across the whole lowering walk — deterministic
+/// because `lower.rs` walks `fns`/`structs`/`instantiations` in their own
+/// already-`BTreeMap`-ordered iteration).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MwirProgram {
+    pub fns: BTreeMap<String, MwirFn>,
+    pub rodata: Vec<Vec<u8>>,
+}
+
+/// One lowered fn/method/`init`/instantiation body. `receiver` is
+/// `Some((self_temp, mode))` for a method/`init` (mirrors
+/// `sema::typed::TypedFn::receiver` exactly); a `Mut`-mode receiver is
+/// what makes a *call site* targeting this fn expect a written-back self
+/// value back (`Inst::Call::self_write_back`) — `init` reuses this
+/// uniformly (`sema::bodies` already types `init`'s own receiver as
+/// `Mut`, so no separate "is this an init" flag exists here at all;
+/// `lower.rs`'s own call-site logic is what special-cases `init`'s
+/// *result*, not this shape).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MwirFn {
+    pub receiver: Option<(Temp, crate::syntax::ast::AccessMode)>,
+    pub params: Vec<Temp>,
+    pub ret: Type,
+    /// `temp_types[t.0]` is temp `t`'s own static type; `temp_types.len()`
+    /// is this fn's own temp count (the plan's own suggested `temps:
+    /// usize` field, generalized to also carry each temp's type — the
+    /// dump wants both, so one `Vec` serves both purposes instead of two
+    /// fields that could disagree).
+    pub temp_types: Vec<Type>,
+    pub body: Vec<Inst>,
+}
+
+impl MwirFn {
+    pub fn temp_count(&self) -> usize {
+        self.temp_types.len()
+    }
+}
+
+// --- instructions --------------------------------------------------------
+
+/// One MachineWir instruction. Every arithmetic/shift op reuses
+/// `syntax::ast::BinOp` directly rather than a duplicate enum (decision
+/// 4: "dumb, no seams for their own sake" — the typed tree's own
+/// `TypedExprKind::Binary` already carries the exact same `BinOp`, so
+/// this just keeps carrying it one stage further).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Inst {
+    // --- constants ---------------------------------------------------
+    /// An integer-scalar constant (any of the ten integer widths, or
+    /// `char` — carried as its codepoint's own ordinal — see
+    /// `Inst::ConstChar` for why `char` gets its own variant instead).
+    ConstInt {
+        dst: Temp,
+        ty: Type,
+        value: i128,
+    },
+    ConstBool {
+        dst: Temp,
+        value: bool,
+    },
+    /// `bits` is the value's own IEEE-754 bit pattern, widened to `u64`
+    /// (an `f32`'s 32 bits in the low half, zero-extended) — `ty` (`F32`/
+    /// `F64`) says which width the low bits mean; carrying bits instead
+    /// of a Rust `f64` keeps `Inst` comparable with a derived `PartialEq`
+    /// (`f64: Eq` does not hold, NaN especially) without hand-rolling one.
+    ConstFloat {
+        dst: Temp,
+        ty: Type,
+        bits: u64,
+    },
+    /// `char` is its own variant (not folded into `ConstInt`) because it
+    /// is not one of `int_shape`'s ten integer scalar types
+    /// (`eval::value::int_shape`) — giving it a plain `char` payload
+    /// avoids inventing a width/signedness for something that has
+    /// neither.
+    ConstChar {
+        dst: Temp,
+        value: char,
+    },
+    ConstUnit {
+        dst: Temp,
+    },
+    /// A `Static[Str]`/`Static[Bytes[N]]` literal's decoded bytes,
+    /// interned into `MwirProgram::rodata`; `data` indexes that table.
+    ConstText {
+        dst: Temp,
+        data: usize,
+    },
+
+    /// An explicit copy — `lower.rs` emits this for both an ordinary
+    /// value read/rebind *and* `take` (decision 2: "a take is a copy in
+    /// mwir", the evaluator's own "you just move" observational
+    /// contract preserved exactly).
+    Copy {
+        dst: Temp,
+        src: Temp,
+    },
+
+    // --- aggregates: struct/tuple/array literals, static projection ---
+    /// Builds a struct/tuple/fixed-array value from its already-lowered
+    /// element/field temps, in the aggregate's own declared/positional
+    /// order (`size_of`'s own layout rule: field `i` occupies slot `i`).
+    MakeAggregate {
+        dst: Temp,
+        elems: Vec<Temp>,
+    },
+    /// A compile-time-known-offset read: a struct field (by
+    /// `TypedStruct::fields`'s own index), a tuple component, or a fixed-
+    /// array literal element accessed by a *literal* index. Never
+    /// bounds-checked — the index is a producer-guaranteed-valid
+    /// constant, not a runtime value (`Inst::IndexGet` below is the
+    /// dynamic-index, bounds-checked counterpart).
+    Project {
+        dst: Temp,
+        base: Temp,
+        index: usize,
+    },
+    /// The in-place counterpart of `Project`, for a `mut`-place field
+    /// write (`self.field = ...`, `place.0 = ...`): overwrites slot
+    /// `index` of the aggregate held in `base` with `value`.
+    SetField {
+        base: Temp,
+        index: usize,
+        value: Temp,
+    },
+
+    /// `base[index]` (`base`'s type is `[T; N]`) — bounds-checked against
+    /// the compile-time-known `len` (`N`, resolved by `lower.rs`'s own
+    /// `eval_array_len`). A failure's exact wording
+    /// (`eval::interp::place_mut`/`eval_expr`'s own
+    /// `"index {i} out of bounds (length {len})"`) embeds the *runtime*
+    /// index value — codegen renders that at its own abort path using
+    /// the live `index` operand's value; this instruction only carries
+    /// the compile-time half (`len`).
+    IndexGet {
+        dst: Temp,
+        base: Temp,
+        index: Temp,
+        len: usize,
+    },
+    /// The in-place counterpart of `IndexGet`, for `base[index] = value`.
+    IndexSet {
+        base: Temp,
+        index: Temp,
+        value: Temp,
+        len: usize,
+    },
+
+    // --- enums ---------------------------------------------------------
+    /// Builds an enum value: `tag` is the variant's own declaration-order
+    /// index (`eval::value::OPTION_NONE`/.../`RESULT_ERR` for the two
+    /// builtin sums, else a user enum's own position in
+    /// `TypedProgram::enums`, exactly like `interp::variant_index`).
+    MakeEnum {
+        dst: Temp,
+        tag: usize,
+        payload: Vec<Temp>,
+    },
+    /// Reads an enum value's own tag as a `u64`-typed temp (`temp_types`
+    /// for the `dst` temp is always `Type::U64`).
+    EnumTag {
+        dst: Temp,
+        src: Temp,
+    },
+    /// Reads payload slot `index` of an enum value — always safe
+    /// regardless of the enum's *actual* live tag (`size_of`'s own "tag +
+    /// max-payload union" layout: every variant's payload lives at the
+    /// identical fixed offset), which is exactly what lets `lower.rs`
+    /// compute a pattern's payload sub-tests unconditionally before ever
+    /// confirming the tag matches (`lower::lower_pattern_test`'s own doc
+    /// comment).
+    EnumPayload {
+        dst: Temp,
+        src: Temp,
+        index: usize,
+    },
+
+    // --- arithmetic (02-language.md §6.1) -------------------------------
+    /// Ordinary `+ - *`: abandons on overflow in every profile. `op` is
+    /// one of `BinOp::Add`/`Sub`/`Mul`; `abort` is the exact evaluator
+    /// wording (`abort_message`) — fully precomputed, since none of these
+    /// three ever embeds a runtime value.
+    ArithChecked {
+        dst: Temp,
+        op: BinOp,
+        ty: Type,
+        lhs: Temp,
+        rhs: Temp,
+        abort: String,
+    },
+    /// Wrapping `+% -% *%`: reduces modulo `2^width`, never abandons.
+    /// Also doubles as ordinary (never-overflowing) `+ - * / %` on a
+    /// *float* `ty` (`F32`/`F64`) — 02-language.md §6.1's own "floats
+    /// never abandon on ordinary `+ - *`" (and division: IEEE 754 has no
+    /// division-by-zero trap, it produces an infinity/NaN): a float
+    /// operand never needs `ArithChecked`/`DivRem`'s own abort machinery
+    /// at all, so `lower.rs` routes it through this instruction instead —
+    /// `ty` alone tells codegen which real op to emit (a wrapping integer
+    /// op, or a plain floating op), so no separate "float arith"
+    /// instruction exists.
+    ArithWrapping {
+        dst: Temp,
+        op: BinOp,
+        ty: Type,
+        lhs: Temp,
+        rhs: Temp,
+    },
+    /// `/ %`: truncates toward zero; abandons on division by zero
+    /// (`abort_zero`) and on the signed `MIN / -1` overflow case
+    /// (`abort_overflow` — reachable for `Div` only, never `Rem`, exactly
+    /// like `eval::value::eval_div_rem`; carried uniformly on both ops
+    /// anyway, matching that fn's own uniform bounds-check, rather than
+    /// special-casing `Rem` to omit a field it can never trigger).
+    DivRem {
+        dst: Temp,
+        op: BinOp,
+        ty: Type,
+        lhs: Temp,
+        rhs: Temp,
+        abort_zero: String,
+        abort_overflow: String,
+    },
+    /// `<< >>`: abandons on an out-of-range count (`>=` `bits`) —
+    /// `eval::value::eval_shift`'s own
+    /// `"shift count {c} is out of range for a {bits}-bit type"` embeds
+    /// the *runtime* count, so only `bits` travels here; codegen
+    /// interpolates the live `rhs` value. `<<` additionally abandons on
+    /// lost high bits — that wording never embeds a runtime value, so
+    /// `lost` carries it precomputed (`Some(..)` for `Shl`, `None` for
+    /// `Shr`, which can never lose bits).
+    Shift {
+        dst: Temp,
+        op: BinOp,
+        ty: Type,
+        lhs: Temp,
+        rhs: Temp,
+        bits: u32,
+        lost: Option<String>,
+    },
+    /// `& | ^` — never abandons.
+    Bitwise {
+        dst: Temp,
+        op: BinOp,
+        ty: Type,
+        lhs: Temp,
+        rhs: Temp,
+    },
+    /// `< <= > >= == !=` on scalars/`bool`/`char` (`TypedExprKind::Binary`'s
+    /// own documented scope — a user type's operator is always `OpCall`,
+    /// an ordinary `Call`, never this). `dst` is always `Type::Bool`;
+    /// `ty` is the *operand* type (codegen needs it to pick signed vs.
+    /// unsigned vs. floating comparison — `eval::value::eval_compare`'s
+    /// own per-`Value`-shape dispatch, one level earlier).
+    Compare {
+        dst: Temp,
+        op: BinOp,
+        ty: Type,
+        lhs: Temp,
+        rhs: Temp,
+    },
+    /// Unary negation: abandons on the one signed overflow case
+    /// (`MIN.neg()`); never for a float. `abort` is
+    /// `neg_abort_message()`, fully precomputed (never embeds a runtime
+    /// value).
+    Neg {
+        dst: Temp,
+        ty: Type,
+        src: Temp,
+        abort: String,
+    },
+    /// Bitwise `~` — never abandons.
+    BitNot {
+        dst: Temp,
+        ty: Type,
+        src: Temp,
+    },
+    /// `x.to[T]()` (02-language.md §6.1): a checked scalar-to-scalar
+    /// conversion — `ty` is the *target* `T`; abandons out of range.
+    /// `abort` is fully precomputed (`eval::value::eval_to_scalar`'s own
+    /// `` `.to[{}]()` conversion out of range`` — the target type's own
+    /// name is compile-time known, so unlike `Shift`/`IndexGet` this
+    /// message never needs a runtime value interpolated).
+    Convert {
+        dst: Temp,
+        ty: Type,
+        src: Temp,
+        abort: String,
+    },
+    /// Boolean `not` (`!`) — logical negation of a `bool` temp, distinct
+    /// from `BitNot` (`~`, which does not exist for `bool`, per
+    /// `int_shape`).
+    Not {
+        dst: Temp,
+        src: Temp,
+    },
+    /// A trap-free, non-short-circuiting boolean AND — `lower.rs`'s own
+    /// internal combinator for folding a pattern's several sub-tests
+    /// (tag match + every payload sub-pattern, or every tuple/array
+    /// element) into one result; never used for source-level `and`
+    /// (`TypedExprKind::And`), which lowers to real short-circuit control
+    /// flow instead (its own right operand may have side effects/traps a
+    /// pattern sub-test never does — `lower.rs`'s own module doc explains
+    /// the distinction).
+    BoolAnd {
+        dst: Temp,
+        lhs: Temp,
+        rhs: Temp,
+    },
+
+    // --- control flow: a flat, explicitly-ordered instruction index ---
+    /// An unconditional jump to `target`, an instruction index into this
+    /// same `MwirFn::body` (decision 3: "label indices into the flat
+    /// list" — no separate label/block type, the index *is* the label).
+    Jump {
+        target: usize,
+    },
+    /// Jumps to `target` when `cond` (a `bool` temp) is false; falls
+    /// through otherwise. The one conditional-jump flavor this module
+    /// needs (decision: "jump/jump-if" realized as this single form) —
+    /// every other shape (`if`/`while`/`for`/`match`/short-circuit `and`/
+    /// `or`) lowers to one or more of these, `lower.rs`'s own module doc
+    /// works through each.
+    JumpIfFalse {
+        cond: Temp,
+        target: usize,
+    },
+
+    // --- calls -----------------------------------------------------------
+    /// `key` is a `sema::typed::CalleeKey::spelling()` string, copied
+    /// verbatim from the typed tree's own resolved callee — the same
+    /// spelling `MwirProgram::fns` is keyed by, so a call always finds
+    /// its own target by exact string equality, never re-resolved.
+    /// `args` are the already-lowered argument temps, receiver first when
+    /// the callee has one (mirrors `sema::typed::TypedFn::params`'s own
+    /// declared order — `bind_params`'s "1:1 with the callee's declared
+    /// parameters" convention, one level down). `dst` always gets a fresh
+    /// temp of the callee's own return type, even when that type is
+    /// `unit`/the result is discarded (an `ExprStmt`) — one uniform shape
+    /// rather than an `Option` no call site actually needs to special-
+    /// case (a discarded temp is simply never read again). `self_write_back`
+    /// is `Some(place_temp)` exactly when the callee's own receiver is
+    /// `Mut` (`MwirFn::receiver`'s own second field) *and* the call site
+    /// has a real place to write the mutated receiver back into (every
+    /// `mut self` call, and every `init` call, which `sema::bodies` types
+    /// with a `Mut` receiver uniformly — `lower.rs`'s own call-lowering
+    /// doc works through `init`'s own extra result translation, which
+    /// happens at the call site, not here).
+    Call {
+        dst: Temp,
+        self_write_back: Option<Temp>,
+        key: String,
+        args: Vec<Temp>,
+    },
+    /// `value` is `None` for a bare `return`/a `unit`-returning fn falling
+    /// off the end of its body.
+    Return {
+        value: Option<Temp>,
+    },
+
+    /// Unconditional abandonment: `assert`'s own failure path, an
+    /// explicit `panic(msg)`, and match's own defensive "no arm matched"
+    /// fallthrough (present for parity with `interp::exec_stmt`'s own
+    /// identical fallthrough, even though exhaustiveness already proved
+    /// it unreachable — decision: reuse the exhaustiveness guarantee,
+    /// never invent a default arm, but still emit the same defensive
+    /// abort the evaluator itself keeps). `message` is `None` for a bare
+    /// `assert cond` with no message.
+    AssertFail {
+        message: Option<String>,
+    },
+}
+
+// --- abort message wording (locked against eval::value, decision 6) -----
+
+/// `+ - *`'s own overflow wording — byte-identical to
+/// `eval::value::eval_ordinary`'s `format!("arithmetic overflow in
+/// `{}`", op.as_str())`. `op` must be `Add`/`Sub`/`Mul`/`Div`/`Rem`
+/// (the five ops that can ever produce this exact message shape —
+/// `Div`/`Rem` share it with `DivRem`'s own `abort_overflow` field).
+pub fn abort_message(op: BinOp) -> String {
+    format!("arithmetic overflow in `{}`", op.as_str())
+}
+
+/// Unary negation's own overflow wording — byte-identical to
+/// `eval::value::eval_neg`'s fixed string.
+pub fn neg_abort_message() -> String {
+    "arithmetic overflow in unary `-`".to_string()
+}
+
+/// Division/remainder-by-zero wording — byte-identical to
+/// `eval::value::eval_div_rem`'s `format!("{} by zero", ...)`.
+pub fn div_zero_message(op: BinOp) -> String {
+    format!(
+        "{} by zero",
+        if op == BinOp::Div {
+            "division"
+        } else {
+            "remainder"
+        }
+    )
+}
+
+/// `<<`'s own lost-bits wording — byte-identical to
+/// `eval::value::eval_shift`'s fixed string.
+pub fn shift_lost_message() -> String {
+    "`<<` lost nonzero high bits".to_string()
+}
+
+/// `.to[T]()`'s own out-of-range wording — byte-identical to
+/// `eval::value::eval_to_scalar`'s `` format!("`.to[{}]()` conversion out
+/// of range", render_type(target)) ``.
+pub fn convert_abort_message(target: &Type) -> String {
+    format!(
+        "`.to[{}]()` conversion out of range",
+        types::render_type(target)
+    )
+}
+
+#[cfg(test)]
+mod abort_message_tests {
+    use super::*;
+    use crate::eval::value::{self, Value};
+
+    // plans/M5.md item B, task note 6: "one checked-op abort payload
+    // wording match against the evaluator" — these assert `mwir`'s own
+    // precomputed strings stay byte-identical to what `eval::value`
+    // actually produces at the exact same failure, so the two can never
+    // silently drift apart (CLAUDE.md: "dumb and locked").
+
+    #[test]
+    fn ordinary_overflow_wording_matches_the_evaluator() {
+        let got = value::eval_ordinary(BinOp::Add, &Type::U8, &Value::U8(250), &Value::U8(10))
+            .unwrap_err();
+        assert_eq!(got, abort_message(BinOp::Add));
+    }
+
+    #[test]
+    fn div_overflow_wording_matches_the_evaluator() {
+        let got = value::eval_div_rem(
+            BinOp::Div,
+            &Type::I32,
+            &Value::I32(i32::MIN),
+            &Value::I32(-1),
+        )
+        .unwrap_err();
+        assert_eq!(got, abort_message(BinOp::Div));
+    }
+
+    #[test]
+    fn neg_overflow_wording_matches_the_evaluator() {
+        let got = value::eval_neg(&Value::I8(i8::MIN)).unwrap_err();
+        assert_eq!(got, neg_abort_message());
+    }
+
+    #[test]
+    fn div_by_zero_wording_matches_the_evaluator() {
+        let got = value::eval_div_rem(BinOp::Div, &Type::U32, &Value::U32(9), &Value::U32(0))
+            .unwrap_err();
+        assert_eq!(got, div_zero_message(BinOp::Div));
+    }
+
+    #[test]
+    fn rem_by_zero_wording_matches_the_evaluator() {
+        let got = value::eval_div_rem(BinOp::Rem, &Type::U32, &Value::U32(9), &Value::U32(0))
+            .unwrap_err();
+        assert_eq!(got, div_zero_message(BinOp::Rem));
+    }
+
+    #[test]
+    fn shift_lost_bits_wording_matches_the_evaluator() {
+        let got =
+            value::eval_shift(BinOp::Shl, &Type::U8, &Value::U8(0xFF), &Value::U8(1)).unwrap_err();
+        assert_eq!(got, shift_lost_message());
+    }
+
+    #[test]
+    fn convert_out_of_range_wording_matches_the_evaluator() {
+        let got = value::eval_to_scalar(&Type::U8, &Value::I32(-1)).unwrap_err();
+        assert_eq!(got, convert_abort_message(&Type::U8));
+    }
+}
+
+// --- aggregate layout (decision 3's dumb rule) --------------------------
+
+/// Every plain (non-generic) struct's own field types, and every plain
+/// enum's own variant payload types, in declaration order — the one
+/// whole-program fact `size_of` needs beyond a bare `Type`
+/// (this module's own doc comment explains why, and the disclosed
+/// generic-instantiation gap).
+#[derive(Debug, Clone, Default)]
+pub struct LayoutCtx {
+    pub structs: BTreeMap<String, Vec<Type>>,
+    pub enums: BTreeMap<String, Vec<Vec<Type>>>,
+}
+
+/// Builds one `LayoutCtx` from a raw module, exactly the way
+/// `sema::dump`/`sema::check` recompute `specialize`/`declare` themselves
+/// rather than threading extra state out of `check_typed` (this module's
+/// own doc comment) — call once per module; only plain (non-generic)
+/// top-level `struct`/`enum` declarations contribute (the disclosed
+/// generic-instantiation gap above).
+pub fn build_layout_ctx(
+    module: &crate::syntax::ast::Module,
+) -> Result<LayoutCtx, crate::sema::SemaError> {
+    use crate::sema::types::{DeclEnum, DeclItem, DeclMember, DeclStruct, DeclVariantPayload};
+
+    let specialized = crate::sema::specialize::specialize(module)?;
+    let items = types::declare(&specialized)?;
+    let mut ctx = LayoutCtx::default();
+    for item in items {
+        match item {
+            DeclItem::Struct(DeclStruct { name, members, .. }) => {
+                let fields: Vec<Type> = members
+                    .into_iter()
+                    .filter_map(|m| match m {
+                        DeclMember::Field(f) => Some(f.ty),
+                        _ => None,
+                    })
+                    .collect();
+                ctx.structs.insert(name, fields);
+            }
+            DeclItem::Enum(DeclEnum { name, variants, .. }) => {
+                let payloads: Vec<Vec<Type>> = variants
+                    .into_iter()
+                    .map(|v| match v.payload {
+                        DeclVariantPayload::None => Vec::new(),
+                        DeclVariantPayload::Tuple(tys) => tys,
+                        DeclVariantPayload::Named(fields) => {
+                            fields.into_iter().map(|(_, t)| t).collect()
+                        }
+                    })
+                    .collect();
+                ctx.enums.insert(name, payloads);
+            }
+            _ => {}
+        }
+    }
+    Ok(ctx)
+}
+
+/// The one 8-byte-slot layout rule (module doc's own "Aggregate layout"
+/// section). `Err` only for the disclosed generic-instantiation gap, or
+/// an array whose length is neither a literal nor resolvable (mirrors
+/// `lower::eval_array_len`'s own scope, duplicated rather than shared —
+/// this fn takes no `TypedProgram`/evaluator at all, by design: a plain
+/// module const's own value is not threaded in here, so a `const`-named
+/// array length here is treated the same as `bodies::literal_array_len`
+/// alone would: unresolvable, `Err`).
+pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
+    const SLOT: usize = 8;
+    match ty {
+        Type::Bool
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::Usize
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::Isize
+        | Type::F32
+        | Type::F64
+        | Type::Char
+        | Type::Unit
+        | Type::Never => Ok(SLOT),
+        Type::Array(elem, len_expr) => {
+            let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
+                "array length is not a literal (unsupported by the layout fn)".to_string()
+            })?;
+            let n = usize::try_from(n).map_err(|_| "array length out of range".to_string())?;
+            Ok(size_of(elem, ctx)? * n)
+        }
+        Type::Tuple(elems) => {
+            let mut total = 0;
+            for e in elems {
+                total += size_of(e, ctx)?;
+            }
+            Ok(total)
+        }
+        Type::Option(inner) => Ok(SLOT + size_of(inner, ctx)?),
+        Type::Result(ok, err) => Ok(SLOT + size_of(ok, ctx)?.max(size_of(err, ctx)?)),
+        Type::Own(_, inner) => size_of(inner, ctx),
+        Type::Static(inner) => size_of(inner, ctx),
+        Type::Bytes(Some(len_expr)) => {
+            let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
+                "Bytes length is not a literal (unsupported by the layout fn)".to_string()
+            })?;
+            Ok(SLOT * usize::try_from(n).map_err(|_| "Bytes length out of range".to_string())?)
+        }
+        Type::Bytes(None) => Err("bare (unbounded) `Bytes` has no static size".to_string()),
+        Type::Fn(_, _) => Err("sizing a `fn` value type is not implemented yet".to_string()),
+        Type::Generic(_) => {
+            Err("sizing a bare generic parameter is not implemented yet".to_string())
+        }
+        Type::Str => Err("sizing a bare `Str` (unbounded) has no static size".to_string()),
+        Type::Named(name, targs) => {
+            if !targs.is_empty() {
+                return Err(
+                    "sizing an instantiated generic struct/enum is not implemented yet".to_string(),
+                );
+            }
+            if let Some(fields) = ctx.structs.get(name) {
+                let mut total = 0;
+                for f in fields {
+                    total += size_of(f, ctx)?;
+                }
+                return Ok(total);
+            }
+            if let Some(variants) = ctx.enums.get(name) {
+                let mut widest = 0usize;
+                for payload in variants {
+                    let mut total = 0;
+                    for f in payload {
+                        total += size_of(f, ctx)?;
+                    }
+                    widest = widest.max(total);
+                }
+                return Ok(SLOT + widest);
+            }
+            Err(format!(
+                "unknown struct/enum `{name}` in this layout context"
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn scalars_are_one_eight_byte_slot() {
+        let ctx = LayoutCtx::default();
+        assert_eq!(size_of(&Type::U8, &ctx), Ok(8));
+        assert_eq!(size_of(&Type::I64, &ctx), Ok(8));
+        assert_eq!(size_of(&Type::Bool, &ctx), Ok(8));
+        assert_eq!(size_of(&Type::Unit, &ctx), Ok(8));
+    }
+
+    #[test]
+    fn array_size_is_element_stride_times_len() {
+        let ctx = LayoutCtx::default();
+        let arr = Type::Array(
+            Box::new(Type::U8),
+            Box::new(crate::syntax::ast::Expr::Int(
+                crate::syntax::ast::Span::default(),
+                "5".to_string(),
+            )),
+        );
+        assert_eq!(size_of(&arr, &ctx), Ok(8 * 5));
+    }
+
+    #[test]
+    fn tuple_size_is_the_sum_of_components() {
+        let ctx = LayoutCtx::default();
+        let t = Type::Tuple(vec![Type::U8, Type::U64, Type::Bool]);
+        assert_eq!(size_of(&t, &ctx), Ok(8 * 3));
+    }
+
+    #[test]
+    fn struct_size_is_the_sum_of_field_sizes_in_declaration_order() {
+        let mut ctx = LayoutCtx::default();
+        ctx.structs.insert(
+            "Point".to_string(),
+            vec![
+                Type::U64,
+                Type::U64,
+                Type::Array(Box::new(Type::U8), Box::new(dummy_int(2))),
+            ],
+        );
+        let t = Type::Named("Point".to_string(), vec![]);
+        // 8 (x) + 8 (y) + (8*2) (a 2-element u8 array) = 32.
+        assert_eq!(size_of(&t, &ctx), Ok(8 + 8 + 16));
+    }
+
+    #[test]
+    fn enum_size_is_tag_plus_the_widest_variant() {
+        let mut ctx = LayoutCtx::default();
+        ctx.enums.insert(
+            "Shape".to_string(),
+            vec![vec![Type::U64], vec![Type::U64, Type::U64]],
+        );
+        let t = Type::Named("Shape".to_string(), vec![]);
+        // 8 (tag) + max(8, 16) = 24.
+        assert_eq!(size_of(&t, &ctx), Ok(8 + 16));
+    }
+
+    #[test]
+    fn option_size_is_tag_plus_the_inner_type() {
+        let ctx = LayoutCtx::default();
+        let t = Type::Option(Box::new(Type::U64));
+        assert_eq!(size_of(&t, &ctx), Ok(8 + 8));
+    }
+
+    #[test]
+    fn instantiated_generic_struct_fails_closed() {
+        let ctx = LayoutCtx::default();
+        let t = Type::Named(
+            "struct:Box[u64]".to_string(),
+            vec![crate::sema::types::TypeArg::Type(Type::U64)],
+        );
+        assert!(size_of(&t, &ctx).is_err());
+    }
+
+    fn dummy_int(n: i128) -> crate::syntax::ast::Expr {
+        crate::syntax::ast::Expr::Int(crate::syntax::ast::Span::default(), n.to_string())
+    }
+}
+
+// --- the `--stage=mwir` dump (M1 dump style: `Kind key=value`, two-space
+// indent per nesting level) ------------------------------------------------
+
+pub fn dump(program: &MwirProgram) -> String {
+    let mut out = String::new();
+    out.push_str("Program\n");
+    for (key, f) in &program.fns {
+        let mut header = format!(
+            "Fn key={key} ret={} temps={}",
+            types::render_type(&f.ret),
+            f.temp_count()
+        );
+        if let Some((t, mode)) = &f.receiver {
+            let _ = write!(header, " receiver={t}:{}", mode.as_str());
+        }
+        if !f.params.is_empty() {
+            let ps: Vec<String> = f.params.iter().map(|t| t.to_string()).collect();
+            let _ = write!(header, " params=[{}]", ps.join(","));
+        }
+        push_line(&mut out, 1, &header);
+        for (i, ty) in f.temp_types.iter().enumerate() {
+            push_line(
+                &mut out,
+                2,
+                &format!("Temp t{i} ty={}", types::render_type(ty)),
+            );
+        }
+        push_line(&mut out, 2, "Body");
+        for (i, inst) in f.body.iter().enumerate() {
+            let line = format!("{i:04}: {}", fmt_inst(inst));
+            push_line(&mut out, 3, &line);
+        }
+    }
+    if !program.rodata.is_empty() {
+        push_line(&mut out, 1, "Rodata");
+        for (i, bytes) in program.rodata.iter().enumerate() {
+            push_line(&mut out, 2, &format!("{i}: {}", render_bytes(bytes)));
+        }
+    }
+    out
+}
+
+fn push_line(out: &mut String, depth: usize, line: &str) {
+    out.push_str(&"  ".repeat(depth));
+    out.push_str(line);
+    out.push('\n');
+}
+
+/// Renders `rodata`'s own bytes as a lossy UTF-8 string, `\`-escaping the
+/// two characters (`\`, newline) that would otherwise break the dump's
+/// own one-line-per-entry grammar — good enough for a review-visible
+/// text dump (never round-tripped back into bytes by anything in this
+/// compiler).
+fn render_bytes(bytes: &[u8]) -> String {
+    let s = String::from_utf8_lossy(bytes);
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn fmt_inst(inst: &Inst) -> String {
+    match inst {
+        Inst::ConstInt { dst, ty, value } => {
+            format!(
+                "ConstInt dst={dst} ty={} value={value}",
+                types::render_type(ty)
+            )
+        }
+        Inst::ConstBool { dst, value } => format!("ConstBool dst={dst} value={value}"),
+        Inst::ConstFloat { dst, ty, bits } => {
+            format!(
+                "ConstFloat dst={dst} ty={} bits={bits}",
+                types::render_type(ty)
+            )
+        }
+        Inst::ConstChar { dst, value } => format!("ConstChar dst={dst} value={value:?}"),
+        Inst::ConstUnit { dst } => format!("ConstUnit dst={dst}"),
+        Inst::ConstText { dst, data } => format!("ConstText dst={dst} data={data}"),
+        Inst::Copy { dst, src } => format!("Copy dst={dst} src={src}"),
+        Inst::MakeAggregate { dst, elems } => {
+            format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
+        }
+        Inst::Project { dst, base, index } => {
+            format!("Project dst={dst} base={base} index={index}")
+        }
+        Inst::SetField { base, index, value } => {
+            format!("SetField base={base} index={index} value={value}")
+        }
+        Inst::IndexGet {
+            dst,
+            base,
+            index,
+            len,
+        } => {
+            format!("IndexGet dst={dst} base={base} index={index} len={len}")
+        }
+        Inst::IndexSet {
+            base,
+            index,
+            value,
+            len,
+        } => {
+            format!("IndexSet base={base} index={index} value={value} len={len}")
+        }
+        Inst::MakeEnum { dst, tag, payload } => {
+            format!(
+                "MakeEnum dst={dst} tag={tag} payload=[{}]",
+                join_temps(payload)
+            )
+        }
+        Inst::EnumTag { dst, src } => format!("EnumTag dst={dst} src={src}"),
+        Inst::EnumPayload { dst, src, index } => {
+            format!("EnumPayload dst={dst} src={src} index={index}")
+        }
+        Inst::ArithChecked {
+            dst,
+            op,
+            ty,
+            lhs,
+            rhs,
+            abort,
+        } => format!(
+            "ArithChecked op={} ty={} dst={dst} lhs={lhs} rhs={rhs} abort={abort:?}",
+            op.as_str(),
+            types::render_type(ty)
+        ),
+        Inst::ArithWrapping {
+            dst,
+            op,
+            ty,
+            lhs,
+            rhs,
+        } => format!(
+            "ArithWrapping op={} ty={} dst={dst} lhs={lhs} rhs={rhs}",
+            op.as_str(),
+            types::render_type(ty)
+        ),
+        Inst::DivRem {
+            dst,
+            op,
+            ty,
+            lhs,
+            rhs,
+            abort_zero,
+            abort_overflow,
+        } => format!(
+            "DivRem op={} ty={} dst={dst} lhs={lhs} rhs={rhs} abort_zero={abort_zero:?} abort_overflow={abort_overflow:?}",
+            op.as_str(),
+            types::render_type(ty)
+        ),
+        Inst::Shift {
+            dst,
+            op,
+            ty,
+            lhs,
+            rhs,
+            bits,
+            lost,
+        } => {
+            let mut s = format!(
+                "Shift op={} ty={} dst={dst} lhs={lhs} rhs={rhs} bits={bits}",
+                op.as_str(),
+                types::render_type(ty)
+            );
+            if let Some(l) = lost {
+                let _ = write!(s, " lost={l:?}");
+            }
+            s
+        }
+        Inst::Bitwise {
+            dst,
+            op,
+            ty,
+            lhs,
+            rhs,
+        } => format!(
+            "Bitwise op={} ty={} dst={dst} lhs={lhs} rhs={rhs}",
+            op.as_str(),
+            types::render_type(ty)
+        ),
+        Inst::Compare {
+            dst,
+            op,
+            ty,
+            lhs,
+            rhs,
+        } => format!(
+            "Compare op={} ty={} dst={dst} lhs={lhs} rhs={rhs}",
+            op.as_str(),
+            types::render_type(ty)
+        ),
+        Inst::Convert {
+            dst,
+            ty,
+            src,
+            abort,
+        } => format!(
+            "Convert ty={} dst={dst} src={src} abort={abort:?}",
+            types::render_type(ty)
+        ),
+        Inst::Neg {
+            dst,
+            ty,
+            src,
+            abort,
+        } => format!(
+            "Neg ty={} dst={dst} src={src} abort={abort:?}",
+            types::render_type(ty)
+        ),
+        Inst::BitNot { dst, ty, src } => {
+            format!("BitNot ty={} dst={dst} src={src}", types::render_type(ty))
+        }
+        Inst::Not { dst, src } => format!("Not dst={dst} src={src}"),
+        Inst::BoolAnd { dst, lhs, rhs } => format!("BoolAnd dst={dst} lhs={lhs} rhs={rhs}"),
+        Inst::Jump { target } => format!("Jump target={target:04}"),
+        Inst::JumpIfFalse { cond, target } => {
+            format!("JumpIfFalse cond={cond} target={target:04}")
+        }
+        Inst::Call {
+            dst,
+            self_write_back,
+            key,
+            args,
+        } => {
+            let mut s = format!("Call key={key} dst={dst} args=[{}]", join_temps(args));
+            if let Some(sw) = self_write_back {
+                let _ = write!(s, " self_write_back={sw}");
+            }
+            s
+        }
+        Inst::Return { value } => match value {
+            Some(v) => format!("Return value={v}"),
+            None => "Return".to_string(),
+        },
+        Inst::AssertFail { message } => match message {
+            Some(m) => format!("AssertFail message={m:?}"),
+            None => "AssertFail".to_string(),
+        },
+    }
+}
+
+fn join_temps(ts: &[Temp]) -> String {
+    ts.iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}

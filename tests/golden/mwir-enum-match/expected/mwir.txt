@@ -1,0 +1,55 @@
+Program
+  Fn key=area ret=u64 temps=21 params=[t0]
+    Temp t0 ty=Shape
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=bool
+    Temp t5 ty=u64
+    Temp t6 ty=bool
+    Temp t7 ty=bool
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=u64
+    Temp t12 ty=bool
+    Temp t13 ty=u64
+    Temp t14 ty=bool
+    Temp t15 ty=bool
+    Temp t16 ty=u64
+    Temp t17 ty=u64
+    Temp t18 ty=u64
+    Temp t19 ty=bool
+    Temp t20 ty=u64
+    Body
+      0000: EnumTag dst=t2 src=t0
+      0001: ConstInt dst=t3 ty=u64 value=0
+      0002: Compare op=== ty=u64 dst=t4 lhs=t2 rhs=t3
+      0003: EnumPayload dst=t5 src=t0 index=0
+      0004: Copy dst=t1 src=t5
+      0005: ConstBool dst=t6 value=true
+      0006: BoolAnd dst=t7 lhs=t4 rhs=t6
+      0007: JumpIfFalse cond=t7 target=0011
+      0008: ArithChecked op=* ty=u64 dst=t8 lhs=t1 rhs=t1 abort="arithmetic overflow in `*`"
+      0009: Return value=t8
+      0010: Jump target=0030
+      0011: EnumTag dst=t10 src=t0
+      0012: ConstInt dst=t11 ty=u64 value=1
+      0013: Compare op=== ty=u64 dst=t12 lhs=t10 rhs=t11
+      0014: EnumPayload dst=t13 src=t0 index=0
+      0015: Copy dst=t9 src=t13
+      0016: ConstBool dst=t14 value=true
+      0017: BoolAnd dst=t15 lhs=t12 rhs=t14
+      0018: JumpIfFalse cond=t15 target=0022
+      0019: ArithChecked op=* ty=u64 dst=t16 lhs=t9 rhs=t9 abort="arithmetic overflow in `*`"
+      0020: Return value=t16
+      0021: Jump target=0030
+      0022: EnumTag dst=t17 src=t0
+      0023: ConstInt dst=t18 ty=u64 value=2
+      0024: Compare op=== ty=u64 dst=t19 lhs=t17 rhs=t18
+      0025: JumpIfFalse cond=t19 target=0029
+      0026: ConstInt dst=t20 ty=u64 value=0
+      0027: Return value=t20
+      0028: Jump target=0030
+      0029: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0030: Return

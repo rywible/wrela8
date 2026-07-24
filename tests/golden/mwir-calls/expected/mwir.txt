@@ -1,0 +1,28 @@
+Program
+  Fn key=add_one ret=u64 temps=3 params=[t0]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=1
+      0001: ArithChecked op=+ ty=u64 dst=t2 lhs=t0 rhs=t1 abort="arithmetic overflow in `+`"
+      0002: Return value=t2
+      0003: Return
+  Fn key=combo ret=u64 temps=3 params=[t0]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Body
+      0000: Call key=add_one dst=t1 args=[t0]
+      0001: Call key=double dst=t2 args=[t1]
+      0002: Return value=t2
+      0003: Return
+  Fn key=double ret=u64 temps=3 params=[t0]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=2
+      0001: ArithChecked op=* ty=u64 dst=t2 lhs=t0 rhs=t1 abort="arithmetic overflow in `*`"
+      0002: Return value=t2
+      0003: Return

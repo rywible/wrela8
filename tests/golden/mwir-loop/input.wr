@@ -1,0 +1,18 @@
+module examples.mwir_loop
+
+# A `while` loop with an accumulator, plus a `for` loop over a fixed
+# array (plans/M5.md item B's own required golden family).
+
+pub fn sum_to(n: u64) -> u64:
+    total: u64 = 0
+    i: u64 = 0
+    while i < n:
+        total = total + i
+        i = i + 1
+    return total
+
+pub fn sum_array(values: [u64; 4]) -> u64:
+    total: u64 = 0
+    for v in values:
+        total = total +% v
+    return total

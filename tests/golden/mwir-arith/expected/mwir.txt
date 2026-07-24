@@ -1,0 +1,40 @@
+Program
+  Fn key=checked_add ret=u32 temps=3 params=[t0,t1]
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Body
+      0000: ArithChecked op=+ ty=u32 dst=t2 lhs=t0 rhs=t1 abort="arithmetic overflow in `+`"
+      0001: Return value=t2
+      0002: Return
+  Fn key=checked_div ret=i32 temps=3 params=[t0,t1]
+    Temp t0 ty=i32
+    Temp t1 ty=i32
+    Temp t2 ty=i32
+    Body
+      0000: DivRem op=/ ty=i32 dst=t2 lhs=t0 rhs=t1 abort_zero="division by zero" abort_overflow="arithmetic overflow in `/`"
+      0001: Return value=t2
+      0002: Return
+  Fn key=mixed ret=u16 temps=7 params=[t0,t1,t2]
+    Temp t0 ty=u16
+    Temp t1 ty=u16
+    Temp t2 ty=u16
+    Temp t3 ty=u16
+    Temp t4 ty=u16
+    Temp t5 ty=u16
+    Temp t6 ty=u16
+    Body
+      0000: ArithWrapping op=+% ty=u16 dst=t3 lhs=t0 rhs=t1
+      0001: Copy dst=t4 src=t3
+      0002: ArithChecked op=+ ty=u16 dst=t5 lhs=t4 rhs=t2 abort="arithmetic overflow in `+`"
+      0003: Copy dst=t6 src=t5
+      0004: Return value=t6
+      0005: Return
+  Fn key=wrapping_add ret=u8 temps=3 params=[t0,t1]
+    Temp t0 ty=u8
+    Temp t1 ty=u8
+    Temp t2 ty=u8
+    Body
+      0000: ArithWrapping op=+% ty=u8 dst=t2 lhs=t0 rhs=t1
+      0001: Return value=t2
+      0002: Return

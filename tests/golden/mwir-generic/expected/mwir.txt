@@ -1,0 +1,17 @@
+Program
+  Fn key=double_identity ret=u64 temps=4 params=[t0]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Body
+      0000: Call key=fn:identity[u64] dst=t1 args=[t0]
+      0001: Call key=fn:identity[u64] dst=t2 args=[t0]
+      0002: ArithChecked op=+ ty=u64 dst=t3 lhs=t1 rhs=t2 abort="arithmetic overflow in `+`"
+      0003: Return value=t3
+      0004: Return
+  Fn key=fn:identity[u64] ret=u64 temps=1 params=[t0]
+    Temp t0 ty=u64
+    Body
+      0000: Return value=t0
+      0001: Return

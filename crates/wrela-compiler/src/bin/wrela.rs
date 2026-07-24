@@ -24,7 +24,7 @@ use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TypedProgram;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|image|report> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|mwir|image|report> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
 
 /// Renders one `sema::SemaError` exactly the way `print_sema_error` prints
 /// it (decision 1's one-line diagnostic, or item H's one multi-line
@@ -448,6 +448,40 @@ fn dump(args: &[String]) -> ExitCode {
                 match parsed {
                     Ok(module) => match sema::check_typed(&module, &path) {
                         Ok(program) => print!("{}", sema::dump_typed(&program)),
+                        Err(e) => print_sema_error(&e),
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        // plans/M5.md item B: the same single-file entry `typed` uses
+        // (`check_typed` itself already fails closed on an import-bearing
+        // module) — lowers the checked program to `mwir::MwirProgram` and
+        // dumps it (`mwir::dump`); a lowering rejection prints in the
+        // exact same one-line `error[unimplemented]: ...` house style
+        // every other fail-closed stage already uses (`lower::LowerError`
+        // carries no location — the typed tree it walks carries none
+        // either, decision 1).
+        "mwir" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match sema::check_typed(&module, &path) {
+                        Ok(program) => match wrela_compiler::lower::lower_program(&program) {
+                            Ok(mwir_program) => {
+                                print!("{}", wrela_compiler::mwir::dump(&mwir_program))
+                            }
+                            Err(e) => println!("error[unimplemented]: {}", e.message),
+                        },
                         Err(e) => print_sema_error(&e),
                     },
                     Err(e) => print_parse_error(&e),
