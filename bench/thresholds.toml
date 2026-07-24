@@ -30,3 +30,19 @@ full_corpus_median_us = 60000
 # that, rounded up to a clean number — same rationale as
 # full_corpus_median_us above.
 check_golden_median_us = 40000
+
+# `cargo xtask bench compiler`'s eval lane (plans/M3.md item F): median
+# wall time (microseconds) for one full pass of lex+parse+
+# `sema::check_typed`+`eval::run_tests` over every test-bearing golden
+# (the `check-tests-*` cases with a pinned `expected/test.txt` — 3 entries
+# as of this lock — see `bench_eval_entries` in
+# crates/xtask/src/main.rs). Measured median on the locking machine,
+# across several runs of 15 timed iterations each: ~10.0-10.4ms
+# (10000-10400us) — most of that cost is `check-tests-program`'s own
+# iterative `fib`/`gcd` loops and `check-tests-arith`'s boundary-arithmetic
+# suite, both running well inside their 20_000-step quota
+# (comptime.eval.quotas) but still real evaluator work, unlike the check
+# lane's mostly-static const/assert-only golden mix. This threshold is
+# 10x that, rounded up to a clean number — same rationale as
+# full_corpus_median_us/check_golden_median_us above.
+eval_tests_median_us = 120000
