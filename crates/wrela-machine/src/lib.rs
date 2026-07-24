@@ -41,13 +41,20 @@ pub const VCPUS: usize = 4;
 ///
 /// ```text
 /// 0x4000_0000  MACHINE_INFO_BASE   (4 KiB)   machine-info page
-/// 0x4000_1000  console::RING_BASE  (4 KiB)   console ring metadata + doorbell
-/// 0x4000_2000  console::DATA_BASE  (16 KiB)  console tx byte buffers
-/// 0x4000_6000  .. 0x4001_0000               reserved (device-page growth)
+/// 0x4000_1000  console::RING_BASE  (8 KiB)   console ring metadata + doorbell
+/// 0x4000_3000  console::DATA_BASE  (16 KiB)  console tx byte buffers
+/// 0x4000_7000  .. 0x4001_0000               reserved (device-page growth)
 /// 0x4001_0000  STACKS_BASE         (4 MiB)   4 per-core stacks, 1 MiB each
 /// 0x4041_0000  .. 0x4050_0000               reserved (stack growth room)
 /// 0x4050_0000  IMAGE_BASE          (rest)    sealed image, loaded flat
 /// ```
+///
+/// (`console::RING_BASE`'s own region grew from 4 KiB to 8 KiB, and
+/// `console::DATA_BASE` moved from `0x4000_2000` to `0x4000_3000`
+/// accordingly, when `console::QUEUE_SIZE` grew from 16 to 256 — the
+/// M5-G adversarial sweep's own find/fix, `console`'s own module doc
+/// below tells the whole story. `console::DATA_SIZE` itself is
+/// unchanged at 16 KiB.)
 ///
 /// Below `DRAM_BASE` entirely, in a separate address range the VMM never
 /// backs with real RAM pages: the two trapped MMIO registers
@@ -178,6 +185,30 @@ pub mod machine_info {
     pub const OFF_RING_DATA_BUMP: u64 = 0x50;
     pub const OFF_RING_DESC_BUMP: u64 = 0x58;
 
+    /// Offset 0x60 (96): the runtime harness's own **line-in-progress**
+    /// anchor, `u64`, zeroed at boot — the M5-G adversarial-sweep fix
+    /// (`crates/wrela-compiler/src/layout.rs`'s module doc tells the
+    /// full story): the harness composes a whole report line (a test's
+    /// `test <name>: ok\n`/`test <name>: FAILED ...\n`, or the summary
+    /// line) into the console data region across *several*
+    /// `__wrela_ring_append` calls before publishing exactly **one**
+    /// descriptor for the finished line. `__wrela_line_begin` snapshots
+    /// the current `OFF_RING_DATA_BUMP` value here, right before the
+    /// first append of a new line; `__wrela_line_commit` reads it back
+    /// to compute the finished line's own start address (`console::
+    /// DATA_BASE + OFF_LINE_START`) and length (`OFF_RING_DATA_BUMP -
+    /// OFF_LINE_START`) for that one descriptor. This is the fix for
+    /// the bug the original one-descriptor-per-call scheme had: a test
+    /// whose report line took more than one `__wrela_ring_write` call
+    /// (every failing test did — prefix, message, newline, at minimum)
+    /// spent multiple of `console::QUEUE_SIZE`'s then-tiny 16 slots per
+    /// test, silently truncating the transcript well before every
+    /// planned test had even run. One line, one descriptor, always,
+    /// regardless of how many pieces compose it — the static bound
+    /// `layout.rs` now enforces at test-image build time is exactly
+    /// "at most `console::QUEUE_SIZE` *lines*" as a result.
+    pub const OFF_LINE_START: u64 = 0x60;
+
     /// Offset 0x100 (256), size 256 bytes: a scratch line buffer the
     /// runtime harness composes a decimal integer's ASCII digits into
     /// (`__wrela_fmt_dec`, used by the summary line's pass/fail counts and
@@ -203,20 +234,36 @@ pub mod machine_info {
 /// avail ring the driver/guest writes, a used ring the device/VMM writes)
 /// but is not the full virtio spec: no `used_event`/`avail_event`
 /// (`VIRTIO_RING_F_EVENT_IDX`) fields, since the M5 runtime is a single
-/// producer with no interrupt suppression to negotiate. `QUEUE_SIZE` is
-/// deliberately tiny (16) — plenty for report-line traffic, and small
-/// enough that the whole ring plus doorbell fits in one page with room to
-/// spare.
+/// producer with no interrupt suppression to negotiate.
+///
+/// `QUEUE_SIZE` was originally 16 (one page held the whole ring with room
+/// to spare) but the M5-G adversarial sweep found a real bug that number
+/// caused: the generated runtime spent one descriptor per
+/// `__wrela_ring_write` *call*, not per printed report line, so a mere
+/// 7-8 `@test(runtime)` fns (each failing test alone needed 3-4 calls —
+/// prefix, message, newline) silently exhausted the queue mid-summary,
+/// truncating the transcript. The fix (`wrela-compiler/src/layout.rs`'s
+/// module doc has the full design) makes "one descriptor per line" a
+/// hard invariant, and separately grows `QUEUE_SIZE` to 256 so a build
+/// with genuinely many tests still fits — enforced *statically*, at
+/// test-image build time (`layout.rs::check_transcript_bound`), never
+/// silently truncated at runtime. 256 descriptor entries (16 bytes each)
+/// alone are exactly one page (4 KiB), so the ring's own metadata no
+/// longer fits in one page with the avail/used rings and doorbell beside
+/// it — `RING_SIZE` grew from one page (4 KiB) to two (8 KiB) to hold all
+/// of it with room to spare (`RING_USED_BYTES` is 6672 of the 8192
+/// available).
 pub mod console {
     use super::layout::DRAM_BASE;
 
-    /// Queue depth. Small on purpose (module doc above).
-    pub const QUEUE_SIZE: u64 = 16;
+    /// Queue depth. Module doc above tells the whole "16 -> 256" story.
+    pub const QUEUE_SIZE: u64 = 256;
 
-    /// Ring metadata page: descriptor table + avail ring + used ring +
-    /// doorbell word, in that order.
+    /// Ring metadata page(s): descriptor table + avail ring + used ring +
+    /// doorbell word, in that order. Two pages (8 KiB) since `QUEUE_SIZE`
+    /// grew to 256 (module doc above).
     pub const RING_BASE: u64 = DRAM_BASE + 0x1000;
-    pub const RING_SIZE: u64 = 0x1000;
+    pub const RING_SIZE: u64 = 2 * 0x1000;
 
     /// Descriptor table: `QUEUE_SIZE` entries of 16 bytes each (`addr:
     /// u64, len: u32, flags: u16, next: u16` — the virtio descriptor
@@ -445,7 +492,8 @@ mod tests {
         assert!(machine_info::OFF_TEST_PASSED + 8 <= machine_info::OFF_TEST_FAILED);
         assert!(machine_info::OFF_TEST_FAILED + 8 <= machine_info::OFF_RING_DATA_BUMP);
         assert!(machine_info::OFF_RING_DATA_BUMP + 8 <= machine_info::OFF_RING_DESC_BUMP);
-        assert!(machine_info::OFF_RING_DESC_BUMP + 8 <= machine_info::OFF_TEST_LINE_BUF);
+        assert!(machine_info::OFF_RING_DESC_BUMP + 8 <= machine_info::OFF_LINE_START);
+        assert!(machine_info::OFF_LINE_START + 8 <= machine_info::OFF_TEST_LINE_BUF);
         assert!(
             machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
                 <= layout::MACHINE_INFO_SIZE

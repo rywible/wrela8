@@ -766,6 +766,54 @@ mod tests {
         ));
     }
 
+    /// The M5-G adversarial-sweep find/fix, at `drain_console`'s own
+    /// level: `wrela-compiler/src/layout.rs`'s module doc has the whole
+    /// story, but the bug's *observable* shape was always here — a
+    /// transcript silently truncated once `console::QUEUE_SIZE`
+    /// descriptors were spent. `drain_console`'s own `count =
+    /// avail_idx.min(console::QUEUE_SIZE)` line never itself hard-coded
+    /// the old `16`, so no code here needed to change for the fix — but
+    /// nothing golden-covered ever exercised more than a handful of
+    /// descriptors either, so this proves the parser genuinely reads
+    /// past the *old* bound (20 > 16) now that `QUEUE_SIZE` is 256: a
+    /// synthetic guest-RAM buffer (a plain heap `Vec<u8>`, not a real
+    /// mmap — `drain_console` only ever does pointer-offset reads, no
+    /// page-fault-timing subtlety like `layout.rs`'s own JIT self-tests
+    /// need) with 20 one-byte descriptors published directly (no VMM,
+    /// no HVF, no guest code at all — purely `drain_console`'s own
+    /// parsing).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn drain_console_reads_more_than_the_old_16_descriptor_limit() {
+        use wrela_machine::{console, layout as machine_layout};
+
+        let buf_len =
+            (console::DATA_BASE + console::DATA_SIZE - machine_layout::DRAM_BASE) as usize + 64;
+        let mut buf = vec![0u8; buf_len];
+
+        let ring_off = (console::RING_BASE - machine_layout::DRAM_BASE) as usize;
+        let data_off = (console::DATA_BASE - machine_layout::DRAM_BASE) as usize;
+
+        let n: usize = 20; // > the old QUEUE_SIZE == 16
+        assert!(n > 16, "this test's whole point is exceeding the old bound");
+        for i in 0..n {
+            let desc_off = ring_off
+                + console::DESC_TABLE_OFFSET as usize
+                + i * console::DESC_ENTRY_SIZE as usize;
+            let addr = console::DATA_BASE + i as u64;
+            buf[desc_off..desc_off + 8].copy_from_slice(&addr.to_le_bytes());
+            buf[desc_off + 8..desc_off + 12].copy_from_slice(&1u32.to_le_bytes());
+            buf[data_off + i] = b'A' + (i as u8);
+        }
+        let avail_idx_off = ring_off + console::AVAIL_OFFSET as usize + 2;
+        buf[avail_idx_off..avail_idx_off + 2].copy_from_slice(&(n as u16).to_le_bytes());
+
+        let got = drain_console(buf.as_ptr());
+        let expect: Vec<u8> = (0..n).map(|i| b'A' + (i as u8)).collect();
+        assert_eq!(got, expect);
+        assert_eq!(got.len(), 20);
+    }
+
     /// plans/M5.md item F: "a hand-built image in wrela-vmm's tests that
     /// DOES read CLOCK_MMIO twice" — this milestone's only exerciser of
     /// the clock trap and the whole `record`/`replay` machinery, since no

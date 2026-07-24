@@ -1,0 +1,1 @@
+error[build]: the runtime test tier could not lay out the test image: this test image's worst-case transcript (40145 byte(s) across 2 line(s)) exceeds the machine's console bound (16384 byte(s) across 256 line(s))

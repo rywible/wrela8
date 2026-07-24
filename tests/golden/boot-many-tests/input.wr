@@ -1,0 +1,64 @@
+module examples.boot_many_tests
+
+# plans/M5.md item G / item E, decision 15: the M5-G adversarial sweep's own
+# exact reproducer — a mere 7-8 trivial `@test(runtime)` fns already
+# exhausted the pre-fix console ring's descriptor budget mid-summary (each
+# printed line spent one descriptor per __wrela_ring_write *call*, not per
+# line: prefix + verdict + newline, 2-3 calls per test). This golden pins
+# 12 tests, all passing, well past that old failure point, proving the fix
+# (one descriptor per LINE, plus the static bound check at build time) with
+# a plain, non-adversarial program: nothing here is a stress test of the
+# static bound itself (`err-test-output-bound` pins that separately) — just
+# an ordinary program a user might actually write, boxed well inside the
+# machine's console bound, that used to fail anyway.
+
+@test(runtime)
+pub fn test_01():
+    assert 1 + 1 == 2, "one plus one"
+
+@test(runtime)
+pub fn test_02():
+    assert 2 + 2 == 4, "two plus two"
+
+@test(runtime)
+pub fn test_03():
+    assert 3 * 3 == 9, "three times three"
+
+@test(runtime)
+pub fn test_04():
+    assert 10 - 4 == 6, "ten minus four"
+
+@test(runtime)
+pub fn test_05():
+    assert 20 / 4 == 5, "twenty over four"
+
+@test(runtime)
+pub fn test_06():
+    assert 7 == 7, "seven equals seven"
+
+@test(runtime)
+pub fn test_07():
+    a: i64 = 100
+    b: i64 = 200
+    assert a + b == 300, "a plus b"
+
+@test(runtime)
+pub fn test_08():
+    assert true, "true is true"
+
+@test(runtime)
+pub fn test_09():
+    assert 1 != 2, "one is not two"
+
+@test(runtime)
+pub fn test_10():
+    x: i64 = 42
+    assert x == 42, "x is forty-two"
+
+@test(runtime)
+pub fn test_11():
+    assert 5 < 10, "five is less than ten"
+
+@test(runtime)
+pub fn test_12():
+    assert 10 > 5, "ten is greater than five"

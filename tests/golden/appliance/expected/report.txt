@@ -33,7 +33,7 @@ ImageReport v0
     Child value=driver#0
     Child value=actor#0
     Child value=actor#1
-  Section name=pages base=0x40000000 size=24576
+  Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=4194304
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=724
