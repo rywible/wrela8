@@ -839,6 +839,19 @@ impl Asm {
         self.start + self.words.len()
     }
 
+    /// The real guest-physical address of this fragment's own current
+    /// position — `abs()` converted from a word index to a byte address
+    /// against `harness_base` (always `machine_layout::IMAGE_BASE`, since
+    /// the combined harness section is always placed first, module doc's
+    /// own fixed emission order). Needed anywhere a *value a register
+    /// will later branch to* is materialized (the landing pad's own
+    /// continuation slot) — as opposed to a `BL`/`B`/`B.cond`'s own
+    /// PC-relative immediate, which `bl_to`/`b_to`/`patch_cond` already
+    /// compute correctly from plain word deltas and never need this.
+    fn addr(&self, harness_base: u64) -> u64 {
+        harness_base + (self.abs() as u64) * 4
+    }
+
     fn push(&mut self, w: u32) {
         self.words.push(w);
     }
@@ -1192,6 +1205,7 @@ fn build_abort_fixed(
     start: usize,
     ring_write_start: usize,
     failed_word_off: usize,
+    newline_off: usize,
 ) -> Asm {
     let mut a = Asm::new(start);
     a.push(encode::enc_sub_imm(31, 31, 16, true)); // sub sp, sp, #16
@@ -1204,6 +1218,10 @@ fn build_abort_fixed(
 
     a.push(encode::enc_ldr_x_imm(0, 31, 0));
     a.push(encode::enc_ldr_x_imm(1, 31, 8));
+    a.bl_to(ring_write_start);
+
+    a.load_rodata_addr_at(0, newline_off);
+    a.load_imm(1, 1);
     a.bl_to(ring_write_start);
 
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
@@ -1224,6 +1242,7 @@ fn build_abort_val(
     ring_write_start: usize,
     fmt_dec_start: usize,
     failed_word_off: usize,
+    newline_off: usize,
 ) -> Asm {
     let mut a = Asm::new(start);
     a.push(encode::enc_sub_imm(31, 31, 48, true));
@@ -1250,6 +1269,10 @@ fn build_abort_val(
     a.push(encode::enc_ldr_x_imm(1, 31, 40));
     a.bl_to(ring_write_start); // suffix
 
+    a.load_rodata_addr_at(0, newline_off);
+    a.load_imm(1, 1);
+    a.bl_to(ring_write_start);
+
     a.push(encode::enc_add_imm(31, 31, 48, true));
     push_abort_tail(&mut a, addrs);
     a
@@ -1272,6 +1295,7 @@ fn build_abort_val(
 fn build_entry_driver(
     addrs: &HarnessAddrs,
     start: usize,
+    harness_base: u64,
     ring_write_start: usize,
     fmt_dec_start: usize,
     runtime_tests: &[String],
@@ -1324,7 +1348,7 @@ fn build_entry_driver(
         a.push(encode::enc_add_imm(10, 10, 1, true));
         a.push(encode::enc_str_x_imm(10, 9, 0));
 
-        let cont_target = a.abs() as u64;
+        let cont_target = a.addr(harness_base);
         a.patch_load_imm(cont_marker, 9, cont_target);
     }
 
@@ -1417,17 +1441,23 @@ pub fn layout_test_image(
     let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
     let mut rodata_cursor: usize = rodata.iter().map(Vec::len).sum();
 
-    // Shared literal used by both abort bodies, interned once, before
-    // either is built (both need its byte offset).
+    // Shared literals used by both abort bodies, interned once, before
+    // either is built (both need their byte offsets).
     let failed_word_off = append_rodata(&mut rodata, &mut rodata_cursor, b"FAILED ".to_vec());
+    let abort_newline_off = append_rodata(&mut rodata, &mut rodata_cursor, b"\n".to_vec());
 
     let ring_write_asm = build_ring_write(&addrs, 0);
     let ring_write_start = 0usize;
     let fmt_dec_start = ring_write_start + ring_write_asm.words.len();
     let fmt_dec_asm = build_fmt_dec(&addrs, fmt_dec_start);
     let abort_fixed_start = fmt_dec_start + fmt_dec_asm.words.len();
-    let abort_fixed_asm =
-        build_abort_fixed(&addrs, abort_fixed_start, ring_write_start, failed_word_off);
+    let abort_fixed_asm = build_abort_fixed(
+        &addrs,
+        abort_fixed_start,
+        ring_write_start,
+        failed_word_off,
+        abort_newline_off,
+    );
     let abort_val_start = abort_fixed_start + abort_fixed_asm.words.len();
     let abort_val_asm = build_abort_val(
         &addrs,
@@ -1435,11 +1465,13 @@ pub fn layout_test_image(
         ring_write_start,
         fmt_dec_start,
         failed_word_off,
+        abort_newline_off,
     );
     let entry_start = abort_val_start + abort_val_asm.words.len();
     let entry_asm = build_entry_driver(
         &addrs,
         entry_start,
+        image_base,
         ring_write_start,
         fmt_dec_start,
         runtime_tests,
