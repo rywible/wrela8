@@ -3196,11 +3196,16 @@ fn emit_group_create(
         ctx.store_slot(X_TAG, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
         ctx.store_slot(X_D, ctx.frame.off(group_temp));
 
-        if i + 1 < gctx.arena_capacity {
-            let j = ctx.words.len();
-            ctx.words.push((0, String::new()));
-            to_after.push(j);
-        }
+        // A successful init (this candidate's own `in_use == 0` case)
+        // must always skip past the overflow abort that follows the last
+        // candidate — including on the *last* candidate itself (a
+        // disclosed off-by-one this golden's own first real boot caught:
+        // an earlier draft only pushed this jump when a further candidate
+        // remained, so the loop's own final successful init fell straight
+        // through into the abort it had just escaped).
+        let j = ctx.words.len();
+        ctx.words.push((0, String::new()));
+        to_after.push(j);
         ctx.patch_skip(skip_try_next, SkipKind::Cbnz(X_D));
     }
     if gctx.arena_capacity == 0 {
@@ -3239,6 +3244,7 @@ fn emit_group_start(
     arg_temps: &[Temp],
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
+    fn_key: &str,
 ) -> Result<(), CodegenError> {
     let child_index = *gctx.child_index.get(callee_key).ok_or_else(|| {
         CodegenError::internal(format!(
@@ -3301,19 +3307,103 @@ fn emit_group_start(
         );
     }
 
+    // Group address (computed once, before the call, so admission can
+    // increment `active_children` *before* this child ever runs — the
+    // real bookkeeping `g.join_all()`'s own "how many children remain
+    // outstanding" reads; item F's own first real boot caught this
+    // exact ordering bug: an earlier draft only ever touched
+    // `active_children` *after* the call returned, and in the wrong
+    // direction, so a synchronously-completing child left it permanently
+    // wrong and `join_all` could never see zero).
+    let group_addr_reg = X_D;
+    ctx.load_slot(X_E, ctx.frame.off(group_temp)); // encoded group id (i+1)
+    ctx.push(
+        encode::enc_sub_imm(X_E, X_E, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
+    );
+    ctx.load_imm(X_F, GROUP_SLOT_SIZE as i64);
+    ctx.push(
+        encode::enc_mul(X_E, X_E, X_F, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_E),
+            reg_name(X_F)
+        ),
+    );
+    let word = ctx.cur_word();
+    ctx.load_imm(group_addr_reg, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = "group-arena-base (g.start)".to_string();
+    }
+    ctx.relocs.push(Reloc::GroupArenaBase { word });
+    ctx.push(
+        encode::enc_add_reg(group_addr_reg, group_addr_reg, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(group_addr_reg),
+            reg_name(group_addr_reg),
+            reg_name(X_E)
+        ),
+    );
+    // active_children += 1 (admission).
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+        format!(
+            "ldr {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
+            reg_name(X_A),
+            reg_name(group_addr_reg)
+        ),
+    );
+    ctx.push(
+        encode::enc_add_imm(X_A, X_A, 1, true),
+        format!("add {}, {}, #1", reg_name(X_A), reg_name(X_A)),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+        format!(
+            "str {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
+            reg_name(X_A),
+            reg_name(group_addr_reg)
+        ),
+    );
+
     // Marshal args (at most 2 scalars) directly into x0/x1 (a fresh call's
     // own receiver-less ABI: a free async fn's entry takes no receiver, so
     // `x0`/`x1` are its first two ordinary params, mirroring
     // `emit_async_entry`'s own fresh-path arg spill exactly one level up —
     // no `rt_enqueue`-style args-pointer marshaling needed here at all,
-    // since this is a direct call, not an admission).
+    // since this is a direct call, not an admission). `group_addr_reg`
+    // (`X_D`) and `X_E`/`X_F` are dead by now — safe to clobber with the
+    // marshaled args/the call itself.
     for (i, t) in arg_temps.iter().enumerate() {
         ctx.load_slot(i as u8, ctx.frame.off(*t));
     }
     ctx.bl_symbolic_call(callee_key);
-    // x0 = status; x1 = value when COMPLETED.
-    let group_addr_reg = X_D;
-    ctx.load_slot(X_E, ctx.frame.off(group_temp)); // encoded group id (i+1)
+    // `X_FRAME` (x28) is *not* preserved by this call the way a hand-
+    // assembled runtime routine's own contract preserves it (`rt_enqueue`/
+    // `__wrela_checkpoint_service`'s own documented "must preserve x28")
+    // — `callee_key`'s own compiled entry is an ordinary async fn, which
+    // loads *its own* persistent-frame address into `X_FRAME` as the very
+    // first thing it does (`emit_async_entry`'s own doc). This item's
+    // first real HVF boot caught exactly this: every `ctx.store_slot`/
+    // `load_slot` call below this line silently addressed the *callee's*
+    // own frame instead of this fn's own, once the child had run — must
+    // reload this fn's own frame address fresh before touching any slot
+    // again, exactly like `emit_async_entry`'s own initial load.
+    let word = ctx.cur_word();
+    ctx.load_imm(X_FRAME, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = format!("turn-frame[{}] {} <{fn_key}>", 0, reg_name(X_FRAME));
+    }
+    ctx.relocs.push(Reloc::TurnFrameAddr {
+        word,
+        key: fn_key.to_string(),
+    });
+    // x0 = status; x1 = value when COMPLETED. Recompute the group address
+    // fresh (the callee's own compiled body may have clobbered any of
+    // x0..x17 — nothing survives a `BL` here by convention).
+    ctx.load_slot(X_E, ctx.frame.off(group_temp));
     ctx.push(
         encode::enc_sub_imm(X_E, X_E, 1, true),
         format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
@@ -3382,6 +3472,12 @@ fn emit_group_start(
             group_child_payload_off(child_index)
         ),
     );
+    // Completed/cancelled (never suspended): decrement active_children —
+    // this admission's own count is now settled — and clear this child's
+    // own `busy` (harvested inline; available for a later loop iteration
+    // of this same `g.start` site to reuse). A suspended child leaves both
+    // untouched: still `busy`, still counted `active`, for
+    // `layout::build_group_child_poll` to harvest later.
     ctx.push(
         encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
@@ -3391,8 +3487,8 @@ fn emit_group_start(
         ),
     );
     ctx.push(
-        encode::enc_add_imm(X_A, X_A, 1, true),
-        format!("add {}, {}, #1", reg_name(X_A), reg_name(X_A)),
+        encode::enc_sub_imm(X_A, X_A, 1, true),
+        format!("sub {}, {}, #1", reg_name(X_A), reg_name(X_A)),
     );
     ctx.push(
         encode::enc_str_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
@@ -3401,6 +3497,19 @@ fn emit_group_start(
             reg_name(X_A),
             reg_name(group_addr_reg)
         ),
+    );
+    let word = ctx.cur_word();
+    ctx.load_imm(X_A, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = format!("turn-frame[{}] {} <{callee_key}>", 0, reg_name(X_A));
+    }
+    ctx.relocs.push(Reloc::TurnFrameAddr {
+        word,
+        key: callee_key.to_string(),
+    });
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_A, OFF_TURN_BUSY as u16),
+        format!("str xzr, [{}, #{OFF_TURN_BUSY}]", reg_name(X_A)),
     );
 
     ctx.patch_skip(skip_still_running, SkipKind::Cond(Cond::Eq));
@@ -3529,12 +3638,14 @@ fn emit_group_close(group_temp: Temp, ctx: &mut FnCtx) -> Result<(), CodegenErro
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_flow_op(
     op: &FlowInst,
     f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
+    fn_key: &str,
     scratch0: Temp,
     scratch1: Temp,
 ) -> Result<(), CodegenError> {
@@ -3577,7 +3688,7 @@ fn emit_flow_op(
             group_temp,
             callee_key,
             arg_temps,
-        } => emit_group_start(*group_temp, callee_key, arg_temps, ctx, gctx),
+        } => emit_group_start(*group_temp, callee_key, arg_temps, ctx, gctx, fn_key),
         FlowInst::GroupClose { group_temp, .. } => emit_group_close(*group_temp, ctx),
     }
 }
@@ -3720,6 +3831,20 @@ fn emit_group_addr_from_temp(ctx: &mut FnCtx, group_temp: Temp, dst_reg: u8, scr
             "sub {}, {}, #1",
             reg_name(scratch_reg),
             reg_name(scratch_reg)
+        ),
+    );
+    // arena index -> byte offset (a real bug this golden's first real boot
+    // caught: an earlier draft added the raw index to the arena base
+    // instead of `index * GROUP_SLOT_SIZE`, invisible for arena index 0
+    // alone since `0 * anything == 0`, wrong for any other slot).
+    ctx.load_imm(X_D, GROUP_SLOT_SIZE as i64);
+    ctx.push(
+        encode::enc_mul(scratch_reg, scratch_reg, X_D, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(scratch_reg),
+            reg_name(scratch_reg),
+            reg_name(X_D)
         ),
     );
     ctx.push(
@@ -3990,6 +4115,7 @@ fn emit_transition(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn emit_flat_entry(
     entry: &FlatEntry,
     flat_idx: usize,
@@ -3997,13 +4123,16 @@ fn emit_flat_entry(
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
+    fn_key: &str,
     state_temp: Temp,
     scratch0: Temp,
     scratch1: Temp,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match entry {
-        FlatEntry::Op(op) => emit_flow_op(op, f, ctx, method_index, gctx, scratch0, scratch1),
+        FlatEntry::Op(op) => {
+            emit_flow_op(op, f, ctx, method_index, gctx, fn_key, scratch0, scratch1)
+        }
         FlatEntry::Trans(t) => emit_transition(
             t,
             flat_idx,
@@ -4117,6 +4246,7 @@ fn emit_flowwir_fn(
             &mut probe,
             method_index,
             gctx,
+            fn_key,
             state_temp,
             scratch0,
             scratch1,
@@ -4173,6 +4303,7 @@ fn emit_flowwir_fn(
             &mut ctx,
             method_index,
             gctx,
+            fn_key,
             state_temp,
             scratch0,
             scratch1,
