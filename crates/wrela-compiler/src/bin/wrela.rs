@@ -580,6 +580,21 @@ fn dump(args: &[String]) -> ExitCode {
         // lowering or codegen rejection prints the same one-line
         // `error[unimplemented]: ...` house style every other fail-closed
         // stage already uses.
+        // plans/M6.md item D: one stage further than the sync-only path
+        // above still covers — `lower::lower_program` (sync fns/methods,
+        // now skipping every `is_async` one) *and*
+        // `flowwir_lower::lower_program` (async fns/methods only) each run
+        // over the same checked program, then
+        // `codegen::codegen_program_with_async` merges both halves into
+        // one `CodegenProgram` sharing one rodata pool/dispatch-index
+        // table before `codegen::dump` renders it — an async fn's own
+        // state-machine form (dispatch header, flattened states,
+        // checkpoints) shows up in the identical dump right alongside
+        // every sync fn. `actor_method_index_tables` needs a
+        // `BTreeMap<String, Module>` the way `layout.rs`'s own multi-module
+        // build closure already does; a single-file dump has exactly one
+        // module, keyed by its own dotted path (arbitrary — never read
+        // back, just a map key).
         "asm" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -590,24 +605,47 @@ fn dump(args: &[String]) -> ExitCode {
                     Ok(module) => match sema::check_typed(&module, &path) {
                         Ok(program) => match wrela_compiler::lower::lower_program(&program) {
                             Ok(mwir_program) => {
-                                match wrela_compiler::mwir::build_layout_ctx(&module) {
-                                    Ok(layout) => {
-                                        match wrela_compiler::codegen::codegen_program(
-                                            &mwir_program,
-                                            &layout,
-                                        ) {
-                                            Ok(codegen_program) => {
-                                                print!(
-                                                    "{}",
-                                                    wrela_compiler::codegen::dump(&codegen_program)
-                                                )
+                                match wrela_compiler::flowwir_lower::lower_program(&program) {
+                                    Ok(flow_program) => {
+                                        match wrela_compiler::mwir::build_layout_ctx(&module) {
+                                            Ok(layout) => {
+                                                let modules: BTreeMap<String, Module> =
+                                                    BTreeMap::from([(
+                                                        module.path.join("."),
+                                                        module.clone(),
+                                                    )]);
+                                                match layout::actor_method_index_tables(
+                                                    &modules, &layout,
+                                                ) {
+                                                    Ok(method_index) => {
+                                                        match wrela_compiler::codegen::codegen_program_with_async(
+                                                            &mwir_program,
+                                                            &flow_program,
+                                                            &layout,
+                                                            &method_index,
+                                                        ) {
+                                                            Ok(codegen_program) => print!(
+                                                                "{}",
+                                                                wrela_compiler::codegen::dump(
+                                                                    &codegen_program
+                                                                )
+                                                            ),
+                                                            Err(e) => println!(
+                                                                "error[unimplemented]: {}",
+                                                                e.message
+                                                            ),
+                                                        }
+                                                    }
+                                                    Err(e) => println!(
+                                                        "error[unimplemented]: {}",
+                                                        e.message
+                                                    ),
+                                                }
                                             }
-                                            Err(e) => {
-                                                println!("error[unimplemented]: {}", e.message)
-                                            }
+                                            Err(e) => print_sema_error(&e),
                                         }
                                     }
-                                    Err(e) => print_sema_error(&e),
+                                    Err(e) => println!("error[unimplemented]: {}", e.message),
                                 }
                             }
                             Err(e) => println!("error[unimplemented]: {}", e.message),

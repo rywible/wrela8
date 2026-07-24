@@ -640,6 +640,18 @@ mod abort_message_tests {
 pub struct LayoutCtx {
     pub structs: BTreeMap<String, Vec<Type>>,
     pub enums: BTreeMap<String, Vec<Vec<Type>>>,
+    /// plans/M6.md item D: a plain struct's own field *names*, in the
+    /// identical declaration order `structs`'s own field *types* already
+    /// carry — added specifically so codegen can resolve
+    /// `flowwir::FlowInst::SelfPath`'s own field-name chain (02-language.md
+    /// §9.2's "the frame records the field path and re-derives it") down
+    /// to a `Project`-style byte offset, the one fact neither `structs`
+    /// (types only) nor the typed tree (`TypedStruct::fields`, gone by the
+    /// time codegen runs) makes available together with a whole-program
+    /// `LayoutCtx`. Populated alongside `structs` in `build_layout_ctx`,
+    /// same source walk, so the two can never disagree on field count or
+    /// order.
+    pub struct_field_names: BTreeMap<String, Vec<String>>,
 }
 
 /// Builds one `LayoutCtx` from a raw module, exactly the way
@@ -659,6 +671,13 @@ pub fn build_layout_ctx(
     for item in items {
         match item {
             DeclItem::Struct(DeclStruct { name, members, .. }) => {
+                let field_names: Vec<String> = members
+                    .iter()
+                    .filter_map(|m| match m {
+                        DeclMember::Field(f) => Some(f.name.clone()),
+                        _ => None,
+                    })
+                    .collect();
                 let fields: Vec<Type> = members
                     .into_iter()
                     .filter_map(|m| match m {
@@ -666,6 +685,7 @@ pub fn build_layout_ctx(
                         _ => None,
                     })
                     .collect();
+                ctx.struct_field_names.insert(name.clone(), field_names);
                 ctx.structs.insert(name, fields);
             }
             DeclItem::Enum(DeclEnum { name, variants, .. }) => {
@@ -744,6 +764,45 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             Err("sizing a bare generic parameter is not implemented yet".to_string())
         }
         Type::Str => Err("sizing a bare `Str` (unbounded) has no static size".to_string()),
+        // plans/M6.md item D: the M6 builtin-pseudo-type vehicle (`Actor`/
+        // `Group`/`Instant`/`Duration`/`Admission`/`Peer`/`Rejected` —
+        // `sema::types::resolve_named`'s own recognized names, none of
+        // which is ever a real `DeclStruct`/`DeclEnum` entry in this
+        // `LayoutCtx`, so the general `Named` path below can never size
+        // one). Every one of these is carried, at this milestone, as a
+        // small opaque handle/tick-count/reason code — one 8-byte slot,
+        // uniformly (`Actor[T]`'s own runtime value is a build-time
+        // constant index per 04-compiler.md §6's "Actor as-if" license;
+        // `Instant`/`Duration` are opaque `u64` tick counts,
+        // `flowwir::FlowInst::Now`/`Duration`'s own doc comments;
+        // `Admission`/`Peer`/`Rejected` are opaque builtin payload types
+        // not yet grown real fields, `sema::bodies`'s own doc comment on
+        // `CallError`'s `NotAdmitted`/`PeerFailed` variants). `CallError[E]`
+        // (the one non-empty-`targs` pseudo-type, 02 §9.4's own five-variant
+        // composition, `sema::bodies::compose_call_error`) sizes like any
+        // other builtin sum: one tag slot plus the widest variant's own
+        // payload — `Op(E)` (up to `size_of(E)`) vs. every other variant's
+        // own opaque-handle-or-nothing payload (at most one `SLOT`), so
+        // `SLOT + size_of(E).max(SLOT)` is exact for the whole real
+        // variant set without re-deriving it here a second time.
+        Type::Named(name, _targs)
+            if matches!(
+                name.as_str(),
+                "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
+            ) =>
+        {
+            // `Actor[T]`/`Rejected[T]` (if ever instantiated) carry their
+            // own type argument purely for the type-checker's sake — the
+            // argument itself never contributes a byte here (module doc
+            // above).
+            Ok(SLOT)
+        }
+        Type::Named(name, targs) if name == "CallError" => {
+            let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
+                return Err("`CallError` with no error type argument".to_string());
+            };
+            Ok(SLOT + size_of(e_ty, ctx)?.max(SLOT))
+        }
         Type::Named(name, targs) => {
             if !targs.is_empty() {
                 return Err(

@@ -317,6 +317,19 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
         if program.image_fn.as_deref() == Some(name.as_str()) {
             continue;
         }
+        // plans/M6.md item D: an `async fn`/method never reaches this
+        // path at all — it lowers via `flowwir_lower::lower_program`
+        // instead (decision 2's own hard constraint, `flowwir.rs`'s own
+        // module doc: "a sync fn never leaves the M5 typed -> mwir path").
+        // Before this item, no `TypedProgram` this fn ever saw declared an
+        // `is_async` fn without also choking on an `await`/`send`/`with
+        // group` construct deeper inside `lower_fn` (the fail-closed
+        // `unimplemented` diagnostics those constructs' own match arms
+        // already carry) — this skip is what makes a *mixed* sync+async
+        // program's own sync half lower cleanly for the first time.
+        if f.is_async {
+            continue;
+        }
         let mf = lower_fn(f, &mut lw)?;
         fns.insert(name.clone(), mf);
     }
@@ -326,6 +339,9 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     for (ikey, inst) in &program.instantiations {
         match inst {
             TypedInstantiation::Fn(f) => {
+                if f.is_async {
+                    continue;
+                }
                 let mf = lower_fn(f, &mut lw)?;
                 fns.insert(ikey.clone(), mf);
             }
@@ -355,13 +371,21 @@ fn lower_struct_members(
     fns: &mut BTreeMap<String, MwirFn>,
 ) -> Result<(), LowerError> {
     for (member, f) in &s.methods {
+        if f.is_async {
+            continue;
+        }
         fns.insert(format!("{key_prefix}.{member}"), lower_fn(f, lw)?);
     }
     for (member, f) in &s.assoc_fns {
+        if f.is_async {
+            continue;
+        }
         fns.insert(format!("{key_prefix}.{member}"), lower_fn(f, lw)?);
     }
     if let Some(f) = &s.init {
-        fns.insert(format!("{key_prefix}.init"), lower_fn(f, lw)?);
+        if !f.is_async {
+            fns.insert(format!("{key_prefix}.init"), lower_fn(f, lw)?);
+        }
     }
     Ok(())
 }

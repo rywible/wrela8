@@ -629,6 +629,7 @@ pub fn merge_layout_ctx(modules: &BTreeMap<String, Module>) -> Result<LayoutCtx,
         let ctx = crate::mwir::build_layout_ctx(module)?;
         merged.structs.extend(ctx.structs);
         merged.enums.extend(ctx.enums);
+        merged.struct_field_names.extend(ctx.struct_field_names);
     }
     Ok(merged)
 }
@@ -877,12 +878,19 @@ fn value_as_u64(v: &crate::eval::value::Value) -> Option<u64> {
 /// collision — the identical disclosed simplification `merge_layout_ctx`
 /// already carries.
 struct ActorMethodShape {
+    /// plans/M6.md item D: this method's own bare name — added to this
+    /// struct (previously anonymous within its own `Vec`) so
+    /// `actor_method_index_tables`, below, can hand out a stable
+    /// `(actor, method name) -> dispatch index` table, the exact same
+    /// declaration order `dispatch: &[usize]` (`build_rt_select_and_run`)
+    /// already numbers methods in.
+    name: String,
     /// Not read by this item's own sizing pass (an async method's own
     /// message slot is sized identically to a sync one's — 02 §9.1's
     /// message shape says nothing about the method's own color); kept for
-    /// item D/F's own dispatch-table wiring, which must route an async
-    /// method's own entry at the named abort stub
-    /// (`build_async_dispatch_abort_stub`) instead of a real method body.
+    /// item D's own dispatch-table wiring, which must route an async
+    /// method's own entry at its real compiled state-machine address
+    /// instead of the item-C-era abort stub.
     #[allow(dead_code)]
     is_async: bool,
     param_sizes: Vec<u64>,
@@ -920,6 +928,7 @@ fn merge_actor_pub_methods(
                     param_sizes.push(size as u64);
                 }
                 methods.push(ActorMethodShape {
+                    name: f.name.clone(),
                     is_async: f.is_async,
                     param_sizes,
                 });
@@ -928,6 +937,31 @@ fn merge_actor_pub_methods(
         }
     }
     Ok(out)
+}
+
+/// plans/M6.md item D: `(actor name) -> (method name) -> its own 0-based
+/// dispatch index`, in the exact declaration order `merge_actor_pub_methods`
+/// (immediately above) already establishes — the same order
+/// `build_rt_select_and_run`'s own `dispatch` table numbers methods in, so
+/// codegen's own symbolic `Send`/`Await{ActorCall}` lookups
+/// (`codegen::ActorMethodIndex`) can never disagree with the runtime
+/// dispatch table actually built alongside it.
+pub fn actor_method_index_tables(
+    modules: &BTreeMap<String, Module>,
+    layout_ctx: &LayoutCtx,
+) -> Result<BTreeMap<String, BTreeMap<String, usize>>, LayoutError> {
+    let shapes = merge_actor_pub_methods(modules, layout_ctx)?;
+    Ok(shapes
+        .into_iter()
+        .map(|(actor, methods)| {
+            let table = methods
+                .into_iter()
+                .enumerate()
+                .map(|(i, m)| (m.name, i))
+                .collect();
+            (actor, table)
+        })
+        .collect())
 }
 
 /// A real (not hand-waved) static count of `with group(...)` sites across
