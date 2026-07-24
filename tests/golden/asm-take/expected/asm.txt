@@ -82,7 +82,7 @@ Program
     0056: 9a9fa7eb  cset x11, lt
     0057: f9003feb  str x11, [sp, #120]
     0058: f9403fe9  ldr x9, [sp, #120]
-    0059: b40007a9  cbz x9, #244
+    0059: b4000889  cbz x9, #272
     0060: f94037e9  ldr x9, [sp, #104]
     0061: d280006a  movz x10, #0x3
     0062: f2a0000a  movk x10, #0x0, lsl #16
@@ -142,52 +142,59 @@ Program
     0116: f9004feb  str x11, [sp, #152]
     0117: f9404fe9  ldr x9, [sp, #152]
     0118: f90037e9  str x9, [sp, #104]
-    0119: 17ffffbe  b #-264
-    0120: d2800129  movz x9, #0x9
-    0121: f2a00009  movk x9, #0x0, lsl #16
-    0122: f2c00009  movk x9, #0x0, lsl #32
-    0123: f2e00009  movk x9, #0x0, lsl #48
-    0124: f90053e9  str x9, [sp, #160]
-    0125: f94053e9  ldr x9, [sp, #160]
-    0126: f90057e9  str x9, [sp, #168]
-    0127: f94057e9  ldr x9, [sp, #168]
-    0128: f9005be9  str x9, [sp, #176]
-    0129: f94007e0  ldr x0, [sp, #8]
-    0130: 94000000  bl <consume>
-    0131: f9005fe0  str x0, [sp, #184]
-    0132: 9102c3e0  add x0, sp, #176
-    0133: 94000000  bl <consume_box>
-    0134: f90063e0  str x0, [sp, #192]
-    0135: f9405fe9  ldr x9, [sp, #184]
-    0136: f94063ea  ldr x10, [sp, #192]
-    0137: ab0a012b  adds x11, x9, x10
-    0138: 54000103  b.cc #32
-    0139: 90000000  adrp x0, rodata+0x1f
-    0140: 91000000  add x0, x0, rodata+0x1f
-    0141: d2800341  movz x1, #0x1a
-    0142: f2a00001  movk x1, #0x0, lsl #16
-    0143: f2c00001  movk x1, #0x0, lsl #32
-    0144: f2e00001  movk x1, #0x0, lsl #48
-    0145: 94000000  bl <__wrela_abort>
-    0146: f90067eb  str x11, [sp, #200]
-    0147: f94067e9  ldr x9, [sp, #200]
-    0148: f94033ea  ldr x10, [sp, #96]
-    0149: ab0a012b  adds x11, x9, x10
-    0150: 54000103  b.cc #32
-    0151: 90000000  adrp x0, rodata+0x1f
-    0152: 91000000  add x0, x0, rodata+0x1f
-    0153: d2800341  movz x1, #0x1a
-    0154: f2a00001  movk x1, #0x0, lsl #16
-    0155: f2c00001  movk x1, #0x0, lsl #32
-    0156: f2e00001  movk x1, #0x0, lsl #48
-    0157: 94000000  bl <__wrela_abort>
-    0158: f9006beb  str x11, [sp, #208]
-    0159: f9406be0  ldr x0, [sp, #208]
-    0160: 14000002  b #8
-    0161: 14000001  b #4
-    0162: f9406ffe  ldr lr, [sp, #216]
-    0163: 910383ff  add sp, sp, #224
-    0164: d65f03c0  ret
+    0119: d28e0009  movz x9, #0x7000
+    0120: f2a80009  movk x9, #0x4000, lsl #16
+    0121: f2c00009  movk x9, #0x0, lsl #32
+    0122: f2e00009  movk x9, #0x0, lsl #48
+    0123: f940012a  ldr x10, [x9]
+    0124: b400004a  cbz x10, #8
+    0125: 94000000  bl <__wrela_checkpoint_service>
+    0126: 17ffffb7  b #-292
+    0127: d2800129  movz x9, #0x9
+    0128: f2a00009  movk x9, #0x0, lsl #16
+    0129: f2c00009  movk x9, #0x0, lsl #32
+    0130: f2e00009  movk x9, #0x0, lsl #48
+    0131: f90053e9  str x9, [sp, #160]
+    0132: f94053e9  ldr x9, [sp, #160]
+    0133: f90057e9  str x9, [sp, #168]
+    0134: f94057e9  ldr x9, [sp, #168]
+    0135: f9005be9  str x9, [sp, #176]
+    0136: f94007e0  ldr x0, [sp, #8]
+    0137: 94000000  bl <consume>
+    0138: f9005fe0  str x0, [sp, #184]
+    0139: 9102c3e0  add x0, sp, #176
+    0140: 94000000  bl <consume_box>
+    0141: f90063e0  str x0, [sp, #192]
+    0142: f9405fe9  ldr x9, [sp, #184]
+    0143: f94063ea  ldr x10, [sp, #192]
+    0144: ab0a012b  adds x11, x9, x10
+    0145: 54000103  b.cc #32
+    0146: 90000000  adrp x0, rodata+0x1f
+    0147: 91000000  add x0, x0, rodata+0x1f
+    0148: d2800341  movz x1, #0x1a
+    0149: f2a00001  movk x1, #0x0, lsl #16
+    0150: f2c00001  movk x1, #0x0, lsl #32
+    0151: f2e00001  movk x1, #0x0, lsl #48
+    0152: 94000000  bl <__wrela_abort>
+    0153: f90067eb  str x11, [sp, #200]
+    0154: f94067e9  ldr x9, [sp, #200]
+    0155: f94033ea  ldr x10, [sp, #96]
+    0156: ab0a012b  adds x11, x9, x10
+    0157: 54000103  b.cc #32
+    0158: 90000000  adrp x0, rodata+0x1f
+    0159: 91000000  add x0, x0, rodata+0x1f
+    0160: d2800341  movz x1, #0x1a
+    0161: f2a00001  movk x1, #0x0, lsl #16
+    0162: f2c00001  movk x1, #0x0, lsl #32
+    0163: f2e00001  movk x1, #0x0, lsl #48
+    0164: 94000000  bl <__wrela_abort>
+    0165: f9006beb  str x11, [sp, #208]
+    0166: f9406be0  ldr x0, [sp, #208]
+    0167: 14000002  b #8
+    0168: 14000001  b #4
+    0169: f9406ffe  ldr lr, [sp, #216]
+    0170: 910383ff  add sp, sp, #224
+    0171: d65f03c0  ret
   Rodata
     0: offset=0x0 index 
     1: offset=0x6  out of bounds (length 3)

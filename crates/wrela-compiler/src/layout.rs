@@ -256,6 +256,22 @@ fn build_abort_stub(exit_code: u64) -> Vec<u32> {
     words
 }
 
+/// plans/M6.md decision 6/item D: `__wrela_checkpoint_service` — the
+/// shared target every `codegen::Reloc::CheckpointService` `BL` resolves
+/// to, in every image flavor (ordinary `wrela build`/`--stage=report` and
+/// `wrela test`'s runtime harness alike). At D it is a bare, immediate
+/// `ret`: "vectors unraisable until E" (item D's own task text) means
+/// there is nothing real to service yet — a checkpoint's own load-test-
+/// branch sequence (`codegen::FnCtx::checkpoint`) only ever calls this
+/// when the pending word is *already* nonzero, and even then this stub
+/// deliberately clears nothing (item E owns the real service: consuming
+/// the pending vector and acting on it). One instruction, shared by every
+/// caller, exactly like `build_checkpoint_stub`'s abort-stub siblings
+/// above.
+fn build_checkpoint_stub() -> Vec<u32> {
+    vec![encode::enc_ret(30)]
+}
+
 // --- section packing helpers ---------------------------------------------
 
 fn round_up(n: u64, align: u64) -> u64 {
@@ -413,6 +429,7 @@ pub fn layout_program(
 
     let abort_fixed_words = build_abort_stub(EXIT_CODE_ABORT_FIXED);
     let abort_val_words = build_abort_stub(EXIT_CODE_ABORT_VAL);
+    let checkpoint_words = build_checkpoint_stub();
 
     // --- place sections, fixed order: entry, code, rodata?, abort. ------
     let mut cursor = image_base;
@@ -440,7 +457,11 @@ pub fn layout_program(
     cursor += (abort_fixed_words.len() * 4) as u64;
     let abort_val_base = cursor;
     cursor += (abort_val_words.len() * 4) as u64;
-    let abort_size = cursor - abort_fixed_base; // both stubs' combined byte length
+    let abort_size = cursor - abort_fixed_base; // both abort stubs' combined byte length
+
+    let checkpoint_base = cursor;
+    let checkpoint_size = (checkpoint_words.len() * 4) as u64;
+    cursor += checkpoint_size;
 
     let mut sections = vec![
         Section {
@@ -465,6 +486,16 @@ pub fn layout_program(
         name: "abort",
         base: abort_fixed_base,
         size: abort_size,
+    });
+    // plans/M6.md decision 6/item D: `__wrela_checkpoint_service`, its own
+    // section (distinct from `abort` — a checkpoint's own service call is
+    // never an abort) — every image flavor reserves it, even one whose own
+    // reachable surface never emits a checkpoint (no per-program
+    // conditionality here, mirroring `abort`'s own unconditional presence).
+    sections.push(Section {
+        name: "checkpoint",
+        base: checkpoint_base,
+        size: checkpoint_size,
     });
 
     // --- rtdata (plans/M6.md item C, decision 3): reserved, zeroed bytes
@@ -534,6 +565,10 @@ pub fn layout_program(
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     patch_bl(&mut all_code_words, base + word, this_addr, abort_val_base)?;
                 }
+                Reloc::CheckpointService { word } => {
+                    let this_addr = code_base + ((base + word) * 4) as u64;
+                    patch_bl(&mut all_code_words, base + word, this_addr, checkpoint_base)?;
+                }
             }
         }
     }
@@ -556,6 +591,10 @@ pub fn layout_program(
         blob.extend_from_slice(&w.to_le_bytes());
     }
     for w in &abort_val_words {
+        blob.extend_from_slice(&w.to_le_bytes());
+    }
+    pad_to(&mut blob, image_base, checkpoint_base);
+    for w in &checkpoint_words {
         blob.extend_from_slice(&w.to_le_bytes());
     }
     if let (Some(rb), Some(tables)) = (rtdata_base, runtime.filter(|t| t.total_bytes > 0)) {
@@ -2578,7 +2617,17 @@ pub fn layout_test_image(
         failed_word_off,
         abort_newline_off,
     );
-    let entry_start = abort_val_start + abort_val_asm.words.len();
+    // plans/M6.md decision 6/item D: `__wrela_checkpoint_service`, the
+    // exact same one-instruction stub `layout_program`'s own
+    // `build_checkpoint_stub` builds for the ordinary image path — placed
+    // once here, in the test harness's own combined word section, since a
+    // runtime-test image's compiled fns (`program.fns`, below) can carry
+    // `Reloc::CheckpointService` exactly like `Reloc::AbortFixed`/`AbortVal`.
+    let checkpoint_start = abort_val_start + abort_val_asm.words.len();
+    let mut checkpoint_asm = Asm::new(checkpoint_start);
+    checkpoint_asm.push(encode::enc_ret(30));
+
+    let entry_start = checkpoint_start + checkpoint_asm.words.len();
     let entry_asm = build_entry_driver(
         &addrs,
         entry_start,
@@ -2601,6 +2650,7 @@ pub fn layout_test_image(
         fmt_dec_asm,
         abort_fixed_asm,
         abort_val_asm,
+        checkpoint_asm,
         entry_asm,
     ] {
         debug_assert_eq!(asm.start, harness_words.len());
@@ -2675,9 +2725,9 @@ pub fn layout_test_image(
                 let target_addr = rb + *byte_offset as u64;
                 patch_adrp_add(&mut harness_words, *word_adrp, this_addr, target_addr)?;
             }
-            Reloc::AbortFixed { .. } | Reloc::AbortVal { .. } => {
+            Reloc::AbortFixed { .. } | Reloc::AbortVal { .. } | Reloc::CheckpointService { .. } => {
                 return Err(LayoutError::new(
-                    "internal error: the harness section itself must never emit an AbortFixed/AbortVal reloc",
+                    "internal error: the harness section itself must never emit an AbortFixed/AbortVal/CheckpointService reloc",
                 ));
             }
         }
@@ -2717,6 +2767,11 @@ pub fn layout_test_image(
                 Reloc::AbortVal { word } => {
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = harness_base + (abort_val_start as u64) * 4;
+                    patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
+                }
+                Reloc::CheckpointService { word } => {
+                    let this_addr = code_base + ((base + word) * 4) as u64;
+                    let target_addr = harness_base + (checkpoint_start as u64) * 4;
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
                 }
             }
@@ -2985,7 +3040,7 @@ fn two():
         };
         let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
-        assert_eq!(names, ["entry", "code", "abort"]);
+        assert_eq!(names, ["entry", "code", "abort", "checkpoint"]);
         assert_eq!(out.entry, machine_layout::IMAGE_BASE);
         // No gaps/overlaps, and the blob is exactly as long as the last
         // section's own end implies.
@@ -3006,7 +3061,7 @@ fn two():
         };
         let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
-        assert_eq!(names, ["entry", "code", "rodata", "abort"]);
+        assert_eq!(names, ["entry", "code", "rodata", "abort", "checkpoint"]);
         let rodata = out.sections.iter().find(|s| s.name == "rodata").unwrap();
         // 8-byte aligned base.
         assert_eq!(rodata.base % 8, 0);

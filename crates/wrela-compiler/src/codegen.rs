@@ -356,6 +356,18 @@ use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
 
+/// plans/M6.md decision 6: any *backward* unconditional `Jump` is a loop's
+/// own back-edge (the exact, and only, shape `lower.rs`/`flowwir_lower.rs`
+/// ever emit for one — a `while`/`for`'s own trailing repeat-jump to its
+/// condition check). A forward `Jump` (an `if`/`match` arm's own
+/// end-of-block skip) is never a loop back-edge and never gets a
+/// checkpoint. `target <= idx` (not just `<`) is deliberately inclusive:
+/// no producer ever emits a genuine self-jump, so this can never
+/// misclassify anything in practice, and stays the simpler, dumber check.
+fn is_loop_back_edge(inst: &Inst, idx: usize) -> bool {
+    matches!(inst, Inst::Jump { target } if *target <= idx)
+}
+
 // --- scratch register numbering (fixed, never reused for anything else) ---
 
 const X_LR: u8 = 30;
@@ -423,6 +435,14 @@ pub enum Reloc {
     AbortFixed { word: usize },
     /// The `BL` at `word` targets `__wrela_abort_val`.
     AbortVal { word: usize },
+    /// The `BL` at `word` targets `__wrela_checkpoint_service` (plans/
+    /// M6.md decision 6/item D task 2): every loop back-edge's own
+    /// checkpoint sequence ends in one of these, called only when the
+    /// pending word (loaded and tested just before it, `FnCtx::checkpoint`)
+    /// is nonzero. At D the target stub is a bare `ret` in every image
+    /// flavor (vectors are unraisable until item E) — resolved the same
+    /// way `AbortFixed`/`AbortVal` are, one shared symbol per image.
+    CheckpointService { word: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -929,6 +949,37 @@ impl<'a> FnCtx<'a> {
     /// x3=value_signed, x4=suffix_ptr, x5=suffix_len)`. `value_reg` must
     /// not be `x0..x5` (every call site below uses `X_A`/`X_B`/... which
     /// never collide).
+    /// plans/M6.md decision 6: "a checkpoint is a short fixed sequence
+    /// (load pending word, test, branch to the scheduler's service path)".
+    /// Always exactly 7 words, regardless of anything about the call site
+    /// (module doc's own "deliberately not optimized" spirit, one level
+    /// up): `load_imm` (4) + `ldr` (1) + `cbz` (1, a fixed 2-instruction
+    /// skip over the `bl`) + `bl` (1). Scratch-only (`X_A`/`X_B`), safe to
+    /// splice in front of any instruction without disturbing a live value
+    /// — every checked op's own live operands sit in frame slots, never in
+    /// `X_A`/`X_B` across an instruction boundary. The address is core 0's
+    /// own pending word (`wrela_machine::pending::core_word_addr`) — M6 is
+    /// core-0-only (plans/M6.md's own scope line), so this is never
+    /// parameterized by a runtime core id.
+    fn checkpoint(&mut self) {
+        let addr = wrela_machine::pending::core_word_addr(0);
+        self.load_imm(X_A, addr as i64);
+        self.push(
+            encode::enc_ldr_x_imm(X_B, X_A, 0),
+            format!("ldr {}, [{}]", reg_name(X_B), reg_name(X_A)),
+        );
+        self.push(
+            encode::enc_cbz(X_B, 8, true),
+            format!("cbz {}, #8", reg_name(X_B)),
+        );
+        let word = self.cur_word();
+        self.push(
+            encode::enc_bl(0),
+            "bl <__wrela_checkpoint_service>".to_string(),
+        );
+        self.relocs.push(Reloc::CheckpointService { word });
+    }
+
     fn abort_val(&mut self, prefix: &str, value_reg: u8, signed: bool, suffix: &str) {
         // `value_reg` may itself be clobbered by the moves below if it
         // aliases x0..x5 — every call site uses a scratch register
@@ -2019,7 +2070,7 @@ fn emit_fn(
 
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut counts = Vec::with_capacity(f.body.len());
-    for inst in &f.body {
+    for (i, inst) in f.body.iter().enumerate() {
         let mut probe = FnCtx {
             frame: &frame,
             layout,
@@ -2028,6 +2079,9 @@ fn emit_fn(
             words: Vec::new(),
             relocs: Vec::new(),
         };
+        if is_loop_back_edge(inst, i) {
+            probe.checkpoint();
+        }
         emit_one(inst, f, &mut probe)?;
         counts.push(probe.words.len());
     }
@@ -2049,7 +2103,10 @@ fn emit_fn(
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
-    for inst in &f.body {
+    for (i, inst) in f.body.iter().enumerate() {
+        if is_loop_back_edge(inst, i) {
+            ctx.checkpoint();
+        }
         emit_one(inst, f, &mut ctx)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
@@ -2224,6 +2281,15 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if *word >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::AbortFixed/AbortVal word {word} is out of range \
+                             (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::CheckpointService { word } => {
+                    if *word >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::CheckpointService word {word} is out of range \
                              (code has {} word(s))",
                             f.code.len()
                         ));
