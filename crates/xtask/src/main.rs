@@ -3504,9 +3504,15 @@ fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
         .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
     let replay_exit = replay_out.status.code().unwrap_or(-1);
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    if replay_exit != 0 {
+    // A clean (non-diverging) replay mirrors the guest's own exit code
+    // exactly like a plain boot (`boot-hello` deliberately fails one
+    // test, so `record_exit`/`replay_exit` are both `1` here — an
+    // ordinary, expected guest outcome, never `EXIT_VMM_FAILURE`/
+    // `EXIT_REPLAY_DIVERGENCE`) — never unconditionally `0`.
+    if replay_exit != record_exit {
         return Err(format!(
-            "repro: choice-log replay diverged from its own recording (exit {replay_exit}):\n{}",
+            "repro: choice-log replay diverged from its own recording (exit {replay_exit}, \
+             expected {record_exit} to match the recorded boot's own guest-authored exit):\n{}",
             String::from_utf8_lossy(&replay_out.stderr)
         ));
     }
@@ -3517,17 +3523,194 @@ fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// plans/M6.md item E, verification's own fail-closed finding: the
+/// process-level exit-code contract `wrela-vmm/src/main.rs`'s own module
+/// doc names must actually hold on the real, signed binary — a caller
+/// (`xtask`, CI, a script) trusts `$?` alone, never stdout/stderr, so
+/// every documented outcome is asserted here directly against
+/// `Output::status.code()`: a clean replay reflects the *same*
+/// guest-authored exit code (`0`/`1`) the original recording boot
+/// itself reported (`tests/golden/boot-hello` has a deliberately failing
+/// test, so this is `1` here — an ordinary, expected guest outcome, not
+/// a VMM failure, exactly the "guest-authored vs runner-authored"
+/// distinction `main.rs`'s own doc draws); a replay whose recorded
+/// `exit_code=` line is tampered must exit `EXIT_REPLAY_DIVERGENCE` (3)
+/// and name the mismatch on stderr — **never** `0` (the exact fail-closed
+/// violation this item's own verification pass caught); a `--replay`
+/// against an unparseable record file, and a `--record` to an unwritable
+/// destination, must each exit `EXIT_VMM_FAILURE` (2). The two constants
+/// are duplicated here (not imported — `xtask` deliberately never links
+/// the `wrela-vmm` *crate*, the same established boundary
+/// `parse_guest_record`'s own doc comment already explains) rather than
+/// invented independently: both mirror `main.rs`'s own `EXIT_VMM_FAILURE`/
+/// `EXIT_REPLAY_DIVERGENCE` values exactly, cited by name in the comments
+/// below so a future edit to either side is easy to keep in sync.
+fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
+    const EXIT_VMM_FAILURE: i32 = 2; // mirrors wrela_vmm::main::EXIT_VMM_FAILURE
+    const EXIT_REPLAY_DIVERGENCE: i32 = 3; // mirrors wrela_vmm::main::EXIT_REPLAY_DIVERGENCE
+
+    let (img_bytes, report_text) = boot_hello_test_image()?;
+    let tmp_dir = root().join("target/repro-exit-code-contract-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let fail = |tmp_dir: &Path, msg: String| -> Result<(), String> {
+        let _ = std::fs::remove_dir_all(tmp_dir);
+        Err(msg)
+    };
+
+    // --- record: a plain boot's own guest-authored exit code -------------
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 && record_exit != 1 {
+        return fail(
+            &tmp_dir,
+            format!(
+                "repro: exit-code-contract record boot did not complete (exit {record_exit}, \
+                 expected the guest-authored 0 or 1)"
+            ),
+        );
+    }
+
+    // --- clean replay: reflects the identical guest-authored outcome ----
+    let clean_replay = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let clean_exit = clean_replay.status.code().unwrap_or(-1);
+    if clean_exit != record_exit {
+        return fail(
+            &tmp_dir,
+            format!(
+                "repro: exit-code-contract clean replay exit ({clean_exit}) does not match the \
+                 recorded boot's own guest-authored exit ({record_exit})"
+            ),
+        );
+    }
+
+    // --- tampered exit_code=: must exit EXIT_REPLAY_DIVERGENCE, never 0 -
+    let record_text =
+        std::fs::read_to_string(&record_path).map_err(|e| format!("read record: {e}"))?;
+    let tampered_text: String = record_text
+        .lines()
+        .map(|line| match line.strip_prefix("exit_code=") {
+            Some(v) => {
+                let original: u64 = v.parse().unwrap_or(0);
+                format!("exit_code={}", original ^ 0xFF)
+            }
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let tampered_path = tmp_dir.join("tampered.record.txt");
+    std::fs::write(&tampered_path, &tampered_text)
+        .map_err(|e| format!("write tampered record: {e}"))?;
+    let diverged_replay = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&tampered_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
+    let diverged_exit = diverged_replay.status.code().unwrap_or(-1);
+    if diverged_exit != EXIT_REPLAY_DIVERGENCE {
+        return fail(
+            &tmp_dir,
+            format!(
+                "repro: FAIL-CLOSED VIOLATION: a replay with a tampered exit_code must exit \
+                 {EXIT_REPLAY_DIVERGENCE} (EXIT_REPLAY_DIVERGENCE), got {diverged_exit} instead \
+                 (stderr: {})",
+                String::from_utf8_lossy(&diverged_replay.stderr)
+            ),
+        );
+    }
+    if !String::from_utf8_lossy(&diverged_replay.stderr).contains("exit code mismatch") {
+        return fail(
+            &tmp_dir,
+            "repro: a tampered replay's own stderr does not name the exit-code mismatch"
+                .to_string(),
+        );
+    }
+
+    // --- malformed record file on --replay: must exit EXIT_VMM_FAILURE --
+    let malformed_path = tmp_dir.join("malformed.record.txt");
+    std::fs::write(&malformed_path, b"not a choice log at all\n")
+        .map_err(|e| format!("write malformed record: {e}"))?;
+    let malformed_replay = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&malformed_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay (malformed): {e}"))?;
+    let malformed_exit = malformed_replay.status.code().unwrap_or(-1);
+    if malformed_exit != EXIT_VMM_FAILURE {
+        return fail(
+            &tmp_dir,
+            format!(
+                "repro: a malformed --replay record file must exit {EXIT_VMM_FAILURE} \
+                 (EXIT_VMM_FAILURE), got {malformed_exit}"
+            ),
+        );
+    }
+
+    // --- --record to an unwritable path: must exit EXIT_VMM_FAILURE ------
+    let unwritable_path = tmp_dir.join("no-such-subdir").join("rec.txt");
+    let unwritable_record = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&unwritable_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record (unwritable): {e}"))?;
+    let unwritable_exit = unwritable_record.status.code().unwrap_or(-1);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if unwritable_exit != EXIT_VMM_FAILURE {
+        return Err(format!(
+            "repro: --record to an unwritable path must exit {EXIT_VMM_FAILURE} \
+             (EXIT_VMM_FAILURE), got {unwritable_exit}"
+        ));
+    }
+
+    println!(
+        "repro: wrela-vmm's own process-level exit-code contract holds: clean replay={clean_exit} \
+         (mirrors the guest), tampered-exit-code replay={EXIT_REPLAY_DIVERGENCE}, malformed \
+         replay/unwritable record={EXIT_VMM_FAILURE}"
+    );
+    Ok(())
+}
+
 /// `cargo xtask repro` (plans/M5.md decision 10, item F; plans/M6.md item
 /// E): the standalone, full-corpus form — `report_determinism`'s own
 /// `@image`/`wrela build` population, `repro_test_image`'s runtime-test-
-/// image case, and `repro_choice_log_roundtrip`'s own record/replay
-/// round trip, so bare `repro` covers every image-emitting *and*
+/// image case, `repro_choice_log_roundtrip`'s own record/replay round
+/// trip, and `repro_replay_exit_code_contract`'s own process-level
+/// exit-code proof, so bare `repro` covers every image-emitting *and*
 /// determinism-recording path this milestone has.
 fn repro() -> Result<(), String> {
     report_determinism()?;
     repro_test_image()?;
     let vmm = build_and_sign_vmm()?;
-    repro_choice_log_roundtrip(&vmm)
+    repro_choice_log_roundtrip(&vmm)?;
+    repro_replay_exit_code_contract(&vmm)
 }
 
 // --- diff-eval (plans/M5.md decision 9, item F) -----------------------------

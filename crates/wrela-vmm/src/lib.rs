@@ -2250,4 +2250,181 @@ pub fn build() -> Image:
 
         let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
     }
+
+    /// plans/M6.md item E, verification's own fail-closed finding: the
+    /// process-level exit-code contract `main.rs`'s own module doc names
+    /// — `record::replay`'s own returned `Vec<Divergence>` (already
+    /// exercised directly, above) is only half the contract; the other
+    /// half is `main.rs`'s own mapping from that list to *this process's*
+    /// exit code, which had no test coverage of its own before this item.
+    /// Builds + codesigns the real `wrela-vmm` *binary* itself (this
+    /// crate's every other test exercises the library directly; this one
+    /// specifically needs the compiled binary's own `main` to run) and
+    /// spawns it as a real subprocess for every documented outcome:
+    /// - a clean replay of a guest that reported a **nonzero** exit code
+    ///   must itself exit `1` (guest-authored, mirroring a plain boot) —
+    ///   not unconditionally `0`, the real bug this test was written to
+    ///   catch (a clean replay previously always returned
+    ///   `ExitCode::SUCCESS` regardless of the guest's own outcome, fixed
+    ///   in the same commit as this test);
+    /// - a replay whose recorded `exit_code=` line is tampered must exit
+    ///   `EXIT_REPLAY_DIVERGENCE` (`3`), **never** `0` — the exact
+    ///   fail-closed violation the coordinator's own verification probe
+    ///   named;
+    /// - `--replay` against an unparseable record file, and `--record` to
+    ///   an unwritable destination, must each exit `EXIT_VMM_FAILURE`
+    ///   (`2`).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn replay_divergence_and_record_failures_exit_nonzero_through_the_real_binary() {
+        use std::process::Command;
+
+        const EXIT_VMM_FAILURE: i32 = 2;
+        const EXIT_REPLAY_DIVERGENCE: i32 = 3;
+        const GUEST_EXIT_CODE: u64 = 5; // nonzero — must collapse to process exit `1`, never `0`.
+
+        let build = Command::new("cargo")
+            .args(["build", "--quiet", "-p", "wrela-vmm", "--bin", "wrela-vmm"])
+            .status()
+            .expect("run cargo build");
+        assert!(
+            build.success(),
+            "cargo build -p wrela-vmm --bin wrela-vmm failed"
+        );
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crates/wrela-vmm has two ancestors up to the repo root")
+            .to_path_buf();
+        let bin = repo_root.join("target/debug/wrela-vmm");
+        let entitlements = repo_root.join("crates/wrela-vmm/entitlements.plist");
+        let codesign = Command::new("codesign")
+            .args(["--force", "--sign", "-", "--entitlements"])
+            .arg(&entitlements)
+            .arg(&bin)
+            .status()
+            .expect("run codesign");
+        assert!(codesign.success(), "codesign wrela-vmm failed");
+
+        // A minimal hand-assembled guest (this file's own clock-test
+        // precedent): halts immediately with `GUEST_EXIT_CODE` — no sp
+        // setup needed, `push_halt` alone is a complete, valid program.
+        let mut words = Vec::new();
+        push_halt(&mut words, 9, 10, GUEST_EXIT_CODE);
+        let img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let report_text = format!(
+            "Machine revision={}\nInput path=exit-code-contract.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            wrela_machine::layout::IMAGE_BASE,
+            img_bytes.len(),
+            wrela_machine::layout::IMAGE_BASE,
+        );
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "wrela-vmm-exit-code-contract-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+        let img_path = tmp_dir.join("test.img");
+        let report_path = tmp_dir.join("test.report.txt");
+        let record_path = tmp_dir.join("test.record.txt");
+        std::fs::write(&img_path, &img_bytes).expect("write image");
+        std::fs::write(&report_path, &report_text).expect("write report");
+
+        // --- record: a plain boot's own guest-authored exit code --------
+        let record_out = Command::new(&bin)
+            .arg(&report_path)
+            .arg(&img_path)
+            .arg("--record")
+            .arg(&record_path)
+            .output()
+            .expect("run wrela-vmm --record");
+        assert_eq!(
+            record_out.status.code(),
+            Some(1),
+            "a nonzero guest exit code must collapse to process exit 1 on a plain --record boot"
+        );
+
+        // --- clean replay: must ALSO exit 1, never unconditionally 0 ----
+        let clean_replay = Command::new(&bin)
+            .arg(&report_path)
+            .arg(&img_path)
+            .arg("--replay")
+            .arg(&record_path)
+            .output()
+            .expect("run wrela-vmm --replay");
+        assert_eq!(
+            clean_replay.status.code(),
+            Some(1),
+            "a clean (non-diverging) replay must mirror the guest's own exit code exactly like a \
+             plain boot, never unconditionally ExitCode::SUCCESS"
+        );
+
+        // --- tampered exit_code=: must exit EXIT_REPLAY_DIVERGENCE, never 0
+        let record_text = std::fs::read_to_string(&record_path).expect("read record");
+        let tampered_text: String = record_text
+            .lines()
+            .map(|line| match line.strip_prefix("exit_code=") {
+                Some(v) => {
+                    let original: u64 = v.parse().unwrap_or(0);
+                    format!("exit_code={}", original ^ 0xFF)
+                }
+                None => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let tampered_path = tmp_dir.join("tampered.record.txt");
+        std::fs::write(&tampered_path, &tampered_text).expect("write tampered record");
+        let diverged_replay = Command::new(&bin)
+            .arg(&report_path)
+            .arg(&img_path)
+            .arg("--replay")
+            .arg(&tampered_path)
+            .output()
+            .expect("run wrela-vmm --replay (tampered)");
+        assert_eq!(
+            diverged_replay.status.code(),
+            Some(EXIT_REPLAY_DIVERGENCE),
+            "a replay with a tampered exit_code must exit EXIT_REPLAY_DIVERGENCE, never 0 \
+             (stderr: {})",
+            String::from_utf8_lossy(&diverged_replay.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&diverged_replay.stderr).contains("exit code mismatch"),
+            "the tampered replay's own stderr must name the exit-code mismatch"
+        );
+
+        // --- malformed record file on --replay: must exit EXIT_VMM_FAILURE
+        let malformed_path = tmp_dir.join("malformed.record.txt");
+        std::fs::write(&malformed_path, b"not a choice log at all\n").expect("write malformed");
+        let malformed_replay = Command::new(&bin)
+            .arg(&report_path)
+            .arg(&img_path)
+            .arg("--replay")
+            .arg(&malformed_path)
+            .output()
+            .expect("run wrela-vmm --replay (malformed)");
+        assert_eq!(
+            malformed_replay.status.code(),
+            Some(EXIT_VMM_FAILURE),
+            "a malformed --replay record file must exit EXIT_VMM_FAILURE"
+        );
+
+        // --- --record to an unwritable path: must exit EXIT_VMM_FAILURE -
+        let unwritable_path = tmp_dir.join("no-such-subdir").join("rec.txt");
+        let unwritable_record = Command::new(&bin)
+            .arg(&report_path)
+            .arg(&img_path)
+            .arg("--record")
+            .arg(&unwritable_path)
+            .output()
+            .expect("run wrela-vmm --record (unwritable)");
+        assert_eq!(
+            unwritable_record.status.code(),
+            Some(EXIT_VMM_FAILURE),
+            "--record to an unwritable path must exit EXIT_VMM_FAILURE"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
 }
