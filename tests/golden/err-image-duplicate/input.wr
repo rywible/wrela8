@@ -1,0 +1,11 @@
+module examples.err_image_duplicate
+
+@image
+pub fn build_a() -> Image:
+    img = Image(name="a", target=Target.wrela_machine_v1)
+    return img.seal()
+
+@image
+pub fn build_b() -> Image:
+    img = Image(name="b", target=Target.wrela_machine_v1)
+    return img.seal()

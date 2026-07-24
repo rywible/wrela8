@@ -837,6 +837,18 @@ fn resolve_named(
         "unit" => Some(Type::Unit),
         "never" => Some(Type::Never),
         "Str" => Some(Type::Str),
+        // The `@image` builder's own opaque resource type (plans/M4.md
+        // item B, decision 5: "opaque builtin resource types"), needed
+        // only so an `@image fn`'s declared `-> Image` return type
+        // resolves (02-language.md §12.1) — recognized here exactly like
+        // every other zero-argument prelude name above, not backed by a
+        // real declared struct. `img.driver`/`img.actor`/`img.device`/
+        // `img.pool`/`img.dma_pool`/`decl.handle()` all resolve to the
+        // builder surface's *other* opaque type, `ImageDecl` — recognized
+        // by `sema::bodies`'s own intrinsic dispatch directly (never
+        // written by source, so it never needs a annotation-position
+        // resolution here).
+        "Image" => Some(Type::Named("Image".to_string(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {
@@ -1042,7 +1054,19 @@ fn classify_named(
             }
         }
     } else {
-        unreachable!("classify_named: `{name}` is neither a known struct nor enum");
+        // Neither a declared struct nor enum: a builtin `Type::Named`
+        // this module resolves without a backing declaration (plans/
+        // M4.md item B, decision 5 — `Image`, and `sema::bodies`'s own
+        // `ImageDecl`/`Duration`/`RestartIntensity` intrinsic-surface
+        // pseudo-types, none registered here since nothing declares
+        // them). Every one of these is plain data (never a resource
+        // fiat, never composed from one), so this falls through to the
+        // same `Classification::Data` a genuinely field-less struct
+        // would get — not `unreachable!()`, since `resolve_named` (this
+        // file) now legitimately produces such a name.
+        in_progress.remove(name);
+        memo.insert(name.to_string(), Classification::Data);
+        return Ok(Classification::Data);
     }
     in_progress.remove(name);
     let result = if resource {

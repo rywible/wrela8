@@ -1,0 +1,90 @@
+Program
+  Fn name=build ret=Image
+    Body
+      Let name=img ty=Image
+        Intrinsic key=Image ty=Image
+          Arg label=name
+            Str text="basic-appliance" ty=Static[Str]
+          Arg label=target
+            EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
+      Let name=block_device ty=ImageDecl
+        Intrinsic key=Image.device type_arg=NicHw ty=ImageDecl
+          Arg label=transport
+            Int text=0x1000 ty=i64
+          Arg label=required_features
+            List ty=[Feature; 1]
+              EnumConstruct enum=Feature variant=Flush ty=Feature
+      Let name=disk ty=ImageDecl
+        Intrinsic key=Image.driver type_arg=Blk ty=ImageDecl
+          Arg label=device
+            Local name=block_device ty=ImageDecl
+          Arg label=queue_depth
+            Int text=8 ty=i64
+      Let name=storage ty=ImageDecl
+        Intrinsic key=Image.actor type_arg=Store ty=ImageDecl
+          Arg label=disk
+            Intrinsic key=ImageDecl.handle ty=ImageDecl
+              Receiver
+                Local name=disk ty=ImageDecl
+          Arg label=mailbox
+            Int text=16 ty=i64
+      Let name=buffers ty=ImageDecl
+        Intrinsic key=Image.pool type_arg=u32 ty=ImageDecl
+          Arg label=name
+            PoolName name=Buffers ty=PoolName
+          Arg label=slots
+            Int text=4 ty=i64
+          Arg label=max_payload
+            Int text=64 ty=i64
+      Intrinsic key=Image.check_layout ty=unit
+        Arg label=f
+          FnRef key=check_limits ty=fn() -> unit
+      Intrinsic key=Image.supervise ty=unit
+        Arg label=children
+          List ty=[ImageDecl; 2]
+            Local name=disk ty=ImageDecl
+            Local name=storage ty=ImageDecl
+        Arg label=strategy
+          EnumConstruct enum=Restart variant=OneForOne ty=Restart
+        Arg label=intensity
+          Intrinsic key=RestartIntensity ty=RestartIntensity
+            Arg label=max
+              Int text=3 ty=i64
+            Arg label=within
+              Intrinsic key=seconds ty=Duration
+                Arg label=n
+                  Int text=10 ty=u64
+      Return
+        Intrinsic key=Image.seal ty=Image
+  Fn name=check_limits ret=unit
+    Body
+      Pass
+  Struct name=Blk
+    Method name=ping ret=u32
+      Receiver mode=read ty=Blk
+      Body
+        Return
+          Field name=id ty=u32
+            Local name=self ty=Blk
+    Init ret=unit
+      Receiver mode=mut ty=Blk
+      Body
+        Assign
+          Field name=id ty=u32
+            Local name=self ty=Blk
+          Int text=1 ty=u32
+  Struct name=NicHw
+  Struct name=Store
+    Method name=get ret=u32
+      Receiver mode=read ty=Store
+      Body
+        Return
+          Field name=count ty=u32
+            Local name=self ty=Store
+    Init ret=unit
+      Receiver mode=mut ty=Store
+      Body
+        Assign
+          Field name=count ty=u32
+            Local name=self ty=Store
+          Int text=0 ty=u32

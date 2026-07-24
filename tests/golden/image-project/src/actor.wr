@@ -1,0 +1,11 @@
+module actor
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+    pub fn get(read self) -> u32:
+        return self.count

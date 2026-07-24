@@ -1,0 +1,3 @@
+module examples.err_image_intrinsic_in_const
+
+const BAD: Image = Image(name="x", target=Target.wrela_machine_v1)

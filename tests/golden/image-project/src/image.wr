@@ -1,0 +1,22 @@
+module image
+
+from actor import Store
+
+@driver
+pub struct Blk:
+    id: u32
+
+    init(mut self):
+        self.id = 1
+
+pool Buffers
+
+@image
+pub fn build() -> Image:
+    img = Image(name="project-appliance", target=Target.wrela_machine_v1)
+    disk = img.driver(Blk, queue_depth=8)
+    storage = img.actor(Store, disk=disk.handle(), mailbox=16)
+    buffers = img.pool[u32](name=Buffers, slots=4, max_payload=64)
+    img.supervise(children=[disk, storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

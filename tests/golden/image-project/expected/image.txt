@@ -1,0 +1,16 @@
+ImageGraph v0
+  Name value=project-appliance
+  Target value=Target.wrela_machine_v1
+  Driver index=0 type=Blk
+    Arg label=queue_depth value=8
+  Actor index=0 type=Store
+    Arg label=disk value=driver#0
+    Arg label=mailbox value=16
+  Pool name=Buffers type=u32
+    Arg label=slots value=4
+    Arg label=max_payload value=64
+  Supervise index=0
+    Arg label=children value=[driver#0, actor#0]
+    Arg label=strategy value=Restart.OneForOne
+    Arg label=intensity value=(3, 10000000000)
+  Sealed value=true

@@ -56,8 +56,8 @@ use crate::sema::types::{
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
-    DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, Pattern, Span,
-    Stmt, UnaryOp, WhileStmt,
+    DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, NamedType,
+    Pattern, Span, Stmt, UnaryOp, WhileStmt,
 };
 
 // --- item H: the generic-instantiation queue ------------------------------
@@ -492,6 +492,22 @@ pub(crate) fn check(
         .filter(|i| !matches!(i, Item::ComptimeIf(_)))
         .collect();
     let mut program = TypedProgram::default();
+    // plans/M4.md item B: the builder surface's own two fixed prelude
+    // enums (`sema::prelude::builtin_enum_variants`) are injected into
+    // every module's own `TypedProgram` unconditionally — the dumbest
+    // way to make `eval::interp::variant_index` (which already falls
+    // back to `TypedProgram::enums` for anything past `Option`/`Result`)
+    // index `Target`/`Restart` constructions with no evaluator-side
+    // special case at all. Harmless for a module that never mentions
+    // either name (this field is not part of the `--stage=typed` dump).
+    for name in ["Target", "Restart"] {
+        let variants = crate::sema::prelude::builtin_enum_variants(name)
+            .expect("both names are in the fixed builtin_enum_variants table")
+            .iter()
+            .map(|v| v.to_string())
+            .collect();
+        program.enums.insert(name.to_string(), variants);
+    }
     for (ai, di) in ast_items.iter().zip(decl_items.iter()) {
         match (ai, di) {
             (Item::Const(c), types::DeclItem::Const(d)) => {
@@ -517,6 +533,28 @@ pub(crate) fn check(
                     check_exhaustive_test_params(f, d, mctx)?;
                 }
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
+                    if is_image_fn(f) {
+                        // plans/M4.md item B's own minimal slice of
+                        // decision 6 ("exactly one reachable `@image` in
+                        // the closure"): this only catches two `@image`
+                        // fns in the *same* module — the cross-module
+                        // "zero, or more than one, across the whole
+                        // build closure" case needs every module's own
+                        // `TypedProgram` at once and is the `--stage=image`
+                        // driver's own job (`bin/wrela.rs`); item C pins
+                        // the full "list every candidate" diagnostic.
+                        if let Some(existing) = &program.image_fn {
+                            return Err(SemaError::at(
+                                "build",
+                                format!(
+                                    "more than one `@image` fn in this module (`{existing}` and `{}`)",
+                                    f.name
+                                ),
+                                f.span,
+                            ));
+                        }
+                        program.image_fn = Some(f.name.clone());
+                    }
                     program.fns.insert(f.name.clone(), tf);
                     if let Some(kind) = test_kind {
                         program.tests.push(TestDecl {
@@ -697,9 +735,34 @@ pub(crate) fn check_top_fn(
     mctx: &ModuleCtx,
 ) -> Result<Option<TypedFn>, SemaError> {
     if is_image_fn(f) {
-        // The whole declaration is unchecked (decision 7): the image
-        // constructor's semantics (device/actor/pool wiring) are M4's.
-        return Err(unimplemented_at("@image bodies are", f.span));
+        // plans/M4.md item B: the fail-closed above is lifted — an
+        // `@image` fn's body is ordinary comptime-legal code (checked
+        // exactly like any other plain fn below) plus the builder
+        // intrinsics 05-library.md §9 names (`check_call_by_name`/
+        // `check_call_by_field`/`check_call_index`'s own new arms,
+        // recognized by callee spelling, decision 5). The two shape
+        // rules 02-language.md §12.1 states directly are checked here,
+        // before the body walk, so a malformed `@image` declaration
+        // fails with its own honest diagnostic rather than a confusing
+        // one from deeper inside the ordinary body checker: it must be a
+        // plain (non-generic) fn — a generic `@image` constructor is not
+        // a documented shape, and generic instantiation of a "unique
+        // reachable @image" makes no sense — and it must declare
+        // `-> Image` (returning anything else can never be legal, since
+        // `img.seal()` is the only producer of an `Image` value).
+        if !f.generics.is_empty() {
+            return Err(unimplemented_at("a generic `@image` fn is", f.span));
+        }
+        if d.ret != Type::Named("Image".to_string(), vec![]) {
+            return Err(type_error(
+                format!(
+                    "`@image` fn `{}` must return `Image`, found `{}`",
+                    f.name,
+                    types::render_type(&d.ret)
+                ),
+                f.span,
+            ));
+        }
     }
     if !f.generics.is_empty() {
         return Ok(None); // generic body: item H's job, not checked here.
@@ -1860,6 +1923,27 @@ fn check_field_expr(
                     span,
                 ));
             }
+            // plans/M4.md item B (05-library.md §9's own `Target`/
+            // `Restart` prelude enums, decision 5): recognized only once
+            // `bname` is not a real module struct/enum, so a module that
+            // declares its own `Target`/`Restart` shadows this fallback
+            // exactly like it would any other prelude name.
+            if let Some(variants) = crate::sema::prelude::builtin_enum_variants(bname.as_str()) {
+                if variants.contains(&name) {
+                    return Ok(TypedExpr {
+                        ty: Type::Named(bname.clone(), vec![]),
+                        kind: TypedExprKind::EnumConstruct {
+                            enum_name: bname.clone(),
+                            variant: name.to_string(),
+                            args: vec![],
+                        },
+                    });
+                }
+                return Err(type_error(
+                    format!("enum `{bname}` has no variant `{name}`"),
+                    span,
+                ));
+            }
         }
     }
     let base_t = check_expr(base, None, fctx, mctx)?;
@@ -2841,6 +2925,19 @@ fn check_call_index(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     if let Expr::Field(base, fspan, mname) = inner {
+        if mname == "device" || mname == "pool" || mname == "dma_pool" {
+            // `img.device[D](...)`/`img.pool[T](...)`/`img.dma_pool[T](...)`
+            // (plans/M4.md item B, decision 5, 05-library.md §9): the
+            // builder surface's own bracketed intrinsics. Recognized only
+            // when the receiver's own (already-checked) type is the
+            // builder's opaque `Image` type — anything else falls
+            // through to the ordinary "generic instantiation" scope
+            // boundary below, unchanged.
+            let base_t = check_expr(base, None, fctx, mctx)?;
+            if base_t.ty == image_type() {
+                return check_image_bracket_intrinsic(mname, targs, args, *fspan, fctx, mctx);
+            }
+        }
         if mname == "to" || mname == "checked_to" || mname == "truncate_to" {
             if targs.len() != 1 {
                 return Err(type_error(
@@ -2920,6 +3017,193 @@ fn check_call_index(
         }
     }
     Err(unimplemented_at("generic instantiation is", call_span))
+}
+
+// --- plans/M4.md item B: the `@image` builder surface (05-library.md §9) --
+//
+// Decision 5: "compiler-recognized ... prelude-style declarations, no
+// stdlib source needed ... recognized by callee key exactly like the
+// existing prelude/intrinsic machinery" — the whole surface is a
+// handful of fixed match arms right alongside `Some`/`Ok`/`Err`/`panic`
+// above, producing one dedicated typed node (`TypedExprKind::Intrinsic`,
+// `typed.rs`'s own module doc) instead of an ordinary `Call`: none of
+// these have a declared parameter list a positional/labeled-default
+// alignment could check against, so every argument keeps its own source
+// label. Legality (illegal anywhere but the one reachable `@image` fn)
+// is `eval::legal`'s job, not this pass's — every intrinsic type-checks
+// uniformly wherever it is written, exactly like `Some`/`Ok`/`Err` do.
+
+/// The builder's own opaque `Image` type (the same type an `@image` fn
+/// declares as its return type, `types::resolve_named`'s own new arm).
+fn image_type() -> Type {
+    Type::Named("Image".to_string(), vec![])
+}
+
+/// The builder's own opaque declaration-handle type: every
+/// `img.device`/`img.driver`/`img.actor`/`img.pool`/`img.dma_pool` call,
+/// and `decl.handle()`, produces one (decision 5: "opaque builtin
+/// resource types ... declaration handles" — one shared type for every
+/// declaration kind, since nothing before item C's graph checks needs to
+/// tell them apart structurally). Never resolvable as a source type
+/// annotation (no `resolve_named` arm) — it only ever appears as an
+/// inferred local's type.
+fn image_decl_type() -> Type {
+    Type::Named("ImageDecl".to_string(), vec![])
+}
+
+/// One evaluated (or, for `img.pool`/`img.dma_pool`'s own `name=`
+/// argument, pool-name-referenced) builder argument, still carrying its
+/// source label.
+type IntrinsicArgs = Vec<(String, TypedExpr)>;
+
+/// Checks/types one builder intrinsic's whole argument list (plans/M4.md
+/// item B): every argument must carry a label (`img.check_layout(f)`'s
+/// single positional argument is handled by its own dedicated call site,
+/// not this shared helper) — a label bound more than once, or an
+/// unlabeled argument, is a `type` diagnostic. Each argument is checked
+/// with no expected type: the builder's own arguments have no declared
+/// parameter list to check against (item C's own job is validating them
+/// against the real target, e.g. an actor's `init`), so item B only
+/// needs every argument to type-check as *some* ordinary comptime-legal
+/// expression. One narrow exception, applied uniformly rather than only
+/// for `img.pool`/`img.dma_pool` (harmless everywhere else: `Image`'s own
+/// `name=` argument is always a string literal, never a bare identifier,
+/// so the pool-name interpretation below never actually matches there):
+/// an argument labeled `name` whose value is a bare identifier naming an
+/// already-declared module-scope `pool` (02-language.md §4) is the one
+/// builder argument that is not an ordinary value expression (a pool
+/// name is otherwise only ever spelled inside an `own[P] T` annotation,
+/// never referenced as a value) — recorded as a `PoolName` leaf instead
+/// of falling through to `synth_name`'s ordinary lookup, which would
+/// (correctly, for anything else) reject it.
+fn check_intrinsic_args(
+    args: &[Arg],
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<IntrinsicArgs, SemaError> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        let Some(label) = &a.label else {
+            return Err(type_error(
+                "image builder arguments must be labeled".to_string(),
+                a.span,
+            ));
+        };
+        if !seen.insert(label.clone()) {
+            return Err(type_error(
+                format!("argument `{label}` bound more than once"),
+                a.span,
+            ));
+        }
+        let typed = if label == "name" {
+            match &a.value {
+                Expr::Name(_, pool_name)
+                    if mctx.module_pools.contains(pool_name)
+                        || fctx.local_pools.contains(pool_name) =>
+                {
+                    TypedExpr {
+                        ty: Type::Named("PoolName".to_string(), vec![]),
+                        kind: TypedExprKind::PoolName(pool_name.clone()),
+                    }
+                }
+                _ => check_expr(&a.value, None, fctx, mctx)?,
+            }
+        } else {
+            check_expr(&a.value, None, fctx, mctx)?
+        };
+        out.push((label.clone(), typed));
+    }
+    Ok(out)
+}
+
+/// Resolves a builder intrinsic's own leading bare type-name argument —
+/// `img.driver(A, ...)`/`img.actor(A, ...)`'s unlabeled first positional
+/// argument, or `img.device[D]`/`img.pool[T]`/`img.dma_pool[T]`'s
+/// bracketed one — through the ordinary type resolver
+/// (`ModuleCtx::resolve_type`), so every shape that resolver already
+/// accepts (a scalar, a plain user struct/enum, `Bytes`, ...) is
+/// accepted here too. Only a *bare name* is supported (item B's own
+/// documented scope boundary): a further `[...]` on the name itself
+/// (`BlkDriver[DriverMode.Irq]`, 02-language.md §12.1's own worked
+/// example) is a generic struct instantiation used as a comptime type
+/// argument rather than a value, which is a different, larger feature
+/// item B does not add — it fails closed with the same
+/// `unimplemented_at("generic instantiation is", ...)` every other
+/// generic-instantiation scope boundary in this file already uses.
+fn resolve_intrinsic_type_arg(e: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Result<Type, SemaError> {
+    match e {
+        Expr::Name(span, name) => {
+            let ast_ty = ast::Type::Named(NamedType {
+                span: *span,
+                name: name.clone(),
+                args: vec![],
+            });
+            mctx.resolve_type(&ast_ty, &fctx.local_pools)
+        }
+        _ => Err(unimplemented_at("generic instantiation is", e.span())),
+    }
+}
+
+/// `img.driver(A, ...)`/`img.actor(A, ...)`'s own leading type argument —
+/// deliberately *not* `resolve_intrinsic_type_arg` above: only a struct
+/// (never a scalar/`Bytes`/enum) can be `@actor`/`@driver`-attributed, so
+/// this looks `name` up directly in `mctx.structs` instead of through the
+/// ordinary type-annotation resolver. This is the one difference that
+/// matters for a multi-module build (plans/M4.md item A's own disclosed
+/// scope line): `mctx.structs` *is* spliced from an imported module's
+/// own checked output (`sema::check_program`'s own splice step), while
+/// `mctx.shapes` (the type-annotation arity table `resolve_type` reads)
+/// is module-local only — so an imported actor/driver struct resolves
+/// here, in call/callee position, exactly like constructing it would,
+/// even though it could not yet resolve as an explicit type annotation.
+/// Only a bare, non-generic struct name is supported (the same scope
+/// boundary as every other builder type argument).
+fn resolve_intrinsic_struct_type_arg(e: &Expr, mctx: &ModuleCtx) -> Result<Type, SemaError> {
+    let Expr::Name(span, name) = e else {
+        return Err(unimplemented_at("generic instantiation is", e.span()));
+    };
+    let Some(s) = mctx.structs.get(name) else {
+        return Err(type_error(format!("unknown type `{name}`"), *span));
+    };
+    if !s.decl.generics.is_empty() {
+        return Err(unimplemented_at("generic instantiation is", *span));
+    }
+    Ok(Type::Named(name.clone(), vec![]))
+}
+
+/// `img.device[D](...)`, `img.pool[T](...)`, `img.dma_pool[T](...)` —
+/// the bracketed third of the builder surface (05-library.md §9);
+/// `check_call_index`'s own new arm dispatches here once the receiver's
+/// type is confirmed to be `Image`. All three share the identical shape
+/// (one bracketed type argument, otherwise arbitrary labeled arguments),
+/// so one function covers them; `mname` only decides the intrinsic's own
+/// key spelling.
+fn check_image_bracket_intrinsic(
+    mname: &str,
+    targs: &[Expr],
+    args: &[Arg],
+    ispan: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if targs.len() != 1 {
+        return Err(type_error(
+            format!("`img.{mname}` takes exactly one type argument"),
+            ispan,
+        ));
+    }
+    let type_arg = resolve_intrinsic_type_arg(&targs[0], fctx, mctx)?;
+    let iargs = check_intrinsic_args(args, fctx, mctx)?;
+    Ok(TypedExpr {
+        ty: image_decl_type(),
+        kind: TypedExprKind::Intrinsic {
+            key: format!("Image.{mname}"),
+            receiver: None,
+            type_arg: Some(type_arg),
+            args: iargs,
+        },
+    })
 }
 
 fn scalar_type_by_name_expr(e: &Expr) -> Option<Type> {
@@ -3107,6 +3391,73 @@ fn check_call_by_name(
                 kind: TypedExprKind::Panic(Box::new(mt)),
             })
         }
+        // plans/M4.md item B, decision 5 (05-library.md §9): `Image`
+        // is the one builder intrinsic called by bare name (every other
+        // one is a method call on the value it returns, dispatched from
+        // `check_call_by_field`/`check_call_index` below).
+        "Image" => {
+            let iargs = check_intrinsic_args(args, fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: image_type(),
+                kind: TypedExprKind::Intrinsic {
+                    key: "Image".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: iargs,
+                },
+            })
+        }
+        // The builder surface's own two supporting prelude helpers
+        // (02-language.md §11, 05-library.md §5): ordinary comptime-legal
+        // values, not graph-building effects, so `eval::legal` never
+        // restricts them to `@image` evaluation the way it does the ten
+        // intrinsics above (`typed::is_restricted_intrinsic`) — they
+        // share the same typed node (dumbest way that works: one
+        // dispatch point in `eval::interp`) purely because neither has a
+        // declared parameter list to check labeled arguments against
+        // either.
+        "RestartIntensity" => {
+            if args.len() != 2 {
+                return Err(type_error(
+                    "`RestartIntensity` takes exactly `max` and `within`".to_string(),
+                    call_span,
+                ));
+            }
+            let iargs = check_intrinsic_args(args, fctx, mctx)?;
+            if !iargs.iter().any(|(l, _)| l == "max") || !iargs.iter().any(|(l, _)| l == "within") {
+                return Err(type_error(
+                    "`RestartIntensity` requires `max` and `within`".to_string(),
+                    call_span,
+                ));
+            }
+            Ok(TypedExpr {
+                ty: Type::Named("RestartIntensity".to_string(), vec![]),
+                kind: TypedExprKind::Intrinsic {
+                    key: "RestartIntensity".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: iargs,
+                },
+            })
+        }
+        "seconds" => {
+            if args.len() != 1 || args[0].label.is_some() {
+                return Err(type_error(
+                    "`seconds` takes exactly one positional argument".to_string(),
+                    call_span,
+                ));
+            }
+            let n = check_expr(&args[0].value, Some(&Type::U64), fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Named("Duration".to_string(), vec![]),
+                kind: TypedExprKind::Intrinsic {
+                    key: "seconds".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: vec![("n".to_string(), n)],
+                },
+            })
+        }
         _ => Err(type_error(format!("`{name}` is not callable"), call_span)),
     }
 }
@@ -3173,6 +3524,12 @@ fn check_call_by_field(
     }
     let base_t = check_expr(base, None, fctx, mctx)?;
     let base_ty = unwrap_own(base_t.ty.clone());
+    if base_ty == image_type() {
+        return check_image_method_intrinsic(name, args, call_span, fctx, mctx);
+    }
+    if base_ty == image_decl_type() {
+        return check_image_decl_method_intrinsic(base_t, name, args, fspan, call_span, fctx, mctx);
+    }
     match &base_ty {
         Type::Named(sname, targs) => {
             // A method call through a generic instantiation (item H):
@@ -3237,6 +3594,145 @@ fn check_call_by_field(
             ))
         }
     }
+}
+
+/// `img.driver(A, ...)` / `img.actor(A, ...)` / `img.supervise(...)` /
+/// `img.check_layout(f)` / `img.seal()` — every builder method called
+/// directly on the `Image` builder value itself (05-library.md §9);
+/// `check_call_by_field`'s own new dispatch reaches here once the
+/// receiver's type is confirmed to be `Image`. `img.device`/`img.pool`/
+/// `img.dma_pool` are *not* handled here — 05 §9 spells all three with a
+/// bracketed type argument (`check_image_bracket_intrinsic`, above), so
+/// calling one of them without brackets falls through to the ordinary
+/// "no method" diagnostic below, which is exactly right (the shape 05
+/// §9 gives is the only one item B accepts, decision 5's "accept the
+/// shape the worked examples use and fail closed on anything else").
+fn check_image_method_intrinsic(
+    name: &str,
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    match name {
+        "driver" | "actor" => {
+            let Some(first) = args.first() else {
+                return Err(type_error(
+                    format!("`img.{name}` needs a leading type argument"),
+                    call_span,
+                ));
+            };
+            if first.label.is_some() {
+                return Err(type_error(
+                    format!("`img.{name}`'s leading argument must not be labeled"),
+                    first.span,
+                ));
+            }
+            let type_arg = resolve_intrinsic_struct_type_arg(&first.value, mctx)?;
+            let iargs = check_intrinsic_args(&args[1..], fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: image_decl_type(),
+                kind: TypedExprKind::Intrinsic {
+                    key: format!("Image.{name}"),
+                    receiver: None,
+                    type_arg: Some(type_arg),
+                    args: iargs,
+                },
+            })
+        }
+        "supervise" => {
+            let iargs = check_intrinsic_args(args, fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Unit,
+                kind: TypedExprKind::Intrinsic {
+                    key: "Image.supervise".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: iargs,
+                },
+            })
+        }
+        "check_layout" => {
+            if args.len() != 1 || args[0].label.is_some() {
+                return Err(type_error(
+                    "`img.check_layout` takes exactly one positional argument".to_string(),
+                    call_span,
+                ));
+            }
+            let f = check_expr(&args[0].value, None, fctx, mctx)?;
+            Ok(TypedExpr {
+                ty: Type::Unit,
+                kind: TypedExprKind::Intrinsic {
+                    key: "Image.check_layout".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: vec![("f".to_string(), f)],
+                },
+            })
+        }
+        "seal" => {
+            if !args.is_empty() {
+                return Err(type_error(
+                    "`img.seal` takes no arguments".to_string(),
+                    call_span,
+                ));
+            }
+            Ok(TypedExpr {
+                ty: image_type(),
+                kind: TypedExprKind::Intrinsic {
+                    key: "Image.seal".to_string(),
+                    receiver: None,
+                    type_arg: None,
+                    args: vec![],
+                },
+            })
+        }
+        _ => Err(type_error(
+            format!("`Image` has no builder method `{name}`"),
+            call_span,
+        )),
+    }
+}
+
+/// `decl.handle()` — the one method on a builder declaration handle
+/// (05-library.md §9); `check_call_by_field`'s own new dispatch reaches
+/// here once the receiver's type is confirmed to be `ImageDecl`. Unlike
+/// every `Image`-rooted intrinsic above (which mutate the evaluator's
+/// one active builder instead of reading a runtime value, decision 6),
+/// `handle()` genuinely needs its own receiver's *value* — which
+/// declaration it names — so it is the one case `receiver` on
+/// `TypedExprKind::Intrinsic` is ever actually read.
+fn check_image_decl_method_intrinsic(
+    receiver: TypedExpr,
+    name: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if name != "handle" {
+        return Err(type_error(
+            format!("`ImageDecl` has no method `{name}`"),
+            fspan,
+        ));
+    }
+    if !args.is_empty() {
+        return Err(type_error(
+            "`decl.handle` takes no arguments".to_string(),
+            call_span,
+        ));
+    }
+    let _ = (fctx, mctx); // no further checking needed: the receiver is already typed.
+    Ok(TypedExpr {
+        ty: image_decl_type(),
+        kind: TypedExprKind::Intrinsic {
+            key: "ImageDecl.handle".to_string(),
+            receiver: Some(Box::new(receiver)),
+            type_arg: None,
+            args: vec![],
+        },
+    })
 }
 
 fn check_struct_construction(

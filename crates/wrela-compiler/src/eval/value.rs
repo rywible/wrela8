@@ -88,6 +88,15 @@ pub enum Value {
         body: TypedClosureBody,
         env: Env,
     },
+    /// One `@image` builder declaration handle (plans/M4.md item B,
+    /// decision 5): the result of `img.device`/`img.driver`/`img.actor`/
+    /// `img.pool`/`img.dma_pool`, and `decl.handle()`'s own passthrough of
+    /// one of these — `eval::image::ImageDeclRef` names *which*
+    /// declaration, in construction order (devices/drivers/actors) or by
+    /// its own bound pool name (pools/dma pools), mirroring
+    /// `ImageGraph`'s own two recording disciplines exactly (that
+    /// module's own doc comment).
+    ImageDecl(crate::eval::image::ImageDeclRef),
 }
 
 impl Value {

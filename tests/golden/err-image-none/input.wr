@@ -1,0 +1,4 @@
+module examples.err_image_none
+
+pub fn nothing_here() -> u32:
+    return 1

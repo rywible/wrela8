@@ -1,0 +1,45 @@
+module examples.image_basic
+
+enum Feature:
+    Flush
+    RingReset
+
+struct NicHw:
+    id: u32
+
+@driver
+pub struct Blk:
+    id: u32
+
+    init(mut self):
+        self.id = 1
+
+    pub fn ping(read self) -> u32:
+        return self.id
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+    pub fn get(read self) -> u32:
+        return self.count
+
+pool Buffers
+
+fn check_limits():
+    pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="basic-appliance", target=Target.wrela_machine_v1)
+    block_device = img.device[NicHw](transport=0x1000, required_features=[Feature.Flush])
+    disk = img.driver(Blk, device=block_device, queue_depth=8)
+    storage = img.actor(Store, disk=disk.handle(), mailbox=16)
+    buffers = img.pool[u32](name=Buffers, slots=4, max_payload=64)
+    img.check_layout(check_limits)
+    img.supervise(children=[disk, storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

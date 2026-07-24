@@ -80,6 +80,30 @@ impl CalleeKey {
     }
 }
 
+/// Whether `key` (a `TypedExprKind::Intrinsic::key` spelling) is one of
+/// the *graph-building* `@image` builder intrinsics (plans/M4.md item B,
+/// decision 5) — legal only during `@image` evaluation
+/// (`eval::legal`'s own first real illegal arm). `RestartIntensity`/
+/// `seconds` share the same node kind (dumbest way that works, one
+/// dispatch point in `eval::interp`) but are ordinary comptime-legal
+/// prelude helpers, not graph effects, so they are deliberately excluded
+/// — legal everywhere, exactly like `Option`/`Result`.
+pub fn is_restricted_intrinsic(key: &str) -> bool {
+    matches!(
+        key,
+        "Image"
+            | "Image.device"
+            | "Image.driver"
+            | "Image.actor"
+            | "Image.pool"
+            | "Image.dma_pool"
+            | "Image.supervise"
+            | "Image.check_layout"
+            | "Image.seal"
+            | "ImageDecl.handle"
+    )
+}
+
 // --- expressions -----------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +197,57 @@ pub enum TypedExprKind {
     /// `panic(msg)` — comptime abandonment (plans/M3.md item B); `ty` is
     /// always `never`.
     Panic(Box<TypedExpr>),
+    /// One `@image`-builder intrinsic call (plans/M4.md item B, decision
+    /// 5: 05-library.md §9's whole builder surface — `Image(...)`,
+    /// `img.device[D](...)`, `img.driver(A, ...)`, `img.actor(A, ...)`,
+    /// `img.pool[T](...)`, `img.dma_pool[T](...)`, `img.supervise(...)`,
+    /// `img.check_layout(f)`, `img.seal()`, `decl.handle()` — plus the
+    /// two prelude helpers `RestartIntensity(...)`/`seconds(n)`) is one
+    /// dedicated node kind rather than an ordinary `Call`: none of these
+    /// have a declared parameter list a `Call` node could align its
+    /// `args` against positionally, and `eval::image`'s report renders
+    /// every argument by its own source label, not position, so each
+    /// label is kept alongside its value instead of erased.
+    ///
+    /// `key` is the fixed intrinsic spelling (`"Image"`, `"Image.driver"`,
+    /// `"ImageDecl.handle"`, `"seconds"`, ...) `sema::typed::is_restricted_intrinsic`
+    /// and `eval::image`'s own dispatch both match on directly —
+    /// `sema::bodies`'s own callee-key-by-spelling convention, reused
+    /// verbatim for the builder surface (decision 5: "recognized by
+    /// callee key exactly like the existing prelude/intrinsic
+    /// machinery"). `receiver` is `Some` for a method-shaped intrinsic
+    /// (`img.driver(...)`, `decl.handle()`) and `None` for a bare
+    /// call-by-name one (`Image(...)`, `seconds(n)`); a method-shaped
+    /// intrinsic's own receiver is only ever actually *read* by
+    /// `ImageDecl.handle` (every `Image`-rooted intrinsic mutates the
+    /// evaluator's own single active builder instead, decision 6: at
+    /// most one `@image` fn, so at most one builder is ever live) but is
+    /// still carried uniformly, mirroring `Call`'s own shape. `type_arg`
+    /// is the builder's own bare type-name slot, already resolved
+    /// (`img.device[D]`/`img.pool[T]`/`img.dma_pool[T]`'s bracket
+    /// argument, or `img.driver`/`img.actor`'s leading unlabeled
+    /// argument) when the intrinsic has one. `args` is every remaining
+    /// argument, labeled, in source order — `img.pool`/`img.dma_pool`'s
+    /// own `name=` argument is the one case that is not an ordinary
+    /// value expression (a bound `pool` name is not usable as a value
+    /// anywhere else in the language) and is instead carried as a
+    /// `PoolName` leaf node (below).
+    Intrinsic {
+        key: String,
+        receiver: Option<Box<TypedExpr>>,
+        type_arg: Option<Type>,
+        args: Vec<(String, TypedExpr)>,
+    },
+    /// A bare `pool` name used as `img.pool[T](name=P, ...)`/
+    /// `img.dma_pool[T](name=P, ...)`'s own `name=` argument (plans/M4.md
+    /// item B) — the one builder argument that is not an ordinary value
+    /// expression: a module- or actor-scoped pool name (02-language.md
+    /// §4) is otherwise only ever spelled inside an `own[P] T` type
+    /// annotation, never referenced as a value, so it needs its own leaf
+    /// node rather than resolving through `synth_name`'s ordinary
+    /// local/const/fn lookup (which would, correctly, reject it). `ty` is
+    /// always the builder surface's own opaque `PoolName` type.
+    PoolName(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -441,6 +516,15 @@ pub struct TypedProgram {
     /// reasoning as `TypedStruct::fields`.
     pub enums: BTreeMap<String, Vec<String>>,
     pub instantiations: BTreeMap<String, TypedInstantiation>,
+    /// The bare name of this module's own `@image fn`, if it declares
+    /// one (plans/M4.md item B) — `sema::bodies::check`'s own addition,
+    /// set at most once per module (a second `@image fn` in the *same*
+    /// module is rejected there directly); `eval::legal::classify` reads
+    /// this to exempt the one fn actually allowed to use the builder
+    /// intrinsics directly, and `wrela dump --stage=image` reads it (via
+    /// every checked module, decision 6: exactly one reachable `@image`
+    /// in the whole build) to find the fn to evaluate.
+    pub image_fn: Option<String>,
 }
 
 // --- the `--stage=typed` dump (decision 2) --------------------------------
@@ -900,6 +984,30 @@ fn dump_expr(e: &TypedExpr, depth: usize, out: &mut String) {
         TypedExprKind::Panic(msg) => {
             push_line(out, depth, &format!("Panic ty={t}"));
             dump_expr(msg, depth + 1, out);
+        }
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            type_arg,
+            args,
+        } => {
+            let mut header = format!("Intrinsic key={key}");
+            if let Some(ta) = type_arg {
+                header.push_str(&format!(" type_arg={}", ty(ta)));
+            }
+            header.push_str(&format!(" ty={t}"));
+            push_line(out, depth, &header);
+            if let Some(r) = receiver {
+                push_line(out, depth + 1, "Receiver");
+                dump_expr(r, depth + 2, out);
+            }
+            for (label, val) in args {
+                push_line(out, depth + 1, &format!("Arg label={label}"));
+                dump_expr(val, depth + 2, out);
+            }
+        }
+        TypedExprKind::PoolName(name) => {
+            push_line(out, depth, &format!("PoolName name={name} ty={t}"));
         }
     }
 }

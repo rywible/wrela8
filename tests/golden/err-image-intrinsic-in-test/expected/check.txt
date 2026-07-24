@@ -1,0 +1,2 @@
+error[comptime]: `@test` requires a comptime-legal closure, but `bad_test` is not comptime-callable at 0:0
+  `bad_test` uses an `@image` builder intrinsic

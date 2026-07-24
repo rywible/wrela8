@@ -1578,8 +1578,23 @@ fn check_call_by_name(
     if let Some(s) = actx.mctx.structs.get(name) {
         return check_struct_construction(s, &[], args, actx);
     }
-    // `Some`/`Ok`/`Err`/`panic`: builtin pseudo-constructors with no
-    // declared parameter modes (they are not real `DeclParam`s).
+    if name == "Image" {
+        // plans/M4.md item B, decision 5: unlike `Some`/`Ok`/`Err`/
+        // `RestartIntensity`/`seconds` below (whose own results this
+        // pass never needs to track further — nothing calls a method on
+        // any of them), `img`'s own type *does* matter: every later
+        // `img.driver(...)`/`img.actor(...)`/... in the same `@image`
+        // body is a real method call this pass's own best-effort type
+        // tracker must not lose (`check_call_by_field`'s own new
+        // dispatch, below, keys off exactly this type).
+        for a in args {
+            check_payload_arg(a, actx)?;
+        }
+        return Ok(Some(Type::Named("Image".to_string(), vec![])));
+    }
+    // `Some`/`Ok`/`Err`/`panic`/`RestartIntensity`/`seconds`: builtin
+    // pseudo-constructors with no declared parameter modes (they are not
+    // real `DeclParam`s).
     for a in args {
         check_payload_arg(a, actx)?;
     }
@@ -1660,6 +1675,26 @@ fn check_call_by_field(
     let root_name = place_root_name(base).map(str::to_string);
     for a in args {
         check_arg(a, actx)?;
+    }
+    // plans/M4.md item B, decision 5: the builder surface's own two
+    // opaque types (`sema::bodies`'s own `image_type`/`image_decl_type`)
+    // are never real declared structs, so the ordinary struct-method
+    // lookup below would (correctly, for every *other* unknown type)
+    // fail closed on them — recognized here instead, mirroring
+    // `sema::bodies::check_call_by_field`'s own dispatch exactly, so
+    // this pass's best-effort tracker reports the right result type
+    // (`img.driver`/`img.actor`/`decl.handle()` all get chained further,
+    // e.g. `disk.handle()`) instead of losing it.
+    if base_ty.as_ref() == Some(&Type::Named("Image".to_string(), vec![])) {
+        let result = match name {
+            "driver" | "actor" => Type::Named("ImageDecl".to_string(), vec![]),
+            "seal" => Type::Named("Image".to_string(), vec![]),
+            _ => Type::Unit, // `supervise`/`check_layout`, or an already-rejected name.
+        };
+        return Ok(Some(result));
+    }
+    if base_ty.as_ref() == Some(&Type::Named("ImageDecl".to_string(), vec![])) {
+        return Ok(Some(Type::Named("ImageDecl".to_string(), vec![])));
     }
     let Some(base_ty) = base_ty.map(bodies::unwrap_own) else {
         return Err(unimplemented_at(

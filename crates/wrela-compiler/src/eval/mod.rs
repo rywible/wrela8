@@ -25,6 +25,7 @@
 //! so the evaluator's own fail-closed behavior on anything it does not
 //! implement is the only guard item B needs.
 
+pub mod image;
 pub mod interp;
 pub mod legal;
 pub mod quota;
@@ -77,7 +78,31 @@ pub fn to_sema_error(e: EvalError) -> SemaError {
 pub fn check_comptime(program: &TypedProgram) -> Result<(), SemaError> {
     let legality = legal::classify(program);
     check_comptime_asserts(program, &legality)?;
-    check_consts(program, &legality)
+    check_consts(program, &legality)?;
+    check_test_legality(program, &legality)
+}
+
+/// plans/M4.md item B: every comptime-run `@test` (`TestKind::Comptime`/
+/// `TestKind::Exhaustive` — `TestKind::Runtime` is deliberately exempt,
+/// 02-language.md §12.2's own "generated image test" path, M5) must
+/// itself be comptime-legal, checked here (unconditionally, as part of
+/// ordinary `check_typed`/`check`) rather than only lazily inside
+/// `wrela test`'s own report (`run_tests`, below) — `comptime.legality.inferred`'s
+/// own flip needs "an intrinsic in a `@test` fn" to be an honest build
+/// error at `--stage=check`/`--stage=typed`, not merely a `FAILED` test
+/// line. A no-op for every program before this item (no `@test` could
+/// ever be `Illegal` — `eval::legal`'s own module doc), so this adds no
+/// new failure to any existing golden.
+fn check_test_legality(
+    program: &TypedProgram,
+    legality: &legal::Legality,
+) -> Result<(), SemaError> {
+    for t in &program.tests {
+        if matches!(t.kind, TestKind::Comptime | TestKind::Exhaustive) {
+            legal::require_legal(legality, &t.name, "@test", Span::default())?;
+        }
+    }
+    Ok(())
 }
 
 /// Evaluates every module-level `const`'s own initializer with the real
@@ -89,20 +114,37 @@ pub fn check_comptime(program: &TypedProgram) -> Result<(), SemaError> {
 /// convention (CLAUDE.md: deterministic, first error wins).
 ///
 /// plans/M3.md item D's own legality wiring: every direct callee a
-/// const's own initializer reaches (`legal::direct_callees`) must be
+/// const's own initializer reaches (`legal::scan_standalone`) must be
 /// comptime-legal per the already-computed whole-program `legality`
 /// (context `"const <name>"`, matching `eval::legal`'s own doc-comment
 /// example verbatim) — checked before evaluating, so an illegal closure
 /// is diagnosed as such rather than however evaluating it might
 /// otherwise fail. `Span::default()` is this diagnostic's own location
-/// today: nothing representable can actually be illegal yet (see
-/// `eval::legal`'s module doc), so this path is honestly unreachable
-/// until M5 — a real span is not worth threading through `TypedConst`
-/// for a diagnostic no golden can produce yet.
+/// today: nothing representable could be illegal via a *callee* before
+/// plans/M4.md item B (see `eval::legal`'s module doc) — a real span is
+/// not worth threading through `TypedConst` for that half of this
+/// check. plans/M4.md item B adds the second half: a builder intrinsic
+/// used *directly* in a const initializer carries no callee key at all
+/// (`legal::StandaloneScan::illegal`), so it is checked and diagnosed
+/// separately, right here.
 fn check_consts(program: &TypedProgram, legality: &legal::Legality) -> Result<(), SemaError> {
     for (name, c) in &program.consts {
-        for callee in legal::direct_callees(&c.value) {
-            legal::require_legal(legality, &callee, &format!("const {name}"), Span::default())?;
+        let scan = legal::scan_standalone(&c.value);
+        for callee in &scan.callees {
+            legal::require_legal(legality, callee, &format!("const {name}"), Span::default())?;
+        }
+        if let Some(reason) = &scan.illegal {
+            return Err(SemaError {
+                category: "comptime",
+                message: format!(
+                    "`const {name}` requires a comptime-legal initializer, but it directly uses {reason}"
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
         }
         interp::eval_const(program, name).map_err(to_sema_error)?;
     }
@@ -391,12 +433,30 @@ fn check_one_comptime_assert(
     legality: &legal::Legality,
     site: AssertSite<'_>,
 ) -> Result<(), SemaError> {
-    for callee in legal::direct_callees(site.cond) {
-        legal::require_legal(legality, &callee, "comptime assert", site.span)?;
+    let cond_scan = legal::scan_standalone(site.cond);
+    for callee in &cond_scan.callees {
+        legal::require_legal(legality, callee, "comptime assert", site.span)?;
+    }
+    if let Some(reason) = &cond_scan.illegal {
+        return Err(SemaError::at(
+            "comptime",
+            format!("`comptime assert` directly uses {reason}, only legal inside an `@image` fn"),
+            site.span,
+        ));
     }
     if let Some(m) = site.message {
-        for callee in legal::direct_callees(m) {
-            legal::require_legal(legality, &callee, "comptime assert", site.span)?;
+        let msg_scan = legal::scan_standalone(m);
+        for callee in &msg_scan.callees {
+            legal::require_legal(legality, callee, "comptime assert", site.span)?;
+        }
+        if let Some(reason) = &msg_scan.illegal {
+            return Err(SemaError::at(
+                "comptime",
+                format!(
+                    "`comptime assert` directly uses {reason}, only legal inside an `@image` fn"
+                ),
+                site.span,
+            ));
         }
     }
 
@@ -583,5 +643,14 @@ fn collect_asserts_expr<'p>(e: &'p TypedExpr, out: &mut Vec<AssertSite<'p>>) {
             }
         }
         TypedExprKind::Panic(msg) => collect_asserts_expr(msg, out),
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                collect_asserts_expr(r, out);
+            }
+            for (_, a) in args {
+                collect_asserts_expr(a, out);
+            }
+        }
+        TypedExprKind::PoolName(_) => {}
     }
 }

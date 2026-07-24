@@ -158,20 +158,35 @@ pub fn require_legal(
     }
 }
 
-/// Direct callees referenced by one standalone expression that is not
-/// itself a node `classify`'s own graph tracks — a `const` initializer,
-/// a `comptime assert`'s condition/message (plans/M3.md item D's own
-/// legality-wiring surface: `sema::mod::check_typed` `require_legal`s
-/// every key this returns against the program-wide `Legality` `classify`
-/// already computed, which accounts for each callee's own transitive
-/// closure — no second graph, no re-walk beyond this one expression).
-/// Reuses the identical exhaustive `scan_expr` this module already
-/// maintains for `classify` itself, so a new `TypedExprKind` variant
-/// forces an arm here for free.
-pub fn direct_callees(expr: &TypedExpr) -> BTreeSet<String> {
+/// The result of scanning one standalone expression that is not itself a
+/// node `classify`'s own graph tracks — a `const` initializer, a
+/// `comptime assert`'s condition/message (plans/M3.md item D's own
+/// legality-wiring surface: `sema::mod::check_typed`/`eval::check_consts`
+/// `require_legal` every key `callees` names against the program-wide
+/// `Legality` `classify` already computed, which accounts for each
+/// callee's own transitive closure — no second graph, no re-walk beyond
+/// this one expression). `illegal` is plans/M4.md item B's own addition:
+/// a builder intrinsic used directly in a `const` initializer or
+/// `comptime assert` carries no `CalleeKey` at all (it is not a `Call`),
+/// so `callees` alone cannot catch it the way it catches an illegal
+/// *callee*; this is the direct, first-hand "this expression itself
+/// commits a decision-7/`@image`-only violation" answer, mirroring
+/// `NodeInfo::illegal` one level up.
+pub struct StandaloneScan {
+    pub callees: BTreeSet<String>,
+    pub illegal: Option<String>,
+}
+
+/// Scans one standalone expression, reusing the identical exhaustive
+/// `scan_expr` this module already maintains for `classify` itself, so a
+/// new `TypedExprKind` variant forces an arm here for free.
+pub fn scan_standalone(expr: &TypedExpr) -> StandaloneScan {
     let mut scan = BodyScan::default();
     scan_expr(expr, &mut scan);
-    scan.callees
+    StandaloneScan {
+        callees: scan.callees,
+        illegal: scan.illegal,
+    }
 }
 
 /// Classifies every fn/method/instantiation key the typed program
@@ -182,7 +197,24 @@ pub fn direct_callees(expr: &TypedExpr) -> BTreeSet<String> {
 /// `BTreeMap`/`BTreeSet` throughout (CLAUDE.md): iteration order, and so
 /// which callee's path wins when several are illegal, is deterministic.
 pub fn classify(program: &TypedProgram) -> Legality {
-    let nodes = build_nodes(program);
+    let mut nodes = build_nodes(program);
+    // plans/M4.md item B, decision 5: the one reachable `@image` fn
+    // (`TypedProgram::image_fn`) is the *only* place a builder intrinsic
+    // is legal — its own node's scan above still flags it exactly like
+    // any other body that directly contains one (the exhaustive-match
+    // discipline the module doc describes applies uniformly), so that
+    // flag is cleared here, once, rather than teaching the scan itself
+    // about "which fn is currently being scanned." A helper fn the
+    // `@image` fn merely calls is *not* exempted (a deliberate, narrow
+    // scope boundary: every worked example spells the whole builder
+    // sequence directly in the `@image` fn's own body; the disclosed
+    // corollary is that a program factoring builder calls into a helper
+    // fn is not yet supported by item B).
+    if let Some(image_fn) = &program.image_fn {
+        if let Some(info) = nodes.get_mut(image_fn) {
+            info.illegal = None;
+        }
+    }
     let mut verdicts: BTreeMap<String, Verdict> = BTreeMap::new();
     for (key, info) in &nodes {
         let verdict = match &info.illegal {
@@ -364,7 +396,23 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
         | TypedExprKind::Tuple(_)
         | TypedExprKind::List(_)
         | TypedExprKind::StructLiteral { .. }
-        | TypedExprKind::Panic(_) => None,
+        | TypedExprKind::Panic(_)
+        | TypedExprKind::PoolName(_) => None,
+        // plans/M4.md item B, decision 5: the ten graph-building builder
+        // intrinsics (`typed::is_restricted_intrinsic`) are illegal
+        // anywhere but the one reachable `@image` fn — `classify` clears
+        // this flag on that one fn's own node afterward, so this arm
+        // does not need to know which fn is currently being scanned.
+        // `RestartIntensity`/`seconds` share the node kind but are
+        // ordinary prelude helpers (excluded from the restricted set),
+        // so they fall through to `None`, legal everywhere.
+        TypedExprKind::Intrinsic { key, .. } => {
+            if crate::sema::typed::is_restricted_intrinsic(key) {
+                Some("an `@image` builder intrinsic")
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -572,6 +620,15 @@ fn scan_expr(e: &TypedExpr, scan: &mut BodyScan) {
             }
         }
         TypedExprKind::Panic(msg) => scan_expr(msg, scan),
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                scan_expr(r, scan);
+            }
+            for (_, a) in args {
+                scan_expr(a, scan);
+            }
+        }
+        TypedExprKind::PoolName(_) => {}
     }
 }
 

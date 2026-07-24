@@ -1,0 +1,2 @@
+error[comptime]: `@image` fn `build` returned without calling `img.seal()`
+  while evaluating `build`

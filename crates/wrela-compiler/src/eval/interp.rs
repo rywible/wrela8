@@ -73,6 +73,21 @@ struct Interp<'p> {
     program: &'p TypedProgram,
     quota: Quota,
     stack: Vec<String>,
+    /// The one active `@image` builder (plans/M4.md item B, decision 6:
+    /// at most one `@image` fn is ever reachable, so at most one builder
+    /// is ever live) — `None` before `Image(...)` runs and after
+    /// `img.seal()` consumes it. Every `Image`-rooted intrinsic mutates
+    /// this directly rather than threading a builder value through
+    /// `env` (decision 5's own "opaque builtin resource type" is real
+    /// enough to type-check and bind to a local, but the evaluator needs
+    /// only one, so nothing is lost by keying off the interpreter's own
+    /// state instead of that local's actual `Value`).
+    image: Option<crate::eval::image::ImageGraph>,
+    /// `img.seal()`'s own result, stashed here since evaluating a call
+    /// returns a bare `Value` (`Value::Unit`, decision 5) rather than the
+    /// full graph — `eval_image` (this module's own new top-level entry)
+    /// reads it back out once the whole `@image` fn body has run.
+    sealed_image: Option<crate::eval::image::ImageGraph>,
 }
 
 impl<'p> Interp<'p> {
@@ -159,6 +174,8 @@ pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError>
         program,
         quota: Quota::new(),
         stack: Vec::new(),
+        image: None,
+        sealed_image: None,
     };
     match run_call(f, None, name.to_string(), |_, _| Ok(()), &mut ctx) {
         Ok((v, _)) => Ok(v),
@@ -186,6 +203,8 @@ pub fn eval_test_case(
         program,
         quota: Quota::new(),
         stack: Vec::new(),
+        image: None,
+        sealed_image: None,
     };
     let bind = |env: &mut Env, _ctx: &mut Interp| {
         for (p, v) in f.params.iter().zip(args.iter()) {
@@ -199,11 +218,49 @@ pub fn eval_test_case(
     }
 }
 
+/// Evaluates the one reachable `@image` fn (plans/M4.md item B): a
+/// fresh `Interp`/`Quota` exactly like every other top-level entry point
+/// here, with one active (empty) builder slot the fn's own body fills in
+/// through the `TypedExprKind::Intrinsic` arm below. `Image(...)`'s
+/// build-error path aside, the only way this can fail *without* an
+/// `EvalError` naming a real abandonment is the fn returning without
+/// ever calling `img.seal()` — deliverable 5's own "unsealed at return"
+/// err golden.
+pub fn eval_image(
+    program: &TypedProgram,
+    fn_name: &str,
+) -> Result<crate::eval::image::ImageGraph, EvalError> {
+    let Some(f) = program.fns.get(fn_name) else {
+        return Err(EvalError {
+            message: format!(
+                "internal error: `@image` fn `{fn_name}` not found in the checked program"
+            ),
+            stack: vec![],
+        });
+    };
+    let mut ctx = Interp {
+        program,
+        quota: Quota::new(),
+        stack: Vec::new(),
+        image: None,
+        sealed_image: None,
+    };
+    match run_call(f, None, fn_name.to_string(), |_, _| Ok(()), &mut ctx) {
+        Ok(_) => ctx.sealed_image.ok_or_else(|| EvalError {
+            message: format!("`@image` fn `{fn_name}` returned without calling `img.seal()`"),
+            stack: vec![fn_name.to_string()],
+        }),
+        Err(u) => Err(unwind_to_error(u)),
+    }
+}
+
 fn eval_top(program: &TypedProgram, expr: &TypedExpr, context: String) -> Result<Value, EvalError> {
     let mut ctx = Interp {
         program,
         quota: Quota::new(),
         stack: Vec::new(),
+        image: None,
+        sealed_image: None,
     };
     if let Err(e) = ctx.enter(context) {
         return Err(unwind_to_error(e));
@@ -735,6 +792,8 @@ fn match_pattern(
                 program: ctx.program,
                 quota: Quota::new(),
                 stack: ctx.stack.clone(),
+                image: None,
+                sealed_image: None,
             };
             let lv = eval_expr(lit, &mut scratch_env, &mut scratch_dstack, 0, &mut scratch)
                 .map_err(|_| ctx.abandon("internal error: pattern literal failed to evaluate"))?;
@@ -1398,6 +1457,222 @@ fn eval_expr<'a, 'p>(
             let mv = eval_expr(msg, env, dstack, loop_marker, ctx)?;
             Err(ctx.abandon(format!("panic: {}", render_message(&mv))))
         }
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            type_arg,
+            args,
+        } => eval_intrinsic(key, receiver, type_arg, args, env, dstack, loop_marker, ctx),
+        TypedExprKind::PoolName(name) => Ok(Value::Str(name.clone().into_bytes())),
+    }
+}
+
+/// The `@image` builder surface's own evaluation (plans/M4.md item B,
+/// decision 5): dispatches on the fixed intrinsic key spelling, exactly
+/// like `eval_call` dispatches on a `CalleeKey` — plain match arms, no
+/// registry. Every `Image`-rooted intrinsic mutates `ctx.image` (the one
+/// active builder, decision 6); `ImageDecl.handle` is the one case that
+/// reads its own `receiver` instead. `eval::legal` is what actually keeps
+/// this reachable only from the one `@image` fn (`sema::check_typed`
+/// rejects everything else before evaluation ever starts) — this
+/// function does not re-check that itself.
+#[allow(clippy::too_many_arguments)]
+fn eval_intrinsic<'a, 'p>(
+    key: &str,
+    receiver: &'a Option<Box<TypedExpr>>,
+    type_arg: &Option<Type>,
+    args: &'a [(String, TypedExpr)],
+    env: &mut Env,
+    dstack: &mut Vec<&'a TypedDeferBody>,
+    loop_marker: usize,
+    ctx: &mut Interp<'p>,
+) -> R<Value> {
+    use crate::eval::image::{DeclArg, ImageGraph, TypedValue};
+
+    ctx.tick_step()?;
+
+    /// Evaluates every remaining labeled argument into a `DeclArg`,
+    /// pulling `img.pool`/`img.dma_pool`'s own bare `name=` `PoolName`
+    /// leaf out separately rather than evaluating it as an ordinary
+    /// value (it has no `Value` shape of its own to speak of — see
+    /// `typed::TypedExprKind::PoolName`'s own doc comment).
+    fn split_args<'a>(
+        args: &'a [(String, TypedExpr)],
+        env: &mut Env,
+        dstack: &mut Vec<&'a TypedDeferBody>,
+        loop_marker: usize,
+        ctx: &mut Interp,
+    ) -> R<(Option<String>, Vec<DeclArg>)> {
+        let mut pool_name = None;
+        let mut out = Vec::with_capacity(args.len());
+        for (label, a) in args {
+            if let TypedExprKind::PoolName(n) = &a.kind {
+                pool_name = Some(n.clone());
+                continue;
+            }
+            let v = eval_expr(a, env, dstack, loop_marker, ctx)?;
+            out.push(DeclArg {
+                label: label.clone(),
+                ty: a.ty.clone(),
+                value: v,
+            });
+        }
+        Ok((pool_name, out))
+    }
+
+    match key {
+        "Image" => {
+            let mut name_v = None;
+            let mut target_v = None;
+            for (label, a) in args {
+                let v = eval_expr(a, env, dstack, loop_marker, ctx)?;
+                match label.as_str() {
+                    "name" => {
+                        name_v = Some(TypedValue {
+                            ty: a.ty.clone(),
+                            value: v,
+                        })
+                    }
+                    "target" => {
+                        target_v = Some(TypedValue {
+                            ty: a.ty.clone(),
+                            value: v,
+                        })
+                    }
+                    _ => {}
+                }
+            }
+            let (Some(name_v), Some(target_v)) = (name_v, target_v) else {
+                return Err(ctx.abandon("`Image(...)` requires both `name` and `target`"));
+            };
+            if ctx.image.is_some() {
+                return Err(ctx.abandon("`Image(...)` was already called once in this evaluation"));
+            }
+            ctx.image = Some(ImageGraph::new(name_v, target_v));
+            Ok(Value::Unit)
+        }
+        "Image.device" | "Image.driver" | "Image.actor" | "Image.pool" | "Image.dma_pool" => {
+            let ty_arg = type_arg
+                .clone()
+                .ok_or_else(|| ctx.abandon("internal error: missing builder type argument"))?;
+            let (pool_name, decl_args) = split_args(args, env, dstack, loop_marker, ctx)?;
+            if ctx.image.is_none() {
+                return Err(
+                    ctx.abandon("no active `Image` builder (`Image(...)` was never called)")
+                );
+            }
+            let result = {
+                let g = ctx.image.as_mut().expect("checked above");
+                match key {
+                    "Image.device" => Ok(g.declare_device(ty_arg, decl_args)),
+                    "Image.driver" => Ok(g.declare_driver(ty_arg, decl_args)),
+                    "Image.actor" => Ok(g.declare_actor(ty_arg, decl_args)),
+                    "Image.pool" => match pool_name {
+                        Some(name) => g.declare_pool(name, ty_arg, decl_args),
+                        None => Err(
+                            "internal error: `img.pool` is missing its own `name=` argument"
+                                .to_string(),
+                        ),
+                    },
+                    "Image.dma_pool" => match pool_name {
+                        Some(name) => g.declare_dma_pool(name, ty_arg, decl_args),
+                        None => Err(
+                            "internal error: `img.dma_pool` is missing its own `name=` argument"
+                                .to_string(),
+                        ),
+                    },
+                    _ => unreachable!("matched above"),
+                }
+            };
+            result.map_err(|m| ctx.abandon(m))
+        }
+        "Image.supervise" => {
+            let (_, decl_args) = split_args(args, env, dstack, loop_marker, ctx)?;
+            if ctx.image.is_none() {
+                return Err(
+                    ctx.abandon("no active `Image` builder (`Image(...)` was never called)")
+                );
+            }
+            ctx.image
+                .as_mut()
+                .expect("checked above")
+                .declare_supervise(decl_args);
+            Ok(Value::Unit)
+        }
+        "Image.check_layout" => {
+            let Some((_, f_expr)) = args.first() else {
+                return Err(
+                    ctx.abandon("internal error: `img.check_layout` is missing its argument")
+                );
+            };
+            let TypedExprKind::FnRef(fkey) = &f_expr.kind else {
+                return Err(ctx.abandon(
+                    "internal error: `img.check_layout`'s argument is not a fn reference",
+                ));
+            };
+            let fn_key = fkey.spelling();
+            if ctx.image.is_none() {
+                return Err(
+                    ctx.abandon("no active `Image` builder (`Image(...)` was never called)")
+                );
+            }
+            ctx.image
+                .as_mut()
+                .expect("checked above")
+                .declare_check_layout(fn_key);
+            Ok(Value::Unit)
+        }
+        "Image.seal" => {
+            let g = ctx
+                .image
+                .take()
+                .ok_or_else(|| ctx.abandon("`img.seal()` called with no active builder"))?;
+            let mut g = g;
+            g.sealed = true;
+            ctx.sealed_image = Some(g);
+            Ok(Value::Unit)
+        }
+        "ImageDecl.handle" => {
+            let Some(r) = receiver else {
+                return Err(ctx.abandon("internal error: `decl.handle()` is missing its receiver"));
+            };
+            eval_expr(r, env, dstack, loop_marker, ctx)
+        }
+        "RestartIntensity" => {
+            let mut max_v = None;
+            let mut within_v = None;
+            for (label, a) in args {
+                let v = eval_expr(a, env, dstack, loop_marker, ctx)?;
+                match label.as_str() {
+                    "max" => max_v = Some(v),
+                    "within" => within_v = Some(v),
+                    _ => {}
+                }
+            }
+            let (Some(max_v), Some(within_v)) = (max_v, within_v) else {
+                return Err(ctx.abandon("`RestartIntensity` requires both `max` and `within`"));
+            };
+            let v = Value::Tuple(vec![max_v, within_v]);
+            ctx.charge(v.weight())?;
+            Ok(v)
+        }
+        "seconds" => {
+            let Some((_, n_expr)) = args.first() else {
+                return Err(ctx.abandon("internal error: `seconds` is missing its argument"));
+            };
+            let nv = eval_expr(n_expr, env, dstack, loop_marker, ctx)?;
+            let n = value::as_i128(&nv).ok_or_else(|| {
+                ctx.abandon("internal error: `seconds`'s argument is not an integer")
+            })?;
+            let nanos = n
+                .checked_mul(1_000_000_000)
+                .filter(|v| *v >= 0 && *v <= u64::MAX as i128)
+                .ok_or_else(|| ctx.abandon("`seconds(...)` overflowed a duration"))?;
+            Ok(Value::U64(nanos as u64))
+        }
+        other => Err(ctx.abandon(format!(
+            "internal error: unknown builder intrinsic `{other}`"
+        ))),
     }
 }
 

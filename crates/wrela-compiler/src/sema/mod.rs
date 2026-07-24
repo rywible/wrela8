@@ -282,6 +282,22 @@ pub fn check_program(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<(), SemaError> {
+    check_program_typed(modules, paths).map(|_| ())
+}
+
+/// plans/M4.md item B: the multi-module *typed* entry — identical to
+/// `check_program` above except every module's own checked
+/// `typed::TypedProgram` is kept (`check_program` discards it and only
+/// returns `()`, delegating here unchanged, mirroring `check`'s own
+/// relationship to `check_typed`) rather than thrown away. The
+/// `--stage=image` evaluator (`eval::image`, driven from `bin/wrela.rs`)
+/// needs exactly this: every module's own checked program, so it can
+/// find the one reachable `@image` fn (`typed::TypedProgram::image_fn`)
+/// across the whole build closure and evaluate it.
+pub fn check_program_typed(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+) -> Result<BTreeMap<Vec<String>, typed::TypedProgram>, SemaError> {
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
     for (key, module) in modules {
         specialized.insert(key.clone(), specialize::specialize(module)?);
@@ -362,6 +378,7 @@ pub fn check_program(
         }
     }
 
+    let mut programs: BTreeMap<Vec<String>, typed::TypedProgram> = BTreeMap::new();
     for (key, module) in &specialized {
         let decl_items = &decl_items_map[key];
         let mctx = &mctxs[key];
@@ -373,9 +390,10 @@ pub fn check_program(
         let path = paths.get(key).unwrap_or(&empty_path);
         program.instantiations = generics::check(module, decl_items, mctx, path)?;
         crate::eval::check_comptime(&program)?;
+        programs.insert(key.clone(), program);
     }
 
-    Ok(())
+    Ok(programs)
 }
 
 /// The multi-module `--stage=check` dump (plans/M4.md item A): every

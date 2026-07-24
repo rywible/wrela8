@@ -1,0 +1,17 @@
+Module path=examples.image_basic
+  Enum Feature data
+    variant Flush
+    variant RingReset
+  Struct NicHw data
+    field id: u32
+  Struct Blk resource
+    field id: u32
+    init(mut self) -> unit
+    fn ping(read self) -> u32
+  Struct Store resource
+    field count: u32
+    init(mut self) -> unit
+    fn get(read self) -> u32
+  Pool Buffers
+  Fn check_limits() -> unit
+  Fn build() -> Image

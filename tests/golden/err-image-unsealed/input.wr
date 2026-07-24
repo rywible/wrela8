@@ -1,0 +1,6 @@
+module examples.err_image_unsealed
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    return img

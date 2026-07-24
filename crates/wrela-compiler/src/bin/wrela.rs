@@ -17,11 +17,13 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use wrela_compiler::eval;
 use wrela_compiler::loader;
 use wrela_compiler::sema;
+use wrela_compiler::sema::typed::TypedProgram;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|image> [--timings] <file.wr>\n       wrela test <file.wr>\n       wrela version";
 
 /// Prints one `sema::SemaError` (decision 1's one-line diagnostic, or
 /// item H's one multi-line exception, decision 2): `extra_lines` is
@@ -69,6 +71,46 @@ fn main() -> ExitCode {
         _ => {
             eprintln!("{USAGE}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// `wrela dump --stage=image`'s own driver (plans/M4.md item B):
+/// `programs` is every module the build closure checked, keyed by its
+/// own dotted module path (a single entry for the no-imports case).
+/// Decision 6's own "exactly one reachable `@image`" rule gets its
+/// minimal item-B version here — zero or more than one is a named
+/// `error[build]` listing every candidate found; item C pins the fuller
+/// diagnostic. Exactly one runs on the M3 evaluator
+/// (`eval::interp::eval_image`) and prints the resulting `ImageGraph`'s
+/// own stable dump (`eval::image::dump`) — an `EvalError` (a blown quota,
+/// `img.dma_pool`'s own fail-closed gap, an unsealed return, ...) renders
+/// through the identical `error[comptime]` path every other comptime
+/// failure already uses (`eval::to_sema_error`).
+fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
+    let candidates: Vec<(&String, &String)> = programs
+        .iter()
+        .filter_map(|(module, p)| p.image_fn.as_ref().map(|f| (module, f)))
+        .collect();
+    match candidates.len() {
+        0 => println!("error[build]: no `@image` fn found in the build closure"),
+        1 => {
+            let (module, fn_name) = candidates[0];
+            let program = &programs[module];
+            match eval::interp::eval_image(program, fn_name) {
+                Ok(graph) => print!("{}", eval::image::dump(&program.enums, &graph)),
+                Err(e) => print_sema_error(&eval::to_sema_error(e)),
+            }
+        }
+        _ => {
+            let names: Vec<String> = candidates
+                .iter()
+                .map(|(module, fn_name)| format!("{module}.{fn_name}"))
+                .collect();
+            println!(
+                "error[build]: more than one `@image` fn reachable in the build closure ({})",
+                names.join(", ")
+            );
         }
     }
 }
@@ -242,6 +284,67 @@ fn dump(args: &[String]) -> ExitCode {
                     Ok(module) => match sema::check_typed(&module, &path) {
                         Ok(program) => print!("{}", sema::dump_typed(&program)),
                         Err(e) => print_sema_error(&e),
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        "image" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                // Sema + `@image` evaluation have no phase timer of their
+                // own yet, exactly like `check`/`typed` above; both fold
+                // into "dump".
+                let dump_start = Instant::now();
+                match parsed {
+                    // plans/M4.md item B: the same single-file/whole-
+                    // closure fork `check` above already makes — an
+                    // `@image` fn's own module may or may not import
+                    // anything else.
+                    Ok(module) if module.imports.is_empty() => {
+                        match sema::check_typed(&module, &path) {
+                            Ok(program) => {
+                                let mut programs = BTreeMap::new();
+                                programs.insert(module.path.join("."), program);
+                                run_image_stage(&programs);
+                            }
+                            Err(e) => print_sema_error(&e),
+                        }
+                    }
+                    Ok(_) => match loader::load_closure(Path::new(&path)) {
+                        Ok(loaded) => {
+                            let paths: BTreeMap<Vec<String>, String> = loaded
+                                .modules
+                                .iter()
+                                .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                                .collect();
+                            let modules: BTreeMap<Vec<String>, _> = loaded
+                                .modules
+                                .into_iter()
+                                .map(|(k, m)| (k, m.module))
+                                .collect();
+                            match sema::check_program_typed(&modules, &paths) {
+                                Ok(programs) => {
+                                    let programs: BTreeMap<String, TypedProgram> = programs
+                                        .into_iter()
+                                        .map(|(k, p)| (k.join("."), p))
+                                        .collect();
+                                    run_image_stage(&programs);
+                                }
+                                Err(e) => print_sema_error(&e),
+                            }
+                        }
+                        Err(loader::LoadError::Lex(e)) => print_lex_error(&e),
+                        Err(loader::LoadError::Parse(e)) => print_parse_error(&e),
+                        Err(loader::LoadError::Build(e)) => print_sema_error(&e),
                     },
                     Err(e) => print_parse_error(&e),
                 }

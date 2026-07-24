@@ -1,0 +1,1 @@
+error[build]: more than one `@image` fn in this module (`build_a` and `build_b`) at 9:1
