@@ -167,12 +167,19 @@ pub const REQ_HEADER_SIZE: u64 = 16;
 pub const REQ_STATUS_SIZE: u64 = 1;
 
 /// Bytes of per-queue bookkeeping that sit in the control pool immediately
-/// after the ring (plans/M7.md item E4 / decision 20). Single-flight for
-/// revision 0.1: one meta record, one header slot, one status byte.
+/// after the ring (plans/M7.md item E4 / decisions 20–22). Single-flight for
+/// revision 0.1: one last_used cursor, one meta record, one header slot,
+/// one status byte.
 ///
 /// ```text
-///   [ring … | meta 64 | header 16 | status 8-pad]
+///   [ring … | last_used 8 | meta 64 | header 16 | status 8-pad]
 /// ```
+///
+/// Decision 22: `QueueOp` / `Receipt` is the absolute address of the meta
+/// record (not the descriptor head). Drain owns `last_used`; await parks
+/// the waiter turn-area and reply-stage addresses in the meta; drain
+/// writes `IoCompletion` into that stage and sets `resume_ready`.
+pub const SLOT_BOOK_BYTES: u64 = 8;
 pub const SLOT_META_BYTES: u64 = 64;
 pub const SLOT_META_PAYLOAD: u64 = 0;
 pub const SLOT_META_HEADER: u64 = 8;
@@ -181,13 +188,138 @@ pub const SLOT_META_PAYLOAD_LEN: u64 = 24;
 pub const SLOT_META_FLAGS: u64 = 32;
 pub const SLOT_META_GENERATION: u64 = 40;
 pub const SLOT_META_WAITER: u64 = 48;
-pub const SLOT_META_INFLIGHT: u64 = 56;
+pub const SLOT_META_REPLY_STAGE: u64 = 56;
 /// `flags` bit 0: device writes the payload (`T_IN` / `device_writes_payload=true`).
 pub const SLOT_FLAG_DEVICE_WRITES: u64 = 1;
+/// `flags` bit 1: publish claimed this slot; drain clears it on resolve.
+pub const SLOT_FLAG_INFLIGHT: u64 = 2;
+/// `flags` bit 2: drain (or reject) wrote an `IoCompletion` into the
+/// completion stash; `await receipt` may take it without parking.
+pub const SLOT_FLAG_RESOLVED: u64 = 4;
+
+/// Stash for a resolved `IoCompletion[P]` (payload + status + written_len
+/// = 32 bytes under the frame ABI). Sits after the status pad so drain can
+/// leave a completion for an `await` that has not yet registered a waiter.
+pub const SLOT_COMPLETION_BYTES: u64 = 32;
+
+/// `avail.flags` bit: `VIRTQ_AVAIL_F_NO_INTERRUPT` (VIRTIO 1.2 §2.6).
+pub const AVAIL_F_NO_INTERRUPT: u16 = 1;
 
 /// Total bytes after the ring this queue's packaging consumes.
+pub const EXPECTED_HEAD: u16 = 0; // single-flight descriptor head
+
 pub fn packaging_bytes() -> u64 {
-    SLOT_META_BYTES + REQ_HEADER_SIZE + 8 // status padded to 8
+    SLOT_BOOK_BYTES
+        + SLOT_META_BYTES
+        + REQ_HEADER_SIZE
+        + 8 // status padded to 8
+        + SLOT_COMPLETION_BYTES
+}
+
+/// Byte offset of the meta record from the pool base, given `place_ring(..).bytes`.
+pub fn meta_offset(ring_bytes: u64) -> u64 {
+    ring_bytes + SLOT_BOOK_BYTES
+}
+
+/// Byte offset of the IoCompletion stash from the pool base.
+pub fn completion_offset(ring_bytes: u64) -> u64 {
+    meta_offset(ring_bytes) + SLOT_META_BYTES + REQ_HEADER_SIZE + 8
+}
+
+/// 03-hardware.md §4: stale / duplicate / unknown IDs are driver faults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionFault {
+    UnknownId {
+        id: u16,
+    },
+    DuplicateId {
+        id: u16,
+    },
+    StaleId {
+        id: u16,
+        slot_epoch: u64,
+        current_epoch: u64,
+    },
+    BadLength {
+        reported: u32,
+        capacity: u32,
+    },
+}
+
+impl CompletionFault {
+    /// Guest abort message — each fault is its own diagnosable name.
+    pub fn abort_message(self) -> &'static str {
+        match self {
+            CompletionFault::UnknownId { .. } => {
+                "driver fault: unknown used-ring id (03-hardware.md §4)"
+            }
+            CompletionFault::DuplicateId { .. } => {
+                "driver fault: duplicate used-ring id (03-hardware.md §4)"
+            }
+            CompletionFault::StaleId { .. } => {
+                "driver fault: stale used-ring id (03-hardware.md §4)"
+            }
+            CompletionFault::BadLength { .. } => {
+                "driver fault: bad used-ring length (03-hardware.md §4)"
+            }
+        }
+    }
+}
+
+/// Validate a device-reported used-ring id against the single-flight slot.
+/// `current_epoch` is the driver's live reset epoch (H2b; revision 0.1 is 0).
+pub fn validate_completion_id(
+    id: u16,
+    expected_head: u16,
+    inflight: bool,
+    slot_epoch: u64,
+    current_epoch: u64,
+) -> Result<(), CompletionFault> {
+    if id != expected_head {
+        return Err(CompletionFault::UnknownId { id });
+    }
+    if slot_epoch != current_epoch {
+        return Err(CompletionFault::StaleId {
+            id,
+            slot_epoch,
+            current_epoch,
+        });
+    }
+    if !inflight {
+        return Err(CompletionFault::DuplicateId { id });
+    }
+    Ok(())
+}
+
+/// Buffer-facing length from `used.len` (which always includes the status
+/// byte). Device-writable payloads report `used.len - 1`; host-writable
+/// (OUT) completions report `0` when the device wrote only status.
+pub fn validate_completion_length(
+    used_len: u32,
+    payload_capacity: u32,
+    device_writes: bool,
+) -> Result<u64, CompletionFault> {
+    if used_len < 1 {
+        return Err(CompletionFault::BadLength {
+            reported: used_len,
+            capacity: payload_capacity,
+        });
+    }
+    let buffer_facing = used_len - 1;
+    if device_writes && buffer_facing > payload_capacity {
+        return Err(CompletionFault::BadLength {
+            reported: used_len,
+            capacity: payload_capacity,
+        });
+    }
+    if !device_writes && buffer_facing != 0 {
+        // OUT: device should have written only the status byte.
+        return Err(CompletionFault::BadLength {
+            reported: used_len,
+            capacity: payload_capacity,
+        });
+    }
+    Ok(u64::from(buffer_facing))
 }
 
 /// Control-pool bytes a `depth`-deep queue needs: ring + packaging.
@@ -256,6 +388,63 @@ mod tests {
         assert_eq!(
             PUBLISH_WRITE_ORDER,
             &["write_descriptors", "publish_available", "notify_queue"]
+        );
+    }
+
+    #[test]
+    fn completion_id_unknown_duplicate_and_stale_are_distinct_faults() {
+        // 03-hardware.md §4: each of the three is its own driver fault.
+        assert_eq!(
+            validate_completion_id(7, EXPECTED_HEAD, true, 0, 0),
+            Err(CompletionFault::UnknownId { id: 7 })
+        );
+        assert_eq!(
+            validate_completion_id(EXPECTED_HEAD, EXPECTED_HEAD, false, 0, 0),
+            Err(CompletionFault::DuplicateId { id: EXPECTED_HEAD })
+        );
+        assert_eq!(
+            validate_completion_id(EXPECTED_HEAD, EXPECTED_HEAD, true, 1, 0),
+            Err(CompletionFault::StaleId {
+                id: EXPECTED_HEAD,
+                slot_epoch: 1,
+                current_epoch: 0,
+            })
+        );
+        assert!(validate_completion_id(EXPECTED_HEAD, EXPECTED_HEAD, true, 0, 0).is_ok());
+        assert_ne!(
+            CompletionFault::UnknownId { id: 0 }.abort_message(),
+            CompletionFault::DuplicateId { id: 0 }.abort_message()
+        );
+        assert_ne!(
+            CompletionFault::DuplicateId { id: 0 }.abort_message(),
+            CompletionFault::StaleId {
+                id: 0,
+                slot_epoch: 1,
+                current_epoch: 0
+            }
+            .abort_message()
+        );
+    }
+
+    #[test]
+    fn completion_length_is_buffer_facing_and_rejects_oversize() {
+        // Read of 512: used.len = 513 (payload + status).
+        assert_eq!(validate_completion_length(513, 512, true), Ok(512));
+        assert_eq!(
+            validate_completion_length(1025, 512, true),
+            Err(CompletionFault::BadLength {
+                reported: 1025,
+                capacity: 512
+            })
+        );
+        // Write: device wrote only status.
+        assert_eq!(validate_completion_length(1, 512, false), Ok(0));
+        assert_eq!(
+            validate_completion_length(513, 512, false),
+            Err(CompletionFault::BadLength {
+                reported: 513,
+                capacity: 512
+            })
         );
     }
 }

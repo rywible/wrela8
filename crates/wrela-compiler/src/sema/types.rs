@@ -924,6 +924,12 @@ fn type_contains_capability(
         Type::Named(name, _) if crate::eval::image_checks::is_sealed_authority_type_name(name) => {
             Some(render_type(ty))
         }
+        // An `Actor[T]` handle is not `T`'s authority (02-language.md §9.1 /
+        // 03-hardware.md §1). Recursing into `T` would refuse every
+        // `@actor` that holds `Actor[SomeDriver]` — the flagship shape —
+        // because the driver's own `Mmio`/`IrqCap` fields would surface
+        // here. Same cut as `eval::legal::capability_in_type`.
+        Type::Named(name, _) if name == "Actor" => None,
         Type::Array(elem, _) => type_contains_capability(elem, components, seen),
         Type::Tuple(elems) => elems
             .iter()
@@ -4952,6 +4958,18 @@ mod tests {
             "{:?}",
             err.message
         );
+    }
+
+    /// plans/M7.md item E4: an `@actor` may hold `Actor[D]` even when `D`
+    /// is a `@driver` whose fields include capabilities. The handle is
+    /// not the driver's authority.
+    #[test]
+    fn an_actor_may_hold_an_actor_handle_to_a_driver() {
+        check_ok(&format!(
+            "{CAP_PRELUDE}@driver\npub struct D:\n    regs: Mmio[Regs]\n\n\
+             @actor\npub struct A:\n    disk: Actor[D]\n\n\
+             \x20   init(mut self, disk: Actor[D]):\n        self.disk = disk\n"
+        ));
     }
 
     // --- typed MMIO (plans/M7.md item C, 03-hardware.md §2) -------------

@@ -1969,11 +1969,10 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             emit_queue_publish(ctx, f, *dst, *queue, *operation)?;
         }
         Inst::QueueDrain { queue, max } => {
-            let _ = (queue, max);
-            return Err(CodegenError::unimplemented(
-                "`VirtQueue.drain` codegen (plans/M7.md item E4: completion validation + \
-                 receipt resolve — the Inst is lowered; the DRAM walk lands next)",
-            ));
+            emit_queue_drain(ctx, f, *queue, *max)?;
+        }
+        Inst::QueueSuppressInterrupts { queue } => {
+            emit_queue_suppress_interrupts(ctx, f, *queue)?;
         }
     }
     Ok(())
@@ -2014,7 +2013,7 @@ fn virtqueue_depth_of(ty: &Type) -> Result<u16, CodegenError> {
 }
 
 /// `prepare_block`: write header/status into packaging, record meta, mint
-/// QueueOp = 0 (single-flight desc head). Decision 20.
+/// QueueOp = absolute meta address (decision 22). Ring head stays 0.
 #[allow(clippy::too_many_arguments)]
 fn emit_queue_prepare(
     ctx: &mut FnCtx,
@@ -2031,7 +2030,7 @@ fn emit_queue_prepare(
     let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
         CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
     })?;
-    let meta = placed.bytes;
+    let meta = crate::virtqueue::meta_offset(placed.bytes);
     let header_off = meta + crate::virtqueue::SLOT_META_BYTES;
     let status_off = header_off + crate::virtqueue::REQ_HEADER_SIZE;
 
@@ -2125,12 +2124,13 @@ fn emit_queue_prepare(
     // payload_len
     ctx.load_imm(X_A, payload_len as i64);
     ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
-    // flags
-    let flags = if device_writes {
-        crate::virtqueue::SLOT_FLAG_DEVICE_WRITES
-    } else {
-        0
-    };
+    // flags = DEVICE_WRITES? | INFLIGHT (RESOLVED cleared)
+    let flags = crate::virtqueue::SLOT_FLAG_INFLIGHT
+        | if device_writes {
+            crate::virtqueue::SLOT_FLAG_DEVICE_WRITES
+        } else {
+            0
+        };
     ctx.load_imm(X_A, flags as i64);
     ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
     // generation: bump (load, add 1, store); start from 1 on first use.
@@ -2146,12 +2146,11 @@ fn emit_queue_prepare(
         ),
     );
     ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_GENERATION as usize);
-    // inflight = 1
-    ctx.load_imm(X_A, 1);
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_INFLIGHT as usize);
-    // QueueOp = desc head 0
-    ctx.load_imm(X_A, 0);
-    ctx.store_slot(X_A, ctx.frame.off(dst));
+    // Clear waiter / reply_stage for a fresh op.
+    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
+    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
+    // QueueOp = absolute meta address (X_D).
+    ctx.store_slot(X_D, ctx.frame.off(dst));
     Ok(())
 }
 
@@ -2167,23 +2166,10 @@ fn emit_queue_publish(
     let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
         CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
     })?;
-    let meta = placed.bytes;
-    let _ = operation; // single-flight: head is always 0; keep operand live via load below
-    ctx.load_slot(X_B, ctx.frame.off(operation)); // keep live / future multi-flight
-
-    // X_C = pool base
+    let meta = crate::virtqueue::meta_offset(placed.bytes);
+    // X_C = pool base; X_D = meta (QueueOp word — absolute address).
     ctx.load_slot(X_C, ctx.frame.off(queue));
-    // X_D = meta base
-    ctx.load_imm(X_D, meta as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
+    ctx.load_slot(X_D, ctx.frame.off(operation));
 
     // Load packaging.
     ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_HEADER as usize); // header addr → will reuse
@@ -2213,26 +2199,18 @@ fn emit_queue_publish(
     // After first emit_desc, X_C should still be pool if emit_desc doesn't clobber.
     // Re-load pool and meta to be safe.
     ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, meta as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
+    ctx.load_slot(X_D, ctx.frame.off(operation));
     ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
     ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
     let data_flags_base = crate::virtqueue::DESC_F_NEXT;
-    // If device_writes, OR WRITE. Compare meta flags to 0.
+    // flags = NEXT | ((meta_flags & DEVICE_WRITES) << 1) — mask so INFLIGHT
+    // does not become a spurious WRITE bit.
     ctx.load_ptr(0, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    // We'll compute flags into a temp slot via conditional — simpler: always
-    // emit two paths. For dump-simplicity use: flags = NEXT | (meta_flags & 1) * WRITE
-    // Since WRITE=2 and FLAG_DEVICE_WRITES=1: flags = NEXT | (meta_flags << 1) when
-    // only bit0 is used: NEXT | (meta_flags * WRITE).
-    // lsl meta_flags by 1 → WRITE bit when meta was 1.
+    ctx.load_imm(1, crate::virtqueue::SLOT_FLAG_DEVICE_WRITES as i64);
+    ctx.push(
+        encode::enc_and_reg(0, 0, 1, true),
+        format!("and {}, {}, {}", reg_name(0), reg_name(0), reg_name(1)),
+    );
     ctx.push(
         encode::enc_lsl_imm(0, 0, 1, true),
         format!("lsl {}, {}, #1", reg_name(0), reg_name(0)),
@@ -2258,16 +2236,8 @@ fn emit_queue_publish(
 
     // Desc 2 (status): WRITE only, len=1, next=0
     ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, meta as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
+    ctx.load_slot(X_D, ctx.frame.off(operation));
+    let _ = meta; // geometry used for ring offsets below
     ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
     emit_desc_entry(
         ctx,
@@ -2365,9 +2335,374 @@ fn emit_queue_publish(
     ctx.load_imm(X_A, 1);
     ctx.store_ptr(X_A, X_D, 0);
 
-    // Receipt word = operation (desc head 0)
+    // Receipt word = operation (meta absolute address).
     ctx.load_slot(X_A, ctx.frame.off(operation));
     ctx.store_slot(X_A, ctx.frame.off(dst));
+    Ok(())
+}
+
+/// `suppress_interrupts`: store `VIRTQ_AVAIL_F_NO_INTERRUPT` into avail.flags.
+fn emit_queue_suppress_interrupts(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    queue: Temp,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, placed.avail as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_imm(X_A, crate::virtqueue::AVAIL_F_NO_INTERRUPT as i64);
+    ctx.push(
+        encode::enc_strh_imm(X_A, X_D, 0),
+        format!("strh w{}, [{}, #0]", X_A, reg_name(X_D)),
+    );
+    Ok(())
+}
+
+/// Used-ring walk for one completion (single-flight). `max` is the source
+/// bound; revision 0.1 never has more than one in flight, so one resolve
+/// per call is the whole drain. Validation faults abort by name.
+fn emit_queue_drain(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    queue: Temp,
+    max: u16,
+) -> Result<(), CodegenError> {
+    let _ = max; // source bound; single-flight processes at most one
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let meta_off = crate::virtqueue::meta_offset(placed.bytes);
+    let comp_off = crate::virtqueue::completion_offset(placed.bytes);
+    let book_off = placed.bytes; // last_used u64
+
+    // X_C = pool
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    // X_D = book (last_used)
+    ctx.load_imm(X_D, book_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, 0); // last_used
+    // X_B = used.idx
+    ctx.load_imm(X_E, placed.used as i64);
+    ctx.push(
+        encode::enc_add_reg(X_E, X_C, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_C),
+            reg_name(X_E)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldrh_imm(X_B, X_E, 2),
+        format!("ldrh w{}, [{}, #2]", X_B, reg_name(X_E)),
+    );
+    // pending = used_idx - last (both as u16 in low half)
+    ctx.push(
+        encode::enc_sub_reg(0, X_B, X_A, true),
+        format!("sub {}, {}, {}", reg_name(0), reg_name(X_B), reg_name(X_A)),
+    );
+    // if pending == 0, done
+    let skip_empty = ctx.emit_skip(SkipKind::Cbnz(0));
+    // fall through = empty → return
+    let done_from_empty = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(skip_empty, SkipKind::Cbnz(0));
+
+    // slot = last & (depth-1)
+    ctx.load_imm(X_B, (depth as u64 - 1) as i64);
+    ctx.push(
+        encode::enc_and_reg(X_B, X_A, X_B, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    // entry = used + 4 + slot*8 → X_F
+    ctx.push(
+        encode::enc_lsl_imm(X_B, X_B, 3, true),
+        format!("lsl {}, {}, #3", reg_name(X_B), reg_name(X_B)),
+    );
+    ctx.load_imm(0, 4);
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, 0, true),
+        format!("add {}, {}, {}", reg_name(X_B), reg_name(X_B), reg_name(0)),
+    );
+    ctx.push(
+        encode::enc_add_reg(X_F, X_E, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_E),
+            reg_name(X_B)
+        ),
+    );
+    // id (u32) → X_B, len (u32) → x0
+    ctx.push(
+        encode::enc_ldr_w_imm(X_B, X_F, 0),
+        format!("ldr w{}, [{}, #0]", X_B, reg_name(X_F)),
+    );
+    ctx.push(
+        encode::enc_ldr_w_imm(0, X_F, 4),
+        format!("ldr w{}, [{}, #4]", 0, reg_name(X_F)),
+    );
+
+    // --- validate id (unknown / duplicate); epoch is always 0 in rev 0.1 ---
+    ctx.load_imm(X_F, crate::virtqueue::EXPECTED_HEAD as i64);
+    ctx.push(
+        encode::enc_cmp_reg(X_B, X_F, true),
+        format!("cmp {}, {}", reg_name(X_B), reg_name(X_F)),
+    );
+    let id_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+    ctx.abort_fixed(crate::virtqueue::CompletionFault::UnknownId { id: 0 }.abort_message());
+    ctx.patch_skip(id_ok, SkipKind::Cond(Cond::Eq));
+
+    // meta → X_D
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, meta_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
+    ctx.push(
+        encode::enc_and_reg(X_F, X_B, X_F, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    let inflight_ok = ctx.emit_skip(SkipKind::Cbnz(X_F));
+    ctx.abort_fixed(crate::virtqueue::CompletionFault::DuplicateId { id: 0 }.abort_message());
+    ctx.patch_skip(inflight_ok, SkipKind::Cbnz(X_F));
+
+    // --- length ---
+    // x0 = used.len; payload_len in X_E; device_writes bit in X_F
+    ctx.load_ptr(X_E, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_DEVICE_WRITES as i64);
+    ctx.push(
+        encode::enc_and_reg(X_F, X_B, X_F, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.push(
+        encode::enc_cmp_imm(0, 1, true),
+        format!("cmp {}, #1", reg_name(0)),
+    );
+    let len_ge1 = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // used.len >= 1 (HS)
+    ctx.abort_fixed(
+        crate::virtqueue::CompletionFault::BadLength {
+            reported: 0,
+            capacity: 0,
+        }
+        .abort_message(),
+    );
+    ctx.patch_skip(len_ge1, SkipKind::Cond(Cond::Cs));
+    // buffer_facing = used.len - 1 → X_A
+    ctx.load_imm(X_A, 1);
+    ctx.push(
+        encode::enc_sub_reg(X_A, 0, X_A, true),
+        format!("sub {}, {}, {}", reg_name(X_A), reg_name(0), reg_name(X_A)),
+    );
+    // if device_writes: buffer_facing <= payload_len; else buffer_facing == 0
+    let is_write = ctx.emit_skip(SkipKind::Cbnz(X_F)); // skip OUT path when DEVICE_WRITES
+    // OUT path
+    ctx.push(
+        encode::enc_cmp_imm(X_A, 0, true),
+        format!("cmp {}, #0", reg_name(X_A)),
+    );
+    let out_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+    ctx.abort_fixed(
+        crate::virtqueue::CompletionFault::BadLength {
+            reported: 0,
+            capacity: 0,
+        }
+        .abort_message(),
+    );
+    ctx.patch_skip(out_ok, SkipKind::Cond(Cond::Eq));
+    let after_len = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(is_write, SkipKind::Cbnz(X_F));
+    // IN path: buffer_facing <= payload_len
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_E, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_E)),
+    );
+    let in_ok = ctx.emit_skip(SkipKind::Cond(Cond::Ls));
+    ctx.abort_fixed(
+        crate::virtqueue::CompletionFault::BadLength {
+            reported: 0,
+            capacity: 0,
+        }
+        .abort_message(),
+    );
+    ctx.patch_skip(in_ok, SkipKind::Cond(Cond::Ls));
+    ctx.patch_skip(after_len, SkipKind::Cond(Cond::Al));
+
+    // --- build IoCompletion in stash ---
+    // Reload meta/pool; X_A still buffer_facing
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, meta_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // Spill buffer_facing to X_E
+    ctx.push(
+        encode::enc_mov_reg(X_E, X_A, true),
+        format!("mov {}, {}", reg_name(X_E), reg_name(X_A)),
+    );
+    // status byte
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
+    ctx.push(
+        encode::enc_ldrb_imm(X_B, X_A, 0),
+        format!("ldrb w{}, [{}, #0]", X_B, reg_name(X_A)),
+    );
+    // payload own handle
+    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    // comp base → X_A
+    ctx.load_imm(X_A, comp_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_F, X_A, 0); // payload
+    // status Result: tag 0 if STATUS_OK else 1
+    ctx.push(
+        encode::enc_cmp_imm(X_B, 0, true),
+        format!("cmp {}, #0", reg_name(X_B)),
+    );
+    ctx.load_imm(X_F, 0);
+    ctx.load_imm(0, 1);
+    ctx.push(
+        encode::enc_csel(X_F, X_F, 0, Cond::Eq, true),
+        format!(
+            "csel {}, {}, {}, eq",
+            reg_name(X_F),
+            reg_name(X_F),
+            reg_name(0)
+        ),
+    );
+    ctx.store_ptr(X_F, X_A, 8); // Result tag
+    ctx.store_ptr(X_ZR, X_A, 16); // Ok(unit) / Err(OutOfRange=0)
+    ctx.store_ptr(X_E, X_A, 24); // written_len
+
+    // flags: clear INFLIGHT, set RESOLVED
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
+    ctx.push(
+        encode::enc_bic_reg(X_B, X_B, X_F, true),
+        format!(
+            "bic {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+    ctx.push(
+        encode::enc_orr_reg(X_B, X_B, X_F, true),
+        format!(
+            "orr {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+
+    // Copy to reply_stage if registered; wake waiter if registered.
+    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
+    let no_stage = ctx.emit_skip(SkipKind::Cbz(X_F));
+    // copy 32 bytes X_A → X_F
+    for w in [0usize, 8, 16, 24] {
+        ctx.load_ptr(X_B, X_A, w);
+        ctx.store_ptr(X_B, X_F, w);
+    }
+    ctx.patch_skip(no_stage, SkipKind::Cbz(X_F));
+
+    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
+    let no_waiter = ctx.emit_skip(SkipKind::Cbz(X_F));
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_str_x_imm(X_B, X_F, OFF_TURN_RESUME_READY as u16),
+        format!(
+            "str {}, [{}, #{OFF_TURN_RESUME_READY}]",
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
+    ctx.patch_skip(no_waiter, SkipKind::Cbz(X_F));
+
+    // last_used++
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, book_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, 0);
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, 0);
+
+    ctx.patch_skip(done_from_empty, SkipKind::Cond(Cond::Al));
     Ok(())
 }
 
@@ -3847,23 +4182,33 @@ fn flow_reply_stage_size(f: &FlowWirFn, layout: &LayoutCtx) -> Result<usize, Cod
     let mut widest = 0usize;
     for s in &f.states {
         let Transition::Await {
-            what: AwaitKind::ActorCall { .. },
-            result_temp,
-            ..
+            what, result_temp, ..
         } = &s.transition
         else {
             continue;
         };
-        let Some(declared) =
-            crate::sema::bodies::decompose_call_error(&f.frame.temp_types[result_temp.0])
-        else {
-            continue;
-        };
-        if !is_aggregate(&declared) {
-            continue;
+        match what {
+            AwaitKind::ActorCall { .. } => {
+                let Some(declared) =
+                    crate::sema::bodies::decompose_call_error(&f.frame.temp_types[result_temp.0])
+                else {
+                    continue;
+                };
+                if !is_aggregate(&declared) {
+                    continue;
+                }
+                let sz = mwir::size_of(&declared, layout)
+                    .map_err(|e| CodegenError::unimplemented(&e))?;
+                widest = widest.max(sz);
+            }
+            AwaitKind::Receipt { .. } => {
+                // `IoCompletion[P]` is the await result — always an aggregate.
+                let ty = &f.frame.temp_types[result_temp.0];
+                let sz = mwir::size_of(ty, layout).map_err(|e| CodegenError::unimplemented(&e))?;
+                widest = widest.max(sz);
+            }
+            AwaitKind::GroupJoin { .. } => {}
         }
-        let sz = mwir::size_of(&declared, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-        widest = widest.max(sz);
     }
     Ok(widest)
 }
@@ -5520,11 +5865,89 @@ fn emit_await_suspend(
             ctx.push(encode::enc_ret(X_LR), "ret".to_string());
             Ok(())
         }
-        AwaitKind::Receipt { .. } => Err(CodegenError::unimplemented(
-            "`await receipt` suspend (plans/M7.md item E4: park until `drain` resolves the \
-             receipt into an `IoCompletion` — typing and AwaitKind are live; the park/wake \
-             path lands with drain codegen)",
-        )),
+        AwaitKind::Receipt { receipt_temp } => {
+            // Decision 22: receipt word = meta absolute address.
+            ctx.load_imm(X_A, resume_state as i64);
+            ctx.store_slot(X_A, ctx.frame.off(state_temp));
+            let stage_off = ctx.frame.reply_stage_off.ok_or_else(|| {
+                CodegenError::internal(
+                    "`await receipt` needs a reply staging slot for `IoCompletion` \
+                     (`flow_reply_stage_size` disagrees with this site)",
+                )
+            })?;
+            let result_size = mwir::size_of(&f.temp_types[result_temp.0], ctx.layout)
+                .map_err(|e| CodegenError::unimplemented(&e))?;
+            // Publish stage address, then waiter, then observe RESOLVED
+            // (mask–arm–recheck against a drain that already finished).
+            ctx.addr_of_slot(X_A, stage_off);
+            ctx.load_slot(X_D, ctx.frame.off(*receipt_temp)); // meta
+            ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
+            ctx.push(
+                encode::enc_str_x_imm(X_FRAME, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+                format!(
+                    "str {}, [{}, #{}]",
+                    reg_name(X_FRAME),
+                    reg_name(X_D),
+                    crate::virtqueue::SLOT_META_WAITER
+                ),
+            );
+            ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+            ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+            ctx.push(
+                encode::enc_and_reg(X_A, X_A, X_B, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_A),
+                    reg_name(X_A),
+                    reg_name(X_B)
+                ),
+            );
+            let need_park = ctx.emit_skip(SkipKind::Cbz(X_A));
+            // Already resolved: copy completion stash → result_temp and
+            // continue into the resume state without leaving the fn.
+            // Stash sits at meta - META + (header+status pad) = meta + 64+16+8
+            // = meta + 88; equivalently pool-relative completion_offset, but
+            // we only have meta here: completion = meta + SLOT_META_BYTES +
+            // REQ_HEADER_SIZE + 8.
+            let stash_delta =
+                crate::virtqueue::SLOT_META_BYTES + crate::virtqueue::REQ_HEADER_SIZE + 8;
+            ctx.load_imm(X_A, stash_delta as i64);
+            ctx.push(
+                encode::enc_add_reg(X_A, X_D, X_A, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_A),
+                    reg_name(X_D),
+                    reg_name(X_A)
+                ),
+            );
+            let result_off = ctx.frame.off(result_temp);
+            let mut w = 0usize;
+            while w < result_size {
+                ctx.load_ptr(X_B, X_A, w);
+                ctx.store_slot(X_B, result_off + w);
+                w += 8;
+            }
+            ctx.checkpoint();
+            emit_checkpoint_cancellation_test(ctx, gctx);
+            ctx.b_unconditional(state_flat_base[resume_state]);
+            ctx.patch_skip(need_park, SkipKind::Cbz(X_A));
+            // Park until drain sets resume_ready.
+            ctx.load_imm(X_A, 1);
+            ctx.push(
+                encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+                format!(
+                    "str {}, [{}, #{OFF_TURN_SUSPENDED}]",
+                    reg_name(X_A),
+                    reg_name(X_FRAME)
+                ),
+            );
+            ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
+            ctx.load_slot(X_LR, ctx.frame.lr_off);
+            ctx.push(encode::enc_ret(X_LR), "ret".to_string());
+            let _ = (scratch0, scratch1);
+            Ok(())
+        }
     }
 }
 
@@ -5930,10 +6353,27 @@ fn emit_await_resume(
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
-        AwaitKind::Receipt { .. } => Err(CodegenError::unimplemented(
-            "`await receipt` resume (plans/M7.md item E4: compose `IoCompletion` from the \
-             drain-resolved reply — typing and AwaitKind are live; lands with drain codegen)",
-        )),
+        AwaitKind::Receipt { .. } => {
+            let stage_off = ctx.frame.reply_stage_off.ok_or_else(|| {
+                CodegenError::internal(
+                    "`await receipt` resume needs the reply staging slot \
+                     (`flow_reply_stage_size` disagrees with this site)",
+                )
+            })?;
+            let result_off = ctx.frame.off(result_temp);
+            let result_size = mwir::size_of(&f.temp_types[result_temp.0], ctx.layout)
+                .map_err(|e| CodegenError::unimplemented(&e))?;
+            let mut w = 0usize;
+            while w < result_size {
+                ctx.load_slot(X_A, stage_off + w);
+                ctx.store_slot(X_A, result_off + w);
+                w += 8;
+            }
+            ctx.checkpoint();
+            emit_checkpoint_cancellation_test(ctx, gctx);
+            ctx.b_unconditional(state_flat_base[resume_state]);
+            Ok(())
+        }
     }
 }
 

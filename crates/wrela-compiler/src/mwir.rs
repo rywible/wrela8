@@ -592,10 +592,11 @@ pub enum Inst {
         driver: String,
     },
 
-    /// `VirtQueue.prepare_block` (plans/M7.md item E4 / decision 20):
+    /// `VirtQueue.prepare_block` (plans/M7.md item E4 / decisions 20–22):
     /// copy the header and status into the control-pool packaging area,
     /// record the payload address / length / direction in the meta slot,
-    /// and mint a `QueueOp` word (descriptor head 0 for single-flight).
+    /// and mint a `QueueOp` word = absolute address of that meta record
+    /// (the ring still uses descriptor head 0 for single-flight).
     /// `payload_len` is the `@layout(dma)` size of the own'd type — the
     /// descriptor length the device model validates against `SECTOR_SIZE`.
     QueuePrepare {
@@ -629,6 +630,12 @@ pub enum Inst {
     QueueDrain {
         queue: Temp,
         max: u16,
+    },
+
+    /// `VirtQueue.suppress_interrupts` (03-hardware.md §7 / poll builds):
+    /// set `VIRTQ_AVAIL_F_NO_INTERRUPT` on the available ring.
+    QueueSuppressInterrupts {
+        queue: Temp,
     },
 
     /// Unconditional abandonment: `assert`'s own failure path, an
@@ -1264,6 +1271,9 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         ),
         Inst::QueueDrain { queue, max } => {
             format!("QueueDrain queue={queue} max={max}")
+        }
+        Inst::QueueSuppressInterrupts { queue } => {
+            format!("QueueSuppressInterrupts queue={queue}")
         }
         Inst::LoadIrqVector { dst, driver } => {
             format!("LoadIrqVector dst={dst} driver={driver}")

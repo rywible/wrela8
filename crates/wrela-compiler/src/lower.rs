@@ -384,7 +384,7 @@ fn mmio_register_offset(
 /// Exact `@layout(dma)` byte size of an `own[P] T` payload (or bare `T`).
 /// Used by `prepare_block` for the descriptor length — mwir `size_of` is
 /// the frame ABI (8-byte slots), not the device-visible layout.
-fn layout_dma_size(ty: &Type, prog: &TypedProgram) -> Option<u64> {
+pub(crate) fn layout_dma_size(ty: &Type, prog: &TypedProgram) -> Option<u64> {
     let name = match ty {
         Type::Own(_, inner) => match inner.as_ref() {
             Type::Named(n, args) if args.is_empty() => n.as_str(),
@@ -2276,8 +2276,8 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         TypedExprKind::Intrinsic {
             key,
             receiver,
+            type_arg,
             args,
-            ..
         } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
             match key.as_str() {
                 "VirtQueue.prepare_block" => {
@@ -2410,6 +2410,9 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 }
                 "VirtQueue.reject" => {
                     // Consume payload + error; mint a Receipt word (opaque).
+                    // Revision 0.1: reject still mints 0 — `await` of a
+                    // rejected receipt is fail-closed until reject writes a
+                    // resolved IoCompletion stash (flagship does not reject).
                     for (_, a) in args {
                         let _ = lower_expr(a, b, env)?;
                     }
@@ -2420,6 +2423,59 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                         value: 0,
                     });
                     let _ = receiver;
+                    Ok(dst)
+                }
+                "VirtQueue.drain" => {
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`drain` reached lowering without a queue receiver".to_string(),
+                            ));
+                        }
+                    };
+                    // `check_virtqueue_drain` folds `max=` into `type_arg`'s Bound.
+                    let max_val = match type_arg {
+                        Some(Type::Named(_, targs)) => match targs.first() {
+                            Some(crate::sema::types::TypeArg::Bound(
+                                crate::syntax::ast::Expr::Int(_, text),
+                            )) => text
+                                .parse::<u16>()
+                                .map_err(|_| LowerError::internal(format!("drain max `{text}`")))?,
+                            _ => {
+                                return Err(LowerError::internal(
+                                    "`drain` type_arg Bound is not an integer literal".to_string(),
+                                ));
+                            }
+                        },
+                        _ => {
+                            return Err(LowerError::internal(
+                                "`drain` reached lowering without a folded max Bound".to_string(),
+                            ));
+                        }
+                    };
+                    let _ = args;
+                    b.emit(Inst::QueueDrain {
+                        queue,
+                        max: max_val,
+                    });
+                    let dst = b.fresh(Type::Unit);
+                    b.emit(Inst::ConstUnit { dst });
+                    Ok(dst)
+                }
+                "VirtQueue.suppress_interrupts" => {
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`suppress_interrupts` reached lowering without a queue receiver"
+                                    .to_string(),
+                            ));
+                        }
+                    };
+                    b.emit(Inst::QueueSuppressInterrupts { queue });
+                    let dst = b.fresh(Type::Unit);
+                    b.emit(Inst::ConstUnit { dst });
                     Ok(dst)
                 }
                 other => Err(LowerError::internal(format!(

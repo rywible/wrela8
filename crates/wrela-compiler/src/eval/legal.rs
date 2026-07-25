@@ -518,6 +518,12 @@ fn capability_in_type(ty: &crate::sema::types::Type, authority: &Authority) -> O
         {
             Some(render_type(ty))
         }
+        // An `Actor[T]` handle is not the driver's authority — holding one
+        // lets a `@test`/`@actor` call public methods; the callee still has
+        // to be reachable from a `@driver` root. Recursing into `T` would
+        // mark every `Actor[BlkDriver]` parameter as a hardware touch and
+        // refuse the flagship caller (plans/M7.md item E4).
+        Type::Named(name, _) if name == "Actor" => None,
         Type::Array(elem, _) => capability_in_type(elem, authority),
         Type::Tuple(elems) => elems.iter().find_map(|e| capability_in_type(e, authority)),
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
@@ -2515,6 +2521,10 @@ fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
                 None
             } else if crate::sema::bodies::is_device_transport_intrinsic(key) {
                 Some("a device bring-up transition (not in the ISR effect set)")
+            } else if crate::sema::bodies::is_queue_op_intrinsic(key) {
+                // 03 §6: substantive queue work (including `drain`) is the
+                // bottom half's job, never the ISR's.
+                Some("a queue operation (not in the ISR effect set — drain belongs in `@task`)")
             } else if crate::sema::bodies::is_irq_cap_intrinsic(key) {
                 Some("an interrupt-vector bind/unmask (not in the ISR effect set)")
             } else if key.starts_with("Group.") {

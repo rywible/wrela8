@@ -5533,14 +5533,14 @@ pub fn is_device_transport_intrinsic(key: &str) -> bool {
 /// falling into a generic "intrinsic" rejection.
 pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
     match key {
-        "VirtQueue.drain" | "VirtQueue.suppress_interrupts" => {
-            Some("plans/M7.md item E4 / G (`drain` / `suppress_interrupts`)")
+        "VirtQueue.poll_sources" | "VirtQueue.completions_pending" => {
+            Some("plans/M7.md item G (`poll_sources` / `completions_pending`)")
         }
         _ => None,
     }
 }
 
-/// Is `key` one of item E2/E3's live queue operations?
+/// Is `key` one of item E2/E3/E4's live queue operations?
 pub fn is_queue_op_intrinsic(key: &str) -> bool {
     matches!(
         key,
@@ -5548,6 +5548,8 @@ pub fn is_queue_op_intrinsic(key: &str) -> bool {
             | "VirtQueue.prepare_block"
             | "VirtQueue.publish"
             | "VirtQueue.reject"
+            | "VirtQueue.drain"
+            | "VirtQueue.suppress_interrupts"
     )
 }
 
@@ -5568,16 +5570,19 @@ fn check_virtqueue_method(
         "prepare_block" => check_virtqueue_prepare_block(queue, args, fspan, call_span, fctx, mctx),
         "publish" => check_virtqueue_publish(queue, args, fspan, call_span, fctx, mctx),
         "reject" => check_virtqueue_reject(queue, args, fspan, call_span, fctx, mctx),
-        "drain" | "suppress_interrupts" | "poll_sources" | "completions_pending" => {
-            Err(unimplemented_at(
-                &format!("`VirtQueue.{name}(...)` — plans/M7.md item E4 / G (`{name}`) is"),
-                call_span,
-            ))
+        "drain" => check_virtqueue_drain(queue, args, fspan, call_span, fctx, mctx),
+        "suppress_interrupts" => {
+            check_virtqueue_suppress_interrupts(queue, args, fspan, call_span, fctx, mctx)
         }
+        "poll_sources" | "completions_pending" => Err(unimplemented_at(
+            &format!("`VirtQueue.{name}(...)` — plans/M7.md item G (`{name}`) is"),
+            call_span,
+        )),
         other => Err(type_error(
             format!(
                 "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4 gives \
-                 `reserve_proven`, `prepare_block`, `publish`, `reject` and `drain`"
+                 `reserve_proven`, `prepare_block`, `publish`, `reject`, `drain`, and \
+                 `suppress_interrupts`"
             ),
             fspan,
         )),
@@ -6079,6 +6084,108 @@ fn check_virtqueue_reject(
                 ("payload".to_string(), payload),
                 ("error".to_string(), error),
             ],
+        },
+    })
+}
+
+/// `queue.drain(max=N)` — bounded used-ring walk (03-hardware.md §4/§6).
+fn check_virtqueue_drain(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    let depth = virtqueue_type_depth(&queue.ty, mctx).ok_or_else(|| {
+        type_error(
+            "`drain` needs a `VirtQueue[..N]` whose depth is a comptime-known nonzero power of two"
+                .to_string(),
+            call_span,
+        )
+    })?;
+    if args.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.drain(max=N)` takes exactly one labelled argument; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let arg = &args[0];
+    if arg.label.as_deref() != Some("max") {
+        return Err(type_error(
+            "`VirtQueue.drain`'s own argument is labelled `max=` (03-hardware.md §6)".to_string(),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`drain`'s `max=` is a bound, not a moved value: drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let max_expr = check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?;
+    let max_val = virtqueue_depth_value(&max_expr, mctx).ok_or_else(|| {
+        type_error(
+            "`drain`'s `max=` must be a comptime-known integer (03-hardware.md §6)".to_string(),
+            arg.span,
+        )
+    })?;
+    if max_val == 0 || max_val > depth {
+        return Err(type_error(
+            format!("`drain(max={max_val})` on `VirtQueue[..{depth}]`: max must be in 1..={depth}"),
+            arg.span,
+        ));
+    }
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.drain".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: Some(Type::Named(
+                "VirtQueue".to_string(),
+                vec![types::TypeArg::Bound(Expr::Int(
+                    call_span,
+                    max_val.to_string(),
+                ))],
+            )),
+            args: vec![("max".to_string(), max_expr)],
+        },
+    })
+}
+
+/// `queue.suppress_interrupts()` — set `VIRTQ_AVAIL_F_NO_INTERRUPT` (poll builds).
+fn check_virtqueue_suppress_interrupts(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    _fctx: &mut FnCtx,
+    _mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    if !args.is_empty() {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.suppress_interrupts()` takes no arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.suppress_interrupts".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: Vec::new(),
         },
     })
 }
@@ -7180,10 +7287,15 @@ fn check_message_args(
             ));
         }
         if a.mode == AccessMode::Take && is_resource_type(&vt.ty, mctx) {
-            return Err(unimplemented_at(
-                "`take` of a resource in a message is",
-                a.span,
-            ));
+            // plans/M7.md item E4 / 03-hardware.md §5: a handoff may
+            // `take` an `own[P] T` transfer payload into an awaitable
+            // driver call. Other resource takes in messages stay closed.
+            if !matches!(&vt.ty, Type::Own(..)) {
+                return Err(unimplemented_at(
+                    "`take` of a non-`own` resource in a message is",
+                    a.span,
+                ));
+            }
         }
         slots[idx] = Some(vt);
     }
