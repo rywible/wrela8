@@ -1,0 +1,60 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/boot_handle_space_multi_kind.wr sha256=53cdc641a34ff2b8a573c0952b2d86ec65740b56f972b5ff66e60571395ca22d
+  Name value=probe7-multi-kind
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=HwA
+    Arg label=transport value=4096
+    Arg label=required_features value=[Feature.Flush]
+  Device index=1 type=HwB
+    Arg label=transport value=8192
+  Driver index=0 type=S0
+    Arg label=n value=9
+  Driver index=1 type=S1
+    Arg label=n value=11
+  Actor index=0 type=Marker
+    Mailbox value=4
+    Arg label=n value=7
+  Actor index=1 type=Tags
+    Mailbox value=4
+  Edge from=driver#0 to=device#0
+  Edge from=driver#1 to=device#1
+  Edge from=actor#1 to=actor#0
+  Edge from=actor#1 to=driver#0
+  Edge from=actor#1 to=driver#1
+  Edge from=actor#1 to=device#0
+  Edge from=actor#1 to=device#1
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=actor#0
+    Child value=driver#0
+    Child value=driver#1
+    Child value=actor#1
+  Placement id=driver#0 type=S0 core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
+  Placement id=driver#1 type=S1 core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
+  Placement id=actor#0 type=Marker core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Placement id=actor#1 type=Tags core=0 source=inferred work=0 work_source=unproved bytes=128 bytes_state=40 bytes_mailbox=88 bytes_pool=0
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=4140
+  Section name=rodata base=0x40501080 size=573
+  Section name=abort base=0x405012c0 size=120
+  Section name=checkpoint base=0x40501338 size=104
+  Section name=rtcode base=0x405013a0 size=2148
+  Section name=rtdata base=0x40501c08 size=1416
+  Section name=devregs base=0x40502190 size=16
+  Entry base=0x40500000
+  Actor name=Marker mailbox=4 slot=16 frame=56 state=8
+  Actor name=Tags mailbox=4 slot=16 frame=56 state=40
+  Turn fn=every_kind_gets_its_own_word frame=1032
+  Driver name=S0 state=8
+  Driver name=S1 state=8
+  Totals actors=2 drivers=2 ready_queue=3 group_arena=0 bytes=1416
+  DeviceRegs device=device#0 type=HwA driver=S0 base=0x40502190 size=8
+  DeviceRegs device=device#1 type=HwB driver=S1 base=0x40502198 size=8

@@ -1,0 +1,133 @@
+module examples.boot_handle_space_multi_kind
+
+# Orchestrator spot-probe for M8 item H attack 6, independent of the
+# agent's own golden: a shape with TWO drivers and TWO devices, so the
+# `n_actors + n_drivers + i` shift for devices is exercised with both
+# terms non-trivial. Expected words: marker=0, tags=1, s0=2, s1=3,
+# hw0=4, hw1=5.
+
+struct HwA:
+    id: u32
+
+struct HwB:
+    id: u32
+
+enum Feature:
+    Flush
+
+@driver
+pub struct S0:
+    n: u64
+
+    init(mut self, n: u64):
+        self.n = n
+
+    pub fn get(read self) -> u64:
+        return self.n
+
+@driver
+pub struct S1:
+    n: u64
+
+    init(mut self, n: u64):
+        self.n = n
+
+    pub fn get(read self) -> u64:
+        return self.n
+
+@actor
+pub struct Marker:
+    n: u64
+
+    init(mut self, n: u64):
+        self.n = n
+
+    pub fn get(read self) -> u64:
+        return self.n
+
+@actor
+pub struct Tags:
+    a: u32
+    d0: u32
+    d1: u32
+    v0: u32
+    v1: u32
+
+    init(mut self, a: u32, d0: u32, d1: u32, v0: u32, v1: u32):
+        self.a = a
+        self.d0 = d0
+        self.d1 = d1
+        self.v0 = v0
+        self.v1 = v1
+
+    pub fn wa(read self) -> u32:
+        return self.a
+
+    pub fn wd0(read self) -> u32:
+        return self.d0
+
+    pub fn wd1(read self) -> u32:
+        return self.d1
+
+    pub fn wv0(read self) -> u32:
+        return self.v0
+
+    pub fn wv1(read self) -> u32:
+        return self.v1
+
+@test(runtime)
+async fn every_kind_gets_its_own_word(t: Actor[Tags]):
+    a = await t.wa()
+    match a:
+        case .Ok(n):
+            assert n == 0, "Marker is actor#0"
+        case .Err(_):
+            assert false, "wa rejected"
+    d0 = await t.wd0()
+    match d0:
+        case .Ok(n):
+            assert n == 2, "S0 is driver#0 after two actors"
+        case .Err(_):
+            assert false, "wd0 rejected"
+    d1 = await t.wd1()
+    match d1:
+        case .Ok(n):
+            assert n == 3, "S1 is driver#1"
+        case .Err(_):
+            assert false, "wd1 rejected"
+    v0 = await t.wv0()
+    match v0:
+        case .Ok(n):
+            assert n == 4, "HwA is device#0 after two actors and two drivers"
+        case .Err(_):
+            assert false, "wv0 rejected"
+    v1 = await t.wv1()
+    match v1:
+        case .Ok(n):
+            assert n == 5, "HwB is device#1"
+        case .Err(_):
+            assert false, "wv1 rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="probe7-multi-kind", target=Target.wrela_machine_v1)
+    hw0 = img.device[HwA](transport=0x1000, required_features=[Feature.Flush])
+    hw1 = img.device[HwB](transport=0x2000)
+    marker = img.actor(Marker, mailbox=4, n=7)
+    s0 = img.driver(S0, device=hw0, n=9)
+    s1 = img.driver(S1, device=hw1, n=11)
+    tags = img.actor(
+        Tags,
+        mailbox=4,
+        a=marker.handle(),
+        d0=s0.handle(),
+        d1=s1.handle(),
+        v0=hw0.handle(),
+        v1=hw1.handle(),
+    )
+    img.supervise(
+        children=[marker, s0, s1, tags],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

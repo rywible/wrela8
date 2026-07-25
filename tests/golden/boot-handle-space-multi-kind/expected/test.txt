@@ -1,0 +1,2 @@
+test every_kind_gets_its_own_word: ok
+1 passed, 0 failed
