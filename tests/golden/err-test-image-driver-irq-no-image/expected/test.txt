@@ -1,0 +1,1 @@
+error[build]: the runtime test tier could not lay out the test image: `LoadIrqVector` names `@driver` `BlkDriver`, which this image never declared — add `img.driver(BlkDriver, device=...)` with `vector=N` (1..=63) on the device to an `@image` fn, or drop the IRQ bind for a poll build (03-hardware.md §6/§7)

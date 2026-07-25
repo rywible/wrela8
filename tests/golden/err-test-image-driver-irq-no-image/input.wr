@@ -1,0 +1,31 @@
+module examples.err_test_image_driver_irq_no_image
+
+# plans/M8.md item H soak (fuzz lower seed 8103): a `@driver` that binds
+# an IRQ, plus `@test(runtime)`, and no `@image`. Layout has nowhere to
+# read the vector from — named `error[build]`, never `internal error:`.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        self.irq = take irq
+
+    fn on_queue_irq(self):
+        pass
+
+@test(runtime)
+pub fn test_needs_the_machine():
+    assert true
