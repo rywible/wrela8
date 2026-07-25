@@ -1,0 +1,1 @@
+error[unimplemented]: codegen for a handoff `await` (03-hardware.md §5) inside an image that declares a `with group` — a cancelled handoff receipt has no `CallError` channel to resolve into and must go to 03-hardware.md §9's recovery turn (plans/M8.md item F) is not implemented yet
