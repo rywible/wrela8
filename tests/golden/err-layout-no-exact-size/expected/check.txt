@@ -1,0 +1,1 @@
+error[type]: field `Flags.enabled: bool` has no exact byte size; a `@layout` field is a sized integer (`u8`/`u16`/`u32`/`u64`, or their signed forms) (03-hardware.md §3) at 12:5

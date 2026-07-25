@@ -1,0 +1,12 @@
+module examples.err_layout_no_exact_size
+
+# plans/M7.md item B, 03-hardware.md §3: "rejects anything implicit or
+# target-dependent". `bool` has no byte encoding pinned anywhere in the
+# docs — one byte? one bit? — so the compiler cannot report an exact one
+# for it without inventing it, and inventing is exactly what a `@layout`
+# never does.
+
+@layout(wire, endian=little)
+struct Flags:
+    magic: u32
+    enabled: bool

@@ -1,0 +1,14 @@
+module examples.err_layout_member
+
+# plans/M7.md item B: a `@layout` type is an encoding, not behavior. Its
+# methods, constructor and pool bindings are all surface this item does not
+# check — so they fail closed here rather than being silently accepted and
+# silently unchecked, which is the shape a `@layout` type's own rules
+# (volatile access, ownership) would have to grow into at items C/D.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+    fn acknowledge(read self) -> u32:
+        return 0

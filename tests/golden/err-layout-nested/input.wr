@@ -1,0 +1,20 @@
+module examples.err_layout_nested
+
+# plans/M7.md item B fails closed on a nested `@layout` field, by name: the
+# composite request-plus-status shapes that need one are the queue/DMA
+# structures plans/M7.md item E owns. Rejected rather than accepted-and-
+# approximated, and rejected with the scope limit it actually is rather
+# than with the "no exact byte size" message it is not — `BlkReqHeader`
+# has a perfectly exact size, this compiler just does not compose one yet.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+
+@layout(dma, endian=little)
+struct BlkRequest:
+    header: BlkReqHeader
+    status: u8

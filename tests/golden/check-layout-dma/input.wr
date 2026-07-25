@@ -1,0 +1,22 @@
+module examples.layout_dma
+
+# plans/M7.md item B: `@layout(dma)` — device-visible memory (03-hardware.md
+# §3). Two real virtio-blk request structures: a four-field header whose
+# offsets are all implicit (each field starts where the previous one ended,
+# every one naturally aligned, so the compiler never has to invent a byte)
+# and a one-byte status word.
+#
+# The *pool* these would live in — `own[P] T`, `DmaShared[P, L]`, and
+# `img.dma_pool` — is plans/M7.md item D and does not exist yet; this case
+# declares the bytes only.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8

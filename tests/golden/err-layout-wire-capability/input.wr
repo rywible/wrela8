@@ -1,0 +1,18 @@
+module examples.err_layout_wire_capability
+
+# plans/M7.md item B, 03-hardware.md §3, verbatim: a `wire` layout is
+# "persistent/network bytes — exact encoding independent of any target, no
+# capabilities or target-dependent fields inside".
+#
+# Note what makes this rejection *live* today: no capability type exists
+# yet (plans/M7.md item A mints `DeviceCap`/`Mmio`/`IrqCap`/`DmaPool`), so
+# checked after name resolution this rule would be dead code and would
+# report `error[name]: unknown name `DmaPool`` — a diagnostic naming the
+# wrong cause. The `@layout` pass therefore runs *before* name resolution
+# (`sema::types::check_layouts`), which is also why the message below
+# names the capability rather than the missing name.
+
+@layout(wire, endian=little)
+struct Record:
+    magic: u32
+    payloads: DmaPool[Payloads, 4096]

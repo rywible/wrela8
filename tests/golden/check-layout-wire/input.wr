@@ -1,0 +1,28 @@
+module examples.layout_wire
+
+# plans/M7.md item B: `@layout(wire)` — persistent/network bytes, "exact
+# encoding independent of any target" (03-hardware.md §3). Two things this
+# case exists to pin that the `dma`/`mmio` cases cannot:
+#
+#   - `endian=big`. The wire kind is the one whose bytes leave the machine,
+#     so network byte order is a real declaration, not a curiosity; the
+#     docs never enumerate the allowed values, and this compiler accepts
+#     exactly `little` and `big` (plans/M7.md item B, reported as a plan
+#     decision).
+#   - An explicit `@offset` that skips ahead. The 12 bytes between
+#     `blocks` and `checksum` are *declared* padding — the author wrote the
+#     hole — so they are reported, not rejected. The padding a `@layout`
+#     rejects is the padding the compiler would otherwise invent
+#     (`err-layout-implicit-padding`).
+#
+# Decoding these bytes (`Bytes.read_wire[W]`, 03 §3 / 05-library.md §9) is
+# not implemented and is not needed to read a block; it fails closed by
+# name until the item that needs it.
+
+@layout(wire, endian=big)
+struct Inode:
+    magic: u32
+    size_bytes: u32
+    start_lba: u64
+    blocks: u32
+    @offset(0x20) checksum: u32

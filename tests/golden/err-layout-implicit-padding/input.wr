@@ -1,0 +1,12 @@
+module examples.err_layout_implicit_padding
+
+# plans/M7.md decision 4: "No implicit padding." An ordinary compiler
+# silently inserts three bytes here so `sector` lands 4-byte aligned; this
+# one refuses and says how many bytes it would have had to invent. The fix
+# is to say what you meant — `@offset(0x004)` for a hole, or reorder the
+# fields so none is needed.
+
+@layout(dma, endian=little)
+struct Request:
+    kind: u8
+    sector: u32
