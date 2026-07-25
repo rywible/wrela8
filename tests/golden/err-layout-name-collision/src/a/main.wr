@@ -1,0 +1,69 @@
+module a.main
+
+# plans/M7.md item I (the adversarial sweep), 03-hardware.md §3 +
+# plans/M7.md decision 5.
+#
+# `eval::image_checks::closure_layouts` unions every module's own checked
+# `@layout` table into one `BTreeMap` keyed by the type's **bare name**,
+# and that table is what `img.dma_pool[T](name=P, ...)` reads to answer
+# how many bytes a device can reach. It used to resolve a same-name
+# collision last-module-wins, disclosed in a comment as "the identical,
+# already-recorded simplification `layout::merge_layout_ctx` makes".
+#
+# The disclosure understated it. Verified by running, both ways:
+#
+#   - **Silent wrong answer.** With `z.other`'s `Ctl` spelled
+#     `@layout(dma)` over three `u64` fields, this image — which binds
+#     `img.dma_pool[Ctl](name=Control, count=4)` against *its own*
+#     one-byte `Ctl` — reserved 4 x 24 bytes and reported `slot_bytes=24`,
+#     from a type this module cannot name and its author never wrote.
+#     That is the wrong answer about *which bytes a device can reach*,
+#     which decision 5 calls a security property.
+#   - **Unactionable diagnostic.** With `z.other`'s `Ctl` spelled
+#     `@layout(mmio)` (as it is below), the build was rejected with
+#     "`Ctl` is `@layout(mmio)`, not `@layout(dma)`" — about a `Ctl` this
+#     file does not have and cannot see.
+#
+# A real fix is cross-module type identity, which this compiler has
+# nowhere: no type name resolves across a module boundary at all today
+# (`layout::merge_layout_ctx` merges every struct and enum name the same
+# way), so `a.main` could not name `z.other`'s `Ctl` even deliberately.
+# Until that changes, two `@layout` types with one name in one closure is
+# a build error rather than a coin flip.
+#
+# `z.other` is in the closure because `a.main` imports its `helper` fn —
+# the ordinary way a module joins a build. Nothing here is contrived
+# beyond the name itself, which is exactly the point: `Ctl`, `Header`,
+# `Status` and `Ring` are the names a real driver and a real filesystem
+# would each pick.
+
+from z.other import helper
+
+@layout(dma, endian=little)
+struct Ctl:
+    tiny: u8
+
+struct BlockHw:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    init(mut self, sectors: u64):
+        self.sectors = sectors
+
+    pub fn capacity(read self) -> u64:
+        return self.sectors + helper()
+
+pool Control
+
+@image
+pub fn build() -> Image:
+    img = Image(name="layout-name-collision", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk, sectors=2048)
+    c = img.dma_pool[Ctl](name=Control, device=blk, count=4)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

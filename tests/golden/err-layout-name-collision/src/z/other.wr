@@ -1,0 +1,24 @@
+module z.other
+
+# The second module of `err-layout-name-collision`. It joins the build the
+# ordinary way — `a.main` imports `helper` — and it declares its own
+# perfectly reasonable `Ctl`. Nothing here knows `a.main` exists, and
+# `a.main` cannot name this type: no type name resolves across a module
+# boundary in this compiler. The collision is in the *closure table* both
+# end up in, which is why neither module's author could have seen it.
+#
+# Spelled `@layout(mmio)` deliberately: that is the arm that produced the
+# unactionable diagnostic ("`Ctl` is `@layout(mmio)`, not `@layout(dma)`"
+# about a `Ctl` the complaining module does not have). The `@layout(dma)`
+# spelling produced the silent wrong answer instead — 4 x 24 bytes of
+# device-reachable memory reserved from a type nobody wrote — and both are
+# refused by one rule now.
+
+@layout(mmio, endian=little)
+struct Ctl:
+    @offset(0x000) status: ReadOnly[u64]
+    @offset(0x008) control: WriteOnly[u64]
+    @offset(0x010) scratch: ReadOnly[u64]
+
+pub fn helper() -> u64:
+    return 7
