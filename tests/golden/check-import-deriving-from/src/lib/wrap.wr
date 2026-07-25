@@ -1,0 +1,10 @@
+module lib.wrap
+
+# plans/M9.md item B3 fixture: deriving(From) on a one-field struct.
+# Exporter spelling is Wrap; importers may alias it.
+
+pub struct Src:
+    n: u32
+
+pub struct Wrap deriving(From):
+    inner: Src

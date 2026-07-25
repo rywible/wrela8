@@ -1,0 +1,14 @@
+Module path=app.main
+  Fn direct() -> u32
+  Const DIRECT: u32
+  Fn t_alias_from() -> unit
+  Struct Store resource
+    field direct: u32
+    init(mut self, direct: read u32) -> unit
+  Fn build() -> Image
+Module path=lib.wrap
+  Struct Src data
+    field n: u32
+  Struct Wrap data deriving(From)
+    field inner: Src
+    fn from(source: take Src) -> Wrap

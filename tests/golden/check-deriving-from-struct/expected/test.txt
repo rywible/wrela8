@@ -1,4 +1,4 @@
-test test_deriving_from_converts: ok
+test test_struct_deriving_converts: ok
 test test_ok_path_unchanged: ok
 test test_generated_from_callable: ok
 3 passed, 0 failed

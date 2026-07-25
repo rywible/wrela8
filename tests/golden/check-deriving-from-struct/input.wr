@@ -1,0 +1,69 @@
+module examples.check_deriving_from_struct
+
+# plans/M9.md item B3. Struct half of deriving(From): generates a real
+# `from` (05 §8), callable directly and consumed by `?`. Settle adds
+# offsets so an identity wrap or a missing call cannot forge the pins.
+
+pub struct LoadError:
+    code: u32
+
+pub struct WrapError deriving(From):
+    inner: LoadError
+
+pub fn parse(raw: u32) -> Result[u32, LoadError]:
+    if raw == 0:
+        return Err(LoadError(code=raw))
+    return Ok(raw)
+
+pub fn convert_wrapped(raw: u32) -> Result[u32, WrapError]:
+    value = parse(raw)?
+    return Ok(value)
+
+fn settle(r: Result[u32, WrapError]) -> u32:
+    match r:
+        case .Ok(v):
+            return v
+        case .Err(e):
+            return e.inner.code + 1000
+
+# Direct call of the generated from — payload 5 becomes 2505.
+fn direct_call() -> u32:
+    s = LoadError(code=5)
+    w = WrapError.from(take s)
+    return w.inner.code + 2500
+
+# Err(LoadError(code=0)) through ? -> 1000. Unconverted 0 cannot.
+const CONVERTED: u32 = settle(convert_wrapped(0))
+const OK: u32 = settle(convert_wrapped(7))
+const DIRECT: u32 = direct_call()
+
+@test
+pub fn test_struct_deriving_converts():
+    assert CONVERTED == 1000, "`?` must call WrapError.from on LoadError(code=0)"
+
+@test
+pub fn test_ok_path_unchanged():
+    assert OK == 7, "Ok path must not convert"
+
+@test
+pub fn test_generated_from_callable():
+    assert DIRECT == 2505, "generated struct from must be callable directly"
+
+@actor
+pub struct Store:
+    converted: u32
+    ok: u32
+    direct: u32
+
+    init(mut self, converted: u32, ok: u32, direct: u32):
+        self.converted = converted
+        self.ok = ok
+        self.direct = direct
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-deriving-from-struct", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, converted=CONVERTED, ok=OK, direct=DIRECT, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -6,8 +6,10 @@ Module path=examples.command_parser
     variant Delete
   Enum ParseError data deriving(From)
     variant BadOpcode(u8)
+    fn from(source: take u8) -> ParseError
   Enum CommandError data deriving(From)
     variant Invalid(ParseError)
+    fn from(source: take ParseError) -> CommandError
   Struct Header data
     field opcode: Opcode
     field length: u8

@@ -20,6 +20,7 @@ Module path=examples.rate_limiter
     fn level(read self) -> u64
   Enum ConfigError data deriving(From)
     variant BadRate(u64)
+    fn from(source: take u64) -> ConfigError
   Struct BucketConfig data
     field capacity: u64
     field refill_rate: u64
@@ -34,8 +35,10 @@ Module path=examples.rate_limiter
     variant Cooldown(Ticks)
   Enum GateError data deriving(From)
     variant Denied(u64)
+    fn from(source: take u64) -> GateError
   Enum LimiterError data deriving(From)
     variant Blocked(GateError)
+    fn from(source: take GateError) -> LimiterError
   Struct Gate data
     field state: GateState
     field bucket: TokenBucket

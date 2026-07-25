@@ -8,8 +8,10 @@ Module path=examples.bodies
     fn increment(mut self, by: read u64) -> unit
   Enum LoadError data deriving(From)
     variant Bad(u64)
+    fn from(source: take u64) -> LoadError
   Enum WrapError data deriving(From)
     variant Inner(LoadError)
+    fn from(source: take LoadError) -> WrapError
   Fn parse(raw: read u64) -> Result[u64, LoadError]
   Fn convert(raw: read u64) -> Result[u64, LoadError]
   Fn convert_wrapped(raw: read u64) -> Result[u64, WrapError]
@@ -39,6 +41,7 @@ Module path=examples.bodies
   Fn make_meter(v: read u64) -> Meter
   Enum MeterError data deriving(From)
     variant Invalid(u64)
+    fn from(source: take u64) -> MeterError
   Struct SafeMeter data
     field value: u64
     init(mut self, value: read u64) -> Result[unit, MeterError]

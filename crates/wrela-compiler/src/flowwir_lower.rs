@@ -2660,54 +2660,28 @@ fn lower_try_check(
 }
 
 /// Apply `?`'s one-hop `from` conversion inside an async body (same
-/// rules as `lower::lower_from_conversion`).
+/// rules as `lower::lower_from_conversion` — Call only, no structural
+/// wrap; plans/M9.md item B3).
 fn lower_from_conversion_flow(
     err_payload: Temp,
     key: &CalleeKey,
     target_ty: Type,
     b: &mut FlowBuilder,
 ) -> Result<Temp, FlowError> {
-    if resolve_callee_fn(b.prog, key).is_ok() {
-        let dst = b.fresh(target_ty);
-        b.emit_mwir(Inst::Call {
-            dst,
-            write_backs: Vec::new(),
-            key: key.spelling(),
-            args: vec![err_payload],
-        });
-        return Ok(dst);
+    if resolve_callee_fn(b.prog, key).is_err() {
+        return Err(FlowError::internal(format!(
+            "`?` conversion `{}` has no TypedFn (deriving(From) must generate one)",
+            key.spelling()
+        )));
     }
-    let CalleeKey::Method(name, member) = key else {
-        return Err(FlowError::unimplemented(
-            "a `?` conversion (`From`) inside an async body is",
-        ));
-    };
-    if member != "from" {
-        return Err(FlowError::unimplemented(
-            "a `?` conversion (`From`) inside an async body is",
-        ));
-    }
-    let prog = b.prog;
-    if prog.enums.contains_key(name) || prog.imported.enums.contains_key(name) {
-        let dst = b.fresh(target_ty);
-        b.emit_mwir(Inst::MakeEnum {
-            dst,
-            tag: 0,
-            payload: vec![err_payload],
-        });
-        return Ok(dst);
-    }
-    if struct_by_name(prog, name).is_some() {
-        let dst = b.fresh(target_ty);
-        b.emit_mwir(Inst::MakeAggregate {
-            dst,
-            elems: vec![err_payload],
-        });
-        return Ok(dst);
-    }
-    Err(FlowError::unimplemented(
-        "a `?` conversion (`From`) inside an async body is",
-    ))
+    let dst = b.fresh(target_ty);
+    b.emit_mwir(Inst::Call {
+        dst,
+        write_backs: Vec::new(),
+        key: key.spelling(),
+        args: vec![err_payload],
+    });
+    Ok(dst)
 }
 
 #[cfg(test)]

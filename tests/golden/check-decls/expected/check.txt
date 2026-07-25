@@ -16,6 +16,7 @@ Module path=examples.decls
     variant Failed(ConfigError)
   Enum ConfigError data deriving(From)
     variant Invalid(Str)
+    fn from(source: take Str) -> ConfigError
   AsyncFn fetch(client: read u64) -> Result[u64, ConfigError]
   Fn hash(data: read Bytes) -> u64
   Fn enqueue(packet: read own[Packets] Packet) -> unit

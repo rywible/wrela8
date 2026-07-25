@@ -1748,9 +1748,9 @@ fn lower_try_sync(
     Ok(ok_payload)
 }
 
-/// Apply `?`'s one-hop `from` conversion (02 §7.4 / plans/M9.md item B).
-/// An explicit associated `from` is a Call; a `deriving(From)` miss is
-/// the structural single-field / single-variant wrap.
+/// Apply `?`'s one-hop `from` conversion (02 §7.4 / plans/M9.md item B3).
+/// Explicit and deriving-generated `from` are both Calls; there is no
+/// structural wrap fallback.
 fn lower_from_conversion(
     err_payload: Temp,
     conv: &Option<CalleeKey>,
@@ -1760,47 +1760,20 @@ fn lower_from_conversion(
     let Some(key) = conv else {
         return Ok(err_payload);
     };
-    if resolve_fn(b.prog(), key).is_some() {
-        let dst = b.fresh(target_ty);
-        b.emit(Inst::Call {
-            dst,
-            write_backs: Vec::new(),
-            key: key.spelling(),
-            args: vec![err_payload],
-        });
-        return Ok(dst);
+    if resolve_fn(b.prog(), key).is_none() {
+        return Err(LowerError::internal(format!(
+            "`?` conversion `{}` has no TypedFn (deriving(From) must generate one)",
+            key.spelling()
+        )));
     }
-    let CalleeKey::Method(name, member) = key else {
-        return Err(LowerError::unimplemented(
-            "a `?` conversion (`From`) in a synchronous body is",
-        ));
-    };
-    if member != "from" {
-        return Err(LowerError::unimplemented(
-            "a `?` conversion (`From`) in a synchronous body is",
-        ));
-    }
-    let prog = b.prog();
-    if prog.enums.contains_key(name) || prog.imported.enums.contains_key(name) {
-        let dst = b.fresh(target_ty);
-        b.emit(Inst::MakeEnum {
-            dst,
-            tag: 0,
-            payload: vec![err_payload],
-        });
-        return Ok(dst);
-    }
-    if struct_by_name(prog, name).is_some() {
-        let dst = b.fresh(target_ty);
-        b.emit(Inst::MakeAggregate {
-            dst,
-            elems: vec![err_payload],
-        });
-        return Ok(dst);
-    }
-    Err(LowerError::unimplemented(
-        "a `?` conversion (`From`) in a synchronous body is",
-    ))
+    let dst = b.fresh(target_ty);
+    b.emit(Inst::Call {
+        dst,
+        write_backs: Vec::new(),
+        key: key.spelling(),
+        args: vec![err_payload],
+    });
+    Ok(dst)
 }
 
 fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Temp, LowerError> {

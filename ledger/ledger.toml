@@ -1635,20 +1635,27 @@ doc = "02-language.md#7.4, 02-language.md#7.5, 05-library.md#8"
 status = "test"
 tests = [
   "golden/check-deriving-from",
+  "golden/check-deriving-from-struct",
   "golden/check-from-explicit",
+  "golden/check-import-deriving-from",
+  "golden/check-import-alias-deriving-from",
   "golden/err-deriving-from-two-fields",
+  "golden/err-deriving-from-two-variants",
+  "golden/err-deriving-from-conflict",
 ]
-note = """02-language.md §7.4 desugars `Err(e)?` needing conversion to `TargetError.from(take e)`; §7.5 / 05-library.md §8 say `deriving(From)` requires exactly one variant/field and generates that `from`. plans/M9.md item B (decisions 105–108) closes both halves BB decision 61 named as gaps.
+note = """02-language.md §7.4 desugars `Err(e)?` needing conversion to `TargetError.from(take e)`; §7.5 / 05-library.md §8 say `deriving(From)` requires exactly one variant/field and generates that `from`. plans/M9.md item B (decisions 105–108) closed the conversion path; item B3 (decisions 137–146) makes the generated `from` a real TypedFn and deletes the structural wrap.
 
-**Half A — spelling.** `from` remains a reserved word for `from path import Name` (§2). After `fn` it is accepted as an associated-fn name (`parser::expect_fn_name`): an import's `from` is only ever the first token of a statement, a function name only ever follows `fn`, so the two positions do not overlap. Other keywords stay `keyword <kw> cannot be used as a name`. Pinned by `check-from-explicit` (`fn from(take source: LoadError) -> WrapError` with body `code = n + 100`, image arg `converted=107`).
+**Half A — spelling.** `from` remains a reserved word for `from path import Name` (§2). After `fn` it is accepted as an associated-fn name (`parser::expect_fn_name`). Pinned by `check-from-explicit` (`fn from(take source: LoadError) -> WrapError` with body `code = n + 100`, image arg `converted=107`).
 
-**Half B — deriving.** No TypedFn is synthesized for `deriving(From)`. Item B2 (clause `sema.types.enum-methods`) gives enums a method surface, but B's conversion path still wraps structurally when no explicit `from` resolves (`Value::Enum(0, [e])` / `Value::Struct([e])`, or `MakeEnum`/`MakeAggregate` in both lowering paths) — generating the real `from` is item B3. An explicit `from` still resolves and is called. Both tiers agree (`mwir.txt` pins `MakeEnum tag=0` for deriving and `Call key=WrapError.from` for explicit).
+**Half B — deriving generates a real `from` (B3; supersedes decision 106).** `declare_struct`/`declare_enum` inject a DeclFn `from(take source: Source) -> Self`; `build_module_ctx` appends the matching FnItem whose body is ordinary construction (`Self(field=source)` / `Self.Variant(source)`). Body-checking yields a TypedFn in `assoc_fns`. `?`'s Err path Calls that key in eval, lower, and flowwir_lower — the same one `Type.from(take e)` reaches. The structural wrap (`Value::Struct([e])` / `MakeAggregate` / `MakeEnum tag=0` on a resolve miss) is gone.
 
-**Single-field restriction.** `err-deriving-from-two-fields` pins `deriving(From) requires exactly one field` on a two-field struct (the enum two-variant rejection is the sibling message already in `types::validate_from_shape`).
+**Conflict (decision 137).** A type may not both `deriving(From)` and declare its own `from` — 02 §7.5's closed list is not a merge. Pinned by `err-deriving-from-conflict`.
 
-**Pinned by value.** `check-deriving-from`: `CONVERTED=1000` is `settle(Err(WrapError.Inner(LoadError.Bad(0))))` — an unconverted 0 or an `Ok(0)` cannot produce 1000; `OK=7` is the success path. `check-from-explicit`: `107` is `Bad(7)` after `+ 100` — identity or missing conversion yields 7, not 107.
+**Single-field/variant restriction.** `err-deriving-from-two-fields` / `err-deriving-from-two-variants`.
 
-**Retired.** `err-try-from-underived` (BB decision 61's named gap) — the intended signal that B landed."""
+**Pinned by value.** `check-deriving-from`: `CONVERTED=1000`, `OK=7`, `DIRECT=2505` (generated enum `from` called directly). `check-deriving-from-struct`: same offsets for the struct shape. `check-import-deriving-from`: `DIRECT=404`. `check-import-alias-deriving-from`: `DIRECT=504`, asm pins `bl <Box.from>`.
+
+**Retired.** `err-try-from-underived` (BB decision 61). Decision 106's structural wrap (B3)."""
 
 [[clause]]
 id = "sema.types.enum-methods"

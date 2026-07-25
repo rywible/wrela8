@@ -25,7 +25,7 @@
 //! conversion-target key (`None` when the error type already matches,
 //! `Some(key)` naming the `<Target>.from` conversion — the same key
 //! whether the target's `From` came from an explicit `from` fn or
-//! `deriving(From)`, since both desugar to the identical shape).  Enum
+//! `deriving(From)`, both real TypedFns after plans/M9.md item B3).  Enum
 //! constructions (`Some`/`Ok`/`Err`/leading-dot/`Enum.Variant`) carry
 //! `(enum name, variant name)` resolved. A closure carries its structural
 //! `fn` type (on the wrapping node) plus its own params/body.
@@ -160,8 +160,8 @@ pub enum TypedExprKind {
     Take(Box<TypedExpr>),
     /// Postfix `?`. `conv` is `None` when the error type already matches
     /// (or `Option`'s case, which never converts); `Some(key)` names the
-    /// `<Target>.from`-shaped conversion (`explicit `from``or
-    /// `deriving(From)` — same key either way).
+    /// `<Target>.from`-shaped conversion (explicit `from` or
+    /// `deriving(From)` — both are TypedFns after B3; same key either way).
     Try(Box<TypedExpr>, Option<CalleeKey>),
     /// A builtin scalar/`bool`/`char` binary op — never desugared.
     Binary(BinOp, Box<TypedExpr>, Box<TypedExpr>),

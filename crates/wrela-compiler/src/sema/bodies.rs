@@ -58,7 +58,7 @@ use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
     DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, NamedType,
-    Pattern, Span, Stmt, UnaryOp, WhileStmt, WithStmt,
+    Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt, WithStmt,
 };
 
 // --- item H: the generic-instantiation queue ------------------------------
@@ -368,6 +368,21 @@ pub(crate) fn build_module_ctx(
                         other => ast_members.push(other.clone()),
                     }
                 }
+                // plans/M9.md item B3: Decl already carries the generated
+                // `from`; append the matching FnItem so the zip stays 1:1.
+                if s.deriving.iter().any(|d| d == "From") {
+                    let field = s
+                        .members
+                        .iter()
+                        .find_map(|m| match m {
+                            Member::Field(f) => Some(f),
+                            _ => None,
+                        })
+                        .expect("validate_from_shape already required exactly one field");
+                    ast_members.push(Member::Fn(types::derived_from_fn_item_struct(
+                        &s.name, field, s.span,
+                    )));
+                }
                 structs.insert(
                     s.name.clone(),
                     StructInfo {
@@ -379,11 +394,26 @@ pub(crate) fn build_module_ctx(
             }
             (Item::Enum(e), types::DeclItem::Enum(d)) => {
                 shapes.insert(e.name.clone(), e.generics.len());
+                let mut ast_members = e.members.clone();
+                // plans/M9.md item B3: matching FnItem for Decl's generated `from`.
+                if e.deriving.iter().any(|d| d == "From") {
+                    let v = &e.variants[0];
+                    let source_ty = match &v.payload {
+                        VariantPayload::Tuple(types) => &types[0],
+                        VariantPayload::Named(fields) => &fields[0].ty,
+                        VariantPayload::None => {
+                            unreachable!("validate_from_shape already required exactly one field")
+                        }
+                    };
+                    ast_members.push(Member::Fn(types::derived_from_fn_item_enum(
+                        &e.name, &v.name, source_ty, e.span,
+                    )));
+                }
                 enums.insert(
                     e.name.clone(),
                     EnumInfo {
                         decl: d.clone(),
-                        ast_members: e.members.clone(),
+                        ast_members,
                     },
                 );
             }
@@ -3515,13 +3545,11 @@ fn check_try(
 /// implicit widening"): `target_ty` either matches `err_ty` directly
 /// (checked by the caller before this runs) or names a struct/enum
 /// declaring the conversion — a user-written associated `from(take
-/// source: E) -> Self`, or the equivalent `deriving(From)` generates
-/// (05-library.md §8) from its single field/payload. Returns the
-/// conversion's return type plus the `<Target>.from`-shaped callee key
-/// (plans/M3.md item A) — the same key regardless of which of the two
-/// shapes produced it, since both desugar identically for a consumer of
-/// the typed tree (the evaluator, item B, special-cases the
-/// `deriving(From)` body's own synthesis, not this key).
+/// source: E) -> Self`, or the `from` `deriving(From)` generates
+/// (05-library.md §8 / plans/M9.md item B3). Returns the conversion's
+/// return type plus the `<Target>.from`-shaped callee key
+/// (plans/M3.md item A). Both shapes are real TypedFns; there is no
+/// second structural path.
 fn try_from_conversion(
     err_ty: &Type,
     target_ty: &Type,
@@ -3534,20 +3562,6 @@ fn try_from_conversion(
         return None;
     }
     if let Some(s) = mctx.structs.get(name) {
-        if s.decl.deriving.iter().any(|d| d == "From") {
-            let field_ty = s.decl.members.iter().find_map(|m| match m {
-                DeclMember::Field(f) => Some(f.ty.clone()),
-                _ => None,
-            });
-            if let Some(ft) = field_ty {
-                if types_eq(&ft, err_ty) {
-                    return Some((
-                        target_ty.clone(),
-                        CalleeKey::Method(name.clone(), "from".to_string()),
-                    ));
-                }
-            }
-        }
         if let Some((_, d)) = s.assoc_fn("from") {
             let shape_ok = d.generics.is_empty()
                 && d.params.len() == 1
@@ -3562,20 +3576,6 @@ fn try_from_conversion(
         }
     }
     if let Some(e) = mctx.enums.get(name) {
-        if e.deriving.iter().any(|d| d == "From") {
-            if let Some(dv) = e.variants.first() {
-                if let Some(pt) = decl_variant_payload_types(dv).into_iter().next() {
-                    if types_eq(&pt, err_ty) {
-                        return Some((
-                            target_ty.clone(),
-                            CalleeKey::Method(name.clone(), "from".to_string()),
-                        ));
-                    }
-                }
-            }
-        }
-        // plans/M9.md item B2: an explicit associated `from` on an enum
-        // is callable the same way a struct's is (B3 generates into this).
         if let Some((_, d)) = e.assoc_fn("from") {
             let shape_ok = d.generics.is_empty()
                 && d.params.len() == 1

@@ -1,4 +1,11 @@
 Program
+  Fn key=LoadError.from ret=LoadError temps=2 params=[t0:take]
+    Temp t0 ty=u32
+    Temp t1 ty=LoadError
+    Body
+      0000: MakeEnum dst=t1 tag=0 payload=[t0]
+      0001: Return value=t1
+      0002: Return
   Fn key=Store.init ret=unit temps=2 receiver=t0:mut params=[t1]
     Temp t0 ty=Store
     Temp t1 ty=u32

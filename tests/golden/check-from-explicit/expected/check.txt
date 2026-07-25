@@ -1,6 +1,7 @@
 Module path=examples.check_from_explicit
   Enum LoadError data deriving(From)
     variant Bad(u32)
+    fn from(source: take u32) -> LoadError
   Struct WrapError data
     field code: u32
     fn from(source: take LoadError) -> WrapError

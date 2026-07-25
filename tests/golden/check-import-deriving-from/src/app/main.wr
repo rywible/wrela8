@@ -1,0 +1,33 @@
+module app.main
+
+from lib.wrap import Wrap, Src
+
+# plans/M9.md item B3: generated `from` reached through a plain import.
+# DIRECT = Wrap.from(Src(n=4)).inner.n + 400 → 404. Identity or miss
+# cannot forge 404 from n=4.
+
+fn direct() -> u32:
+    s = Src(n=4)
+    w = Wrap.from(take s)
+    return w.inner.n + 400
+
+const DIRECT: u32 = direct()
+
+@test
+pub fn t_import_from():
+    assert DIRECT == 404, "imported generated from must be callable"
+
+@actor
+pub struct Store:
+    direct: u32
+
+    init(mut self, direct: u32):
+        self.direct = direct
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-deriving-from", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, direct=DIRECT, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -1,0 +1,35 @@
+module app.main
+
+from lib.wrap import Wrap as Box, Src
+
+# plans/M9.md item B3: generated `from` through an alias — DD/EE/FF
+# machinery (sema, lower, layout/codegen). Box.from must lower under the
+# local spelling. DIRECT = 4 + 500 = 504; a wrong key cannot forge it.
+# Src keeps its exporter spelling so the generated from's parameter type
+# (still keyed Src in the spliced Decl until a broader re-key) resolves.
+
+fn direct() -> u32:
+    s = Src(n=4)
+    w = Box.from(take s)
+    return w.inner.n + 500
+
+const DIRECT: u32 = direct()
+
+@test
+pub fn t_alias_from():
+    assert DIRECT == 504, "aliased generated from must be callable"
+
+@actor
+pub struct Store:
+    direct: u32
+
+    init(mut self, direct: u32):
+        self.direct = direct
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-alias-deriving-from", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, direct=DIRECT, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

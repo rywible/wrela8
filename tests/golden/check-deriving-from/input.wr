@@ -1,13 +1,14 @@
 module examples.check_deriving_from
 
-# plans/M9.md item B. 02-language.md §7.4 / §7.5 and 05-library.md §8:
+# plans/M9.md item B / B3. 02-language.md §7.4 / §7.5 and 05-library.md §8:
 # `deriving(From)` on a one-variant/one-field shape generates the `from`
-# that `?` consumes. `settle` maps a converted `Err` into a range `Ok`
-# cannot reach, so a wrong conversion (or a missing one that somehow
-# type-checked) cannot produce the pinned image values.
+# that `?` consumes — a real associated fn, callable directly. `settle`
+# maps a converted `Err` into a range `Ok` cannot reach, so a wrong
+# conversion (or a missing one that somehow type-checked) cannot produce
+# the pinned image values.
 #
 # Retired `err-try-from-underived` (BB decision 61): that case stops being
-# an `err-` case when B lands — this is that signal.
+# an `err-` case when B lands — this is that signal. B3 adds DIRECT.
 
 pub enum LoadError deriving(From):
     Bad(u32)
@@ -40,6 +41,18 @@ fn settle(r: Result[u32, WrapError]) -> u32:
 const CONVERTED: u32 = settle(convert_wrapped(0))
 const OK: u32 = settle(convert_wrapped(7))
 
+# Direct call of the generated from (item B3): Bad(5) -> 2505.
+fn direct_call() -> u32:
+    e = LoadError.Bad(5)
+    w = WrapError.from(take e)
+    match w:
+        case .Inner(inner):
+            match inner:
+                case .Bad(n):
+                    return n + 2500
+
+const DIRECT: u32 = direct_call()
+
 @test
 pub fn test_deriving_from_converts():
     assert CONVERTED == 1000, "`?` must apply WrapError.from to LoadError.Bad(0)"
@@ -48,19 +61,25 @@ pub fn test_deriving_from_converts():
 pub fn test_ok_path_unchanged():
     assert OK == 7, "Ok path must not convert"
 
+@test
+pub fn test_generated_from_callable():
+    assert DIRECT == 2505, "generated enum from must be callable directly"
+
 @actor
 pub struct Store:
     converted: u32
     ok: u32
+    direct: u32
 
-    init(mut self, converted: u32, ok: u32):
+    init(mut self, converted: u32, ok: u32, direct: u32):
         self.converted = converted
         self.ok = ok
+        self.direct = direct
 
 @image
 pub fn build() -> Image:
     img = Image(name="check-deriving-from", target=Target.wrela_machine_v1)
-    storage = img.actor(Store, converted=CONVERTED, ok=OK, mailbox=4)
+    storage = img.actor(Store, converted=CONVERTED, ok=OK, direct=DIRECT, mailbox=4)
     img.supervise(children=[storage], strategy=Restart.OneForOne,
                   intensity=RestartIntensity(max=3, within=seconds(10)))
     return img.seal()

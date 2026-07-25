@@ -1,18 +1,17 @@
-Module path=examples.check_deriving_from
-  Enum LoadError data deriving(From)
-    variant Bad(u32)
-    fn from(source: take u32) -> LoadError
-  Enum WrapError data deriving(From)
-    variant Inner(LoadError)
+Module path=examples.check_deriving_from_struct
+  Struct LoadError data
+    field code: u32
+  Struct WrapError data deriving(From)
+    field inner: LoadError
     fn from(source: take LoadError) -> WrapError
   Fn parse(raw: read u32) -> Result[u32, LoadError]
   Fn convert_wrapped(raw: read u32) -> Result[u32, WrapError]
   Fn settle(r: read Result[u32, WrapError]) -> u32
+  Fn direct_call() -> u32
   Const CONVERTED: u32
   Const OK: u32
-  Fn direct_call() -> u32
   Const DIRECT: u32
-  Fn test_deriving_from_converts() -> unit
+  Fn test_struct_deriving_converts() -> unit
   Fn test_ok_path_unchanged() -> unit
   Fn test_generated_from_callable() -> unit
   Struct Store resource

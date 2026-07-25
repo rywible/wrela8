@@ -30,8 +30,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
-    self, AccessMode, Attr, ConstItem, EnumItem, Expr, FnItem, GenericArg, GenericParam, InitItem,
-    Item, Member, Module, NamedType, Span, StructItem, VariantPayload,
+    self, AccessMode, Arg, Attr, ConstItem, EnumItem, Expr, FieldItem, FnItem, GenericArg,
+    GenericParam, InitItem, Item, Member, Module, NamedType, Param, Span, Stmt, StructItem,
+    VariantPayload,
 };
 use crate::syntax::printer;
 
@@ -3118,6 +3119,133 @@ fn validate_from_shape(shape: &DerivingShape, span: Span) -> Result<(), SemaErro
     Ok(())
 }
 
+/// plans/M9.md item B3: `deriving(From)` generates a real associated
+/// `from(take source: Source) -> Self` (05 §8 / 02 §7.5), not a
+/// structural wrap on `?`'s error path (supersedes decision 106). The
+/// DeclFn is what call sites and `?` resolve; the FnItem body is the
+/// ordinary construction that body-checking turns into a TypedFn.
+///
+/// Conflict (decision 137): a type may not both `deriving(From)` and
+/// declare its own `from` — 02 §7.5's closed list is not a macro that
+/// merges with a hand-written peer; one construct, one mechanism.
+fn derived_from_conflict(type_name: &str, span: Span) -> SemaError {
+    SemaError::at(
+        "type",
+        format!("deriving(From) conflicts with an explicit `from` on `{type_name}`"),
+        span,
+    )
+}
+
+/// The DeclFn half of a generated `from` (return type `Type::Named(name,
+/// [])`, one `take source` parameter).
+fn derived_from_decl(type_name: &str, source_ty: Type) -> DeclFn {
+    DeclFn {
+        name: "from".to_string(),
+        is_async: false,
+        is_task: false,
+        generics: Vec::new(),
+        receiver: None,
+        params: vec![DeclParam {
+            mode: AccessMode::Take,
+            name: "source".to_string(),
+            ty: source_ty,
+        }],
+        ret: Type::Named(type_name.to_string(), vec![]),
+    }
+}
+
+/// The AST FnItem half: `pub fn from(take source: Source) -> Self` with
+/// body `return Self(<field>=source)` / `return Self.<Variant>(source)`.
+/// `pub` so an imported type's generated `from` is reachable the same
+/// way a hand-written one is (decision 123's import rule).
+pub(crate) fn derived_from_fn_item_struct(
+    type_name: &str,
+    field: &FieldItem,
+    span: Span,
+) -> FnItem {
+    let source = Expr::Name(span, "source".to_string());
+    let construct = Expr::Call(
+        Box::new(Expr::Name(span, type_name.to_string())),
+        span,
+        vec![Arg {
+            span,
+            label: Some(field.name.clone()),
+            mode: AccessMode::Read,
+            value: source,
+        }],
+    );
+    FnItem {
+        span,
+        name: "from".to_string(),
+        is_pub: true,
+        is_async: false,
+        doc: None,
+        attrs: Vec::new(),
+        generics: Vec::new(),
+        receiver: None,
+        params: vec![Param {
+            span,
+            mode: AccessMode::Take,
+            name: "source".to_string(),
+            ty: field.ty.clone(),
+            default: None,
+        }],
+        ret: Some(ast::Type::Named(NamedType {
+            span,
+            name: type_name.to_string(),
+            args: Vec::new(),
+        })),
+        body: Some(vec![Stmt::Return(span, Some(construct))]),
+    }
+}
+
+/// Enum form: body `return Type.Variant(source)`.
+pub(crate) fn derived_from_fn_item_enum(
+    type_name: &str,
+    variant: &str,
+    source_ast_ty: &ast::Type,
+    span: Span,
+) -> FnItem {
+    let source = Expr::Name(span, "source".to_string());
+    let construct = Expr::Call(
+        Box::new(Expr::Field(
+            Box::new(Expr::Name(span, type_name.to_string())),
+            span,
+            variant.to_string(),
+        )),
+        span,
+        vec![Arg {
+            span,
+            label: None,
+            mode: AccessMode::Read,
+            value: source,
+        }],
+    );
+    FnItem {
+        span,
+        name: "from".to_string(),
+        is_pub: true,
+        is_async: false,
+        doc: None,
+        attrs: Vec::new(),
+        generics: Vec::new(),
+        receiver: None,
+        params: vec![Param {
+            span,
+            mode: AccessMode::Take,
+            name: "source".to_string(),
+            ty: source_ast_ty.clone(),
+            default: None,
+        }],
+        ret: Some(ast::Type::Named(NamedType {
+            span,
+            name: type_name.to_string(),
+            args: Vec::new(),
+        })),
+        body: Some(vec![Stmt::Return(span, Some(construct))]),
+    }
+}
+
 fn declare_struct(
     s: &StructItem,
     shapes: &BTreeMap<String, usize>,
@@ -3169,6 +3297,23 @@ fn declare_struct(
             Member::Pool(p) => members.push(DeclMember::Pool(p.name.clone())),
             Member::ComptimeIf(_) => {} // comptime evaluation is item C's job
         }
+    }
+    // plans/M9.md item B3: generate DeclFn `from` for deriving(From).
+    if s.deriving.iter().any(|d| d == "From") {
+        if members
+            .iter()
+            .any(|m| matches!(m, DeclMember::Fn(f) if f.name == "from"))
+        {
+            return Err(derived_from_conflict(&s.name, s.span));
+        }
+        let source_ty = members
+            .iter()
+            .find_map(|m| match m {
+                DeclMember::Field(f) => Some(f.ty.clone()),
+                _ => None,
+            })
+            .expect("validate_from_shape already required exactly one field");
+        members.push(DeclMember::Fn(derived_from_decl(&s.name, source_ty)));
     }
     Ok(DeclStruct {
         name: s.name.clone(),
@@ -3390,6 +3535,20 @@ fn declare_enum(
                 ));
             }
         }
+    }
+    // plans/M9.md item B3: generate DeclFn `from` for deriving(From).
+    if e.deriving.iter().any(|d| d == "From") {
+        if !seen_names.insert("from".to_string()) {
+            return Err(derived_from_conflict(&e.name, e.span));
+        }
+        let source_ty = match &variants[0].payload {
+            DeclVariantPayload::Tuple(types) => types[0].clone(),
+            DeclVariantPayload::Named(fields) => fields[0].1.clone(),
+            DeclVariantPayload::None => {
+                unreachable!("validate_from_shape already required exactly one field")
+            }
+        };
+        members.push(DeclMember::Fn(derived_from_decl(&e.name, source_ty)));
     }
     Ok(DeclEnum {
         name: e.name.clone(),
