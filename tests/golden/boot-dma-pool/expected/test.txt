@@ -1,0 +1,2 @@
+test pool_backed_image: ok
+1 passed, 0 failed

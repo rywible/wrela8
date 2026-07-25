@@ -906,10 +906,30 @@ fn verify_section_sizes(
 /// when this landed).
 fn place_pools(
     cursor: u64,
+    sections: &[Section],
     backings: &BTreeMap<String, crate::eval::image_checks::PoolBacking>,
-) -> Option<(Vec<PoolPlacement>, u64, u64, u64)> {
+) -> Result<Option<(Vec<PoolPlacement>, u64, u64, u64)>, LayoutError> {
     if backings.is_empty() {
-        return None;
+        return Ok(None);
+    }
+    // `pooldata` is the last section either image flavor places, so its
+    // base must be past every section already placed. Checked here rather
+    // than left to `verify_section_sizes`, which runs after serialization
+    // — and serialization's own `pad_to` would trip a `debug_assert`
+    // first, which is a panic in a debug build and silence in a release
+    // one. This is the exact bug the first draft of this item had (the
+    // `rtdata` block never advanced `cursor`, because it used to be the
+    // final section), so it gets a real error rather than an assumption.
+    let placed_end = sections
+        .iter()
+        .map(|s| s.base + s.size)
+        .max()
+        .unwrap_or(cursor);
+    if cursor < placed_end {
+        return Err(LayoutError::new(format!(
+            "internal error: pool backing would be placed at {cursor:#x}, inside a section that \
+             ends at {placed_end:#x}"
+        )));
     }
     let base = round_up(cursor, 8);
     let mut at = base;
@@ -922,7 +942,7 @@ fn place_pools(
         });
         at += b.bytes;
     }
-    Some((out, base, at - base, at))
+    Ok(Some((out, base, at - base, at)))
 }
 
 /// plans/M7.md decision 5, re-derived rather than asserted: **the windows
@@ -1249,7 +1269,7 @@ pub fn layout_program(
     // image shape's own final section — nothing consumes `cursor` past
     // it. Absent entirely for an image that binds no pool.
     let pool_backings = image_pool_backings(boot.as_ref())?;
-    let placed_pools = place_pools(cursor, &pool_backings);
+    let placed_pools = place_pools(cursor, &sections, &pool_backings)?;
     let pools: Vec<PoolPlacement> = match &placed_pools {
         Some((pools, base, size, end)) => {
             sections.push(Section {
@@ -5359,12 +5379,12 @@ pub fn layout_test_image(
     // makes, for the same reason — a test image that declares a pool
     // reserves its backing too, or the two image flavors would emit
     // different memory maps for the same source (plans/M6.md item F/G's
-    // own rule that the two flavors emit and reject identically).
+    // own rule that the two flavors emit and reject identically). Only
+    // the *backing* is resolved here; the placement itself waits until
+    // the section table exists, so `place_pools` can check its own base
+    // against every section already placed.
     let pool_backings = image_pool_backings(boot.as_ref())?;
-    let placed_pools = place_pools(cursor, &pool_backings);
-    if let Some((_, _, _, end)) = &placed_pools {
-        cursor = *end;
-    }
+    let pool_cursor = cursor;
     let _ = cursor;
 
     // Now that `rtdata_base` is real, rebuild the address-dependent
@@ -5465,6 +5485,7 @@ pub fn layout_test_image(
             size: tables.total_bytes,
         });
     }
+    let placed_pools = place_pools(pool_cursor, &sections, &pool_backings)?;
     let pools: Vec<PoolPlacement> = match &placed_pools {
         Some((pools, base, size, _)) => {
             sections.push(Section {
@@ -6300,8 +6321,9 @@ fn two():
             backing("Alpha", 5, 8, Some(0)),
             backing("Mid", 2, 2, None),
         ]);
-        let (pools, base, size, end) =
-            place_pools(0x1004, &m).expect("three pools reserve a section");
+        let (pools, base, size, end) = place_pools(0x1004, &[], &m)
+            .expect("no section overlaps")
+            .expect("three pools reserve a section");
         assert_eq!(base, 0x1008, "the section itself is 8-byte aligned");
         let names: Vec<&str> = pools.iter().map(|p| p.backing.name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Mid", "Zeta"]);
@@ -6311,12 +6333,37 @@ fn two():
         assert_eq!(end, 0x1013);
         assert_eq!(size, end - base);
         // Placing twice cannot disagree with itself.
-        assert_eq!(place_pools(0x1004, &m), Some((pools, base, size, end)));
+        assert_eq!(
+            place_pools(0x1004, &[], &m).unwrap(),
+            Some((pools, base, size, end))
+        );
+    }
+
+    /// `pooldata` is the last section either image flavor places, so its
+    /// base must be past every section already placed. The first draft of
+    /// this item got that wrong — `rtdata` used to be the final section
+    /// and never advanced the cursor — and the symptom was a `debug_assert`
+    /// panic inside serialization, which is silence in a release build.
+    #[test]
+    fn pool_backing_placed_inside_an_existing_section_is_refused() {
+        let m = backings(vec![backing("A", 16, 8, Some(0))]);
+        let sections = vec![Section {
+            name: "rtdata",
+            base: 0x1000,
+            size: 0x100,
+        }];
+        let err = place_pools(0x1080, &sections, &m).expect_err("0x1080 is inside rtdata");
+        assert!(
+            err.message.contains("inside a section that ends at 0x1100"),
+            "{}",
+            err.message
+        );
+        assert!(place_pools(0x1100, &sections, &m).is_ok());
     }
 
     #[test]
     fn an_image_with_no_pool_reserves_no_pooldata_section() {
-        assert_eq!(place_pools(0x1000, &BTreeMap::new()), None);
+        assert_eq!(place_pools(0x1000, &[], &BTreeMap::new()).unwrap(), None);
     }
 
     /// plans/M7.md decision 5, on the compiler's side: every declared
