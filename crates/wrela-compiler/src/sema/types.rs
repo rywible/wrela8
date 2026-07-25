@@ -1049,23 +1049,56 @@ enum CapOwner {
 /// question, because 03-hardware.md §3's rule is `DmaShared`'s alone and
 /// not every capability's (a `DeviceCap[D]` parameter lent `read` is
 /// ordinary driver code).
-fn dma_shared_in_type(ty: &Type) -> Option<String> {
+/// plans/M7.md item I's sweep: this walk used to stop at a named type,
+/// looking only into its *type arguments* — so a `DmaShared[P, L]` held
+/// as a **field of a plain wrapper struct** was invisible, and
+/// `read bundle: RingBundle` lent exactly the ordinary borrow of shared
+/// control memory that `read ring: DmaShared[..]` is rejected for
+/// (`golden/err-dma-shared-lend-wrapped`). It recurses through the shared
+/// `components_by_name` table now, the same reach
+/// `type_contains_capability` has always had for the containment rules —
+/// which is where the discrepancy showed: `DmaShared` *is* a capability
+/// type, so an `@actor` field or a `pub` method parameter carrying one
+/// through a wrapper was already caught; only a `@driver`'s own private
+/// method, which containment deliberately permits, reached this rule and
+/// found it shallower.
+fn dma_shared_in_type(
+    ty: &Type,
+    components: &BTreeMap<String, &[(Type, Span)]>,
+    seen: &mut BTreeSet<String>,
+) -> Option<String> {
     match ty {
         Type::Named(name, _) if name == "DmaShared" => Some(render_type(ty)),
-        Type::Array(elem, _) => dma_shared_in_type(elem),
-        Type::Tuple(elems) => elems.iter().find_map(dma_shared_in_type),
+        Type::Array(elem, _) => dma_shared_in_type(elem, components, seen),
+        Type::Tuple(elems) => elems
+            .iter()
+            .find_map(|e| dma_shared_in_type(e, components, seen)),
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-            dma_shared_in_type(inner)
+            dma_shared_in_type(inner, components, seen)
         }
-        Type::Result(ok, err) => dma_shared_in_type(ok).or_else(|| dma_shared_in_type(err)),
+        Type::Result(ok, err) => dma_shared_in_type(ok, components, seen)
+            .or_else(|| dma_shared_in_type(err, components, seen)),
         Type::Fn(params, ret) => params
             .iter()
-            .find_map(|(_, t)| dma_shared_in_type(t))
-            .or_else(|| dma_shared_in_type(ret)),
-        Type::Named(_, targs) => targs.iter().find_map(|a| match a {
-            TypeArg::Type(t) => dma_shared_in_type(t),
-            _ => None,
-        }),
+            .find_map(|(_, t)| dma_shared_in_type(t, components, seen))
+            .or_else(|| dma_shared_in_type(ret, components, seen)),
+        Type::Named(name, targs) => {
+            if !seen.insert(name.clone()) {
+                return None; // already visited on this path: cycle guard.
+            }
+            let via_fields = components.get(name.as_str()).and_then(|c| {
+                c.iter()
+                    .find_map(|(t, _)| dma_shared_in_type(t, components, seen))
+            });
+            let found = via_fields.or_else(|| {
+                targs.iter().find_map(|a| match a {
+                    TypeArg::Type(t) => dma_shared_in_type(t, components, seen),
+                    _ => None,
+                })
+            });
+            seen.remove(name);
+            found
+        }
         _ => None,
     }
 }
@@ -1100,13 +1133,23 @@ fn validate_fn_capability_types(
         // — those are methods on the builtin type, which no source can
         // declare.
         if p.mode != AccessMode::Take {
-            if let Some(found) = dma_shared_in_type(&p.ty) {
+            if let Some(found) = dma_shared_in_type(&p.ty, components, &mut BTreeSet::new()) {
+                // The parameter's own declared type, plus what it carries
+                // when the two differ — a wrapper struct's name alone
+                // would not say why it is refused, and the capability's
+                // name alone would not match anything the reader wrote.
+                let declared = render_type(&p.ty);
+                let carries = if declared == found {
+                    String::new()
+                } else {
+                    format!(", which carries `{found}`")
+                };
                 return Err(SemaError::at(
                     "type",
                     format!(
-                        "`{where_}` lends `{}: {found}` — 03-hardware.md §3: shared control \
-                         memory \"cannot be read as bytes or lent as a plain value\", it exposes \
-                         only field-wise typed operations that carry the target's \
+                        "`{where_}` lends `{}: {declared}`{carries} — 03-hardware.md §3: shared \
+                         control memory \"cannot be read as bytes or lent as a plain value\", it \
+                         exposes only field-wise typed operations that carry the target's \
                          volatile/cache/ordering semantics. Move it with `take` instead",
                         p.name
                     ),

@@ -1,0 +1,54 @@
+module examples.err_dma_shared_lend_wrapped
+
+# plans/M7.md item I (the adversarial sweep), 03-hardware.md §3,
+# `DmaShared[P, L]`'s own second sentence: "It cannot be read as bytes or
+# **lent as a plain value**."
+#
+# `golden/err-dma-shared-lend` rejects the direct spelling
+# (`read ring: DmaShared[BlockControl, RingControl]`). One plain wrapper
+# struct away it was accepted: `dma_shared_in_type` walked the type
+# structurally — arrays, tuples, `Option`, `Result`, `fn`, and a named
+# type's *type arguments* — but never into a named type's declared
+# **fields**, unlike `type_contains_capability`, which has had exactly
+# that reach since item A built it for "at any nesting". So `read bundle:
+# RingBundle` handed out the same ordinary borrow of a descriptor ring,
+# carrying none of the target's volatile/cache/ordering semantics, which
+# is the whole class of bug 03 §3's sealed queue operations exist to make
+# unwritable.
+#
+# WHY IT SURVIVED THIS LONG, which is the interesting part: `DmaShared`
+# *is* one of the five capability types (`CAPABILITY_TYPES`), so the
+# containment rules — which do walk fields — already caught the wrapper
+# everywhere they apply: an `@actor` field, an `@actor` parameter, a `pub`
+# method of either kind, a fn return. The one place left is a `@driver`'s
+# own **private** method, which containment deliberately permits (a driver
+# may hold capabilities; that asymmetry is §1's rule). That is exactly
+# where this file puts it, and it is exactly where a real driver would
+# write one.
+#
+# The diagnostic names the parameter's own declared type *and* what it
+# carries: `RingBundle` alone would not say why it is refused, and
+# `DmaShared[...]` alone would not match anything the author wrote.
+#
+# `take` is untouched — `golden/check-dma-shared` is the accept, and
+# moving the handle is how it reaches a driver at all.
+
+@layout(dma, endian=little)
+struct RingControl:
+    flags: u16
+    idx: u16
+
+struct BlockHw:
+    id: u32
+
+pool BlockControl
+
+struct RingBundle:
+    ring: DmaShared[BlockControl, RingControl]
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    fn peek_ring(read self, read bundle: RingBundle) -> unit:
+        return unit
