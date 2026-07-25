@@ -1,0 +1,62 @@
+module examples.err_blk_config_two_devices
+
+# plans/M8.md item H attack 3 — twin of `golden/check-pool-two-devices`,
+# one label apart: both devices declare `capacity_sectors=`, and there is
+# no `VirtQueue.configure` site anywhere.
+#
+# Before the fix, `check_blk_config_names_the_blk_device` returned Ok the
+# instant `configured` stayed None, so this image built. The report carried
+# both `Arg label=capacity_sectors` lines under Device index=0/1 and no
+# `BlkDevice` line at all (`derive_blk_report` returns None without a
+# configure). `blk_capacity_sectors` would have returned 16 (first in
+# declaration order) and silently dropped 64 — an invisible coin flip for
+# a machine whose device set is closed and which has exactly one `blk`.
+#
+# Drop either `capacity_sectors=` and this is again
+# `golden/check-pool-two-devices` (accepting).
+
+@layout(dma, endian=little)
+struct Ctl:
+    sector: u64
+
+struct BlockHw:
+    id: u32
+
+struct OtherHw:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    init(mut self, sectors: u64):
+        self.sectors = sectors
+
+    pub fn capacity(read self) -> u64:
+        return self.sectors
+
+@driver
+pub struct OtherDriver:
+    tag: u32
+
+    init(mut self, tag: u32):
+        self.tag = tag
+
+    pub fn tag(read self) -> u32:
+        return self.tag
+
+pool ControlA
+pool ControlB
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-blk-config-two-devices", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000, capacity_sectors=16)
+    other = img.device[OtherHw](transport=0x3000, capacity_sectors=64)
+    disk = img.driver(BlkDriver, device=blk, sectors=2048)
+    aux = img.driver(OtherDriver, device=other, tag=7)
+    a = img.dma_pool[Ctl](name=ControlA, device=blk, count=2)
+    b = img.dma_pool[Ctl](name=ControlB, device=other, count=2)
+    img.supervise(children=[disk, aux], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
