@@ -1542,6 +1542,42 @@ pub fn double(x: u64) -> u64:
         );
     }
 
+    /// A generic *instantiation* is a graph node like any other, and it
+    /// is the one node kind with no source location at all (it is
+    /// synthesized — `sema::types::capability_authority` records spans
+    /// only for declared fns and members). Its diagnostic must therefore
+    /// be location-free rather than carry an invented `0:0`; this is the
+    /// only case that reaches that branch, and it reaches it because
+    /// `fn:hold[Wrap]` sorts before `zz_caller` in the fail-fast
+    /// `BTreeMap` order both nodes appear in.
+    #[test]
+    fn an_instantiation_has_no_span_and_gets_a_location_free_diagnostic() {
+        let src = "module t\n\n\
+             @layout(mmio, endian=little)\n\
+             struct Regs:\n\
+             \x20   @offset(0x000) status: ReadOnly[u32]\n\n\
+             struct Wrap:\n\
+             \x20   m: Mmio[Regs]\n\
+             \x20   n: u64\n\n\
+             fn hold[T](read m: T) -> u64:\n\
+             \x20   return 0\n\n\
+             fn zz_caller(read w: Wrap) -> u64:\n\
+             \x20   return hold[Wrap](w)\n";
+        let tokens = lexer::lex(src).expect("test source must lex");
+        let module = parser::parse(tokens).expect("test source must parse");
+        let err = sema::check(&module, "test.wr").expect_err("the instantiation touches");
+        assert!(
+            err.message
+                .starts_with("`fn:hold[Wrap]` touches hardware state"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.omit_location,
+            "an instantiation has no location to cite"
+        );
+    }
+
     /// An `@actor` is not an authority root, only a `@driver` is —
     /// 03-hardware.md §1 says "the owning driver's authority", and the
     /// containment rule that keeps an actor from holding one would be

@@ -1156,6 +1156,66 @@ mod tests {
     }
 
     #[test]
+    fn a_device_argument_that_names_no_device_mints_nothing() {
+        // `device=` wired to another *driver*'s handle rather than a
+        // device. Unrepresentable from source today only because nothing
+        // else is ever passed as `device=`, exactly like the
+        // construction-DAG cycle case above — real code, real oracle, no
+        // golden.
+        let programs = programs_map(program_with_init(
+            "Blk",
+            vec![cap_param("cap", "DeviceCap", "BlockHw")],
+        ));
+        let mut g = ImageGraph::default();
+        g.devices.push(crate::eval::image::DeviceDecl {
+            device_type: Type::Named("BlockHw".to_string(), vec![]),
+            args: vec![],
+        });
+        g.drivers.push(crate::eval::image::DriverDecl {
+            actor_type: Type::Named("Blk".to_string(), vec![]),
+            args: vec![decl_arg(
+                "device",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Driver(0)),
+            )],
+        });
+        let err = check_init_args(&g, &programs).expect_err("a driver is not a device");
+        assert!(
+            err.message.contains("is not a declared device"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_device_argument_naming_an_undeclared_index_mints_nothing() {
+        // The structural floor beneath the arm above: a `Device(i)` whose
+        // `i` this graph has no entry for. `ImageGraph::declare_device` is
+        // the only producer of such a value and always pushes first, so
+        // this is unreachable by construction — kept and tested anyway,
+        // because "index out of range" must never be a silent success.
+        let programs = programs_map(program_with_init(
+            "Blk",
+            vec![cap_param("cap", "DeviceCap", "BlockHw")],
+        ));
+        let mut g = ImageGraph::default();
+        g.drivers.push(crate::eval::image::DriverDecl {
+            actor_type: Type::Named("Blk".to_string(), vec![]),
+            args: vec![decl_arg(
+                "device",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Device(7)),
+            )],
+        });
+        let err = check_init_args(&g, &programs).expect_err("device#7 does not exist");
+        assert!(
+            err.message.contains("which this image does not declare"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
     fn an_actor_binding_mints_no_capability_at_all() {
         let programs = programs_map(program_with_init(
             "Store",

@@ -3636,6 +3636,31 @@ mod tests {
                 "fn f(read c: Mmio[Blk]) -> u32:\n    return 0\n",
                 "requires `Blk` to be an `@layout(mmio)` struct",
             ),
+            // A const argument where a layout type belongs — `Mmio[4]`
+            // resolves (a capability's arguments go through the general
+            // `resolve_type_arg`, so a const stays a const), and the
+            // argument rule is what rejects it.
+            (
+                "fn f(read c: Mmio[4]) -> u32:\n    return 0\n",
+                "`Mmio` requires a type argument",
+            ),
+            // The argument rule reaches through composites, not only a
+            // bare annotation — the recursion arms of
+            // `validate_capability_args`, which no golden exercises.
+            (
+                "fn f(read c: Option[Mmio[Blk]]) -> u32:\n    return 0\n",
+                "requires `Blk` to be an `@layout(mmio)` struct",
+            ),
+            (
+                "fn f(read c: [(u32, Mmio[Blk]); 2]) -> u32:\n    return 0\n",
+                "requires `Blk` to be an `@layout(mmio)` struct",
+            ),
+            // ...and into an enum variant's own payload, the one item
+            // declaration kind with no fn signature of its own.
+            (
+                "enum E:\n    Plain\n    Held(Mmio[Blk])\n",
+                "requires `Blk` to be an `@layout(mmio)` struct",
+            ),
         ];
         for (body, needle) in cases {
             let src = format!("{CAP_PRELUDE}{body}");
