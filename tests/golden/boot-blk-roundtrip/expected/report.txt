@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_blk_roundtrip.wr sha256=8f2352daf1ddfed29fc74c548d84032c790fe8d9b4ede37ee1ece43f21aa4f6e
+  Input path=examples/boot_blk_roundtrip.wr sha256=0aaf53f5088bf15b9dc8b2b72bf85f2c7376200b73e06f02e12445e7a55ef78c
   Name value=boot-blk-roundtrip
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

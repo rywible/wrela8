@@ -2525,6 +2525,30 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     });
                     Ok(dst)
                 }
+                "VirtQueue.recover" => {
+                    let receipt_arg =
+                        args.iter().find(|(l, _)| l == "receipt").ok_or_else(|| {
+                            LowerError::internal(
+                                "`recover` reached lowering without `receipt=`".to_string(),
+                            )
+                        })?;
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`recover` reached lowering without a queue receiver".to_string(),
+                            ));
+                        }
+                    };
+                    let receipt = lower_expr(&receipt_arg.1, b, env)?;
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::QueueRecover {
+                        dst,
+                        queue,
+                        receipt,
+                    });
+                    Ok(dst)
+                }
                 other => Err(LowerError::internal(format!(
                     "unknown queue-op intrinsic `{other}`"
                 ))),

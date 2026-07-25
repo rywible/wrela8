@@ -84,6 +84,7 @@ pub struct BlkDriver:
             payload=take buffer,
             device_writes_payload=true,
             status=BlkReqStatus(status=0xff),
+            idempotent=true,
         )
         return self.queue.publish(operation=take operation)
 

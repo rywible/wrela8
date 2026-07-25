@@ -1,0 +1,2 @@
+test recover_reports_completed_then_unknown: ok
+1 passed, 0 failed

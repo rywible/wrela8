@@ -55,7 +55,7 @@ Program
       Return
         Intrinsic key=Image.seal ty=Image
   Struct name=BlkDriver
-    Method name=prepare_read ret=QueueOp[own[BlockPayloads] DmaBlock]
+    Method name=prepare_read ret=QueueOp[own[BlockPayloads] DmaBlock, true]
       Receiver mode=mut ty=BlkDriver
       Param name=buffer mode=take ty=own[BlockPayloads] DmaBlock
       Param name=lba mode=read ty=u64
@@ -67,8 +67,8 @@ Program
                 Local name=self ty=BlkDriver
             Arg label=descriptors
               Int text=3 ty=usize
-        Let name=operation ty=QueueOp[own[BlockPayloads] DmaBlock]
-          Intrinsic key=VirtQueue.prepare_block ty=QueueOp[own[BlockPayloads] DmaBlock]
+        Let name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+          Intrinsic key=VirtQueue.prepare_block ty=QueueOp[own[BlockPayloads] DmaBlock, true]
             Receiver
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver
@@ -91,8 +91,8 @@ Program
                 Field name=status
                   Int text=0xff ty=u8
         Return
-          Take ty=QueueOp[own[BlockPayloads] DmaBlock]
-            Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock]
+          Take ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+            Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
     Init ret=Result[unit, BootError]
       Receiver mode=mut ty=BlkDriver
       Param name=cap mode=take ty=DeviceCap[VirtioBlock]

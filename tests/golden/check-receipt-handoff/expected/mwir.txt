@@ -80,8 +80,8 @@ Program
     Temp t12 ty=BlkReqHeader
     Temp t13 ty=u8
     Temp t14 ty=BlkReqStatus
-    Temp t15 ty=QueueOp[own[BlockPayloads] DmaBlock]
-    Temp t16 ty=QueueOp[own[BlockPayloads] DmaBlock]
+    Temp t15 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t16 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
     Temp t17 ty=VirtQueue[..8]
     Temp t18 ty=Receipt[own[BlockPayloads] DmaBlock]
     Body

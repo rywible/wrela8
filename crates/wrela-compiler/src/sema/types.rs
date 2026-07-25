@@ -3432,6 +3432,11 @@ fn resolve_named(
         // `Image`; variants live in `builtin_enum_variants`.
         // =================================================================
         "DriverMode" | "Target" | "Restart" => Some(Type::Named(n.name.clone(), vec![])),
+        // plans/M8.md item G, decision 17: 03-hardware.md §9's
+        // `CompletionOutcome` — same zero-argument prelude-enum shape,
+        // minted only by `VirtQueue.recover` but nameable in an
+        // annotation (a helper that classifies one takes it by value).
+        "CompletionOutcome" => Some(Type::Named("CompletionOutcome".to_string(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {
@@ -3459,12 +3464,42 @@ fn resolve_named(
         // plans/M7.md item E2/E3: `QueueOp[P]` — sealed prepared operation
         // carrying the transfer-payload brand `P` so `publish` can yield
         // `Receipt[P]`. `prepare_block` always produces the branded form.
+        // plans/M8.md item G, decision 18 grows it to
+        // `QueueOp[P, <idempotent>]`: 03-hardware.md §9's no-auto-retry
+        // rule needs the author's idempotence declaration to survive from
+        // the `prepare_block` that made the operation to the `publish` that
+        // issues it — including across a helper's signature — so it is part
+        // of the operation's type, not a fact about one call site.
         "QueueOp" => {
-            let args = expect_type_args(n, 1)?;
-            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            expect_arity(n, 2)?;
+            let GenericArg::Type(payload) = &n.args[0] else {
+                return Err(SemaError::at(
+                    "type",
+                    "`QueueOp[P, <idempotent>]`'s first argument is the transfer-payload type"
+                        .to_string(),
+                    n.span,
+                ));
+            };
+            let inner = resolve_type(payload, shapes, module_pools, local_pools, generics, false)?;
+            let idempotent = match &n.args[1] {
+                GenericArg::Expr(Expr::Bool(_, v)) => *v,
+                _ => {
+                    return Err(SemaError::at(
+                        "type",
+                        "`QueueOp[P, <idempotent>]`'s second argument is the literal `true` or \
+                         `false` — 03-hardware.md §9's no-auto-retry rule reads it off the \
+                         operation's own type, and the compiler cannot infer it"
+                            .to_string(),
+                        n.span,
+                    ));
+                }
+            };
             return Ok(Type::Named(
                 "QueueOp".to_string(),
-                vec![TypeArg::Type(inner)],
+                vec![
+                    TypeArg::Type(inner),
+                    TypeArg::Const(Expr::Bool(ast::Span::default(), idempotent)),
+                ],
             ));
         }
         // plans/M7.md item E3: `Receipt[P]` (03-hardware.md §5) — sealed

@@ -82,8 +82,8 @@ Program
                 Local name=self ty=BlkDriver
             Arg label=descriptors
               Int text=3 ty=usize
-        Let name=operation ty=QueueOp[own[BlockPayloads] DmaBlock]
-          Intrinsic key=VirtQueue.prepare_block ty=QueueOp[own[BlockPayloads] DmaBlock]
+        Let name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+          Intrinsic key=VirtQueue.prepare_block ty=QueueOp[own[BlockPayloads] DmaBlock, true]
             Receiver
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver
@@ -111,7 +111,7 @@ Program
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver
             Arg label=operation
-              Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock]
+              Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
     Init ret=Result[unit, BootError]
       Receiver mode=mut ty=BlkDriver
       Param name=cap mode=take ty=DeviceCap[VirtioBlock]
