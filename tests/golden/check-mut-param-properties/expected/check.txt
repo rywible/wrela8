@@ -1,0 +1,46 @@
+Module path=examples.check_mut_param_properties
+  Struct Counter data
+    field n: u32
+  Struct Pair data
+    field a: u32
+    field b: u32
+  Fn no_write(c: mut Counter) -> unit
+  Fn probe_no_write() -> u32
+  Fn early_return(c: mut Counter, bail: read bool) -> unit
+  Fn probe_early_bail() -> u32
+  Fn probe_early_through() -> u32
+  Fn write_then_return(c: mut Counter) -> unit
+  Fn probe_write_then_return() -> u32
+  Fn inner(c: mut Counter) -> unit
+  Fn outer(c: mut Counter) -> unit
+  Fn probe_nested_frames() -> u32
+  Fn two_muts(p: mut Counter, q: mut Counter) -> unit
+  Fn probe_two_muts() -> u32
+  Fn mixed(m: mut Counter, r: read Counter, t: take Counter) -> u32
+  Fn probe_mixed() -> u32
+  Fn deferred(c: mut Counter) -> unit
+  Fn probe_defer() -> u32
+  Fn add_one(c: mut Counter) -> unit
+  Fn probe_loop() -> u32
+  Fn touch_a(p: mut Pair) -> unit
+  Fn probe_partial() -> u32
+  Const P1: u32
+  Const P2: u32
+  Const P3: u32
+  Const P4: u32
+  Const P5: u32
+  Const P6: u32
+  Const P7: u32
+  Const P8: u32
+  Const P9: u32
+  Const P10: u32
+  Fn t_no_write() -> unit
+  Fn t_early_bail() -> unit
+  Fn t_early_through() -> unit
+  Fn t_write_then_return() -> unit
+  Fn t_nested_frames() -> unit
+  Fn t_two_muts() -> unit
+  Fn t_mixed() -> unit
+  Fn t_defer() -> unit
+  Fn t_loop() -> unit
+  Fn t_partial() -> unit

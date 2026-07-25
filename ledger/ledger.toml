@@ -1581,6 +1581,7 @@ status = "test"
 tests = [
   "golden/check-mut-param-writeback",
   "golden/check-mut-param-nested",
+  "golden/check-mut-param-properties",
   "golden/err-mut-param-defaulted-writeback",
 ]
 note = """02-language.md §5.1, verbatim: "Non-receiver `mut` and `take` are **mirrored at the call site**, and the operand must be an explicit place." This clause holds the *evaluation* half of that mirroring for `mut`: after a call returns, each non-receiver `mut` parameter's final value is written back into the call-site place.
@@ -1597,4 +1598,6 @@ Opened by plans/M9.md item CC (decisions 68–71 for the evaluator; backend gene
 
 **Backend still wrong.** `Inst::Call` still carries only `self_write_back`; non-receiver `mut` has no write-back mechanism in `lower`/`codegen`. That is why `diff-eval` never saw this defect: both tiers agreed on the wrong answer. CC2 owns the generalization.
 
-**CC2 (backend).** `Inst::Call::self_write_back` generalized to `write_backs: Vec<(usize, Temp)>` (args-index → place temp). `MwirFn`/`FlowWirFn` params carry `AccessMode`. Mut params (including scalars) pass by pointer; the callee epilogue writes them back through saved pointers — the same mechanism `mut self` already used. `check-mut-param-nested` carries `@test` fns; full `diff-eval` agrees on all five."""
+**CC2 (backend).** `Inst::Call::self_write_back` generalized to `write_backs: Vec<(usize, Temp)>` (args-index → place temp). `MwirFn`/`FlowWirFn` params carry `AccessMode`. Mut params (including scalars) pass by pointer; the callee epilogue writes them back through saved pointers — the same mechanism `mut self` already used. `check-mut-param-nested` carries `@test` fns; full `diff-eval` agrees on all five.
+
+**`check-mut-param-properties` pins the properties, not the cases (orchestrator review).** A directed item closes the shapes it was shown, so this case is written the other way round — as the five ways a write-back mechanism is classically wrong, each with an expected value no other branch reaches. A callee that never assigns its `mut` parameter must leave it alone (5, not 0 and not 6). An early `return` before the assignment must not publish it (3), while falling through to it must (77), and an assignment before an explicit `return` must survive (88). Write-back must compose through nested `mut` frames (2 → 20 → 200). Two `mut` parameters in one signature must not cross-write (102, where a crossed write is 201 and a single write is 100 or 2). A `defer` that touches the parameter after the body's own assignment must be included (31, not 30). Repeated calls in a caller loop must each land (5). A sibling field the callee never assigned must survive (96, where a whole-struct clobber is 90). Full `diff-eval` agrees on all ten between the evaluator and real guest execution, so this is a two-tier property lock, not an evaluator test."""

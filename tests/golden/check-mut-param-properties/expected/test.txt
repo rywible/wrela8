@@ -1,0 +1,11 @@
+test t_no_write: ok
+test t_early_bail: ok
+test t_early_through: ok
+test t_write_then_return: ok
+test t_nested_frames: ok
+test t_two_muts: ok
+test t_mixed: ok
+test t_defer: ok
+test t_loop: ok
+test t_partial: ok
+10 passed, 0 failed
