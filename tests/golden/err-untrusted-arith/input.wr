@@ -1,0 +1,7 @@
+module examples.err_untrusted_arith
+
+# plans/M7.md item H2a, 03-hardware.md §8: arithmetic with an unmarked
+# value is an ordinary use and a rejection, not taint-preserving math.
+
+fn bad(reported: Untrusted[usize]) -> usize:
+    return reported + 1

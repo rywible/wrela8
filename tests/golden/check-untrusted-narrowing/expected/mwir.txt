@@ -1,0 +1,65 @@
+Program
+  Fn key=narrow ret=Result[usize, unit] temps=5 params=[t0,t1]
+    Temp t0 ty=Untrusted[usize]
+    Temp t1 ty=usize
+    Temp t2 ty=bool
+    Temp t3 ty=Result[usize, unit]
+    Temp t4 ty=unit
+    Body
+      0000: Compare op=<= ty=usize dst=t2 lhs=t0 rhs=t1
+      0001: JumpIfFalse cond=t2 target=0004
+      0002: MakeEnum dst=t3 tag=0 payload=[t0]
+      0003: Jump target=0006
+      0004: ConstUnit dst=t4
+      0005: MakeEnum dst=t3 tag=1 payload=[t4]
+      0006: Return value=t3
+      0007: Return
+  Fn key=use_ok ret=usize temps=19 params=[t0,t1]
+    Temp t0 ty=Untrusted[usize]
+    Temp t1 ty=usize
+    Temp t2 ty=bool
+    Temp t3 ty=Result[usize, unit]
+    Temp t4 ty=unit
+    Temp t5 ty=usize
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=bool
+    Temp t9 ty=usize
+    Temp t10 ty=bool
+    Temp t11 ty=bool
+    Temp t12 ty=u64
+    Temp t13 ty=u64
+    Temp t14 ty=bool
+    Temp t15 ty=unit
+    Temp t16 ty=bool
+    Temp t17 ty=bool
+    Temp t18 ty=usize
+    Body
+      0000: Compare op=<= ty=usize dst=t2 lhs=t0 rhs=t1
+      0001: JumpIfFalse cond=t2 target=0004
+      0002: MakeEnum dst=t3 tag=0 payload=[t0]
+      0003: Jump target=0006
+      0004: ConstUnit dst=t4
+      0005: MakeEnum dst=t3 tag=1 payload=[t4]
+      0006: EnumTag dst=t6 src=t3
+      0007: ConstInt dst=t7 ty=u64 value=0
+      0008: Compare op=== ty=u64 dst=t8 lhs=t6 rhs=t7
+      0009: EnumPayload dst=t9 src=t3 index=0
+      0010: Copy dst=t5 src=t9
+      0011: ConstBool dst=t10 value=true
+      0012: BoolAnd dst=t11 lhs=t8 rhs=t10
+      0013: JumpIfFalse cond=t11 target=0016
+      0014: Return value=t5
+      0015: Jump target=0027
+      0016: EnumTag dst=t12 src=t3
+      0017: ConstInt dst=t13 ty=u64 value=1
+      0018: Compare op=== ty=u64 dst=t14 lhs=t12 rhs=t13
+      0019: EnumPayload dst=t15 src=t3 index=0
+      0020: ConstBool dst=t16 value=true
+      0021: BoolAnd dst=t17 lhs=t14 rhs=t16
+      0022: JumpIfFalse cond=t17 target=0026
+      0023: ConstInt dst=t18 ty=usize value=0
+      0024: Return value=t18
+      0025: Jump target=0027
+      0026: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0027: Return

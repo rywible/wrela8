@@ -63,6 +63,20 @@ const ACTOR_SURFACE: &[&str] = &["Actor", "group", "now", "ms"];
 /// resolver's own arm for these).
 const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
 
+/// The one marked-value mechanism's three policy names (plans/M7.md item
+/// H2a, 03-hardware.md §8 / 05-library.md §6): `Untrusted` (live),
+/// `Validated` / `Secret` (recognized so the mechanism can refuse them by
+/// name as out of M7's honest-scope line, rather than as unknown types).
+/// Resolution and sealing live in `sema::types::resolve_named` /
+/// `sema::bodies`; being in scope is not being constructible.
+const MARKED_VALUES: &[&str] = &["Untrusted", "Validated", "Secret"];
+
+/// Fail-closed type names that resolve only to refuse by plan item
+/// (plans/M7.md item H2a → E4): recognized so `symbols::resolve` does
+/// not report `unknown name` before `types::resolve_named` can name the
+/// owning item.
+const FAIL_CLOSED_TYPES: &[&str] = &["IoCompletion"];
+
 /// Is `name` one of the fixed prelude names above?
 ///
 /// The one entry with no array of its own here: 03-hardware.md §1's four
@@ -82,6 +96,8 @@ pub fn is_builtin(name: &str) -> bool {
         || IMAGE_BUILDER.contains(&name)
         || ACTOR_SURFACE.contains(&name)
         || MMIO_WRAPPERS.contains(&name)
+        || MARKED_VALUES.contains(&name)
+        || FAIL_CLOSED_TYPES.contains(&name)
         || crate::eval::image_checks::is_sealed_authority_type_name(name)
 }
 

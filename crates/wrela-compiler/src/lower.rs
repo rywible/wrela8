@@ -369,6 +369,67 @@ fn mmio_register_offset(
     }
 }
 
+/// plans/M7.md item H2a: lower `reported.checked_le(bound)` to a compare
+/// against the bound and a branch that builds `Ok(payload)` or `Err(unit)`.
+fn lower_untrusted_checked_le(
+    expr: &TypedExpr,
+    receiver: &Option<Box<TypedExpr>>,
+    type_arg: &Option<Type>,
+    args: &[(String, TypedExpr)],
+    b: &mut FnBuilder,
+    env: &mut LEnv,
+) -> Result<Temp, LowerError> {
+    let Some(recv) = receiver else {
+        return Err(LowerError::internal(
+            "`Untrusted.checked_le` with no receiver".to_string(),
+        ));
+    };
+    let Some(payload_ty) = type_arg.clone() else {
+        return Err(LowerError::internal(
+            "`Untrusted.checked_le` with no payload type".to_string(),
+        ));
+    };
+    let Some((_, bound_expr)) = args.iter().find(|(l, _)| l == "bound") else {
+        return Err(LowerError::internal(
+            "`Untrusted.checked_le` with no bound argument".to_string(),
+        ));
+    };
+    // Transparent newtype: the receiver's bits *are* the payload.
+    let payload = lower_expr(recv, b, env)?;
+    let bound = lower_expr(bound_expr, b, env)?;
+    let le = b.fresh(Type::Bool);
+    b.emit(Inst::Compare {
+        dst: le,
+        op: BinOp::Le,
+        ty: payload_ty.clone(),
+        lhs: payload,
+        rhs: bound,
+    });
+    let result = b.fresh(expr.ty.clone());
+    let else_fixup = b.emit(Inst::JumpIfFalse {
+        cond: le,
+        target: usize::MAX,
+    });
+    b.emit(Inst::MakeEnum {
+        dst: result,
+        tag: value::RESULT_OK,
+        payload: vec![payload],
+    });
+    let end_fixup = b.emit(Inst::Jump { target: usize::MAX });
+    let else_pos = b.here();
+    b.patch_jump(else_fixup, else_pos);
+    let err_unit = b.fresh(Type::Unit);
+    b.emit(Inst::ConstUnit { dst: err_unit });
+    b.emit(Inst::MakeEnum {
+        dst: result,
+        tag: value::RESULT_ERR,
+        payload: vec![err_unit],
+    });
+    let end_pos = b.here();
+    b.patch_jump(end_fixup, end_pos);
+    Ok(result)
+}
+
 pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> {
     let mut lw = Lowerer {
         prog: program,
@@ -1893,6 +1954,19 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 b.emit(Inst::ConstUnit { dst });
                 Ok(dst)
             }
+        }
+        // plans/M7.md item H2a, 03-hardware.md §8: `reported.checked_le(bound)`.
+        // A real compare and a real branch — not a cast, not a no-op. The
+        // `Untrusted[T]` receiver is a transparent newtype over `T` at the
+        // ABI (`mwir::size_of`), so lowering it is just lowering its bits;
+        // success builds `Ok(payload)`, failure builds `Err(unit)`.
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            type_arg,
+            args,
+        } if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) => {
+            lower_untrusted_checked_le(expr, receiver, type_arg, args, b, env)
         }
         TypedExprKind::Intrinsic { .. } => Err(LowerError::unimplemented(
             "an `@image` builder intrinsic (reachable only inside the one `@image` fn, which is never lowered) is",

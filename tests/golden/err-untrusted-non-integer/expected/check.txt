@@ -1,0 +1,1 @@
+error[type]: `Untrusted[bool]` cannot be checked-narrowed: the payload must be an integer scalar (03-hardware.md §8's `Untrusted[usize]` worked example) at 7:21

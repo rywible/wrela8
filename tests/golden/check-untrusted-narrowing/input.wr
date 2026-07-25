@@ -1,0 +1,17 @@
+module examples.check_untrusted_narrowing
+
+# plans/M7.md item H2a, 03-hardware.md §8's own spelling: a checked
+# narrowing yields `Result[T, unit]` whose `Ok` payload is the unmarked
+# `T`. The receiver here is a parameter (the type is real); the producer
+# that mints an `Untrusted[T]` at runtime is the undirected-MMIO path
+# exercised by `golden/boot-untrusted-narrowing`.
+
+fn narrow(reported: Untrusted[usize], bound: usize) -> Result[usize, unit]:
+    return reported.checked_le(bound)
+
+fn use_ok(reported: Untrusted[usize], bound: usize) -> usize:
+    match reported.checked_le(bound):
+        case .Ok(v):
+            return v
+        case .Err(_):
+            return 0

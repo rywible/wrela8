@@ -1,0 +1,1 @@
+error[type]: the marked-value mechanism refuses policy `Validated[F, T]` in this milestone — plans/M7.md's honest-scope line keeps only `Untrusted[T]` IN (03-hardware.md §8); `Validated[F, T]` needs `FormatValidator[F, T].validate` and `into_value(take self)` (05-library.md §6), which are out of M7 at 7:11

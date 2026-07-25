@@ -839,6 +839,16 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             // above).
             Ok(SLOT)
         }
+        // plans/M7.md item H2a, 03-hardware.md §8: `Untrusted[T]` is a
+        // sealed newtype over `T` — one mechanism, no extra fields
+        // (archive 05 §8: "adds no field beyond what the check
+        // requires"). Sized exactly as its payload.
+        Type::Named(name, targs) if name == "Untrusted" => {
+            let Some(crate::sema::types::TypeArg::Type(inner)) = targs.first() else {
+                return Err("`Untrusted` with no payload type argument".to_string());
+            };
+            size_of(inner, ctx)
+        }
         Type::Named(name, targs) if name == "CallError" => {
             let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
                 return Err("`CallError` with no error type argument".to_string());

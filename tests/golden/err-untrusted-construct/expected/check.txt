@@ -1,0 +1,1 @@
+error[type]: `Untrusted[T]` is a sealed marked-value wrapper (03-hardware.md §8); it has no source-visible constructor — a device control value arrives marked, and the only transition out is a checked narrowing such as `.checked_le(bound)` at 8:21

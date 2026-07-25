@@ -1,0 +1,7 @@
+module examples.err_untrusted_non_integer
+
+# plans/M7.md item H2a: checked narrowing requires an integer-scalar
+# payload (03 §8's `Untrusted[usize]` worked example).
+
+fn bad(reported: Untrusted[bool], bound: bool) -> Result[bool, unit]:
+    return reported.checked_le(bound)

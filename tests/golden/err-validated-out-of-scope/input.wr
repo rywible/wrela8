@@ -1,0 +1,8 @@
+module examples.err_validated_out_of_scope
+
+# plans/M7.md item H2a: one marked-value mechanism, three policies. The
+# mechanism refuses `Validated[F, T]` by name as out of M7's honest-scope
+# line (only `Untrusted[T]` is IN).
+
+fn bad(v: Validated[u32, u32]) -> u32:
+    return 0

@@ -1650,10 +1650,12 @@ fn check_struct_construction(
 }
 
 /// The result type of an already-`bodies`-accepted MMIO register access:
-/// `read()` yields the register's declared scalar, `write(v)` yields
-/// `unit`. Best-effort like the rest of this pass — an unknown layout or
-/// register simply stops the chain (`None`) rather than inventing a type,
-/// and cannot be reached at all through a program `bodies` accepted.
+/// `ReadOnly[T].read()` yields the declared scalar (item C); an
+/// undirected register's `.read()` yields `Untrusted[T]` (item H2a);
+/// `.write(v)` yields `unit`. Best-effort like the rest of this pass —
+/// an unknown layout or register simply stops the chain (`None`) rather
+/// than inventing a type, and cannot be reached at all through a program
+/// `bodies` accepted.
 fn mmio_access_result(
     targs: &[types::TypeArg],
     register: &str,
@@ -1668,7 +1670,12 @@ fn mmio_access_result(
     };
     let layout = actx.mctx.layouts.get(layout_name.as_str())?;
     let reg = types::mmio_register(layout, register)?;
-    bodies::scalar_type_by_name(&reg.scalar)
+    let scalar = bodies::scalar_type_by_name(&reg.scalar)?;
+    if reg.direction.is_none() {
+        Some(bodies::untrusted_type(scalar))
+    } else {
+        Some(scalar)
+    }
 }
 
 fn check_call_by_field(
@@ -1814,6 +1821,22 @@ fn check_call_by_field(
             return Ok(None);
         }
         if n == "Group" {
+            return Ok(None);
+        }
+        // plans/M7.md item H2a: `Untrusted[T]` is a sealed builtin, never
+        // a declared struct. `bodies` already resolved `.checked_le`; this
+        // pass only owes the result type so a `match`/`?` chain keeps
+        // tracking. Receiver is a plain read — narrowing does not consume
+        // the wrapper's storage (the value is copied into the compare).
+        if n == "Untrusted" {
+            if name == "checked_le" {
+                if let Some(types::TypeArg::Type(inner)) = targs.first() {
+                    return Ok(Some(Type::Result(
+                        Box::new(inner.clone()),
+                        Box::new(Type::Unit),
+                    )));
+                }
+            }
             return Ok(None);
         }
         // plans/M7.md item H1: 03-hardware.md §9's bring-up states are

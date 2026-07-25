@@ -1,0 +1,3 @@
+Module path=examples.check_untrusted_narrowing
+  Fn narrow(reported: read Untrusted[usize], bound: read usize) -> Result[usize, unit]
+  Fn use_ok(reported: read Untrusted[usize], bound: read usize) -> usize

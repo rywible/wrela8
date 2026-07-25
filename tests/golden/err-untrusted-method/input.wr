@@ -1,0 +1,7 @@
+module examples.err_untrusted_method
+
+# plans/M7.md item H2a: `Untrusted[T]` has no method other than
+# `.checked_le(bound)`.
+
+fn bad(reported: Untrusted[usize]) -> usize:
+    return reported.unwrap()

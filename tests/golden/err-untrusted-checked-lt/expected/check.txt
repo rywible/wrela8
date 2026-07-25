@@ -1,0 +1,1 @@
+error[unimplemented]: `Untrusted[T].checked_lt` (03-hardware.md §8 spells only `.checked_le(bound)`; any other checked narrowing is not checked yet at 7:31

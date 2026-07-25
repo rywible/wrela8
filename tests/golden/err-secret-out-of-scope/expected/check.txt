@@ -1,0 +1,1 @@
+error[type]: the marked-value mechanism refuses policy `Secret[T]` in this milestone — plans/M7.md's honest-scope line keeps only `Untrusted[T]` IN (03-hardware.md §8); `Secret[T]` needs secret-preserving transforms and the comptime non-serialization rule (02-language.md §12), which are out of M7 at 6:11

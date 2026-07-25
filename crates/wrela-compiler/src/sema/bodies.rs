@@ -1355,6 +1355,14 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
     let (elem_ty, iter) = match raw_iterable {
         Expr::Range(rspan, from, to, incl) => {
             let (ft, tt) = check_same_type_operands(from, to, fctx, mctx)?;
+            if is_untrusted_type(&ft.ty) || is_untrusted_type(&tt.ty) {
+                let bad = if is_untrusted_type(&ft.ty) {
+                    from.span()
+                } else {
+                    to.span()
+                };
+                return Err(untrusted_use_error("a range bound", bad));
+            }
             if !is_integer_scalar(&ft.ty) {
                 return Err(type_error(
                     format!(
@@ -1892,6 +1900,13 @@ pub(crate) fn check_expr(
     let actual = synth_expr(expr, expected, fctx, mctx)?;
     if let Some(exp) = expected {
         if !types_eq(&actual.ty, exp) {
+            // plans/M7.md item H2a: an `Untrusted[T]` is never silently
+            // coerced to a plain `T`. Prefer the mechanism's own wording
+            // over a bare expected/found mismatch whenever the found
+            // type is marked and the expected type is unmarked.
+            if let Some(msg) = untrusted_coercion_message(exp, &actual.ty) {
+                return Err(type_error(msg, expr.span()));
+            }
             return Err(type_error(
                 format!(
                     "expected `{}`, found `{}`",
@@ -2326,14 +2341,51 @@ fn synth_index(
     }
     match &base_ty {
         Type::Array(elem, _) => {
-            let idx_t = check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?;
+            // Bare integer literals must take the index's `usize` width
+            // (02-language.md §6.1); a named `Untrusted[usize]` must be
+            // rejected by the marked-value rule before any coercion.
+            let idx_t = if is_bare_numeric_literal(&args[0]) {
+                check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?
+            } else {
+                let idx_t = check_expr(&args[0], None, fctx, mctx)?;
+                if is_untrusted_type(&idx_t.ty) {
+                    return Err(untrusted_use_error("an array index", args[0].span()));
+                }
+                if !types_eq(&idx_t.ty, &Type::Usize) {
+                    return Err(type_error(
+                        format!(
+                            "expected `usize`, found `{}`",
+                            types::render_type(&idx_t.ty)
+                        ),
+                        args[0].span(),
+                    ));
+                }
+                idx_t
+            };
             Ok(TypedExpr {
                 ty: (**elem).clone(),
                 kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
             })
         }
         Type::Bytes(_) => {
-            let idx_t = check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?;
+            let idx_t = if is_bare_numeric_literal(&args[0]) {
+                check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?
+            } else {
+                let idx_t = check_expr(&args[0], None, fctx, mctx)?;
+                if is_untrusted_type(&idx_t.ty) {
+                    return Err(untrusted_use_error("an array index", args[0].span()));
+                }
+                if !types_eq(&idx_t.ty, &Type::Usize) {
+                    return Err(type_error(
+                        format!(
+                            "expected `usize`, found `{}`",
+                            types::render_type(&idx_t.ty)
+                        ),
+                        args[0].span(),
+                    ));
+                }
+                idx_t
+            };
             Ok(TypedExpr {
                 ty: Type::U8,
                 kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
@@ -2719,12 +2771,24 @@ fn check_same_type_operands(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<(TypedExpr, TypedExpr), SemaError> {
+    // plans/M7.md item H2a: if either operand is `Untrusted[T]`, do not
+    // unify the other against it (a bare literal would otherwise be
+    // asked to type as `Untrusted[T]` and report a confusing mismatch).
+    // The caller (range / binary) then rejects the marked use by name.
     if is_bare_numeric_literal(a) && !is_bare_numeric_literal(b) {
         let bt = check_expr(b, None, fctx, mctx)?;
+        if is_untrusted_type(&bt.ty) {
+            let at = check_expr(a, None, fctx, mctx)?;
+            return Ok((at, bt));
+        }
         let at = check_expr(a, Some(&bt.ty), fctx, mctx)?;
         Ok((at, bt))
     } else {
         let at = check_expr(a, None, fctx, mctx)?;
+        if is_untrusted_type(&at.ty) {
+            let bt = check_expr(b, None, fctx, mctx)?;
+            return Ok((at, bt));
+        }
         let bt = check_expr(b, Some(&at.ty), fctx, mctx)?;
         Ok((at, bt))
     }
@@ -2750,6 +2814,15 @@ fn build_binop_expr(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     use BinOp::*;
+    // plans/M7.md item H2a: an `Untrusted[T]` has no arithmetic form —
+    // ordinary use with an unmarked value (or another marked one) is a
+    // rejection naming the narrowing transition, never a coercion that
+    // preserves taint. Archive 05 §8's "arithmetic preserves untrusted"
+    // reading is deliberately not taken: 03 §8 says the value cannot be
+    // used until checked-narrowed.
+    if is_untrusted_type(&l.ty) || is_untrusted_type(&r.ty) {
+        return Err(untrusted_use_error("an arithmetic operand", span));
+    }
     let ty = l.ty.clone();
     match op {
         Add | Sub | Mul | Div | Rem => {
@@ -3578,6 +3651,19 @@ fn check_call_by_name(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
+    // plans/M7.md item H2a: `Untrusted[T]` is sealed — no source-visible
+    // constructor (03-hardware.md §8: the wrapper gates use until an
+    // explicit typed transition; the transitions are the narrowings OUT,
+    // and the producers are device control values, not a call form).
+    if name == "Untrusted" {
+        return Err(type_error(
+            "`Untrusted[T]` is a sealed marked-value wrapper (03-hardware.md §8); it has no \
+             source-visible constructor — a device control value arrives marked, and the only \
+             transition out is a checked narrowing such as `.checked_le(bound)`"
+                .to_string(),
+            call_span,
+        ));
+    }
     if let Some(ty) = fctx.lookup_local(name) {
         let callee_t = TypedExpr {
             ty,
@@ -4018,6 +4104,18 @@ fn check_call_by_field(
             );
         }
     }
+    // plans/M7.md item H2a, 03-hardware.md §8: `Untrusted[T]`'s only
+    // source-visible transition is a checked narrowing. Intercepted
+    // before the generic "no method" path so an unimplemented
+    // `checked_*` name fails closed by name rather than looking like a
+    // missing user method.
+    if let Type::Named(marker, targs) = &base_ty {
+        if marker == "Untrusted" {
+            return check_untrusted_narrowing(
+                base_t, targs, name, args, fspan, call_span, fctx, mctx,
+            );
+        }
+    }
     // plans/M7.md item C: an `Mmio[L]` itself has no methods — the only
     // operations 03 §2 gives it go through a *declared register*, which
     // the arm above already took. Named here rather than falling into the
@@ -4346,6 +4444,20 @@ fn check_mmio_access(
                 call_span,
             ));
         }
+        (None, "read") | (None, "write") => {
+            // plans/M7.md item H2a decision (recorded in plans/M7.md): an
+            // undirected `@layout(mmio)` field is a device control
+            // register with no declared direction. Item C left both
+            // operations fail-closed; H2a opens them so the marked-value
+            // mechanism has an honest producer without inventing a
+            // second one and without waiting on E4's `completion.written_len`.
+            // `.read()` returns `Untrusted[T]` — the same §8 rule that
+            // marks a device control value — and `.write(v)` stores a
+            // plain `T`. ReadOnly/WriteOnly keep item C's yield-`T` /
+            // take-`T` contract (03 §6's ISR still bitwise-masks a plain
+            // status today; ReadOnly→Untrusted waits on G's masking
+            // transition).
+        }
         (None, _) => {
             return Err(type_error(
                 format!(
@@ -4395,7 +4507,15 @@ fn check_mmio_access(
                     call_span,
                 ));
             }
-            scalar.clone()
+            // plans/M7.md item H2a: an undirected register's read is a
+            // device control value, so it arrives as `Untrusted[T]`
+            // (03-hardware.md §8). A `ReadOnly[T]` read still yields the
+            // plain scalar (item C's pin; ReadOnly→Untrusted is G's).
+            if reg.direction.is_none() {
+                untrusted_type(scalar.clone())
+            } else {
+                scalar.clone()
+            }
         }
         _ => {
             let [arg] = args else {
@@ -4464,6 +4584,169 @@ fn register_type_text(reg: &types::MmioRegister) -> String {
 /// agree on exactly which keys are a hardware effect.
 pub fn is_mmio_access_intrinsic(key: &str) -> bool {
     matches!(key, "Mmio.read" | "Mmio.write")
+}
+
+// --- plans/M7.md item H2a: `Untrusted[T]` + checked narrowing (03 §8) ----
+//
+// One marked-value mechanism, three policies (03-hardware.md §8 /
+// 05-library.md §6). Only `Untrusted[T]` is live at M7; `Validated` /
+// `Secret` are refused by name at resolve time (`types::resolve_named`).
+// The wrapper is sealed: no source-visible constructor, no ordinary use
+// as an index / length / allocation size / bound / arithmetic operand,
+// and exactly one implemented narrowing — `checked_le(bound)` — which
+// yields `Result[T, unit]` and lowers to a real compare + branch.
+//
+// ## Where a marked value comes from
+//
+// 03 §8's worked producer is `completion.written_len` (`IoCompletion[P]`),
+// which is plans/M7.md item E4 and fails closed by name at resolve.
+// H2a's honest producer for end-to-end testing is an *undirected*
+// `@layout(mmio)` register read: a device control value reached through
+// typed MMIO, returning `Untrusted[T]` under the same §8 rule — not a
+// second mechanism. ReadOnly/WriteOnly keep item C's plain-`T` contract
+// until G's masking transition can replace the ISR's bitwise use.
+
+/// `Untrusted[<inner>]`.
+pub(crate) fn untrusted_type(inner: Type) -> Type {
+    Type::Named("Untrusted".to_string(), vec![types::TypeArg::Type(inner)])
+}
+
+/// Is `ty` the marked wrapper `Untrusted[_]`?
+fn is_untrusted_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, _) if name == "Untrusted")
+}
+
+/// The payload type inside `Untrusted[T]`, when `ty` is one.
+#[allow(dead_code)] // reserved for the self-audit / table-driven guards
+fn untrusted_payload(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Named(name, targs) if name == "Untrusted" => match targs.first() {
+            Some(types::TypeArg::Type(inner)) => Some(inner),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 03-hardware.md §8's rejection for an ordinary use of a marked value:
+/// names the use and the one transition that would clear it.
+fn untrusted_use_error(use_kind: &str, span: Span) -> SemaError {
+    type_error(
+        format!(
+            "`Untrusted[T]` cannot be used as {use_kind} until checked-narrowed — write \
+             `.checked_le(bound)` (03-hardware.md §8)"
+        ),
+        span,
+    )
+}
+
+/// When an expected type is unmarked and the found type is `Untrusted[_]`,
+/// prefer the mechanism's wording over a bare expected/found mismatch.
+fn untrusted_coercion_message(expected: &Type, found: &Type) -> Option<String> {
+    if !is_untrusted_type(found) {
+        return None;
+    }
+    // Coercing *into* Untrusted from a plain value is also refused — the
+    // wrapper is sealed — but that case is `expected` being Untrusted,
+    // handled by the ordinary mismatch (or by the constructor arm).
+    if is_untrusted_type(expected) {
+        return None;
+    }
+    Some(format!(
+        "`Untrusted[T]` cannot be used as a plain `{}` until checked-narrowed — write \
+         `.checked_le(bound)` (03-hardware.md §8); expected `{}`, found `{}`",
+        types::render_type(expected),
+        types::render_type(expected),
+        types::render_type(found),
+    ))
+}
+
+/// Is `key` the one checked-narrowing intrinsic H2a emits?
+pub fn is_untrusted_narrowing_intrinsic(key: &str) -> bool {
+    key == "Untrusted.checked_le"
+}
+
+/// One `reported.checked_le(bound)` (03-hardware.md §8's own spelling).
+#[allow(clippy::too_many_arguments)]
+fn check_untrusted_narrowing(
+    receiver: TypedExpr,
+    targs: &[types::TypeArg],
+    name: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let Some(types::TypeArg::Type(inner)) = targs.first() else {
+        return Err(type_error(
+            "`Untrusted` with no payload type argument".to_string(),
+            fspan,
+        ));
+    };
+    if !is_integer_scalar(inner) {
+        return Err(type_error(
+            format!(
+                "`Untrusted[{}]` cannot be checked-narrowed: the payload must be an integer \
+                 scalar (03-hardware.md §8's `Untrusted[usize]` worked example)",
+                types::render_type(inner)
+            ),
+            fspan,
+        ));
+    }
+    // Only `checked_le` is implemented. Every other `checked_*` the docs
+    // could be read to imply fails closed by name rather than half-built.
+    if name != "checked_le" {
+        if name.starts_with("checked_") {
+            return Err(unimplemented_at(
+                &format!(
+                    "`Untrusted[T].{name}` (03-hardware.md §8 spells only `.checked_le(bound)`; \
+                     any other checked narrowing is"
+                ),
+                call_span,
+            ));
+        }
+        return Err(type_error(
+            format!(
+                "`Untrusted[{}]` has no method `{name}`; the only source-visible transition is \
+                 `.checked_le(bound)` (03-hardware.md §8)",
+                types::render_type(inner)
+            ),
+            fspan,
+        ));
+    }
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`Untrusted[{}].checked_le(bound)` takes exactly one argument; found {}",
+                types::render_type(inner),
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if let Some(label) = &arg.label {
+        if label != "bound" {
+            return Err(type_error(
+                format!(
+                    "`Untrusted[{}].checked_le(bound)`'s argument is positional or `bound=`; \
+                     `{label}=` names no parameter",
+                    types::render_type(inner)
+                ),
+                arg.span,
+            ));
+        }
+    }
+    let bound = check_expr(&arg.value, Some(inner), fctx, mctx)?;
+    Ok(TypedExpr {
+        ty: Type::Result(Box::new(inner.clone()), Box::new(Type::Unit)),
+        kind: TypedExprKind::Intrinsic {
+            key: "Untrusted.checked_le".to_string(),
+            receiver: Some(Box::new(receiver)),
+            type_arg: Some(inner.clone()),
+            args: vec![("bound".to_string(), bound)],
+        },
+    })
 }
 
 // --- plans/M7.md item H1: 03-hardware.md §9's sealed transport ------------
@@ -6513,6 +6796,23 @@ fn check_call_args(
         }
         bound[idx] = true;
         let pty = decl_params[idx].ty.clone();
+        let pname = decl_params[idx].name.as_str();
+        // plans/M7.md item H2a: a length / allocation-size parameter is
+        // exactly the kind of use 03-hardware.md §8 forbids of an
+        // unmarked-yet `Untrusted[T]`. Named by the parameter's own
+        // spelling so the diagnostic can say which use it was, rather
+        // than a generic expected/found mismatch.
+        let use_kind = match pname {
+            "length" | "len" => Some("a length"),
+            "capacity" | "size" => Some("an allocation size"),
+            _ => None,
+        };
+        if let Some(kind) = use_kind {
+            let probe = check_expr(&a.value, None, fctx, mctx)?;
+            if is_untrusted_type(&probe.ty) {
+                return Err(untrusted_use_error(kind, a.span));
+            }
+        }
         let vt = check_expr(&a.value, Some(&pty), fctx, mctx)?;
         slots[idx] = Some(vt);
     }

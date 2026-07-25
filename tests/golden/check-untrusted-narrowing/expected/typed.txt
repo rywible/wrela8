@@ -1,0 +1,31 @@
+Program
+  Fn name=narrow ret=Result[usize, unit]
+    Param name=reported mode=read ty=Untrusted[usize]
+    Param name=bound mode=read ty=usize
+    Body
+      Return
+        Intrinsic key=Untrusted.checked_le type_arg=usize ty=Result[usize, unit]
+          Receiver
+            Local name=reported ty=Untrusted[usize]
+          Arg label=bound
+            Local name=bound ty=usize
+  Fn name=use_ok ret=usize
+    Param name=reported mode=read ty=Untrusted[usize]
+    Param name=bound mode=read ty=usize
+    Body
+      Match
+        Intrinsic key=Untrusted.checked_le type_arg=usize ty=Result[usize, unit]
+          Receiver
+            Local name=reported ty=Untrusted[usize]
+          Arg label=bound
+            Local name=bound ty=usize
+        Case
+          VariantPattern enum=Result variant=Ok ty=Result[usize, unit]
+            Binding name=v ty=usize
+          Return
+            Local name=v ty=usize
+        Case
+          VariantPattern enum=Result variant=Err ty=Result[usize, unit]
+            Wildcard ty=unit
+          Return
+            Int text=0 ty=usize
