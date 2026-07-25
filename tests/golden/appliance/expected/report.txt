@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=cache.wr sha256=1a924c897defb3a7ba6ca57e4d38aaae95bba87c419486d9078ef3df0519e2a2
+  Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
   Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
   Input path=image.wr sha256=5778ef86a97edc7c4856fd70f343db253e77283c61dda63b4ca8a024d43ccddc
   Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee

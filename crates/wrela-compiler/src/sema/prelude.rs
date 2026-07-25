@@ -41,6 +41,8 @@ const LITERAL_SURFACE: &[&str] = &["Static", "Str", "Bytes", "String"];
 const IMAGE_BUILDER: &[&str] = &[
     "Image",
     "RestartIntensity",
+    // plans/M9.md item E: `seconds` stays prelude-visible (RestartIntensity
+    // goldens) while its implementation lives in `stdlib/core/time.wr`.
     "seconds",
     "Target",
     "Restart",
@@ -51,13 +53,10 @@ const IMAGE_BUILDER: &[&str] = &[
 /// The actor/async surface's own bare prelude names (plans/M6.md item A,
 /// 02-language.md §9): `Actor` (a type name, `Actor[T]` — `sema::types::resolve_named`'s
 /// own new arm), `group` (`with group(...)`'s constructor-shaped call
-/// name), and the two clock intrinsics `now`/`ms` (decision 11,
-/// `sema::bodies`'s own `now`/`ms`/`seconds` dispatch). Every other new
-/// M6 name (`CallError`, `Rejected`, `Admission`, `Peer`, `Group`,
-/// `Instant`, `Duration`) is never spelled by source directly — only ever
-/// synthesized by the compiler (await/send composition, `with group`'s
-/// own binder, `now`/`seconds`'s own return type) — so none of them need
-/// an entry here, mirroring `Duration`/`ImageDecl`'s own precedent above.
+/// name), and `now` (still a sealed intrinsic) plus the Duration
+/// constructors that item E moved to `stdlib/core/time.wr` while keeping
+/// the names prelude-visible. `Instant`/`Duration` type names join so an
+/// annotation resolves with no import (the constructors' return types).
 ///
 /// `pool` joins `group` for exactly the same reason, and for no other
 /// (plans/M8.md item R, decision 16): 02-language.md §10 names **two**
@@ -70,7 +69,13 @@ const IMAGE_BUILDER: &[&str] = &[
 /// fail-closed `error[unimplemented]` `check_with` already had written
 /// and could never reach. Being in scope is not being constructible: the
 /// name resolves so the honest rejection can name it.
-const ACTOR_SURFACE: &[&str] = &["Actor", "group", "pool", "now", "ms"];
+const ACTOR_SURFACE: &[&str] = &[
+    "Actor", "group", "pool", "now",
+    // plans/M9.md item E: Duration constructors + types. Implementations
+    // are ordinary wrela in `stdlib/core/time.wr`; these entries are
+    // resolution only (item I owns whether auto-visibility survives).
+    "ns", "us", "ms", "minutes", "hours", "Duration", "Instant",
+];
 
 /// The typed-MMIO register wrappers (plans/M7.md item B, 03-hardware.md
 /// §2's own worked example: `@offset(0x060) interrupt_status:

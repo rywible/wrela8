@@ -312,10 +312,101 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
         }
     }
 
+    // plans/M9.md item E: load `core.time` only when the closure mentions
+    // a time-prelude name (or `now`). Always-loading would put
+    // `Module path=time` in every project check dump; lazy keeps the
+    // golden review surface honest.
+    if closure_mentions_time(&modules) {
+        ensure_time_module(&pkgroot, &mut modules)?;
+    }
+
     Ok(LoadedProgram {
         root: root_key,
         modules,
     })
+}
+
+/// Loader key for `stdlib/core/time.wr` — the `core` alias prefix plus
+/// the file's own `module time` address (same shape as `io_error`).
+pub const TIME_MODULE_KEY: &[&str] = &["core", "time"];
+
+/// True when any loaded module's source mentions a time-prelude name or
+/// `now` (plans/M9.md item E: lazy load of `core.time`).
+pub fn closure_mentions_time(modules: &BTreeMap<Vec<String>, LoadedModule>) -> bool {
+    modules.values().any(|m| module_mentions_time(&m.module))
+}
+
+fn module_mentions_time(module: &Module) -> bool {
+    // Pretty-print and scan tokens — cheaper and less brittle than
+    // mirroring every Expr/Stmt variant, and false positives from a
+    // comment spelling `seconds` only cost a harmless stdlib load.
+    let text = crate::syntax::printer::pretty(module);
+    text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| tok == "now" || TIME_PRELUDE_NAMES.contains(&tok))
+}
+
+/// Names item E keeps prelude-visible while their implementations live
+/// in `stdlib/core/time.wr`. `now` is deliberately absent: it stays a
+/// sealed intrinsic (05 §5).
+pub const TIME_PRELUDE_NAMES: &[&str] = &[
+    "Duration", "Instant", "ns", "us", "ms", "seconds", "minutes", "hours",
+];
+
+/// Ensures `core.time` is present in `modules`. Idempotent when the
+/// closure already imported it explicitly.
+pub fn ensure_time_module(
+    pkgroot: &Path,
+    modules: &mut BTreeMap<Vec<String>, LoadedModule>,
+) -> Result<(), LoadError> {
+    let key: Vec<String> = TIME_MODULE_KEY.iter().map(|s| (*s).to_string()).collect();
+    if modules.contains_key(&key) {
+        return Ok(());
+    }
+    let (resolved_key, file, expected_root) = import_target(pkgroot, &key, Span::default())?;
+    debug_assert_eq!(resolved_key, key);
+    if !file.is_file() {
+        return Err(build_error(
+            format!("module `{}` not found: no such file", key.join(".")),
+            Span::default(),
+        ));
+    }
+    let module = parse_file(&file)?;
+    check_agrees(&file, &module, &expected_root)?;
+    modules.insert(key, LoadedModule { file, module });
+    Ok(())
+}
+
+/// Parses toolchain `stdlib/core/time.wr` into a standalone loaded module
+/// (plans/M9.md item E: the single-module `check_typed` entry still
+/// needs the time surface without a user-facing import).
+pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
+    let key: Vec<String> = TIME_MODULE_KEY.iter().map(|s| (*s).to_string()).collect();
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core");
+    let file = toolchain.join("time.wr");
+    if !file.is_file() {
+        return Err(build_error(
+            "stdlib not found: toolchain `stdlib/core/time.wr` is missing".to_string(),
+            Span::default(),
+        ));
+    }
+    let module = parse_file(&file)?;
+    check_agrees(&file, &module, &toolchain)?;
+    Ok((key, LoadedModule { file, module }))
+}
+
+#[cfg(test)]
+mod time_prelude_tests {
+    use super::*;
+
+    #[test]
+    fn load_time_module_parses() {
+        let (key, loaded) = match load_time_module() {
+            Ok(v) => v,
+            Err(_) => panic!("time.wr exists"),
+        };
+        assert_eq!(key, vec!["core".to_string(), "time".to_string()]);
+        assert_eq!(loaded.module.path, vec!["time".to_string()]);
+    }
 }
 
 #[cfg(test)]

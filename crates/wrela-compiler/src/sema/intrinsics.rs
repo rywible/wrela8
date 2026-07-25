@@ -21,10 +21,14 @@
 //! justification attached.
 //!
 //! The signature this exists to catch is already on the record:
-//! 05-library.md §5 calls the `Duration` constructors "ordinary
-//! phase-neutral functions", yet `ms` and `seconds` are compiler
+//! 05-library.md §5 called the `Duration` constructors "ordinary
+//! phase-neutral functions", yet `ms` and `seconds` were compiler
 //! intrinsic arms — and the other four (`ns`, `us`, `minutes`, `hours`)
-//! do not exist at all, because nobody needed them for a golden.
+//! did not exist at all, because nobody needed them for a golden.
+//! **plans/M9.md item E deleted those two arms** and landed all six as
+//! ordinary wrela in `stdlib/core/time.wr`; the surface shrank 44→42.
+//! `now` remains (sealed recorded effect). This file's job is to keep
+//! the next accretion from landing silently.
 //!
 //! ## What this covers, and what it does not
 //!
@@ -113,21 +117,6 @@ pub const IMAGE_BUILDER_SURFACE: &[&str] = &[
 /// within it.
 pub const EXCEPTIONS: &[(&str, &str)] = &[
     // --- 05 §5: time -------------------------------------------------
-    //
-    // The two entries below are the accretion case study plans/M9.md
-    // item AA was written around, and item E deletes both. When it does,
-    // this comment block and its two lines go with them: that is the
-    // "one-line change with an obvious diff" AA owes E.
-    (
-        "ms",
-        "ACCRETION — 05 §5 calls the `Duration` constructors ordinary phase-neutral functions; \
-         plans/M9.md item E deletes this arm for `stdlib/core/time.wr`.",
-    ),
-    (
-        "seconds",
-        "ACCRETION — same as `ms`: 05 §5 says ordinary function, the compiler says intrinsic. \
-         plans/M9.md item E deletes this arm.",
-    ),
     (
         "now",
         "05 §5: a sealed effect. It is forbidden in comptime and ISR context and is \

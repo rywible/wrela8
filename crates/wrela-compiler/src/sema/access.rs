@@ -1685,6 +1685,17 @@ fn check_call_by_name(
         }
         return Ok(Some(Type::Named("Image".to_string(), vec![])));
     }
+    // plans/M9.md item E: `now()` is a sealed intrinsic returning
+    // `Instant`. Without this arm, `a = now(); a.less_than(b)` loses
+    // the receiver type and fails closed as "mirroring a method call
+    // through this base expression" — the same reason `Image` is typed
+    // above.
+    if name == "now" {
+        for a in args {
+            check_payload_arg(a, actx)?;
+        }
+        return Ok(Some(Type::Named("Instant".to_string(), vec![])));
+    }
     // `Some`/`Ok`/`Err`/`panic`/`RestartIntensity`/`seconds`: builtin
     // pseudo-constructors with no declared parameter modes (they are not
     // real `DeclParam`s).

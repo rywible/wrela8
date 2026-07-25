@@ -2158,6 +2158,16 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
         TypedExprKind::Field(base, name) => {
             let base_temp = lower_expr_flat(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
+            if let Type::Named(sname, _) = &base_ty {
+                if matches!(sname.as_str(), "Duration" | "Instant") && name == "nanos" {
+                    let dst = b.fresh(e.ty.clone());
+                    b.emit_mwir(Inst::Copy {
+                        dst,
+                        src: base_temp,
+                    });
+                    return Ok(dst);
+                }
+            }
             let idx = field_index(b.prog, &base_ty, name)?;
             let dst = b.fresh(e.ty.clone());
             b.emit_mwir(Inst::Project {
@@ -2189,6 +2199,18 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 return Err(FlowError::internal("struct literal type is not `Named`"));
             };
             debug_assert_eq!(name, sname);
+            // plans/M9.md item E: Duration/Instant scalar-newtype ABI.
+            if matches!(sname.as_str(), "Duration" | "Instant") {
+                if fields.len() != 1 {
+                    return Err(FlowError::internal(format!(
+                        "`{sname}` construction must supply exactly one field"
+                    )));
+                }
+                let nanos = lower_expr_flat(&fields[0].1, b, env)?;
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::Copy { dst, src: nanos });
+                return Ok(dst);
+            }
             let s = struct_by_name(b.prog, sname).ok_or_else(|| missing_struct(b.prog, sname))?;
             let mut slots: Vec<Option<Temp>> = vec![None; s.fields.len()];
             for (fname, fval) in fields {
@@ -2254,15 +2276,9 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             b.emit(FlowInst::Now { dst });
             Ok(dst)
         }
-        TypedExprKind::Intrinsic { key, args, .. } if key.as_str() == "ms" => {
-            let (_, n_expr) = args
-                .first()
-                .ok_or_else(|| FlowError::internal("`ms` has no `n` argument"))?;
-            let n = lower_expr_flat(n_expr, b, env)?;
-            let dst = b.fresh(e.ty.clone());
-            b.emit(FlowInst::Duration { dst, n });
-            Ok(dst)
-        }
+        // plans/M9.md item E: `ms` is an ordinary Call into
+        // `stdlib/core/time.wr` (no FlowInst::Duration). The Call arm
+        // above handles it.
         // plans/M7.md item H1: the async half of `lower.rs`'s own MMIO
         // arm. The *sync* half emits, and the sync half is the whole of
         // what this item needs: a driver's `init` is a plain `fn`

@@ -1,0 +1,3 @@
+Module path=examples.check_duration_arith
+  Fn constructors_and_arith() -> unit
+  Fn check() -> bool

@@ -49,9 +49,8 @@ Program
             Arg label=max
               Int text=3 ty=i64
             Arg label=within
-              Intrinsic key=seconds ty=Duration
-                Arg label=n
-                  Int text=10 ty=u64
+              Call key=seconds ty=Duration
+                Int text=10 ty=u64
       Return
         Intrinsic key=Image.seal ty=Image
   Struct name=BlkDriver

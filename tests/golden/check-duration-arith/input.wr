@@ -1,0 +1,20 @@
+module examples.check_duration_arith
+
+# plans/M9.md item E / 05-library.md §5: Duration constructors and
+# add/subtract/less_than as ordinary wrela in stdlib/core/time.wr.
+# Pins values (not mere acceptance). Field `.nanos` is module-private;
+# equality against constructor results is the user-facing observation.
+
+@test
+fn constructors_and_arith():
+    comptime assert ms(1).less_than(seconds(1)), "ms < seconds"
+    comptime assert ms(1).add(seconds(1)) == ns(1001000000), "ms+seconds"
+    comptime assert seconds(1).subtract(ms(1)) == ns(999000000), "seconds-ms"
+    comptime assert us(1) == ns(1000), "us"
+    comptime assert minutes(1) == seconds(60), "minutes"
+    comptime assert hours(1) == minutes(60), "hours"
+    comptime assert ns(1).add(ns(2)).add(ns(3)) == ns(6), "chain add"
+    comptime assert seconds(1).less_than(ms(1)) == false, "not lt"
+
+pub fn check() -> bool:
+    return true

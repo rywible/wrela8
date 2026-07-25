@@ -1017,6 +1017,7 @@ pub fn lower_program_with(
     };
     let mut fns: BTreeMap<String, MwirFn> = BTreeMap::new();
 
+
     for (name, f) in &program.fns {
         if program.image_fn.as_deref() == Some(name.as_str()) {
             continue;
@@ -1161,6 +1162,34 @@ fn lower_struct_members(
         }
     }
     Ok(())
+}
+
+fn scan_time_prelude_in_stmts(stmts: &[TypedStmt], out: &mut std::collections::BTreeSet<String>) {
+    for s in stmts {
+        scan_time_prelude_in_stmt(s, out);
+    }
+}
+
+fn scan_time_prelude_in_stmt(stmt: &TypedStmt, out: &mut std::collections::BTreeSet<String>) {
+    // Dump the statement's Debug form and look for Call keys — dumb but
+    // covers every nested shape without mirroring the whole TypedStmt
+    // grammar. False positives only over-emit a tiny time constructor
+    // or Duration/Instant method.
+    let text = format!("{:?}", stmt);
+    for name in crate::loader::TIME_PRELUDE_NAMES {
+        // CalleeKey::Fn debug is typically `Fn("seconds")`.
+        if text.contains(&format!("Fn(\"{name}\")")) {
+            out.insert((*name).to_string());
+        }
+    }
+    // Method calls: CalleeKey::Method("Instant", "less_than") — seed
+    // `"Instant."` / `"Duration."` so the imported-struct emit gate can
+    // pull the whole method set for that type.
+    for ty in ["Duration", "Instant"] {
+        if text.contains(&format!("Method(\"{ty}\"")) {
+            out.insert(format!("{ty}."));
+        }
+    }
 }
 
 /// plans/M9.md item B2: same keying as `lower_struct_members` —
@@ -2476,6 +2505,18 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         TypedExprKind::Field(base, name) => {
             let base_temp = lower_expr(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
+            // plans/M9.md item E: Duration/Instant are scalar newtypes —
+            // `.nanos` is the word itself.
+            if let Type::Named(sname, _) = &base_ty {
+                if matches!(sname.as_str(), "Duration" | "Instant") && name == "nanos" {
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::Copy {
+                        dst,
+                        src: base_temp,
+                    });
+                    return Ok(dst);
+                }
+            }
             let idx = field_index(b.prog(), &base_ty, name)?;
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::Project {
@@ -2742,6 +2783,21 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 return Err(LowerError::internal("struct literal type is not `Named`"));
             };
             debug_assert_eq!(name, sname);
+            // plans/M9.md item E: `Duration`/`Instant` are one-word
+            // newtypes (private `nanos: u64`). Keep the pre-E ABI
+            // (`is_aggregate` treats them as scalars) by lowering a
+            // construction to a plain Copy of the nanos field.
+            if matches!(sname.as_str(), "Duration" | "Instant") {
+                if fields.len() != 1 {
+                    return Err(LowerError::internal(format!(
+                        "`{sname}` construction must supply exactly one field"
+                    )));
+                }
+                let nanos = lower_expr(&fields[0].1, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Copy { dst, src: nanos });
+                return Ok(dst);
+            }
             let s = resolve_struct(b.prog(), sname, targs)
                 .ok_or_else(|| missing_struct(b.prog(), sname))?;
             let mut slots: Vec<Option<Temp>> = vec![None; s.fields.len()];

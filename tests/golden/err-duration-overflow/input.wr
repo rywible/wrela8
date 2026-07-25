@@ -1,0 +1,11 @@
+module examples.err_duration_overflow
+
+# plans/M9.md item E: Duration constructors use ordinary checked `*`.
+# A multiplier that overflows u64 abandons at comptime.
+
+@test
+fn overflow():
+    comptime assert ms(18446744073710) == ns(0), "unreachable"
+
+pub fn check() -> bool:
+    return true

@@ -27,12 +27,12 @@
 /// from the scan (it talks about the prefix without emitting one).
 pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     ("layout.rs", 71),
-    ("eval/interp.rs", 72),
+    ("eval/interp.rs", 70),
     ("lower.rs", 5),
     ("codegen.rs", 4),
     ("eval/mod.rs", 2),
     ("placement.rs", 2),
-    ("sema/mod.rs", 2),
+    ("sema/mod.rs", 3),
     ("sema/specialize.rs", 2),
     ("sema/types.rs", 2),
     ("flowwir_lower.rs", 1),
@@ -133,7 +133,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 164,
+            INTERNAL_ERROR_SITE_COUNT, 163,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

@@ -1,1 +1,3 @@
-error[unimplemented]: `@image` fn `build` calls `add_actor`, declared in another module; checking a cross-module callee's comptime legality from an `@image` fn is not supported yet
+error[comptime]: `@image fn build` requires a comptime-legal closure, but `build` is not comptime-callable at 0:0
+  `build` calls `add_actor`
+  `add_actor` uses an `@image` builder intrinsic

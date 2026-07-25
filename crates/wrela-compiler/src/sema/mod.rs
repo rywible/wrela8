@@ -184,6 +184,67 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
             import.span,
         ));
     }
+    // plans/M9.md item E: when the module mentions a time-prelude name
+    // (or `now`), run through the whole-closure path with `core.time`
+    // loaded so constructors are ordinary Calls into stdlib wrela —
+    // still no user-facing import (prelude visibility via IMAGE_BUILDER /
+    // ACTOR_SURFACE). Modules that never mention time keep the exact
+    // single-module path (byte-identical dumps).
+    let text = crate::syntax::printer::pretty(module);
+    let needs_time = text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| tok == "now" || crate::loader::TIME_PRELUDE_NAMES.contains(&tok));
+    if needs_time {
+        return check_typed_with_time_prelude(module, path);
+    }
+    check_typed_single(module, path)
+}
+
+/// Single-module pipeline with `core.time` spliced in (plans/M9.md item E).
+fn check_typed_with_time_prelude(
+    module: &Module,
+    path: &str,
+) -> Result<typed::TypedProgram, SemaError> {
+    let (time_key, time_loaded) = crate::loader::load_time_module().map_err(|e| match e {
+        crate::loader::LoadError::Build(e) => e,
+        crate::loader::LoadError::Lex(e) => SemaError {
+            category: "lex",
+            message: e.message,
+            line: e.line,
+            col: e.col,
+            extra_lines: vec![],
+            omit_location: false,
+            missing_method: None,
+        },
+        crate::loader::LoadError::Parse(e) => SemaError {
+            category: "parse",
+            message: e.message,
+            line: e.line,
+            col: e.col,
+            extra_lines: vec![],
+            omit_location: false,
+            missing_method: None,
+        },
+    })?;
+    let root_key = module.path.clone();
+    let time_path = time_loaded.file.display().to_string();
+    let mut modules = BTreeMap::new();
+    modules.insert(root_key.clone(), module.clone());
+    modules.insert(time_key.clone(), time_loaded.module);
+    let mut paths = BTreeMap::new();
+    paths.insert(root_key.clone(), path.to_string());
+    paths.insert(time_key, time_path);
+    let mut progs = check_program_typed(&modules, &paths)?;
+    progs.remove(&root_key).ok_or_else(|| {
+        SemaError::at(
+            "internal",
+            "internal error: time-prelude check lost the root module".to_string(),
+            Span::default(),
+        )
+    })
+}
+
+fn check_typed_single(module: &Module, path: &str) -> Result<typed::TypedProgram, SemaError> {
     let specialized = specialize::specialize(module)?;
     // plans/M7.md item B: the `@layout` exact-bytes pass runs before name
     // resolution — see `types::check_layouts`' own section note for the
@@ -438,6 +499,11 @@ pub fn check_program_typed(
         bindings.insert(key.clone(), b);
     }
 
+    // plans/M9.md item E: splice the time prelude names into every module
+    // that is not `core.time` itself, without requiring a source import.
+    // Explicit `from core.time import ...` wins (entry already present).
+    inject_time_prelude_bindings(&mut bindings, &specialized);
+
     // plans/M9.md item A1: the closure's type-name arity table, read off
     // raw AST on both sides (`imports::closure_type_shapes`) so it is
     // complete before any module's `declare` runs — that is what keeps
@@ -452,10 +518,10 @@ pub fn check_program_typed(
     let mut imported_types: BTreeMap<Vec<String>, types::ImportedTypes> = BTreeMap::new();
     let mut imported_targets = types::ImportedTypeTargets::new();
     for (key, module) in &specialized {
-        imported_types.insert(
-            key.clone(),
-            imports::imported_type_shapes(module, &closure_shapes),
-        );
+        let mut imported = imports::imported_type_shapes(module, &closure_shapes);
+        // Same inject for type-position Duration/Instant.
+        inject_time_prelude_types(&mut imported, &closure_shapes);
+        imported_types.insert(key.clone(), imported);
         imported_targets.insert(
             key.clone(),
             imports::imported_type_targets(module, &closure_shapes),
@@ -617,6 +683,12 @@ pub fn check_program_typed(
             &types::capability_authority(module, decl_items),
         )?;
         crate::eval::legal::check_isr_effects(program)?;
+        // plans/M7.md item G: same wake/bottom-half checks the
+        // single-module path runs. Item E routes every module that
+        // mentions `seconds`/`now`/… through this multi-module path, so
+        // omitting them here would let `err-wake-outside-isr` pass.
+        crate::eval::legal::check_wake_sites(program)?;
+        crate::eval::legal::check_bottom_half(program)?;
     }
 
     // plans/M6.md item G: the whole-closure half of the send proof (see
@@ -1105,6 +1177,53 @@ fn close_typed_type_reachability(
     }
 }
 
+/// plans/M9.md item E: bind `TIME_PRELUDE_NAMES` from `core.time` into
+/// every module that is not `core.time` itself. Explicit imports win.
+fn inject_time_prelude_bindings(
+    bindings: &mut BTreeMap<Vec<String>, imports::ImportBindings>,
+    specialized: &BTreeMap<Vec<String>, Module>,
+) {
+    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    if !specialized.contains_key(&time_key) {
+        return;
+    }
+    for key in specialized.keys() {
+        if key == &time_key {
+            continue;
+        }
+        let bs = bindings.entry(key.clone()).or_default();
+        for name in crate::loader::TIME_PRELUDE_NAMES {
+            bs.entry((*name).to_string())
+                .or_insert_with(|| imports::ImportBinding {
+                    target_module: time_key.clone(),
+                    target_name: (*name).to_string(),
+                });
+        }
+    }
+}
+
+/// Same inject for type-position `Duration`/`Instant` arity.
+fn inject_time_prelude_types(
+    imported: &mut types::ImportedTypes,
+    closure_shapes: &BTreeMap<Vec<String>, BTreeMap<String, usize>>,
+) {
+    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let Some(shapes) = closure_shapes.get(&time_key) else {
+        return;
+    };
+    for name in ["Duration", "Instant"] {
+        if let Some(arity) = shapes.get(name) {
+            imported.entry(name.to_string()).or_insert(*arity);
+        }
+    }
+}
+
 /// The multi-module `--stage=check` dump (plans/M4.md item A): every
 /// module's own dump (`dump` above, unchanged), concatenated in
 /// `modules`'s own BTree order — an imported name is bound, never
@@ -1153,8 +1272,24 @@ pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> String {
     types::classify_closure(&mut decl_items_map, &imported_targets)
         .expect("dump is only called after check returns Ok");
 
+    // plans/M9.md item E: `core.time` is auto-loaded for prelude-visible
+    // constructors without a source import. Showing `Module path=time` in
+    // every project check dump that mentions `seconds` would reshape the
+    // golden review surface the same way requiring an import would —
+    // omit it from the dump unless some module explicitly imported it.
+    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let time_explicitly_imported = modules
+        .values()
+        .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
+
     let mut out = String::new();
     for (key, module) in modules {
+        if key == &time_key && !time_explicitly_imported {
+            continue;
+        }
         out.push_str(&dump_with_imports(
             module,
             &imported_types[key],

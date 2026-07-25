@@ -4941,51 +4941,11 @@ fn check_call_by_name(
                 },
             })
         }
-        "seconds" => {
-            if args.len() != 1 || args[0].label.is_some() {
-                return Err(type_error(
-                    "`seconds` takes exactly one positional argument".to_string(),
-                    call_span,
-                ));
-            }
-            let n = check_expr(&args[0].value, Some(&Type::U64), fctx, mctx)?;
-            Ok(TypedExpr {
-                ty: Type::Named("Duration".to_string(), vec![]),
-                kind: TypedExprKind::Intrinsic {
-                    key: "seconds".to_string(),
-                    receiver: None,
-                    type_arg: None,
-                    args: vec![("n".to_string(), n)],
-                },
-            })
-        }
+        // plans/M9.md item E: `seconds` / `ms` deleted as intrinsic arms —
+        // ordinary wrela in `stdlib/core/time.wr`, prelude-visible via
+        // IMAGE_BUILDER / ACTOR_SURFACE. `now` stays sealed below.
         // Plans/M6.md item A, decision 11 (02-language.md §9.5's own
-        // vocabulary): `ms(n)` is a pure, comptime-legal duration
-        // constructor — shares `seconds`'s exact node shape (a
-        // `Duration`-typed `Intrinsic`), just a different fixed `n`-to-
-        // duration scale (lowering — item D — is the only place that
-        // actually differs). `eval::legal` never restricts it (mirrors
-        // `seconds`/`RestartIntensity`'s own "ordinary comptime-legal
-        // value" doc note above).
-        "ms" => {
-            if args.len() != 1 || args[0].label.is_some() {
-                return Err(type_error(
-                    "`ms` takes exactly one positional argument".to_string(),
-                    call_span,
-                ));
-            }
-            let n = check_expr(&args[0].value, Some(&Type::U64), fctx, mctx)?;
-            Ok(TypedExpr {
-                ty: Type::Named("Duration".to_string(), vec![]),
-                kind: TypedExprKind::Intrinsic {
-                    key: "ms".to_string(),
-                    receiver: None,
-                    type_arg: None,
-                    args: vec![("n".to_string(), n)],
-                },
-            })
-        }
-        // `now()` (decision 11): runtime-only — the one new
+        // vocabulary): `now()` is runtime-only — the one new
         // `eval::legal` illegal-reason arm decision 11 asks for (mirrors
         // the intrinsic-outside-`@image` precedent: recognized by bare
         // callee spelling, restricted by a dedicated `eval::legal` check

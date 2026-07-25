@@ -8,9 +8,8 @@ Program
         Deadline
           Binary op=+ ty=Instant
             Intrinsic key=now ty=Instant
-            Intrinsic key=ms ty=Duration
-              Arg label=n
-                Int text=50 ty=u64
+            Call key=ms ty=Duration
+              Int text=50 ty=u64
         Body
           Let name=outcome ty=Result[u64, CallError[never]]
             Await ty=Result[u64, CallError[never]]

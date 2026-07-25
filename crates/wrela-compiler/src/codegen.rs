@@ -4559,18 +4559,27 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
     );
     ctx.store_slot(X_LR, frame.lr_off);
     let mut next_reg = 0u8;
-    if let Some((self_temp, _mode)) = f.receiver {
-        let self_ptr_off = frame
-            .self_ptr_off
-            .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
-        ctx.store_slot(next_reg, self_ptr_off);
-        let size = frame.size_of_temp(self_temp);
-        let dst_off = frame.off(self_temp);
-        let mut w = 0;
-        while w < size {
-            ctx.load_ptr(X_A, next_reg, w);
-            ctx.store_slot(X_A, dst_off + w);
-            w += 8;
+    if let Some((self_temp, mode)) = f.receiver {
+        let self_ty = &f.temp_types[self_temp.0];
+        // plans/M9.md item E: `Instant`/`Duration` are scalar newtypes
+        // (`is_aggregate` false) with real `read self` methods. Call
+        // sites already pass them by value; the prologue must not
+        // dereference the tick count as a pointer (FAR = nanos).
+        if is_aggregate(self_ty) || mode == AccessMode::Mut {
+            let self_ptr_off = frame
+                .self_ptr_off
+                .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
+            ctx.store_slot(next_reg, self_ptr_off);
+            let size = frame.size_of_temp(self_temp);
+            let dst_off = frame.off(self_temp);
+            let mut w = 0;
+            while w < size {
+                ctx.load_ptr(X_A, next_reg, w);
+                ctx.store_slot(X_A, dst_off + w);
+                w += 8;
+            }
+        } else {
+            ctx.store_slot(next_reg, frame.off(self_temp));
         }
         next_reg += 1;
     }
@@ -5558,19 +5567,26 @@ fn emit_async_entry(
 
     // --- fresh path: spill self/params into the persistent frame -------
     let mut next_reg = 0u8;
-    if let Some((self_temp, _mode)) = f.receiver {
-        let self_ptr_off = ctx
-            .frame
-            .self_ptr_off
-            .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
-        ctx.store_slot(next_reg, self_ptr_off);
-        let size = ctx.frame.size_of_temp(self_temp);
-        let dst_off = ctx.frame.off(self_temp);
-        let mut w = 0;
-        while w < size {
-            ctx.load_ptr(X_A, next_reg, w);
-            ctx.store_slot(X_A, dst_off + w);
-            w += 8;
+    if let Some((self_temp, mode)) = f.receiver {
+        let self_ty = &f.temp_types[self_temp.0];
+        // plans/M9.md item E: scalar `read self` (Instant/Duration) by
+        // value — same rule as `emit_prologue`.
+        if is_aggregate(self_ty) || mode == AccessMode::Mut {
+            let self_ptr_off = ctx
+                .frame
+                .self_ptr_off
+                .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
+            ctx.store_slot(next_reg, self_ptr_off);
+            let size = ctx.frame.size_of_temp(self_temp);
+            let dst_off = ctx.frame.off(self_temp);
+            let mut w = 0;
+            while w < size {
+                ctx.load_ptr(X_A, next_reg, w);
+                ctx.store_slot(X_A, dst_off + w);
+                w += 8;
+            }
+        } else {
+            ctx.store_slot(next_reg, ctx.frame.off(self_temp));
         }
         next_reg += 1;
     }

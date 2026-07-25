@@ -1,0 +1,48 @@
+# plans/M9.md item E: 05-library.md §5 time surface as ordinary wrela.
+# Constructors are phase-neutral checked functions; Instant is opaque
+# (fields private to this module — only this module and the `now()`
+# intrinsic mint it). `now()` itself stays a sealed compiler intrinsic
+# (recorded/replayed through ClockRead).
+module time
+
+pub struct Duration:
+    nanos: u64
+
+    pub fn add(read self, right: Duration) -> Duration:
+        return Duration(nanos = self.nanos + right.nanos)
+
+    pub fn subtract(read self, right: Duration) -> Duration:
+        return Duration(nanos = self.nanos - right.nanos)
+
+    pub fn less_than(read self, right: Duration) -> bool:
+        return self.nanos < right.nanos
+
+pub struct Instant:
+    nanos: u64
+
+    pub fn add(read self, right: Duration) -> Instant:
+        return Instant(nanos = self.nanos + right.nanos)
+
+    pub fn subtract(read self, right: Instant) -> Duration:
+        return Duration(nanos = self.nanos - right.nanos)
+
+    pub fn less_than(read self, right: Instant) -> bool:
+        return self.nanos < right.nanos
+
+pub fn ns(n: u64) -> Duration:
+    return Duration(nanos = n)
+
+pub fn us(n: u64) -> Duration:
+    return Duration(nanos = n * 1000)
+
+pub fn ms(n: u64) -> Duration:
+    return Duration(nanos = n * 1000000)
+
+pub fn seconds(n: u64) -> Duration:
+    return Duration(nanos = n * 1000000000)
+
+pub fn minutes(n: u64) -> Duration:
+    return Duration(nanos = n * 60 * 1000000000)
+
+pub fn hours(n: u64) -> Duration:
+    return Duration(nanos = n * 3600 * 1000000000)

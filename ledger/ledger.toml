@@ -1604,7 +1604,7 @@ note = """05-library.md §9, verbatim: "`Image`, `group`, actor admission, and p
 
 Opened by plans/M9.md item AA (decisions 56–59). Its premise, restated: ROADMAP M10 warns that migrating item-by-item while adding whatever intrinsic each item needs "designs the permanent surface by accretion, in the one place this project can least afford it." That pressure is in **M9** — every stdlib item can reach for a compiler-recognized name instead of writing wrela. plans/M9.md shape decision 1 forbids it in prose; nothing enforced it.
 
-**The census (2026-07-25, at c714491).** 44 distinct intrinsic keys, from 38 construction sites in `sema/bodies.rs` — 34 literal `key: "..."` sites plus four that build the key with `format!`, which is why the surface could not be counted by grepping. All four templated sites are statically knowable and were resolved by reading: `Image.{mname}` → `device`/`pool`/`dma_pool`; `Mmio.{op}` → `read`/`write`; `InterruptCell.{method}` → `store_release`/`swap_acquire`/`fetch_or_release`; `Image.{name}` → `driver`/`actor`. Of the 44, **10 are §9's builder surface** (identical to `sema::typed::is_restricted_intrinsic`'s set) and **34 are exceptions**, grouped as time (3), builder vocabulary (1), typed MMIO (2), marked values (1), device bring-up (7), queues/receipts (10), interrupts and bottom halves (8), scoped concurrency (2).
+**The census (2026-07-25, at c714491).** 44 distinct intrinsic keys, from 38 construction sites in `sema/bodies.rs` — 34 literal `key: "..."` sites plus four that build the key with `format!`, which is why the surface could not be counted by grepping. All four templated sites are statically knowable and were resolved by reading: `Image.{mname}` → `device`/`pool`/`dma_pool`; `Mmio.{op}` → `read`/`write`; `InterruptCell.{method}` → `store_release`/`swap_acquire`/`fetch_or_release`; `Image.{name}` → `driver`/`actor`. Of the 44, **10 are §9's builder surface** (identical to `sema::typed::is_restricted_intrinsic`'s set) and **34 are exceptions**, grouped as time (3), builder vocabulary (1), typed MMIO (2), marked values (1), device bring-up (7), queues/receipts (10), interrupts and bottom halves (8), scoped concurrency (2). **plans/M9.md item E (2026-07-25) deletes `ms`/`seconds`: surface is now 42 (10 + 32); `now` remains the one time exception.**
 
 **Where it is written down.** `crates/wrela-compiler/src/sema/intrinsics.rs` — `IMAGE_BUILDER_SURFACE` (§9, stays intrinsic: comptime-only, emits no code, effects land on the compiler's own image graph, and making it ordinary wrela would mean exposing the image IR as a language type) and `EXCEPTIONS`, one line of justification each. The bar: an intrinsic is justified when wrela source *cannot* express the thing (no expression form, a build-time graph edge, a sealed wrapper, a recorded effect), not when writing it in wrela would merely be inconvenient.
 
@@ -1625,11 +1625,36 @@ Holes found by mutation-testing the guard itself, and closed:
 
 **Recorded, not acted on** (AA measures and locks; it removes nothing):
 
-- `ms` and `seconds` are marked `ACCRETION` in `EXCEPTIONS` and cite plans/M9.md item E, which deletes both arms for `stdlib/core/time.wr`. That removal is a two-line diff here.
+- ~~`ms` and `seconds` are marked `ACCRETION` in `EXCEPTIONS` and cite plans/M9.md item E, which deletes both arms for `stdlib/core/time.wr`. That removal is a two-line diff here.~~ **Done by plans/M9.md item E (2026-07-25):** both arms deleted; surface is now **42** keys (10 builder + 32 exceptions). `now` stays — sealed recorded effect.
 - `is_queue_op_deferred` accepts `VirtQueue.poll_sources` and `VirtQueue.completions_pending`, which **no construction site produces** — `check_virtqueue_method` rejects both methods with `unimplemented_at` first, so the consumer arms in `lower.rs`/`flowwir_lower.rs` are unreachable. Kept as `UNPRODUCED_CONSUMER_KEYS` with a test that fails if either gains a producer or loses its consumer.
-- `InterruptCell.new` is the weakest exception: it lowers to a plain `Copy`, unlike its four siblings which lower to dedicated ordered instructions. Named in its own justification line as the answer to item E's "investigate, don't presume" question — the *ops* genuinely need compiler knowledge (wrela has no atomic or ordering expression form, and ROADMAP M10's floor says so); the *constructor* is intrinsic only because the type is compiler-known.
+- `InterruptCell.new` is the weakest exception: it lowers to a plain `Copy`, unlike its four siblings which lower to dedicated ordered instructions. Named in its own justification line as the answer to item E's "investigate, don't presume" question — the *ops* genuinely need compiler knowledge (wrela has no atomic or ordering expression form, and ROADMAP M10's floor says so); the *constructor* is intrinsic only because the type is compiler-known. **Item E confirms AA's answer and does not change it.**
 
 **Deliberately not covered.** `sema::prelude`'s bare-name table is a different surface — resolution, not meaning — and the two are not in bijection (`Target` is a prelude name with no intrinsic key; `Mmio.read` is an intrinsic key that is not a prelude name). plans/M9.md item I owns shrinking `prelude.rs`; this clause owns holding the intrinsic surface still while that happens."""
+
+[[clause]]
+id = "library.time"
+doc = "05-library.md#5"
+status = "test"
+tests = [
+  "golden/check-duration-arith",
+  "golden/err-duration-overflow",
+  "golden/err-now-in-comptime",
+  "golden/err-now-in-isr",
+  "golden/boot-instant-monotonic",
+  "golden/boot-deadline-cancel",
+  "xtask:repro",
+]
+note = """05-library.md §5: `Duration` constructors are ordinary phase-neutral functions; Instant is opaque and monotonic; `now() -> Instant` is a sealed effect forbidden in comptime and ISR context and recorded/replayed.
+
+**plans/M9.md item E (2026-07-25, decisions 300–309).** The doc-vs-code defect: `ms`/`seconds` were compiler intrinsic arms while `ns`/`us`/`minutes`/`hours` did not exist. E deletes those two arms (AA surface 44→42) and lands all six constructors plus `Duration`/`Instant` methods in `stdlib/core/time.wr`. Names stay prelude-visible via `IMAGE_BUILDER`/`ACTOR_SURFACE` so ~194 `seconds(...)` goldens need no import reshape (decision 300); item I still owns whether that auto-visibility survives deleting `prelude.rs`.
+
+**Constructors.** Ordinary checked `*` overflow — `error[comptime]: arithmetic overflow in '*'` while evaluating `ms` (`golden/err-duration-overflow`). Arith pinned by value in `golden/check-duration-arith` (equality against `ns(...)`, not `.nanos` peeks).
+
+**`now()`.** Stays intrinsic. Comptime refusal unchanged (`golden/err-now-in-comptime`: "`is_ready` uses `now()` (a runtime-only clock read)"). ISR refusal via `eval::legal::check_isr_effects` (`golden/err-now-in-isr`: "uses a runtime clock read (`now()` — not in the ISR effect set)"). Guest lowering: FlowWir `Now` → `codegen::emit_now` trapping load at `CLOCK_MMIO_ADDR`; VMM returns `monotonic_ns()` and logs `ChoiceEntry::ClockRead` (reuses M6's entry — no new tag). Monotonicity proven by `golden/boot-instant-monotonic` (two successive `now()` reads; `Instant.less_than` asserts order) plus existing `xtask:repro` clock-log tamper on `boot-deadline-cancel`.
+
+**Instant opacity.** Public API is `now()` + methods; fields are non-`pub`. Cross-module field privacy is a pre-existing language gap (not opened here); Instant struct-literal construction from outside is currently possible and recorded as residue.
+
+**InterruptCell.** Confirms AA: ops need compiler knowledge; constructor is weak; unchanged."""
 
 [[clause]]
 id = "comptime.eval.try-propagation"

@@ -30,7 +30,7 @@ Program
       0001: Mwir Copy dst=t4 src=t3
       0002: Now dst=t5
       0003: Mwir ConstInt dst=t6 ty=u64 value=50
-      0004: Duration dst=t7 n=t6
+      0004: Mwir Call key=ms dst=t7 args=[t6]
       0005: Mwir ArithWrapping op=+% ty=u64 dst=t8 lhs=t5 rhs=t7
       0006: GroupCreate group=t9 deadline=t8
       Transition Await what=ActorCall{target=t2,method=Storage.load,args=[]} resume=1 result=t10

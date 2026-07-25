@@ -745,6 +745,16 @@ fn dump(args: &[String]) -> ExitCode {
                                 print!("{}", sema::dump_typed(&checked.programs[&checked.root]));
                             } else {
                                 let mut out = String::new();
+                                // plans/M9.md item E: omit auto-injected
+                                // `core.time` from the typed dump unless
+                                // some module explicitly imported it —
+                                // same rule as `sema::dump_program`.
+                                let time_key: Vec<String> =
+                                    ["core", "time"].iter().map(|s| (*s).to_string()).collect();
+                                let time_explicit = checked
+                                    .modules
+                                    .values()
+                                    .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
                                 for (addr, program) in &checked.programs {
                                     // Prefer the module's declared path
                                     // (matches `--stage=check`'s dump) so a
@@ -755,6 +765,9 @@ fn dump(args: &[String]) -> ExitCode {
                                         .get(addr)
                                         .map(|m| m.path.join("."))
                                         .unwrap_or_else(|| addr.clone());
+                                    if label == "time" && !time_explicit {
+                                        continue;
+                                    }
                                     out.push_str(&format!("Module path={label}\n"));
                                     out.push_str(&sema::dump_typed(program));
                                 }

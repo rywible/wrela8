@@ -1,0 +1,43 @@
+module examples.boot_instant_monotonic
+
+# plans/M9.md item E / 05-library.md §5: Instant is opaque and monotonic.
+# now() lowers to the ClockRead MMIO trap; two successive reads must not
+# go backwards. Pins the value relationship, not a wall-clock absolute.
+# sample is async so `now()` reaches FlowWir's Now → ClockRead path
+# (sync actor bodies have no Now lowering; every prior now() site is a
+# group deadline inside an async fn).
+
+@actor
+pub struct ClockProbe:
+    first: u64
+    second: u64
+
+    pub async fn sample(mut self) -> u64:
+        a = now()
+        b = now()
+        # Instant.less_than is the total order; equal ticks are fine.
+        if b.less_than(a):
+            assert false, "Instant must be monotonic"
+        z = ms(0)
+        a2 = a.add(z)
+        b2 = b.add(z)
+        if b2.less_than(a2):
+            assert false, "Instant+Duration(0) preserves order"
+        return 1
+
+@test(runtime)
+async fn monotonic(c: Actor[ClockProbe]):
+    r = await c.sample()
+    match r:
+        case .Ok(v):
+            assert v == 1, "sample returned 1"
+        case .Err(_):
+            assert false, "sample rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-instant-monotonic", target=Target.wrela_machine_v1)
+    c = img.actor(ClockProbe, mailbox=8)
+    img.supervise(children=[c], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

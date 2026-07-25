@@ -2144,7 +2144,11 @@ fn eval_intrinsic<'a, 'p>(
                 let v = eval_expr(a, env, dstack, loop_marker, ctx)?;
                 match label.as_str() {
                     "max" => max_v = Some(v),
-                    "within" => within_v = Some(v),
+                    // plans/M9.md item E: `within` is a `Duration` (struct
+                    // with one `nanos` field) after the constructors moved
+                    // to ordinary wrela; the image graph still stores the
+                    // nanosecond count (report intensity=(max, nanos)).
+                    "within" => within_v = Some(duration_as_nanos(v, ctx)?),
                     _ => {}
                 }
             }
@@ -2155,42 +2159,27 @@ fn eval_intrinsic<'a, 'p>(
             ctx.charge(v.weight())?;
             Ok(v)
         }
-        "seconds" => {
-            let Some((_, n_expr)) = args.first() else {
-                return Err(ctx.abandon("internal error: `seconds` is missing its argument"));
-            };
-            let nv = eval_expr(n_expr, env, dstack, loop_marker, ctx)?;
-            let n = value::as_i128(&nv).ok_or_else(|| {
-                ctx.abandon("internal error: `seconds`'s argument is not an integer")
-            })?;
-            let nanos = n
-                .checked_mul(1_000_000_000)
-                .filter(|v| *v >= 0 && *v <= u64::MAX as i128)
-                .ok_or_else(|| ctx.abandon("`seconds(...)` overflowed a duration"))?;
-            Ok(Value::U64(nanos as u64))
-        }
-        // Plans/M6.md item A, decision 11: `ms(n)` is comptime-legal
-        // (unlike `now()`, which `eval::legal` bars from every comptime
-        // context, so it never reaches this dispatch at all — the
-        // fallback below is what it hits, honestly, if that invariant is
-        // ever broken) — mirrors `seconds`'s own evaluation exactly, one
-        // order of magnitude down (milliseconds, not seconds).
-        "ms" => {
-            let Some((_, n_expr)) = args.first() else {
-                return Err(ctx.abandon("internal error: `ms` is missing its argument"));
-            };
-            let nv = eval_expr(n_expr, env, dstack, loop_marker, ctx)?;
-            let n = value::as_i128(&nv)
-                .ok_or_else(|| ctx.abandon("internal error: `ms`'s argument is not an integer"))?;
-            let nanos = n
-                .checked_mul(1_000_000)
-                .filter(|v| *v >= 0 && *v <= u64::MAX as i128)
-                .ok_or_else(|| ctx.abandon("`ms(...)` overflowed a duration"))?;
-            Ok(Value::U64(nanos as u64))
-        }
         other => Err(ctx.abandon(format!(
             "internal error: unknown/runtime-only builder intrinsic `{other}` reached the \
              comptime evaluator"
+        ))),
+    }
+}
+
+/// `Duration` after item E is `Value::Struct([nanos])`; the legacy
+/// intrinsic path produced a bare `U64`. Accept both so a half-migrated
+/// tree cannot silently widen.
+fn duration_as_nanos(v: Value, ctx: &Interp<'_>) -> Result<Value, Unwind> {
+    match v {
+        Value::U64(n) => Ok(Value::U64(n)),
+        Value::Struct(fields) if fields.len() == 1 => match &fields[0] {
+            Value::U64(n) => Ok(Value::U64(*n)),
+            other => Err(ctx.abandon(format!(
+                "internal error: Duration.nanos is not u64 (found {other:?})"
+            ))),
+        },
+        other => Err(ctx.abandon(format!(
+            "internal error: RestartIntensity.within is not a Duration (found {other:?})"
         ))),
     }
 }

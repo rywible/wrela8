@@ -864,6 +864,17 @@ fn build_nodes(program: &TypedProgram) -> BTreeMap<String, NodeInfo> {
         insert_fn_node(&mut nodes, name.clone(), f);
     }
 
+    // plans/M9.md item E: imported/spliced fns (time constructors, and
+    // any other `from core...` free fn) must be classifiable so an
+    // `@image` fn that calls them is not fail-closed as "cross-module
+    // callee" — their bodies are already typed and sit on
+    // `TypedProgram::imported`.
+    for (name, f) in &program.imported.fns {
+        if !nodes.contains_key(name) {
+            insert_fn_node(&mut nodes, name.clone(), f);
+        }
+    }
+
     for (struct_name, s) in &program.structs {
         for (member, f) in &s.methods {
             insert_fn_node(&mut nodes, format!("{struct_name}.{member}"), f);
@@ -873,6 +884,27 @@ fn build_nodes(program: &TypedProgram) -> BTreeMap<String, NodeInfo> {
         }
         if let Some(f) = &s.init {
             insert_fn_node(&mut nodes, format!("{struct_name}.init"), f);
+        }
+    }
+
+    for (struct_name, s) in &program.imported.structs {
+        for (member, f) in &s.methods {
+            let key = format!("{struct_name}.{member}");
+            if !nodes.contains_key(&key) {
+                insert_fn_node(&mut nodes, key, f);
+            }
+        }
+        for (member, f) in &s.assoc_fns {
+            let key = format!("{struct_name}.{member}");
+            if !nodes.contains_key(&key) {
+                insert_fn_node(&mut nodes, key, f);
+            }
+        }
+        if let Some(f) = &s.init {
+            let key = format!("{struct_name}.init");
+            if !nodes.contains_key(&key) {
+                insert_fn_node(&mut nodes, key, f);
+            }
         }
     }
 
