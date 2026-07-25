@@ -1,0 +1,8 @@
+module lib
+
+pub struct Helper:
+    k: u32
+
+pub fn measure() -> u32:
+    h = Helper(k=4)
+    return h.k

@@ -1,0 +1,10 @@
+module b
+
+from a import Ay
+
+pub struct Bee:
+    m: u32
+
+pub fn bee_weight(x: Bee) -> u32:
+    y = Ay(n=x.m)
+    return y.scaled()

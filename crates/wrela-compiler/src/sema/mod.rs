@@ -36,7 +36,7 @@ pub mod symbols;
 pub mod typed;
 pub mod types;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::syntax::ast::{Module, Span};
 
@@ -543,7 +543,37 @@ pub fn check_program_typed(
         let empty_path = String::new();
         let path = paths.get(key).unwrap_or(&empty_path);
         program.instantiations = generics::check(module, decl_items, mctx, path)?;
-        crate::eval::check_comptime(&program)?;
+        programs.insert(key.clone(), program);
+    }
+
+    // plans/M9.md item A1b: the *typed* splice — the same read-only reuse
+    // of another module's already-finished output the `ModuleCtx` splice
+    // above does, one layer down. `bodies::check` only ever fills
+    // `TypedProgram::consts`/`fns`/`structs`/`enums` from *this* module's
+    // own `module.items`, so the comptime evaluator (`eval::interp`,
+    // which is handed one `TypedProgram` and nothing else) could not see
+    // an imported declaration at all: constructing an imported struct or
+    // reading an imported `const` at comptime abandoned with `internal
+    // error: struct/const ... not found`, and an imported enum's variant
+    // or an imported fn call abandoned with a named diagnostic that
+    // blamed generics. Runs *after* the loop above, for exactly the
+    // reason the `ModuleCtx` splice runs where it does: every module's
+    // own `bodies::check` needs nothing from any other module, so no
+    // module's evaluation waits on another's and import cycles stay free
+    // (golden/check-import-comptime-cycle).
+    splice_imported_decls(&mut programs, &bindings);
+
+    // The comptime/legality tail, in its own loop over the same modules
+    // in the same BTree order — it runs after the splice above because
+    // `eval::check_comptime` is the pass the splice exists for. Moving it
+    // out of the loop above also makes the closure behave like the
+    // single-module pipeline it mirrors: every module finishes a pass
+    // before any module starts the next one, so the first diagnostic is
+    // the earliest one in *pass* order, then module order (decision 14).
+    for (key, module) in &specialized {
+        let decl_items = &decl_items_map[key];
+        let program = &programs[key];
+        crate::eval::check_comptime(program)?;
         // plans/M7.md item A: the whole-closure half of the provenance
         // check, per module for the same reason every pass in this loop
         // is — and, unlike them, with a real consequence, since the
@@ -553,11 +583,10 @@ pub fn check_program_typed(
         // if a driver elsewhere calls it, which is the fail-closed
         // direction, and the diagnostic says "in this module".
         crate::eval::legal::check_provenance(
-            &program,
+            program,
             &types::capability_authority(module, decl_items),
         )?;
-        crate::eval::legal::check_isr_effects(&program)?;
-        programs.insert(key.clone(), program);
+        crate::eval::legal::check_isr_effects(program)?;
     }
 
     // plans/M6.md item G: the whole-closure half of the send proof (see
@@ -571,6 +600,222 @@ pub fn check_program_typed(
     reserve_proof::check(&by_name)?;
 
     Ok(programs)
+}
+
+/// plans/M9.md item A1b: fills every module's `TypedProgram::imported`
+/// from the modules it imports, and — for everything that splice cannot
+/// honestly carry — fills `TypedProgram::imported::unresolvable` with the
+/// sentence the evaluator prints instead of abandoning with an `internal
+/// error:`.
+///
+/// The splice itself is deliberately narrow: one entry per *import
+/// binding*, keyed by the importing module's own local (possibly aliased)
+/// spelling, which is the same key the typed tree itself uses (decision
+/// 9). Nothing is re-checked, nothing is re-typed, and nothing here
+/// requires one module's evaluation to finish before another's can begin
+/// — every `TypedProgram` in `programs` is already complete when this
+/// runs, so import cycles stay free exactly as they do for the
+/// `ModuleCtx` splice one layer up.
+///
+/// **Decision 15, the fail-closed half.** `eval::interp` walks one
+/// `TypedProgram`'s flat name tables and has no notion of which module a
+/// body came from, so an *imported body* is evaluated against the
+/// importing module's tables. Two consequences, both recorded in
+/// `unresolvable` rather than papered over:
+///
+/// - A name only the exporting module has (a private helper, const, or
+///   type) is simply absent from the importer's tables. That is a miss,
+///   and a miss must name its real cause.
+/// - Worse, a name the exporting module has *and the importing module
+///   also resolves differently* would silently resolve to the importer's
+///   declaration — a wrong value, not a missing one. So a body-bearing
+///   splice (`const`/`fn`/`struct`; an `enum` is a variant-name list with
+///   no body and is always safe) from a module that shadows any name with
+///   its importer is **withheld**, turning the wrong value back into a
+///   named miss.
+///
+/// Making the evaluator evaluate each body against its own module's
+/// program is the real fix and is not A1b's: it changes every
+/// `eval::` entry point's signature. A1b's contract is narrower and
+/// exact — the declarations a module *names* are evaluable, and
+/// everything else says so out loud.
+fn splice_imported_decls(
+    programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
+    bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
+) {
+    // Every module's own declaration names, and every name it can resolve
+    // at all (its own, plus the locals its imports bind). Both are read
+    // off the already-finished programs — no new analysis.
+    let mut declared: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
+    for (key, p) in programs.iter() {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        names.extend(p.consts.keys().cloned());
+        names.extend(p.fns.keys().cloned());
+        names.extend(p.structs.keys().cloned());
+        names.extend(p.enums.keys().cloned());
+        declared.insert(key.clone(), names);
+    }
+    let empty_bindings = imports::ImportBindings::new();
+    // What module `m` means by the name `name`, as a (module, name) pair
+    // — its own declaration first, else whatever its imports bound.
+    let resolve = |m: &Vec<String>, name: &str| -> Option<(Vec<String>, String)> {
+        if declared.get(m).is_some_and(|d| d.contains(name)) {
+            return Some((m.clone(), name.to_string()));
+        }
+        bindings
+            .get(m)
+            .unwrap_or(&empty_bindings)
+            .get(name)
+            .map(|b| (b.target_module.clone(), b.target_name.clone()))
+    };
+
+    // The shadowing witness for each (importer, exporter) pair, if any:
+    // the first name (BTree order, so deterministic) the two modules
+    // resolve to genuinely different declarations. "Different module" is
+    // not enough on its own — `bodies::check` injects the six fixed
+    // prelude enums (`Target`, `Restart`, `BootError`, `IoError`,
+    // `DriverMode`, `CompletionOutcome`) into *every* module's own
+    // `TypedProgram::enums`, so every pair of modules in every build
+    // "declares" all six. Those are the same declaration by value, and
+    // the evaluator cannot tell them apart either, so value equality is
+    // the honest test.
+    let shadow: BTreeMap<(Vec<String>, Vec<String>), String> = {
+        let same_decl = |a: &(Vec<String>, String), b: &(Vec<String>, String)| -> bool {
+            if a == b {
+                return true;
+            }
+            let (Some(pa), Some(pb)) = (programs.get(&a.0), programs.get(&b.0)) else {
+                return false;
+            };
+            pa.consts.get(&a.1) == pb.consts.get(&b.1)
+                && pa.fns.get(&a.1) == pb.fns.get(&b.1)
+                && pa.structs.get(&a.1) == pb.structs.get(&b.1)
+                && pa.enums.get(&a.1) == pb.enums.get(&b.1)
+        };
+        let mut shadow: BTreeMap<(Vec<String>, Vec<String>), String> = BTreeMap::new();
+        for (m, bs) in bindings {
+            for b in bs.values() {
+                let n = &b.target_module;
+                if n == m || shadow.contains_key(&(m.clone(), n.clone())) {
+                    continue;
+                }
+                let mut visible: BTreeSet<String> = declared.get(n).cloned().unwrap_or_default();
+                visible.extend(bindings.get(n).unwrap_or(&empty_bindings).keys().cloned());
+                for name in &visible {
+                    let (Some(from_n), Some(from_m)) = (resolve(n, name), resolve(m, name)) else {
+                        continue;
+                    };
+                    if !same_decl(&from_n, &from_m) {
+                        shadow.insert((m.clone(), n.clone()), name.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        shadow
+    };
+
+    // Names some module of the closure declares that `m` cannot resolve
+    // at all — reachable when an imported body refers to something
+    // private to its own module.
+    let mut unresolvable: BTreeMap<Vec<String>, BTreeMap<String, String>> = BTreeMap::new();
+    let module_names: Vec<Vec<String>> = programs.keys().cloned().collect();
+    for m in &module_names {
+        let mut out: BTreeMap<String, String> = BTreeMap::new();
+        for (owner, names) in &declared {
+            if owner == m {
+                continue;
+            }
+            for name in names {
+                if resolve(m, name).is_some() || out.contains_key(name) {
+                    continue;
+                }
+                out.insert(
+                    name.clone(),
+                    format!(
+                        "is declared in module `{}`, which module `{}` does not import; \
+                         evaluating an imported body that reaches a declaration private to \
+                         its own module is not supported yet (plans/M9.md item A1b)",
+                        owner.join("."),
+                        m.join(".")
+                    ),
+                );
+            }
+        }
+        unresolvable.insert(m.clone(), out);
+    }
+
+    let splices: Vec<(Vec<String>, String, Vec<String>, String)> = bindings
+        .iter()
+        .flat_map(|(key, bs)| {
+            bs.iter().map(move |(local, b)| {
+                (
+                    key.clone(),
+                    local.clone(),
+                    b.target_module.clone(),
+                    b.target_name.clone(),
+                )
+            })
+        })
+        .collect();
+    for (key, local, target_module, target_name) in splices {
+        let Some(src) = programs.get(&target_module) else {
+            continue;
+        };
+        let withheld = shadow.get(&(key.clone(), target_module.clone())).cloned();
+        let const_entry = src.consts.get(&target_name).cloned();
+        let fn_entry = src.fns.get(&target_name).cloned();
+        let struct_entry = src.structs.get(&target_name).cloned();
+        let enum_entry = src.enums.get(&target_name).cloned();
+        // The exporter's own instantiations come across wholesale, under
+        // the exporter's own canonical-key spelling: an instantiation key
+        // is `generics::canonical_key`'s text, not an importable name, so
+        // it has no local alias to be re-keyed under. Withheld under the
+        // same shadowing rule as the bodies they belong to.
+        let inst_entries = src.instantiations.clone();
+        let body_bearing = const_entry.is_some() || fn_entry.is_some() || struct_entry.is_some();
+        let dst = programs.get_mut(&key).expect("key is a key of programs");
+        if let (Some(witness), true) = (&withheld, body_bearing) {
+            dst.imported.unresolvable.insert(
+                local.clone(),
+                format!(
+                    "is imported from module `{}`, which declares `{witness}` — a name module \
+                     `{}` resolves differently; evaluating that module's bodies here could \
+                     silently pick the wrong `{witness}`, so it is not supported yet \
+                     (plans/M9.md item A1b)",
+                    target_module.join("."),
+                    key.join(".")
+                ),
+            );
+        } else {
+            if let Some(c) = const_entry {
+                dst.imported.consts.insert(local.clone(), c);
+            }
+            if let Some(f) = fn_entry {
+                dst.imported.fns.insert(local.clone(), f);
+            }
+            if let Some(s) = struct_entry {
+                dst.imported.structs.insert(local.clone(), s);
+            }
+            for (ikey, inst) in inst_entries {
+                dst.imported.instantiations.entry(ikey).or_insert(inst);
+            }
+        }
+        // An `enum` is a list of variant names with no body of any kind,
+        // so no shadowing question arises and it always crosses.
+        if let Some(e) = enum_entry {
+            dst.imported.enums.insert(local, e);
+        }
+    }
+
+    // Finally the closure-wide "declared elsewhere" notes, under every
+    // name the withheld entries above did not already claim.
+    for (key, notes) in unresolvable {
+        let dst = programs.get_mut(&key).expect("key is a key of programs");
+        for (name, note) in notes {
+            dst.imported.unresolvable.entry(name).or_insert(note);
+        }
+    }
 }
 
 /// The multi-module `--stage=check` dump (plans/M4.md item A): every

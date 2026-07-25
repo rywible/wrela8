@@ -1,0 +1,18 @@
+Module path=decls
+  Const BASE: u32
+  Fn triple(x: read u32) -> u32
+  Enum Mode data
+    variant Off
+    variant Low
+    variant High
+  Fn weight(m: read Mode) -> u32
+Module path=image
+  Struct Store resource
+    field base: u32
+    field scaled: u32
+    field weighted: u32
+    field count: u32
+    init(mut self, base: read u32, scaled: read u32, weighted: read u32) -> unit
+  Const SCALED: u32
+  Const WEIGHTED: u32
+  Fn build() -> Image

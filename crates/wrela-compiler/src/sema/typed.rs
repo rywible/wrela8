@@ -667,6 +667,68 @@ pub struct TypedProgram {
     /// depth=N)` site this module typed — `(pool name, depth)`. Layout
     /// places the ring from these facts and nowhere else.
     pub virtqueue_configures: Vec<(String, u16)>,
+    /// plans/M9.md item A1b: the declarations this module *imports*,
+    /// keyed by the local (possibly aliased) spelling — the comptime
+    /// evaluator's read-only window onto the rest of the build closure.
+    /// Empty for every single-module build (`sema::mod::check_typed`
+    /// rejects an import outright) and filled once, by
+    /// `sema::mod::check_program_typed`, after every module in the
+    /// closure has finished its own `bodies::check`.
+    ///
+    /// Deliberately a *separate* field rather than extra entries in the
+    /// four maps above: `consts`/`fns`/`structs`/`enums` are "what this
+    /// module declares", and every backend stage
+    /// (`lower`/`flowwir_lower`/`layout`/`codegen`) iterates them to emit
+    /// code exactly once per declaration. Merging imports into them
+    /// would emit an imported fn once per importer. `eval::interp` is
+    /// the only consumer that wants the union, so the union lives at the
+    /// lookup, not in the maps.
+    pub imported: ImportedDecls,
+}
+
+/// plans/M9.md item A1b: one module's imported declarations, copied
+/// wholesale from the exporting module's already-finished
+/// `TypedProgram` and re-keyed under the importing module's own local
+/// name. Read-only reuse of finished output, exactly like
+/// `sema::mod::check_program_typed`'s existing `ModuleCtx` splice —
+/// nothing here is re-checked, and nothing here requires one module's
+/// evaluation to finish before another's can begin, so import cycles
+/// stay free (golden/check-import-comptime-cycle).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ImportedDecls {
+    pub consts: BTreeMap<String, TypedConst>,
+    pub fns: BTreeMap<String, TypedFn>,
+    pub structs: BTreeMap<String, TypedStruct>,
+    pub enums: BTreeMap<String, Vec<String>>,
+    /// The exporting module's own generic instantiations, keyed by
+    /// `generics::canonical_key`'s spelling *as the exporter spelled it*.
+    /// An importing module that instantiates an imported generic
+    /// registers its own instantiation under its own local spelling
+    /// (`generics::check` runs per module), so this map is a fallback
+    /// for an instantiation only the exporter ever built.
+    pub instantiations: BTreeMap<String, TypedInstantiation>,
+    /// The fail-closed half (plans/M9.md item A1b, decision 15): every
+    /// declaration name in the build closure that this module's comptime
+    /// evaluator **cannot** resolve, mapped to the sentence explaining
+    /// why. The evaluator walks one `TypedProgram`'s name tables and has
+    /// no notion of which module a body came from, so two shapes are out
+    /// of reach and both are recorded here rather than left to abandon
+    /// with `internal error:` (a bug by house rule, CLAUDE.md):
+    ///
+    /// 1. A name only some *other* module of the closure declares and
+    ///    this module does not import — reachable when an imported fn's
+    ///    own body refers to a helper/const/type private to its own
+    ///    module.
+    /// 2. A name this module *does* import, but whose exporting module
+    ///    declares some other name this module also declares — splicing
+    ///    that body in would make the body's own reference to that other
+    ///    name silently resolve to this module's declaration instead of
+    ///    its own. The splice is withheld rather than allowed to produce
+    ///    a wrong value.
+    ///
+    /// Consulted by `eval::interp` at every lookup that can miss, and
+    /// nowhere else.
+    pub unresolvable: BTreeMap<String, String>,
 }
 
 // --- the `--stage=typed` dump (decision 2) --------------------------------

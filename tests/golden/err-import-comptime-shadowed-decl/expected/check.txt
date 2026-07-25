@@ -1,0 +1,2 @@
+error[comptime]: `measure` is imported from module `lib`, which declares `Helper` — a name module `main` resolves differently; evaluating that module's bodies here could silently pick the wrong `Helper`, so it is not supported yet (plans/M9.md item A1b)
+  while evaluating `N`

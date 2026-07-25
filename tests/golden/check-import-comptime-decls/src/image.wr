@@ -1,0 +1,46 @@
+module image
+
+from decls import BASE, triple, Mode, weight
+
+@actor
+pub struct Store:
+    base: u32
+    scaled: u32
+    weighted: u32
+    count: u32
+
+    init(mut self, base: u32, scaled: u32, weighted: u32):
+        self.base = base
+        self.scaled = scaled
+        self.weighted = weighted
+        self.count = 0
+
+# plans/M9.md item A1b: two module-level consts, each evaluated at build
+# time through a different imported declaration kind — an imported `fn`,
+# and an imported `enum`'s variant passed to an imported `fn` that
+# matches on it in its own module. They sit here rather than inline in
+# `build` below because an `@image` fn may not *call* a cross-module
+# callee at all: that is plans/M4.md item B's own pinned fail-closed
+# boundary (golden/err-image-intrinsic-in-cross-module-helper), which
+# A1b deliberately leaves standing (decision 15). Reading an imported
+# `const` from the `@image` fn is not a call and stays legal — `base=BASE`
+# below.
+const SCALED: u32 = triple(BASE)
+const WEIGHTED: u32 = weight(Mode.High)
+
+# Each argument's value is pinned in `expected/image.txt` — `base value=5`,
+# `scaled value=15`, `weighted value=7`. A wrong answer changes the dump;
+# mere acceptance is not enough to pass this case.
+@image
+pub fn build() -> Image:
+    img = Image(name="import-comptime-decls", target=Target.wrela_machine_v1)
+    storage = img.actor(
+        Store,
+        base=BASE,
+        scaled=SCALED,
+        weighted=WEIGHTED,
+        mailbox=4,
+    )
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

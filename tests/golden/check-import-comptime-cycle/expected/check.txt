@@ -1,0 +1,14 @@
+Module path=a
+  Struct Ay data
+    field n: u32
+    fn scaled(read self) -> u32
+  Const DEPTH: u32
+  Struct Store resource
+    field depth: u32
+    field count: u32
+    init(mut self, depth: read u32) -> unit
+  Fn build() -> Image
+Module path=b
+  Struct Bee data
+    field m: u32
+  Fn bee_weight(x: read Bee) -> u32

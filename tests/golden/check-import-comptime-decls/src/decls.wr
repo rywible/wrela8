@@ -1,0 +1,29 @@
+module decls
+
+# The other three importable declaration kinds plans/M9.md item A1b
+# probed alongside the struct: a `const`, a `fn`, and an `enum`. All
+# three were the same hole (`TypedProgram` carried only this module's
+# own declarations); the `const` abandoned with `internal error: const
+# `BASE` not found`, the `fn` and the `enum` with named diagnostics that
+# blamed generics.
+pub const BASE: u32 = 5
+
+pub fn triple(x: u32) -> u32:
+    return x * 3
+
+pub enum Mode:
+    Off
+    Low
+    High
+
+# Called from the importing module with a value of *this* module's enum,
+# constructed over there: the variant index has to agree across the
+# boundary, which is exactly what `interp::variant_index` looks up.
+pub fn weight(m: Mode) -> u32:
+    match m:
+        case Mode.Off:
+            return 0
+        case Mode.Low:
+            return 1
+        case Mode.High:
+            return 7

@@ -391,8 +391,13 @@ fn param_domain(program: &TypedProgram, ty: &Type) -> Option<Vec<Value>> {
         Type::Bool => Some(vec![Value::Bool(false), Value::Bool(true)]),
         Type::U8 => Some((0..=u8::MAX).map(Value::U8).collect()),
         Type::I8 => Some((i8::MIN..=i8::MAX).map(Value::I8).collect()),
+        // plans/M9.md item A1b: this module's own enums, else the ones it
+        // imports — an imported enum is as finite a domain as a local one.
         Type::Named(name, targs) if targs.is_empty() => {
-            let variants = program.enums.get(name)?;
+            let variants = program
+                .enums
+                .get(name)
+                .or_else(|| program.imported.enums.get(name))?;
             Some(
                 (0..variants.len())
                     .map(|i| Value::Enum(i, vec![]))
@@ -407,7 +412,11 @@ fn param_domain(program: &TypedProgram, ty: &Type) -> Option<Vec<Value>> {
 /// exactly the shapes `param_domain` can produce, nothing more.
 fn render_case_value(program: &TypedProgram, ty: &Type, v: &Value) -> String {
     match (ty, v) {
-        (Type::Named(name, _), Value::Enum(idx, _)) => match program.enums.get(name) {
+        (Type::Named(name, _), Value::Enum(idx, _)) => match program
+            .enums
+            .get(name)
+            .or_else(|| program.imported.enums.get(name))
+        {
             Some(variants) => variants
                 .get(*idx)
                 .cloned()

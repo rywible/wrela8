@@ -1,0 +1,12 @@
+module main
+
+from lib import measure
+
+# plans/M9.md item A1b, decision 15: `eval::interp` walks one
+# `TypedProgram`'s flat name tables and has no notion of which module a
+# body came from, so an imported body is evaluated against *this*
+# module's tables. `measure`'s body reaches `Priv`, which only `lib` has.
+# That is a real boundary, and it says so by name — before A1b the same
+# program abandoned with `internal error: struct `Priv` not found`, which
+# is a bug by house rule (CLAUDE.md), not an outcome.
+pub const N: u32 = measure()

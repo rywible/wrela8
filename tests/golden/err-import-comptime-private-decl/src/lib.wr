@@ -1,0 +1,12 @@
+module lib
+
+# Neither of these is `pub`, so `main` cannot import them and cannot name
+# them. `measure`'s own body reaches both.
+struct Priv:
+    v: u32
+
+const SECRET: u32 = 9
+
+pub fn measure() -> u32:
+    p = Priv(v=SECRET)
+    return p.v

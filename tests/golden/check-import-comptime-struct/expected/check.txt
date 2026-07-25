@@ -1,0 +1,12 @@
+Module path=image
+  Fn mk() -> u32
+  Const MAILBOX: u32
+  Struct Store resource
+    field count: u32
+    init(mut self) -> unit
+  Fn build() -> Image
+Module path=shapes
+  Struct Pair data
+    field a: u32
+    field b: u32
+    fn sum(read self) -> u32

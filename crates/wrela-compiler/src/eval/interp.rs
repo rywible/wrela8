@@ -145,6 +145,20 @@ impl<'p> Interp<'p> {
         })
     }
 
+    /// plans/M9.md item A1b: a lookup that missed. If the name is one
+    /// `sema::mod::splice_imported_decls` recorded as out of this
+    /// module's reach, say so in those words — a cross-module resolution
+    /// boundary is a named, fail-closed outcome, never an `internal
+    /// error:` (a bug by house rule, CLAUDE.md). Otherwise the caller's
+    /// own message stands, and an `internal error:` there still means
+    /// exactly what it always did: a producer bug.
+    fn abandon_missing(&self, name: &str, fallback: impl Into<String>) -> Unwind {
+        match self.program.imported.unresolvable.get(name) {
+            Some(note) => self.abandon(format!("`{name}` {note}")),
+            None => self.abandon(fallback),
+        }
+    }
+
     fn tick_step(&mut self) -> R<()> {
         self.quota.tick_step().map_err(|m| self.abandon(m))
     }
@@ -349,22 +363,77 @@ fn unwind_to_error(u: Unwind) -> EvalError {
 }
 
 // --- callee/struct/enum resolution (typed-tree lookups only) -------------
+//
+// plans/M9.md item A1b: every lookup below is "this module's own
+// declarations, else the ones it imports" (`TypedProgram::imported`,
+// keyed by the importing module's local spelling — the same key the
+// typed tree itself uses, decision 9). Before A1b these five lookups
+// stopped at the module boundary, so a comptime-reachable construction
+// of an imported struct, a read of an imported `const`, a match on an
+// imported enum's variant, or a call to an imported fn abandoned —
+// three of them with `internal error:`, which is a bug by house rule
+// (CLAUDE.md), not an outcome. The declaration side is the *only*
+// thing the union covers; comptime *legality* of a cross-module callee
+// stays where `eval::mod::check_image_legality` put it (decision 15).
+
+/// This module's own struct `name`, else the imported one bound to that
+/// local name.
+fn struct_by_name<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
+    program
+        .structs
+        .get(name)
+        .or_else(|| program.imported.structs.get(name))
+}
+
+/// This module's own instantiation `key`, else the exporting module's.
+fn instantiation_by_key<'p>(
+    program: &'p TypedProgram,
+    key: &str,
+) -> Option<&'p TypedInstantiation> {
+    program
+        .instantiations
+        .get(key)
+        .or_else(|| program.imported.instantiations.get(key))
+}
 
 fn resolve_fn<'p>(program: &'p TypedProgram, key: &CalleeKey) -> Option<&'p TypedFn> {
     match key {
-        CalleeKey::Fn(name) => program.fns.get(name),
-        CalleeKey::FnInstance(ikey) => match program.instantiations.get(ikey) {
+        CalleeKey::Fn(name) => program
+            .fns
+            .get(name)
+            .or_else(|| program.imported.fns.get(name)),
+        CalleeKey::FnInstance(ikey) => match instantiation_by_key(program, ikey) {
             Some(TypedInstantiation::Fn(f)) => Some(f),
             _ => None,
         },
         CalleeKey::Method(sname, member) => {
-            resolve_struct_member(program.structs.get(sname)?, member)
+            resolve_struct_member(struct_by_name(program, sname)?, member)
         }
-        CalleeKey::MethodInstance(ikey, member) => match program.instantiations.get(ikey) {
+        CalleeKey::MethodInstance(ikey, member) => match instantiation_by_key(program, ikey) {
             Some(TypedInstantiation::Struct(s)) => resolve_struct_member(s, member),
             _ => None,
         },
     }
+}
+
+/// The plain declaration name a callee key hangs off, for
+/// `Interp::abandon_missing`'s own `unresolvable` lookup: a fn's own
+/// name, or the struct name a method sits on. An instantiation key
+/// (`fn:Name[..]`/`struct:Name[..]`) is not a declaration name at all,
+/// so the bare name is dug out of the spelling — a miss there is
+/// reported by the caller's own fallback unless that bare name really is
+/// one of the recorded cross-module ones.
+fn callee_decl_name(key: &CalleeKey) -> String {
+    let raw = match key {
+        CalleeKey::Fn(name) => name.clone(),
+        CalleeKey::Method(sname, _) => sname.clone(),
+        CalleeKey::FnInstance(k) | CalleeKey::MethodInstance(k, _) => k.clone(),
+    };
+    let no_prefix = raw
+        .strip_prefix("fn:")
+        .or_else(|| raw.strip_prefix("struct:"))
+        .unwrap_or(&raw);
+    no_prefix.split('[').next().unwrap_or(no_prefix).to_string()
 }
 
 fn resolve_struct_member<'p>(s: &'p TypedStruct, member: &str) -> Option<&'p TypedFn> {
@@ -387,10 +456,10 @@ fn resolve_struct_by_type<'p>(
     targs: &[TypeArg],
 ) -> Option<&'p TypedStruct> {
     if targs.is_empty() {
-        program.structs.get(name)
+        struct_by_name(program, name)
     } else {
         let key = generics::canonical_key(InstKind::Struct, name, targs);
-        match program.instantiations.get(&key) {
+        match instantiation_by_key(program, &key) {
             Some(TypedInstantiation::Struct(s)) => Some(s),
             _ => None,
         }
@@ -399,8 +468,8 @@ fn resolve_struct_by_type<'p>(
 
 fn struct_of<'p>(program: &'p TypedProgram, key: &CalleeKey) -> Option<&'p TypedStruct> {
     match key {
-        CalleeKey::Method(sname, _) => program.structs.get(sname),
-        CalleeKey::MethodInstance(ikey, _) => match program.instantiations.get(ikey) {
+        CalleeKey::Method(sname, _) => struct_by_name(program, sname),
+        CalleeKey::MethodInstance(ikey, _) => match instantiation_by_key(program, ikey) {
             Some(TypedInstantiation::Struct(s)) => Some(s),
             _ => None,
         },
@@ -442,10 +511,21 @@ fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &I
             }
         }),
         _ => {
-            let Some(variants) = program.enums.get(enum_name) else {
-                return Err(ctx.abandon(format!(
-                    "evaluating a generic enum instantiation's variant (`{enum_name}.{variant}`) is not supported yet"
-                )));
+            // plans/M9.md item A1b: this module's own enums, else the
+            // ones it imports. Before A1b an *imported* enum landed in
+            // the generic-instantiation arm below and was reported as a
+            // generic instantiation, which named the wrong cause.
+            let Some(variants) = program
+                .enums
+                .get(enum_name)
+                .or_else(|| program.imported.enums.get(enum_name))
+            else {
+                return Err(ctx.abandon_missing(
+                    enum_name,
+                    format!(
+                        "evaluating a generic enum instantiation's variant (`{enum_name}.{variant}`) is not supported yet"
+                    ),
+                ));
             };
             variants.iter().position(|v| v == variant).ok_or_else(|| {
                 ctx.abandon(format!(
@@ -850,7 +930,7 @@ fn place_mut<'e, 'a, 'p>(
                 );
             };
             let s = resolve_struct_by_type(ctx.program, sname, targs).ok_or_else(|| {
-                ctx.abandon(format!("internal error: struct `{sname}` not found"))
+                ctx.abandon_missing(sname, format!("internal error: struct `{sname}` not found"))
             })?;
             let idx = field_index(&s.fields, name, ctx)?;
             let base_val = place_mut(base, env, dstack, loop_marker, ctx)?;
@@ -1110,16 +1190,22 @@ fn eval_call<'a, 'p>(
         matches!(callee, CalleeKey::Method(_, m) | CalleeKey::MethodInstance(_, m) if m == "init");
     if member_is_init {
         let s = struct_of(ctx.program, callee).ok_or_else(|| {
-            ctx.abandon(format!(
-                "internal error: struct for `{}` not found",
-                callee.spelling()
-            ))
+            ctx.abandon_missing(
+                &callee_decl_name(callee),
+                format!(
+                    "internal error: struct for `{}` not found",
+                    callee.spelling()
+                ),
+            )
         })?;
         let f = resolve_fn(ctx.program, callee).ok_or_else(|| {
-            ctx.abandon(format!(
-                "internal error: `init` for `{}` not found",
-                callee.spelling()
-            ))
+            ctx.abandon_missing(
+                &callee_decl_name(callee),
+                format!(
+                    "internal error: `init` for `{}` not found",
+                    callee.spelling()
+                ),
+            )
         })?;
         let frame = callee.spelling();
         return run_init(
@@ -1131,10 +1217,13 @@ fn eval_call<'a, 'p>(
         );
     }
     let f = resolve_fn(ctx.program, callee).ok_or_else(|| {
-        ctx.abandon(format!(
-            "callee `{}` is not available to comptime evaluation yet (a generic instantiation not yet resolved at this point in the build, plans/M3.md item B's own documented boundary)",
-            callee.spelling()
-        ))
+        ctx.abandon_missing(
+            &callee_decl_name(callee),
+            format!(
+                "callee `{}` is not available to comptime evaluation yet (a generic instantiation not yet resolved at this point in the build, plans/M3.md item B's own documented boundary)",
+                callee.spelling()
+            ),
+        )
     })?;
     let mode = f.receiver.as_ref().map(|(m, _)| *m);
     let frame = callee.spelling();
@@ -1232,9 +1321,13 @@ fn eval_expr<'a, 'p>(
         TypedExprKind::Local(name) => env_lookup(env, name)
             .ok_or_else(|| ctx.abandon(format!("internal error: unbound local `{name}`"))),
         TypedExprKind::Const(name) => {
-            let c =
-                ctx.program.consts.get(name).ok_or_else(|| {
-                    ctx.abandon(format!("internal error: const `{name}` not found"))
+            let c = ctx
+                .program
+                .consts
+                .get(name)
+                .or_else(|| ctx.program.imported.consts.get(name))
+                .ok_or_else(|| {
+                    ctx.abandon_missing(name, format!("internal error: const `{name}` not found"))
                 })?;
             ctx.enter(name.clone())?;
             let mut cenv: Env = vec![BTreeMap::new()];
@@ -1251,7 +1344,7 @@ fn eval_expr<'a, 'p>(
                 return Err(ctx.abandon("internal error: field base is not a named type"));
             };
             let s = resolve_struct_by_type(ctx.program, sname, targs).ok_or_else(|| {
-                ctx.abandon(format!("internal error: struct `{sname}` not found"))
+                ctx.abandon_missing(sname, format!("internal error: struct `{sname}` not found"))
             })?;
             let idx = field_index(&s.fields, name, ctx)?;
             match bv {
@@ -1331,10 +1424,10 @@ fn eval_expr<'a, 'p>(
                 }
                 Value::Fn(key) => {
                     let f = resolve_fn(ctx.program, &key).ok_or_else(|| {
-                        ctx.abandon(format!(
-                            "internal error: fn value `{}` not found",
-                            key.spelling()
-                        ))
+                        ctx.abandon_missing(
+                            &callee_decl_name(&key),
+                            format!("internal error: fn value `{}` not found", key.spelling()),
+                        )
                     })?;
                     let frame = key.spelling();
                     let (result, _) = run_call(
@@ -1426,10 +1519,13 @@ fn eval_expr<'a, 'p>(
                 None => e,
                 Some(key) => {
                     let f = resolve_fn(ctx.program, key).ok_or_else(|| {
-                        ctx.abandon(format!(
-                            "internal error: `from` conversion `{}` not found",
-                            key.spelling()
-                        ))
+                        ctx.abandon_missing(
+                            &callee_decl_name(key),
+                            format!(
+                                "internal error: `from` conversion `{}` not found",
+                                key.spelling()
+                            ),
+                        )
                     })?;
                     let frame = key.spelling();
                     let (result, _) = run_call(
@@ -1457,10 +1553,13 @@ fn eval_expr<'a, 'p>(
             let lv = eval_expr(l, env, dstack, loop_marker, ctx)?;
             let rv = eval_expr(r, env, dstack, loop_marker, ctx)?;
             let f = resolve_fn(ctx.program, key).ok_or_else(|| {
-                ctx.abandon(format!(
-                    "internal error: operator method `{}` not found",
-                    key.spelling()
-                ))
+                ctx.abandon_missing(
+                    &callee_decl_name(key),
+                    format!(
+                        "internal error: operator method `{}` not found",
+                        key.spelling()
+                    ),
+                )
             })?;
             let frame = key.spelling();
             let (result, _) = run_call(
@@ -1549,7 +1648,7 @@ fn eval_expr<'a, 'p>(
             };
             debug_assert_eq!(name, sname);
             let s = resolve_struct_by_type(ctx.program, sname, targs).ok_or_else(|| {
-                ctx.abandon(format!("internal error: struct `{sname}` not found"))
+                ctx.abandon_missing(sname, format!("internal error: struct `{sname}` not found"))
             })?;
             let mut slots: Vec<Option<Value>> = vec![None; s.fields.len()];
             for (fname, fval) in fields {
