@@ -4444,20 +4444,6 @@ fn check_mmio_access(
                 call_span,
             ));
         }
-        (None, "read") | (None, "write") => {
-            // plans/M7.md item H2a decision (recorded in plans/M7.md): an
-            // undirected `@layout(mmio)` field is a device control
-            // register with no declared direction. Item C left both
-            // operations fail-closed; H2a opens them so the marked-value
-            // mechanism has an honest producer without inventing a
-            // second one and without waiting on E4's `completion.written_len`.
-            // `.read()` returns `Untrusted[T]` — the same §8 rule that
-            // marks a device control value — and `.write(v)` stores a
-            // plain `T`. ReadOnly/WriteOnly keep item C's yield-`T` /
-            // take-`T` contract (03 §6's ISR still bitwise-masks a plain
-            // status today; ReadOnly→Untrusted waits on G's masking
-            // transition).
-        }
         (None, _) => {
             return Err(type_error(
                 format!(
@@ -4507,15 +4493,7 @@ fn check_mmio_access(
                     call_span,
                 ));
             }
-            // plans/M7.md item H2a: an undirected register's read is a
-            // device control value, so it arrives as `Untrusted[T]`
-            // (03-hardware.md §8). A `ReadOnly[T]` read still yields the
-            // plain scalar (item C's pin; ReadOnly→Untrusted is G's).
-            if reg.direction.is_none() {
-                untrusted_type(scalar.clone())
-            } else {
-                scalar.clone()
-            }
+            scalar.clone()
         }
         _ => {
             let [arg] = args else {
@@ -4598,15 +4576,19 @@ pub fn is_mmio_access_intrinsic(key: &str) -> bool {
 //
 // ## Where a marked value comes from
 //
-// 03 §8's worked producer is `completion.written_len` (`IoCompletion[P]`),
-// which is plans/M7.md item E4 and fails closed by name at resolve.
-// H2a's honest producer for end-to-end testing is an *undirected*
-// `@layout(mmio)` register read: a device control value reached through
-// typed MMIO, returning `Untrusted[T]` under the same §8 rule — not a
-// second mechanism. ReadOnly/WriteOnly keep item C's plain-`T` contract
-// until G's masking transition can replace the ISR's bitwise use.
+// Nothing in source produces an `Untrusted[T]` today — that is the
+// honest state, recorded as gap `hardware.untrusted.checked-narrowing`
+// (plans/M7.md decision 12). 03 §8's worked producer is
+// `completion.written_len` (`IoCompletion[P]`, item E4); 03 §6
+// independently calls an interrupt-status register untrusted, which
+// makes a `ReadOnly[T]` read the other candidate (item G). Whichever
+// lands first owns the decision. `checked_le`'s lowering is kept and
+// dump-covered the same way item C kept MMIO's typed surface before
+// anything could emit — a dump oracle for an unreachable-but-emitted
+// path, not a claim that one has executed.
 
 /// `Untrusted[<inner>]`.
+#[allow(dead_code)] // producers (E4 / G) will mint through this
 pub(crate) fn untrusted_type(inner: Type) -> Type {
     Type::Named("Untrusted".to_string(), vec![types::TypeArg::Type(inner)])
 }

@@ -1650,12 +1650,10 @@ fn check_struct_construction(
 }
 
 /// The result type of an already-`bodies`-accepted MMIO register access:
-/// `ReadOnly[T].read()` yields the declared scalar (item C); an
-/// undirected register's `.read()` yields `Untrusted[T]` (item H2a);
-/// `.write(v)` yields `unit`. Best-effort like the rest of this pass —
-/// an unknown layout or register simply stops the chain (`None`) rather
-/// than inventing a type, and cannot be reached at all through a program
-/// `bodies` accepted.
+/// `read()` yields the register's declared scalar, `write(v)` yields
+/// `unit`. Best-effort like the rest of this pass — an unknown layout or
+/// register simply stops the chain (`None`) rather than inventing a type,
+/// and cannot be reached at all through a program `bodies` accepted.
 fn mmio_access_result(
     targs: &[types::TypeArg],
     register: &str,
@@ -1670,12 +1668,7 @@ fn mmio_access_result(
     };
     let layout = actx.mctx.layouts.get(layout_name.as_str())?;
     let reg = types::mmio_register(layout, register)?;
-    let scalar = bodies::scalar_type_by_name(&reg.scalar)?;
-    if reg.direction.is_none() {
-        Some(bodies::untrusted_type(scalar))
-    } else {
-        Some(scalar)
-    }
+    bodies::scalar_type_by_name(&reg.scalar)
 }
 
 fn check_call_by_field(

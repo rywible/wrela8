@@ -1,2 +1,0 @@
-test narrowing_ran: ok
-1 passed, 0 failed

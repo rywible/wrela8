@@ -2,9 +2,12 @@ module examples.check_untrusted_narrowing
 
 # plans/M7.md item H2a, 03-hardware.md §8's own spelling: a checked
 # narrowing yields `Result[T, unit]` whose `Ok` payload is the unmarked
-# `T`. The receiver here is a parameter (the type is real); the producer
-# that mints an `Untrusted[T]` at runtime is the undirected-MMIO path
-# exercised by `golden/boot-untrusted-narrowing`.
+# `T`. The receiver here is a parameter — the type is real and the
+# lowering is dump-covered — but nothing in source produces an
+# `Untrusted[T]` today (gap `hardware.untrusted.checked-narrowing`,
+# decision 12). Same shape as item C's typed MMIO surface before H1
+# gave it a base: a dump oracle for an unreachable-but-emitted path,
+# not a claim that one has executed.
 
 fn narrow(reported: Untrusted[usize], bound: usize) -> Result[usize, unit]:
     return reported.checked_le(bound)
