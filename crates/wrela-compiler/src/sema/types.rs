@@ -3476,6 +3476,18 @@ fn resolve_named(
                 vec![TypeArg::Type(inner)],
             ));
         }
+        // plans/M7.md item E4: `IoCompletion[P]` (03-hardware.md §3/§8) —
+        // resolved receipt: payload ownership returns, `status` is the
+        // device/protocol outcome, `written_len` is the Untrusted
+        // producer for checked narrowing.
+        "IoCompletion" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named(
+                "IoCompletion".to_string(),
+                vec![TypeArg::Type(inner)],
+            ));
+        }
         // `Actor[T]` (plans/M6.md item A, 02-language.md §9.1): the
         // generated handle type — `T` is structurally resolved here
         // exactly like `Option`/`Static`'s own inner argument; *which*
@@ -3578,21 +3590,6 @@ fn resolve_named(
                  plans/M7.md's honest-scope line keeps only `Untrusted[T]` IN (03-hardware.md \
                  §8); `Secret[T]` needs secret-preserving transforms and the comptime \
                  non-serialization rule (02-language.md §12), which are out of M7"
-                    .to_string(),
-                n.span,
-            ));
-        }
-        // plans/M7.md item H2a / E4: 03-hardware.md §8's worked producer
-        // is `completion.written_len` on an `IoCompletion[P]`. Completions
-        // are item E4; naming the type here fails closed rather than
-        // inventing a stand-in producer for the marked-value mechanism.
-        "IoCompletion" => {
-            let _args = expect_type_args(n, 1)?;
-            return Err(SemaError::at(
-                "type",
-                "`IoCompletion[P]` and its `written_len` field (03-hardware.md §8's \
-                 `Untrusted[T]` producer) are plans/M7.md item E4; the marked-value \
-                 mechanism itself is H2a and does not invent a second producer"
                     .to_string(),
                 n.span,
             ));

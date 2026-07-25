@@ -959,6 +959,24 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             };
             size_of(inner, ctx)
         }
+        // plans/M7.md item E4: `IoCompletion[P]` = payload + status +
+        // written_len. Field order is load-bearing for Project indices:
+        // 0 = payload (`P`), 1 = status (`Result[unit, IoError]`),
+        // 2 = written_len (`Untrusted[usize]`).
+        Type::Named(name, targs) if name == "IoCompletion" => {
+            let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
+                return Err("`IoCompletion` with no payload type argument".to_string());
+            };
+            let status = Type::Result(
+                Box::new(Type::Unit),
+                Box::new(Type::Named("IoError".to_string(), vec![])),
+            );
+            let written = Type::Named(
+                "Untrusted".to_string(),
+                vec![crate::sema::types::TypeArg::Type(Type::Usize)],
+            );
+            Ok(size_of(payload, ctx)? + size_of(&status, ctx)? + size_of(&written, ctx)?)
+        }
         Type::Named(name, targs) if name == "CallError" => {
             let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
                 return Err("`CallError` with no error type argument".to_string());

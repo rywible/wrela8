@@ -781,6 +781,39 @@ fn field_offset_size(
             Ok((sz * index, sz))
         }
         Type::Named(name, targs) => {
+            // plans/M7.md item E4: `IoCompletion[P]` is a real aggregate
+            // (payload + status + written_len), not a sealed one-word
+            // authority type.
+            if name == "IoCompletion" {
+                let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
+                    return Err(CodegenError::internal(
+                        "`IoCompletion` with no payload type".to_string(),
+                    ));
+                };
+                let fields = [
+                    payload.clone(),
+                    Type::Result(
+                        Box::new(Type::Unit),
+                        Box::new(Type::Named("IoError".to_string(), vec![])),
+                    ),
+                    Type::Named(
+                        "Untrusted".to_string(),
+                        vec![crate::sema::types::TypeArg::Type(Type::Usize)],
+                    ),
+                ];
+                if index >= fields.len() {
+                    return Err(CodegenError::internal(format!(
+                        "`IoCompletion` field index {index} out of range"
+                    )));
+                }
+                let mut off = 0usize;
+                for f in &fields[..index] {
+                    off += mwir::size_of(f, layout).map_err(|e| CodegenError::unimplemented(&e))?;
+                }
+                let sz = mwir::size_of(&fields[index], layout)
+                    .map_err(|e| CodegenError::unimplemented(&e))?;
+                return Ok((off, sz));
+            }
             // plans/M7.md item G, decision 18: look up by rendered type.
             let key = if targs.is_empty() {
                 name.clone()
