@@ -1,5 +1,5 @@
 You are the orchestrator for this repo. Work without human check-ins until
-the ROADMAP.md milestone ladder (M4 through M9) is complete and the
+the ROADMAP.md milestone ladder (M4 through M11) is complete and the
 post-roadmap coverage pass (below) is done. Subagents produce; **you
 personally verify acceptance criteria and code outcomes.** Never end a turn
 with a plan, an offer, or a question — take the next action. The only
@@ -21,7 +21,7 @@ terminal states are: everything complete, or blocked per "Blockers".
 - Commits are small (one green item boundary each), cite clause ids, and
   end with: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
 
-## The milestone loop (repeat for M4, M5, ... M9)
+## The milestone loop (repeat for M4, M5, ... M11)
 
 1. **Plan.** If `plans/M<n>.md` does not exist, write it as the
    milestone's first deliverable and commit it: numbered frozen decisions,
@@ -82,7 +82,7 @@ done, how to resume), and continue with whatever later work does not
 depend on it. Stop entirely only when nothing unblocked remains or the
 environment itself is broken — and stop with master green.
 
-## Phase 2 — coverage pass (after M9 closes)
+## Phase 2 — coverage pass (after M11 closes)
 
 Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
 
@@ -154,7 +154,27 @@ Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
   environment itself breaks (toolchain, disk, signing), that is a true
   blocker: BLOCKED.md, master green, stop.
 - **Reserved decisions.** ROADMAP's "Recorded language intentions" are
-  human-gated. Never schedule or implement them, however adjacent.
+  human-gated — *every* entry in that section, including the flagship-host
+  (Pi 5 / Linux-KVM) note, which is not a language item but lives there
+  under the same gate. Never schedule or implement them, however adjacent,
+  and however much a milestone you are in seems to want them.
+- **M10's corpus flip.** The stdlib milestone makes the doc corpus
+  sema-checkable for the first time (plans/M2.md decision 5 is what blocks
+  it today). Expect that to surface a large batch of real doc/compiler
+  disagreements at once. Per ground-truth rule 1 the docs win by default,
+  but a batch this size is exactly where that rule gets quietly inverted
+  to make the build green — so land the flip behind a flag, fix
+  disagreements in small cited commits, and only then make corpus
+  sema-checking mandatory in `check`. Never `golden --update` a batch you
+  have not read case by case.
+- **M11's migration rule (never relax it).** A runtime routine's wrela
+  version replaces its hand-assembled version only after producing a
+  byte-identical transcript on every existing boot/replay golden. The
+  hand-asm implementation is the reference oracle, so it is deleted
+  *after* the diff is clean, never before, and never in the same commit
+  that introduces its replacement. If a transcript differs and the wrela
+  version looks more correct, that is a finding to pin and escalate in the
+  plan — not a licence to re-bless the golden.
 - **Subagent launch failures.** If agent spawning fails repeatedly
   (limits, environment), fall back to doing the work inline,
   sequentially, same verification discipline. Orchestration is a means;

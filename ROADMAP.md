@@ -54,7 +54,7 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. The active plan: [plans/M1.md](plans/M1.md).
+history when it completes. The active plan: [plans/M7.md](plans/M7.md).
 
 ### M1 — Parse everything
 Full grammar → stable AST dumps (`wrela dump --stage=ast`). Includes
@@ -146,6 +146,88 @@ Display + input devices, a dumb scalar tile compositor, golden frame
 digests. SIMD/NEON tuning only after a frame exists to measure. Flips:
 `machine.display.golden-frames`.
 
+### M10 — The stdlib
+The milestone the code has been citing by name since M2 without it ever
+existing on this ladder (`ledger.toml`, plans/M2–M5 — grep "stdlib
+milestone"). Today `stdlib/` is a README and an empty directory, while
+`sema/prelude.rs` — 84 hardcoded lines whose own doc comment calls itself
+a placeholder — stands in for the real surface.
+
+Lands: the `Format` contract and f-strings (dead in sema since M2 —
+`sema::bodies` returns `error[unimplemented]: f-strings are not checked
+yet` at three sites), `Result`/`from` conversion, the collection/format/
+time surface of [05](docs/language/05-library.md), and the `ImageReport`
+reflection type `@layout_assert` needs to run at all.
+
+Two structural consequences worth more than the features: `sema/prelude.rs`
+is **deleted**, and the doc corpus becomes sema-checkable. `xtask corpus`
+stops at parse today precisely because the docs name stdlib types
+(plans/M2.md decision 5) — so the normative chapters are currently lexer
+inputs, not type-checked ones, and closing that makes ground-truth rule 1
+mechanical rather than aspirational.
+
+Flips: `comptime.fstring.bounds`, `image.report.layout-asserts`,
+`values.resource.protocol-consumption`. Unblocks the inferred-error-sets
+intention below (still human-gated).
+
+### M11 — The runtime in wrela
+Today the runtime is not a library: it is hand-assembled A64 emitted word
+by word from `layout.rs` (`build_rt_select_and_run`, `build_rt_enqueue`,
+`build_rt_run_one`, `build_group_child_poll`, the console formatter
+`build_fmt_dec`/`build_ring_append`, the abort stubs), with branch offsets
+patched by index. It is the one module that fails the regeneration test,
+and it is exempt from every oracle this project owns — no stage dump, no
+sema, no FlowWir, no `diff-eval`, no mwir golden. Its only oracle is a boot
+transcript; its one known bug so far (a missing `x30` save,
+`build_rt_select_and_run_core`'s own comment) was found by a test hanging
+forever.
+
+It is also the hottest code in every image — the scheduler runs between
+every turn — and therefore the one place the cleverness budget
+*structurally* cannot be spent: no profile, before/after, or lock reaches
+it. Hand-assembly is not fast. It is **unimprovable**, which is worse.
+
+So the scheduler, mailbox admission, turn execution, group child polling,
+the console formatter, and the abort path become **wrela source**,
+compiled by the same backend as user code, dumped at every stage, and
+pinned by the same goldens. The image stops having a Rust-shaped hole in
+the middle of its "one designed machine, front to back" claim.
+
+**The floor (settled here; the "what must be Rust" question, answered
+once).** The compiler and the VMM are Rust permanently — the VMM
+*implements* the machine, it is not part of it. Guest-side, exactly three
+things cannot be compiled code, totalling roughly twenty instructions:
+code running before SP is installed (every prologue assumes a stack);
+code that must clobber no register (the checkpoint stub's save/restore);
+and instructions with no expression form (`eret`, `brk`, barriers,
+`msr`/`mrs` — note `encode.rs` today has only `enc_brk`, which is the
+measure of how little the machine needs). Those stay hand-encoded in
+`layout.rs`, pinned as a byte golden, and never grow.
+
+Everything above the floor needs one narrow intrinsic surface — raw
+load/store at a comptime-known address, plus the handful of system
+instructions above — normative doc change and ledger clause first, in its
+own commit, before any migration. **Rejected: `@naked` + inline asm.** It
+is a real language feature with real semantic weight (no prologue, no
+stack, register discipline sema cannot verify) — a large surface to add to
+a language whose premise is that it checks everything, bought only to
+delete twenty reviewable, byte-pinned words.
+
+**Migration discipline (what makes this safe at all).** One routine at a
+time, console formatter first (lowest risk, immediately testable), the
+scheduler last. Each routine's wrela version must produce a
+**byte-identical boot transcript** against every existing boot/replay
+golden *before* its hand-assembled version is deleted — the transcripts
+already pinned by M5–M9 are the differential oracle, and the hand-asm
+implementation is the reference the new one is diffed against, exactly as
+`diff-eval` uses the evaluator against the backend.
+
+Opens: `runtime.*` clauses (there are none today — every one is opened
+here). Non-goals: self-hosting the compiler; touching codegen; and
+optimizing the scheduler — M11 makes the scheduler *reachable* by the
+cleverness budget, it does not spend it. The first optimization pays the
+full three-part price like everything else.
+
 ### Recorded language intentions (not yet scheduled)
 
 - **Inferred error sets** (stdlib milestone, via doc revision): extend
@@ -162,6 +244,18 @@ digests. SIMD/NEON tuning only after a frame exists to measure. Flips:
   waits until a concrete image needs a concrete named check — hardcode
   that check, no policy query language; whole-image snapshot/time-travel
   is a VMM feature to weigh after M6's recorder exists.
+- **The flagship host** (recorded 2026-07-24; deliberately *not* a
+  milestone — human-gated like everything else in this section). CLAUDE.md
+  names the flagship as wrela OS on Raspberry Pi 5 / 1 GiB, and
+  [06 §](docs/language/06-machine.md) names Linux/KVM as the product
+  backend — but `wrela-vmm`'s `kvm` module is unimplemented and every
+  hardware-facing path is `#[cfg(all(target_os = "macos", target_arch =
+  "aarch64"))]`. M5–M11 all boot on Hypervisor.framework on a Mac, and
+  `xtask check`'s boot/repro/diff-eval/bench-guest lanes fail honestly
+  (never silently skip) on any other host. So the ladder's development
+  host is not the product's host. Recorded as a known, deliberate gap so
+  it is a decision rather than an oversight; scheduling it is a human
+  call.
 
 ## The cleverness budget (permanent)
 
@@ -195,9 +289,11 @@ Rules that follow:
 - Contracts cannot be profiled into existence after the fact: checkpoint
   density, the doorbell ABI, and image/frame layout rules bake into the
   machine spec and are revised deliberately, not patched.
-- Known future hot spots (compositor inner loop, naive codegen quality)
-  wait their turn like everything else: the profile says when, and until
-  then dumb code calling stdlib SIMD ops is the answer.
+- Known future hot spots (compositor inner loop, naive codegen quality,
+  and — once M11 lands — the scheduler, which runs between every turn and
+  is unreachable by this budget until it stops being hand-assembly) wait
+  their turn like everything else: the profile says when, and until then
+  dumb code calling stdlib SIMD ops is the answer.
 
 Also permanently out: abstractions serving futures that are not ledger
 clauses; incremental/parallel/cached anything in the compiler until a
