@@ -1778,8 +1778,14 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
         "BlkQueue index={} size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n",
         q.index, q.size, q.desc, q.avail, q.used, q.doorbell
     ));
-    // Only the queue's own pool — the one whose ring the device reaches.
-    if let Some(p) = layout.pools.iter().find(|p| p.backing.name == q.pool_name) {
+    // Every device-reachable pool — ring *and* payload — matching the
+    // full `--stage=report` `BlkPool` set (decision 5: the VMM maps exactly
+    // these windows). Emitting only the queue's control pool left payload
+    // DMA unmapped and failed the flagship write at the first descriptor.
+    for p in &layout.pools {
+        if p.backing.device.is_none() {
+            continue;
+        }
         out.push_str(&format!(
             "BlkPool name={} base={:#x} size={:#x}\n",
             p.backing.name, p.base, p.backing.bytes

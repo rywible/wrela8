@@ -638,6 +638,17 @@ pub enum Inst {
         queue: Temp,
     },
 
+    /// `VirtQueue.claim(receipt=take r)` (plans/M7.md item E4 / decision 22):
+    /// sync claim of a drain-resolved receipt's `IoCompletion` stash — the
+    /// bottom-half dual of `await receipt` when the driver holds the
+    /// receipt itself (no parked waiter). Aborts if the meta is not
+    /// `RESOLVED`.
+    QueueClaim {
+        dst: Temp,
+        queue: Temp,
+        receipt: Temp,
+    },
+
     /// Unconditional abandonment: `assert`'s own failure path, an
     /// explicit `panic(msg)`, and match's own defensive "no arm matched"
     /// fallthrough (present for parity with `interp::exec_stmt`'s own
@@ -1274,6 +1285,13 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         }
         Inst::QueueSuppressInterrupts { queue } => {
             format!("QueueSuppressInterrupts queue={queue}")
+        }
+        Inst::QueueClaim {
+            dst,
+            queue,
+            receipt,
+        } => {
+            format!("QueueClaim dst={dst} queue={queue} receipt={receipt}")
         }
         Inst::LoadIrqVector { dst, driver } => {
             format!("LoadIrqVector dst={dst} driver={driver}")

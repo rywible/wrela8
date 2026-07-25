@@ -1974,6 +1974,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         Inst::QueueSuppressInterrupts { queue } => {
             emit_queue_suppress_interrupts(ctx, f, *queue)?;
         }
+        Inst::QueueClaim {
+            dst,
+            queue,
+            receipt,
+        } => {
+            emit_queue_claim(ctx, f, *dst, *queue, *receipt)?;
+        }
     }
     Ok(())
 }
@@ -2373,6 +2380,13 @@ fn emit_queue_suppress_interrupts(
 /// Used-ring walk for one completion (single-flight). `max` is the source
 /// bound; revision 0.1 never has more than one in flight, so one resolve
 /// per call is the whole drain. Validation faults abort by name.
+///
+/// When the used ring is quiet, this emits one 06 §5 park (clock + short
+/// deadline + `PARK_MMIO`) so the VMM's doorbell poll can run before the
+/// bottom half claims — the same shape the hand-assembled blk conformance
+/// guest uses after ringing the doorbell. A completion on that park
+/// suppresses the sleep; an empty ring after the park returns without
+/// resolving (claim then fails closed by name).
 fn emit_queue_drain(
     ctx: &mut FnCtx,
     f: &MwirFn,
@@ -2422,10 +2436,45 @@ fn emit_queue_drain(
         encode::enc_sub_reg(0, X_B, X_A, true),
         format!("sub {}, {}, {}", reg_name(0), reg_name(X_B), reg_name(X_A)),
     );
-    // if pending == 0, done
+    // if pending != 0, skip the empty→park→recheck path
     let skip_empty = ctx.emit_skip(SkipKind::Cbnz(0));
-    // fall through = empty → return
+    // Used ring quiet: yield once so the host can poll the doorbell
+    // (06 §5; VMM blk conformance parks after publish for the same reason).
+    emit_doorbell_poll_park(ctx);
+    // Recheck used.idx vs last_used after the park.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, book_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, 0);
+    ctx.load_imm(X_E, placed.used as i64);
+    ctx.push(
+        encode::enc_add_reg(X_E, X_C, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_C),
+            reg_name(X_E)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldrh_imm(X_B, X_E, 2),
+        format!("ldrh w{}, [{}, #2]", X_B, reg_name(X_E)),
+    );
+    ctx.push(
+        encode::enc_sub_reg(0, X_B, X_A, true),
+        format!("sub {}, {}, {}", reg_name(0), reg_name(X_B), reg_name(X_A)),
+    );
+    let skip_still_empty = ctx.emit_skip(SkipKind::Cbnz(0));
     let done_from_empty = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(skip_still_empty, SkipKind::Cbnz(0));
     ctx.patch_skip(skip_empty, SkipKind::Cbnz(0));
 
     // slot = last & (depth-1)
@@ -2703,6 +2752,93 @@ fn emit_queue_drain(
     ctx.store_ptr(X_A, X_D, 0);
 
     ctx.patch_skip(done_from_empty, SkipKind::Cond(Cond::Al));
+    Ok(())
+}
+
+/// One 06 §5 park so the VMM's doorbell poll can run: read the clock,
+/// write `now + 20ms` to `OFF_NEXT_DEADLINE`, trap on `PARK_MMIO`. A blk
+/// completion on that park suppresses the sleep (same numbers as the
+/// hand-assembled conformance guest in `wrela-vmm`).
+fn emit_doorbell_poll_park(ctx: &mut FnCtx) {
+    ctx.load_imm(X_A, wrela_machine::mmio::CLOCK_MMIO_ADDR as i64);
+    ctx.load_ptr(X_B, X_A, 0);
+    ctx.load_imm(X_C, 20_000_000);
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, X_C, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_C)
+        ),
+    );
+    let deadline_addr =
+        wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_NEXT_DEADLINE;
+    ctx.load_imm(X_A, deadline_addr as i64);
+    ctx.store_ptr(X_B, X_A, 0);
+    ctx.load_imm(X_A, wrela_machine::mmio::PARK_MMIO_ADDR as i64);
+    ctx.store_ptr(X_B, X_A, 0);
+}
+
+/// Sync claim of a drain-resolved receipt's IoCompletion stash (decision 22).
+/// `receipt` holds the meta absolute address (same word publish minted).
+fn emit_queue_claim(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+    receipt: Temp,
+) -> Result<(), CodegenError> {
+    let _ = queue; // pool is recoverable from meta; kept for API symmetry
+    let _ = f;
+    // X_D = meta (receipt word)
+    ctx.load_slot(X_D, ctx.frame.off(receipt));
+    // flags must include RESOLVED
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+    ctx.push(
+        encode::enc_and_reg(X_A, X_A, X_B, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    let ok = ctx.emit_skip(SkipKind::Cbnz(X_A));
+    ctx.abort_fixed("driver fault: claim of a receipt that is not RESOLVED");
+    ctx.patch_skip(ok, SkipKind::Cbnz(X_A));
+    // stash = meta + SLOT_META_BYTES + header + status pad
+    let stash_delta = crate::virtqueue::SLOT_META_BYTES + crate::virtqueue::REQ_HEADER_SIZE + 8;
+    ctx.load_imm(X_A, stash_delta as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_D, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_D),
+            reg_name(X_A)
+        ),
+    );
+    // Copy 32-byte IoCompletion stash → dst
+    let dst_off = ctx.frame.off(dst);
+    for w in [0usize, 8, 16, 24] {
+        ctx.load_ptr(X_B, X_A, w);
+        ctx.store_slot(X_B, dst_off + w);
+    }
+    // Clear RESOLVED so a second claim aborts (single resolve).
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+    ctx.push(
+        encode::enc_bic_reg(X_A, X_A, X_B, true),
+        format!(
+            "bic {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
     Ok(())
 }
 

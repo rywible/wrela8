@@ -5550,6 +5550,7 @@ pub fn is_queue_op_intrinsic(key: &str) -> bool {
             | "VirtQueue.reject"
             | "VirtQueue.drain"
             | "VirtQueue.suppress_interrupts"
+            | "VirtQueue.claim"
     )
 }
 
@@ -5574,6 +5575,7 @@ fn check_virtqueue_method(
         "suppress_interrupts" => {
             check_virtqueue_suppress_interrupts(queue, args, fspan, call_span, fctx, mctx)
         }
+        "claim" => check_virtqueue_claim(queue, args, fspan, call_span, fctx, mctx),
         "poll_sources" | "completions_pending" => Err(unimplemented_at(
             &format!("`VirtQueue.{name}(...)` — plans/M7.md item G (`{name}`) is"),
             call_span,
@@ -5581,8 +5583,8 @@ fn check_virtqueue_method(
         other => Err(type_error(
             format!(
                 "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4 gives \
-                 `reserve_proven`, `prepare_block`, `publish`, `reject`, `drain`, and \
-                 `suppress_interrupts`"
+                 `reserve_proven`, `prepare_block`, `publish`, `reject`, `drain`, \
+                 `suppress_interrupts`, and `claim`"
             ),
             fspan,
         )),
@@ -6156,6 +6158,82 @@ fn check_virtqueue_drain(
                 ))],
             )),
             args: vec![("max".to_string(), max_expr)],
+        },
+    })
+}
+
+/// `queue.claim(receipt=take r) -> IoCompletion[P]` — plans/M7.md item E4 /
+/// decision 22: sync claim of a drain-resolved receipt (bottom-half dual
+/// of `await receipt`).
+fn check_virtqueue_claim(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    if args.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.claim(receipt=take ...)` takes exactly one labelled argument; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let arg = &args[0];
+    if arg.label.as_deref() != Some("receipt") {
+        return Err(type_error(
+            "`VirtQueue.claim`'s own argument is labelled `receipt=` (plans/M7.md item E4)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Take {
+        return Err(type_error(
+            "`claim` consumes the receipt: write `receipt=take ...` (03-hardware.md §5)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    let receipt = check_expr(&arg.value, None, fctx, mctx)?;
+    let Type::Named(n, targs) = &receipt.ty else {
+        return Err(type_error(
+            format!(
+                "`claim`'s `receipt=` must be a `Receipt[P]`; found `{}`",
+                types::render_type(&receipt.ty)
+            ),
+            arg.span,
+        ));
+    };
+    if n != "Receipt" {
+        return Err(type_error(
+            format!(
+                "`claim`'s `receipt=` must be a `Receipt[P]`; found `{}`",
+                types::render_type(&receipt.ty)
+            ),
+            arg.span,
+        ));
+    }
+    let Some(types::TypeArg::Type(payload)) = targs.first() else {
+        return Err(type_error(
+            "`Receipt` with no payload type argument".to_string(),
+            arg.span,
+        ));
+    };
+    let payload = payload.clone();
+    Ok(TypedExpr {
+        ty: Type::Named(
+            "IoCompletion".to_string(),
+            vec![types::TypeArg::Type(payload)],
+        ),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.claim".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: vec![("receipt".to_string(), receipt)],
         },
     })
 }

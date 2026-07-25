@@ -1,0 +1,69 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/err_boot_blk_roundtrip.wr sha256=5b2b4ed8df684524398aa8a57924d444c5ce274d6e05931adb1161b54aa918ae
+  Name value=err-boot-blk-roundtrip
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=VirtioBlock
+    Arg label=transport value=8192
+    Arg label=capacity_sectors value=16
+    Arg label=required_features value=[Feature.Flush]
+    Arg label=vector value=1
+  Driver index=0 type=BlkDriver
+  Actor index=0 type=Ledger
+    Mailbox value=8
+  Edge from=driver#0 to=device#0
+  Edge from=driver#0 to=dma_pool:BlockPayloads
+  DmaPool name=BlockControl type=BlkReqHeader
+    Arg label=device value=device#0
+    Arg label=count value=32
+  DmaPool name=BlockPayloads type=DmaBlock
+    Arg label=device value=device#0
+    Arg label=count value=1
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+    Child value=actor#0
+  Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
+    Padding offset=0x0 size=96
+    Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
+    Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4
+  Layout name=BlkReqHeader kind=dma endian=little size=16 padding=0
+    Field name=kind type=u32 offset=0x0 size=4
+    Field name=reserved type=u32 offset=0x4 size=4
+    Field name=sector type=u64 offset=0x8 size=8
+  Layout name=BlkReqStatus kind=dma endian=little size=1 padding=0
+    Field name=status type=u8 offset=0x0 size=1
+  Layout name=DmaBlock kind=dma endian=little size=512 padding=496
+    Field name=word type=u64 offset=0x0 size=8
+    Padding offset=0x8 size=496
+    Field name=pad_end type=u64 offset=0x1f8 size=8
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=10048
+  Section name=rodata base=0x40502790 size=1190
+  Section name=abort base=0x40502c38 size=120
+  Section name=checkpoint base=0x40502cb0 size=336
+  Section name=rtcode base=0x40502e00 size=1292
+  Section name=rtdata base=0x40503310 size=1040
+  Section name=devregs base=0x40503720 size=104
+  Section name=pooldata base=0x40503788 size=1024
+  Entry base=0x40500000
+  Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
+  Turn fn=blk_write_read_roundtrip frame=632
+  Driver name=BlkDriver state=104
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=1040
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503720 size=104
+  IrqHostInject base=0x40503720 offset=0x60 status=0xa501 vector=1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503788 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40503988 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl base=0x40503788 size=0x200
+  BlkPool name=BlockPayloads base=0x40503988 size=0x200
+  BlkDevice capacity_sectors=16 features=0x100000200 vector=1
+  BlkQueue index=0 size=8 desc=0x40503788 avail=0x40503808 used=0x40503820 doorbell=0x40503868
+  BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
