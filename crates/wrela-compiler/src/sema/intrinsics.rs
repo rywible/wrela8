@@ -45,14 +45,22 @@
 //!
 //! `sema/bodies.rs` is the sole producer of intrinsic nodes. It is read
 //! as text (`include_str!`, so a missing file is a compile error rather
-//! than a silently-empty scan), every `kind: TypedExprKind::Intrinsic {`
-//! construction site is located, and the `key:` line that must follow it
-//! is parsed. Four sites build the key with `format!`; each one's
-//! expansion is written down in `FORMAT_KEY_SITES` **together with the
-//! source line of the guard that bounds its variable**, and that guard
-//! line is itself asserted to be present verbatim — so widening a guard
-//! (adding a fifth `InterruptCell` method to its match arm, say) fails
-//! the test too, which hand-resolving the set alone would not catch.
+//! than a silently-empty scan) and every occurrence of the node's type
+//! name followed by `{` — **any prefix, any path qualification** — is
+//! located. Each occurrence's brace-balanced field region is then asked
+//! whether it binds a `key`: a string literal or a `format!` is a census
+//! entry, no `key:` at all is an ordinary pattern match and is ignored,
+//! and a `key:` bound to anything else fails closed rather than being
+//! quietly missed. The same scan runs over the whole workspace, where
+//! the only permitted key sites are the enumerated ones in
+//! `ALLOWED_OFFSITE_KEY_SITES`.
+//!
+//! Four sites build the key with `format!`; each one's expansion is
+//! written down in `FORMAT_KEY_SITES` **together with the source line of
+//! the guard that bounds its variable**, and that guard line is itself
+//! asserted to be present verbatim — so widening a guard (adding a fifth
+//! `InterruptCell` method to its match arm, say) fails the test too,
+//! which hand-resolving the set alone would not catch.
 
 /// **05-library.md §9's image-builder surface.** This is the part of the
 /// intrinsic surface that is *not* an exception and is not expected to
@@ -381,61 +389,180 @@ mod tests {
     /// file is a build failure, never an empty scan that passes.
     const BODIES_SRC: &str = include_str!("bodies.rs");
 
-    /// The one marker that starts an intrinsic *construction* (a pattern
-    /// match has no `kind:` prefix; a doc comment starts with `//`).
-    const CONSTRUCTION_MARKER: &str = "kind: TypedExprKind::Intrinsic {";
+    /// The marker the census keys on (decision 60), assembled at runtime
+    /// from two halves so that *this file's own code* never contains it
+    /// verbatim and therefore needs no exclusion from the walk.
+    ///
+    /// Deliberately the **weak** form: no `kind:` prefix and no path
+    /// qualification, so `crate::sema::typed::TypedExprKind::Intrinsic {`
+    /// and a bare `TypedExprKind::Intrinsic { key: ... }` both match. The
+    /// first version of this test keyed on the whole line
+    /// `kind: TypedExprKind::Intrinsic {` and was evaded three separate
+    /// ways by spelling the construction differently; see decision 60.
+    fn marker() -> String {
+        format!("{}{}", "TypedExprKind::Intrinsic", " {")
+    }
 
-    /// Every key `sema/bodies.rs` can construct: literal keys, and the
-    /// `format!` templates found (returned unexpanded).
-    fn scan_bodies() -> (BTreeSet<String>, BTreeSet<String>) {
-        let lines: Vec<&str> = BODIES_SRC.lines().collect();
-        let mut literals = BTreeSet::new();
-        let mut templates = BTreeSet::new();
-        let mut sites = 0usize;
+    /// One occurrence of the marker that *produces* a key, with the key
+    /// as written.
+    #[derive(Debug)]
+    struct KeySite {
+        file: String,
+        line: usize,
+        form: KeyForm,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum KeyForm {
+        /// `key: "Image.seal".to_string()` / `.into()`.
+        Literal(String),
+        /// `key: format!("Mmio.{op}")`.
+        Template(String),
+    }
+
+    /// Every marker occurrence in `src` that assigns a `key`, classified.
+    ///
+    /// The classification is structural rather than positional, which is
+    /// what makes it hard to evade: from each marker's `{`, the
+    /// brace-balanced field region is collected (across lines), and the
+    /// region is then asked whether it binds `key:` to a value.
+    ///
+    /// - No `key:` in the region → a **pattern** (`{ key, .. }`,
+    ///   `{ receiver, args, .. }`, `{ .. }`). Ignored, and deliberately
+    ///   *not* counted: pattern matches on this node are added and
+    ///   removed by ordinary downstream work, and a census that churned
+    ///   on those would teach everyone to bump a number without reading.
+    /// - `key:` bound to a string literal or a `format!` → a **key site**.
+    /// - `key:` bound to anything else → **panic**. A computed key is
+    ///   surface this census cannot resolve, so it fails closed and says
+    ///   so rather than silently missing a name.
+    ///
+    /// Comment lines are skipped (they do not compile); this is why the
+    /// worked example inside `bodies.rs`'s own `check_mmio_access` prose
+    /// is not a site.
+    fn scan_key_sites(label: &str, src: &str) -> Vec<KeySite> {
+        let marker = marker();
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = Vec::new();
         for (i, line) in lines.iter().enumerate() {
-            if line.trim() != CONSTRUCTION_MARKER {
+            if line.trim_start().starts_with("//") {
                 continue;
             }
-            sites += 1;
-            let next = lines
-                .get(i + 1)
-                .unwrap_or_else(|| {
-                    panic!("bodies.rs:{}: intrinsic construction at end of file", i + 1)
-                })
-                .trim();
-            // `key:` is the first field of every construction site, and
-            // the test depends on that: reordering the fields must fail
-            // loudly rather than drop a name from the census.
-            if let Some(rest) = next.strip_prefix("key: \"") {
-                let name = rest.strip_suffix("\".to_string(),").unwrap_or_else(|| {
-                    panic!(
-                        "bodies.rs:{}: unrecognized literal key line `{next}`",
-                        i + 2
-                    )
+            let Some(col) = line.find(&marker) else {
+                continue;
+            };
+            let region = brace_region(&lines, i, col + marker.len() - 1, label);
+            let Some(value) = key_binding(&region) else {
+                continue; // a pattern match, not a construction
+            };
+            let form = if let Some(rest) = value.strip_prefix('"') {
+                let end = rest.find('"').unwrap_or_else(|| {
+                    panic!("{label}:{}: unterminated key literal `{value}`", i + 1)
                 });
-                literals.insert(name.to_string());
-            } else if let Some(rest) = next.strip_prefix("key: format!(\"") {
-                let tmpl = rest.strip_suffix("\"),").unwrap_or_else(|| {
-                    panic!("bodies.rs:{}: unrecognized format key line `{next}`", i + 2)
+                KeyForm::Literal(rest[..end].to_string())
+            } else if let Some(rest) = value.strip_prefix("format!(\"") {
+                let end = rest.find('"').unwrap_or_else(|| {
+                    panic!("{label}:{}: unterminated key template `{value}`", i + 1)
                 });
-                templates.insert(tmpl.to_string());
+                KeyForm::Template(rest[..end].to_string())
             } else {
                 panic!(
-                    "bodies.rs:{}: an intrinsic construction whose first field is not `key:` \
-                     (`{next}`). plans/M9.md item AA's census scan reads the key from the line \
-                     immediately after the construction marker; put `key:` first, or teach \
-                     sema/intrinsics.rs the new shape.",
-                    i + 2
+                    "{label}:{}: an intrinsic is built with a `key` this census cannot resolve \
+                     (`key: {}`). plans/M9.md item AA requires every intrinsic name to be \
+                     statically knowable: spell it as a string literal, or as a `format!` whose \
+                     variable is bounded by a guard recorded in FORMAT_KEY_SITES.",
+                    i + 1,
+                    value.chars().take(40).collect::<String>()
                 );
-            }
+            };
+            out.push(KeySite {
+                file: label.to_string(),
+                line: i + 1,
+                form,
+            });
         }
-        assert!(
-            sites >= 30,
-            "the census scan found only {sites} intrinsic construction sites in bodies.rs — \
-             the marker `{CONSTRUCTION_MARKER}` no longer matches the source, so this test is \
-             proving nothing"
+        out
+    }
+
+    /// The brace-balanced text between the `{` at `lines[start][open]`
+    /// and its matching `}`. Fails loudly rather than returning a
+    /// truncated region.
+    fn brace_region(lines: &[&str], start: usize, open: usize, label: &str) -> String {
+        let mut depth = 0i32;
+        let mut region = String::new();
+        for (n, line) in lines.iter().enumerate().skip(start).take(60) {
+            let from = if n == start { open } else { 0 };
+            for ch in line[from..].chars() {
+                match ch {
+                    '{' => {
+                        depth += 1;
+                        if depth == 1 {
+                            continue; // skip the opening brace itself
+                        }
+                    }
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return region;
+                        }
+                    }
+                    _ => {}
+                }
+                region.push(ch);
+            }
+            region.push(' ');
+        }
+        panic!(
+            "{label}:{}: an intrinsic marker whose braces do not balance within 60 lines",
+            start + 1
         );
-        (literals, templates)
+    }
+
+    /// The value bound to a `key:` field in `region`, if any. Matches
+    /// `key` only at a token boundary, so no other field name can be
+    /// mistaken for it.
+    fn key_binding(region: &str) -> Option<&str> {
+        let mut from = 0usize;
+        while let Some(rel) = region[from..].find("key:") {
+            let at = from + rel;
+            let boundary = at == 0
+                || !region[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if boundary {
+                return Some(region[at + "key:".len()..].trim_start());
+            }
+            from = at + 4;
+        }
+        None
+    }
+
+    /// Every `.rs` file in the workspace, with a repo-relative label.
+    fn crate_sources() -> Vec<(String, String)> {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/ dir")
+            .to_path_buf();
+        assert!(
+            crates.ends_with("crates"),
+            "expected the workspace `crates/` dir, got {}",
+            crates.display()
+        );
+        let mut files = Vec::new();
+        collect_rs(&crates, &mut files);
+        files
+            .into_iter()
+            .map(|p| {
+                let label = p
+                    .strip_prefix(&crates)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .to_string();
+                let src = std::fs::read_to_string(&p).expect("read crate source");
+                (label, src)
+            })
+            .collect()
     }
 
     /// **The ratchet** (plans/M9.md item AA, ledger
@@ -446,7 +573,25 @@ mod tests {
     /// being removed here.
     #[test]
     fn intrinsic_surface_equals_the_written_down_list() {
-        let (literals, templates) = scan_bodies();
+        let sites = scan_key_sites("sema/bodies.rs", BODIES_SRC);
+        assert!(
+            sites.len() >= 30,
+            "the census scan found only {} key sites in bodies.rs — the marker no longer \
+             matches the source, so this test is proving nothing",
+            sites.len()
+        );
+        let mut literals = BTreeSet::new();
+        let mut templates = BTreeSet::new();
+        for s in &sites {
+            match &s.form {
+                KeyForm::Literal(k) => {
+                    literals.insert(k.clone());
+                }
+                KeyForm::Template(t) => {
+                    templates.insert(t.clone());
+                }
+            }
+        }
 
         // Every `format!` template found must be one we have resolved.
         let declared_templates: BTreeSet<String> = FORMAT_KEY_SITES
@@ -507,64 +652,71 @@ mod tests {
         }
     }
 
-    /// Files other than `sema/bodies.rs` that contain the construction
-    /// marker, and how many times — locked as **exact counts**, not as a
-    /// "outside the test module" heuristic. A first attempt truncated
-    /// each file at its `#[cfg(test)]` and was itself mutation-tested:
-    /// an intrinsic appended to the *end* of `lower.rs` (i.e. after the
-    /// test module) sailed straight through. Exact counts have no such
-    /// blind spot.
-    const NON_PRODUCER_SITES: &[(&str, usize)] = &[
-        // Its own prose quotes the marker twice.
-        ("sema/intrinsics.rs", 2),
-        // One `#[cfg(test)]` fixture asserting `wake` is ISR-legal.
-        ("eval/legal.rs", 1),
+    /// The only intrinsic key sites outside `sema/bodies.rs`: `(file,
+    /// key)`, enumerated rather than counted, so an *added* site fails
+    /// even in a file that already has one.
+    const ALLOWED_OFFSITE_KEY_SITES: &[(&str, &str)] = &[
+        // A `#[cfg(test)]` fixture asserting `wake` is ISR-legal. A test
+        // fixture is not surface.
+        ("wrela-compiler/src/eval/legal.rs", "wake"),
     ];
 
     /// `sema/bodies.rs` is the sole producer of intrinsic nodes, which is
     /// what makes scanning that one file a complete census. Walks the
-    /// crate source so a construction site added elsewhere fails here.
+    /// whole workspace so a key site added anywhere else fails here.
     #[test]
     fn bodies_rs_is_the_only_producer() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        collect_rs(&root, &mut files);
+        let files = crate_sources();
         assert!(
             files.len() > 20,
-            "the crate source walk found only {} files under {} — this test would pass \
-             vacuously",
-            files.len(),
-            root.display()
+            "the workspace source walk found only {} files — this test would pass vacuously",
+            files.len()
         );
-        let mut offenders = Vec::new();
         let mut saw_bodies = false;
-        for path in &files {
-            let src = std::fs::read_to_string(path).expect("read crate source");
-            let hits = src.matches(CONSTRUCTION_MARKER).count();
-            if path.ends_with("sema/bodies.rs") {
+        let mut offsite: Vec<(String, String)> = Vec::new();
+        for (label, src) in &files {
+            if label.ends_with("sema/bodies.rs") {
                 saw_bodies = true;
+                // The walked file and the compile-time embed must be the
+                // same text, or the census is reading a different tree
+                // from the one this test polices.
+                assert_eq!(
+                    src, BODIES_SRC,
+                    "the walked sema/bodies.rs differs from the `include_str!` embed"
+                );
                 continue;
             }
-            let allowed = NON_PRODUCER_SITES
-                .iter()
-                .find(|(suffix, _)| path.ends_with(suffix))
-                .map_or(0, |(_, n)| *n);
-            if hits != allowed {
-                offenders.push(format!(
-                    "{} ({hits} sites, {allowed} allowed)",
-                    path.display()
-                ));
+            for s in scan_key_sites(label, src) {
+                let key = match s.form {
+                    KeyForm::Literal(k) => k,
+                    KeyForm::Template(t) => format!("format!({t})"),
+                };
+                offsite.push((format!("{}:{}", s.file, s.line), key));
             }
         }
         assert!(
             saw_bodies,
             "the walk never reached sema/bodies.rs, so it proves nothing"
         );
+        let unexpected: Vec<&(String, String)> = offsite
+            .iter()
+            .filter(|(loc, key)| {
+                !ALLOWED_OFFSITE_KEY_SITES
+                    .iter()
+                    .any(|(f, k)| loc.starts_with(f) && k == key)
+            })
+            .collect();
         assert!(
-            offenders.is_empty(),
-            "an intrinsic construction site outside sema/bodies.rs: {offenders:?}. The census in \
-             sema/intrinsics.rs scans bodies.rs only, so a node built anywhere else is surface it \
-             cannot see. Move the site back into bodies.rs, or extend the scan."
+            unexpected.is_empty(),
+            "an intrinsic key site outside sema/bodies.rs: {unexpected:?}. The census scans \
+             bodies.rs only, so a node built anywhere else is surface it cannot see. Move the \
+             site into bodies.rs, or add it to ALLOWED_OFFSITE_KEY_SITES with a reason."
+        );
+        assert_eq!(
+            offsite.len(),
+            ALLOWED_OFFSITE_KEY_SITES.len(),
+            "an allowlisted off-site key site is gone ({offsite:?}); delete its \
+             ALLOWED_OFFSITE_KEY_SITES entry"
         );
     }
 
