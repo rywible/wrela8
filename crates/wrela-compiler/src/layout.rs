@@ -39,7 +39,7 @@
 //! The report's own `Layout` section (`render_layout_section`, below) also
 //! prints the two *fixed* machine regions below `IMAGE_BASE` (`pages` —
 //! `wrela_machine::layout::MACHINE_INFO_BASE`'s own page plus the console
-//! ring/data pages, one combined fact — and `stacks` — the four reserved
+//! ring/data pages, one combined fact — and `stacks` — the three reserved
 //! per-core stacks) even though this module never places anything there
 //! itself (the VMM, item E, owns those pages' actual contents) — decision
 //! 7's own "(code/rodata/data/stacks/pages)" enumeration named them as
@@ -4175,7 +4175,7 @@ pub fn compute_runtime_tables(
 /// The two fixed, always-present machine regions below `IMAGE_BASE`
 /// (module doc's own "pages"/"stacks" reporting note): the machine-info
 /// page plus the console ring/data pages, combined into one `pages` fact,
-/// and the four reserved per-core stacks as one `stacks` fact.
+/// and the three reserved per-core stacks as one `stacks` fact.
 fn pages_region() -> (u64, u64) {
     let base = machine_layout::MACHINE_INFO_BASE;
     let end = console::DATA_BASE + console::DATA_SIZE;

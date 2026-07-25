@@ -19,9 +19,10 @@ machine only needs to be what the stdlib drivers speak.
 
 ## 1. CPU
 
-- **4 vCPUs**, always. The image assigns every actor to one of them at
+- **3 vCPUs**, always. The image assigns every actor to one of them at
   build time ([04 §3](04-compiler.md)); hosts with more cores run VMM
-  threads on the surplus.
+  threads on the surplus. The count is derived, not arbitrary:
+  `vCPUs = flagship core count − 1 housekeeping core` (Pi 5: 4 − 1 = 3).
 - ISA baseline: **AArch64 ARMv8.2-A + NEON/ASIMD**, the intersection of
   Cortex-A76 and Apple Silicon. The compiler's one cost model is the A76;
   images simply run faster on M-series.

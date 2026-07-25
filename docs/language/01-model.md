@@ -19,7 +19,7 @@ closed stack makes true:
 
 - the complete code graph is known at build time;
 - the actor and task set is finite and bounded;
-- the machine — 4 cores, one memory map, one closed virtio device set — is
+- the machine — 3 cores, one memory map, one closed virtio device set — is
   a versioned contract, not a discovered environment;
 - hardware bindings and resource budgets are build inputs; and
 - no code enters the image after it is sealed.
@@ -34,7 +34,7 @@ teardown paths wired by the image. The compiler rejects a build whose
 reachability is not closed. There is no dynamic loader, JIT, runtime dispatch,
 `dyn` type, or unbounded task creation.
 
-An image has one address space and the machine's four cores, each running
+An image has one address space and the machine's three cores, each running
 one cooperative event loop. Every actor lives on exactly one core, assigned
 at build time; within a core nothing runs simultaneously, and across cores
 the only interaction is the same typed message channels, lowered to

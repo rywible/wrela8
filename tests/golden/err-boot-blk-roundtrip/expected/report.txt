@@ -43,7 +43,7 @@ ImageReport v0
     Padding offset=0x8 size=496
     Field name=pad_end type=u64 offset=0x1f8 size=8
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=4194304
+  Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=10112
   Section name=rodata base=0x405027d0 size=1243

@@ -28,7 +28,7 @@ stays small.** If a concept appears in 04, source code never spells it.
 
 The project targets one designed machine, front to back:
 
-- **One machine** ([06](06-machine.md)): 4 vCPUs at an ARMv8.2-A/NEON
+- **One machine** ([06](06-machine.md)): 3 vCPUs at an ARMv8.2-A/NEON
   baseline (Cortex-A76 cost model), one memory map, a closed virtio device
   set whose drivers ship with the stdlib. New hardware is a machine
   revision, never a discovered environment.
