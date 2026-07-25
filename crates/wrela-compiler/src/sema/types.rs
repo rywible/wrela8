@@ -4190,6 +4190,132 @@ mod tests {
         ));
     }
 
+    /// One `@layout(mmio)` type and one driver holding it — the prefix
+    /// every access-shape guard below shares.
+    const MMIO_PRELUDE: &str = "module t\n\n\
+         @layout(mmio, endian=little)\n\
+         struct Regs:\n\
+         \x20   @offset(0x000) status: ReadOnly[u32]\n\
+         \x20   @offset(0x004) ack: WriteOnly[u32]\n\n\
+         @driver\npub struct D:\n\
+         \x20   regs: Mmio[Regs]\n\n";
+
+    /// Every MMIO access *shape* guard whose own golden would say nothing
+    /// a reader could not predict from the accepting case
+    /// (`declaration_shape_guards`/`capability_shape_guards` above set the
+    /// precedent). The rules with a story — direction, width, endianness,
+    /// unknown register, register-as-a-value — are goldens.
+    #[test]
+    fn mmio_access_shape_guards() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "a bare selection of an unknown register names the mistake it is",
+                "        r = self.regs.nope\n        return 0\n",
+                "declares no register `nope`",
+            ),
+            (
+                "a register has no operation but read/write",
+                "        self.regs.ack.poke(1)\n        return 0\n",
+                "has no operation `poke`",
+            ),
+            (
+                "an `Mmio[L]` itself has no methods",
+                "        self.regs.reset()\n        return 0\n",
+                "has no method `reset`",
+            ),
+            (
+                "`read()` takes no arguments",
+                "        return self.regs.status.read(1)\n",
+                "read()` takes no arguments",
+            ),
+            (
+                "`write(v)` takes exactly one",
+                "        self.regs.ack.write()\n        return 0\n",
+                "takes exactly one argument",
+            ),
+            (
+                "...and not two",
+                "        self.regs.ack.write(1, 2)\n        return 0\n",
+                "takes exactly one argument",
+            ),
+            (
+                "`write(v)`'s value is positional",
+                "        self.regs.ack.write(value=1)\n        return 0\n",
+                "names no parameter",
+            ),
+        ];
+        for (what, body, needle) in cases {
+            let src = format!("{MMIO_PRELUDE}    fn go(read self) -> u32:\n{body}");
+            let err = check_err(&src);
+            assert!(
+                err.message.contains(needle),
+                "{what}: expected {needle:?} in {:?}",
+                err.message
+            );
+        }
+    }
+
+    /// The claim walk sees a layout wherever a driver field's type carries
+    /// one, because each of those is still a layout the driver holds live.
+    /// **Every** composite arm of `collect_mmio_layouts` is listed here,
+    /// and every one is source-reachable — this is the test that keeps
+    /// that claim honest rather than assumed. One test rather than eight
+    /// goldens: the rule is the same rule each time, and the composite
+    /// arms are `type_contains_capability`'s own shape reused (this
+    /// section's own note).
+    #[test]
+    fn the_claim_walk_reaches_a_layout_through_every_composite() {
+        for nested in [
+            "Option[Mmio[Regs]]",
+            "[Mmio[Regs]; 2]",
+            "(Mmio[Regs], u32)",
+            "Result[Mmio[Regs], u32]",
+            "Static[Mmio[Regs]]",
+            "fn() -> Mmio[Regs]",
+            "own[P] Mmio[Regs]",
+            "Wrapper",
+        ] {
+            let src = format!(
+                "module t\n\npool P\n\n\
+                 @layout(mmio, endian=little)\n\
+                 struct Regs:\n\
+                 \x20   @offset(0x000) status: ReadOnly[u32]\n\n\
+                 struct Wrapper:\n\
+                 \x20   inner: Mmio[Regs]\n\n\
+                 @driver\npub struct D:\n\
+                 \x20   a: Mmio[Regs]\n\
+                 \x20   b: {nested}\n"
+            );
+            let err = check_err(&src);
+            assert!(
+                err.message.contains("alias the same register"),
+                "a layout inside `{nested}` is still live: {:?}",
+                err.message
+            );
+        }
+    }
+
+    /// A struct that is not a `@driver` has no claim, so it partitions
+    /// nothing and this rule does not apply to it — provenance
+    /// (`hardware.capabilities.provenance`) is what governs who may touch
+    /// what it holds. Asserted directly because it is an *absence*: the
+    /// `!d.is_driver` skip is otherwise invisible.
+    #[test]
+    fn a_struct_with_no_claim_partitions_nothing() {
+        check_ok(
+            "module t\n\n\
+             @layout(mmio, endian=little)\n\
+             struct A:\n\
+             \x20   @offset(0x000) x: ReadOnly[u32]\n\n\
+             @layout(mmio, endian=little)\n\
+             struct B:\n\
+             \x20   @offset(0x000) y: ReadOnly[u32]\n\n\
+             struct Holder:\n\
+             \x20   a: Mmio[A]\n\
+             \x20   b: Mmio[B]\n",
+        );
+    }
+
     /// A layout consumes its declared *registers*, never its declared
     /// holes. Two layouts whose holes cover each other's registers are
     /// disjoint partitions of one claim — which is exactly 03 §2's own
