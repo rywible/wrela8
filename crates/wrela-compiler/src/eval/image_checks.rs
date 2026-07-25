@@ -93,7 +93,23 @@ pub fn check_sealed(
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
     check_construction_dag(graph)?;
-    check_pools_bound(graph, &owner.declared_pools)?;
+    // plans/M7.md item D self-audit finding: this used to be handed the
+    // `@image` fn's *own module's* declared pools only, while
+    // `image.graph.pools-bound-once`'s own note already said the rule is
+    // "a `pool P` declared in source that is never bound by *any* call
+    // before `img.seal()`" and "only the declaring module's own
+    // `declared_pools` can supply" it — for every declaring module, not
+    // just one. A `pool Q` declared in another module of the closure, with
+    // `own[Q] T` signatures over it and no `img.dma_pool`/`img.pool`
+    // binding anywhere, sailed through. 02-language.md §4 is unambiguous:
+    // "An image pool is bound to a pool name — a module- or actor-scoped
+    // `pool Name` declaration that **the image binds** to exactly one pool
+    // node."
+    let mut declared: BTreeSet<String> = owner.declared_pools.clone();
+    for p in programs.values() {
+        declared.extend(p.declared_pools.iter().cloned());
+    }
+    check_pools_bound(graph, &declared)?;
     check_pool_decls(graph, programs)?;
     check_init_args(graph, programs)?;
     check_supervision(graph)?;
@@ -1860,6 +1876,147 @@ mod tests {
         }
         let err = pool_backings(&g, &BTreeMap::new()).expect_err("past MAX_POOL_BYTES");
         assert!(err.message.contains("ceiling"), "{}", err.message);
+    }
+
+    /// plans/M7.md item D self-audit: every arm below is reachable from
+    /// real source (each was written as a `.wr` file and run through the
+    /// real compiler during the audit) but has no golden of its own,
+    /// because each is a one-line variant of a case that does. Kept as
+    /// executable oracles rather than as a comment, which is the whole
+    /// point of the audit.
+    #[test]
+    fn the_reachable_pool_arms_no_golden_spells() {
+        let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 4)])]);
+
+        // `device=1` — an ordinary value, not a declaration reference.
+        let g = dma_pool_graph(
+            true,
+            "Hdr",
+            vec![
+                decl_arg("device", Type::I64, Value::I64(1)),
+                decl_arg("count", Type::I64, Value::I64(2)),
+            ],
+        );
+        let err = pool_backings(&g, &layouts).expect_err("1 is not a declared device");
+        assert!(
+            err.message.contains("must name a declared device"),
+            "{}",
+            err.message
+        );
+
+        // `img.pool` with an argument belonging to the DMA form.
+        let mut g2 = ImageGraph::default();
+        g2.pools.insert(
+            "B".to_string(),
+            crate::eval::image::PoolDecl {
+                payload_type: Type::U32,
+                args: vec![
+                    decl_arg("slots", Type::I64, Value::I64(2)),
+                    decl_arg("max_payload", Type::I64, Value::I64(8)),
+                    decl_arg("count", Type::I64, Value::I64(2)),
+                ],
+            },
+        );
+        let err = pool_backings(&g2, &BTreeMap::new()).expect_err("`count=` is the DMA form's");
+        assert!(
+            err.message.contains("has no `count=` argument"),
+            "{}",
+            err.message
+        );
+
+        // Backing whose product does not fit a `u64` at all — caught
+        // before the ceiling check, which is a comparison and would
+        // otherwise be handed a wrapped number.
+        let mut g3 = ImageGraph::default();
+        g3.pools.insert(
+            "B".to_string(),
+            crate::eval::image::PoolDecl {
+                payload_type: Type::U32,
+                args: vec![
+                    decl_arg("slots", Type::I64, Value::I64(1 << 62)),
+                    decl_arg("max_payload", Type::I64, Value::I64(1 << 62)),
+                ],
+            },
+        );
+        let err = pool_backings(&g3, &BTreeMap::new()).expect_err("past a u64");
+        assert!(err.message.contains("more than a `u64`"), "{}", err.message);
+
+        let mut g4 = dma_pool_graph(
+            true,
+            "Hdr",
+            vec![
+                handle_arg("device", ImageDeclRef::Device(0)),
+                decl_arg("count", Type::I64, Value::I64(1 << 62)),
+            ],
+        );
+        let wide = layouts_of(vec![types::LayoutType {
+            name: "Hdr".to_string(),
+            kind: types::LayoutKind::Dma,
+            endian: types::LayoutEndian::Little,
+            size: 1 << 62,
+            padding: 0,
+            entries: vec![],
+        }]);
+        g4.dma_pools.get_mut("P").expect("P is bound").payload_type =
+            Type::Named("Hdr".to_string(), vec![]);
+        let err = pool_backings(&g4, &wide).expect_err("past a u64");
+        assert!(err.message.contains("more than a `u64`"), "{}", err.message);
+    }
+
+    /// The two `DmaPool[P, N]` bound-argument arms a source can spell but
+    /// no golden pins (audited the same way): a bound that is a *type*
+    /// rather than a const, and one this compiler cannot read as a `u64`.
+    #[test]
+    fn a_dma_pool_bound_must_be_a_readable_const() {
+        let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 4)])]);
+        let g = dma_pool_graph(
+            true,
+            "Hdr",
+            vec![
+                handle_arg("device", ImageDeclRef::Device(0)),
+                decl_arg("count", Type::I64, Value::I64(2)),
+            ],
+        );
+        let backings = pool_backings(&g, &layouts).expect("well-formed");
+        let span = crate::syntax::ast::Span { line: 1, col: 1 };
+
+        let ty = |second: crate::sema::types::TypeArg| {
+            Type::Named(
+                "DmaPool".to_string(),
+                vec![crate::sema::types::TypeArg::Pool("P".to_string()), second],
+            )
+        };
+        let err = check_dma_pool_mint(
+            &ImageDeclRef::Driver(0),
+            "Blk",
+            "control",
+            &ty(crate::sema::types::TypeArg::Type(Type::U32)),
+            &g.drivers[0].args,
+            &backings,
+        )
+        .expect_err("a type is not a capacity bound");
+        assert!(
+            err.message.contains("declares no capacity bound `N`"),
+            "{}",
+            err.message
+        );
+
+        let err = check_dma_pool_mint(
+            &ImageDeclRef::Driver(0),
+            "Blk",
+            "control",
+            &ty(crate::sema::types::TypeArg::Const(
+                crate::syntax::ast::Expr::Int(span, "9".repeat(30)),
+            )),
+            &g.drivers[0].args,
+            &backings,
+        )
+        .expect_err("does not fit a u64");
+        assert!(
+            err.message.contains("cannot read as a `u64`"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

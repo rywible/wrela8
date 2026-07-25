@@ -3854,6 +3854,18 @@ mod tests {
                 "fn f(take c: DmaShared[4, Ctl]) -> u32:\n    return 0\n",
                 "names the DMA pool it is authority over",
             ),
+            // plans/M7.md item D self-audit: two more reachable arms with
+            // no golden of their own — a pool argument carrying generic
+            // arguments (a `pool` declaration has none), and an `L` that
+            // is a scalar rather than a named struct.
+            (
+                "fn f(take c: DmaPool[Option[u8], 4]) -> u32:\n    return 0\n",
+                "takes no generic arguments of its own",
+            ),
+            (
+                "fn f(take c: DmaShared[Slots, u32]) -> u32:\n    return 0\n",
+                "must name an `@layout(dma)` struct",
+            ),
             // `Mmio[L]`'s own argument rule (03 §2), in the two shapes no
             // golden covers: a scalar, and a struct with no `@layout` at
             // all. `golden/err-cap-mmio-layout` pins the third — a
