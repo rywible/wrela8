@@ -29,7 +29,7 @@ ImageReport v0
     Field name=probe_write_half type=WriteOnly[u16] offset=0x108 size=2
     Field name=probe_read_half type=ReadOnly[u16] offset=0x10a size=2
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=4194304
+  Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=3176
   Section name=rodata base=0x40500cb8 size=759

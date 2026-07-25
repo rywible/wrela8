@@ -27,8 +27,9 @@ pub const MACHINE_REVISION: u32 = 1;
 /// crate only defines the one shared string so neither side can drift).
 pub const MACHINE_REVISION_STR: &str = "wrela-machine-v1";
 
-/// Always four vCPUs. Hosts with more cores run VMM threads on the surplus.
-pub const VCPUS: usize = 4;
+/// Always three vCPUs. Hosts with more cores run VMM threads on the surplus
+/// (ROADMAP M8 / 06 §1: `vCPUs = flagship core count − 1 housekeeping core`).
+pub const VCPUS: usize = 3;
 
 /// Guest-physical memory layout (06-machine.md §2). Flagship profile: one
 /// fixed layout, published here per machine revision, that the compiler's
@@ -45,8 +46,8 @@ pub const VCPUS: usize = 4;
 /// 0x4000_3000  console::DATA_BASE  (16 KiB)  console tx byte buffers
 /// 0x4000_7000  pending::BASE       (4 KiB)   per-core pending-vector page
 /// 0x4000_8000  .. 0x4001_0000               reserved (device-page growth)
-/// 0x4001_0000  STACKS_BASE         (4 MiB)   4 per-core stacks, 1 MiB each
-/// 0x4041_0000  .. 0x4050_0000               reserved (stack growth room)
+/// 0x4001_0000  STACKS_BASE         (3 MiB)   3 per-core stacks, 1 MiB each
+/// 0x4031_0000  .. 0x4050_0000               reserved (stack growth room)
 /// 0x4050_0000  IMAGE_BASE          (rest)    sealed image, loaded flat
 /// ```
 ///
@@ -79,11 +80,10 @@ pub mod layout {
     pub const MACHINE_INFO_BASE: u64 = DRAM_BASE;
     pub const MACHINE_INFO_SIZE: u64 = 0x1000;
 
-    /// Reserved region for the 4 per-core stacks (06 §1: "4 vCPUs,
-    /// always"). Only core 0 runs at M5 (plans/M5.md decision 11: "cores
-    /// 1-3 are reserved in the layout but never started (sync only)") —
-    /// all four are still reserved here so a later milestone starting the
-    /// other cores needs no layout change, only a VMM change.
+    /// Reserved region for the 3 per-core stacks (06 §1: "3 vCPUs,
+    /// always"). Only core 0 runs until M8 multicore boot starts the rest
+    /// (plans/M5.md decision 11 reserved the unused cores in the layout;
+    /// the count itself moved 4 → 3 at plans/M8.md item A).
     pub const STACKS_BASE: u64 = 0x4001_0000;
     /// 1 MiB per core. Generous for a spill-everything frame convention
     /// (plans/M5.md decision 4) with no register allocation to shrink
@@ -493,11 +493,6 @@ mod tests {
             (
                 "core_stack_2",
                 layout::core_stack_base(2),
-                layout::CORE_STACK_SIZE,
-            ),
-            (
-                "core_stack_3",
-                layout::core_stack_base(3),
                 layout::CORE_STACK_SIZE,
             ),
             // The image region has no fixed size (it is whatever the

@@ -139,7 +139,7 @@ with a why-chain (allocation site, escape path, footprint contribution);
 silent promotion of an unbounded allocation is forbidden — if no finite bound
 exists, the build fails.
 
-Placement generalizes to the machine's four cores. Every actor gets exactly
+Placement generalizes to the machine's three cores. Every actor gets exactly
 one build-time core assignment; explicit image assignments (`core=`) are
 fixed first, then the compiler places the rest deterministically from
 published facts only — proved maximum uninterrupted turn work, owned image
