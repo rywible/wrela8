@@ -37,12 +37,15 @@ ImageReport v0
   Section name=rodata base=0x40500218 size=26
   Section name=abort base=0x40500234 size=120
   Section name=checkpoint base=0x405002ac size=104
-  Section name=rtcode base=0x40500314 size=952
-  Section name=rtdata base=0x405006d0 size=312
-  Section name=pooldata base=0x40500808 size=384
+  Section name=rtcode base=0x40500314 size=1008
+  Section name=rtdata base=0x40500708 size=320
+  Section name=devregs base=0x40500848 size=8
+  Section name=pooldata base=0x40500850 size=384
   Entry base=0x40500000
   Actor name=Store mailbox=8 slot=24 frame=56 state=16
-  Totals actors=1 ready_queue=2 group_arena=0 bytes=312
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40500808 size=128 align=8 coherency=coherent device=device#0
-  Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40500888 size=256 align=8 coherency=coherent device=none
-  BlkPool name=BlockControl base=0x40500808 size=0x80
+  Driver name=BlkDriver state=8
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=320
+  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40500848 size=8
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40500850 size=128 align=8 coherency=coherent device=device#0
+  Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x405008d0 size=256 align=8 coherency=coherent device=none
+  BlkPool name=BlockControl base=0x40500850 size=0x80

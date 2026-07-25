@@ -1160,23 +1160,43 @@ fn check_capability_substitution(
         return check_dma_pool_mint(decl_ref, struct_name, param_name, param_ty, args, backings);
     }
     if cap_name != "DeviceCap" {
+        // plans/M7.md item H1 rewrote the `Mmio` arm, and decision 10 says
+        // exactly why: this arm's old text said "nothing mints a `Mmio`
+        // yet — that is plans/M7.md item C", which was already wrong when
+        // it was written and is now false twice over. An `Mmio[L]` *is*
+        // mintable — but never *here*. 03-hardware.md §2's own sentence is
+        // "a driver **or sealed protocol** partitions its claim", and 03
+        // §9's transport is what does it: `claimed.map_partition(L)`, on a
+        // state the driver's own `init` obtained from `claim`. The image
+        // binding mints one capability and one only, the `DeviceCap[D]`
+        // the `device=` names. So this is a *permanent* rejection with a
+        // redirection, not a fail-closed floor waiting on an item.
         let owner = match cap_name {
-            "Mmio" => "plans/M7.md item C (a driver partitions its claim into declared layouts)",
-            "IrqCap" => "plans/M7.md item G (a vector is bound from the image graph)",
+            "Mmio" => {
+                "an `Mmio[L]` is not minted at the image binding at all: the sealed transport \
+                 hands one out from an already-claimed device \
+                 (`claimed.map_partition(L)` — 03-hardware.md §2/§9). Declare it as a `@driver` \
+                 field and assign it inside `init`, which is where 03 §1's own worked \
+                 constructor puts it"
+            }
+            "IrqCap" => {
+                "nothing mints an `IrqCap[V]` yet — that is plans/M7.md item G (a vector is \
+                 bound from the image graph)"
+            }
             // 03-hardware.md §3's shared control memory. Not "no pool
             // exists" — pools are real at item D — but "nothing at the
             // image binding produces one": in 03 §3's own worked example
             // a `DmaShared` is what `VirtQueue.configure(pool=take
             // control_pool, ...)` makes out of a pool, which is item E.
             _ => {
-                "plans/M7.md item E (a queue configures shared control memory out of a pool; \
-                  03-hardware.md §3's shared control memory is not minted at the image binding)"
+                "nothing mints a `DmaShared[P, L]` yet — that is plans/M7.md item E (a queue \
+                 configures shared control memory out of a pool; 03-hardware.md §3's shared \
+                 control memory is not minted at the image binding)"
             }
         };
         return Err(build_error(format!(
             "`{}` binds a device to `{struct_name}`, but `{struct_name}.init` takes `{param_name}: \
-             {rendered}` and nothing mints a `{cap_name}` yet — that is {owner}. Failing closed \
-             rather than substituting an unminted capability",
+             {rendered}` — {owner}. Failing closed rather than substituting an unminted capability",
             decl_ref.render()
         )));
     }
@@ -2348,8 +2368,16 @@ mod tests {
         // image binding at all — a queue configures it out of a pool).
         // `golden/err-cap-mint-unminted` and
         // `golden/err-dma-shared-unminted` are the source-shaped witnesses.
+        //
+        // plans/M7.md item H1 changed the `Mmio` arm's *kind*, which is
+        // why it is checked against a mechanism rather than a plan item:
+        // decision 10 found the old text ("that is item C") stale, because
+        // an `Mmio[L]` is not waiting on an item at all — it is minted, by
+        // the sealed transport's `map_partition`, and never at the image
+        // binding. That rejection is permanent, so naming a future item in
+        // it would be wrong forever rather than merely out of date.
         for (cap, owner) in [
-            ("Mmio", "item C"),
+            ("Mmio", "map_partition"),
             ("IrqCap", "item G"),
             ("DmaShared", "item E"),
         ] {

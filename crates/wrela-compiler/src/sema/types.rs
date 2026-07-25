@@ -2323,6 +2323,45 @@ fn consumed_ranges(layout: &LayoutType) -> Vec<(u64, u64, String)> {
         .collect()
 }
 
+/// Every `@layout(mmio)` type the `@driver` `driver` mints through its own
+/// declared fields, in the fields' own structural order — exactly the set
+/// `check_mmio_claims` (below) proves pairwise disjoint. Public because
+/// `layout.rs` needs the *same* set to size the device's register window:
+/// 03-hardware.md §2's "minting a layout consumes those byte ranges from
+/// the claim" is one rule, so the window a claim hands out and the ranges
+/// the no-alias rule partitions must come from one walk, never two
+/// (plans/M7.md item H1).
+///
+/// `None` when `driver` names no `@driver` in `items` at all.
+pub fn driver_mmio_mints(items: &[DeclItem], driver: &str) -> Option<Vec<String>> {
+    let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
+    for item in items {
+        if let DeclItem::Struct(s) = item {
+            structs.insert(s.name.clone(), s);
+        }
+    }
+    let d = structs.get(driver).filter(|d| d.is_driver)?;
+    let mut out = Vec::new();
+    for m in &d.members {
+        if let DeclMember::Field(f) = m {
+            collect_mmio_layouts(&f.ty, &structs, &mut BTreeSet::new(), &mut out);
+        }
+    }
+    Some(out)
+}
+
+/// The exclusive end of the highest byte `layout`'s declared registers
+/// consume — `consumed_ranges`' own answer, reduced. `0` for a layout that
+/// declares only holes (03 §2: a declared hole belongs to the sealed
+/// transport, not to this layout).
+pub fn mmio_consumed_end(layout: &LayoutType) -> u64 {
+    consumed_ranges(layout)
+        .into_iter()
+        .map(|(_, end, _)| end)
+        .max()
+        .unwrap_or(0)
+}
+
 /// 03-hardware.md §2's claim-partitioning sentence, checked
 /// (`hardware.mmio.no-alias`): for every `@driver`, the layouts its own
 /// fields mint must consume disjoint byte ranges from its one claim.

@@ -204,6 +204,10 @@ pub struct ImageLayout {
     /// declares no pool at all, which is why no existing golden without
     /// one moved when this landed.
     pub pools: Vec<PoolPlacement>,
+    /// plans/M7.md item H1: every device this image binds to a `@driver`,
+    /// with its own placed register window in the `devregs` section.
+    /// Empty for an image that binds no driver.
+    pub device_regs: Vec<DeviceRegs>,
 }
 
 /// One bound pool as it was actually placed: everything the checker
@@ -931,6 +935,21 @@ fn place_pools(
              ends at {placed_end:#x}"
         )));
     }
+    Ok(place_pools_unchecked(cursor, backings))
+}
+
+/// The placement itself, with no section-table check — the half
+/// `layout_test_image` needs *before* its section table exists, because
+/// plans/M7.md item H1 made a pool's base an `init` argument word and the
+/// boot-init block is assembled first. `place_pools` (above) is this plus
+/// the check, so the two can never place a pool differently.
+fn place_pools_unchecked(
+    cursor: u64,
+    backings: &BTreeMap<String, crate::eval::image_checks::PoolBacking>,
+) -> Option<(Vec<PoolPlacement>, u64, u64, u64)> {
+    if backings.is_empty() {
+        return None;
+    }
     let base = round_up(cursor, 8);
     let mut at = base;
     let mut out = Vec::with_capacity(backings.len());
@@ -942,7 +961,7 @@ fn place_pools(
         });
         at += b.bytes;
     }
-    Ok(Some((out, base, at - base, at)))
+    Some((out, base, at - base, at))
 }
 
 /// plans/M7.md decision 5, re-derived rather than asserted: **the windows
@@ -1013,6 +1032,209 @@ fn verify_pool_windows(sections: &[Section], pools: &[PoolPlacement]) -> Result<
         }
     }
     Ok(())
+}
+
+// --- device register windows: the `devregs` section (item H1) -------------
+//
+// **Decision 11's other half.** A capability is one word holding a guest
+// base address; a `DeviceCap[D]`'s address is *this* — the base of the
+// declared register window of the device the image bound to that driver.
+//
+// **Why the window is a declared region of guest DRAM, not a trapping
+// address.** 06-machine.md §3 is explicit that "the VMM ... preconfigures
+// every device, queue, and **shared-memory window** the report declares —
+// device topology is a *build output*, not a probed fact", and that "cold
+// boot is a design property: there is nothing to negotiate". Machine v1
+// has no virtio MMIO transport at all (`wrela-vmm`'s `devices` module doc:
+// no `MagicValue`/`DeviceID`/`QueueSel` register file exists, because
+// `BlkConfig` *is* the transport configuration, parsed out of the report),
+// and 06 §5's own notification mechanism is a shared-memory doorbell word,
+// not a trap. `wrela_machine::mmio` reserves exactly three trapping
+// registers — clock, exit, park — and nothing else in that window is
+// mapped, so a device register file placed there would fault the boot.
+// So this machine's device registers are a declared shared-memory window,
+// the same kind of thing its doorbell already is.
+//
+// **Why its own section, not room inside `rtdata`.** `verify_pool_windows`'
+// own doc spells the property item D established: device-reachable memory
+// is disjoint from this image's instructions and from every actor's state
+// and mailbox. A register window is the second kind of memory a device
+// model writes, so it gets the same treatment — its own section, its own
+// placement check (`verify_device_windows`), never bytes interleaved with
+// actor state.
+//
+// **Sizing comes from item C's mint set, not from a second walk.** The
+// window is as wide as the highest byte any layout the driver mints
+// consumes (`types::driver_mmio_mints` + `types::mmio_consumed_end` — the
+// exact set `check_mmio_claims` proves pairwise disjoint), rounded up to 8
+// and never smaller than one word. A driver that mints nothing still gets
+// a word, so its `DeviceCap[D]` still names a real, mapped address rather
+// than a zero.
+
+/// One declared device's own register window, as sized and placed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRegs {
+    /// Index into `ImageGraph::devices` — the `device#N` the report and
+    /// every edge already spell.
+    pub device: usize,
+    pub device_type: String,
+    /// The `@driver` whose `device=` binding names it (one per device:
+    /// `eval::image_checks` already refuses a second binding of the same
+    /// device, so this is not a list).
+    pub driver: String,
+    pub base: u64,
+    pub size: u64,
+}
+
+/// Every declared device that some `@driver` binds, with the window width
+/// its driver's own declared `Mmio[L]` fields ask for — in `graph.devices`
+/// order, which is `image.report.deterministic`'s own construction order.
+fn device_register_windows(
+    boot: Option<&BootCtx>,
+) -> Result<Vec<(usize, String, String, u64)>, LayoutError> {
+    use crate::eval::image::ImageDeclRef;
+    use crate::eval::value::Value;
+
+    let Some(b) = boot else {
+        return Ok(Vec::new());
+    };
+    let layouts = closure_layout_types(b.modules)?;
+    let decls = closure_decl_items(b.modules)?;
+
+    let mut out: Vec<(usize, String, String, u64)> = Vec::new();
+    for d in &b.graph.drivers {
+        let driver = crate::sema::types::render_type(&d.actor_type);
+        // `device=` is optional on `img.driver(...)` — 03-hardware.md §1
+        // names it "the single source of truth" for *which* device a
+        // driver's authority is over, and a driver that claims none (no
+        // capability parameter, no `Mmio[L]` field) is a legal, if
+        // currently pointless, declaration: `golden/err-image-driver-message`
+        // is exactly one. Such a driver gets no register window, and the
+        // one thing that would have needed it — a `DeviceCap[D]`
+        // parameter — is refused by name in `one_boot_init_call`.
+        let Some(Value::ImageDecl(ImageDeclRef::Device(idx))) = d
+            .args
+            .iter()
+            .find(|a| a.label == "device")
+            .map(|a| &a.value)
+        else {
+            continue;
+        };
+        let device_type = match b.graph.devices.get(*idx) {
+            Some(dev) => crate::sema::types::render_type(&dev.device_type),
+            None => {
+                return Err(LayoutError::new(format!(
+                    "internal error: `@driver` `{driver}` binds device#{idx}, which this image \
+                     does not declare"
+                )));
+            }
+        };
+        let mut extent = 0u64;
+        if let Some(mints) = crate::sema::types::driver_mmio_mints(&decls, &driver) {
+            for name in mints {
+                if let Some(l) = layouts.get(&name) {
+                    extent = extent.max(crate::sema::types::mmio_consumed_end(l));
+                }
+            }
+        }
+        let size = round_up(extent.max(8), 8);
+        out.push((*idx, device_type, driver, size));
+    }
+    out.sort_by_key(|(idx, _, _, _)| *idx);
+    Ok(out)
+}
+
+/// Places every device register window sequentially from `cursor`, each
+/// 8-byte aligned. Returns the placements, the section's own base/size and
+/// the advanced cursor — `None` when this image binds no driver at all, in
+/// which case no `devregs` section exists.
+fn place_device_regs(
+    cursor: u64,
+    windows: &[(usize, String, String, u64)],
+) -> Option<(Vec<DeviceRegs>, u64, u64, u64)> {
+    if windows.is_empty() {
+        return None;
+    }
+    let base = round_up(cursor, 8);
+    let mut at = base;
+    let mut out = Vec::with_capacity(windows.len());
+    for (device, device_type, driver, size) in windows {
+        out.push(DeviceRegs {
+            device: *device,
+            device_type: device_type.clone(),
+            driver: driver.clone(),
+            base: at,
+            size: *size,
+        });
+        at += size;
+    }
+    Some((out, base, at - base, at))
+}
+
+/// `verify_pool_windows`' sibling, for the same reason and by the same
+/// method: every placed register window is non-empty, lies wholly inside
+/// the `devregs` section, and overlaps no other. The section table is
+/// already proved disjoint by `verify_section_sizes`, so this is what
+/// extends that proof to each individual window — an address a driver
+/// reaches through an `Mmio[L]` is inside `devregs`, therefore outside
+/// this image's instructions, its runtime tables, every actor's state and
+/// mailbox, and every DMA pool.
+fn verify_device_windows(sections: &[Section], regs: &[DeviceRegs]) -> Result<(), LayoutError> {
+    if regs.is_empty() {
+        return Ok(());
+    }
+    let Some(sec) = sections.iter().find(|s| s.name == "devregs") else {
+        return Err(LayoutError::new(
+            "internal error: this image places device register windows but reserves no `devregs` \
+             section",
+        ));
+    };
+    let sec_end = sec.base + sec.size;
+    for (i, r) in regs.iter().enumerate() {
+        if r.size == 0 {
+            return Err(LayoutError::new(format!(
+                "internal error: device#{} was placed with a zero-byte register window",
+                r.device
+            )));
+        }
+        let end = r.base + r.size;
+        if r.base < sec.base || end > sec_end {
+            return Err(LayoutError::new(format!(
+                "internal error: device#{}'s register window [{:#x}, {end:#x}) is not inside the \
+                 `devregs` section [{:#x}, {sec_end:#x})",
+                r.device, r.base, sec.base
+            )));
+        }
+        for other in &regs[..i] {
+            let other_end = other.base + other.size;
+            if r.base < other_end && other.base < end {
+                return Err(LayoutError::new(format!(
+                    "internal error: device#{} and device#{} were placed at overlapping register \
+                     windows",
+                    other.device, r.device
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every declared struct/enum in a build closure, as `DeclItem`s — the
+/// same specialize-then-declare pass `actor_inits` runs, kept separate
+/// because its consumers ask a different question of the result.
+fn closure_decl_items(
+    modules: &BTreeMap<String, Module>,
+) -> Result<Vec<crate::sema::types::DeclItem>, LayoutError> {
+    let mut out = Vec::new();
+    for module in modules.values() {
+        let specialized = crate::sema::specialize::specialize(module)
+            .map_err(|e| LayoutError::new(format!("device register windows: {}", e.message)))?;
+        out.extend(
+            crate::sema::types::declare(&specialized)
+                .map_err(|e| LayoutError::new(format!("device register windows: {}", e.message)))?,
+        );
+    }
+    Ok(out)
 }
 
 /// Every `@layout` type in a build closure, by name — `layout_program`'s
@@ -1144,9 +1366,31 @@ pub fn layout_program(
     // section's own base (this fn's own placement, unlike
     // `layout_test_image`'s, gives the block a section of its own rather
     // than a slice of the combined harness section).
+    // The sizing pass gets **address-free but structurally real**
+    // placements: the same device windows and pool backings this image
+    // will place, at base 0. Word counts do not depend on address values
+    // (`build_runtime_glue_block`'s own doc), but `BootInitArg::resolve`'s
+    // "no placed window" guard does depend on the *entries* existing — and
+    // that guard is a real one, so it is fed a real list rather than
+    // switched off for one of the two passes.
+    let sizing_device_regs = place_device_regs(0, &device_register_windows(boot.as_ref())?)
+        .map(|(regs, _, _, _)| regs)
+        .unwrap_or_default();
+    let sizing_pools = place_pools_unchecked(0, &image_pool_backings(boot.as_ref())?)
+        .map(|(pools, _, _, _)| pools)
+        .unwrap_or_default();
     let dummy_runtime_block = wiring
         .as_ref()
-        .map(|w| build_runtime_block(w, &place_runtime_tables(0, &w.tables), 0));
+        .map(|w| {
+            build_runtime_block(
+                w,
+                &place_runtime_tables(0, &w.tables),
+                &sizing_device_regs,
+                &sizing_pools,
+                0,
+            )
+        })
+        .transpose()?;
     let rtcode_words_len = dummy_runtime_block
         .as_ref()
         .map(|b| b.words.len())
@@ -1268,6 +1512,30 @@ pub fn layout_program(
     // exact backing", zeroed image bytes exactly like `rtdata`'s. This
     // image shape's own final section — nothing consumes `cursor` past
     // it. Absent entirely for an image that binds no pool.
+    // --- devregs (plans/M7.md item H1): one declared register window per
+    // device this image binds to a `@driver` — decision 11's own address
+    // for a `DeviceCap[D]`, and the base every `Mmio[L]` partition
+    // addresses from. Placed *before* `pooldata`, in the identical order
+    // `layout_test_image` places it: plans/M6.md item F/G's rule is that
+    // the two image flavors emit the same memory map for the same source,
+    // and the boot-init words that carry these bases are built from the
+    // same `build_runtime_block` in both. Absent entirely for an image
+    // that binds no driver.
+    let device_windows = device_register_windows(boot.as_ref())?;
+    let placed_regs = place_device_regs(cursor, &device_windows);
+    let device_regs: Vec<DeviceRegs> = match &placed_regs {
+        Some((regs, base, size, end)) => {
+            sections.push(Section {
+                name: "devregs",
+                base: *base,
+                size: *size,
+            });
+            cursor = *end;
+            regs.clone()
+        }
+        None => Vec::new(),
+    };
+
     let pool_backings = image_pool_backings(boot.as_ref())?;
     let placed_pools = place_pools(cursor, &sections, &pool_backings)?;
     let pools: Vec<PoolPlacement> = match &placed_pools {
@@ -1315,7 +1583,7 @@ pub fn layout_program(
     // the identical shape the checkpoint block above uses.
     let runtime_block = match (&wiring, &placement) {
         (Some(w), Some(pl)) => {
-            let real = build_runtime_block(w, pl, 0);
+            let real = build_runtime_block(w, pl, &device_regs, &pools, 0)?;
             if real.words.len() != rtcode_words_len {
                 return Err(LayoutError::new(
                     "internal error: the runtime block's own word count changed between its \
@@ -1529,6 +1797,14 @@ pub fn layout_program(
         pad_to(&mut blob, image_base, rb);
         blob.resize(blob.len() + tables.total_bytes as usize, 0);
     }
+    // plans/M7.md item H1: `devregs` is emitted before `pooldata`, the
+    // same order it is placed in — 06-machine.md §3's "zeroes the declared
+    // reservations" applies to a register window exactly as it does to a
+    // pool's backing.
+    if let Some((_, base, size, _)) = &placed_regs {
+        pad_to(&mut blob, image_base, *base);
+        blob.resize(blob.len() + *size as usize, 0);
+    }
     if let Some((_, base, size, _)) = &placed_pools {
         pad_to(&mut blob, image_base, *base);
         blob.resize(blob.len() + *size as usize, 0);
@@ -1536,6 +1812,7 @@ pub fn layout_program(
 
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
     verify_pool_windows(&sections, &pools)?;
+    verify_device_windows(&sections, &device_regs)?;
 
     Ok(ImageLayout {
         blob,
@@ -1543,6 +1820,7 @@ pub fn layout_program(
         sections,
         runtime: runtime.cloned(),
         pools,
+        device_regs,
     })
 }
 
@@ -1786,9 +2064,31 @@ pub struct ActorRuntimeLayout {
 /// `layout_program`/`layout_test_image` reserve — computed once, here,
 /// from the per-actor/per-table sizes below, so the reservation and the
 /// report's own totals line can never disagree.
+/// One `@driver` declaration's own static sizing (plans/M7.md item H1).
+/// Deliberately *not* an `ActorRuntimeLayout`: a driver is an actor root
+/// (02 §9.1) but M6-D's floor still stands — only an `img.actor(...)`
+/// declaration gets a mailbox, a ring and an admission routine
+/// (`unresolved_call_target`'s own driver sentence), so a driver has
+/// exactly one static fact today, its state bytes. A turn area follows
+/// when item G gives a driver a `@task`; a mailbox follows when a driver
+/// is messageable. Two half-filled `ActorRuntimeLayout`s would have made
+/// both of those look already-decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverRuntimeLayout {
+    pub name: String,
+    /// This driver struct's own field storage (`mwir::size_of`) — where
+    /// the instance lives, exactly like an actor's `state_size`.
+    pub state_size: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimeTables {
     pub actors: Vec<ActorRuntimeLayout>,
+    /// plans/M7.md item H1: one entry per declared `@driver` instance, in
+    /// `ImageGraph::drivers` order. Until this item a `@driver`'s state
+    /// was never reserved and its `init` never called, so no capability of
+    /// any kind had bytes at runtime — decision 10's second prerequisite.
+    pub drivers: Vec<DriverRuntimeLayout>,
     /// One turn area per **free** async fn (every `FlowWirProgram::fns`
     /// key that is not a declared actor's own method — `@test(runtime)`
     /// roots foremost; a compiled-but-unreachable free `async fn` still
@@ -2015,7 +2315,64 @@ fn actor_inits(
 #[derive(Debug)]
 struct BootInitCall {
     key: String,
-    args: Vec<u64>,
+    args: Vec<BootInitArg>,
+}
+
+/// One materialized `init` argument word — or the promise of one whose
+/// value is not known until the section table is placed.
+///
+/// plans/M7.md item H1: a `DeviceCap[D]` argument is decision 11's own
+/// representation, the base address of the device's declared register
+/// window, and that address exists only after `place_device_regs` has run.
+/// Every other argument is already a build-time constant by the time
+/// `build_boot_init_calls` sees it. Carrying the one unresolved case as
+/// its own variant (rather than threading placement through the whole
+/// derivation, or patching a word after the fact) keeps the emitted word
+/// count identical in both of `build_runtime_block`'s passes — a
+/// `load_imm` is four words whatever it loads — which is the invariant
+/// both image flavors' two-pass assembly rests on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BootInitArg {
+    Word(u64),
+    /// The base of `ImageGraph::devices[.0]`'s own register window.
+    DeviceRegsBase(usize),
+    /// The base of the named pool's own backing in `pooldata` — decision
+    /// 11's word for a `DmaPool[P, N]`, which item D placed and reported
+    /// but nothing could yet pass to an `init`.
+    PoolBase(String),
+}
+
+impl BootInitArg {
+    /// The word this argument actually loads. `regs`/`pools` are the
+    /// placed window lists; a reference with no matching placement is an
+    /// internal inconsistency (both parameters only exist on a driver
+    /// whose binding `eval::image_checks` already resolved), reported
+    /// rather than silently zeroed.
+    fn resolve(&self, regs: &[DeviceRegs], pools: &[PoolPlacement]) -> Result<u64, LayoutError> {
+        match self {
+            BootInitArg::Word(w) => Ok(*w),
+            BootInitArg::DeviceRegsBase(i) => regs
+                .iter()
+                .find(|r| r.device == *i)
+                .map(|r| r.base)
+                .ok_or_else(|| {
+                    LayoutError::new(format!(
+                        "internal error: boot passes a `DeviceCap` for device#{i}, which has no \
+                         placed register window"
+                    ))
+                }),
+            BootInitArg::PoolBase(name) => pools
+                .iter()
+                .find(|p| &p.backing.name == name)
+                .map(|p| p.base)
+                .ok_or_else(|| {
+                    LayoutError::new(format!(
+                        "internal error: boot passes a `DmaPool` for pool `{name}`, which has no \
+                         placed backing"
+                    ))
+                }),
+        }
+    }
 }
 
 /// The one place a build-time `eval::value::Value` becomes the 64-bit
@@ -2160,10 +2517,11 @@ fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
 ///    leaves*. A value with no register representation at all is rejected
 ///    too, since this compiler cannot show it is zero either.
 fn check_field_wired_args(
+    kind: &str,
     name: &str,
-    decl: &crate::eval::image::ActorDecl,
+    decl_args: &[crate::eval::image::DeclArg],
 ) -> Result<(), LayoutError> {
-    for a in &decl.args {
+    for a in decl_args {
         if crate::eval::image_checks::is_reserved_actor_arg(&a.label) {
             continue;
         }
@@ -2179,24 +2537,35 @@ fn check_field_wired_args(
             ),
         };
         return Err(LayoutError::new(format!(
-            "actor `{name}` declares no `init`, so this image wires `{}=...` to its field of that \
-             name — and boot has nothing to call: it zero-fills the whole state slot and stops \
-             (05-library.md §9's literal-constructor path). The wired value {what}, which is not \
-             the zero the state-fill leaves, so the actor would boot with a value this image did \
-             not declare. Failing closed (plans/M7.md item W's residual, owned by item D) rather \
-             than reporting success over a wrong answer. Give `{name}` an `init` that takes it, \
-             or drop the argument.",
+            "{kind} `{name}` declares no `init`, so this image wires `{}=...` to its field of \
+             that name — and boot has nothing to call: it zero-fills the whole state slot and \
+             stops (05-library.md §9's literal-constructor path). The wired value {what}, which \
+             is not the zero the state-fill leaves, so the {kind} would boot with a value this \
+             image did not declare. Failing closed (plans/M7.md item W's residual, owned by item \
+             D) rather than reporting success over a wrong answer. Give `{name}` an `init` that \
+             takes it, or drop the argument.",
             a.label
         )));
     }
     Ok(())
 }
 
-/// plans/M7.md item W: every declared actor instance's own boot `init`
-/// call, in `graph.actors` order — which is `RuntimeTables::actors` order
-/// too (`compute_runtime_tables` builds one entry per `graph.actors`
-/// entry, in that same walk), so the result indexes 1:1 against
-/// `RuntimeWiring::state_sizes`/`RuntimePlacement::actors`.
+/// plans/M7.md item W: every declared actor *and driver* instance's own
+/// boot `init` call, in `graph.actors`/`graph.drivers` order — which is
+/// `RuntimeTables::actors`/`RuntimeTables::drivers` order too
+/// (`compute_runtime_tables` builds one entry per graph entry, in the same
+/// walks), so each result indexes 1:1 against the matching
+/// `RuntimePlacement` list.
+///
+/// **plans/M7.md item H1, decision 10's second prerequisite**: until this
+/// item the walk was `graph.actors` only, so a `@driver`'s `init` was
+/// never called at boot at all and no capability of any kind had bytes at
+/// runtime. A driver's `init` is now called exactly like an actor's, with
+/// one difference that is the whole point: its `DeviceCap[D]` parameter
+/// carries no explicit image argument (05-library.md §9 substitutes it)
+/// and is materialized as decision 11's own word — the base of the device
+/// register window `place_device_regs` reserved for the device its
+/// `device=` binding names.
 ///
 /// `None` for an actor whose struct declares no `init` at all: its state
 /// is its own literal constructor's, and `build_boot_init`'s zero-fill
@@ -2218,10 +2587,12 @@ fn check_field_wired_args(
 ///   `ipa=0x0`, verified by running it.
 /// - any other **non-`unit` return**, for the same reason with no item to
 ///   name: boot has nowhere to put the value.
-/// - a **capability parameter** (`DeviceCap`/`DmaPool`/`Mmio`/`IrqCap`,
-///   recognized by name exactly as `eval::image_checks` recognizes them):
-///   03-hardware.md §1's `@driver` `init` takes these by `take`, and
-///   nothing mints one until plans/M7.md item A.
+/// - a **capability parameter other than `DeviceCap[D]` on a `@driver`**
+///   (recognized by name exactly as `eval::image_checks` recognizes them):
+///   `eval::image_checks::check_capability_substitution` already refuses
+///   each of these at the image binding, naming the item that mints it;
+///   this is the same refusal for the shape that check cannot see (an
+///   `img.actor(...)` naming a struct that is not an `@actor`).
 /// - an **`Actor[T]` parameter with no explicit argument**: 05-library.md
 ///   §9 lets an actor handle be substituted by type rather than wired by
 ///   name, and boot materializes only what the image explicitly wired.
@@ -2239,128 +2610,224 @@ fn check_field_wired_args(
 fn build_boot_init_calls(
     graph: &ImageGraph,
     inits: &BTreeMap<String, ActorInit>,
-) -> Result<Vec<Option<BootInitCall>>, LayoutError> {
+) -> Result<(Vec<Option<BootInitCall>>, Vec<Option<BootInitCall>>), LayoutError> {
+    let mut actors = Vec::with_capacity(graph.actors.len());
+    for decl in &graph.actors {
+        actors.push(one_boot_init_call(
+            "actor",
+            &decl.actor_type,
+            &decl.args,
+            None,
+            inits,
+        )?);
+    }
+    let mut drivers = Vec::with_capacity(graph.drivers.len());
+    for decl in &graph.drivers {
+        let device = device_index_of(&decl.args);
+        drivers.push(one_boot_init_call(
+            "driver",
+            &decl.actor_type,
+            &decl.args,
+            device,
+            inits,
+        )?);
+    }
+    Ok((actors, drivers))
+}
+
+/// The `device#N` an `img.driver(..., device=...)` declaration binds, if
+/// its `device=` argument is a device reference at all. `None` is never a
+/// silent default: the one caller that needs it turns it into a named
+/// rejection on the `DeviceCap[D]` parameter that would have used it.
+fn device_index_of(args: &[crate::eval::image::DeclArg]) -> Option<usize> {
+    use crate::eval::image::ImageDeclRef;
+    use crate::eval::value::Value;
+    args.iter()
+        .find(|a| a.label == "device")
+        .and_then(|a| match &a.value {
+            Value::ImageDecl(ImageDeclRef::Device(i)) => Some(*i),
+            _ => None,
+        })
+}
+
+/// One declaration's own boot `init` call. `kind` is the noun every
+/// diagnostic here uses (`actor`/`driver`) so a driver is never described
+/// as an actor and vice versa; `device` is the driver's own bound device
+/// index (`None` for an actor, which binds none).
+fn one_boot_init_call(
+    kind: &str,
+    decl_type: &crate::sema::types::Type,
+    decl_args: &[crate::eval::image::DeclArg],
+    device: Option<usize>,
+    inits: &BTreeMap<String, ActorInit>,
+) -> Result<Option<BootInitCall>, LayoutError> {
     use crate::sema::types::{Type, render_type};
 
-    let mut out = Vec::with_capacity(graph.actors.len());
-    for decl in &graph.actors {
-        let name = render_type(&decl.actor_type);
-        let Some(init) = inits.get(&name) else {
-            check_field_wired_args(&name, decl)?;
-            out.push(None);
-            continue;
-        };
-        if init.ret != Type::Unit {
-            let rendered = render_type(&init.ret);
-            return Err(LayoutError::new(if matches!(init.ret, Type::Result(..)) {
-                format!(
-                    "actor `{name}` declares a fallible `init` returning `{rendered}`, and this \
-                     image declares an instance of it — boot would have to drive \
-                     03-hardware.md §9's own consuming transition chain to handle the failure \
-                     arm, which is plans/M7.md item H's work. Failing closed rather than \
-                     discarding the result."
-                )
-            } else {
-                format!(
-                    "actor `{name}` declares `init` returning `{rendered}`, and this image \
-                     declares an instance of it — boot can only call an `init` returning \
-                     `unit`, and has nowhere to put a returned value."
-                )
-            }));
-        }
-        if init.params.len() > 8 {
-            return Err(LayoutError::new(format!(
-                "actor `{name}`'s own `init` declares {} parameters; boot can pass at most 8 \
-                 (`x0` carries the receiver, leaving `x1..x8`) — the identical limit \
-                 `codegen` places on every other call.",
-                init.params.len()
-            )));
-        }
-        let mut args = Vec::with_capacity(init.params.len());
-        for p in &init.params {
-            // Reserved labels are skipped through the same predicate
-            // `eval::image_checks` accepts them by, so the acceptance rule
-            // and this materialization rule can never disagree about which
-            // label is image-wiring metadata rather than an `init`
-            // argument (a parameter that happens to be named `mailbox` is
-            // therefore unsatisfiable on both sides alike, not satisfiable
-            // on one).
-            let wired = decl.args.iter().find(|a| {
-                a.label == p.name && !crate::eval::image_checks::is_reserved_actor_arg(&a.label)
-            });
-            let Some(a) = wired else {
-                let param_ty = render_type(&p.ty);
-                if let Type::Named(tn, _) = &p.ty {
-                    if crate::eval::image_checks::is_capability_type_name(tn) {
-                        return Err(LayoutError::new(format!(
-                            "actor `{name}`'s own `init` takes `{}: {param_ty}`, a capability \
-                             this image never wires explicitly — capabilities are minted by the \
-                             image, and nothing mints one until plans/M7.md item A. Failing \
-                             closed rather than passing a zero.",
-                            p.name
-                        )));
-                    }
-                    if crate::eval::image_checks::is_handle_type_name(tn) {
-                        return Err(LayoutError::new(format!(
-                            "actor `{name}`'s own `init` takes `{}: {param_ty}` with no \
-                             `{}=...` argument in this image — 05-library.md §9 allows an actor \
-                             handle to be substituted by type there, but boot materializes only \
-                             the arguments the image wires by name. Wire it explicitly, or wait \
-                             for handle substitution.",
-                            p.name, p.name
-                        )));
-                    }
-                }
-                return Err(LayoutError::new(format!(
-                    "actor `{name}`'s own `init` takes `{}: {param_ty}` and this image wires no \
-                     `{}=...` argument for it, so boot has no value to pass.",
-                    p.name, p.name
-                )));
-            };
-            // plans/M7.md item D: a pool handle gets its own diagnostic
-            // rather than the generic "no register representation" one,
-            // because the pool it names *is* real now (declared, checked,
-            // sized and placed) and only the runtime handle value is
-            // missing — a reader deserves to be told which of the two.
-            if matches!(
-                a.value,
-                crate::eval::value::Value::ImageDecl(
-                    crate::eval::image::ImageDeclRef::Pool(_)
-                        | crate::eval::image::ImageDeclRef::DmaPool(_)
-                )
-            ) {
-                return Err(LayoutError::new(format!(
-                    "actor `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}` from a \
-                     declared pool. The pool is real — bound, sized and placed in this image's \
-                     own `pooldata` section (plans/M7.md item D) — but 05-library.md §9's \
-                     \"create the initial handles\" means a runtime `own[P] T` per slot, and \
-                     nothing constructs one yet. Failing closed rather than passing the pool's \
-                     construction index as if it were a handle.",
-                    a.label,
-                    p.name,
-                    render_type(&p.ty),
-                )));
-            }
-            let Some(word) = boot_init_arg_word(&a.value) else {
-                return Err(LayoutError::new(format!(
-                    "actor `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}`, but the \
-                     value is {} — boot passes arguments in registers (`x1..`), and this \
-                     compiler has no register representation for that shape. Failing closed \
-                     rather than passing a zero.",
-                    a.label,
-                    p.name,
-                    render_type(&p.ty),
-                    value_shape_name(&a.value)
-                )));
-            };
-            args.push(word);
-        }
-        out.push(Some(BootInitCall {
-            key: init.key.clone(),
-            args,
+    let name = render_type(decl_type);
+    let Some(init) = inits.get(&name) else {
+        check_field_wired_args(kind, &name, decl_args)?;
+        return Ok(None);
+    };
+    if init.ret != Type::Unit {
+        let rendered = render_type(&init.ret);
+        return Err(LayoutError::new(if matches!(init.ret, Type::Result(..)) {
+            format!(
+                "{kind} `{name}` declares a fallible `init` returning `{rendered}`, and this \
+                 image declares an instance of it — boot would have to handle the failure arm, \
+                 and 03-hardware.md §9's own failure vocabulary (`BootError`, and the transitions \
+                 that route a capability to its restart provision) does not exist in the stdlib \
+                 yet: plans/M7.md item H1 builds the chain's states and its two live transitions \
+                 (`claim`/`map_partition`), both infallible on this machine. Failing closed rather \
+                 than discarding the result."
+            )
+        } else {
+            format!(
+                "{kind} `{name}` declares `init` returning `{rendered}`, and this image \
+                 declares an instance of it — boot can only call an `init` returning \
+                 `unit`, and has nowhere to put a returned value."
+            )
         }));
     }
-    Ok(out)
+    if init.params.len() > 8 {
+        return Err(LayoutError::new(format!(
+            "{kind} `{name}`'s own `init` declares {} parameters; boot can pass at most 8 \
+             (`x0` carries the receiver, leaving `x1..x8`) — the identical limit \
+             `codegen` places on every other call.",
+            init.params.len()
+        )));
+    }
+    let mut args = Vec::with_capacity(init.params.len());
+    for p in &init.params {
+        // Reserved labels are skipped through the same predicate
+        // `eval::image_checks` accepts them by, so the acceptance rule
+        // and this materialization rule can never disagree about which
+        // label is image-wiring metadata rather than an `init`
+        // argument (a parameter that happens to be named `mailbox` is
+        // therefore unsatisfiable on both sides alike, not satisfiable
+        // on one).
+        let wired = decl_args.iter().find(|a| {
+            a.label == p.name && !crate::eval::image_checks::is_reserved_actor_arg(&a.label)
+        });
+        let Some(a) = wired else {
+            let param_ty = render_type(&p.ty);
+            if let Type::Named(tn, targs) = &p.ty {
+                // plans/M7.md item H1: **the mint, materialized.** A
+                // `@driver`'s `DeviceCap[D]` parameter carries no explicit
+                // argument — 05-library.md §9 substitutes it from the
+                // `device=` binding, and `check_capability_substitution`
+                // has already checked that `D` *is* the device that
+                // binding names. Its word is decision 11's: the base of
+                // that device's own declared register window.
+                if tn == "DeviceCap" {
+                    let Some(i) = device else {
+                        return Err(LayoutError::new(format!(
+                            "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, but this \
+                             declaration binds no device — a `DeviceCap[D]` is authority over one \
+                             device instance and is minted only from an `img.driver(..., \
+                             device=...)` binding (03-hardware.md §1).",
+                            p.name
+                        )));
+                    };
+                    args.push(BootInitArg::DeviceRegsBase(i));
+                    continue;
+                }
+                // plans/M7.md item H1: a `DmaPool[P, N]` parameter is
+                // substituted the same way, and its word is decision 11's
+                // — the base of pool `P`'s own backing, which item D
+                // already sized, placed and reported.
+                // `check_dma_pool_mint` has already checked that `P` is
+                // bound, DMA, reachable from *this* driver's device and at
+                // least `N` bytes wide, so nothing is re-derived here.
+                if tn == "DmaPool" {
+                    let Some(crate::sema::types::TypeArg::Pool(pool)) = targs.first() else {
+                        return Err(LayoutError::new(format!(
+                            "internal error: `{name}.init`'s own `{}: {param_ty}` names no pool",
+                            p.name
+                        )));
+                    };
+                    args.push(BootInitArg::PoolBase(pool.clone()));
+                    continue;
+                }
+                if crate::eval::image_checks::is_capability_type_name(tn) {
+                    return Err(LayoutError::new(format!(
+                        "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, a capability this \
+                         image never wires explicitly — the image binding mints a `DeviceCap[D]` \
+                         and a `DmaPool[P, N]` and nothing else (plans/M7.md item H1); an \
+                         `Mmio[L]` comes from the sealed transport's own `map_partition` \
+                         (03-hardware.md §2/§9), and the rest are named by \
+                         `eval::image_checks::check_capability_substitution`. Failing closed \
+                         rather than passing a zero.",
+                        p.name
+                    )));
+                }
+                if crate::eval::image_checks::is_protocol_state_type_name(tn) {
+                    return Err(LayoutError::new(format!(
+                        "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, a bring-up state \
+                         (03-hardware.md §9). A state is produced by a transition inside the \
+                         driver, never handed to it: boot mints the `DeviceCap[D]` and the \
+                         driver's own `init` calls `claim`.",
+                        p.name
+                    )));
+                }
+                if crate::eval::image_checks::is_handle_type_name(tn) {
+                    return Err(LayoutError::new(format!(
+                        "{kind} `{name}`'s own `init` takes `{}: {param_ty}` with no \
+                         `{}=...` argument in this image — 05-library.md §9 allows an actor \
+                         handle to be substituted by type there, but boot materializes only \
+                         the arguments the image wires by name. Wire it explicitly, or wait \
+                         for handle substitution.",
+                        p.name, p.name
+                    )));
+                }
+            }
+            return Err(LayoutError::new(format!(
+                "{kind} `{name}`'s own `init` takes `{}: {param_ty}` and this image wires no \
+                 `{}=...` argument for it, so boot has no value to pass.",
+                p.name, p.name
+            )));
+        };
+        // plans/M7.md item D: a pool handle gets its own diagnostic
+        // rather than the generic "no register representation" one,
+        // because the pool it names *is* real now (declared, checked,
+        // sized and placed) and only the runtime handle value is
+        // missing — a reader deserves to be told which of the two.
+        if matches!(
+            a.value,
+            crate::eval::value::Value::ImageDecl(
+                crate::eval::image::ImageDeclRef::Pool(_)
+                    | crate::eval::image::ImageDeclRef::DmaPool(_)
+            )
+        ) {
+            return Err(LayoutError::new(format!(
+                "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}` from a \
+                 declared pool. The pool is real — bound, sized and placed in this image's \
+                 own `pooldata` section (plans/M7.md item D) — but 05-library.md §9's \
+                 \"create the initial handles\" means a runtime `own[P] T` per slot, and \
+                 nothing constructs one yet. Failing closed rather than passing the pool's \
+                 construction index as if it were a handle.",
+                a.label,
+                p.name,
+                render_type(&p.ty),
+            )));
+        }
+        let Some(word) = boot_init_arg_word(&a.value) else {
+            return Err(LayoutError::new(format!(
+                "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}`, but the \
+                 value is {} — boot passes arguments in registers (`x1..`), and this \
+                 compiler has no register representation for that shape. Failing closed \
+                 rather than passing a zero.",
+                a.label,
+                p.name,
+                render_type(&p.ty),
+                value_shape_name(&a.value)
+            )));
+        };
+        args.push(BootInitArg::Word(word));
+    }
+    Ok(Some(BootInitCall {
+        key: init.key.clone(),
+        args,
+    }))
 }
 
 /// plans/M6.md item D: `(actor name) -> (method name) -> its own 0-based
@@ -2500,7 +2967,7 @@ pub fn compute_runtime_tables(
     layout_ctx: &LayoutCtx,
     async_frames: &BTreeMap<String, u64>,
 ) -> Result<Option<RuntimeTables>, String> {
-    if graph.actors.is_empty() && async_frames.is_empty() {
+    if graph.actors.is_empty() && graph.drivers.is_empty() && async_frames.is_empty() {
         return Ok(None);
     }
     let shapes = merge_actor_pub_methods(modules, layout_ctx).map_err(|e| e.message)?;
@@ -2552,6 +3019,19 @@ pub fn compute_runtime_tables(
         });
     }
 
+    // plans/M7.md item H1: every declared `@driver` instance's own state
+    // bytes, sized by the identical `mwir::size_of` an actor's are — which
+    // is only answerable at all since this item taught it that a
+    // capability is one word.
+    let mut drivers = Vec::with_capacity(graph.drivers.len());
+    for decl in &graph.drivers {
+        let name = crate::sema::types::render_type(&decl.actor_type);
+        let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
+            .map_err(|e| format!("driver `{name}`'s own state: {e}"))?
+            as u64;
+        drivers.push(DriverRuntimeLayout { name, state_size });
+    }
+
     let free_turns: Vec<(String, u64)> = async_frames
         .iter()
         .filter(|(key, _)| turn_owner(key, &actor_names).is_none())
@@ -2568,6 +3048,9 @@ pub fn compute_runtime_tables(
             + MAILBOX_BOOKKEEPING_SIZE
             + a.frame_size;
     }
+    for d in &drivers {
+        total_bytes += d.state_size;
+    }
     for (_, area) in &free_turns {
         total_bytes += area;
     }
@@ -2577,6 +3060,7 @@ pub fn compute_runtime_tables(
 
     Ok(Some(RuntimeTables {
         actors,
+        drivers,
         free_turns,
         ready_queue_capacity,
         group_arena_capacity,
@@ -2654,15 +3138,54 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         for (key, area) in &tables.free_turns {
             push_line(out, 1, &format!("Turn fn={key} frame={area}"));
         }
+        // plans/M7.md item H1: one line per declared `@driver` instance.
+        // Deliberately its own line kind, not an `Actor ...` line with
+        // blanks: a driver has no mailbox, no ring and no turn area
+        // today (M6-D's floor), and printing `mailbox=0 slot=0 frame=0`
+        // would read as three decisions this milestone has not made.
+        for d in &tables.drivers {
+            push_line(
+                out,
+                1,
+                &format!("Driver name={} state={}", d.name, d.state_size),
+            );
+        }
         push_line(
             out,
             1,
             &format!(
-                "Totals actors={} ready_queue={} group_arena={} bytes={}",
+                "Totals actors={} drivers={} ready_queue={} group_arena={} bytes={}",
                 tables.actors.len(),
+                tables.drivers.len(),
                 tables.ready_queue_capacity,
                 tables.group_arena_capacity,
                 tables.total_bytes
+            ),
+        );
+    }
+
+    // --- plans/M7.md item H1: the device register windows, appended for
+    // the identical reason every accounting block above it is — facts
+    // only, absent entirely for an image that binds no driver.
+    //
+    // **One** line kind, deliberately — unlike item D's pool block, which
+    // emits an accounting `Pool ...` line *and* a mapping `BlkPool ...`
+    // line. A mapping line exists to be parsed by a device model, and
+    // `wrela-vmm::parse_report` has no register-window field to parse into:
+    // machine v1's virtio-blk model has no register file at all
+    // (06-machine.md §3, `wrela-vmm`'s `devices` module doc). Inventing a
+    // device-kind-prefixed second line now would be naming a protocol
+    // against a consumer that does not exist; `DeviceRegs` carries every
+    // fact such a consumer would need (base, size, which device, which
+    // driver), and item G — which gives the window's other side a writer,
+    // 03 §6's own `interrupt_status` — is where the mapping half lands.
+    for r in &layout.device_regs {
+        push_line(
+            out,
+            1,
+            &format!(
+                "DeviceRegs device=device#{} type={} driver={} base={:#x} size={}",
+                r.device, r.device_type, r.driver, r.base, r.size
             ),
         );
     }
@@ -2794,6 +3317,11 @@ pub struct ActorAddrs {
 #[derive(Debug, Clone, Default)]
 pub struct RuntimePlacement {
     pub actors: Vec<ActorAddrs>,
+    /// plans/M7.md item H1: each declared `@driver` instance's own state
+    /// address, in `RuntimeTables::drivers` order. Placed after every
+    /// actor's region and before the free-turn areas — a driver's state is
+    /// the only region it has, so there is nothing else to interleave.
+    pub drivers: Vec<u64>,
     /// fn key -> free-turn area base (`RuntimeTables::free_turns` order).
     pub free_turns: BTreeMap<String, u64>,
     /// The deterministic round-robin cursor word `rt_run_one` reads/
@@ -2851,6 +3379,11 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             turn,
         });
     }
+    let mut drivers = Vec::with_capacity(tables.drivers.len());
+    for d in &tables.drivers {
+        drivers.push(cursor);
+        cursor += d.state_size;
+    }
     let mut free_turns = BTreeMap::new();
     for (key, area) in &tables.free_turns {
         free_turns.insert(key.clone(), cursor);
@@ -2862,6 +3395,7 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     let group_arena = cursor;
     RuntimePlacement {
         actors,
+        drivers,
         free_turns,
         rr_cursor,
         group_arena,
@@ -3757,12 +4291,18 @@ pub fn resolve_runtime_test_args(
 /// derivation. Item W's own doc comment on `ActorInit` records what this
 /// used to be (a zero-argument-only call, and a rejection for everything
 /// else) and why it is not that any more.
+#[allow(clippy::too_many_arguments)]
 fn build_boot_init(
     actor_addrs: &[ActorAddrs],
+    driver_addrs: &[u64],
     state_sizes: &[u64],
+    driver_state_sizes: &[u64],
     init_calls: &[Option<BootInitCall>],
+    driver_init_calls: &[Option<BootInitCall>],
+    device_regs: &[DeviceRegs],
+    pools: &[PoolPlacement],
     start: usize,
-) -> Asm {
+) -> Result<Asm, LayoutError> {
     let mut a = Asm::new(start);
     // Called via `bl_to` from `build_entry_driver` and itself calls out
     // to a real compiled `init` below — `x30` (the link register) is
@@ -3776,26 +4316,52 @@ fn build_boot_init(
     // oracle" real-boot test this comment now documents.
     a.push(encode::enc_sub_imm(31, 31, 16, true));
     a.push(encode::enc_str_x_imm(30, 31, 0));
-    for (addrs, &size) in actor_addrs.iter().zip(state_sizes) {
+    // Every state slot is zero-filled first — actors, then drivers, in
+    // 06-machine.md §3's own "runs typed driver and actor initialization
+    // in image dependency order" spirit, applied to the one ordering fact
+    // this machine has: nothing may read a field before its `init` runs,
+    // so every slot is defined before any `init` is called.
+    let state_slots = actor_addrs
+        .iter()
+        .map(|a| a.state)
+        .zip(state_sizes.iter().copied())
+        .chain(
+            driver_addrs
+                .iter()
+                .copied()
+                .zip(driver_state_sizes.iter().copied()),
+        );
+    for (state, size) in state_slots {
         let mut w = 0u64;
         while w < size {
-            a.load_imm(9, addrs.state + w);
+            a.load_imm(9, state + w);
             a.push(encode::enc_str_x_imm(31, 9, 0)); // store xzr (unit is Copy/all-zero-valid)
             w += 8;
         }
     }
-    for (addrs, call) in actor_addrs.iter().zip(init_calls) {
+    // plans/M7.md item H1: **drivers first.** 06 §3 step 3 is explicit —
+    // "runs typed driver and actor initialization in image dependency
+    // order" — and a driver is the root of that order by construction: an
+    // actor may hold an `Actor[Driver]` handle (`golden/appliance`'s own
+    // cache actor does), and no driver may hold an actor's anything (03 §1:
+    // "a driver may export safe actor APIs but never raw capabilities").
+    let calls = driver_addrs
+        .iter()
+        .copied()
+        .zip(driver_init_calls)
+        .chain(actor_addrs.iter().map(|a| a.state).zip(init_calls));
+    for (state, call) in calls {
         let Some(call) = call else { continue };
-        for (i, word) in call.args.iter().enumerate() {
-            a.load_imm(i as u8 + 1, *word);
+        for (i, arg) in call.args.iter().enumerate() {
+            a.load_imm(i as u8 + 1, arg.resolve(device_regs, pools)?);
         }
-        a.load_imm(0, addrs.state);
+        a.load_imm(0, state);
         a.bl_call_key(&call.key);
     }
     a.push(encode::enc_ldr_x_imm(30, 31, 0));
     a.push(encode::enc_add_imm(31, 31, 16, true));
     a.push(encode::enc_ret(30));
-    a
+    Ok(a)
 }
 
 // ===========================================================================
@@ -3852,7 +4418,11 @@ struct RuntimeWiring {
     /// struct: two `img.actor(Same, ...)` calls are two calls with two
     /// argument lists.
     init_calls: Vec<Option<BootInitCall>>,
+    /// plans/M7.md item H1: the same, per declared `@driver` instance, in
+    /// `tables.drivers` order.
+    driver_init_calls: Vec<Option<BootInitCall>>,
     state_sizes: Vec<u64>,
+    driver_state_sizes: Vec<u64>,
     group_child_index: BTreeMap<String, usize>,
 }
 
@@ -3903,18 +4473,27 @@ impl RuntimeWiring {
         // struct is ordinary, legal code (`Pair.init(lo, hi)` in
         // `golden/boot-actor-reply-struct`) and is none of this pass's
         // business.
-        let init_calls = build_boot_init_calls(boot.graph, &actor_inits(boot.modules)?)?;
+        let (init_calls, driver_init_calls) =
+            build_boot_init_calls(boot.graph, &actor_inits(boot.modules)?)?;
         debug_assert_eq!(
             init_calls.len(),
             tables.actors.len(),
             "one boot `init` call per declared actor instance"
         );
+        debug_assert_eq!(
+            driver_init_calls.len(),
+            tables.drivers.len(),
+            "one boot `init` call per declared driver instance"
+        );
         let state_sizes = tables.actors.iter().map(|a| a.state_size).collect();
+        let driver_state_sizes = tables.drivers.iter().map(|d| d.state_size).collect();
         Ok(Some(RuntimeWiring {
             tables,
             dispatch,
             init_calls,
+            driver_init_calls,
             state_sizes,
+            driver_state_sizes,
             group_child_index: boot.group_child_index.clone(),
         }))
     }
@@ -3940,11 +4519,18 @@ struct RuntimeBlock {
     boot_init_start: usize,
 }
 
+/// `device_regs` is this image's own placed register windows — empty on
+/// the *sizing* pass (which runs before any section exists) and real on
+/// the address pass. Nothing about the block's length depends on it: a
+/// `load_imm` is four words whatever it loads, which is exactly the
+/// invariant both image flavors' two-pass assembly already asserts.
 fn build_runtime_block(
     wiring: &RuntimeWiring,
     placement: &RuntimePlacement,
+    device_regs: &[DeviceRegs],
+    pools: &[PoolPlacement],
     start: usize,
-) -> RuntimeBlock {
+) -> Result<RuntimeBlock, LayoutError> {
     let glue = build_runtime_glue_block(
         &wiring.tables,
         &wiring.dispatch,
@@ -3961,19 +4547,24 @@ fn build_runtime_block(
     let boot_init_start = start + words.len();
     let boot_init = build_boot_init(
         &placement.actors,
+        &placement.drivers,
         &wiring.state_sizes,
+        &wiring.driver_state_sizes,
         &wiring.init_calls,
+        &wiring.driver_init_calls,
+        device_regs,
+        pools,
         boot_init_start,
-    );
+    )?;
     words.extend(boot_init.words.iter().copied());
     relocs.extend(boot_init.relocs.iter().cloned());
-    RuntimeBlock {
+    Ok(RuntimeBlock {
         words,
         relocs,
         symbols: glue.symbols,
         rt_run_one_start: glue.rt_run_one_start,
         boot_init_start,
-    }
+    })
 }
 
 // ===========================================================================
@@ -5292,9 +5883,24 @@ pub fn layout_test_image(
     // computed below, replacing the placeholder-valued bytes in the final
     // buffer at the identical word offsets.
     let glue_start = checkpoint_start + checkpoint_asm.words.len();
+    let sizing_device_regs = place_device_regs(0, &device_register_windows(boot.as_ref())?)
+        .map(|(regs, _, _, _)| regs)
+        .unwrap_or_default();
+    let sizing_pools = place_pools_unchecked(0, &image_pool_backings(boot.as_ref())?)
+        .map(|(pools, _, _, _)| pools)
+        .unwrap_or_default();
     let dummy_block = wiring
         .as_ref()
-        .map(|w| build_runtime_block(w, &place_runtime_tables(0, &w.tables), glue_start));
+        .map(|w| {
+            build_runtime_block(
+                w,
+                &place_runtime_tables(0, &w.tables),
+                &sizing_device_regs,
+                &sizing_pools,
+                glue_start,
+            )
+        })
+        .transpose()?;
     let runtime_words_len = dummy_block.as_ref().map(|b| b.words.len()).unwrap_or(0);
     let rt_run_one_start = dummy_block.as_ref().map(|b| b.rt_run_one_start);
     let boot_init_start_opt = dummy_block.as_ref().map(|b| b.boot_init_start);
@@ -5384,8 +5990,32 @@ pub fn layout_test_image(
     // the section table exists, so `place_pools` can check its own base
     // against every section already placed.
     let pool_backings = image_pool_backings(boot.as_ref())?;
+
+    // plans/M7.md item H1: the same `devregs` reservation `layout_program`
+    // makes, at the same point in the same order (after `rtdata`, before
+    // `pooldata`). Placed *here*, before the runtime block's real-address
+    // pass below, because that pass is what bakes each `DeviceCap[D]`
+    // argument word into boot's own `init` call.
+    let device_windows = device_register_windows(boot.as_ref())?;
+    let placed_regs = place_device_regs(cursor, &device_windows);
+    let device_regs: Vec<DeviceRegs> = match &placed_regs {
+        Some((regs, _, _, end)) => {
+            cursor = *end;
+            regs.clone()
+        }
+        None => Vec::new(),
+    };
     let pool_cursor = cursor;
     let _ = cursor;
+    // The pools' own bases, needed *now* rather than after the section
+    // table exists, for the same reason `device_regs` is: item H1 made a
+    // `DmaPool[P, N]` `init` argument a real address word, and the
+    // boot-init block that carries it is assembled below. `place_pools`
+    // is called again once `sections` exists — same fn, same cursor, same
+    // backings, so the two placements are the same placement.
+    let early_pools = place_pools_unchecked(pool_cursor, &pool_backings)
+        .map(|(pools, _, _, _)| pools)
+        .unwrap_or_default();
 
     // Now that `rtdata_base` is real, rebuild the address-dependent
     // fragments (glue routines + boot-init) at the identical word offsets
@@ -5413,7 +6043,8 @@ pub fn layout_test_image(
                     harness_words[checkpoint_start + i] = *word;
                 }
             }
-            let real_block = build_runtime_block(w, &placement, glue_start);
+            let real_block =
+                build_runtime_block(w, &placement, &device_regs, &early_pools, glue_start)?;
             if real_block.words.len() != runtime_words_len {
                 return Err(LayoutError::new(
                     "internal error: the runtime block's own word count changed between its \
@@ -5483,6 +6114,13 @@ pub fn layout_test_image(
             name: "rtdata",
             base: rb,
             size: tables.total_bytes,
+        });
+    }
+    if let Some((_, base, size, _)) = &placed_regs {
+        sections.push(Section {
+            name: "devregs",
+            base: *base,
+            size: *size,
         });
     }
     let placed_pools = place_pools(pool_cursor, &sections, &pool_backings)?;
@@ -5646,6 +6284,10 @@ pub fn layout_test_image(
         pad_to(&mut blob, image_base, rb);
         blob.resize(blob.len() + tables.total_bytes as usize, 0);
     }
+    if let Some((_, base, size, _)) = &placed_regs {
+        pad_to(&mut blob, image_base, *base);
+        blob.resize(blob.len() + *size as usize, 0);
+    }
     if let Some((_, base, size, _)) = &placed_pools {
         pad_to(&mut blob, image_base, *base);
         blob.resize(blob.len() + *size as usize, 0);
@@ -5653,6 +6295,7 @@ pub fn layout_test_image(
 
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
     verify_pool_windows(&sections, &pools)?;
+    verify_device_windows(&sections, &device_regs)?;
 
     Ok(ImageLayout {
         blob,
@@ -5663,6 +6306,7 @@ pub fn layout_test_image(
         // sub-note's own "staged, named work" is this commit).
         runtime: runtime_tables,
         pools,
+        device_regs,
     })
 }
 
@@ -5926,10 +6570,13 @@ pub struct Store:
                 wired("lo", Type::U8, Value::U8(200)),
             ],
         ));
-        let calls = build_boot_init_calls(&graph, &inits).unwrap();
+        let (calls, _) = build_boot_init_calls(&graph, &inits).unwrap();
         let call = calls[0].as_ref().expect("Store declares an `init`");
         assert_eq!(call.key, "Store.init");
-        assert_eq!(call.args, vec![200, 40000]);
+        assert_eq!(
+            call.args,
+            vec![BootInitArg::Word(200), BootInitArg::Word(40000)]
+        );
     }
 
     #[test]
@@ -5945,7 +6592,7 @@ pub struct Store:
         let inits = actor_inits(&modules).unwrap();
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", Some(4)));
-        let calls = build_boot_init_calls(&graph, &inits).unwrap();
+        let (calls, _) = build_boot_init_calls(&graph, &inits).unwrap();
         assert!(
             calls[0].is_none(),
             "no `init` means the zero-fill is the whole construction"
@@ -6015,17 +6662,10 @@ pub struct Store:
         assert!(build_boot_init_calls(&graph, &inits).is_ok());
     }
 
-    #[test]
-    fn a_capability_typed_init_param_fails_closed_naming_item_a() {
+    /// One `init` taking one capability parameter of type `cap_ty`.
+    fn cap_init(cap_ty: crate::sema::types::Type) -> BTreeMap<String, ActorInit> {
         use crate::sema::types::{DeclParam, Type};
         use crate::syntax::ast::AccessMode;
-        // Unrepresentable from source — none of `DeviceCap`/`DmaPool`/
-        // `Mmio`/`IrqCap` resolves as a type annotation anywhere in this
-        // compiler yet (`sema::types::resolve_named`'s own fixed arm
-        // list), exactly as `eval::image_checks`'s own substitution half
-        // records. Recognized defensively by name anyway, and unit-tested
-        // here for the same reason that half is: so the arm is real code
-        // on the day item A mints one, not a comment.
         let mut inits = BTreeMap::new();
         inits.insert(
             "Blk".to_string(),
@@ -6034,22 +6674,120 @@ pub struct Store:
                 params: vec![DeclParam {
                     mode: AccessMode::Take,
                     name: "cap".to_string(),
-                    ty: Type::Named(
-                        "DeviceCap".to_string(),
-                        vec![crate::sema::types::TypeArg::Type(Type::Named(
-                            "VirtioBlock".to_string(),
-                            vec![],
-                        ))],
-                    ),
+                    ty: cap_ty,
                 }],
                 ret: Type::Unit,
             },
         );
+        inits
+    }
+
+    fn named1(name: &str, arg: &str) -> crate::sema::types::Type {
+        use crate::sema::types::{Type, TypeArg};
+        Type::Named(
+            name.to_string(),
+            vec![TypeArg::Type(Type::Named(arg.to_string(), vec![]))],
+        )
+    }
+
+    /// plans/M7.md item H1: **the mint, at the one place it becomes a
+    /// word.** A `@driver`'s `DeviceCap[D]` parameter carries no explicit
+    /// image argument at all — 05-library.md §9 substitutes it — so the
+    /// only thing that can give it a value is the `device=` binding, and
+    /// the value is decision 11's: that device's own register-window base.
+    ///
+    /// Unit-tested rather than golden-tested for the *unresolved* half:
+    /// `BootInitArg::DeviceRegsBase` deliberately survives derivation
+    /// without an address, because `build_boot_init_calls` runs before any
+    /// section is placed. `golden/boot-device-claim` is the other half —
+    /// the same argument, resolved, executed and asserted on real
+    /// hardware.
+    #[test]
+    fn a_driver_device_cap_materializes_its_devices_register_window() {
+        let inits = cap_init(named1("DeviceCap", "VirtioBlock"));
+        let mut graph = ImageGraph::default();
+        graph.devices.push(crate::eval::image::DeviceDecl {
+            device_type: crate::sema::types::Type::Named("VirtioBlock".to_string(), vec![]),
+            args: Vec::new(),
+        });
+        graph.drivers.push(crate::eval::image::DriverDecl {
+            actor_type: crate::sema::types::Type::Named("Blk".to_string(), vec![]),
+            args: vec![wired(
+                "device",
+                crate::sema::types::Type::Named("Image".to_string(), vec![]),
+                crate::eval::value::Value::ImageDecl(crate::eval::image::ImageDeclRef::Device(0)),
+            )],
+        });
+        let (actors, drivers) = build_boot_init_calls(&graph, &inits).unwrap();
+        assert!(actors.is_empty());
+        let call = drivers[0].as_ref().expect("the driver declares an `init`");
+        assert_eq!(call.args, vec![BootInitArg::DeviceRegsBase(0)]);
+        // And the resolution step itself: the word is the window's base,
+        // never a zero, and a missing window is an internal error rather
+        // than a silent one.
+        let regs = vec![DeviceRegs {
+            device: 0,
+            device_type: "VirtioBlock".to_string(),
+            driver: "Blk".to_string(),
+            base: 0x4050_1234,
+            size: 8,
+        }];
+        assert_eq!(call.args[0].resolve(&regs, &[]).unwrap(), 0x4050_1234);
+        let err = call.args[0].resolve(&[], &[]).unwrap_err();
+        assert!(
+            err.message.contains("no placed register window"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// The same parameter on an `img.actor(...)` declaration, which binds
+    /// no device at all — a shape `eval::image_checks` rejects first
+    /// (`check_capability_substitution`'s own actor arm), restated here so
+    /// boot never substitutes a zero if it ever reached this pass alone.
+    #[test]
+    fn a_device_cap_with_no_device_binding_fails_closed() {
+        let inits = cap_init(named1("DeviceCap", "VirtioBlock"));
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Blk", Some(4)));
         let err = build_boot_init_calls(&graph, &inits).unwrap_err();
-        assert!(err.message.contains("capability"), "{}", err.message);
-        assert!(err.message.contains("item A"), "{}", err.message);
+        assert!(err.message.contains("binds no device"), "{}", err.message);
+    }
+
+    /// Every capability that is *not* a `DeviceCap[D]`, and every bring-up
+    /// state, still fails closed here — the mint is one specific thing,
+    /// not "capabilities work now". `Mmio[L]` in particular names where it
+    /// really comes from (03 §2/§9's `map_partition`), which is the stale
+    /// half decision 10 asked H1 to fix.
+    #[test]
+    fn every_other_capability_and_every_state_still_fails_closed() {
+        for (ty, needle) in [
+            (named1("Mmio", "VirtioIrqMmio"), "map_partition"),
+            (named1("IrqCap", "V"), "check_capability_substitution"),
+            (
+                named1("DriverClaimedDevice", "VirtioBlock"),
+                "produced by a transition inside the driver",
+            ),
+        ] {
+            let inits = cap_init(ty);
+            let mut graph = ImageGraph::default();
+            graph.devices.push(crate::eval::image::DeviceDecl {
+                device_type: crate::sema::types::Type::Named("VirtioBlock".to_string(), vec![]),
+                args: Vec::new(),
+            });
+            graph.drivers.push(crate::eval::image::DriverDecl {
+                actor_type: crate::sema::types::Type::Named("Blk".to_string(), vec![]),
+                args: vec![wired(
+                    "device",
+                    crate::sema::types::Type::Named("Image".to_string(), vec![]),
+                    crate::eval::value::Value::ImageDecl(crate::eval::image::ImageDeclRef::Device(
+                        0,
+                    )),
+                )],
+            });
+            let err = build_boot_init_calls(&graph, &inits).unwrap_err();
+            assert!(err.message.contains(needle), "{}", err.message);
+        }
     }
 
     #[test]
@@ -6117,11 +6855,11 @@ pub struct Store:
         let calls = vec![
             Some(BootInitCall {
                 key: "A.init".to_string(),
-                args: vec![7],
+                args: vec![BootInitArg::Word(7)],
             }),
             None,
         ];
-        let asm = build_boot_init(&addrs, &[8, 8], &calls, 0);
+        let asm = build_boot_init(&addrs, &[], &[8, 8], &[], &calls, &[], &[], &[], 0).unwrap();
         let bl_word = asm.relocs.iter().find_map(|r| match r {
             Reloc::Call { word, key } if key == "A.init" => Some(*word),
             _ => None,
@@ -6463,6 +7201,7 @@ fn two():
                 size: 0x30,
             }],
             runtime: None,
+            device_regs: Vec::new(),
             pools: vec![
                 PoolPlacement {
                     backing: backing("Control", 0x10, 8, Some(0)),

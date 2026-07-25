@@ -27,4 +27,4 @@ ImageReport v0
   Turn fn=fetch_a frame=296
   Turn fn=fetch_b frame=296
   Turn fn=test_join frame=440
-  Totals actors=1 ready_queue=2 group_arena=1 bytes=1328
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=1328

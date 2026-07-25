@@ -24,4 +24,4 @@ ImageReport v0
   Section name=rtdata base=0x405005d8 size=368
   Entry base=0x40500000
   Actor name=Store mailbox=16 slot=16 frame=56 state=8
-  Totals actors=1 ready_queue=2 group_arena=0 bytes=368
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=368
