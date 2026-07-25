@@ -284,6 +284,470 @@ pub fn classify(program: &TypedProgram) -> Legality {
     Legality { verdicts }
 }
 
+// --- provenance: the same graph, a second color (plans/M7.md item A) -------
+//
+// 03-hardware.md §1: "The compiler checks provenance transitively — a
+// function that touches MMIO, DMA, or IRQ state must be reachable through
+// the owning driver's authority."
+//
+// plans/M7.md decision 3: "Provenance ... is the same whole-graph
+// reachability `eval::legal::classify` already computes for comptime
+// legality — reuse its shape, a second color." That is taken literally.
+// Same `build_nodes` graph, same callee edges, same fixed point; only the
+// direction and the seed differ. Legality propagates *backwards* along
+// edges (a caller inherits its callee's illegality); provenance
+// propagates *forwards* from a seed (a callee inherits its caller's
+// authority), which is exactly what "reachable through" means.
+//
+// ## What "touches MMIO, DMA, or IRQ state" means at this milestone
+//
+// Precisely: **the fn's own signature or body names a capability-typed
+// value**. Nothing narrower is available and nothing wider would be
+// honest, because at item A there is no MMIO access, no DMA operation and
+// no IRQ binding in the language at all — item C owns register access,
+// item D owns pools, item G owns vectors. What a fn *can* do today is
+// hold the authority: take an `Mmio[L]`/`DeviceCap[D]`/`IrqCap[V]`/
+// `DmaPool[P, N]` parameter, or evaluate an expression of one of those
+// types (reading a field, passing one along, binding one to a local).
+//
+// This is not a placeholder for the real rule; it is the real rule's
+// *base*. Holding the authority is the precondition for every operation
+// C/D/G will add, so a fn that passes this check is exactly the set those
+// operations will be allowed in. **How C and D plug in**: each adds its
+// operation to `hardware_touch_reason` below — an MMIO load/store node, a
+// DMA publish/reclaim node — as a second `Some(...)` arm alongside the
+// type-based one. Nothing else changes: the seed, the propagation, the
+// diagnostic and the roots are already whole. The arm is a match on the
+// typed node kind, which is why `expr_hardware_reason` is written as an
+// exhaustive match over `TypedExprKind` exactly like `expr_illegal_reason`
+// is — a new node kind for an MMIO access will not compile until it
+// answers this question too.
+//
+// ## The rule, and the one reading it takes
+//
+// A node is **authorized** if it is a `@driver`'s own member (the driver
+// owns the capability) or is reachable from one through the callee graph.
+// A node that touches and is not authorized is rejected.
+//
+// "Reachable through the owning driver's authority" is read as
+// *at-least-one path from some driver*, not *every path from a driver*.
+// That is sound rather than lax, and here is why: a caller that is not
+// itself authorized cannot construct the capability argument such a call
+// needs — no source construct produces one
+// (`hardware.capabilities.unforgeable`), so its only source would be that
+// caller's own parameter or field, which makes the *caller* a touching
+// node subject to this same rule. The chain therefore bottoms out at a
+// driver or at a rejection, whichever comes first.
+//
+// ## Scope boundary, stated rather than discovered
+//
+// This runs per module, because the callee graph does: a `CalleeKey`
+// names a local spelling, and an imported callee resolves to no node in
+// the importing module's graph (`sema::check_program_typed`'s splice
+// copies a declaration's *shape* under the local name, not an edge). So a
+// capability-touching helper in a module that declares no `@driver` is
+// rejected even if a driver in another module calls it. That is the
+// fail-closed direction — the alternative (merging every module's graph
+// under bare keys) would silently *accept* a touching fn merely because
+// some other module happened to declare a same-named fn that a driver
+// calls. The diagnostic says "in this module" so the boundary is in the
+// message, not only in the ledger.
+
+/// One provenance check's declaration-side inputs, computed by
+/// `sema::types::capability_authority` (which owns the walk that answers
+/// all three) and handed here as data.
+pub type Authority = crate::sema::types::CapabilityAuthority;
+
+/// 03-hardware.md §1's provenance sentence, checked. Fail-fast in
+/// `BTreeMap` key order, like every other whole-program check here.
+pub fn check_provenance(program: &TypedProgram, authority: &Authority) -> Result<(), SemaError> {
+    let nodes = build_nodes(program);
+    let touches = hardware_touches(program, authority);
+    if touches.is_empty() {
+        return Ok(()); // no capability anywhere: nothing to authorize.
+    }
+
+    // Forward reachability from the driver roots. Same dumb whole-pass
+    // fixed point `classify` uses, for the same reason: "authorized" is
+    // monotonic, so a finite graph settles in at most `nodes.len()`
+    // passes, and no visited set is needed.
+    let mut authorized: BTreeSet<String> = authority
+        .roots
+        .iter()
+        .filter(|k| nodes.contains_key(*k))
+        .cloned()
+        .collect();
+    loop {
+        let mut changed = false;
+        for (key, info) in &nodes {
+            if !authorized.contains(key) {
+                continue;
+            }
+            for callee in &info.callees {
+                if authorized.insert(callee.clone()) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for (key, reason) in &touches {
+        if authorized.contains(key) {
+            continue;
+        }
+        let span = authority.spans.get(key).copied();
+        return Err(SemaError {
+            category: "type",
+            message: format!(
+                "`{key}` touches hardware state ({reason}) but is not reachable through any \
+                 `@driver`'s authority in this module — 03-hardware.md §1: a function that \
+                 touches MMIO, DMA, or IRQ state must be reachable through the owning driver's \
+                 authority"
+            ),
+            line: span.map(|s| s.line).unwrap_or(0),
+            col: span.map(|s| s.col).unwrap_or(0),
+            extra_lines: Vec::new(),
+            omit_location: span.is_none(),
+            missing_method: None,
+        });
+    }
+    Ok(())
+}
+
+/// Every node key that touches hardware state, with the reason naming
+/// what it touched — same key namespace `build_nodes` uses, so the two
+/// maps are directly comparable.
+fn hardware_touches(program: &TypedProgram, authority: &Authority) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (name, f) in &program.fns {
+        note_touch(&mut out, name.clone(), f, authority);
+    }
+    for (struct_name, s) in &program.structs {
+        for (member, f) in &s.methods {
+            note_touch(&mut out, format!("{struct_name}.{member}"), f, authority);
+        }
+        for (member, f) in &s.assoc_fns {
+            note_touch(&mut out, format!("{struct_name}.{member}"), f, authority);
+        }
+        if let Some(f) = &s.init {
+            note_touch(&mut out, format!("{struct_name}.init"), f, authority);
+        }
+    }
+    for (key, inst) in &program.instantiations {
+        match inst {
+            TypedInstantiation::Fn(f) => note_touch(&mut out, key.clone(), f, authority),
+            TypedInstantiation::Struct(s) => {
+                for (member, f) in &s.methods {
+                    note_touch(&mut out, format!("{key}.{member}"), f, authority);
+                }
+                for (member, f) in &s.assoc_fns {
+                    note_touch(&mut out, format!("{key}.{member}"), f, authority);
+                }
+                if let Some(f) = &s.init {
+                    note_touch(&mut out, format!("{key}.init"), f, authority);
+                }
+            }
+            TypedInstantiation::Enum => {}
+        }
+    }
+    out
+}
+
+fn note_touch(out: &mut BTreeMap<String, String>, key: String, f: &TypedFn, authority: &Authority) {
+    // The signature first: a capability parameter is the plainest form of
+    // "this fn holds the authority", and naming the parameter makes the
+    // diagnostic checkable on its face.
+    for p in &f.params {
+        if let Some(found) = capability_in_type(&p.ty, authority) {
+            out.insert(key, format!("its own `{}: {found}`", p.name));
+            return;
+        }
+    }
+    // Then the body. A receiver is deliberately *not* consulted: a
+    // `@driver`'s own methods are roots anyway, and a `read self` on a
+    // capability-holding struct would otherwise mark every one of them
+    // with a less informative reason than whatever their body actually
+    // does.
+    let mut scan = BodyScan::default();
+    scan_hardware_stmts(&f.body, authority, &mut scan);
+    if let Some(reason) = scan.illegal {
+        out.insert(key, reason);
+    }
+}
+
+/// The capability `ty` names at any nesting, rendered — or `None`.
+/// Composites recurse; a *named* type is answered by
+/// `authority.capability_bearing`, the flattened set
+/// `sema::types::capability_authority` already computed with the walk
+/// that owns struct-field recursion, so this is not a second copy of that
+/// rule.
+fn capability_in_type(ty: &crate::sema::types::Type, authority: &Authority) -> Option<String> {
+    use crate::sema::types::{Type, TypeArg, render_type};
+    match ty {
+        Type::Named(name, _)
+            if crate::eval::image_checks::is_capability_type_name(name)
+                || authority.capability_bearing.contains(name) =>
+        {
+            Some(render_type(ty))
+        }
+        Type::Array(elem, _) => capability_in_type(elem, authority),
+        Type::Tuple(elems) => elems.iter().find_map(|e| capability_in_type(e, authority)),
+        Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+            capability_in_type(inner, authority)
+        }
+        Type::Result(ok, err) => {
+            capability_in_type(ok, authority).or_else(|| capability_in_type(err, authority))
+        }
+        Type::Fn(params, ret) => params
+            .iter()
+            .find_map(|(_, t)| capability_in_type(t, authority))
+            .or_else(|| capability_in_type(ret, authority)),
+        Type::Named(_, targs) => targs.iter().find_map(|a| match a {
+            TypeArg::Type(t) => capability_in_type(t, authority),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+/// Does this typed expression itself touch hardware state? Exhaustive
+/// over `TypedExprKind` for the same reason `expr_illegal_reason` is: the
+/// operations plans/M7.md items C and D add (an MMIO load/store, a DMA
+/// publish) will be new node kinds, and this match must stop compiling
+/// until each answers here. Today exactly one answer is possible — the
+/// expression's *type* is a capability — because no hardware operation is
+/// representable yet.
+fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> {
+    let by_type = capability_in_type(&e.ty, authority).map(|found| format!("a `{found}` value"));
+    match &e.kind {
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::Local(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::FnRef(_)
+        | TypedExprKind::Field(..)
+        | TypedExprKind::Index(..)
+        | TypedExprKind::Call { .. }
+        | TypedExprKind::CallValue(..)
+        | TypedExprKind::ToScalar(_)
+        | TypedExprKind::Neg(_)
+        | TypedExprKind::BitNot(_)
+        | TypedExprKind::Take(_)
+        | TypedExprKind::Try(..)
+        | TypedExprKind::Binary(..)
+        | TypedExprKind::OpCall(..)
+        | TypedExprKind::Is(..)
+        | TypedExprKind::Not(_)
+        | TypedExprKind::And(..)
+        | TypedExprKind::Or(..)
+        | TypedExprKind::EnumConstruct { .. }
+        | TypedExprKind::Closure { .. }
+        | TypedExprKind::Tuple(_)
+        | TypedExprKind::List(_)
+        | TypedExprKind::StructLiteral { .. }
+        | TypedExprKind::Panic(_)
+        | TypedExprKind::PoolName(_)
+        | TypedExprKind::Intrinsic { .. }
+        | TypedExprKind::Await(_)
+        | TypedExprKind::Send(_)
+        | TypedExprKind::GroupChild(_) => by_type,
+    }
+}
+
+/// The same body walk `scan_stmts` performs, asking the hardware question
+/// instead of the legality one. Deliberately a second walk rather than a
+/// second field on `BodyScan`: `classify`'s scan runs on every program and
+/// this one only ever runs when a capability exists somewhere, and folding
+/// the two would make `classify`'s hot path pay for a rule it does not
+/// use. A closure's body folds into its enclosing fn here for the identical
+/// reason it does there (plans/M3.md decision 4) — which is also how 03 §1's
+/// "or captures" is covered for a *driver*'s own closures.
+fn scan_hardware_stmts(stmts: &[TypedStmt], authority: &Authority, scan: &mut BodyScan) {
+    for s in stmts {
+        scan_hardware_stmt(s, authority, scan);
+    }
+}
+
+fn scan_hardware_stmt(stmt: &TypedStmt, authority: &Authority, scan: &mut BodyScan) {
+    match &stmt.kind {
+        TypedStmtKind::Let { value, .. } => scan_hardware_expr(value, authority, scan),
+        TypedStmtKind::Assign { target, value } => {
+            scan_hardware_expr(target, authority, scan);
+            scan_hardware_expr(value, authority, scan);
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            scan_hardware_expr(cond, authority, scan);
+            scan_hardware_stmts(then_branch, authority, scan);
+            for elif in elifs {
+                scan_hardware_expr(&elif.cond, authority, scan);
+                scan_hardware_stmts(&elif.body, authority, scan);
+            }
+            if let Some(b) = else_branch {
+                scan_hardware_stmts(b, authority, scan);
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            scan_hardware_expr(scrutinee, authority, scan);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_hardware_expr(g, authority, scan);
+                }
+                scan_hardware_stmts(&arm.body, authority, scan);
+            }
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(from, to, _) => {
+                    scan_hardware_expr(from, authority, scan);
+                    scan_hardware_expr(to, authority, scan);
+                }
+                TypedForIter::Expr(e) => scan_hardware_expr(e, authority, scan),
+            }
+            scan_hardware_stmts(body, authority, scan);
+        }
+        TypedStmtKind::While { cond, body } => {
+            scan_hardware_expr(cond, authority, scan);
+            scan_hardware_stmts(body, authority, scan);
+        }
+        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
+        TypedStmtKind::Return(value) => {
+            if let Some(e) = value {
+                scan_hardware_expr(e, authority, scan);
+            }
+        }
+        TypedStmtKind::Assert { cond, message } => {
+            scan_hardware_expr(cond, authority, scan);
+            if let Some(m) = message {
+                scan_hardware_expr(m, authority, scan);
+            }
+        }
+        TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            scan_hardware_expr(cond, authority, scan);
+            if let Some(m) = message {
+                scan_hardware_expr(m, authority, scan);
+            }
+        }
+        TypedStmtKind::Defer(body) => match body {
+            TypedDeferBody::Expr(e) => scan_hardware_expr(e, authority, scan),
+            TypedDeferBody::Suite(stmts) => scan_hardware_stmts(stmts, authority, scan),
+        },
+        TypedStmtKind::ExprStmt(e) => scan_hardware_expr(e, authority, scan),
+        TypedStmtKind::BareSend { expr, .. } => scan_hardware_expr(expr, authority, scan),
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                scan_hardware_expr(c, authority, scan);
+            }
+            if let Some(d) = deadline {
+                scan_hardware_expr(d, authority, scan);
+            }
+            scan_hardware_stmts(body, authority, scan);
+        }
+    }
+}
+
+fn scan_hardware_expr(e: &TypedExpr, authority: &Authority, scan: &mut BodyScan) {
+    if let Some(reason) = expr_hardware_reason(e, authority) {
+        if scan.illegal.is_none() {
+            scan.illegal = Some(reason);
+        }
+    }
+    match &e.kind {
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::Local(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::FnRef(_)
+        | TypedExprKind::PoolName(_)
+        | TypedExprKind::GroupChild(_) => {}
+        TypedExprKind::Field(base, _) => scan_hardware_expr(base, authority, scan),
+        TypedExprKind::Index(base, idx) => {
+            scan_hardware_expr(base, authority, scan);
+            scan_hardware_expr(idx, authority, scan);
+        }
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                scan_hardware_expr(r, authority, scan);
+            }
+            for a in args.iter().flatten() {
+                scan_hardware_expr(a, authority, scan);
+            }
+        }
+        TypedExprKind::CallValue(callee, args) => {
+            scan_hardware_expr(callee, authority, scan);
+            for a in args {
+                scan_hardware_expr(a, authority, scan);
+            }
+        }
+        TypedExprKind::ToScalar(inner)
+        | TypedExprKind::Neg(inner)
+        | TypedExprKind::BitNot(inner)
+        | TypedExprKind::Take(inner)
+        | TypedExprKind::Not(inner)
+        | TypedExprKind::Panic(inner)
+        | TypedExprKind::Await(inner)
+        | TypedExprKind::Send(inner) => scan_hardware_expr(inner, authority, scan),
+        TypedExprKind::Try(inner, _) => scan_hardware_expr(inner, authority, scan),
+        TypedExprKind::Binary(_, l, r)
+        | TypedExprKind::OpCall(_, l, r)
+        | TypedExprKind::And(l, r)
+        | TypedExprKind::Or(l, r) => {
+            scan_hardware_expr(l, authority, scan);
+            scan_hardware_expr(r, authority, scan);
+        }
+        TypedExprKind::Is(inner, _) => scan_hardware_expr(inner, authority, scan),
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args {
+                scan_hardware_expr(a, authority, scan);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => match body {
+            TypedClosureBody::Expr(e) => scan_hardware_expr(e, authority, scan),
+            TypedClosureBody::Suite(stmts) => scan_hardware_stmts(stmts, authority, scan),
+        },
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                scan_hardware_expr(i, authority, scan);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                scan_hardware_expr(v, authority, scan);
+            }
+        }
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                scan_hardware_expr(r, authority, scan);
+            }
+            for (_, a) in args {
+                scan_hardware_expr(a, authority, scan);
+            }
+        }
+    }
+}
+
 // --- the callee graph: one node per classifiable key -----------------------
 
 /// One graph node: a fn/method/instantiation body's own direct callees
@@ -1008,5 +1472,96 @@ pub fn double(x: u64) -> u64:
         assert!(
             require_legal(&legality, "nonexistent", "comptime assert", Span::default()).is_ok()
         );
+    }
+
+    // --- provenance (plans/M7.md item A, 03-hardware.md §1) --------------
+    //
+    // Driven through the real `sema::check` pipeline, like every test
+    // above: `check_provenance` is wired into it, so these assert the
+    // rule as a user meets it rather than a hand-built graph.
+
+    fn provenance(src: &str) -> Result<(), String> {
+        let tokens = lexer::lex(src).expect("test source must lex");
+        let module = parser::parse(tokens).expect("test source must parse");
+        sema::check(&module, "test.wr").map_err(|e| e.message)
+    }
+
+    const DRIVER_PRELUDE: &str = "module t\n\n\
+         @layout(mmio, endian=little)\n\
+         struct Regs:\n\
+         \x20   @offset(0x000) status: ReadOnly[u32]\n\n\
+         @driver\n\
+         pub struct D:\n\
+         \x20   n: u64\n\n";
+
+    /// The transitive half of the sentence: "reachable through" is a
+    /// closure, not a direct-call check. Two hops from the driver.
+    #[test]
+    fn authority_reaches_transitively_through_the_callee_graph() {
+        let src = format!(
+            "{DRIVER_PRELUDE}\
+             \x20   fn service(read self, read m: Mmio[Regs]) -> u64:\n\
+             \x20       return hop_one(m)\n\n\
+             fn hop_one(read m: Mmio[Regs]) -> u64:\n\
+             \x20   return hop_two(m)\n\n\
+             fn hop_two(read m: Mmio[Regs]) -> u64:\n\
+             \x20   return 1\n"
+        );
+        assert_eq!(provenance(&src), Ok(()));
+    }
+
+    /// ...and the same graph with the middle hop's own call removed: the
+    /// tail is now unreachable, and the *tail* is what is named — not the
+    /// still-reachable hop that stopped calling it.
+    #[test]
+    fn a_severed_tail_is_rejected_and_named() {
+        let src = format!(
+            "{DRIVER_PRELUDE}\
+             \x20   fn service(read self, read m: Mmio[Regs]) -> u64:\n\
+             \x20       return hop_one(m)\n\n\
+             fn hop_one(read m: Mmio[Regs]) -> u64:\n\
+             \x20   return 2\n\n\
+             fn hop_two(read m: Mmio[Regs]) -> u64:\n\
+             \x20   return 1\n"
+        );
+        let err = provenance(&src).expect_err("the severed tail must be rejected");
+        assert!(err.starts_with("`hop_two` touches hardware state"), "{err}");
+    }
+
+    /// A program with no capability anywhere must not pay for this rule,
+    /// and — more to the point — must not be *changed* by it. Every
+    /// pre-item-A program is this case.
+    #[test]
+    fn a_program_with_no_capability_is_untouched() {
+        assert_eq!(
+            provenance(
+                "module t\n\nfn helper() -> u64:\n    return 1\n\n\
+                 pub fn use_it() -> u64:\n    return helper()\n"
+            ),
+            Ok(())
+        );
+    }
+
+    /// An `@actor` is not an authority root, only a `@driver` is —
+    /// 03-hardware.md §1 says "the owning driver's authority", and the
+    /// containment rule that keeps an actor from holding one would be
+    /// pointless if calling out of an actor conferred authority anyway.
+    #[test]
+    fn an_actor_is_not_an_authority_root() {
+        let src = "module t\n\n\
+             @layout(mmio, endian=little)\n\
+             struct Regs:\n\
+             \x20   @offset(0x000) status: ReadOnly[u32]\n\n\
+             @actor\n\
+             pub struct A:\n\
+             \x20   n: u64\n\n\
+             \x20   init(mut self):\n\
+             \x20       self.n = 0\n\n\
+             \x20   fn call_it(read self) -> u64:\n\
+             \x20       return 0\n\n\
+             fn holds(read m: Mmio[Regs]) -> u64:\n\
+             \x20   return 1\n";
+        let err = provenance(src).expect_err("an actor confers no authority");
+        assert!(err.starts_with("`holds` touches hardware state"), "{err}");
     }
 }

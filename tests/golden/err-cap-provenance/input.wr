@@ -1,0 +1,30 @@
+module examples.err_cap_provenance
+
+# plans/M7.md item A, 03-hardware.md §1: "The compiler checks provenance
+# transitively — a function that touches MMIO, DMA, or IRQ state must be
+# reachable through the owning driver's authority."
+#
+# `golden/check-capabilities` is this file with one line more: there,
+# `BlkDriver.service` calls `ack_vector`, so the helper is reachable
+# through the driver's authority and accepted. Here the driver's own
+# method returns without calling it, and the same declaration is a fn
+# holding hardware authority that no driver reaches.
+#
+# What "touches" means at this milestone, and why: item C owns MMIO
+# access, item D owns DMA and item G owns IRQ binding, so *no hardware
+# operation is representable in the language yet*. What a fn can do today
+# is hold the authority — take a capability parameter, or evaluate an
+# expression of capability type. That is the base of the real rule, not a
+# stand-in for it: holding the authority is the precondition for every
+# operation C/D/G add, so the set of fns this check admits is exactly the
+# set those operations will be allowed in.
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    fn service(read self) -> u64:
+        return self.sectors
+
+fn ack_vector(read vector: IrqCap[u32]) -> u64:
+    return 1

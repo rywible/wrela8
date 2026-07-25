@@ -196,6 +196,18 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     matches::check(&specialized, &decl_items, &mctx)?;
     program.instantiations = generics::check(&specialized, &decl_items, &mctx, path)?;
     crate::eval::check_comptime(&program)?;
+    // plans/M7.md item A, decision 3: 03-hardware.md §1's provenance
+    // sentence, checked over the same whole-graph reachability
+    // `eval::legal` already computes for comptime legality. It runs here,
+    // after `generics::check` has filled `instantiations` (an
+    // instantiation is a graph node too) and after the typed program is
+    // otherwise complete, for exactly the reason `send_proof` runs where
+    // it does: this is a whole-program fact about an already-finished
+    // program, not a per-item check.
+    crate::eval::legal::check_provenance(
+        &program,
+        &types::capability_authority(&specialized, &decl_items),
+    )?;
     // plans/M6.md item G, decision 5: the bare `send` statement is the
     // language's one proof-conditioned form, and the proof is a
     // *whole-image* fact (a mailbox's declared capacity lives in the
@@ -418,6 +430,18 @@ pub fn check_program_typed(
         let path = paths.get(key).unwrap_or(&empty_path);
         program.instantiations = generics::check(module, decl_items, mctx, path)?;
         crate::eval::check_comptime(&program)?;
+        // plans/M7.md item A: the whole-closure half of the provenance
+        // check, per module for the same reason every pass in this loop
+        // is — and, unlike them, with a real consequence, since the
+        // callee graph a `CalleeKey` names is module-local. See
+        // `eval::legal`'s own provenance section: a capability-touching
+        // helper in a module that declares no `@driver` is rejected even
+        // if a driver elsewhere calls it, which is the fail-closed
+        // direction, and the diagnostic says "in this module".
+        crate::eval::legal::check_provenance(
+            &program,
+            &types::capability_authority(module, decl_items),
+        )?;
         programs.insert(key.clone(), program);
     }
 

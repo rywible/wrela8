@@ -21,10 +21,14 @@ module examples.check_capabilities
 #     visible in the dump as `Struct RegsBundle resource` — a plain data
 #     struct that holds one is a resource by composition, which is what
 #     makes the containment walk see through a wrapper.
-#   - Provenance accepts what it should: `ack_vector` is a free fn taking
-#     a capability, reachable from `BlkDriver.service`, so it is reachable
-#     through the owning driver's authority. `golden/err-cap-provenance`
-#     is the identical fn with the driver's call removed.
+#   - Provenance accepts what it should, on both of its arms. `ack_vector`
+#     is a free fn *taking* a capability; `RegsBundle.tag_of` touches one
+#     only through its own body (its receiver is not a parameter, and
+#     `self` is a capability-bearing value). Both are reachable from
+#     `BlkDriver.service`, so both are reachable through the owning
+#     driver's authority. `golden/err-cap-provenance` and
+#     `golden/err-cap-provenance-body` are these same two declarations
+#     with the driver's call removed — one line apiece.
 #   - A `pub` driver method exporting only scalars is a safe actor API
 #     (§1's "a driver may export safe actor APIs"), where the same method
 #     returning or taking a capability is not
@@ -56,6 +60,14 @@ struct VirtioBlock:
 # containment walk must see through.
 struct RegsBundle:
     regs: Mmio[VirtioIrqMmio]
+    tag: u64
+
+    # Provenance's body arm: no parameter here names a capability, but
+    # `self` is a capability-bearing value, so this method holds hardware
+    # authority and must be reachable through a driver — it is, via
+    # `BlkDriver.service` below.
+    fn tag_of(read self) -> u64:
+        return self.tag
 
 # 03 §1's own field shape: the driver "maps only what its ISR needs".
 @driver
@@ -76,8 +88,8 @@ pub struct BlkDriver:
     # A private helper taking a capability: the driver delegating inside
     # its own authority. The same signature on a `pub` method is
     # `golden/err-cap-driver-message`.
-    fn service(read self, read vector: IrqCap[u32], read regs: Mmio[VirtioIrqMmio]) -> u64:
-        return ack_vector(vector) + self.sectors
+    fn service(read self, read vector: IrqCap[u32], read bundle: RegsBundle) -> u64:
+        return ack_vector(vector) + bundle.tag_of() + self.sectors
 
     # A safe actor API: scalars in, scalars out.
     pub fn capacity(read self) -> u64:

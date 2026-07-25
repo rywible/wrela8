@@ -6,12 +6,14 @@ Module path=examples.check_capabilities
     field id: u32
   Struct RegsBundle resource
     field regs: Mmio[VirtioIrqMmio]
+    field tag: u64
+    fn tag_of(read self) -> u64
   Struct IrqPartition resource
     field irq_regs: Mmio[VirtioIrqMmio]
     field bundle: RegsBundle
   Struct BlkDriver resource
     field sectors: u64
     init(mut self, cap: take DeviceCap[VirtioBlock], sectors: read u64) -> unit
-    fn service(read self, vector: read IrqCap[u32], regs: read Mmio[VirtioIrqMmio]) -> u64
+    fn service(read self, vector: read IrqCap[u32], bundle: read RegsBundle) -> u64
     fn capacity(read self) -> u64
   Fn ack_vector(vector: read IrqCap[u32]) -> u64

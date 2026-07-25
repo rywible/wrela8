@@ -1,0 +1,1 @@
+error[type]: `RegsBundle.tag_of` touches hardware state (a `RegsBundle` value) but is not reachable through any `@driver`'s authority in this module — 03-hardware.md §1: a function that touches MMIO, DMA, or IRQ state must be reachable through the owning driver's authority at 27:5

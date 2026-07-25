@@ -1098,6 +1098,107 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
     Ok(())
 }
 
+/// Everything `eval::legal::check_provenance` needs from this pass, and
+/// nothing it could derive on its own (plans/M7.md item A, decision 3).
+///
+/// 03-hardware.md §1's provenance sentence — "a function that touches
+/// MMIO, DMA, or IRQ state must be reachable through the owning driver's
+/// authority" — is whole-graph reachability over the typed callee graph,
+/// which is `eval::legal`'s own shape. But three of its inputs are
+/// *declaration* facts the typed tree does not carry: which struct is a
+/// `@driver`, where each fn was declared (a typed node has no span at
+/// all — `typed.rs` decision 1 drops them), and which named types carry a
+/// capability at any nesting. All three are computed here, by the walk
+/// this file already maintains, and handed over as data.
+pub struct CapabilityAuthority {
+    /// Every `Struct.member` key belonging to a `@driver` — the roots of
+    /// "the owning driver's authority".
+    pub roots: BTreeSet<String>,
+    /// Each classifiable key's own declaration span, for the diagnostic.
+    /// A key with no entry (a generic instantiation, which is synthesized
+    /// and has no source location of its own) gets a location-free
+    /// diagnostic rather than an invented `0:0`.
+    pub spans: BTreeMap<String, Span>,
+    /// Every declared struct/enum name whose type carries a capability at
+    /// any nesting — the *flattened* answer, so the reachability walk can
+    /// ask "does this type touch hardware state" with a set lookup
+    /// instead of a second copy of `type_contains_capability`'s recursion
+    /// through struct fields. One walk, in the file that owns it.
+    pub capability_bearing: BTreeSet<String>,
+}
+
+pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAuthority {
+    let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
+    for item in items {
+        if let DeclItem::Struct(s) = item {
+            structs.insert(s.name.clone(), s);
+        }
+    }
+    let mut roots = BTreeSet::new();
+    let mut capability_bearing = BTreeSet::new();
+    for item in items {
+        match item {
+            DeclItem::Struct(s) => {
+                if contains_capability(&Type::Named(s.name.clone(), Vec::new()), &structs).is_some()
+                {
+                    capability_bearing.insert(s.name.clone());
+                }
+                if !s.is_driver {
+                    continue;
+                }
+                for m in &s.members {
+                    match m {
+                        DeclMember::Fn(f) => {
+                            roots.insert(format!("{}.{}", s.name, f.name));
+                        }
+                        DeclMember::Init(_) => {
+                            roots.insert(format!("{}.init", s.name));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            DeclItem::Enum(e) => {
+                if contains_capability(&Type::Named(e.name.clone(), Vec::new()), &structs).is_some()
+                {
+                    capability_bearing.insert(e.name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    // Spans, from the raw ast alongside the same items — `DeclFn` carries
+    // no span of its own (only `DeclStruct`/`DeclEnum` do), so this is the
+    // one place a fn's declaration location is available at all.
+    let mut spans = BTreeMap::new();
+    for item in &module.items {
+        match item {
+            Item::Fn(f) => {
+                spans.insert(f.name.clone(), f.span);
+            }
+            Item::Struct(s) => {
+                for m in &s.members {
+                    match m {
+                        Member::Fn(f) => {
+                            spans.insert(format!("{}.{}", s.name, f.name), f.span);
+                        }
+                        Member::Init(i) => {
+                            spans.insert(format!("{}.init", s.name), i.span);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    CapabilityAuthority {
+        roots,
+        spans,
+        capability_bearing,
+    }
+}
+
 // --- `@layout` exact bytes (plans/M7.md item B, 03-hardware.md §2/§3) -----
 //
 // 03-hardware.md §3, the whole rule this pass implements: "`@layout(kind,
