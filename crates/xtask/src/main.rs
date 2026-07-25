@@ -6958,8 +6958,25 @@ fn crate_sources_have_test_fn(name: &str) -> bool {
                 }
             } else if path.extension().is_some_and(|e| e == "rs")
                 && std::fs::read_to_string(&path).is_ok_and(|s| {
-                    s.match_indices("#[test]")
-                        .any(|(i, m)| s[i + m.len()..].trim_start().starts_with(needle))
+                    s.match_indices("#[test]").any(|(i, m)| {
+                        // The attribute must not be commented out
+                        // (plans/M9.md decision 59c, orchestrator
+                        // verification of 59b): a textual scan is happy
+                        // to find `#[test]` inside `// #[test]`, so
+                        // commenting out an attribute to disable a
+                        // flaky test would silently leave every clause
+                        // citing it counted as tested — the exact
+                        // silent-coverage failure `unit:` refs exist to
+                        // prevent. Checked by walking back to the line
+                        // start and rejecting a `//` before the
+                        // attribute; a `//` anywhere earlier on that
+                        // line comments the rest of it out.
+                        let line_start = s[..i].rfind('\n').map_or(0, |n| n + 1);
+                        if s[line_start..i].contains("//") {
+                            return false;
+                        }
+                        s[i + m.len()..].trim_start().starts_with(needle)
+                    })
                 })
             {
                 return true;
