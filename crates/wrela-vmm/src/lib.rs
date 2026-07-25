@@ -203,6 +203,59 @@ struct RequestRing {
     count_addr: u64,
 }
 
+/// A ring's declared byte range (`base`..`base+bytes`), request or reply —
+/// kept only long enough for the overlap checks in `parse_report`. The
+/// three-word head/tail/count bookkeeping is part of `bytes` (same formula
+/// the compiler's `RingLayout::bytes` uses: `cap * slot + 24`).
+#[derive(Debug, Clone)]
+struct RingRange {
+    kind: String,
+    src: usize,
+    dst: usize,
+    target: String,
+    base: u64,
+    bytes: u64,
+}
+
+impl RingRange {
+    fn end(&self) -> u64 {
+        self.base.saturating_add(self.bytes)
+    }
+}
+
+/// plans/M8.md item H sweep, Target A: a `Section name=... base=... size=`
+/// line, parsed fully so a `CoreEntry`/`Ring` that points into the wrong
+/// section (or into no section) can be refused by name rather than booted.
+#[derive(Debug, Clone)]
+struct ReportSection {
+    name: String,
+    base: u64,
+    size: u64,
+}
+
+impl ReportSection {
+    fn contains(&self, addr: u64) -> bool {
+        addr >= self.base && addr < self.base.saturating_add(self.size)
+    }
+}
+
+/// One `Placement id=actor#N ... core=C ...` line. Optional in the
+/// VMM-facing report (`append_vmm_runtime_lines` does not emit them today),
+/// but when present they are configuration and a forgery that places an
+/// actor on a core this image never brings up must not boot.
+#[derive(Debug, Clone)]
+struct ReportPlacement {
+    id: String,
+    core: usize,
+}
+
+/// Ring bookkeeping beyond the slot bytes: head, tail, count — three
+/// u64s. Mirrored from the compiler's `MAILBOX_BOOKKEEPING_SIZE` rather
+/// than imported (that constant lives in `layout.rs`, which this crate
+/// does not link for the formula); the `bytes == cap * slot + 24` check
+/// below is the tripwire if either side drifts.
+const RING_BOOKKEEPING_BYTES: u64 = 3 * 8;
+
 /// One `IrqHostInject` report line (plans/M7.md item G).
 #[derive(Debug, Clone)]
 struct IrqHostInject {
@@ -299,7 +352,6 @@ fn report_device_index(
 fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut revision: Option<String> = None;
     let mut has_input = false;
-    let mut has_section = false;
     let mut entry: Option<u64> = None;
     // plans/M7.md item F: the declared `blk` device's own three line
     // kinds, accumulated here and assembled into one `BlkConfig` below.
@@ -314,14 +366,45 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut irq_injects: Vec<IrqHostInject> = Vec::new();
     let mut core_entries: Vec<(usize, u64)> = Vec::new();
     let mut request_rings: Vec<RequestRing> = Vec::new();
+    // plans/M8.md item H sweep, Target A: semantic checks beyond
+    // presence/shape. Sections are parsed fully (a `CoreEntry` must land
+    // in `rtcode`); every ring's byte range is retained for overlap;
+    // `Placement`/`Actor` lines are optional but, when present, must agree
+    // with the core set and with each other — a forged report is an attack
+    // surface, not a convenience.
+    let mut sections: Vec<ReportSection> = Vec::new();
+    let mut ring_ranges: Vec<RingRange> = Vec::new();
+    let mut placements: Vec<ReportPlacement> = Vec::new();
+    let mut actor_ids: Vec<String> = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
             revision = Some(rest.to_string());
         } else if line.starts_with("Input path=") {
             has_input = true;
-        } else if line.starts_with("Section name=") {
-            has_section = true;
+        } else if let Some(rest) = line.strip_prefix("Section ") {
+            let fields = parse_report_fields("Section", rest, &["name", "base", "size"])?;
+            let name = fields.get("name").copied().ok_or_else(|| {
+                VmmError::MalformedReport("`Section` is missing required field `name`".to_string())
+            })?;
+            let base = report_u64("Section", &fields, "base")?;
+            let size = report_u64("Section", &fields, "size")?;
+            if size == 0 {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Section name={name} base={base:#x} size=0`: a section with no bytes is not \
+                     a configuration this VMM can honor"
+                )));
+            }
+            if sections.iter().any(|s| s.name == name) {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Section name={name}` is repeated"
+                )));
+            }
+            sections.push(ReportSection {
+                name: name.to_string(),
+                base,
+                size,
+            });
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
             let digits = rest.trim_start_matches("0x");
             entry = u64::from_str_radix(digits, 16).ok();
@@ -365,6 +448,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             let dst = report_u64("Ring", &fields, "dst")?;
             let capacity = report_u64("Ring", &fields, "cap")?;
             let slot = report_u64("Ring", &fields, "slot")?;
+            let bytes = report_u64("Ring", &fields, "bytes")?;
             let base = report_u64("Ring", &fields, "base")?;
             let target = fields.get("target").copied().ok_or_else(|| {
                 VmmError::MalformedReport("`Ring` is missing required field `target`".to_string())
@@ -379,6 +463,26 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                 return Err(VmmError::MalformedReport(format!(
                     "`Ring src={src} dst={dst}`: a ring is a *cross*-core edge; same-core edges \
                      keep the mailbox path (04-compiler.md §3)"
+                )));
+            }
+            // plans/M8.md item H Target A: `bytes` is not decorative — it
+            // is `cap * slot + 24` (slots plus head/tail/count). A triple
+            // that does not add up would make `count_addr` disagree with
+            // the range the report claims to reserve.
+            let expected_bytes = capacity
+                .checked_mul(slot)
+                .and_then(|s| s.checked_add(RING_BOOKKEEPING_BYTES))
+                .ok_or_else(|| {
+                    VmmError::MalformedReport(format!(
+                        "`Ring cap={capacity} slot={slot}`: capacity * slot overflows"
+                    ))
+                })?;
+            if bytes != expected_bytes {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Ring kind={kind} src={src} dst={dst} target={target} cap={capacity} \
+                     slot={slot} bytes={bytes}`: bytes must equal cap*slot+{RING_BOOKKEEPING_BYTES} \
+                     (={expected_bytes}); a forged triple would point the admission witness at \
+                     the wrong occupancy word"
                 )));
             }
             match kind {
@@ -398,16 +502,91 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                         // head, tail, count.
                         count_addr: base + capacity * slot + 16,
                     });
+                    ring_ranges.push(RingRange {
+                        kind: "request".to_string(),
+                        src: src as usize,
+                        dst: dst as usize,
+                        target: target.to_string(),
+                        base,
+                        bytes,
+                    });
                 }
                 // A reply is delivered to a turn record, not admitted to a
-                // mailbox: shape-checked above, then deliberately dropped.
-                "reply" => {}
+                // mailbox: retained for overlap checks, then dropped from
+                // the admission witness set.
+                "reply" => {
+                    ring_ranges.push(RingRange {
+                        kind: "reply".to_string(),
+                        src: src as usize,
+                        dst: dst as usize,
+                        target: target.to_string(),
+                        base,
+                        bytes,
+                    });
+                }
                 other => {
                     return Err(VmmError::MalformedReport(format!(
                         "`Ring kind={other}`: the only lanes are `request` and `reply` \
                          (plans/M8.md decision 29)"
                     )));
                 }
+            }
+        } else if let Some(rest) = line.strip_prefix("Placement ") {
+            // Full `--stage=report` lines; optional in the VMM-facing
+            // subset. When present they must name a real actor and a core
+            // this image brings up — otherwise a forged placement would
+            // disagree with the CoreEntry set the VMM actually starts.
+            let fields = parse_report_fields(
+                "Placement",
+                rest,
+                &[
+                    "id",
+                    "type",
+                    "core",
+                    "source",
+                    "work",
+                    "work_source",
+                    "bytes",
+                    "bytes_state",
+                    "bytes_mailbox",
+                    "bytes_pool",
+                ],
+            )?;
+            let id = fields.get("id").copied().ok_or_else(|| {
+                VmmError::MalformedReport("`Placement` is missing required field `id`".to_string())
+            })?;
+            let core = report_u64("Placement", &fields, "core")?;
+            if core as usize >= wrela_machine::VCPUS {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Placement id={id} core={core}`: this machine has {} vCPUs (06-machine.md §1)",
+                    wrela_machine::VCPUS
+                )));
+            }
+            placements.push(ReportPlacement {
+                id: id.to_string(),
+                core: core as usize,
+            });
+        } else if let Some(rest) = line.strip_prefix("Actor ") {
+            // Two spellings reach this VMM: the full report's
+            // `Actor index=N type=Name` and the layout section's
+            // `Actor name=Name mailbox=...`. Either names an actor the
+            // Placement set may refer to.
+            let fields = parse_report_fields(
+                "Actor",
+                rest,
+                &["index", "type", "name", "mailbox", "slot", "frame", "state"],
+            )?;
+            if let Some(index) = fields.get("index").copied() {
+                let n: u64 = index.parse().map_err(|e| {
+                    VmmError::MalformedReport(format!("`Actor` field `index={index}`: {e}"))
+                })?;
+                actor_ids.push(format!("actor#{n}"));
+            } else if let Some(name) = fields.get("name").copied() {
+                actor_ids.push(name.to_string());
+            } else {
+                return Err(VmmError::MalformedReport(
+                    "`Actor` line names neither `index=` nor `name=`".to_string(),
+                ));
             }
         } else if let Some(rest) = line.strip_prefix("BlkDevice ") {
             let fields = parse_report_fields(
@@ -507,7 +686,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             "no `Input path=` digest line".to_string(),
         ));
     }
-    if !has_section {
+    if sections.is_empty() {
         return Err(VmmError::MalformedReport(
             "no `Section name=` line".to_string(),
         ));
@@ -574,6 +753,33 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             )));
         }
     }
+    // plans/M8.md item H Target A: every secondary entry must land inside
+    // an **executable** section. Production images put secondary entries in
+    // `rtcode`; `layout_test_image` folds the same routines into its
+    // combined harness (`entry`/`code`) and emits no `rtcode` line. Either
+    // way, an entry pointing into `rtdata`, a stack, or a forged address
+    // outside every section would execute whatever bytes sit there.
+    const EXEC_SECTIONS: &[&str] = &["rtcode", "code", "entry"];
+    for (core, base) in &core_entries {
+        let owner = sections.iter().find(|s| s.contains(*base));
+        match owner {
+            Some(s) if EXEC_SECTIONS.contains(&s.name.as_str()) => {}
+            Some(s) => {
+                return Err(VmmError::MalformedReport(format!(
+                    "`CoreEntry core={core} base={base:#x}` falls inside `Section name={}` — a \
+                     secondary entry must be code (`rtcode`, or a test image's `entry`/`code` \
+                     harness), not data",
+                    s.name
+                )));
+            }
+            None => {
+                return Err(VmmError::MalformedReport(format!(
+                    "`CoreEntry core={core} base={base:#x}` is outside every `Section` this report \
+                     declares — a secondary entry must be code"
+                )));
+            }
+        }
+    }
     // plans/M8.md item C3: a ring whose consuming core this image never
     // brings up would be an admission nothing could ever perform — and a
     // recorder that silently carries one would under-record forever.
@@ -586,6 +792,73 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                  up (no `CoreEntry` line for it)",
                 r.src, r.dst, r.target
             )));
+        }
+    }
+    // plans/M8.md item H Target A: ring ranges must not overlap each
+    // other, and must not sit inside a per-core stack. Either forgery
+    // would let the admission witness and the guest stomp the same bytes.
+    for (i, a) in ring_ranges.iter().enumerate() {
+        for b in ring_ranges.iter().skip(i + 1) {
+            let overlap = a.base < b.end() && b.base < a.end();
+            if overlap {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` overlaps \
+                     `Ring kind={} src={} dst={} target={} base={:#x} bytes={}`",
+                    a.kind,
+                    a.src,
+                    a.dst,
+                    a.target,
+                    a.base,
+                    a.bytes,
+                    b.kind,
+                    b.src,
+                    b.dst,
+                    b.target,
+                    b.base,
+                    b.bytes
+                )));
+            }
+        }
+        for core in 0..wrela_machine::VCPUS {
+            let stack_base = wrela_machine::layout::core_stack_base(core);
+            let stack_end = stack_base + wrela_machine::layout::CORE_STACK_SIZE;
+            if a.base < stack_end && stack_base < a.end() {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` overlaps \
+                     core {core}'s stack [{stack_base:#x}..{stack_end:#x})",
+                    a.kind, a.src, a.dst, a.target, a.base, a.bytes
+                )));
+            }
+        }
+    }
+    // plans/M8.md item H Target A: when Placement/Actor lines are present
+    // (the full report carries them; the VMM-facing subset today does not),
+    // a Placement must name an Actor this report declares and a core this
+    // image brings up. Silently accepting a forged placement would let the
+    // report claim a topology the CoreEntry set does not implement.
+    if !placements.is_empty() {
+        for p in &placements {
+            let core_up = p.core == 0 || core_entries.iter().any(|(c, _)| *c == p.core);
+            if !core_up {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Placement id={} core={}` names a core this image never brings up (no \
+                     `CoreEntry` line for it; core 0 is the `Entry base=` line)",
+                    p.id, p.core
+                )));
+            }
+            if !actor_ids.is_empty() {
+                // `actor_ids` holds both spellings the report uses
+                // (`actor#N` from `Actor index=` and the bare name from
+                // `Actor name=`). A Placement id must match one exactly.
+                let exact = actor_ids.iter().any(|a| a == &p.id);
+                if !exact {
+                    return Err(VmmError::MalformedReport(format!(
+                        "`Placement id={}` names an actor this report's `Actor` lines do not \
+                         declare (declared: {actor_ids:?})",
+                        p.id
+                    )));
+                }
+            }
         }
     }
     Ok(ParsedReport {
@@ -4821,8 +5094,16 @@ pub fn build() -> Image:
 
     /// A guest fault on a **secondary** core names that core and fails the
     /// boot closed — never a silent hang, never a partial transcript
-    /// reported as success. Core 1's declared entry is pointed below DRAM,
-    /// where nothing is mapped, so its very first instruction fetch aborts.
+    /// reported as success.
+    ///
+    /// plans/M8.md item H Target A closed the below-DRAM forgery at
+    /// `parse_report` (a `CoreEntry` must land in `rtcode`), so this
+    /// oracle now forges an entry that is still inside `rtcode` but is
+    /// the *other* secondary's entry block — core 1 then runs core 2's
+    /// code, never writes its own mark, and the boot fails closed naming
+    /// core 1. The below-DRAM shape is pinned by
+    /// `parse_report_refuses_placement_forgeries`'s own "CoreEntry outside
+    /// rtcode" row.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn a_fault_on_a_secondary_core_names_that_core_over_hvf() {
@@ -4833,9 +5114,15 @@ pub fn build() -> Image:
             .find(|(c, _)| *c == 1)
             .expect("core 1 entry")
             .1;
+        let core2 = image
+            .core_entries
+            .iter()
+            .find(|(c, _)| *c == 2)
+            .expect("core 2 entry")
+            .1;
         let bad = report.replace(
             &format!("CoreEntry core=1 base={core1:#x}"),
-            "CoreEntry core=1 base=0x1000",
+            &format!("CoreEntry core=1 base={core2:#x}"),
         );
         assert!(bad != report, "the report rewrite must have applied");
         let dir = std::env::temp_dir().join(format!("wrela-vmm-c1-fault-{}", std::process::id()));
@@ -4848,7 +5135,8 @@ pub fn build() -> Image:
         let _ = std::fs::remove_dir_all(&dir);
         let msg = err.to_string();
         assert!(
-            msg.contains("core 1:") && msg.contains("unhandled exception"),
+            msg.contains("core 1 was released but never ran its own entry block")
+                || (msg.contains("core 1:") && msg.contains("unhandled exception")),
             "{msg}"
         );
     }
@@ -4859,7 +5147,10 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_rejects_malformed_core_entries() {
         let head = format!(
-            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x40500000\n",
+            "Machine revision={}\nInput path=x digest=y\n\
+             Section name=entry base=0x40500000 size=64\n\
+             Section name=rtcode base=0x40500100 size=0x200\n\
+             Entry base=0x40500000\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         for (why, line) in [
@@ -4901,7 +5192,9 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_reads_request_rings_and_refuses_malformed_ones() {
         let head = format!(
-            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\n\
+            "Machine revision={}\nInput path=x digest=y\n\
+             Section name=entry base=0x40500000 size=64\n\
+             Section name=rtcode base=0x40500100 size=0x200\n\
              Entry base=0x40500000\nCoreEntry core=1 base=0x40500100\n\
              CoreEntry core=2 base=0x40500200\n",
             wrela_machine::MACHINE_REVISION_STR
@@ -4931,18 +5224,31 @@ pub fn build() -> Image:
                 "an unknown field",
                 "Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base=0x1 depth=2\n",
             ),
+            (
+                "an inconsistent cap/slot/bytes triple",
+                "Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=99 base=0x40501000\n",
+            ),
         ] {
             let text = format!("{head}{line}");
+            let err = parse_report(&text).expect_err(why);
             assert!(
-                matches!(parse_report(&text), Err(VmmError::MalformedReport(_))),
-                "{why} must be refused"
+                matches!(err, VmmError::MalformedReport(_)),
+                "{why} must be refused: {err}"
             );
+            if why.contains("cap/slot/bytes") {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("bytes must equal cap*slot+") || msg.contains("forged triple"),
+                    "{why}: {msg}"
+                );
+            }
         }
         // A ring naming a core the image never brings up: the `CoreEntry`
         // set is the machine, and an admission nothing can ever perform is
         // a report this VMM refuses rather than carries.
         let single_core = format!(
-            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\n\
+            "Machine revision={}\nInput path=x digest=y\n\
+             Section name=entry base=0x40500000 size=64\n\
              Entry base=0x40500000\n\
              Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base=0x40501000\n",
             wrela_machine::MACHINE_REVISION_STR
@@ -4975,6 +5281,135 @@ pub fn build() -> Image:
                 (2, 1, "Sink", 0x40502de8 + 8 * 24 + 16),
             ]
         );
+    }
+
+    /// plans/M8.md item H Target A — placement / report forgery. Every row
+    /// was a semantic gap `parse_report` previously accepted; each is now
+    /// refused by name. The report is this VMM's whole configuration
+    /// (AGENTS.md / 06 §3), so a forged line must never boot.
+    #[test]
+    fn parse_report_refuses_placement_forgeries() {
+        let head = format!(
+            "Machine revision={}\nInput path=x digest=y\n\
+             Section name=entry base=0x40500000 size=64\n\
+             Section name=code base=0x40500040 size=0xc0\n\
+             Section name=rtcode base=0x40500100 size=0x200\n\
+             Section name=rtdata base=0x40501000 size=0x1000\n\
+             Entry base=0x40500000\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        let cores = "CoreEntry core=1 base=0x40500100\nCoreEntry core=2 base=0x40500200\n";
+
+        // (1) CoreEntry base inside a non-executable section (rtdata).
+        {
+            let text = format!(
+                "{head}CoreEntry core=1 base=0x40501040\nCoreEntry core=2 base=0x40500200\n"
+            );
+            let err = parse_report(&text).expect_err("CoreEntry in rtdata");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("falls inside `Section name=rtdata`") && msg.contains("must be code"),
+                "{msg}"
+            );
+        }
+        // (2) CoreEntry base outside every section.
+        {
+            let text =
+                format!("{head}CoreEntry core=1 base=0x1000\nCoreEntry core=2 base=0x40500200\n");
+            let err = parse_report(&text).expect_err("CoreEntry outside sections");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("outside every `Section`") && msg.contains("must be code"),
+                "{msg}"
+            );
+        }
+        // (3) CoreEntry whose only owning section is data (no executable
+        // section contains the address) — the production-image shape of
+        // "not code", distinct from a test image's `entry`/`code` harness.
+        {
+            let text = format!(
+                "Machine revision={}\nInput path=x digest=y\n\
+                 Section name=rtdata base=0x40500100 size=0x200\n\
+                 Entry base=0x40500000\n\
+                 CoreEntry core=1 base=0x40500100\n",
+                wrela_machine::MACHINE_REVISION_STR
+            );
+            let err = parse_report(&text).expect_err("CoreEntry only in rtdata");
+            assert!(
+                err.to_string()
+                    .contains("falls inside `Section name=rtdata`"),
+                "{err}"
+            );
+        }
+        // (4) Ring base overlapping another ring.
+        {
+            let text = format!(
+                "{head}{cores}\
+                 Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base=0x40501000\n\
+                 Ring kind=request src=2 dst=1 target=A cap=4 slot=16 bytes=88 base=0x40501020\n"
+            );
+            let err = parse_report(&text).expect_err("overlapping rings");
+            assert!(err.to_string().contains("overlaps"), "{err}");
+        }
+        // (5) Ring base overlapping a per-core stack.
+        {
+            let stack = wrela_machine::layout::core_stack_base(1);
+            let text = format!(
+                "{head}{cores}\
+                 Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base={stack:#x}\n"
+            );
+            let err = parse_report(&text).expect_err("ring on stack");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("overlaps") && msg.contains("core 1's stack"),
+                "{msg}"
+            );
+        }
+        // (6) Placement core disagrees with the CoreEntry set.
+        {
+            let text = format!(
+                "{head}\
+                 CoreEntry core=1 base=0x40500100\n\
+                 Actor index=0 type=Sink\n\
+                 Placement id=actor#0 type=Sink core=2 source=explicit work=0 work_source=unproved \
+                 bytes=1 bytes_state=1 bytes_mailbox=0 bytes_pool=0\n"
+            );
+            let err = parse_report(&text).expect_err("Placement on undeclared core");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Placement id=actor#0 core=2") && msg.contains("never brings up"),
+                "{msg}"
+            );
+        }
+        // (7) Placement naming an actor the Actor lines do not declare.
+        {
+            let text = format!(
+                "{head}{cores}\
+                 Actor index=0 type=Sink\n\
+                 Placement id=actor#9 type=Ghost core=1 source=explicit work=0 work_source=unproved \
+                 bytes=1 bytes_state=1 bytes_mailbox=0 bytes_pool=0\n"
+            );
+            let err = parse_report(&text).expect_err("Placement of unknown actor");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Placement id=actor#9") && msg.contains("Actor` lines do not declare"),
+                "{msg}"
+            );
+        }
+        // Well-formed control: Placement agrees with Actor + CoreEntry.
+        {
+            let text = format!(
+                "{head}{cores}\
+                 Actor index=0 type=Sink\n\
+                 Actor index=1 type=Near\n\
+                 Placement id=actor#0 type=Sink core=1 source=explicit work=0 work_source=unproved \
+                 bytes=1 bytes_state=1 bytes_mailbox=0 bytes_pool=0\n\
+                 Placement id=actor#1 type=Near core=0 source=explicit work=0 work_source=unproved \
+                 bytes=1 bytes_state=1 bytes_mailbox=0 bytes_pool=0\n\
+                 Ring kind=request src=0 dst=1 target=Sink cap=4 slot=16 bytes=88 base=0x40501000\n"
+            );
+            parse_report(&text).expect("well-formed Placement set must parse");
+        }
     }
 
     /// plans/M8.md item C3, decision 42: the whole counting rule of the
