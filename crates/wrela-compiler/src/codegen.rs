@@ -551,14 +551,30 @@ impl RodataPool {
 
 fn strip_wrappers(ty: &Type) -> &Type {
     match ty {
-        Type::Own(_, inner) => strip_wrappers(inner),
+        // plans/M7.md item E4 / decision 19: do **not** strip `Own` here.
+        // `own[P] T` is one word (a pool-slot address); treating it as `T`
+        // for aggregate classification would pass the address-of-the-word
+        // instead of the word, and field offset math would look past an
+        // 8-byte slot as if it held `T` inline. Callers that need the
+        // payload type use `sema::bodies::unwrap_own` explicitly.
         Type::Static(inner) => strip_wrappers(inner),
+        other => other,
+    }
+}
+
+/// Payload type inside an `own[P] T`, or `ty` unchanged.
+fn unwrap_own_ref(ty: &Type) -> &Type {
+    match ty {
+        Type::Own(_, inner) => inner,
         other => other,
     }
 }
 
 pub(crate) fn is_aggregate(ty: &Type) -> bool {
     match strip_wrappers(ty) {
+        // plans/M7.md item E4 / decision 19: `own[P] T` is one opaque word
+        // (a guest pool-slot address), passed by value like a capability.
+        Type::Own(..) => false,
         // plans/M6.md item D (verification fix, decision 11b's own boot
         // exercised this for the first time): the M6 builtin-pseudo-type
         // vehicle (`mwir::size_of`'s own doc comment has the full list) is
@@ -1345,13 +1361,42 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         }
         Inst::Project { dst, base, index } => {
             let base_ty = f.temp_types[base.0].clone();
-            let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
-            ctx.copy_slot_to_slot(ctx.frame.off(*dst), ctx.frame.off(*base) + off, size);
+            // plans/M7.md item E4 / decision 19: an `own[P] T` base holds a
+            // pool-slot address; project the field from guest memory at
+            // that address, not from the 8-byte handle word itself.
+            if matches!(base_ty, Type::Own(..)) {
+                let payload_ty = unwrap_own_ref(&base_ty);
+                let (off, size) = field_offset_size(payload_ty, *index, ctx.layout)?;
+                ctx.load_slot(X_A, ctx.frame.off(*base));
+                let dst_off = ctx.frame.off(*dst);
+                let mut w = 0;
+                while w < size {
+                    ctx.load_ptr(X_B, X_A, off + w);
+                    ctx.store_slot(X_B, dst_off + w);
+                    w += 8;
+                }
+            } else {
+                let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
+                ctx.copy_slot_to_slot(ctx.frame.off(*dst), ctx.frame.off(*base) + off, size);
+            }
         }
         Inst::SetField { base, index, value } => {
             let base_ty = f.temp_types[base.0].clone();
-            let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
-            ctx.copy_slot_to_slot(ctx.frame.off(*base) + off, ctx.frame.off(*value), size);
+            if matches!(base_ty, Type::Own(..)) {
+                let payload_ty = unwrap_own_ref(&base_ty);
+                let (off, size) = field_offset_size(payload_ty, *index, ctx.layout)?;
+                ctx.load_slot(X_A, ctx.frame.off(*base));
+                let src_off = ctx.frame.off(*value);
+                let mut w = 0;
+                while w < size {
+                    ctx.load_slot(X_B, src_off + w);
+                    ctx.store_ptr(X_B, X_A, off + w);
+                    w += 8;
+                }
+            } else {
+                let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
+                ctx.copy_slot_to_slot(ctx.frame.off(*base) + off, ctx.frame.off(*value), size);
+            }
         }
         Inst::IndexGet {
             dst,

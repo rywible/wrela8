@@ -850,7 +850,13 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         }
         Type::Option(inner) => Ok(SLOT + size_of(inner, ctx)?),
         Type::Result(ok, err) => Ok(SLOT + size_of(ok, ctx)?.max(size_of(err, ctx)?)),
-        Type::Own(_, inner) => size_of(inner, ctx),
+        // plans/M7.md item E4 / decision 19: `own[P] T` is one 64-bit word
+        // holding the guest address of a pool slot. The payload bytes live
+        // in `pooldata`; the handle is authority over them, not a by-value
+        // copy (which would either invent an allocator at publish time or
+        // put device-reachable bytes in actor state). Field/method access
+        // through an `own` loads via that address — see codegen's Own arms.
+        Type::Own(_, _) => Ok(SLOT),
         Type::Static(inner) => size_of(inner, ctx),
         Type::Bytes(Some(len_expr)) => {
             let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
