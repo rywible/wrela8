@@ -1,0 +1,1 @@
+error[unimplemented]: codegen for an MMIO register declared `i32`: this backend emits only the four unsigned widths (`u8`/`u16`/`u32`/`u64`/`usize`); a signed register would need a sign-extending load this encoder does not have is not implemented yet

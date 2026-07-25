@@ -1,0 +1,20 @@
+module examples.err_claim_take
+
+# plans/M7.md item H1 self-audit — `claim(cap=cap)` without `take`
+#
+# What this case would catch: a claim that does not consume the capability — 03 §9's "each transition consumes its input".
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)

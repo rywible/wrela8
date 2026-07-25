@@ -1,0 +1,1 @@
+error[unimplemented]: codegen for an MMIO register at offset 0x10000: the unsigned-immediate load/store encoder reaches 16380 bytes at this width, and no base-plus-register addressing form is emitted yet. That offset is not implemented yet

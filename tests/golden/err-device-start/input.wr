@@ -1,0 +1,21 @@
+module examples.err_device_start
+
+# plans/M7.md item H1 self-audit — `claimed.start()` — still a named rejection
+#
+# What this case would catch: the final `-> Running` transition, whose input state nothing produces yet (`negotiate` and `VirtQueue.configure` are before it).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        _ = claimed.start()
+        self.regs = claimed.map_partition(VirtioIrqMmio)

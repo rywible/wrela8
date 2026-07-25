@@ -1,0 +1,21 @@
+module examples.err_mmio_signed_register
+
+# plans/M7.md item H1 self-audit — an MMIO register declared `i32`
+#
+# What this case would catch: a signed register width. This backend emits only unsigned widths; a sign-extending load does not exist and zero-extending would be wrong.
+
+@layout(mmio, endian=little)
+struct Regs:
+    @offset(0x000) status: ReadOnly[i32]
+
+struct Dev:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[Regs]
+
+    init(mut self, take cap: DeviceCap[Dev]):
+        claimed = Dev.claim(cap=take cap)
+        self.regs = claimed.map_partition(Regs)
+        _ = self.regs.status.read()

@@ -1,0 +1,1 @@
+error[type]: `VirtioBlock.claim` consumes the capability: write `cap=take ...` (03-hardware.md §9 — each transition consumes its input) at 19:37

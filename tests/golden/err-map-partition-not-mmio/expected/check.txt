@@ -1,0 +1,1 @@
+error[type]: `map_partition(DmaThing)` requires `DmaThing` to be an `@layout(mmio)` struct (03-hardware.md §2: a typed register layout) at 24:43

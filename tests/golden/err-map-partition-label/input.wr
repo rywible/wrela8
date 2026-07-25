@@ -1,0 +1,20 @@
+module examples.err_map_partition_label
+
+# plans/M7.md item H1 self-audit — `map_partition(layout=...)` — layout is positional
+#
+# What this case would catch: a partition call whose layout argument is labelled; the layout is positional.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(layout=VirtioIrqMmio)

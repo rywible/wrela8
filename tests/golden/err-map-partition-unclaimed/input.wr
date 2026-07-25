@@ -1,0 +1,25 @@
+module examples.err_map_partition_unclaimed
+
+# plans/M7.md item H1 self-audit — `map_partition(OtherMmio)` for a layout the driver does not declare
+#
+# What this case would catch: a partition outside the driver's declared `Mmio[L]` fields — the set the no-alias rule and the device's register window are both derived from.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(mmio, endian=little)
+struct OtherMmio:
+    @offset(0x200) x: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        _ = claimed.map_partition(OtherMmio)
+        self.regs = claimed.map_partition(VirtioIrqMmio)

@@ -1,0 +1,1 @@
+error[unimplemented]: lowering a typed MMIO access or bring-up transition (03-hardware.md §2/§9) inside an `async fn`: the synchronous path emits both (plans/M7.md item H1), and a driver's own `init` is synchronous. The async register readers are 03 §6's ISR and §7's bottom-half task, which are plans/M7.md item G — until then this is not implemented yet

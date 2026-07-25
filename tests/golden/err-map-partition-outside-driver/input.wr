@@ -1,0 +1,24 @@
+module examples.err_map_partition_outside_driver
+
+# plans/M7.md item H1 self-audit — `map_partition` from a free function (no `self`)
+#
+# What this case would catch: a partition called outside any `@driver` method — there is no enclosing claim to partition.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        helper(take claimed)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+
+fn helper(take claimed: DriverClaimedDevice[VirtioBlock]):
+    regs = claimed.map_partition(VirtioIrqMmio)

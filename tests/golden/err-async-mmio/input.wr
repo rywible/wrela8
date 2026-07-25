@@ -1,0 +1,26 @@
+module examples.err_async_mmio
+
+# plans/M7.md item H1 self-audit — MMIO `.read()` inside an `async` driver method
+#
+# What this case would catch: the async MMIO path. Sync emits; an ISR / bottom-half reader is item G. Inventing a synchronous load here would be wrong.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+
+    pub async fn on_irq(mut self):
+        status = self.regs.interrupt_status.read()
+        if status != 0:
+            self.regs.interrupt_ack.write(status)

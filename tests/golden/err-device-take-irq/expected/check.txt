@@ -1,0 +1,1 @@
+error[unimplemented]: `DriverClaimedDevice[VirtioBlock].take_irq()` — an `IrqCap[V]` out of the claim (03-hardware.md §6). Vector binding is plans/M7.md item G; that not checked yet at 20:29

@@ -1,0 +1,20 @@
+module examples.err_claim_arity
+
+# plans/M7.md item H1 self-audit — `VirtioBlock.claim()` with zero arguments
+#
+# What this case would catch: a claim call whose arity is wrong — the capability the image minted is the one required argument, not optional.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim()
+        self.regs = claimed.map_partition(VirtioIrqMmio)

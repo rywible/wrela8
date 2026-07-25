@@ -6042,6 +6042,38 @@ mod tests {
             "{err}"
         );
     }
+
+    /// plans/M7.md item H1 self-audit: `mmio_access_width`'s three fail-
+    /// closed arms, called directly. The signed-register and out-of-reach
+    /// arms are also source-reachable (`golden/err-mmio-signed-register`,
+    /// `golden/err-mmio-offset-out-of-reach`); the alignment arm is not —
+    /// `types::check_layouts` already refuses a misaligned `@offset`, so
+    /// it stays an `internal` rather than a panic, pinned here.
+    #[test]
+    fn mmio_access_width_fail_closed_arms() {
+        let signed = mmio_access_width(&Type::I32, 0).expect_err("signed");
+        assert!(
+            signed.message.contains("unsigned") && signed.message.contains("sign-extending"),
+            "{}",
+            signed.message
+        );
+
+        let far = mmio_access_width(&Type::U32, 0x10000).expect_err("far");
+        assert!(
+            far.message.contains("0x10000") && far.message.contains("unsigned-immediate"),
+            "{}",
+            far.message
+        );
+
+        let misaligned = mmio_access_width(&Type::U32, 1).expect_err("misaligned");
+        assert!(
+            misaligned.message.contains("internal error:")
+                && misaligned.message.contains("not 4-byte aligned")
+                && misaligned.message.contains("check_layouts"),
+            "{}",
+            misaligned.message
+        );
+    }
 }
 
 #[cfg(test)]

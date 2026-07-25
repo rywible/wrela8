@@ -1,0 +1,21 @@
+module examples.err_mmio_offset_out_of_reach
+
+# plans/M7.md item H1 self-audit — an MMIO register at offset 0x10000
+#
+# What this case would catch: an offset outside the unsigned-immediate encoder's scaled reach. No base-plus-register form is emitted yet.
+
+@layout(mmio, endian=little)
+struct Regs:
+    @offset(0x10000) status: ReadOnly[u32]
+
+struct Dev:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[Regs]
+
+    init(mut self, take cap: DeviceCap[Dev]):
+        claimed = Dev.claim(cap=take cap)
+        self.regs = claimed.map_partition(Regs)
+        _ = self.regs.status.read()

@@ -1,0 +1,21 @@
+module examples.err_device_read_capacity
+
+# plans/M7.md item H1 self-audit — `claimed.read_capacity_sectors()` — still a named rejection
+#
+# What this case would catch: a virtio-blk config read. Capacity is an image-declared report fact, not a register this guest can read.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        _ = claimed.read_capacity_sectors()
+        self.regs = claimed.map_partition(VirtioIrqMmio)

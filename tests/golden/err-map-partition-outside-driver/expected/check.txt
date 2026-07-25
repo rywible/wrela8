@@ -1,0 +1,1 @@
+error[type]: `DriverClaimedDevice[VirtioBlock].map_partition(VirtioIrqMmio)` partitions a `@driver`'s own claim (03-hardware.md §2), so it is only callable from inside one at 24:33

@@ -1,0 +1,1 @@
+error[type]: `VirtioBlock.claim(cap=take cap)` takes exactly one argument, the `DeviceCap[VirtioBlock]` the image minted; found 0 at 19:36

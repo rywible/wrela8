@@ -1,0 +1,21 @@
+module examples.err_device_take_irq
+
+# plans/M7.md item H1 self-audit — `claimed.take_irq()` — still a named rejection
+#
+# What this case would catch: an `IrqCap[V]` out of the claim. Vector binding is plans/M7.md item G.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        _ = claimed.take_irq()
+        self.regs = claimed.map_partition(VirtioIrqMmio)

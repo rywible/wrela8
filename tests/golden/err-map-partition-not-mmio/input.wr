@@ -1,0 +1,24 @@
+module examples.err_map_partition_not_mmio
+
+# plans/M7.md item H1 self-audit — `map_partition(DmaThing)` — not an `@layout(mmio)`
+#
+# What this case would catch: a partition of a type that is not an `@layout(mmio)` struct.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(dma, endian=little)
+struct DmaThing:
+    idx: u16
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(DmaThing)

@@ -2506,4 +2506,125 @@ pub fn check():
             err.message
         );
     }
+
+    /// plans/M7.md item H1 self-audit: `mmio_register_offset`'s cross-
+    /// module arm and the `None`-register internal. The cross-module
+    /// case is not source-reachable from a single-module golden (the
+    /// build closure would need a layout in another module that this
+    /// module's `TypedProgram::layouts` does not carry); pinned by
+    /// constructing a program whose layouts table is empty.
+    #[test]
+    fn mmio_register_offset_fail_closed_arms() {
+        let empty = TypedProgram::default();
+        let cross =
+            mmio_register_offset("ForeignRegs", "status", &empty).expect_err("cross-module");
+        assert!(
+            cross.message.contains("different module") && cross.message.contains("ForeignRegs"),
+            "{}",
+            cross.message
+        );
+
+        // A layout is present but the register is not — the checker
+        // already refused this, so it is an `internal`.
+        let mut prog = TypedProgram::default();
+        prog.layouts.push(crate::sema::types::LayoutType {
+            name: "Regs".to_string(),
+            kind: crate::sema::types::LayoutKind::Mmio,
+            endian: crate::sema::types::LayoutEndian::Little,
+            size: 4,
+            padding: 0,
+            entries: vec![],
+        });
+        let missing = mmio_register_offset("Regs", "nope", &prog).expect_err("missing reg");
+        assert!(
+            missing.message.contains("internal error:")
+                && missing.message.contains("declares no register `nope`"),
+            "{}",
+            missing.message
+        );
+    }
+
+    /// plans/M7.md item H1 self-audit: `mmio_access_names`' defensive
+    /// internals — each is unreachable through a checked program
+    /// (`check_mmio_access` already shapes the node), kept as named
+    /// rejections rather than panics.
+    #[test]
+    fn mmio_access_names_internal_guards() {
+        let not_mmio = mmio_access_names(&Type::U32, &[]).expect_err("not Mmio");
+        assert!(
+            not_mmio.message.contains("not an `Mmio[L]`"),
+            "{}",
+            not_mmio.message
+        );
+
+        let wrong_cap = mmio_access_names(&Type::Named("DeviceCap".to_string(), vec![]), &[])
+            .expect_err("DeviceCap");
+        assert!(
+            wrong_cap.message.contains("not an `Mmio[L]`"),
+            "{}",
+            wrong_cap.message
+        );
+
+        let bad_targ = mmio_access_names(
+            &Type::Named(
+                "Mmio".to_string(),
+                vec![crate::sema::types::TypeArg::Type(Type::U32)],
+            ),
+            &[],
+        )
+        .expect_err("non-named layout arg");
+        assert!(
+            bad_targ
+                .message
+                .contains("layout argument is not a named type"),
+            "{}",
+            bad_targ.message
+        );
+
+        let no_reg = mmio_access_names(
+            &Type::Named(
+                "Mmio".to_string(),
+                vec![crate::sema::types::TypeArg::Type(Type::Named(
+                    "Regs".to_string(),
+                    vec![],
+                ))],
+            ),
+            &[],
+        )
+        .expect_err("no register");
+        assert!(
+            no_reg.message.contains("no register name"),
+            "{}",
+            no_reg.message
+        );
+
+        let non_lit = mmio_access_names(
+            &Type::Named(
+                "Mmio".to_string(),
+                vec![crate::sema::types::TypeArg::Type(Type::Named(
+                    "Regs".to_string(),
+                    vec![],
+                ))],
+            ),
+            &[(
+                "register".to_string(),
+                TypedExpr {
+                    ty: Type::Named(
+                        "Static".to_string(),
+                        vec![crate::sema::types::TypeArg::Type(Type::Named(
+                            "Str".to_string(),
+                            vec![],
+                        ))],
+                    ),
+                    kind: TypedExprKind::Local("r".to_string()),
+                },
+            )],
+        )
+        .expect_err("non-literal register");
+        assert!(
+            non_lit.message.contains("register name is not a literal"),
+            "{}",
+            non_lit.message
+        );
+    }
 }

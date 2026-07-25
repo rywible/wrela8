@@ -1,0 +1,1 @@
+error[type]: `map_partition(L)`'s argument is a *type*, not a value: drop the `take` at 20:43

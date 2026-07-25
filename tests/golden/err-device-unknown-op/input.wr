@@ -1,0 +1,21 @@
+module examples.err_device_unknown_op
+
+# plans/M7.md item H1 self-audit — `claimed.reset()` — not an operation of the chain
+#
+# What this case would catch: a method name that is not one of §9's bring-up operations on a claimed device.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        _ = claimed.reset()
+        self.regs = claimed.map_partition(VirtioIrqMmio)
