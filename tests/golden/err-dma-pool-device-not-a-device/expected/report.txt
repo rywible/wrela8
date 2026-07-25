@@ -1,0 +1,1 @@
+error[build]: `img.dma_pool(name=Statuses, device=actor#0)` must name a declared device (or the driver bound to one) — 03-hardware.md §3: all memory a device can reach originates from its bound pools

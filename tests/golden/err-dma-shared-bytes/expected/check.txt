@@ -1,0 +1,1 @@
+error[type]: field `Descriptor.ring: DmaShared[BlockControl, RingControl]` is shared control memory; 03-hardware.md §3: it "cannot be read as bytes or lent as a plain value", and a `@layout` field is exactly a byte view. Name the control structure's own `@layout(dma)` type as `L` instead at 22:5

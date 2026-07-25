@@ -1,0 +1,32 @@
+module examples.err_dma_pool_payload_not_layout
+
+# plans/M7.md item D, 03-hardware.md §3: "**Transfer payloads** are
+# `own[P] T` where `P` is a device-bound DMA pool and `T` is
+# `@layout(dma)`."
+#
+# `Payload` is an ordinary struct: the compiler has no exact size, no
+# offsets, no padding and no endianness for it, so it cannot say what a
+# device would read out of a slot. Rejected by name.
+#
+# This case is `golden/err-image-dma-pool`'s successor. That golden pinned
+# the *fail-closed* diagnostic plans/M4.md decision 10 left behind — DMA
+# pools were not implemented at all, `img.dma_pool` failed the whole build
+# the instant it was called, and `image.graph.dma-pools` was an explicit
+# ledger gap. Item B built `@layout(dma)` validation and item D consumes
+# it, so the gap is closed and the same source now meets the real rule
+# instead of a placeholder.
+
+struct Payload:
+    id: u32
+
+struct BlockHw:
+    id: u32
+
+pool Payloads
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    buffers = img.dma_pool[Payload](name=Payloads, device=blk, count=4)
+    return img.seal()

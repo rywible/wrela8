@@ -1,0 +1,28 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/check_dma_shared.wr sha256=9d3217aa801485dba563581a6ecb08c4730b24d643212c0ca0da1250137b6a99
+  Name value=dma-shared
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=BlockHw
+    Arg label=transport value=8192
+  Driver index=0 type=BlkDriver
+    Arg label=sectors value=2048
+  Edge from=driver#0 to=device#0
+  DmaPool name=BlockControl type=BlkReqHeader
+    Arg label=device value=device#0
+    Arg label=count value=16
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+  Layout name=BlkReqHeader kind=dma endian=little size=16 padding=0
+    Field name=kind type=u32 offset=0x0 size=4
+    Field name=reserved type=u32 offset=0x4 size=4
+    Field name=sector type=u64 offset=0x8 size=8
+  Layout name=RingControl kind=dma endian=little size=4 padding=0
+    Field name=flags type=u16 offset=0x0 size=2
+    Field name=idx type=u16 offset=0x2 size=2

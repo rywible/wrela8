@@ -1,0 +1,42 @@
+module examples.err_dma_pool_mint_bound
+
+# plans/M7.md item D, 03-hardware.md §1: `DmaPool[P, N]` is "a **bounded**
+# device-reachable pool". `BlockControl` reserves 16 slots of 16 bytes =
+# 256 bytes; a `DmaPool[BlockControl, 64]` claims authority bounded at 64.
+# A bound smaller than the memory it admits authority over is not a bound,
+# and every later capacity argument (03 §4's `reserve_proven`, item E)
+# would be proved against a number the image contradicts.
+#
+# `golden/check-dma-shared` is this file with a bound that covers the
+# pool.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct BlockHw:
+    id: u32
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    init(mut self, take control: DmaPool[BlockControl, 64]):
+        self.sectors = 0
+
+    pub fn capacity(read self) -> u64:
+        return self.sectors
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk)
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=16)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

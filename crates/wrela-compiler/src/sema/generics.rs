@@ -109,6 +109,9 @@ fn subst_type_arg(arg: &TypeArg, subst: &Subst) -> TypeArg {
         TypeArg::Type(t) => TypeArg::Type(subst_type(t, subst)),
         TypeArg::Const(e) => TypeArg::Const(subst_expr(e, subst)),
         TypeArg::Bound(e) => TypeArg::Bound(subst_expr(e, subst)),
+        // A pool name (plans/M7.md item D) is a `pool Name` declaration,
+        // never a generic parameter, so nothing substitutes into it.
+        TypeArg::Pool(p) => TypeArg::Pool(p.clone()),
     }
 }
 

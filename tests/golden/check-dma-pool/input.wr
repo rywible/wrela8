@@ -1,0 +1,78 @@
+module examples.check_dma_pool
+
+# plans/M7.md item D, 03-hardware.md §3 + 05-library.md §9: a real
+# image-declared DMA pool.
+#
+# `img.dma_pool[T](name=P, device=d, count=N)` binds the previously
+# unbound pool name `P` exactly once, reserves exact backing, and creates
+# the initial handles; the DMA form requires a `@layout(dma)` `T` and
+# device reachability. All four halves are visible in this one case:
+#
+#  - `BlkReqHeader` is `@layout(dma)`, so its bytes are exact (item B):
+#    16 bytes, 8-byte alignment, and the report says so;
+#  - `device=disk` is 03 §3's own worked spelling — the *driver* bound to
+#    the device, one hop from `img.driver(..., device=blk)`; 05 §9's
+#    `device=d` naming the device directly is accepted identically;
+#  - `count=8` × 16 bytes is the pool's exact backing, placed in the
+#    image's own `pooldata` section and reported with its base;
+#  - `own[BlockControl] BlkReqHeader` below is 03 §3's transfer-payload
+#    handle, and its payload type must be the one the pool was bound with
+#    (`err-dma-pool-own-mismatch` is the rejection).
+#
+# `CacheBuffers` is the *other* pool form, in the same image, to keep the
+# two visibly distinct in the report: an `img.pool` reserves backing too,
+# but nothing declares it reachable from a device, so it never becomes a
+# `BlkPool` window the VMM maps (plans/M7.md decision 5).
+#
+# Publishing a payload to the device — `queue.publish`, `Receipt[P]` — is
+# plans/M7.md item E and fails closed by name until it lands.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct BlockHw:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    init(mut self, sectors: u64):
+        self.sectors = sectors
+
+    pub fn capacity(read self) -> u64:
+        return self.sectors
+
+pool BlockControl
+pool CacheBuffers
+
+@actor
+pub struct Store:
+    disk: Actor[BlkDriver]
+    seen: u64
+
+    init(mut self, disk: Actor[BlkDriver]):
+        self.disk = disk
+        self.seen = 0
+
+    pub fn note(mut self, n: u64) -> unit:
+        self.seen = self.seen + n
+        return unit
+
+pub fn retire(take payload: own[BlockControl] BlkReqHeader) -> unit:
+    return unit
+
+@image
+pub fn build() -> Image:
+    img = Image(name="dma-pool", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk, sectors=2048)
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=disk, count=8)
+    buffers = img.pool[u32](name=CacheBuffers, slots=4, max_payload=64)
+    store = img.actor(Store, disk=disk.handle(), mailbox=8)
+    img.supervise(children=[disk, store], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

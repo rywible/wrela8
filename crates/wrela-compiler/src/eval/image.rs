@@ -17,11 +17,16 @@
 //! one-parent supervision, init-argument matching, ...) — recording
 //! faithfully is this item's whole job; item C reads this same struct.
 //!
-//! `img.dma_pool` is the one declaration kind that is recorded and then
-//! immediately fails the whole build (plans/M4.md decision 10, gap
-//! `image.graph.dma-pools`): `@layout(dma)` validation does not exist
+//! `img.dma_pool` used to be the one declaration kind that was recorded
+//! and then immediately failed the whole build (plans/M4.md decision 10,
+//! gap `image.graph.dma-pools`): `@layout(dma)` validation did not exist
 //! until the hardware milestone, and this compiler never asserts against
-//! nothing. `img.check_layout` registers a `@layout_assert` fn and runs
+//! nothing. plans/M7.md item B built that validation and item D consumes
+//! it, so the recorder now returns an ordinary bound-pool handle and the
+//! real checks (a `@layout(dma)` payload, a reachable device, an exact
+//! count) live in `eval::image_checks::check_pool_decls`, over the whole
+//! finished graph, like every other graph rule.
+//! `img.check_layout` registers a `@layout_assert` fn and runs
 //! nothing (decision 10's other half) — `LayoutAssertDecl` is the whole
 //! of what M4 records for it.
 
@@ -118,13 +123,13 @@ pub struct LayoutAssertDecl {
 /// One `@image` fn's whole evaluated product (plans/M4.md item B,
 /// decision 5). `name`/`target` come only from `Image(...)` itself
 /// (decision 5's own "the image's name and target come only from
-/// `Image(...)`, comptime-checked source, nowhere else"). `dma_pools` is
-/// always empty in a graph this module ever hands back to a caller: an
-/// `img.dma_pool` call records its own entry and then fails the whole
-/// evaluation before `img.seal()` could ever run (decision 10) — the
-/// field exists so the recording step itself is exercised (and unit-
-/// tested) now, ready for the day the hardware milestone lifts the
-/// restriction, rather than reappearing from nothing then.
+/// `Image(...)`, comptime-checked source, nowhere else"). `dma_pools` was
+/// always empty until plans/M7.md item D: an `img.dma_pool` call recorded
+/// its own entry and then failed the whole evaluation before `img.seal()`
+/// could ever run (decision 10). It is an ordinary declaration map now,
+/// keyed exactly like `pools` and disjoint from it — 05-library.md §9's
+/// "bind the previously unbound pool name `P` exactly once" is one rule
+/// over one name space, not two (`bind_pool_name`, below).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ImageGraph {
     pub name: Option<TypedValue>,
@@ -166,6 +171,25 @@ impl ImageGraph {
         Value::ImageDecl(ImageDeclRef::Actor(idx))
     }
 
+    /// 05-library.md §9's "bind the previously unbound pool name `P`
+    /// exactly once", as one predicate over **one** name space: a name
+    /// already bound by either form — `img.pool` or `img.dma_pool` — is
+    /// already bound, full stop. Before plans/M7.md item D each recorder
+    /// only ever consulted its own map, which was harmless exactly
+    /// because `declare_dma_pool` failed the whole build closed and
+    /// `dma_pools` could therefore never hold anything by the time a
+    /// second call ran. Making DMA pools real makes
+    /// `img.pool(name=P, ...)` followed by `img.dma_pool(name=P, ...)`
+    /// reachable, and it must be the same rejection as binding either
+    /// form twice — a pool name names one pool node
+    /// (02-language.md §4), not one per form.
+    fn bind_pool_name(&self, pool_name: &str) -> Result<(), String> {
+        if self.pools.contains_key(pool_name) || self.dma_pools.contains_key(pool_name) {
+            return Err(format!("pool `{pool_name}` is already bound"));
+        }
+        Ok(())
+    }
+
     /// Binds `pool_name` (05-library.md §9: "bind the previously unbound
     /// pool name `P` exactly once ... binding a name twice ... is a build
     /// error" — item C's own full check over the whole graph, once
@@ -180,35 +204,33 @@ impl ImageGraph {
         payload_type: Type,
         args: Vec<DeclArg>,
     ) -> Result<Value, String> {
-        if self.pools.contains_key(&pool_name) {
-            return Err(format!("pool `{pool_name}` is already bound"));
-        }
+        self.bind_pool_name(&pool_name)?;
         self.pools
             .insert(pool_name.clone(), PoolDecl { payload_type, args });
         Ok(Value::ImageDecl(ImageDeclRef::Pool(pool_name)))
     }
 
-    /// Records the declaration (decision 10: "records the declaration
-    /// then fails closed") and then always fails, naming the hardware
-    /// milestone (gap `image.graph.dma-pools`): `@layout(dma)` structs
-    /// are not validated until then, and this compiler never asserts
-    /// against nothing.
+    /// The DMA form of the same binding (plans/M7.md item D). Until this
+    /// item it recorded the declaration and then failed the whole build
+    /// closed (plans/M4.md decision 10, gap `image.graph.dma-pools`),
+    /// because `@layout(dma)` validation did not exist and this compiler
+    /// never asserts against nothing. It exists now (item B), so the
+    /// recorder records and the real rules — a `@layout(dma)` payload
+    /// type, a device this image declares, an exact positive count —
+    /// are checked over the whole finished graph by
+    /// `eval::image_checks::check_pool_decls`, which is where every other
+    /// graph rule lives and where the payload type's own layout table is
+    /// reachable.
     pub fn declare_dma_pool(
         &mut self,
         pool_name: String,
         payload_type: Type,
         args: Vec<DeclArg>,
     ) -> Result<Value, String> {
-        if self.dma_pools.contains_key(&pool_name) {
-            return Err(format!("pool `{pool_name}` is already bound"));
-        }
+        self.bind_pool_name(&pool_name)?;
         self.dma_pools
             .insert(pool_name.clone(), PoolDecl { payload_type, args });
-        Err(format!(
-            "`img.dma_pool(name={pool_name}, ...)` is recorded, but DMA pools are not \
-             implemented until the hardware milestone: `@layout(dma)` validation does not exist \
-             yet (gap `image.graph.dma-pools`)"
-        ))
+        Ok(Value::ImageDecl(ImageDeclRef::DmaPool(pool_name)))
     }
 
     pub fn declare_supervise(&mut self, args: Vec<DeclArg>) {
@@ -523,15 +545,41 @@ mod tests {
     }
 
     #[test]
-    fn dma_pool_records_then_fails_closed() {
+    fn a_dma_pool_binds_its_name_like_any_other_pool() {
+        // plans/M7.md item D: this used to record the declaration and
+        // then fail the whole build closed (plans/M4.md decision 10).
         let mut g = ImageGraph::default();
-        let err = g
+        let v = g
             .declare_dma_pool("Payloads".to_string(), Type::U8, vec![])
-            .expect_err("dma_pool always fails closed (decision 10)");
-        assert!(err.contains("hardware milestone"));
-        assert!(err.contains("image.graph.dma-pools"));
-        // Recorded before failing, per decision 10's own wording.
+            .expect("a DMA pool is an ordinary bound pool now");
+        assert_eq!(
+            v,
+            Value::ImageDecl(ImageDeclRef::DmaPool("Payloads".to_string()))
+        );
         assert!(g.dma_pools.contains_key("Payloads"));
+    }
+
+    #[test]
+    fn a_pool_name_is_one_name_space_across_both_forms() {
+        // 05-library.md §9: "bind the previously unbound pool name `P`
+        // exactly once". Unreachable before item D (the DMA form failed
+        // the build before a second call could run), reachable now, and
+        // the same rejection either way round.
+        let mut g = ImageGraph::default();
+        g.declare_pool("Shared".to_string(), Type::U32, vec![])
+            .expect("first bind succeeds");
+        let err = g
+            .declare_dma_pool("Shared".to_string(), Type::U8, vec![])
+            .expect_err("the DMA form binds the same one name space");
+        assert!(err.contains("Shared"), "{err}");
+
+        let mut g2 = ImageGraph::default();
+        g2.declare_dma_pool("Shared".to_string(), Type::U8, vec![])
+            .expect("first bind succeeds");
+        let err2 = g2
+            .declare_pool("Shared".to_string(), Type::U32, vec![])
+            .expect_err("and the plain form binds it too");
+        assert!(err2.contains("Shared"), "{err2}");
     }
 
     #[test]

@@ -97,6 +97,14 @@ pub enum TypeArg {
     Type(Type),
     Const(Expr),
     Bound(Expr),
+    /// A bound **pool name** (02-language.md §4's `pool Name`), which is
+    /// neither a type nor a const expression. Exactly two type
+    /// constructors take one, both hardware (plans/M7.md item D):
+    /// `DmaPool[P, N]` (03-hardware.md §1) and `DmaShared[P, L]`
+    /// (03-hardware.md §3), each in argument position 0 — the same
+    /// identifier `own[P] T` names, which the ast has its own syntax for
+    /// and these do not.
+    Pool(String),
 }
 
 // --- the declared/resolved item shapes the check dump renders ----------
@@ -826,6 +834,51 @@ fn validate_capability_args(
                 )),
             }
         }
+        // plans/M7.md item D, 03-hardware.md §3: "**Shared control memory**
+        // (descriptor tables, rings) is `DmaShared[P, L]`". `L` is the
+        // control structure's own layout, and a device reads it, so it is
+        // `@layout(dma)` for the same reason a transfer payload's `T` is —
+        // exact size, offsets, padding and endianness, reported before
+        // anything touches it. The `mmio` kind is a register map, not
+        // memory, and `wire` is deliberately target-independent; neither is
+        // what a descriptor table is.
+        Type::Named(name, targs) if name == "DmaShared" => {
+            let inner = match targs.get(1) {
+                Some(TypeArg::Type(t)) => t,
+                _ => {
+                    return Err(SemaError::at(
+                        "type",
+                        "`DmaShared[P, L]` requires a layout type argument `L` \
+                         (03-hardware.md §3)"
+                            .to_string(),
+                        span,
+                    ));
+                }
+            };
+            let Type::Named(layout_name, _) = inner else {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`DmaShared[..., {}]` must name an `@layout(dma)` struct \
+                         (03-hardware.md §3)",
+                        render_type(inner)
+                    ),
+                    span,
+                ));
+            };
+            match structs.get(layout_name.as_str()) {
+                Some(s) if s.layout_kind == Some(LayoutKind::Dma) => Ok(()),
+                _ => Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`DmaShared[..., {layout_name}]` requires `{layout_name}` to be an \
+                         `@layout(dma)` struct (03-hardware.md §3: shared control memory a \
+                         device reads, exposed field-wise)"
+                    ),
+                    span,
+                )),
+            }
+        }
         Type::Array(elem, _) => validate_capability_args(elem, span, structs),
         Type::Tuple(elems) => {
             for e in elems {
@@ -882,6 +935,32 @@ enum CapOwner {
 /// for the same reason: only such a method is reachable through an
 /// `Actor[T]` handle, so only such a method's signature is a message
 /// shape (02-language.md §9.4).
+/// The `DmaShared[P, L]` a type names at any nesting, rendered — or
+/// `None`. A sibling of `type_contains_capability` asking one narrower
+/// question, because 03-hardware.md §3's rule is `DmaShared`'s alone and
+/// not every capability's (a `DeviceCap[D]` parameter lent `read` is
+/// ordinary driver code).
+fn dma_shared_in_type(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Named(name, _) if name == "DmaShared" => Some(render_type(ty)),
+        Type::Array(elem, _) => dma_shared_in_type(elem),
+        Type::Tuple(elems) => elems.iter().find_map(dma_shared_in_type),
+        Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+            dma_shared_in_type(inner)
+        }
+        Type::Result(ok, err) => dma_shared_in_type(ok).or_else(|| dma_shared_in_type(err)),
+        Type::Fn(params, ret) => params
+            .iter()
+            .find_map(|(_, t)| dma_shared_in_type(t))
+            .or_else(|| dma_shared_in_type(ret)),
+        Type::Named(_, targs) => targs.iter().find_map(|a| match a {
+            TypeArg::Type(t) => dma_shared_in_type(t),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
 fn validate_fn_capability_types(
     struct_name: Option<&str>,
     fn_name: &str,
@@ -898,6 +977,33 @@ fn validate_fn_capability_types(
     };
     for p in params {
         validate_capability_args(&p.ty, span, structs)?;
+        // 03-hardware.md §3, `DmaShared[P, L]`'s own second sentence:
+        // "It cannot be read as bytes or **lent as a plain value**."
+        // Shared control memory is permanently shared, and the only
+        // sanctioned way to touch it is a field-wise typed operation
+        // carrying the target's volatile/cache/ordering semantics — a
+        // `read`/`mut` loan hands out an ordinary borrow that carries
+        // none of that, which is exactly the thing the sentence forbids.
+        // `take` is untouched: moving the handle (into a driver's own
+        // field, or through a queue constructor) is how it gets anywhere
+        // at all. This never blocks the field-wise operations themselves
+        // — those are methods on the builtin type, which no source can
+        // declare.
+        if p.mode != AccessMode::Take {
+            if let Some(found) = dma_shared_in_type(&p.ty) {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`{where_}` lends `{}: {found}` — 03-hardware.md §3: shared control \
+                         memory \"cannot be read as bytes or lent as a plain value\", it exposes \
+                         only field-wise typed operations that carry the target's \
+                         volatile/cache/ordering semantics. Move it with `take` instead",
+                        p.name
+                    ),
+                    span,
+                ));
+            }
+        }
         let Some(found) = contains_capability(&p.ty, structs) else {
             continue;
         };
@@ -1333,13 +1439,6 @@ fn scalar_field_size(name: &str) -> Option<u64> {
     }
 }
 
-/// 03-hardware.md §1's capability type list, by name. These are the types
-/// plans/M7.md item A mints; 03 §3 forbids them inside a `wire` layout
-/// explicitly, and no capability has a byte encoding on any target, so
-/// they are rejected inside every kind — with the `wire` case saying so in
-/// the doc's own words.
-const CAPABILITY_TYPES: &[&str] = &["DeviceCap", "Mmio", "IrqCap", "DmaPool"];
-
 /// 03-hardware.md §2's register wrappers.
 const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
 
@@ -1549,7 +1648,33 @@ fn layout_field_size(
             ));
         }
     }
-    if CAPABILITY_TYPES.contains(&n.name.as_str()) {
+    // plans/M7.md item D self-audit finding: this pass used to carry its
+    // own second copy of the capability name list, which item A's own
+    // "one list, in one place — several copies could disagree; one
+    // cannot" note had already ruled out. It consults the shared list
+    // now, which is also how `DmaShared[P, L]` (03 §3's shared control
+    // memory, no byte encoding of its own) became covered here with no
+    // further code. This pass runs before name resolution, so a plain
+    // name check is all it can do and all it needs.
+    if n.name == "DmaShared" {
+        // 03-hardware.md §3, `DmaShared[P, L]`'s own second sentence:
+        // "It **cannot be read as bytes** or lent as a plain value."
+        // A `@layout` field is precisely a byte view — declaring one as
+        // `DmaShared[P, L]` is asking the compiler to say which bytes it
+        // is, which is the thing the sentence rules out. This is a
+        // permanent rule, not a fail-closed floor: no later item makes
+        // shared control memory describable as bytes.
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` is shared control memory; \
+                 03-hardware.md §3: it \"cannot be read as bytes or lent as a plain value\", and \
+                 a `@layout` field is exactly a byte view. Name the control structure's own \
+                 `@layout(dma)` type as `L` instead"
+            ),
+            span,
+        ));
+    }
+    if crate::eval::image_checks::is_capability_type_name(&n.name) {
         return Err(match kind {
             LayoutKind::Wire => layout_error(
                 format!(
@@ -2951,8 +3076,30 @@ fn resolve_named(
     // holding one (`validate_capability_types`).
     if let Some(arity) = crate::eval::image_checks::capability_generic_arity(&n.name) {
         expect_arity(n, arity)?;
+        // plans/M7.md item D: `DmaPool[P, N]` and `DmaShared[P, L]` name a
+        // bound **pool** in argument position 0 — 03-hardware.md §1's own
+        // worked driver constructor is
+        // `take pool: DmaPool[BlockControl, 256.KiB]`, and `BlockControl`
+        // there is the same `pool Name` declaration `own[BlockControl] T`
+        // names elsewhere in that example. `own[P] T` has dedicated ast
+        // syntax for that identifier; these two do not, so position 0 is
+        // resolved against the declared pool names instead of the type
+        // table. Every other argument of every capability type resolves
+        // through the general `resolve_type_arg`, so a type argument stays
+        // a type and a const argument (`N`) stays an unevaluated const
+        // expression.
+        let pool_first = matches!(n.name.as_str(), "DmaPool" | "DmaShared");
         let mut targs = Vec::with_capacity(n.args.len());
-        for a in &n.args {
+        for (i, a) in n.args.iter().enumerate() {
+            if pool_first && i == 0 {
+                targs.push(resolve_pool_type_arg(
+                    &n.name,
+                    a,
+                    module_pools,
+                    local_pools,
+                )?);
+                continue;
+            }
             targs.push(resolve_type_arg(
                 a,
                 shapes,
@@ -3016,6 +3163,59 @@ fn resolve_named(
 /// a bare identifier naming an in-scope const generic is unwrapped into
 /// its const expression exactly like `Bytes[N]` above, for the same
 /// grammar-ambiguity reason, rather than rejected as "not a type".
+/// `DmaPool[P, N]`/`DmaShared[P, L]`'s own argument position 0
+/// (plans/M7.md item D): a bare identifier that must name a `pool`
+/// declared in this module or this fn's own scope — the identical set
+/// `own[P] T` resolves its pool against, and the identical
+/// module-scoped-only limitation (a pool declared in another module does
+/// not resolve here yet, exactly as it does not there).
+fn resolve_pool_type_arg(
+    ctor: &str,
+    a: &GenericArg,
+    module_pools: &BTreeSet<String>,
+    local_pools: &BTreeSet<String>,
+) -> Result<TypeArg, SemaError> {
+    let GenericArg::Type(ast::Type::Named(inner)) = a else {
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "`{ctor}`'s first argument names the DMA pool it is authority over \
+                 (03-hardware.md §1/§3), which is a `pool` declaration, not a value"
+            ),
+            span_of_generic_arg(a),
+        ));
+    };
+    if !inner.args.is_empty() {
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "`{ctor}`'s first argument names a `pool` declaration, which takes no generic \
+                 arguments of its own"
+            ),
+            inner.span,
+        ));
+    }
+    if !module_pools.contains(&inner.name) && !local_pools.contains(&inner.name) {
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "unknown pool `{}` — `{ctor}`'s first argument names a `pool` declaration \
+                 (02-language.md §4), the same identifier `own[{}] T` would name",
+                inner.name, inner.name
+            ),
+            inner.span,
+        ));
+    }
+    Ok(TypeArg::Pool(inner.name.clone()))
+}
+
+fn span_of_generic_arg(a: &GenericArg) -> Span {
+    match a {
+        GenericArg::Type(t) => t.span(),
+        GenericArg::Expr(e) | GenericArg::Bound(e) => e.span(),
+    }
+}
+
 fn resolve_type_arg(
     a: &GenericArg,
     shapes: &BTreeMap<String, usize>,
@@ -3443,6 +3643,7 @@ pub(crate) fn render_type_arg(arg: &TypeArg) -> String {
         TypeArg::Type(t) => render_type(t),
         TypeArg::Const(e) => printer::print_expr_bare(e),
         TypeArg::Bound(e) => format!("..{}", printer::print_expr_bare(e)),
+        TypeArg::Pool(name) => name.clone(),
     }
 }
 
@@ -3946,8 +4147,12 @@ mod tests {
          @layout(mmio, endian=little)\n\
          struct Regs:\n\
          \x20   @offset(0x000) status: ReadOnly[u32]\n\n\
+         @layout(dma, endian=little)\n\
+         struct Ctl:\n\
+         \x20   idx: u16\n\n\
          struct Blk:\n\
-         \x20   id: u32\n\n";
+         \x20   id: u32\n\n\
+         pool Slots\n\n";
 
     /// Every capability *shape* guard with no source-shaped story of its
     /// own — arity, and the argument-kind rules — kept here rather than
@@ -3969,8 +4174,45 @@ mod tests {
                 "`Mmio` expects 1 generic argument(s), found 2",
             ),
             (
-                "fn f(read c: DmaPool[Blk]) -> u32:\n    return 0\n",
+                "fn f(read c: DmaPool[Slots]) -> u32:\n    return 0\n",
                 "`DmaPool` expects 2 generic argument(s), found 1",
+            ),
+            // plans/M7.md item D: `DmaPool[P, N]`/`DmaShared[P, L]` name a
+            // bound **pool** in argument position 0 (03-hardware.md §1's
+            // own `DmaPool[BlockControl, 256.KiB]`), resolved against the
+            // declared pool names rather than the type table. A type there
+            // is not a pool, and a pool name is not a type.
+            (
+                "fn f(take c: DmaPool[Blk, 4096]) -> u32:\n    return 0\n",
+                "unknown pool `Blk`",
+            ),
+            (
+                "fn f(take c: DmaShared[Blk, Ctl]) -> u32:\n    return 0\n",
+                "unknown pool `Blk`",
+            ),
+            (
+                "fn f(take c: DmaShared[Slots, Blk]) -> u32:\n    return 0\n",
+                "requires `Blk` to be an `@layout(dma)` struct",
+            ),
+            (
+                "fn f(take c: DmaShared[Slots, 4]) -> u32:\n    return 0\n",
+                "requires a layout type argument",
+            ),
+            (
+                "fn f(take c: DmaShared[4, Ctl]) -> u32:\n    return 0\n",
+                "names the DMA pool it is authority over",
+            ),
+            // plans/M7.md item D self-audit: two more reachable arms with
+            // no golden of their own — a pool argument carrying generic
+            // arguments (a `pool` declaration has none), and an `L` that
+            // is a scalar rather than a named struct.
+            (
+                "fn f(take c: DmaPool[Option[u8], 4]) -> u32:\n    return 0\n",
+                "takes no generic arguments of its own",
+            ),
+            (
+                "fn f(take c: DmaShared[Slots, u32]) -> u32:\n    return 0\n",
+                "must name an `@layout(dma)` struct",
             ),
             // `Mmio[L]`'s own argument rule (03 §2), in the two shapes no
             // golden covers: a scalar, and a struct with no `@layout` at
@@ -4093,7 +4335,14 @@ mod tests {
             // (b) a comptime value claiming to be one.
             (
                 "a const declared as one",
-                "const C: DmaPool[Blk, 4096] = 0\n",
+                "const C: DmaPool[Slots, 4096] = 0\n",
+                "no comptime value is one",
+            ),
+            // plans/M7.md item D: the same sentence for 03 §3's shared
+            // control memory, whose first argument is a pool name too.
+            (
+                "a const declared as shared control memory",
+                "const C: DmaShared[Slots, Ctl] = 0\n",
                 "no comptime value is one",
             ),
         ];

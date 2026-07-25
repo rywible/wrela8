@@ -1,0 +1,34 @@
+module examples.err_dma_shared_lend
+
+# plans/M7.md item D, 03-hardware.md §3, `DmaShared[P, L]`'s own second
+# sentence: "It cannot be read as bytes or **lent as a plain value**."
+#
+# Shared control memory is permanently shared and exposes only field-wise
+# typed operations that carry the target's volatile/cache/ordering
+# semantics. A `read`/`mut` parameter hands out an ordinary borrow that
+# carries none of that — an ordinary load or store of a descriptor ring,
+# which is the whole class of bug the sealed queue operations exist to
+# make unwritable (03 §3: "Ordering never appears as freestanding fences
+# in driver source").
+#
+# `take` is untouched: moving the handle is how it reaches a driver at
+# all, and `golden/check-dma-shared` is that accept. The field-wise
+# operations themselves are methods on the builtin type, which no source
+# can declare, so this rule never stands in plans/M7.md item E's way.
+
+@layout(dma, endian=little)
+struct RingControl:
+    flags: u16
+    idx: u16
+
+struct BlockHw:
+    id: u32
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    fn peek_ring(read self, read ring: DmaShared[BlockControl, RingControl]) -> unit:
+        return unit

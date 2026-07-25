@@ -1,0 +1,1 @@
+error[build]: `driver#0` binds a device to `BlkDriver`, but `BlkDriver.init` takes `control: DmaPool[Scratch, 4096]` and pool `Scratch` is bound by `img.pool`, which declares no device — a `DmaPool[P, N]` is authority over *device-reachable* memory (03-hardware.md §1/§3). Bind it with `img.dma_pool(name=Scratch, device=..., count=...)` instead

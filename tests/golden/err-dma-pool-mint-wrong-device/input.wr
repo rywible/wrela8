@@ -1,0 +1,47 @@
+module examples.err_dma_pool_mint_wrong_device
+
+# plans/M7.md item D, 03-hardware.md §1: "The device itself is named once,
+# at the image binding (`img.driver(BlkDriver, device=blk_device)`), the
+# single source of truth" — which is only a single source of truth if the
+# pool and the driver name the *same* device.
+#
+# `BlkDriver` is bound to `blk`, and `BlockControl` is declared reachable
+# from `nic`. A `DmaPool[BlockControl, 4096]` handed to that driver would
+# be authority over memory its own device cannot reach, and (worse, under
+# plans/M7.md decision 5) a window the VMM maps for the wrong device
+# model.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct BlockHw:
+    id: u32
+
+struct NicHw:
+    id: u32
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    init(mut self, take control: DmaPool[BlockControl, 4096]):
+        self.sectors = 0
+
+    pub fn capacity(read self) -> u64:
+        return self.sectors
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    nic = img.device[NicHw](transport=0x3000)
+    disk = img.driver(BlkDriver, device=blk)
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=nic, count=4)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

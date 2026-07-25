@@ -183,8 +183,12 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     // an ordinary annotation; and 03-hardware.md §3's capability rule must
     // be live before plans/M7.md item A makes a capability name
     // resolvable at all). Its table is discarded here — `--stage=layout-types`
-    // and the image report call the same fn for it — and its table is
-    // what plans/M7.md item C's claim-partitioning check reads below.
+    // and the image report call the same fn for it — and its rejections
+    // are still the point. Two later items read the table rather than
+    // recompute it: plans/M7.md item C's claim-partitioning check below,
+    // and item D, which *keeps* it on the typed program
+    // (`TypedProgram::layouts`) so the post-seal pool checks can ask
+    // whether an `img.dma_pool[T]`'s own `T` is `@layout(dma)`.
     let layouts = types::check_layouts(&specialized)?;
     let symtab = symbols::collect(&specialized)?;
     symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
@@ -199,6 +203,7 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     types::check_mmio_claims(&specialized, &decl_items, &layouts)?;
     let mctx = bodies::build_module_ctx(&specialized, &decl_items);
     let mut program = bodies::check(&specialized, &decl_items, &mctx)?;
+    program.layouts = layouts;
     access::check(&specialized, &decl_items, &mctx)?;
     flow::check(&specialized, &decl_items, &mctx)?;
     matches::check(&specialized, &decl_items, &mctx)?;
@@ -347,7 +352,8 @@ pub fn check_program_typed(
         // pre-resolution `@layout` pass `check_typed` runs (see
         // `types::check_layouts`). One module at a time — a `@layout`
         // type is a module-local declaration, so nothing here needs the
-        // closure.
+        // closure. plans/M7.md item D keeps each module's own table on
+        // its `TypedProgram` (see `check_typed`'s own note).
         layouts.insert(key.clone(), types::check_layouts(&s)?);
         specialized.insert(key.clone(), s);
     }
@@ -440,6 +446,7 @@ pub fn check_program_typed(
         let decl_items = &decl_items_map[key];
         let mctx = &mctxs[key];
         let mut program = bodies::check(module, decl_items, mctx)?;
+        program.layouts = layouts.get(key).cloned().unwrap_or_default();
         access::check(module, decl_items, mctx)?;
         flow::check(module, decl_items, mctx)?;
         matches::check(module, decl_items, mctx)?;
