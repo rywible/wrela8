@@ -1,0 +1,17 @@
+Module path=examples.check_deriving_from
+  Enum LoadError data deriving(From)
+    variant Bad(u32)
+  Enum WrapError data deriving(From)
+    variant Inner(LoadError)
+  Fn parse(raw: read u32) -> Result[u32, LoadError]
+  Fn convert_wrapped(raw: read u32) -> Result[u32, WrapError]
+  Fn settle(r: read Result[u32, WrapError]) -> u32
+  Const CONVERTED: u32
+  Const OK: u32
+  Fn test_deriving_from_converts() -> unit
+  Fn test_ok_path_unchanged() -> unit
+  Struct Store resource
+    field converted: u32
+    field ok: u32
+    init(mut self, converted: read u32, ok: read u32) -> unit
+  Fn build() -> Image

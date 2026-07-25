@@ -1,0 +1,136 @@
+Program
+  Fn key=Store.init ret=unit temps=2 receiver=t0:mut params=[t1]
+    Temp t0 ty=Store
+    Temp t1 ty=u32
+    Body
+      0000: SetField base=t0 index=0 value=t1
+      0001: Return
+  Fn key=WrapError.from ret=WrapError temps=11 params=[t0:take]
+    Temp t0 ty=LoadError
+    Temp t1 ty=u32
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=bool
+    Temp t5 ty=u32
+    Temp t6 ty=bool
+    Temp t7 ty=bool
+    Temp t8 ty=u32
+    Temp t9 ty=u32
+    Temp t10 ty=WrapError
+    Body
+      0000: EnumTag dst=t2 src=t0
+      0001: ConstInt dst=t3 ty=u64 value=0
+      0002: Compare op=== ty=u64 dst=t4 lhs=t2 rhs=t3
+      0003: EnumPayload dst=t5 src=t0 index=0
+      0004: Copy dst=t1 src=t5
+      0005: ConstBool dst=t6 value=true
+      0006: BoolAnd dst=t7 lhs=t4 rhs=t6
+      0007: JumpIfFalse cond=t7 target=0013
+      0008: ConstInt dst=t8 ty=u32 value=100
+      0009: ArithChecked op=+ ty=u32 dst=t9 lhs=t1 rhs=t8 abort="arithmetic overflow in `+`"
+      0010: MakeAggregate dst=t10 elems=[t9]
+      0011: Return value=t10
+      0012: Jump target=0014
+      0013: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0014: Return
+  Fn key=convert_wrapped ret=Result[u32, WrapError] temps=11 params=[t0]
+    Temp t0 ty=u32
+    Temp t1 ty=Result[u32, LoadError]
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=bool
+    Temp t5 ty=u32
+    Temp t6 ty=LoadError
+    Temp t7 ty=WrapError
+    Temp t8 ty=Result[u32, WrapError]
+    Temp t9 ty=u32
+    Temp t10 ty=Result[u32, WrapError]
+    Body
+      0000: Call key=parse dst=t1 args=[t0]
+      0001: EnumTag dst=t2 src=t1
+      0002: ConstInt dst=t3 ty=u64 value=0
+      0003: Compare op=== ty=u64 dst=t4 lhs=t2 rhs=t3
+      0004: JumpIfFalse cond=t4 target=0007
+      0005: EnumPayload dst=t5 src=t1 index=0
+      0006: Jump target=0011
+      0007: EnumPayload dst=t6 src=t1 index=0
+      0008: Call key=WrapError.from dst=t7 args=[t6]
+      0009: MakeEnum dst=t8 tag=1 payload=[t7]
+      0010: Return value=t8
+      0011: Copy dst=t9 src=t5
+      0012: MakeEnum dst=t10 tag=0 payload=[t9]
+      0013: Return value=t10
+      0014: Return
+  Fn key=parse ret=Result[u32, LoadError] temps=7 params=[t0]
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=bool
+    Temp t3 ty=u32
+    Temp t4 ty=LoadError
+    Temp t5 ty=Result[u32, LoadError]
+    Temp t6 ty=Result[u32, LoadError]
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=0
+      0001: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
+      0002: JumpIfFalse cond=t2 target=0008
+      0003: ConstInt dst=t3 ty=u32 value=7
+      0004: MakeEnum dst=t4 tag=0 payload=[t3]
+      0005: MakeEnum dst=t5 tag=1 payload=[t4]
+      0006: Return value=t5
+      0007: Jump target=0008
+      0008: MakeEnum dst=t6 tag=0 payload=[t0]
+      0009: Return value=t6
+      0010: Return
+  Fn key=settle ret=u32 temps=16 params=[t0]
+    Temp t0 ty=Result[u32, WrapError]
+    Temp t1 ty=u32
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=bool
+    Temp t5 ty=u32
+    Temp t6 ty=bool
+    Temp t7 ty=bool
+    Temp t8 ty=WrapError
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=bool
+    Temp t12 ty=WrapError
+    Temp t13 ty=bool
+    Temp t14 ty=bool
+    Temp t15 ty=u32
+    Body
+      0000: EnumTag dst=t2 src=t0
+      0001: ConstInt dst=t3 ty=u64 value=0
+      0002: Compare op=== ty=u64 dst=t4 lhs=t2 rhs=t3
+      0003: EnumPayload dst=t5 src=t0 index=0
+      0004: Copy dst=t1 src=t5
+      0005: ConstBool dst=t6 value=true
+      0006: BoolAnd dst=t7 lhs=t4 rhs=t6
+      0007: JumpIfFalse cond=t7 target=0010
+      0008: Return value=t1
+      0009: Jump target=0022
+      0010: EnumTag dst=t9 src=t0
+      0011: ConstInt dst=t10 ty=u64 value=1
+      0012: Compare op=== ty=u64 dst=t11 lhs=t9 rhs=t10
+      0013: EnumPayload dst=t12 src=t0 index=0
+      0014: Copy dst=t8 src=t12
+      0015: ConstBool dst=t13 value=true
+      0016: BoolAnd dst=t14 lhs=t11 rhs=t13
+      0017: JumpIfFalse cond=t14 target=0021
+      0018: Project dst=t15 base=t8 index=0
+      0019: Return value=t15
+      0020: Jump target=0022
+      0021: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0022: Return
+  Fn key=test_explicit_from ret=unit temps=3
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=107
+      0001: ConstInt dst=t1 ty=u32 value=107
+      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
+      0003: JumpIfFalse cond=t2 target=0005
+      0004: Jump target=0006
+      0005: AssertFail message="explicit from must transform Bad(7) into code=107"
+      0006: Return

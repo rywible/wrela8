@@ -283,6 +283,40 @@ impl Parser {
         }
     }
 
+    /// A declared `fn` name: an `Ident`, or the keyword `from` (02 §7.4 /
+    /// 05 §8's conversion associated fn, plans/M9.md item B decision 105).
+    ///
+    /// Ambiguity argument, established against this file: an import
+    /// statement's `from` is only ever recognized at statement position
+    /// (`parse_imports` / a future item-level `from`, both gated on
+    /// `at_keyword("from")` as the *first* token of the statement, or
+    /// `pub` then `from`). A function name is only ever read *after*
+    /// `fn` has already been consumed (`parse_fn_item`). Those two
+    /// positions never overlap, so accepting `from` here cannot steal an
+    /// import and cannot leave `from path import Name` unparseable. Other
+    /// keywords stay rejected (`keyword \`X\` cannot be used as a name`).
+    fn expect_fn_name(&mut self) -> Result<(Span, String), ParseError> {
+        if self.at_kind(TokenKind::Ident) {
+            let span = self.peek_span();
+            let text = self.bump().text;
+            Ok((span, text))
+        } else if self.at_keyword("from") {
+            let span = self.peek_span();
+            self.bump();
+            Ok((span, "from".to_string()))
+        } else if self.at_kind(TokenKind::Keyword) {
+            Err(self.error_here(format!(
+                "keyword `{}` cannot be used as a name",
+                self.peek_text()
+            )))
+        } else {
+            Err(self.error_here(format!(
+                "expected a function name, found `{}`",
+                self.peek_display()
+            )))
+        }
+    }
+
     fn expect_newline(&mut self) -> Result<(), ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
@@ -911,11 +945,9 @@ impl Parser {
         doc: Option<Doc>,
         attrs: Vec<Attr>,
     ) -> Result<FnItem, ParseError> {
-        // A declared name: `Ident` only. Reserved-word conversion/accessor
-        // method names (`from`, `read`, `take`, ...) are a stdlib-milestone
-        // question (deferred; see the commit note), not a parser leniency —
-        // a declared `fn` name never accepts a `Keyword` token.
-        let (_, name) = self.expect_ident("a function name")?;
+        // `from` is the one reserved word a `fn` name may spell (02 §7.4);
+        // see `expect_fn_name`. Other keywords stay rejected.
+        let (_, name) = self.expect_fn_name()?;
         let generics = self.parse_generic_params()?;
         let (receiver, params) = self.parse_param_list()?;
         let (ret, body) = self.parse_fn_tail()?;

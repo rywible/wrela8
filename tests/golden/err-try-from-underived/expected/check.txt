@@ -1,4 +1,0 @@
-error[comptime]: `?`'s error conversion `WrapError.from` is not available: nothing generates it yet — `deriving(From)` produces no `from` method (plans/M9.md item B)
-  while evaluating `CONVERTED`
-  while evaluating `settle`
-  while evaluating `convert_wrapped`

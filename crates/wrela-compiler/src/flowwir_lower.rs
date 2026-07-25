@@ -50,8 +50,9 @@
 //!   `Call` to a top-level sync helper is live (plans/M7.md item E4:
 //!   field access after await is refused by the §9.2 scan, so the
 //!   flagship finishes through sync helpers).
-//! - `Option`-typed `?` (only `Result` is supported); a `?` needing a
-//!   `From` conversion (`conv: Some(_)`).
+//! - `Option`-typed `?` (only `Result` is supported). A `?` needing a
+//!   `From` conversion is live (plans/M9.md item B) — same rules as
+//!   `lower.rs`.
 //! - A `match`/`for` containing an `await` anywhere inside (scrutinee,
 //!   guard, arm/body) — both stay intra-state-only.
 //! - An `elif` chain, or an `if`'s own condition, containing an `await`.
@@ -2620,21 +2621,17 @@ fn lower_try_check(
         src: value_temp,
         index: 0,
     });
-    let converted = match conv {
-        Some(_) => {
-            return Err(FlowError::unimplemented(
-                "a `?` conversion (`From`) inside an async body is",
-            ));
-        }
-        None => err_payload,
-    };
-    let fn_ret = b.ret.clone();
-    if !matches!(&fn_ret, Type::Result(_, _)) {
+    let Type::Result(_, ret_err) = &b.ret else {
         return Err(FlowError::internal(
             "`?` used inside a fn whose own declared return type is not `Result`",
         ));
-    }
-    let ret_enum = b.fresh(fn_ret.clone());
+    };
+    let target_ty = (**ret_err).clone();
+    let converted = match conv {
+        Some(key) => lower_from_conversion_flow(err_payload, key, target_ty, b)?,
+        None => err_payload,
+    };
+    let ret_enum = b.fresh(b.ret.clone());
     b.emit_mwir(Inst::MakeEnum {
         dst: ret_enum,
         tag: value::RESULT_ERR,
@@ -2646,6 +2643,57 @@ fn lower_try_check(
     let after_pos = b.here();
     b.patch(after_fixup, after_pos);
     Ok(ok_payload)
+}
+
+/// Apply `?`'s one-hop `from` conversion inside an async body (same
+/// rules as `lower::lower_from_conversion`).
+fn lower_from_conversion_flow(
+    err_payload: Temp,
+    key: &CalleeKey,
+    target_ty: Type,
+    b: &mut FlowBuilder,
+) -> Result<Temp, FlowError> {
+    if resolve_callee_fn(b.prog, key).is_ok() {
+        let dst = b.fresh(target_ty);
+        b.emit_mwir(Inst::Call {
+            dst,
+            write_backs: Vec::new(),
+            key: key.spelling(),
+            args: vec![err_payload],
+        });
+        return Ok(dst);
+    }
+    let CalleeKey::Method(name, member) = key else {
+        return Err(FlowError::unimplemented(
+            "a `?` conversion (`From`) inside an async body is",
+        ));
+    };
+    if member != "from" {
+        return Err(FlowError::unimplemented(
+            "a `?` conversion (`From`) inside an async body is",
+        ));
+    }
+    let prog = b.prog;
+    if prog.enums.contains_key(name) || prog.imported.enums.contains_key(name) {
+        let dst = b.fresh(target_ty);
+        b.emit_mwir(Inst::MakeEnum {
+            dst,
+            tag: 0,
+            payload: vec![err_payload],
+        });
+        return Ok(dst);
+    }
+    if struct_by_name(prog, name).is_some() {
+        let dst = b.fresh(target_ty);
+        b.emit_mwir(Inst::MakeAggregate {
+            dst,
+            elems: vec![err_payload],
+        });
+        return Ok(dst);
+    }
+    Err(FlowError::unimplemented(
+        "a `?` conversion (`From`) inside an async body is",
+    ))
 }
 
 #[cfg(test)]

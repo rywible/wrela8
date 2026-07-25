@@ -1,0 +1,66 @@
+module examples.check_deriving_from
+
+# plans/M9.md item B. 02-language.md §7.4 / §7.5 and 05-library.md §8:
+# `deriving(From)` on a one-variant/one-field shape generates the `from`
+# that `?` consumes. `settle` maps a converted `Err` into a range `Ok`
+# cannot reach, so a wrong conversion (or a missing one that somehow
+# type-checked) cannot produce the pinned image values.
+#
+# Retired `err-try-from-underived` (BB decision 61): that case stops being
+# an `err-` case when B lands — this is that signal.
+
+pub enum LoadError deriving(From):
+    Bad(u32)
+
+pub enum WrapError deriving(From):
+    Inner(LoadError)
+
+pub fn parse(raw: u32) -> Result[u32, LoadError]:
+    if raw == 0:
+        return Err(LoadError.Bad(raw))
+    return Ok(raw)
+
+pub fn convert_wrapped(raw: u32) -> Result[u32, WrapError]:
+    value = parse(raw)?
+    return Ok(value)
+
+fn settle(r: Result[u32, WrapError]) -> u32:
+    match r:
+        case .Ok(v):
+            return v
+        case .Err(e):
+            match e:
+                case .Inner(inner):
+                    match inner:
+                        case .Bad(n):
+                            return n + 1000
+
+# Err(LoadError.Bad(0)) converted through WrapError.from -> 1000.
+# An unconverted payload of 0, or an Ok of 0, cannot produce 1000.
+const CONVERTED: u32 = settle(convert_wrapped(0))
+const OK: u32 = settle(convert_wrapped(7))
+
+@test
+pub fn test_deriving_from_converts():
+    assert CONVERTED == 1000, "`?` must apply WrapError.from to LoadError.Bad(0)"
+
+@test
+pub fn test_ok_path_unchanged():
+    assert OK == 7, "Ok path must not convert"
+
+@actor
+pub struct Store:
+    converted: u32
+    ok: u32
+
+    init(mut self, converted: u32, ok: u32):
+        self.converted = converted
+        self.ok = ok
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-deriving-from", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, converted=CONVERTED, ok=OK, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

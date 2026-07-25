@@ -444,6 +444,66 @@ fn resolve_struct_member<'p>(s: &'p TypedStruct, member: &str) -> Option<&'p Typ
     }
 }
 
+/// This module's own enum `name`'s variant list, else the imported one.
+fn enum_variants<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p Vec<String>> {
+    program
+        .enums
+        .get(name)
+        .or_else(|| program.imported.enums.get(name))
+}
+
+/// Structural `deriving(From)` wrap (05 §8 / 02 §7.5): one field on a
+/// struct, or the sole variant's sole payload on an enum. Check already
+/// validated the shape; this only builds the value. Called when
+/// `resolve_fn` misses — there is no TypedFn for a derived conversion
+/// (enums carry no methods; a struct's derived `from` is the same
+/// wrap, not a synthesized body).
+fn derived_from_wrap(
+    program: &TypedProgram,
+    key: &CalleeKey,
+    source: Value,
+    ctx: &mut Interp<'_>,
+) -> R<Value> {
+    let (name, member) = match key {
+        CalleeKey::Method(name, member) => (name.as_str(), member.as_str()),
+        _ => {
+            return Err(ctx.abandon_missing(
+                &callee_decl_name(key),
+                format!(
+                    "`?`'s error conversion `{}` is not available",
+                    key.spelling()
+                ),
+            ));
+        }
+    };
+    if member != "from" {
+        return Err(ctx.abandon_missing(
+            name,
+            format!(
+                "`?`'s error conversion `{}` is not available",
+                key.spelling()
+            ),
+        ));
+    }
+    if enum_variants(program, name).is_some() {
+        let v = Value::Enum(0, vec![source]);
+        ctx.charge(v.weight())?;
+        return Ok(v);
+    }
+    if struct_by_name(program, name).is_some() {
+        let v = Value::Struct(vec![source]);
+        ctx.charge(v.weight())?;
+        return Ok(v);
+    }
+    Err(ctx.abandon_missing(
+        name,
+        format!(
+            "`?`'s error conversion `{}` is not available",
+            key.spelling()
+        ),
+    ))
+}
+
 /// The struct a `Method`/`MethodInstance` callee key's `init` allocates,
 /// or a `Field`/`Index`/`StructLiteral` node's own struct (from its
 /// `Type::Named(name, targs)`) — the one place `generics::canonical_key`
@@ -1671,49 +1731,43 @@ fn eval_expr<'a, 'p>(
             let converted = match conv {
                 None => e,
                 Some(key) => {
-                    // Not an `internal error:` (plans/M9.md item BB,
-                    // decision 61): `deriving(From)` generates no `from`
-                    // method anywhere in this compiler yet, and `from`
-                    // is a reserved word so no user can declare one
-                    // either — so *every* `?` that needs a conversion
-                    // reaches here, from ordinary source. That is a
-                    // named, fail-closed gap owned by item B, not a bug
-                    // in the evaluator; the backend already refuses the
-                    // same shape by name (`lower::lower_expr`'s own "a
-                    // `?` conversion (`From`) in a synchronous body is").
-                    let f = resolve_fn(ctx.program, key).ok_or_else(|| {
-                        ctx.abandon_missing(
-                            &callee_decl_name(key),
-                            format!(
-                                "`?`'s error conversion `{}` is not available: nothing generates \
-                                 it yet — `deriving(From)` produces no `from` method \
-                                 (plans/M9.md item B)",
-                                key.spelling()
-                            ),
-                        )
-                    })?;
-                    let frame = key.spelling();
-                    let outcome = run_call(
-                        f,
-                        None,
-                        frame,
-                        |callee_env, _ictx| {
-                            let pname =
-                                f.params.first().map(|p| p.name.clone()).unwrap_or_default();
-                            env_insert(callee_env, pname, e);
-                            Ok(())
-                        },
-                        ctx,
-                    )?;
-                    // `from(take source)` — never a `mut` param. A
-                    // non-empty write-back list here would mean the
-                    // conversion's signature disagreed with §7.4.
-                    if !outcome.mut_params.is_empty() {
-                        return Err(ctx.abandon(
-                            "writing back a `mut` parameter from a `?` `from` conversion is not supported",
-                        ));
+                    // Explicit `from` (user-written associated fn) resolves
+                    // and is called. `deriving(From)` leaves no TypedFn —
+                    // enums carry no methods (02 §7.2) and the synthesizer
+                    // is the structural wrap below — so a miss means the
+                    // check-time `try_from_conversion` already validated a
+                    // single-field/single-variant shape; apply it here
+                    // (plans/M9.md item B decision 106).
+                    match resolve_fn(ctx.program, key) {
+                        Some(f) => {
+                            let frame = key.spelling();
+                            let outcome = run_call(
+                                f,
+                                None,
+                                frame,
+                                |callee_env, _ictx| {
+                                    let pname = f
+                                        .params
+                                        .first()
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_default();
+                                    env_insert(callee_env, pname, e);
+                                    Ok(())
+                                },
+                                ctx,
+                            )?;
+                            // `from(take source)` — never a `mut` param. A
+                            // non-empty write-back list here would mean the
+                            // conversion's signature disagreed with §7.4.
+                            if !outcome.mut_params.is_empty() {
+                                return Err(ctx.abandon(
+                                    "writing back a `mut` parameter from a `?` `from` conversion is not supported",
+                                ));
+                            }
+                            outcome.result
+                        }
+                        None => derived_from_wrap(ctx.program, key, e, ctx)?,
                     }
-                    outcome.result
                 }
             };
             Err(Unwind::Return(Value::Enum(

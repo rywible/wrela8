@@ -1,0 +1,12 @@
+ImageGraph v0
+  Name value=check-deriving-from
+  Target value=Target.wrela_machine_v1
+  Actor index=0 type=Store
+    Arg label=converted value=1000
+    Arg label=ok value=7
+    Arg label=mailbox value=4
+  Supervise index=0
+    Arg label=children value=[actor#0]
+    Arg label=strategy value=Restart.OneForOne
+    Arg label=intensity value=(3, 10000000000)
+  Sealed value=true

@@ -1,0 +1,54 @@
+module examples.check_from_explicit
+
+# plans/M9.md item B, Half A. 02-language.md §7.4 spells the conversion
+# as `TargetError.from(take e)`. `from` is a reserved word for imports;
+# after `fn` it is a legal associated-fn name (decision 105). The body
+# adds 100 so a missing or identity conversion cannot produce 107.
+
+pub enum LoadError deriving(From):
+    Bad(u32)
+
+pub struct WrapError:
+    code: u32
+
+    pub fn from(take source: LoadError) -> WrapError:
+        match source:
+            case .Bad(n):
+                return WrapError(code=n + 100)
+
+pub fn parse(raw: u32) -> Result[u32, LoadError]:
+    if raw == 0:
+        return Err(LoadError.Bad(7))
+    return Ok(raw)
+
+pub fn convert_wrapped(raw: u32) -> Result[u32, WrapError]:
+    value = parse(raw)?
+    return Ok(value)
+
+fn settle(r: Result[u32, WrapError]) -> u32:
+    match r:
+        case .Ok(v):
+            return v
+        case .Err(e):
+            return e.code
+
+const CONVERTED: u32 = settle(convert_wrapped(0))
+
+@test
+pub fn test_explicit_from():
+    assert CONVERTED == 107, "explicit from must transform Bad(7) into code=107"
+
+@actor
+pub struct Store:
+    converted: u32
+
+    init(mut self, converted: u32):
+        self.converted = converted
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-from-explicit", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, converted=CONVERTED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

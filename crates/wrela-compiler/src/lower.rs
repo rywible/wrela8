@@ -1636,11 +1636,13 @@ fn lower_init_call(
 // --- expressions ------------------------------------------------------------
 
 /// Sync `?` (plans/M7.md item E1 / 02-language.md §7.4): on `Ok`, project
-/// the payload; on `Err`, build this fn's own `Err`-wrapped return and
-/// early-return. Same shape as `flowwir_lower::lower_try_check`.
+/// the payload; on `Err`, apply the target's `from` conversion when
+/// needed (plans/M9.md item B), build this fn's own `Err`-wrapped return,
+/// and early-return. Same shape as `flowwir_lower::lower_try_check`.
 fn lower_try_sync(
     value_temp: Temp,
     value_ty: &Type,
+    conv: &Option<CalleeKey>,
     b: &mut FnBuilder,
 ) -> Result<Temp, LowerError> {
     let (ok_ty, err_ty) = match value_ty {
@@ -1689,16 +1691,18 @@ fn lower_try_sync(
         src: value_temp,
         index: 0,
     });
-    if !matches!(&b.ret, Type::Result(_, _)) {
+    let Type::Result(_, ret_err) = &b.ret else {
         return Err(LowerError::internal(
             "`?` used inside a fn whose own declared return type is not `Result`".to_string(),
         ));
-    }
+    };
+    let target_ty = (**ret_err).clone();
+    let converted = lower_from_conversion(err_payload, conv, target_ty, b)?;
     let ret_enum = b.fresh(b.ret.clone());
     b.emit(Inst::MakeEnum {
         dst: ret_enum,
         tag: value::RESULT_ERR,
-        payload: vec![err_payload],
+        payload: vec![converted],
     });
     b.emit(Inst::Return {
         value: Some(ret_enum),
@@ -1706,6 +1710,61 @@ fn lower_try_sync(
     let after_pos = b.here();
     b.patch_jump(after_fixup, after_pos);
     Ok(ok_payload)
+}
+
+/// Apply `?`'s one-hop `from` conversion (02 §7.4 / plans/M9.md item B).
+/// An explicit associated `from` is a Call; a `deriving(From)` miss is
+/// the structural single-field / single-variant wrap.
+fn lower_from_conversion(
+    err_payload: Temp,
+    conv: &Option<CalleeKey>,
+    target_ty: Type,
+    b: &mut FnBuilder,
+) -> Result<Temp, LowerError> {
+    let Some(key) = conv else {
+        return Ok(err_payload);
+    };
+    if resolve_fn(b.prog(), key).is_some() {
+        let dst = b.fresh(target_ty);
+        b.emit(Inst::Call {
+            dst,
+            write_backs: Vec::new(),
+            key: key.spelling(),
+            args: vec![err_payload],
+        });
+        return Ok(dst);
+    }
+    let CalleeKey::Method(name, member) = key else {
+        return Err(LowerError::unimplemented(
+            "a `?` conversion (`From`) in a synchronous body is",
+        ));
+    };
+    if member != "from" {
+        return Err(LowerError::unimplemented(
+            "a `?` conversion (`From`) in a synchronous body is",
+        ));
+    }
+    let prog = b.prog();
+    if prog.enums.contains_key(name) || prog.imported.enums.contains_key(name) {
+        let dst = b.fresh(target_ty);
+        b.emit(Inst::MakeEnum {
+            dst,
+            tag: 0,
+            payload: vec![err_payload],
+        });
+        return Ok(dst);
+    }
+    if struct_by_name(prog, name).is_some() {
+        let dst = b.fresh(target_ty);
+        b.emit(Inst::MakeAggregate {
+            dst,
+            elems: vec![err_payload],
+        });
+        return Ok(dst);
+    }
+    Err(LowerError::unimplemented(
+        "a `?` conversion (`From`) in a synchronous body is",
+    ))
 }
 
 fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Temp, LowerError> {
@@ -1904,20 +1963,15 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         // point, so nothing extra happens here.
         TypedExprKind::Take(inner) => lower_expr(inner, b, env),
         TypedExprKind::Try(inner, conv) => {
-            // plans/M7.md item E1: sync `?` (02-language.md §7.4), copied
-            // from `flowwir_lower::lower_try_check`. A driver's fallible
-            // `init` is a plain `fn` and must be able to `?`-propagate
-            // `BootError`. Active defers at the early-exit site are not
-            // run here — a driver's `init` that uses both `defer` and `?`
-            // fails closed by name rather than silently skipping cleanup
-            // (none of E1's goldens combine the two).
-            if !matches!(conv, None) {
-                return Err(LowerError::unimplemented(
-                    "a `?` conversion (`From`) in a synchronous body is",
-                ));
-            }
+            // plans/M7.md item E1 / plans/M9.md item B: sync `?`
+            // (02-language.md §7.4). A driver's fallible `init` is a plain
+            // `fn` and must be able to `?`-propagate `BootError`. Active
+            // defers at the early-exit site are not run here — a driver's
+            // `init` that uses both `defer` and `?` fails closed by name
+            // rather than silently skipping cleanup (none of E1's goldens
+            // combine the two).
             let v = lower_expr(inner, b, env)?;
-            lower_try_sync(v, &inner.ty, b)
+            lower_try_sync(v, &inner.ty, conv, b)
         }
         TypedExprKind::Binary(op, l, r) => lower_binary(*op, l, r, expr, b, env),
         TypedExprKind::OpCall(key, l, r) => {

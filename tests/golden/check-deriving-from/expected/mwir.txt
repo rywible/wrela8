@@ -1,0 +1,156 @@
+Program
+  Fn key=Store.init ret=unit temps=3 receiver=t0:mut params=[t1,t2]
+    Temp t0 ty=Store
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Body
+      0000: SetField base=t0 index=0 value=t1
+      0001: SetField base=t0 index=1 value=t2
+      0002: Return
+  Fn key=convert_wrapped ret=Result[u32, WrapError] temps=11 params=[t0]
+    Temp t0 ty=u32
+    Temp t1 ty=Result[u32, LoadError]
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=bool
+    Temp t5 ty=u32
+    Temp t6 ty=LoadError
+    Temp t7 ty=WrapError
+    Temp t8 ty=Result[u32, WrapError]
+    Temp t9 ty=u32
+    Temp t10 ty=Result[u32, WrapError]
+    Body
+      0000: Call key=parse dst=t1 args=[t0]
+      0001: EnumTag dst=t2 src=t1
+      0002: ConstInt dst=t3 ty=u64 value=0
+      0003: Compare op=== ty=u64 dst=t4 lhs=t2 rhs=t3
+      0004: JumpIfFalse cond=t4 target=0007
+      0005: EnumPayload dst=t5 src=t1 index=0
+      0006: Jump target=0011
+      0007: EnumPayload dst=t6 src=t1 index=0
+      0008: MakeEnum dst=t7 tag=0 payload=[t6]
+      0009: MakeEnum dst=t8 tag=1 payload=[t7]
+      0010: Return value=t8
+      0011: Copy dst=t9 src=t5
+      0012: MakeEnum dst=t10 tag=0 payload=[t9]
+      0013: Return value=t10
+      0014: Return
+  Fn key=parse ret=Result[u32, LoadError] temps=6 params=[t0]
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=bool
+    Temp t3 ty=LoadError
+    Temp t4 ty=Result[u32, LoadError]
+    Temp t5 ty=Result[u32, LoadError]
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=0
+      0001: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
+      0002: JumpIfFalse cond=t2 target=0007
+      0003: MakeEnum dst=t3 tag=0 payload=[t0]
+      0004: MakeEnum dst=t4 tag=1 payload=[t3]
+      0005: Return value=t4
+      0006: Jump target=0007
+      0007: MakeEnum dst=t5 tag=0 payload=[t0]
+      0008: Return value=t5
+      0009: Return
+  Fn key=settle ret=u32 temps=31 params=[t0]
+    Temp t0 ty=Result[u32, WrapError]
+    Temp t1 ty=u32
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=bool
+    Temp t5 ty=u32
+    Temp t6 ty=bool
+    Temp t7 ty=bool
+    Temp t8 ty=WrapError
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=bool
+    Temp t12 ty=WrapError
+    Temp t13 ty=bool
+    Temp t14 ty=bool
+    Temp t15 ty=LoadError
+    Temp t16 ty=u64
+    Temp t17 ty=u64
+    Temp t18 ty=bool
+    Temp t19 ty=LoadError
+    Temp t20 ty=bool
+    Temp t21 ty=bool
+    Temp t22 ty=u32
+    Temp t23 ty=u64
+    Temp t24 ty=u64
+    Temp t25 ty=bool
+    Temp t26 ty=u32
+    Temp t27 ty=bool
+    Temp t28 ty=bool
+    Temp t29 ty=u32
+    Temp t30 ty=u32
+    Body
+      0000: EnumTag dst=t2 src=t0
+      0001: ConstInt dst=t3 ty=u64 value=0
+      0002: Compare op=== ty=u64 dst=t4 lhs=t2 rhs=t3
+      0003: EnumPayload dst=t5 src=t0 index=0
+      0004: Copy dst=t1 src=t5
+      0005: ConstBool dst=t6 value=true
+      0006: BoolAnd dst=t7 lhs=t4 rhs=t6
+      0007: JumpIfFalse cond=t7 target=0010
+      0008: Return value=t1
+      0009: Jump target=0043
+      0010: EnumTag dst=t9 src=t0
+      0011: ConstInt dst=t10 ty=u64 value=1
+      0012: Compare op=== ty=u64 dst=t11 lhs=t9 rhs=t10
+      0013: EnumPayload dst=t12 src=t0 index=0
+      0014: Copy dst=t8 src=t12
+      0015: ConstBool dst=t13 value=true
+      0016: BoolAnd dst=t14 lhs=t11 rhs=t13
+      0017: JumpIfFalse cond=t14 target=0042
+      0018: EnumTag dst=t16 src=t8
+      0019: ConstInt dst=t17 ty=u64 value=0
+      0020: Compare op=== ty=u64 dst=t18 lhs=t16 rhs=t17
+      0021: EnumPayload dst=t19 src=t8 index=0
+      0022: Copy dst=t15 src=t19
+      0023: ConstBool dst=t20 value=true
+      0024: BoolAnd dst=t21 lhs=t18 rhs=t20
+      0025: JumpIfFalse cond=t21 target=0040
+      0026: EnumTag dst=t23 src=t15
+      0027: ConstInt dst=t24 ty=u64 value=0
+      0028: Compare op=== ty=u64 dst=t25 lhs=t23 rhs=t24
+      0029: EnumPayload dst=t26 src=t15 index=0
+      0030: Copy dst=t22 src=t26
+      0031: ConstBool dst=t27 value=true
+      0032: BoolAnd dst=t28 lhs=t25 rhs=t27
+      0033: JumpIfFalse cond=t28 target=0038
+      0034: ConstInt dst=t29 ty=u32 value=1000
+      0035: ArithChecked op=+ ty=u32 dst=t30 lhs=t22 rhs=t29 abort="arithmetic overflow in `+`"
+      0036: Return value=t30
+      0037: Jump target=0039
+      0038: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0039: Jump target=0041
+      0040: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0041: Jump target=0043
+      0042: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0043: Return
+  Fn key=test_deriving_from_converts ret=unit temps=3
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=1000
+      0001: ConstInt dst=t1 ty=u32 value=1000
+      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
+      0003: JumpIfFalse cond=t2 target=0005
+      0004: Jump target=0006
+      0005: AssertFail message="`?` must apply WrapError.from to LoadError.Bad(0)"
+      0006: Return
+  Fn key=test_ok_path_unchanged ret=unit temps=3
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=7
+      0001: ConstInt dst=t1 ty=u32 value=7
+      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
+      0003: JumpIfFalse cond=t2 target=0005
+      0004: Jump target=0006
+      0005: AssertFail message="Ok path must not convert"
+      0006: Return
