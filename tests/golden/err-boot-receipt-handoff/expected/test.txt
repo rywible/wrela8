@@ -1,0 +1,4 @@
+test a_caller_owned_receipt_resolves_with_the_device_word: FAILED assertion failed: vacuity twin: the disk holds ...EE11, so this must fail
+test the_parked_turn_really_left_and_re_entered: ok
+test the_bottom_half_is_what_resolved_them: ok
+2 passed, 1 failed

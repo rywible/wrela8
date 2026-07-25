@@ -1,0 +1,3 @@
+Module path=examples.check_panic_diverges
+  Fn unwrap_or_abandon(v: read Option[u64]) -> u64
+  Fn abandon_ends_a_block() -> u64

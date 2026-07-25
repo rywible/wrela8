@@ -1,0 +1,306 @@
+module examples.err_boot_receipt_handoff
+
+# **Vacuity control for `boot-receipt-handoff`.** Identical source, with
+# the read-back word asserted against a number the disk cannot hold (MAGIC
+# with its low nibble changed). Without this twin, a green
+# `boot-receipt-handoff` would also be green on a boot that admitted no
+# handoff, never parked on a receipt and never resumed — every `match` arm
+# would simply never be reached, and every `assert` inside one would go
+# unevaluated.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+const BLK_T_IN: u32 = 0
+const BLK_T_OUT: u32 = 1
+const MAGIC: u64 = 0xD15EA5E0C0FFEE11
+
+pool BlockControl
+pool BlockPayloads
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    capacity_sectors: u64
+    pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+    drains: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        self.drains = 0
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = 16
+        irq = negotiated.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    # 03 §6's ISR and bottom half: private, unchanged, and still the only
+    # thing that ever touches the used ring.
+    fn on_queue_irq(self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.irq_regs.interrupt_ack.write(handled)
+            wake(BlkDriver.drain)
+
+    @task
+    fn drain(mut self):
+        status = self.pending.swap_acquire(0)
+        if status == 0:
+            return unit
+        self.drains = self.drains + 1
+        # Resolves whatever receipt is in flight — and, this time, wakes a
+        # turn in a *different* actor (03 §5: "its bottom-half turn drains
+        # completions and resolves receipts without re-entering anyone").
+        self.queue.drain(max=QDEPTH)
+        return unit
+
+    # 03 §5's signature-determined handoff, twice. Nothing but the
+    # `device_writes_payload=`/`idempotent=`/`kind=` triple differs.
+    pub fn submit_write(mut self, lba: u64,
+                        take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
+        if lba >= self.capacity_sectors:
+            return self.queue.reject(
+                payload=take buffer,
+                error=IoError.OutOfRange,
+            )
+        permit = self.queue.reserve_proven(descriptors=3)
+        operation = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=lba),
+            payload=take buffer,
+            device_writes_payload=false,
+            status=BlkReqStatus(status=0xff),
+            idempotent=false,
+        )
+        return self.queue.publish(operation=take operation)
+
+    pub fn submit_read(mut self, lba: u64,
+                       take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
+        if lba >= self.capacity_sectors:
+            return self.queue.reject(
+                payload=take buffer,
+                error=IoError.OutOfRange,
+            )
+        permit = self.queue.reserve_proven(descriptors=3)
+        operation = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=BLK_T_IN, reserved=0, sector=lba),
+            payload=take buffer,
+            device_writes_payload=true,
+            status=BlkReqStatus(status=0xff),
+            idempotent=true,
+        )
+        return self.queue.publish(operation=take operation)
+
+    pub fn drain_count(read self) -> u64:
+        return self.drains
+
+# A third actor whose only job is to be runnable. Every mark it records
+# happened in a turn of its own — so a mark observed *between* the two
+# halves of `Client.round_trip` is proof that `round_trip`'s turn really
+# left and re-entered, rather than running straight through.
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> u64:
+        self.marks = self.marks * 10 + n
+        return self.marks
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@actor
+pub struct Client:
+    disk: Actor[BlkDriver]
+    led: Actor[Ledger]
+    block: Option[own[BlockPayloads] DmaBlock]
+    seen: u64
+    witness: u64
+
+    init(mut self, disk: Actor[BlkDriver], led: Actor[Ledger],
+         take block: own[BlockPayloads] DmaBlock):
+        self.disk = disk
+        self.led = led
+        self.block = Some(take block)
+        self.seen = 0
+        self.witness = 0
+
+    # 02-language.md §9.2: `self` must be whole at every suspension, so the
+    # payload leaves and re-enters `self` only inside these two synchronous
+    # helpers — the async body never holds `self` partially moved.
+    fn take_block(mut self) -> own[BlockPayloads] DmaBlock:
+        held = take self.block
+        self.block = None
+        match held:
+            case .Some(b):
+                return take b
+            case .None:
+                panic("client has no payload slot")
+
+    # The completion comes back with the payload (03 §3: "ownership returns
+    # with the completion"), which is put straight back into `self` and
+    # zeroed, so the read half cannot pass by reading its own leftovers.
+    fn stash_and_clear(mut self,
+                       take completion: IoCompletion[own[BlockPayloads] DmaBlock]) -> u64:
+        empty = take self.block
+        match empty:
+            case .None:
+                pass
+            case .Some(_):
+                assert false, "the payload slot is still held at completion"
+        b = take completion.payload
+        w = b.word
+        b.word = 0
+        self.block = Some(take b)
+        return w
+
+    fn stash(mut self,
+             take completion: IoCompletion[own[BlockPayloads] DmaBlock]) -> u64:
+        empty = take self.block
+        match empty:
+            case .None:
+                pass
+            case .Some(_):
+                assert false, "the payload slot is still held at completion"
+        b = take completion.payload
+        w = b.word
+        self.seen = w
+        self.block = Some(take b)
+        return w
+
+    pub fn read_seen(read self) -> u64:
+        return self.seen
+
+    pub fn read_witness(read self) -> u64:
+        return self.witness
+
+    pub async fn round_trip(mut self) -> u64:
+        buf = self.take_block()
+        buf.word = MAGIC
+        # --- handoff 1: write MAGIC to sector 0 -------------------------
+        r1 = await self.disk.submit_write(lba=0, buffer=take buf)
+        # The caller now owns a `Receipt[own[BlockPayloads] DmaBlock]` and
+        # parks on it. Nothing else in this image can resolve it.
+        c1 = await r1
+        cleared = self.stash_and_clear(completion=take c1)
+        assert cleared == MAGIC, "the write completion returns the payload the caller lent"
+        # --- a turn boundary that is not a receipt ----------------------
+        # An ordinary actor call between the two halves: its reply is the
+        # `Ledger`'s own running mark, which only a turn on a *different*
+        # actor can produce, so observing it proves this turn suspended.
+        m = await self.led.mark(n=7)
+        match m:
+            case .Ok(v):
+                self.witness = v
+            case .Err(_):
+                assert false, "ledger mark rejected"
+        # --- handoff 2: read sector 0 back ------------------------------
+        buf2 = self.take_block()
+        r2 = await self.disk.submit_read(lba=0, buffer=take buf2)
+        c2 = await r2
+        return self.stash(completion=take c2)
+
+@test(runtime)
+async fn a_caller_owned_receipt_resolves_with_the_device_word(cl: Actor[Client]):
+    v = await cl.round_trip()
+    match v:
+        case .Ok(n):
+            assert n == 0xD15EA5E0C0FFEE1F, "vacuity twin: the disk holds ...EE11, so this must fail"
+        case .Err(_):
+            assert false, "round_trip rejected"
+
+@test(runtime)
+async fn the_parked_turn_really_left_and_re_entered(cl: Actor[Client]):
+    # `witness` is the `Ledger`'s reply, recorded by `round_trip` *after*
+    # its first receipt resolved and *before* its second handoff. A turn
+    # that never suspended could not have run a `Ledger` turn at all.
+    w = await cl.read_witness()
+    match w:
+        case .Ok(n):
+            assert n == 7, "a Ledger turn ran between the two halves of one parked caller turn"
+        case .Err(_):
+            assert false, "read_witness rejected"
+
+@test(runtime)
+async fn the_bottom_half_is_what_resolved_them(disk: Actor[BlkDriver]):
+    # 03 §6: the receipts were resolved by the driver's bottom half, not by
+    # the caller polling — the caller has no queue to poll. `drains` counts
+    # *wakes that carried a nonzero pending word*, which on this device
+    # model is three across the two handoffs (measured, not derived: one
+    # handoff alone yields two — the constant extra wake is the device
+    # model's, and is not this item's to explain). What is load-bearing is
+    # that it is nonzero and that deleting `queue.drain` from the `@task`
+    # hangs the boot, which is the mutation this row is verified by.
+    d = await disk.drain_count()
+    match d:
+        case .Ok(n):
+            assert n == 3, "the bottom half woke for every handoff"
+        case .Err(_):
+            assert false, "drain_count rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-boot-receipt-handoff", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=1)
+    disk = img.driver(BlkDriver, device=blk, mailbox=4)
+    led = img.actor(Ledger, mailbox=4)
+    cl = img.actor(Client, mailbox=4, disk=disk, led=led, block=take payloads)
+    img.supervise(children=[disk, led, cl], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

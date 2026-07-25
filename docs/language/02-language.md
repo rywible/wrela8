@@ -623,6 +623,13 @@ CallError[E] =
   | PeerFailed(Peer)          # callee abandoned or restarted first
 ```
 
+One signature is exempt from that composition, and its own chapter names it:
+a call to a `@driver` method carrying the handoff calling convention
+([03 §5](03-hardware.md)) has result `Receipt[P]` exactly as declared. The
+receipt is the caller's endpoint on work no handler has done yet, so its
+failure vocabulary is the receipt's own state machine, reached by awaiting
+it — not `CallError`.
+
 `CallError` is the whole failure vocabulary for suspending work: group joins
 and installed tasks use the same variants minus the actor-specific ones.
 `?` converts it through an ordinary explicit `from` (§7.4), and whole-image

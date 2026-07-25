@@ -6274,6 +6274,17 @@ fn emit_group_addr_from_temp(ctx: &mut FnCtx, group_temp: Temp, dst_reg: u8, scr
 /// `emit_await_suspend` (which publishes its address) and
 /// `emit_await_resume` (which reads the staged value back) all share, so
 /// no two of them can disagree about one site.
+/// 03-hardware.md §5: is this `Await{ActorCall}` site's own result the
+/// bare `Receipt[P]` of the handoff calling convention rather than 02
+/// §9.4's composed `Result`? One predicate, read by `emit_await_resume`
+/// (which reads the reply back) and by `flow_reply_stage_size` /
+/// `aggregate_reply_of_await` (which must *not* reserve a staging slot
+/// for it — a receipt is one opaque word, `is_aggregate`'s own sealed-
+/// authority arm).
+fn is_handoff_receipt_reply(ty: &Type) -> bool {
+    matches!(ty, Type::Named(n, _) if n == "Receipt")
+}
+
 fn aggregate_reply_of_await(f: &MwirFn, result_temp: Temp) -> Option<Type> {
     let declared = crate::sema::bodies::decompose_call_error(&f.temp_types[result_temp.0])?;
     is_aggregate(&declared).then_some(declared)
@@ -6755,6 +6766,45 @@ fn emit_await_resume(
             // `sema::bodies::compose_call_error`) — never the bare
             // declared reply.
             let composed_ty = &f.temp_types[result_temp.0];
+            // 03-hardware.md §5's handoff calling convention (plans/M8.md
+            // item E, decision 32): the one `Actor[T]` await whose result
+            // is *not* 02 §9.4's composed `Result` — its result is
+            // `Receipt[P]` by name, the caller-owned endpoint the driver's
+            // `return queue.publish(...)` transitioned. One scalar word,
+            // delivered in the caller's own turn record exactly like every
+            // other scalar reply; the failure vocabulary that matters to it
+            // is the receipt's own state machine, reached by `await`ing it.
+            if is_handoff_receipt_reply(composed_ty) {
+                if gctx.arena_capacity != 0 {
+                    // 02 §9.5: "Cancellation becomes observable at
+                    // `await`". A composed reply carries `Cancelled` in its
+                    // error slot; a bare `Receipt[P]` has no error slot, and
+                    // inventing one would mean handing back a forged receipt
+                    // word. Fail closed by name rather than resolve a lie —
+                    // the honest repair is 03 §9's recovery turn, which is
+                    // plans/M8.md item F.
+                    return Err(CodegenError::unimplemented(
+                        "a handoff `await` (03-hardware.md §5) inside an image that declares a \
+                         `with group` — a cancelled handoff receipt has no `CallError` channel \
+                         to resolve into and must go to 03-hardware.md §9's recovery turn \
+                         (plans/M8.md item F)",
+                    ));
+                }
+                let result_off = ctx.frame.off(result_temp);
+                ctx.push(
+                    encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+                    format!(
+                        "ldr {}, [{}, #{OFF_TURN_REPLY}]",
+                        reg_name(X_A),
+                        reg_name(X_FRAME)
+                    ),
+                );
+                ctx.store_slot(X_A, result_off);
+                ctx.checkpoint();
+                emit_checkpoint_cancellation_test(ctx, gctx);
+                ctx.b_unconditional(state_flat_base[resume_state]);
+                return Ok(());
+            }
             if !matches!(composed_ty, Type::Result(_, _)) {
                 return Err(CodegenError::internal(format!(
                     "Await's own result_temp is not a composed Result type: {composed_ty:?}"
