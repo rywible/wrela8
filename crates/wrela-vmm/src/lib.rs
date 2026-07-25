@@ -1067,9 +1067,58 @@ fn boot_image_core(
                         drop(g);
                         return Ok(Step::Yield);
                     }
-                    // Core 0. A sibling that can run gets the machine
-                    // before this core considers sleeping the host thread —
-                    // sleeping while another core is ready would be the
+                    let deadline_ns = unsafe {
+                        let mut b = [0u8; 8];
+                        std::ptr::copy_nonoverlapping(
+                            host_ram.add(deadline_off),
+                            b.as_mut_ptr(),
+                            8,
+                        );
+                        u64::from_le_bytes(b)
+                    };
+                    // plans/M8.md item C2, decision 31: in a cross-core image,
+                    // core 0 parking with **no deadline armed** is exactly a
+                    // secondary core's park — "nothing of mine is ready" — and
+                    // is treated identically: this core stops being scheduled
+                    // until its own pending word is raised. There is nothing to
+                    // sleep until, so the deadline path below does not apply.
+                    //
+                    // **It is deliberately handled before the runnable-sibling
+                    // shortcut below**, and that ordering is the whole reason a
+                    // lost wake is catchable. Leaving core 0 `Runnable` because
+                    // some sibling happened to be runnable would mean core 0
+                    // gets the baton back whether or not anything ever woke it,
+                    // so an omitted cross-core wake would still boot green — a
+                    // decorative mechanism, found by mutating `waker_tag` and
+                    // watching every golden pass. Marking it `Parked` puts its
+                    // resumption where the machine's own contract puts it: on
+                    // its pending word. `next_core` then either finds a runnable
+                    // sibling, finds this core's own word already raised, or
+                    // fails the boot closed with `no core is runnable` — which
+                    // is what replaces the guest-side `DEADLOCK_MSG` for a
+                    // cross-core image.
+                    //
+                    // Unreachable for a single-core image: its entry driver only
+                    // parks when a deadline is armed, so every M5-M7 boot takes
+                    // the untouched path below.
+                    if cores_declared > 1 && deadline_ns == 0 {
+                        let blk_completed = {
+                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            let g = &mut *g;
+                            service_blk(&mut g.blk, &mut g.chooser, host_ram)?
+                        };
+                        // The mask-arm-recheck "recheck" half: a wake that
+                        // landed between the guest's last look and this trap
+                        // must not put the core to sleep.
+                        if !blk_completed && pending_word(host_ram, core) == 0 {
+                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            g.sched.state[core] = CoreState::Parked;
+                        }
+                        return Ok(Step::Yield);
+                    }
+                    // Core 0, with a deadline armed. A sibling that can run gets
+                    // the machine before this core considers sleeping the host
+                    // thread — sleeping while another core is ready would be the
                     // baton deciding scheduling by host timing, which
                     // decision 11 forbids. With no runnable sibling (every
                     // single-core image, always) this is exactly the M6
@@ -1086,15 +1135,6 @@ fn boot_image_core(
                             return Ok(Step::Yield);
                         }
                     }
-                    let deadline_ns = unsafe {
-                        let mut b = [0u8; 8];
-                        std::ptr::copy_nonoverlapping(
-                            host_ram.add(deadline_off),
-                            b.as_mut_ptr(),
-                            8,
-                        );
-                        u64::from_le_bytes(b)
-                    };
                     // plans/M7.md item F: the second doorbell poll site
                     // (06 §5). A completion serviced *here* — after the
                     // guest published and rang, before this VMM decides to
@@ -1113,26 +1153,6 @@ fn boot_image_core(
                     // wake already happened (or was never needed) — do
                     // not sleep at all, so it is never lost.
                     let already_pending = pending_word(host_ram, core) != 0;
-                    // plans/M8.md item C2, decision 31: in a cross-core
-                    // image core 0 parks with **no deadline** whenever its
-                    // own core has nothing ready, because a reply may still
-                    // be one turn away on another core. There is nothing to
-                    // sleep until, so this is the secondary cores' own park
-                    // exactly: stop being scheduled until this core's
-                    // pending word is raised. `next_core` then either finds
-                    // a runnable sibling, finds this core's own word already
-                    // raised (the recheck above, never lost), or fails the
-                    // boot closed with `no core is runnable` — which is what
-                    // replaces the guest-side `DEADLOCK_MSG` for a
-                    // cross-core image. Unreachable for a single-core image:
-                    // its entry driver only parks when a deadline is armed.
-                    if cores_declared > 1 && deadline_ns == 0 {
-                        if !already_pending && !blk_completed {
-                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                            g.sched.state[core] = CoreState::Parked;
-                        }
-                        return Ok(Step::Yield);
-                    }
                     if !already_pending && !blk_completed {
                         {
                             let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());

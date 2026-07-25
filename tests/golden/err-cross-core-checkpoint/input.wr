@@ -1,0 +1,61 @@
+module examples.err_cross_core_checkpoint
+
+# plans/M8.md item C2, decision 31 — the second shape a cross-core image
+# still refuses, and the one that would have been a **lost wake** rather
+# than a compile error if it had shipped.
+#
+# `__wrela_checkpoint_service` names core 0's own pending word by a baked-in
+# constant (`pending::core_word_addr(0)`, twice), and so does every
+# checkpoint test `codegen::FnCtx::checkpoint` emits at a loop back-edge.
+# That was exactly right while core 0 was the only core that ran turns. Item
+# C2 makes a turn run on core 1 — and a turn on core 1 reaching a loop
+# back-edge would find core 0's word nonzero, call the service, and have it
+# **clear that whole word**: the wake a cross-core reply ring just raised
+# for core 0 would be consumed by a core it was not addressed to, and core 0
+# would park forever. 06-machine.md §5's mask-arm-recheck exists to make a
+# wake unlosable, and this is the one way this item could still lose one.
+#
+# So it fails closed instead, naming the fn, its core, and why. Lifting it
+# is per-core checkpoint services (and the per-core deadline word they
+# imply) — real work with its own oracles, not something to smuggle in
+# behind a cross-core ring.
+#
+# Vacuity control: change `core=1` to `core=0` and this image builds and
+# boots — the loop is ordinary code, refused only for *where it runs*.
+# Remove the `while` and it builds on core 1 too: no back-edge, no
+# checkpoint, no `Reloc::CheckpointService`, which is why the check keys off
+# that reloc rather than off "is this method complicated".
+
+@actor
+pub struct Spinner:
+    n: u64
+
+    init(mut self):
+        self.n = 0
+
+    pub fn tick(mut self) -> u64:
+        i: u64 = 0
+        while i < 3:
+            self.n = self.n + 1
+            i = i + 1
+        return self.n
+
+@test(runtime)
+async fn spins_off_core(s: Actor[Spinner]):
+    v = await s.tick()
+    match v:
+        case .Ok(n):
+            assert n == 3, "unreachable: this image must not build"
+        case .Err(_):
+            assert false, "unreachable: this image must not build"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cross-core-checkpoint", target=Target.wrela_machine_v1)
+    s = img.actor(Spinner, mailbox=4, core=1)
+    img.supervise(
+        children=[s],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

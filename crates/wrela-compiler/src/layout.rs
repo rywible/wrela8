@@ -1152,15 +1152,26 @@ fn cross_core_rings(
 /// cross-core edge's message semantics to be identical, and this item
 /// delivers that by routing the request and the reply *word* over rings.
 /// An aggregate reply does not travel that way: `build_rt_select_and_run`'s
-/// aggregate arm hands the callee the awaiting turn's own staging-slot
-/// address in `x8` and the callee writes the aggregate straight into that
-/// frame — a direct store into another core's memory with no ring and no
-/// ordering the compiler placed there. Under decision 11's baton that
-/// happens to work today, and **that is exactly why it is refused**: no
-/// oracle this project owns could show it broken, so shipping it would be
-/// shipping an untested claim about publish/acquire ordering. Refused per
-/// target actor rather than per method, because the ring's own slot format
-/// is per actor.
+/// aggregate arm loads `[waker + OFF_TURN_REPLY_SLOT]` and hands the callee
+/// the awaiting turn's own staging-slot address in `x8`, and the callee
+/// writes the aggregate straight into that frame — a direct store into
+/// another core's memory with no ring and no ordering the compiler placed
+/// there.
+///
+/// Two reasons, and the first was found by removing this arm and running
+/// the gate rather than by reading the code. (a) **The waker that reaches
+/// that arm is core-tagged** (decision 30), so `[waker + ...]` dereferences
+/// an address with the tag still in its top bits: the boot faults on core 1
+/// with `FAR_EL1=0x2000000040501660` — the tag, not memory. Untagging it
+/// there is a one-line change, which is what makes reason (b) the real one.
+/// (b) Even untagged, the store is a direct cross-core write with no
+/// publication this compiler placed, and under decision 11's baton **no
+/// oracle this project owns could show it broken** — a green boot would be
+/// evidence of the baton, not of correct publish/acquire ordering. Shipping
+/// it would be shipping an untested claim, so it is refused instead.
+///
+/// Refused per target actor rather than per method, because the ring's own
+/// slot format is per actor.
 ///
 /// **2. A checkpoint inside a turn placed on a secondary core.**
 /// `__wrela_checkpoint_service` and every `codegen::FnCtx::checkpoint` test
@@ -5620,7 +5631,12 @@ fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capaci
 ///
 /// The wake is skipped on rejection: nothing was published, so there is
 /// nothing to wake for.
-fn build_rt_xsend(ring_enqueue_start: usize, src_core: usize, dst_core: usize, start: usize) -> Asm {
+fn build_rt_xsend(
+    ring_enqueue_start: usize,
+    src_core: usize,
+    dst_core: usize,
+    start: usize,
+) -> Asm {
     let mut a = Asm::new(start);
     a.push(encode::enc_sub_imm(31, 31, 16, true));
     a.push(encode::enc_str_x_imm(30, 31, 0));
@@ -8411,51 +8427,51 @@ fn build_entry_driver(
                 continue_after_loop = true;
             }
             if !continue_after_loop {
-            // Nothing ready. plans/M6.md item E, decision 7/06 §5: park
-            // iff a deadline is pending (`OFF_NEXT_DEADLINE != 0`);
-            // otherwise item D's own deadlock diagnostic still applies
-            // unchanged — no deadline and nothing ready is no progress,
-            // ever (the park path below can never turn a real deadlock
-            // into a hang: it only ever fires when *something* names a
-            // future wake, which item F's groups are the only real M6
-            // producer of — conformance tests exercise it via
-            // hand-arranged state, exactly like D's own deadlock test).
-            a.load_imm(9, addrs.info_base + mi::OFF_NEXT_DEADLINE);
-            a.push(encode::enc_ldr_x_imm(10, 9, 0));
-            let skip_park = a.skip_placeholder(); // cbz x10, .deadlock
-            // Park (06 §5's own protocol): the deadline is already resident
-            // at `OFF_NEXT_DEADLINE` (a real group's expiry write is item
-            // F's job; conformance hand-arranges it here, mirroring D's
-            // own hand-arranged deadlock state) — x10 already holds it.
-            // The trapping store to `PARK_MMIO_ADDR` is the park itself;
-            // the VMM reads the real deadline back from
-            // `OFF_NEXT_DEADLINE`, not from the value stored here.
-            a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
-            a.push(encode::enc_str_x_imm(10, 9, 0));
-            // Resumed: the VMM slept until the deadline (or was woken
-            // sooner), raised the vector, and resumed this vCPU with PC
-            // advanced past the trapping store above. The park's own
-            // resume point is a checkpoint by construction (06 §4:
-            // "observed only at checkpoints and parks") — service it
-            // directly, unconditionally, then retry the scheduler.
-            a.bl_to(checkpoint_service_word);
-            a.b_to(drive_top);
-            let deadlock = a.abs();
-            a.patch_cbz(skip_park, 10);
-            debug_assert_eq!(deadlock, a.abs());
-            // Deadlock: root not ready, nothing else ready, no deadline
-            // pending either — no progress is possible, ever.
-            a.load_rodata_addr_at(0, ddl_off);
-            a.load_imm(1, DEADLOCK_MSG.len() as u64);
-            a.bl_to(abort_fixed_start); // noreturn (landing pad)
-            let reenter = a.abs();
-            a.patch_cbnz(skip_reenter, 10);
-            debug_assert_eq!(reenter, a.abs());
-            a.bl_call_key(name); // resume (the fn's own discriminant routes)
-            a.b_to(status_loop_top);
-            let done = a.abs();
-            a.patch_cbz(skip_done, 0);
-            debug_assert_eq!(done, a.abs());
+                // Nothing ready. plans/M6.md item E, decision 7/06 §5: park
+                // iff a deadline is pending (`OFF_NEXT_DEADLINE != 0`);
+                // otherwise item D's own deadlock diagnostic still applies
+                // unchanged — no deadline and nothing ready is no progress,
+                // ever (the park path below can never turn a real deadlock
+                // into a hang: it only ever fires when *something* names a
+                // future wake, which item F's groups are the only real M6
+                // producer of — conformance tests exercise it via
+                // hand-arranged state, exactly like D's own deadlock test).
+                a.load_imm(9, addrs.info_base + mi::OFF_NEXT_DEADLINE);
+                a.push(encode::enc_ldr_x_imm(10, 9, 0));
+                let skip_park = a.skip_placeholder(); // cbz x10, .deadlock
+                // Park (06 §5's own protocol): the deadline is already resident
+                // at `OFF_NEXT_DEADLINE` (a real group's expiry write is item
+                // F's job; conformance hand-arranges it here, mirroring D's
+                // own hand-arranged deadlock state) — x10 already holds it.
+                // The trapping store to `PARK_MMIO_ADDR` is the park itself;
+                // the VMM reads the real deadline back from
+                // `OFF_NEXT_DEADLINE`, not from the value stored here.
+                a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
+                a.push(encode::enc_str_x_imm(10, 9, 0));
+                // Resumed: the VMM slept until the deadline (or was woken
+                // sooner), raised the vector, and resumed this vCPU with PC
+                // advanced past the trapping store above. The park's own
+                // resume point is a checkpoint by construction (06 §4:
+                // "observed only at checkpoints and parks") — service it
+                // directly, unconditionally, then retry the scheduler.
+                a.bl_to(checkpoint_service_word);
+                a.b_to(drive_top);
+                let deadlock = a.abs();
+                a.patch_cbz(skip_park, 10);
+                debug_assert_eq!(deadlock, a.abs());
+                // Deadlock: root not ready, nothing else ready, no deadline
+                // pending either — no progress is possible, ever.
+                a.load_rodata_addr_at(0, ddl_off);
+                a.load_imm(1, DEADLOCK_MSG.len() as u64);
+                a.bl_to(abort_fixed_start); // noreturn (landing pad)
+                let reenter = a.abs();
+                a.patch_cbnz(skip_reenter, 10);
+                debug_assert_eq!(reenter, a.abs());
+                a.bl_call_key(name); // resume (the fn's own discriminant routes)
+                a.b_to(status_loop_top);
+                let done = a.abs();
+                a.patch_cbz(skip_done, 0);
+                debug_assert_eq!(done, a.abs());
             }
         }
 
@@ -11337,7 +11353,13 @@ mod harness_jit {
             sel1_start,
         ));
         let run_one_start = combined.len();
-        let run_one = build_rt_run_one(&[sel0_start, sel1_start], &[], cursor_addr, run_one_start);
+        let run_one = build_rt_run_one(
+            &[sel0_start, sel1_start],
+            &[],
+            None,
+            cursor_addr,
+            run_one_start,
+        );
         combined.extend(run_one.words);
 
         let page = ExecPage::new(&combined);
