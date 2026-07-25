@@ -13,6 +13,10 @@ module examples.boot_driver_message
 #      `disk.capacity()` and resumes with the reply. Actor -> driver.
 #   2. The `@test(runtime)` root awaits `disk.sector_bytes()` directly
 #      through its own `Actor[BlkDriver]` parameter. Root -> driver.
+#   3. The driver's own `pub async fn scaled_capacity` awaits an `@actor`
+#      and resumes — a driver turn that **parks in the driver's own turn
+#      area** and is re-dispatched to its saved state, which is the half of
+#      "an ordinary root" a sync-only driver method would never exercise.
 #
 # Both go through the identical `rt_enqueue_*` / `rt_select_and_run_*` pair
 # every `@actor` uses; nothing in the runtime can tell the two roots apart,
@@ -60,11 +64,14 @@ pub struct BlkDriver:
     irq: IrqCap[u32]
     drains: u64
     bringup_done: u64
+    scale: Actor[Scale]
 
     init(mut self,
          take cap: DeviceCap[VirtioBlock],
-         take control_pool: DmaPool[BlockControl, 512])
+         take control_pool: DmaPool[BlockControl, 512],
+         scale: Actor[Scale])
         -> Result[unit, BootError]:
+        self.scale = scale
         claimed = VirtioBlock.claim(cap=take cap)
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         self.pending = InterruptCell(0)
@@ -121,6 +128,26 @@ pub struct BlkDriver:
     pub fn ready(read self) -> u64:
         return self.bringup_done
 
+    # A driver turn that parks: `await` inside a `@driver`'s own `pub async
+    # fn`, resolved into the driver's own turn area (not a free turn).
+    pub async fn scaled_capacity(read self) -> u64:
+        v = await self.scale.times(n=self.capacity_sectors)
+        match v:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0
+
+@actor
+pub struct Scale:
+    factor: u64
+
+    init(mut self, factor: u64):
+        self.factor = factor
+
+    pub fn times(read self, n: u64) -> u64:
+        return n * self.factor
+
 @actor
 pub struct Storage:
     disk: Actor[BlkDriver]
@@ -152,6 +179,15 @@ async fn root_messages_the_driver_directly(disk: Actor[BlkDriver]):
             assert false, "driver call rejected"
 
 @test(runtime)
+async fn a_driver_turn_parks_and_resumes(disk: Actor[BlkDriver]):
+    v = await disk.scaled_capacity()
+    match v:
+        case .Ok(n):
+            assert n == 160, "16 sectors * factor 10, computed across a parked driver turn"
+        case .Err(_):
+            assert false, "driver call rejected"
+
+@test(runtime)
 async fn root_never_reenters_bring_up(disk: Actor[BlkDriver]):
     # 03-hardware.md §9: publication requires `Running`, and every state
     # transition consumes its input. A driver mailbox must not become a way
@@ -175,8 +211,9 @@ pub fn build() -> Image:
         vector=1,
     )
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
-    disk = img.driver(BlkDriver, device=blk, mailbox=4)
+    scale = img.actor(Scale, mailbox=4, factor=10)
+    disk = img.driver(BlkDriver, device=blk, mailbox=4, scale=scale)
     st = img.actor(Storage, mailbox=4, disk=disk)
-    img.supervise(children=[disk, st], strategy=Restart.OneForOne,
+    img.supervise(children=[disk, scale, st], strategy=Restart.OneForOne,
                   intensity=RestartIntensity(max=3, within=seconds(10)))
     return img.seal()

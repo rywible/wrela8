@@ -7,7 +7,7 @@ module examples.err_boot_driver_message
 # nothing, ran no driver turn and delivered no reply — every `match` arm
 # would simply never be reached.
 #
-# The expected transcript is the guest's own abort line plus a nonzero
+# The expected transcript is the guest's own FAILED line plus a nonzero
 # exit, exactly as `err-boot-blk-roundtrip` pins for the M7 flagship.
 
 @layout(mmio, endian=little)
@@ -42,11 +42,14 @@ pub struct BlkDriver:
     irq: IrqCap[u32]
     drains: u64
     bringup_done: u64
+    scale: Actor[Scale]
 
     init(mut self,
          take cap: DeviceCap[VirtioBlock],
-         take control_pool: DmaPool[BlockControl, 512])
+         take control_pool: DmaPool[BlockControl, 512],
+         scale: Actor[Scale])
         -> Result[unit, BootError]:
+        self.scale = scale
         claimed = VirtioBlock.claim(cap=take cap)
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         self.pending = InterruptCell(0)
@@ -103,6 +106,26 @@ pub struct BlkDriver:
     pub fn ready(read self) -> u64:
         return self.bringup_done
 
+    # A driver turn that parks: `await` inside a `@driver`'s own `pub async
+    # fn`, resolved into the driver's own turn area (not a free turn).
+    pub async fn scaled_capacity(read self) -> u64:
+        v = await self.scale.times(n=self.capacity_sectors)
+        match v:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0
+
+@actor
+pub struct Scale:
+    factor: u64
+
+    init(mut self, factor: u64):
+        self.factor = factor
+
+    pub fn times(read self, n: u64) -> u64:
+        return n * self.factor
+
 @actor
 pub struct Storage:
     disk: Actor[BlkDriver]
@@ -134,6 +157,15 @@ async fn root_messages_the_driver_directly(disk: Actor[BlkDriver]):
             assert false, "driver call rejected"
 
 @test(runtime)
+async fn a_driver_turn_parks_and_resumes(disk: Actor[BlkDriver]):
+    v = await disk.scaled_capacity()
+    match v:
+        case .Ok(n):
+            assert n == 160, "16 sectors * factor 10, computed across a parked driver turn"
+        case .Err(_):
+            assert false, "driver call rejected"
+
+@test(runtime)
 async fn root_never_reenters_bring_up(disk: Actor[BlkDriver]):
     # 03-hardware.md §9: publication requires `Running`, and every state
     # transition consumes its input. A driver mailbox must not become a way
@@ -157,8 +189,9 @@ pub fn build() -> Image:
         vector=1,
     )
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
-    disk = img.driver(BlkDriver, device=blk, mailbox=4)
+    scale = img.actor(Scale, mailbox=4, factor=10)
+    disk = img.driver(BlkDriver, device=blk, mailbox=4, scale=scale)
     st = img.actor(Storage, mailbox=4, disk=disk)
-    img.supervise(children=[disk, st], strategy=Restart.OneForOne,
+    img.supervise(children=[disk, scale, st], strategy=Restart.OneForOne,
                   intensity=RestartIntensity(max=3, within=seconds(10)))
     return img.seal()
