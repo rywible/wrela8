@@ -3053,6 +3053,85 @@ fn declare_struct(
     })
 }
 
+// ===========================================================================
+// plans/M7.md item G, decision 14: re-declare a struct's members after
+// per-instantiation `comptime if` expansion (`specialize::expand_deferred_members`).
+// Generics on the result are cleared — the instantiation is concrete.
+// ===========================================================================
+pub(crate) fn declare_struct_members_for_instantiation(
+    name: &str,
+    expanded_members: &[Member],
+    template: &DeclStruct,
+    mctx: &crate::sema::bodies::ModuleCtx,
+    call_span: Span,
+) -> Result<DeclStruct, SemaError> {
+    let shapes = &mctx.shapes;
+    let module_pools = &mctx.module_pools;
+    let local_pools: BTreeSet<String> = expanded_members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Pool(p) => Some(p.name.clone()),
+            _ => None,
+        })
+        .collect();
+    // Instantiation is concrete: no generic scope (const args already
+    // expanded out of the AST; type args are substituted by the caller).
+    let scope = BTreeMap::new();
+    let mut members = Vec::new();
+    let mut component_types = Vec::new();
+    for m in expanded_members {
+        match m {
+            Member::Field(f) => {
+                let ty = resolve_type(&f.ty, shapes, module_pools, &local_pools, &scope, false)?;
+                component_types.push((ty.clone(), f.span));
+                members.push(DeclMember::Field(DeclField {
+                    name: f.name.clone(),
+                    ty,
+                }));
+            }
+            Member::Fn(f) => members.push(DeclMember::Fn(declare_fn(
+                f,
+                shapes,
+                module_pools,
+                &local_pools,
+                &scope,
+            )?)),
+            Member::Init(i) => members.push(DeclMember::Init(declare_init(
+                i,
+                shapes,
+                module_pools,
+                &local_pools,
+                &scope,
+            )?)),
+            Member::Pool(p) => members.push(DeclMember::Pool(p.name.clone())),
+            Member::ComptimeIf(c) => {
+                return Err(SemaError::at(
+                    "comptime",
+                    format!(
+                        "internal error: deferred `comptime if` on `{name}` survived \
+                         instantiation expansion"
+                    ),
+                    c.span,
+                ));
+            }
+        }
+    }
+    let _ = call_span;
+    Ok(DeclStruct {
+        name: name.to_string(),
+        generics: Vec::new(),
+        deriving: template.deriving.clone(),
+        classification: template.classification,
+        members,
+        is_resource_fiat: template.is_resource_fiat,
+        is_actor: template.is_actor,
+        is_driver: template.is_driver,
+        layout_kind: template.layout_kind,
+        component_types,
+        span: template.span,
+    })
+}
+
 /// `@layout(<kind>, ...)`'s kind, for a struct that carries the attribute
 /// at all — `None` for every ordinary struct, and `None` too for a
 /// malformed `@layout` this cannot read (which `check_layouts` has
@@ -3317,6 +3396,12 @@ fn resolve_named(
         // written by source, so it never needs a annotation-position
         // resolution here).
         "Image" => Some(Type::Named("Image".to_string(), vec![])),
+        // =================================================================
+        // plans/M7.md item G, decision 14: prelude enums as annotation
+        // types (`const MODE: DriverMode`). Same zero-arg Named shape as
+        // `Image`; variants live in `builtin_enum_variants`.
+        // =================================================================
+        "DriverMode" | "Target" | "Restart" => Some(Type::Named(n.name.clone(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {

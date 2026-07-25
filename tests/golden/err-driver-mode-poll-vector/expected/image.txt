@@ -1,0 +1,1 @@
+error[build]: `driver#0` is `BlkDriver[DriverMode.Poll]` but its device declares `vector=1` — 03-hardware.md §7: a poll build eliminates the ISR and vector entirely

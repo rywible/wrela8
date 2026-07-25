@@ -1,0 +1,1 @@
+error[build]: `driver#0` is `BlkDriver[DriverMode.Irq]` but its device declared no `vector=` — 03-hardware.md §7: an IRQ build needs a vector to bind

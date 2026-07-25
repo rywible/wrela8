@@ -911,17 +911,27 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             Ok(SLOT + size_of(e_ty, ctx)?.max(SLOT))
         }
         Type::Named(name, targs) => {
-            if !targs.is_empty() {
-                return Err(
-                    "sizing an instantiated generic struct/enum is not implemented yet".to_string(),
-                );
-            }
-            if let Some(fields) = ctx.structs.get(name) {
+            // plans/M7.md item G, decision 14: an instantiated generic
+            // (`BlkDriver[DriverMode.Irq]`) is keyed in `LayoutCtx` by its
+            // rendered type spelling — populated from
+            // `TypedProgram::instantiations` before codegen/layout.
+            let key = if targs.is_empty() {
+                name.clone()
+            } else {
+                crate::sema::types::render_type(&Type::Named(name.clone(), targs.clone()))
+            };
+            if let Some(fields) = ctx.structs.get(&key) {
                 let mut total = 0;
                 for f in fields {
                     total += size_of(f, ctx)?;
                 }
                 return Ok(total);
+            }
+            if !targs.is_empty() {
+                return Err(format!(
+                    "sizing an instantiated generic struct/enum `{key}` is not in this layout \
+                     context (no matching TypedProgram instantiation)"
+                ));
             }
             if let Some(variants) = ctx.enums.get(name) {
                 let mut widest = 0usize;

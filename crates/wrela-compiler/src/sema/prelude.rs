@@ -37,7 +37,15 @@ const LITERAL_SURFACE: &[&str] = &["Static", "Str", "Bytes"];
 /// `actor`, `pool`, `dma_pool`, `supervise`, `check_layout`, `seal`,
 /// `handle`) are never bare identifiers — they only ever appear after a
 /// `.` — so they need no entry here.
-const IMAGE_BUILDER: &[&str] = &["Image", "RestartIntensity", "seconds", "Target", "Restart"];
+const IMAGE_BUILDER: &[&str] = &[
+    "Image",
+    "RestartIntensity",
+    "seconds",
+    "Target",
+    "Restart",
+    // plans/M7.md item G, decision 14: 03 §7's driver-mode const generic.
+    "DriverMode",
+];
 
 /// The actor/async surface's own bare prelude names (plans/M6.md item A,
 /// 02-language.md §9): `Actor` (a type name, `Actor[T]` — `sema::types::resolve_named`'s
@@ -117,6 +125,11 @@ pub fn builtin_enum_variants(name: &str) -> Option<&'static [&'static str]> {
         // virtio-storage.wr worked example additionally exercises
         // `Restart.OneForAll` (`img.supervise(strategy=Restart.OneForAll, ...)`).
         "Restart" => Some(&["OneForOne", "OneForAll", "RestForOne"]),
+        // =================================================================
+        // plans/M7.md item G, decision 14: 03-hardware.md §7's driver mode
+        // const-generic vocabulary (`BlkDriver[DriverMode.Irq]`).
+        // =================================================================
+        "DriverMode" => Some(&["Irq", "Poll"]),
         _ => None,
     }
 }

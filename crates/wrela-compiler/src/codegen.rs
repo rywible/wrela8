@@ -765,15 +765,16 @@ fn field_offset_size(
             Ok((sz * index, sz))
         }
         Type::Named(name, targs) => {
-            if !targs.is_empty() {
-                return Err(CodegenError::unimplemented(
-                    "field access on an instantiated generic struct",
-                ));
-            }
+            // plans/M7.md item G, decision 14: look up by rendered type.
+            let key = if targs.is_empty() {
+                name.clone()
+            } else {
+                crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
+            };
             let fields = layout
                 .structs
-                .get(name)
-                .ok_or_else(|| CodegenError::internal(format!("unknown struct `{name}`")))?;
+                .get(&key)
+                .ok_or_else(|| CodegenError::internal(format!("unknown struct `{key}`")))?;
             let mut off = 0usize;
             for f in &fields[..index] {
                 off += mwir::size_of(f, layout).map_err(|e| CodegenError::unimplemented(&e))?;
@@ -2561,16 +2562,17 @@ fn write_back_self_skipping_interrupt_cells(
         }
         return Ok(());
     };
-    if !targs.is_empty() {
-        return Err(CodegenError::unimplemented(
-            "mut-self write-back for an instantiated generic receiver",
-        ));
-    }
-    let fields = ctx
-        .layout
-        .structs
-        .get(name)
-        .ok_or_else(|| CodegenError::internal(format!("unknown struct `{name}`")))?;
+    // plans/M7.md item G, decision 14: instantiated drivers
+    // (`BlkDriver[DriverMode.Irq]`) are keyed in LayoutCtx by rendered
+    // type spelling — same lookup `mwir::size_of` uses.
+    let layout_key = if targs.is_empty() {
+        name.clone()
+    } else {
+        crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
+    };
+    let fields = ctx.layout.structs.get(&layout_key).ok_or_else(|| {
+        CodegenError::internal(format!("unknown struct `{layout_key}` in layout ctx"))
+    })?;
     let src_base = frame.off(self_temp);
     let mut off = 0usize;
     for field_ty in fields {
@@ -3562,19 +3564,25 @@ fn emit_self_path(
                 "SelfPath: an intermediate step is not a struct type",
             ));
         };
-        if !targs.is_empty() {
-            return Err(CodegenError::unimplemented(
-                "a SelfPath through an instantiated generic struct",
-            ));
-        }
-        let names = ctx.layout.struct_field_names.get(sname).ok_or_else(|| {
-            CodegenError::internal(format!("unknown struct `{sname}` (no field-name table)"))
-        })?;
+        let layout_key = if targs.is_empty() {
+            sname.clone()
+        } else {
+            crate::sema::types::render_type(&Type::Named(sname.clone(), targs.clone()))
+        };
+        let names = ctx
+            .layout
+            .struct_field_names
+            .get(&layout_key)
+            .ok_or_else(|| {
+                CodegenError::internal(format!(
+                    "unknown struct `{layout_key}` (no field-name table)"
+                ))
+            })?;
         let idx = names.iter().position(|n| n == name).ok_or_else(|| {
-            CodegenError::internal(format!("unknown field `{name}` on struct `{sname}`"))
+            CodegenError::internal(format!("unknown field `{name}` on struct `{layout_key}`"))
         })?;
         let (off, _size) = field_offset_size(&base_ty, idx, ctx.layout)?;
-        let field_ty = ctx.layout.structs[sname][idx].clone();
+        let field_ty = ctx.layout.structs[&layout_key][idx].clone();
         cur_off += off;
         cur_ty = field_ty;
     }

@@ -113,7 +113,58 @@ pub fn check_sealed(
     check_pool_decls(graph, programs)?;
     check_init_args(graph, programs)?;
     check_supervision(graph)?;
+    // DriverMode before vector-binding: an Irq build without `vector=`
+    // would also trip `take_irq` unowned (§6); name the §7 mode
+    // contradiction first when MODE is present.
+    check_driver_mode(graph)?;
     check_vector_bindings(graph, programs)?;
+    Ok(())
+}
+
+// ===========================================================================
+// plans/M7.md item G, decision 14: 03-hardware.md §7 — DriverMode is a
+// const generic that changes the ISR/vector graph. Poll + vector, or Irq
+// without a vector, is a sealed-graph contradiction.
+// ===========================================================================
+fn check_driver_mode(graph: &ImageGraph) -> Result<(), SemaError> {
+    for (di, decl) in graph.drivers.iter().enumerate() {
+        let Type::Named(_, targs) = &decl.actor_type else {
+            continue;
+        };
+        let mode = targs.iter().find_map(|a| match a {
+            crate::sema::types::TypeArg::Const(e) => match e {
+                crate::syntax::ast::Expr::Field(base, _, variant)
+                    if matches!(base.as_ref(), crate::syntax::ast::Expr::Name(_, n) if n == "DriverMode") =>
+                {
+                    Some(variant.as_str())
+                }
+                _ => None,
+            },
+            _ => None,
+        });
+        let Some(mode) = mode else {
+            continue;
+        };
+        let vector = device_index_of_driver(decl)
+            .and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)));
+        match (mode, vector) {
+            ("Poll", Some(v)) => {
+                return Err(build_error(format!(
+                    "`driver#{di}` is `{}` but its device declares `vector={v}` — \
+                     03-hardware.md §7: a poll build eliminates the ISR and vector entirely",
+                    crate::sema::types::render_type(&decl.actor_type)
+                )));
+            }
+            ("Irq", None) => {
+                return Err(build_error(format!(
+                    "`driver#{di}` is `{}` but its device declared no `vector=` — \
+                     03-hardware.md §7: an IRQ build needs a vector to bind",
+                    crate::sema::types::render_type(&decl.actor_type)
+                )));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -1130,7 +1181,38 @@ impl Constructor {
 /// lives in `TypedProgram::instantiations` rather than `structs`, and
 /// whose `init` is therefore invisible to this pass. Fail closed, and
 /// leave it exactly as loud as it already was.
-fn find_constructor(programs: &BTreeMap<String, TypedProgram>, struct_name: &str) -> Constructor {
+fn find_constructor(programs: &BTreeMap<String, TypedProgram>, actor_type: &Type) -> Constructor {
+    let Type::Named(struct_name, targs) = actor_type else {
+        return Constructor::Init(Vec::new());
+    };
+    // plans/M7.md item G, decision 14: mode-generic drivers' `init` lives
+    // on the instantiation, not the unsubstituted template.
+    if !targs.is_empty() {
+        let key = format!("struct:{}", crate::sema::types::render_type(actor_type));
+        for p in programs.values() {
+            if let Some(crate::sema::typed::TypedInstantiation::Struct(s)) =
+                p.instantiations.get(&key)
+            {
+                if let Some(f) = &s.init {
+                    return Constructor::Init(
+                        f.params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .collect(),
+                    );
+                }
+                return Constructor::Fields(
+                    s.fields
+                        .iter()
+                        .filter_map(|name| {
+                            s.field_types.get(name).map(|ty| (name.clone(), ty.clone()))
+                        })
+                        .collect(),
+                );
+            }
+        }
+        return Constructor::Init(Vec::new());
+    }
     if let Some(f) = programs
         .values()
         .find_map(|p| p.structs.get(struct_name).and_then(|s| s.init.as_ref()))
@@ -1474,7 +1556,7 @@ fn check_one_decl(
     let Type::Named(struct_name, _) = actor_type else {
         return Ok(()); // defensive: only ever a bare struct name reaches here
     };
-    let ctor = find_constructor(programs, struct_name);
+    let ctor = find_constructor(programs, actor_type);
     let reserved = reserved_args(kind);
     let mut satisfied: BTreeSet<String> = BTreeSet::new();
     for a in args {
@@ -1758,15 +1840,18 @@ pub fn check_vector_bindings(
     let mut binds: Vec<IrqBindSite> = Vec::new();
     let mut take_irq_sites: Vec<(String, Option<u64>, String)> = Vec::new();
     for (di, decl) in graph.drivers.iter().enumerate() {
-        let Type::Named(driver, _) = &decl.actor_type else {
+        let Type::Named(driver, targs) = &decl.actor_type else {
             continue;
         };
         let vector = device_index_of_driver(decl)
             .and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)));
-        let Some(program) = programs.values().find(|p| p.structs.contains_key(driver)) else {
-            continue;
-        };
-        let Some(s) = program.structs.get(driver) else {
+        let Some(program) = programs.values().find(|p| {
+            p.structs.contains_key(driver)
+                || p.instantiations.keys().any(|k| {
+                    k.strip_prefix("struct:").unwrap_or(k).split('[').next()
+                        == Some(driver.as_str())
+                })
+        }) else {
             continue;
         };
         let mut walk = |site_key: String, f: &crate::sema::typed::TypedFn| {
@@ -1779,14 +1864,39 @@ pub fn check_vector_bindings(
                 &mut take_irq_sites,
             );
         };
-        if let Some(f) = &s.init {
-            walk(format!("{driver}.init"), f);
-        }
-        for (m, f) in &s.methods {
-            walk(format!("{driver}.{m}"), f);
-        }
-        for (m, f) in &s.assoc_fns {
-            walk(format!("{driver}.{m}"), f);
+        // Plain (non-generic) driver: bodies live on `program.structs`.
+        if targs.is_empty() {
+            if let Some(s) = program.structs.get(driver) {
+                if let Some(f) = &s.init {
+                    walk(format!("{driver}.init"), f);
+                }
+                for (m, f) in &s.methods {
+                    walk(format!("{driver}.{m}"), f);
+                }
+                for (m, f) in &s.assoc_fns {
+                    walk(format!("{driver}.{m}"), f);
+                }
+            }
+        } else {
+            // plans/M7.md item G, decision 14: mode-generic driver bodies
+            // live on the instantiation (`struct:BlkDriver[DriverMode.Irq]`).
+            let key = format!(
+                "struct:{}",
+                crate::sema::types::render_type(&decl.actor_type)
+            );
+            if let Some(crate::sema::typed::TypedInstantiation::Struct(s)) =
+                program.instantiations.get(&key)
+            {
+                if let Some(f) = &s.init {
+                    walk(format!("{key}.init"), f);
+                }
+                for (m, f) in &s.methods {
+                    walk(format!("{key}.{m}"), f);
+                }
+                for (m, f) in &s.assoc_fns {
+                    walk(format!("{key}.{m}"), f);
+                }
+            }
         }
         let _ = di;
     }

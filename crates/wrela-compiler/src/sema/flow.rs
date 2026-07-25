@@ -41,6 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::sema::SemaError;
 use crate::sema::access::{self, EffectMap};
 use crate::sema::bodies::{self, FnCtx, ModuleCtx, StructInfo};
+use crate::sema::generics;
 use crate::sema::paths::{PathStep, StoragePath, const_index_value, render_path};
 use crate::sema::types::{self, Type};
 use crate::syntax::ast::{
@@ -293,10 +294,20 @@ fn is_method_reference(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> bool {
         return false;
     };
     let base_ty = bodies::unwrap_own(base_ty);
-    let Type::Named(sname, _) = &base_ty else {
+    let Type::Named(sname, targs) = &base_ty else {
         return false;
     };
-    let Some(s) = mctx.structs.get(sname.as_str()) else {
+    // plans/M7.md item G, decision 14: an ISR gated by
+    // `comptime if MODE == DriverMode.Irq` exists only on the expanded
+    // instantiation, not on the unsubstituted template in `mctx.structs`.
+    if targs.is_empty() {
+        let Some(s) = mctx.structs.get(sname.as_str()) else {
+            return false;
+        };
+        return s.field_ty(name).is_none()
+            && (s.method(name).is_some() || s.assoc_fn(name).is_some());
+    }
+    let Ok(s) = generics::instantiate_struct(mctx, sname, targs, Span::default()) else {
         return false;
     };
     s.field_ty(name).is_none() && (s.method(name).is_some() || s.assoc_fn(name).is_some())

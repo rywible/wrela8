@@ -1,0 +1,42 @@
+module examples.err_driver_mode_poll_vector
+
+# plans/M7.md item G, decision 14: Poll + vector is a sealed-graph
+# contradiction (03-hardware.md §7: a poll build eliminates the vector).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver[const MODE: DriverMode]:
+    regs: Mmio[VirtioIrqMmio]
+    pending: InterruptCell[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        comptime if MODE == DriverMode.Irq:
+            irq = claimed.take_irq()
+            irq.bind(self.on_queue_irq)
+            irq.unmask()
+
+    comptime if MODE == DriverMode.Irq:
+        fn on_queue_irq(self):
+            pass
+
+    @task
+    fn drain(mut self):
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-driver-mode-poll-vector", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver[DriverMode.Poll], device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

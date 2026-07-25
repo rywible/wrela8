@@ -135,6 +135,13 @@ pub(crate) const MAX_GENERIC_DEPTH: usize = 64;
 pub(crate) struct StructInfo {
     pub(crate) decl: types::DeclStruct,
     pub(crate) ast_members: Vec<Member>,
+    // =====================================================================
+    // plans/M7.md item G, decision 14: `comptime if` members deferred by
+    // `specialize` because they name this struct's own const generics
+    // (e.g. `MODE == DriverMode.Irq`). Concrete `ast_members` stay 1:1 with
+    // `decl.members` for the zip; instantiation expands these first.
+    // =====================================================================
+    pub(crate) deferred_comptime_members: Vec<Member>,
 }
 
 impl StructInfo {
@@ -281,17 +288,22 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
         match (ai, di) {
             (Item::Struct(s), types::DeclItem::Struct(d)) => {
                 shapes.insert(s.name.clone(), s.generics.len());
-                let ast_members: Vec<Member> = s
-                    .members
-                    .iter()
-                    .filter(|m| !matches!(m, Member::ComptimeIf(_)))
-                    .cloned()
-                    .collect();
+                // plans/M7.md item G, decision 14: keep deferred `comptime if`
+                // members aside so `ast_members` stays 1:1 with `decl.members`.
+                let mut ast_members = Vec::new();
+                let mut deferred_comptime_members = Vec::new();
+                for m in &s.members {
+                    match m {
+                        Member::ComptimeIf(_) => deferred_comptime_members.push(m.clone()),
+                        other => ast_members.push(other.clone()),
+                    }
+                }
                 structs.insert(
                     s.name.clone(),
                     StructInfo {
                         decl: d.clone(),
                         ast_members,
+                        deferred_comptime_members,
                     },
                 );
             }
@@ -588,9 +600,9 @@ pub(crate) fn check(
     // index `Target`/`Restart` constructions with no evaluator-side
     // special case at all. Harmless for a module that never mentions
     // either name (this field is not part of the `--stage=typed` dump).
-    for name in ["Target", "Restart"] {
+    for name in ["Target", "Restart", "DriverMode"] {
         let variants = crate::sema::prelude::builtin_enum_variants(name)
-            .expect("both names are in the fixed builtin_enum_variants table")
+            .expect("prelude enum names are in the fixed builtin_enum_variants table")
             .iter()
             .map(|v| v.to_string())
             .collect();
@@ -3534,19 +3546,40 @@ fn resolve_intrinsic_type_arg(e: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Resul
 /// is module-local only — so an imported actor/driver struct resolves
 /// here, in call/callee position, exactly like constructing it would,
 /// even though it could not yet resolve as an explicit type annotation.
-/// Only a bare, non-generic struct name is supported (the same scope
-/// boundary as every other builder type argument).
+///
+/// plans/M7.md item G, decision 14: also accepts `BlkDriver[DriverMode.Irq]`
+/// (an `Expr::Index` whose base is the struct name) and enqueues the
+/// instantiation so the mode-specialized members exist.
 fn resolve_intrinsic_struct_type_arg(e: &Expr, mctx: &ModuleCtx) -> Result<Type, SemaError> {
-    let Expr::Name(span, name) = e else {
-        return Err(unimplemented_at("generic instantiation is", e.span()));
-    };
-    let Some(s) = mctx.structs.get(name) else {
-        return Err(type_error(format!("unknown type `{name}`"), *span));
-    };
-    if !s.decl.generics.is_empty() {
-        return Err(unimplemented_at("generic instantiation is", *span));
+    match e {
+        Expr::Name(span, name) => {
+            let Some(s) = mctx.structs.get(name) else {
+                return Err(type_error(format!("unknown type `{name}`"), *span));
+            };
+            if !s.decl.generics.is_empty() {
+                return Err(unimplemented_at("generic instantiation is", *span));
+            }
+            Ok(Type::Named(name.clone(), vec![]))
+        }
+        Expr::Index(base, span, args) => {
+            let Expr::Name(nspan, name) = base.as_ref() else {
+                return Err(unimplemented_at("generic instantiation is", *span));
+            };
+            let Some(s) = mctx.structs.get(name) else {
+                return Err(type_error(format!("unknown type `{name}`"), *nspan));
+            };
+            if s.decl.generics.is_empty() {
+                return Err(type_error(format!("`{name}` is not generic"), *span));
+            }
+            let targs = generics::resolve_call_targs(args, mctx)?;
+            // Force the instantiation (and its deferred comptime-if
+            // expansion) to exist before image checks / layout run.
+            // `instantiate_struct` arity-checks and expands MODE branches.
+            let _ = generics::instantiate_struct(mctx, name, &targs, *span)?;
+            Ok(Type::Named(name.clone(), targs))
+        }
+        _ => Err(unimplemented_at("generic instantiation is", e.span())),
     }
-    Ok(Type::Named(name.clone(), vec![]))
 }
 
 /// `img.device[D](...)`, `img.pool[T](...)`, `img.dma_pool[T](...)` —
@@ -5087,7 +5120,7 @@ fn resolve_irq_bind_handler(
                     span,
                 ));
             };
-            let Type::Named(sname, _) = unwrap_own(self_ty.clone()) else {
+            let Type::Named(sname, targs) = unwrap_own(self_ty.clone()) else {
                 return Err(type_error(
                     format!(
                         "`IrqCap.bind`'s handler must name a method of a `@driver`; `self` has type \
@@ -5097,17 +5130,17 @@ fn resolve_irq_bind_handler(
                     span,
                 ));
             };
-            return irq_handler_fnref(&sname, method, span, mctx);
+            return irq_handler_fnref(&sname, &targs, method, span, mctx);
         }
         // `BlkDriver.on_queue_irq` — only works for associated fns today;
         // an instance method under a type name is the same rejection
         // `check_field_expr` already gives, restated for this site.
         if let Some(s) = mctx.structs.get(name.as_str()) {
             if s.method(method).is_some() {
-                return irq_handler_fnref(name, method, span, mctx);
+                return irq_handler_fnref(name, &[], method, span, mctx);
             }
             if s.assoc_fn(method).is_some() {
-                return irq_handler_fnref(name, method, span, mctx);
+                return irq_handler_fnref(name, &[], method, span, mctx);
             }
             return Err(type_error(
                 format!("type `{name}` has no method `{method}` to bind as an ISR"),
@@ -5125,15 +5158,26 @@ fn resolve_irq_bind_handler(
 
 fn irq_handler_fnref(
     struct_name: &str,
+    targs: &[types::TypeArg],
     method: &str,
     span: Span,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    let Some(s) = mctx.structs.get(struct_name) else {
-        return Err(type_error(
-            format!("type `{struct_name}` is not a declared struct"),
-            span,
-        ));
+    // plans/M7.md item G, decision 14: a mode-generic `@driver`'s ISR
+    // lives only on the expanded instantiation (`BlkDriver[DriverMode.Irq]`),
+    // never on the unsubstituted template in `mctx.structs`.
+    let owned;
+    let s: &StructInfo = if targs.is_empty() {
+        let Some(s) = mctx.structs.get(struct_name) else {
+            return Err(type_error(
+                format!("type `{struct_name}` is not a declared struct"),
+                span,
+            ));
+        };
+        s
+    } else {
+        owned = generics::instantiate_struct(mctx, struct_name, targs, span)?;
+        &owned
     };
     if !s.decl.is_driver {
         return Err(type_error(
@@ -5181,12 +5225,17 @@ fn irq_handler_fnref(
             span,
         ));
     }
+    let key = if targs.is_empty() {
+        CalleeKey::Method(struct_name.to_string(), method.to_string())
+    } else {
+        CalleeKey::MethodInstance(
+            generics::canonical_key(InstKind::Struct, struct_name, targs),
+            method.to_string(),
+        )
+    };
     Ok(TypedExpr {
         ty: fn_value_type(d),
-        kind: TypedExprKind::FnRef(CalleeKey::Method(
-            struct_name.to_string(),
-            method.to_string(),
-        )),
+        kind: TypedExprKind::FnRef(key),
     })
 }
 

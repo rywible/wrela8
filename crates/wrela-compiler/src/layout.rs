@@ -927,13 +927,16 @@ fn driver_declares_task(modules: &BTreeMap<String, Module>, name: &str) -> bool 
 
 /// Every `@task` method name on `@driver` `name` (AST walk).
 fn driver_task_method_names(modules: &BTreeMap<String, Module>, name: &str) -> Vec<String> {
+    // Decision 14: runtime tables pass `BlkDriver[DriverMode.Irq]`; the
+    // AST struct is the bare name.
+    let bare = name.split('[').next().unwrap_or(name);
     let mut out = Vec::new();
     for m in modules.values() {
         for item in &m.items {
             let crate::syntax::ast::Item::Struct(s) = item else {
                 continue;
             };
-            if s.name != name {
+            if s.name != bare {
                 continue;
             }
             if !s.attrs.iter().any(|a| a.name == "driver") {
@@ -965,12 +968,22 @@ fn checkpoint_irq_shape(
     let mut irq_vectors = Vec::new();
     let mut wake_drains = Vec::new();
     for (di, decl) in boot.graph.drivers.iter().enumerate() {
-        let crate::sema::types::Type::Named(driver, _) = &decl.actor_type else {
+        let crate::sema::types::Type::Named(driver, targs) = &decl.actor_type else {
             continue;
         };
         let state = placement
             .and_then(|p| p.drivers.get(di).copied())
             .unwrap_or(0);
+        // Decision 14: codegen keys for a mode-generic driver are
+        // `struct:BlkDriver[DriverMode.Irq].method` (MethodInstance).
+        let key_prefix = if targs.is_empty() {
+            driver.clone()
+        } else {
+            format!(
+                "struct:{}",
+                crate::sema::types::render_type(&decl.actor_type)
+            )
+        };
         let vector = device_index_of(&decl.args)
             .and_then(|i| boot.graph.devices.get(i))
             .and_then(|d| crate::eval::image_checks::device_vector(&d.args));
@@ -978,7 +991,7 @@ fn checkpoint_irq_shape(
             for handler in irq_bind_handlers_in_driver(boot.modules, driver) {
                 irq_vectors.push(IrqVectorEntry {
                     vector: v,
-                    handler_key: format!("{driver}.{handler}"),
+                    handler_key: format!("{key_prefix}.{handler}"),
                     driver_state: state,
                 });
             }
@@ -989,7 +1002,7 @@ fn checkpoint_irq_shape(
                     wake_drains.push(WakeDrainEntry {
                         driver_state: state,
                         wake_pending_off: off,
-                        task_key: format!("{driver}.{task}"),
+                        task_key: format!("{key_prefix}.{task}"),
                     });
                 }
             }
@@ -1177,7 +1190,10 @@ fn build_irq_host_injects(
         let Some(vector) = crate::eval::image_checks::device_vector(&dev.args) else {
             continue;
         };
-        if irq_bind_handlers_in_driver(boot.modules, &r.driver).is_empty() {
+        // Decision 14: DeviceRegs.driver is the rendered instantiation
+        // name; the AST struct is the bare name.
+        let bare = r.driver.split('[').next().unwrap_or(r.driver.as_str());
+        if irq_bind_handlers_in_driver(boot.modules, bare).is_empty() {
             continue;
         }
         out.push(IrqHostInject {
@@ -1200,7 +1216,11 @@ fn driver_wake_pending_addr(
     driver: &str,
 ) -> Result<u64, LayoutError> {
     for (i, d) in tables.drivers.iter().enumerate() {
-        if d.name != driver {
+        // Decision 14: runtime table names are rendered
+        // (`BlkDriver[DriverMode.Irq]`); `Inst::Wake` carries the bare
+        // struct name from the FnRef.
+        let bare = d.name.split('[').next().unwrap_or(d.name.as_str());
+        if d.name != driver && bare != driver {
             continue;
         }
         let Some(off) = d.wake_pending_off else {
@@ -1232,11 +1252,19 @@ fn driver_irq_vector(graph: Option<&ImageGraph>, driver: &str) -> Result<u64, La
              this layout has none"
         )));
     };
+    // Decision 14: `LoadIrqVector` may carry `struct:BlkDriver[DriverMode.Irq]`
+    // (instantiation owner) or the bare `BlkDriver`.
+    let bare_want = driver
+        .strip_prefix("struct:")
+        .unwrap_or(driver)
+        .split('[')
+        .next()
+        .unwrap_or(driver);
     for decl in &graph.drivers {
         let crate::sema::types::Type::Named(name, _) = &decl.actor_type else {
             continue;
         };
-        if name != driver {
+        if name != driver && name != bare_want {
             continue;
         }
         let Some(i) = device_index_of(&decl.args) else {
@@ -2359,6 +2387,33 @@ pub fn merge_layout_ctx(modules: &BTreeMap<String, Module>) -> Result<LayoutCtx,
     Ok(merged)
 }
 
+/// plans/M7.md item G, decision 14: fold every checked struct
+/// instantiation into `LayoutCtx` under its rendered type spelling
+/// (`BlkDriver[DriverMode.Irq]`), so `mwir::size_of` can size a mode-
+/// specialized driver's state the same way it sizes a plain one.
+pub fn enrich_layout_ctx_with_instantiations(
+    ctx: &mut LayoutCtx,
+    programs: &BTreeMap<String, TypedProgram>,
+) {
+    use crate::sema::typed::TypedInstantiation;
+    for typed in programs.values() {
+        for (key, inst) in &typed.instantiations {
+            let TypedInstantiation::Struct(s) = inst else {
+                continue;
+            };
+            let display = key.strip_prefix("struct:").unwrap_or(key.as_str());
+            let fields: Vec<crate::sema::types::Type> = s
+                .fields
+                .iter()
+                .filter_map(|n| s.field_types.get(n).cloned())
+                .collect();
+            ctx.struct_field_names
+                .insert(display.to_string(), s.fields.clone());
+            ctx.structs.insert(display.to_string(), fields);
+        }
+    }
+}
+
 /// Merges every module's own `lower::lower_program` output into one
 /// `MwirProgram` — needed because `bodies::check` (the typed-tree
 /// producer) only ever populates one module's own `TypedProgram::fns`/
@@ -2454,6 +2509,10 @@ pub fn try_layout_program(
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
 ) -> Result<Option<ImageLayout>, String> {
+    // Decision 14: instantiations must be sizeable before codegen.
+    let mut layout_ctx = layout_ctx.clone();
+    enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+    let layout_ctx = &layout_ctx;
     let mut mwir_programs = Vec::with_capacity(programs.len());
     for typed in programs.values() {
         match crate::lower::lower_program(typed) {

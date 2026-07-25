@@ -377,6 +377,31 @@ pub fn check_provenance(program: &TypedProgram, authority: &Authority) -> Result
         .filter(|k| nodes.contains_key(*k))
         .cloned()
         .collect();
+    // =====================================================================
+    // plans/M7.md item G, decision 14: a mode-generic `@driver`'s checked
+    // bodies live under `struct:Name[Args].member` keys (instantiations),
+    // while `capability_authority` roots are still the bare `Name.member`
+    // spellings from the unsubstituted template. Seed every instantiation
+    // method of a `@driver` whose bare name is already a root family.
+    // =====================================================================
+    let driver_root_names: BTreeSet<&str> = authority
+        .roots
+        .iter()
+        .filter_map(|r| r.split('.').next())
+        .collect();
+    for key in nodes.keys() {
+        let Some(rest) = key.strip_prefix("struct:") else {
+            continue;
+        };
+        let Some(dot) = rest.rfind('.') else {
+            continue;
+        };
+        let type_part = &rest[..dot];
+        let bare = type_part.split('[').next().unwrap_or(type_part);
+        if driver_root_names.contains(bare) {
+            authorized.insert(key.clone());
+        }
+    }
     loop {
         let mut changed = false;
         for (key, info) in &nodes {

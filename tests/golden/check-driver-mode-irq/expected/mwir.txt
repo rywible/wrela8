@@ -1,0 +1,78 @@
+Program
+  Fn key=struct:BlkDriver[DriverMode.Irq].drain ret=unit temps=7 receiver=t0:mut
+    Temp t0 ty=BlkDriver[DriverMode.Irq]
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=bool
+    Temp t6 ty=unit
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=0
+      0001: InterruptCellSwapAcquire dst=t2 field_off=8 width=4 value=t1
+      0002: Copy dst=t3 src=t2
+      0003: ConstInt dst=t4 ty=u32 value=0
+      0004: Compare op=!= ty=u32 dst=t5 lhs=t3 rhs=t4
+      0005: JumpIfFalse cond=t5 target=0009
+      0006: Wake driver=BlkDriver
+      0007: ConstUnit dst=t6
+      0008: Jump target=0009
+      0009: Return
+  Fn key=struct:BlkDriver[DriverMode.Irq].init ret=unit temps=11 receiver=t0:mut params=[t1]
+    Temp t0 ty=BlkDriver[DriverMode.Irq]
+    Temp t1 ty=DeviceCap[VirtioBlock]
+    Temp t2 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t3 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t4 ty=Mmio[VirtioIrqMmio]
+    Temp t5 ty=u32
+    Temp t6 ty=InterruptCell[u32]
+    Temp t7 ty=IrqCap[u32]
+    Temp t8 ty=IrqCap[u32]
+    Temp t9 ty=unit
+    Temp t10 ty=unit
+    Body
+      0000: Copy dst=t2 src=t1
+      0001: Copy dst=t3 src=t2
+      0002: Copy dst=t4 src=t3
+      0003: SetField base=t0 index=0 value=t4
+      0004: ConstInt dst=t5 ty=u32 value=0
+      0005: Copy dst=t6 src=t5
+      0006: InterruptCellStoreRelease field_off=8 width=4 value=t6
+      0007: SetField base=t0 index=1 value=t6
+      0008: LoadIrqVector dst=t7 driver=struct:BlkDriver[DriverMode.Irq]
+      0009: Copy dst=t8 src=t7
+      0010: ConstUnit dst=t9
+      0011: ConstUnit dst=t10
+      0012: Return
+  Fn key=struct:BlkDriver[DriverMode.Irq].on_queue_irq ret=unit temps=13 receiver=t0:read
+    Temp t0 ty=BlkDriver[DriverMode.Irq]
+    Temp t1 ty=Mmio[VirtioIrqMmio]
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=u32
+    Temp t6 ty=u32
+    Temp t7 ty=u32
+    Temp t8 ty=bool
+    Temp t9 ty=u32
+    Temp t10 ty=Mmio[VirtioIrqMmio]
+    Temp t11 ty=unit
+    Temp t12 ty=unit
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: MmioRead dst=t2 base=t1 offset=0x60 ty=u32
+      0002: Copy dst=t3 src=t2
+      0003: ConstInt dst=t4 ty=u32 value=1
+      0004: Bitwise op=& ty=u32 dst=t5 lhs=t3 rhs=t4
+      0005: Copy dst=t6 src=t5
+      0006: ConstInt dst=t7 ty=u32 value=0
+      0007: Compare op=!= ty=u32 dst=t8 lhs=t6 rhs=t7
+      0008: JumpIfFalse cond=t8 target=0016
+      0009: InterruptCellFetchOrRelease dst=t9 field_off=8 width=4 value=t6
+      0010: Project dst=t10 base=t0 index=0
+      0011: MmioWrite base=t10 offset=0x64 ty=u32 value=t6
+      0012: ConstUnit dst=t11
+      0013: Wake driver=BlkDriver
+      0014: ConstUnit dst=t12
+      0015: Jump target=0016
+      0016: Return
