@@ -80,6 +80,7 @@ use crate::sema::bodies;
 use crate::sema::typed::{
     CalleeKey, TypedDeferBody, TypedElif, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
     TypedMatchArm, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
+    TypedStruct,
 };
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
@@ -374,14 +375,57 @@ fn stmt_contains_await(s: &TypedStmt) -> bool {
 // --- small lookup helpers (own copies — see module doc: not a reuse of
 // `lower.rs`'s private fns, just the same trivial logic written again) ----
 
+/// This module's own struct `name`, else the imported one (plans/M9.md
+/// item EE — mirrors `lower::struct_by_name` / `eval::interp`).
+fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
+    prog.structs
+        .get(name)
+        .or_else(|| prog.imported.structs.get(name))
+}
+
+fn missing_struct(prog: &TypedProgram, name: &str) -> FlowError {
+    if let Some(note) = prog.imported.unresolvable.get(name) {
+        return FlowError::unimplemented(format!("`{name}` {note}"));
+    }
+    FlowError::unimplemented(format!(
+        "struct `{name}` is not declared in this module and not present in its import closure"
+    ))
+}
+
+fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> FlowError {
+    let name = match key {
+        CalleeKey::Fn(n) => n.clone(),
+        CalleeKey::Method(s, _) => s.clone(),
+        CalleeKey::FnInstance(k) | CalleeKey::MethodInstance(k, _) => k
+            .strip_prefix("fn:")
+            .or_else(|| k.strip_prefix("struct:"))
+            .unwrap_or(k)
+            .split('[')
+            .next()
+            .unwrap_or(k)
+            .to_string(),
+    };
+    if let Some(note) = prog.imported.unresolvable.get(&name) {
+        return FlowError::unimplemented(format!("`{name}` {note}"));
+    }
+    match key {
+        CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => {
+            FlowError::unimplemented("calling a generic instantiation from an async body is")
+        }
+        CalleeKey::Fn(n) => FlowError::unimplemented(format!(
+            "calling `{n}` — not declared in this module and not present in its import closure"
+        )),
+        CalleeKey::Method(s, m) => FlowError::unimplemented(format!(
+            "calling `{s}.{m}` — not declared in this module and not present in its import closure"
+        )),
+    }
+}
+
 fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<usize, FlowError> {
     let Type::Named(sname, _) = base_ty else {
         return Err(FlowError::internal("field base is not a `Named` type"));
     };
-    let s = prog
-        .structs
-        .get(sname)
-        .ok_or_else(|| FlowError::internal(format!("struct `{sname}` not found")))?;
+    let s = struct_by_name(prog, sname).ok_or_else(|| missing_struct(prog, sname))?;
     s.fields
         .iter()
         .position(|f| f == field_name)
@@ -441,12 +485,10 @@ fn resolve_callee_fn<'p>(
         CalleeKey::Fn(name) => prog
             .fns
             .get(name)
-            .ok_or_else(|| FlowError::internal(format!("unknown fn `{name}`"))),
+            .or_else(|| prog.imported.fns.get(name))
+            .ok_or_else(|| missing_callee(prog, key)),
         CalleeKey::Method(sname, member) => {
-            let s = prog
-                .structs
-                .get(sname)
-                .ok_or_else(|| FlowError::internal(format!("unknown struct `{sname}`")))?;
+            let s = struct_by_name(prog, sname).ok_or_else(|| missing_callee(prog, key))?;
             s.methods
                 .get(member)
                 .or_else(|| s.assoc_fns.get(member))
@@ -457,11 +499,11 @@ fn resolve_callee_fn<'p>(
                         None
                     }
                 })
-                .ok_or_else(|| FlowError::internal(format!("unknown method `{sname}.{member}`")))
+                .ok_or_else(|| missing_callee(prog, key))
         }
-        CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => Err(
-            FlowError::unimplemented("calling a generic instantiation from an async body is"),
-        ),
+        CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => {
+            Err(missing_callee(prog, key))
+        }
     }
 }
 
@@ -514,6 +556,33 @@ pub fn lower_program(program: &TypedProgram) -> Result<FlowWirProgram, FlowError
         if let Some(f) = &s.init {
             if f.is_async {
                 fns.insert(format!("{sname}.init"), lower_fn(f, program)?);
+            }
+        }
+    }
+    // plans/M9.md item EE / decision 90: same imported emission
+    // `lower::lower_program` does, for async members only.
+    for (name, f) in &program.imported.fns {
+        if f.is_async && !fns.contains_key(name) {
+            fns.insert(name.clone(), lower_fn(f, program)?);
+        }
+    }
+    for (sname, s) in &program.imported.structs {
+        for (member, f) in &s.methods {
+            let key = format!("{sname}.{member}");
+            if f.is_async && !fns.contains_key(&key) {
+                fns.insert(key, lower_fn(f, program)?);
+            }
+        }
+        for (member, f) in &s.assoc_fns {
+            let key = format!("{sname}.{member}");
+            if f.is_async && !fns.contains_key(&key) {
+                fns.insert(key, lower_fn(f, program)?);
+            }
+        }
+        if let Some(f) = &s.init {
+            let key = format!("{sname}.init");
+            if f.is_async && !fns.contains_key(&key) {
+                fns.insert(key, lower_fn(f, program)?);
             }
         }
     }
@@ -2071,11 +2140,7 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 return Err(FlowError::internal("struct literal type is not `Named`"));
             };
             debug_assert_eq!(name, sname);
-            let s = b
-                .prog
-                .structs
-                .get(sname)
-                .ok_or_else(|| FlowError::internal(format!("struct `{sname}` not found")))?;
+            let s = struct_by_name(b.prog, sname).ok_or_else(|| missing_struct(b.prog, sname))?;
             let mut slots: Vec<Option<Temp>> = vec![None; s.fields.len()];
             for (fname, fval) in fields {
                 let idx = s

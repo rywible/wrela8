@@ -1,0 +1,59 @@
+module app.main
+
+from lib.pair import Pair
+from lib.helper import twice
+
+# plans/M9.md item EE: the three shapes that, before EE, passed
+# `wrela test` (evaluator saw the import closure) and failed at
+# `--stage=mwir`/`asm` (lower did not). Fields abandoned with
+# `internal error: struct \`Pair\` not found`; method and plain fn
+# blamed "an unresolved generic instantiation" — the wrong cause.
+#
+# SETTLED packs all three into one value success cannot forge by
+# accepting alone: fields=7, method=11, fn=42 → 7*10000 + 11*100 + 42
+# = 71142.
+
+fn field_sum(p: Pair) -> u32:
+    return p.a + p.b
+
+fn method_sum(p: Pair) -> u32:
+    return p.sum()
+
+fn drive() -> u32:
+    f = field_sum(Pair(a=3, b=4))
+    m = method_sum(Pair(a=5, b=6))
+    t = twice(21)
+    return f * 10000 + m * 100 + t
+
+const SETTLED: u32 = drive()
+
+@test
+pub fn t_fields():
+    assert field_sum(Pair(a=3, b=4)) == 7, "imported struct fields"
+
+@test
+pub fn t_method():
+    assert method_sum(Pair(a=5, b=6)) == 11, "imported struct method"
+
+@test
+pub fn t_fn():
+    assert twice(21) == 42, "imported plain fn"
+
+@test
+pub fn t_settled():
+    assert SETTLED == 71142, "all three under one settle"
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-lower", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, mailbox=SETTLED)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

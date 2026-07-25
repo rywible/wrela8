@@ -1,0 +1,150 @@
+Program
+  Fn key=Pair.sum ret=u32 temps=4 receiver=t0:read
+    Temp t0 ty=Pair
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Project dst=t2 base=t0 index=1
+      0002: ArithChecked op=+ ty=u32 dst=t3 lhs=t1 rhs=t2 abort="arithmetic overflow in `+`"
+      0003: Return value=t3
+      0004: Return
+  Fn key=Store.init ret=unit temps=2 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=u32
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=0
+      0001: SetField base=t0 index=0 value=t1
+      0002: Return
+  Fn key=drive ret=u32 temps=19
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=Pair
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=u32
+    Temp t6 ty=u32
+    Temp t7 ty=Pair
+    Temp t8 ty=u32
+    Temp t9 ty=u32
+    Temp t10 ty=u32
+    Temp t11 ty=u32
+    Temp t12 ty=u32
+    Temp t13 ty=u32
+    Temp t14 ty=u32
+    Temp t15 ty=u32
+    Temp t16 ty=u32
+    Temp t17 ty=u32
+    Temp t18 ty=u32
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=3
+      0001: ConstInt dst=t1 ty=u32 value=4
+      0002: MakeAggregate dst=t2 elems=[t0,t1]
+      0003: Call key=field_sum dst=t3 args=[t2]
+      0004: Copy dst=t4 src=t3
+      0005: ConstInt dst=t5 ty=u32 value=5
+      0006: ConstInt dst=t6 ty=u32 value=6
+      0007: MakeAggregate dst=t7 elems=[t5,t6]
+      0008: Call key=method_sum dst=t8 args=[t7]
+      0009: Copy dst=t9 src=t8
+      0010: ConstInt dst=t10 ty=u32 value=21
+      0011: Call key=twice dst=t11 args=[t10]
+      0012: Copy dst=t12 src=t11
+      0013: ConstInt dst=t13 ty=u32 value=10000
+      0014: ArithChecked op=* ty=u32 dst=t14 lhs=t4 rhs=t13 abort="arithmetic overflow in `*`"
+      0015: ConstInt dst=t15 ty=u32 value=100
+      0016: ArithChecked op=* ty=u32 dst=t16 lhs=t9 rhs=t15 abort="arithmetic overflow in `*`"
+      0017: ArithChecked op=+ ty=u32 dst=t17 lhs=t14 rhs=t16 abort="arithmetic overflow in `+`"
+      0018: ArithChecked op=+ ty=u32 dst=t18 lhs=t17 rhs=t12 abort="arithmetic overflow in `+`"
+      0019: Return value=t18
+      0020: Return
+  Fn key=field_sum ret=u32 temps=4 params=[t0]
+    Temp t0 ty=Pair
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Project dst=t2 base=t0 index=1
+      0002: ArithChecked op=+ ty=u32 dst=t3 lhs=t1 rhs=t2 abort="arithmetic overflow in `+`"
+      0003: Return value=t3
+      0004: Return
+  Fn key=method_sum ret=u32 temps=2 params=[t0]
+    Temp t0 ty=Pair
+    Temp t1 ty=u32
+    Body
+      0000: Call key=Pair.sum dst=t1 args=[t0]
+      0001: Return value=t1
+      0002: Return
+  Fn key=t_fields ret=unit temps=6
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=Pair
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=3
+      0001: ConstInt dst=t1 ty=u32 value=4
+      0002: MakeAggregate dst=t2 elems=[t0,t1]
+      0003: Call key=field_sum dst=t3 args=[t2]
+      0004: ConstInt dst=t4 ty=u32 value=7
+      0005: Compare op=== ty=u32 dst=t5 lhs=t3 rhs=t4
+      0006: JumpIfFalse cond=t5 target=0008
+      0007: Jump target=0009
+      0008: AssertFail message="imported struct fields"
+      0009: Return
+  Fn key=t_fn ret=unit temps=4
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Temp t3 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=21
+      0001: Call key=twice dst=t1 args=[t0]
+      0002: ConstInt dst=t2 ty=u32 value=42
+      0003: Compare op=== ty=u32 dst=t3 lhs=t1 rhs=t2
+      0004: JumpIfFalse cond=t3 target=0006
+      0005: Jump target=0007
+      0006: AssertFail message="imported plain fn"
+      0007: Return
+  Fn key=t_method ret=unit temps=6
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=Pair
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=5
+      0001: ConstInt dst=t1 ty=u32 value=6
+      0002: MakeAggregate dst=t2 elems=[t0,t1]
+      0003: Call key=method_sum dst=t3 args=[t2]
+      0004: ConstInt dst=t4 ty=u32 value=11
+      0005: Compare op=== ty=u32 dst=t5 lhs=t3 rhs=t4
+      0006: JumpIfFalse cond=t5 target=0008
+      0007: Jump target=0009
+      0008: AssertFail message="imported struct method"
+      0009: Return
+  Fn key=t_settled ret=unit temps=3
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=71142
+      0001: ConstInt dst=t1 ty=u32 value=71142
+      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
+      0003: JumpIfFalse cond=t2 target=0005
+      0004: Jump target=0006
+      0005: AssertFail message="all three under one settle"
+      0006: Return
+  Fn key=twice ret=u32 temps=3 params=[t0]
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=2
+      0001: ArithChecked op=* ty=u32 dst=t2 lhs=t0 rhs=t1 abort="arithmetic overflow in `*`"
+      0002: Return value=t2
+      0003: Return

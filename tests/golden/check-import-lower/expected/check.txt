@@ -1,0 +1,20 @@
+Module path=app.main
+  Fn field_sum(p: read Pair) -> u32
+  Fn method_sum(p: read Pair) -> u32
+  Fn drive() -> u32
+  Const SETTLED: u32
+  Fn t_fields() -> unit
+  Fn t_method() -> unit
+  Fn t_fn() -> unit
+  Fn t_settled() -> unit
+  Struct Store resource
+    field count: u32
+    init(mut self) -> unit
+  Fn build() -> Image
+Module path=lib.helper
+  Fn twice(x: read u32) -> u32
+Module path=lib.pair
+  Struct Pair data
+    field a: u32
+    field b: u32
+    fn sum(read self) -> u32

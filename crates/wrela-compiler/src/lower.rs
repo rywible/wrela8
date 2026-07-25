@@ -195,9 +195,9 @@ impl LowerError {
     /// closure literal is"`, `"imports are"`-style — mirrors
     /// `sema::unimplemented_at`'s own `subject` convention exactly, one
     /// stage later), so this only ever supplies `"not implemented yet"`.
-    fn unimplemented(construct: &str) -> LowerError {
+    fn unimplemented(construct: impl Into<String>) -> LowerError {
         LowerError {
-            message: format!("lowering {construct} not implemented yet"),
+            message: format!("lowering {} not implemented yet", construct.into()),
         }
     }
 
@@ -492,6 +492,45 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
         lower_struct_members(sname, s, &mut lw, &mut fns)?;
     }
     for (ikey, inst) in &program.instantiations {
+        match inst {
+            TypedInstantiation::Fn(f) => {
+                if f.is_async {
+                    continue;
+                }
+                let mf = lower_fn(f, None, &mut lw)?;
+                fns.insert(ikey.clone(), mf);
+            }
+            TypedInstantiation::Struct(s) => {
+                lower_struct_members(ikey, s, &mut lw, &mut fns)?;
+            }
+            TypedInstantiation::Enum => {}
+        }
+    }
+    // plans/M9.md item EE / decision 90: emit imported fns/methods under
+    // the *local* spelling the typed tree already uses (decision 9), so a
+    // Call keyed `Duo.sum` / `twice` resolves in this module's own MWIR
+    // without merging the exporter's tables into `prog.fns`/`structs`
+    // (decision 13 rejected that — it would emit once per importer when
+    // `try_layout_program` lowers every module). Walking `imported` keeps
+    // the declaration tables honest ("what this module declares") and
+    // still emits each *Call key* once in this program. An unaliased name
+    // that also exists in the exporter's own lower may collide at
+    // `merge_mwir_programs` last-wins — that collision is already
+    // disclosed there.
+    for (name, f) in &program.imported.fns {
+        if f.is_async || fns.contains_key(name) {
+            continue;
+        }
+        let mf = lower_fn(f, None, &mut lw)?;
+        fns.insert(name.clone(), mf);
+    }
+    for (sname, s) in &program.imported.structs {
+        lower_struct_members(sname, s, &mut lw, &mut fns)?;
+    }
+    for (ikey, inst) in &program.imported.instantiations {
+        if fns.contains_key(ikey) {
+            continue;
+        }
         match inst {
             TypedInstantiation::Fn(f) => {
                 if f.is_async {
@@ -1440,11 +1479,7 @@ fn lower_call(
 ) -> Result<Temp, LowerError> {
     let member_is_init =
         matches!(callee, CalleeKey::Method(_, m) | CalleeKey::MethodInstance(_, m) if m == "init");
-    let f = resolve_fn(b.prog(), callee).ok_or_else(|| {
-        LowerError::unimplemented(
-            "calling a callee not resolvable at lowering time (an unresolved generic instantiation)",
-        )
-    })?;
+    let f = resolve_fn(b.prog(), callee).ok_or_else(|| missing_callee(b.prog(), callee))?;
     let key = callee.spelling();
 
     if member_is_init {
@@ -1896,11 +1931,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             // needed at all.
             let lv = lower_expr(l, b, env)?;
             let rv = lower_expr(r, b, env)?;
-            let f = resolve_fn(b.prog(), key).ok_or_else(|| {
-                LowerError::unimplemented(
-                    "calling an operator method not resolvable at lowering time (an unresolved generic instantiation)",
-                )
-            })?;
+            let f = resolve_fn(b.prog(), key).ok_or_else(|| missing_callee(b.prog(), key))?;
             let dst = b.fresh(f.ret.clone());
             b.emit(Inst::Call {
                 dst,
@@ -2023,7 +2054,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             };
             debug_assert_eq!(name, sname);
             let s = resolve_struct(b.prog(), sname, targs)
-                .ok_or_else(|| LowerError::internal(format!("struct `{sname}` not found")))?;
+                .ok_or_else(|| missing_struct(b.prog(), sname))?;
             let mut slots: Vec<Option<Temp>> = vec![None; s.fields.len()];
             for (fname, fval) in fields {
                 let idx = s
@@ -2872,15 +2903,34 @@ fn emit_const_value(v: &Value, ty: &Type, b: &mut FnBuilder) -> Result<Temp, Low
 
 // --- shared lookups (mirroring interp.rs's own, one stage later) --------
 
+/// This module's own struct `name`, else the imported one bound to that
+/// local name (plans/M9.md item EE — same union `eval::interp` already
+/// applies; before EE an imported `Pair` abandoned with
+/// `internal error: struct \`Pair\` not found`).
+fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
+    prog.structs
+        .get(name)
+        .or_else(|| prog.imported.structs.get(name))
+}
+
+/// This module's own instantiation `key`, else the exporting module's.
+fn instantiation_by_key<'p>(prog: &'p TypedProgram, key: &str) -> Option<&'p TypedInstantiation> {
+    prog.instantiations
+        .get(key)
+        .or_else(|| prog.imported.instantiations.get(key))
+}
+
 fn resolve_fn<'p>(prog: &'p TypedProgram, key: &CalleeKey) -> Option<&'p TypedFn> {
     match key {
-        CalleeKey::Fn(name) => prog.fns.get(name),
-        CalleeKey::FnInstance(ikey) => match prog.instantiations.get(ikey) {
+        CalleeKey::Fn(name) => prog.fns.get(name).or_else(|| prog.imported.fns.get(name)),
+        CalleeKey::FnInstance(ikey) => match instantiation_by_key(prog, ikey) {
             Some(TypedInstantiation::Fn(f)) => Some(f),
             _ => None,
         },
-        CalleeKey::Method(sname, member) => resolve_struct_member(prog.structs.get(sname)?, member),
-        CalleeKey::MethodInstance(ikey, member) => match prog.instantiations.get(ikey) {
+        CalleeKey::Method(sname, member) => {
+            resolve_struct_member(struct_by_name(prog, sname)?, member)
+        }
+        CalleeKey::MethodInstance(ikey, member) => match instantiation_by_key(prog, ikey) {
             Some(TypedInstantiation::Struct(s)) => resolve_struct_member(s, member),
             _ => None,
         },
@@ -2901,14 +2951,62 @@ fn resolve_struct<'p>(
     targs: &[TypeArg],
 ) -> Option<&'p TypedStruct> {
     if targs.is_empty() {
-        prog.structs.get(name)
+        struct_by_name(prog, name)
     } else {
         let key = generics::canonical_key(InstKind::Struct, name, targs);
-        match prog.instantiations.get(&key) {
+        match instantiation_by_key(prog, &key) {
             Some(TypedInstantiation::Struct(s)) => Some(s),
             _ => None,
         }
     }
+}
+
+/// Plain declaration name a callee key hangs off — mirrors
+/// `eval::interp::callee_decl_name` for the `unresolvable` lookup.
+fn callee_decl_name(key: &CalleeKey) -> String {
+    let raw = match key {
+        CalleeKey::Fn(name) => name.clone(),
+        CalleeKey::Method(sname, _) => sname.clone(),
+        CalleeKey::FnInstance(k) | CalleeKey::MethodInstance(k, _) => k.clone(),
+    };
+    let no_prefix = raw
+        .strip_prefix("fn:")
+        .or_else(|| raw.strip_prefix("struct:"))
+        .unwrap_or(&raw);
+    no_prefix.split('[').next().unwrap_or(no_prefix).to_string()
+}
+
+/// Fail-closed miss for a Call/OpCall: prefer the import splice's own
+/// `unresolvable` note (decision 15), else name the real cause. Never
+/// blame "an unresolved generic instantiation" for a plain imported
+/// name that simply was not wired into lower (plans/M9.md item EE).
+fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
+    let name = callee_decl_name(key);
+    if let Some(note) = prog.imported.unresolvable.get(&name) {
+        return LowerError::unimplemented(format!("`{name}` {note}"));
+    }
+    match key {
+        CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => LowerError::unimplemented(
+            "calling a callee not resolvable at lowering time (an unresolved generic instantiation)",
+        ),
+        _ => LowerError::unimplemented(format!(
+            "calling `{}` — not declared in this module and not present in its import closure",
+            key.spelling()
+        )),
+    }
+}
+
+/// Fail-closed miss for a struct layout/construction lookup. An
+/// `internal error: struct \`X\` not found` reachable from ordinary
+/// source is a bug by house rule; after EE the ordinary imported case
+/// resolves, and a genuine miss names the import closure.
+fn missing_struct(prog: &TypedProgram, name: &str) -> LowerError {
+    if let Some(note) = prog.imported.unresolvable.get(name) {
+        return LowerError::unimplemented(format!("`{name}` {note}"));
+    }
+    LowerError::unimplemented(format!(
+        "struct `{name}` is not declared in this module and not present in its import closure"
+    ))
 }
 
 fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<usize, LowerError> {
@@ -2926,8 +3024,7 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
             ))),
         };
     }
-    let s = resolve_struct(prog, sname, targs)
-        .ok_or_else(|| LowerError::internal(format!("struct `{sname}` not found")))?;
+    let s = resolve_struct(prog, sname, targs).ok_or_else(|| missing_struct(prog, sname))?;
     s.fields
         .iter()
         .position(|f| f == field_name)
@@ -2947,8 +3044,8 @@ fn interrupt_cell_field_off(
             "InterruptCell field base is not a `Named` type",
         ));
     };
-    let s = resolve_struct(b.prog(), sname, targs)
-        .ok_or_else(|| LowerError::internal(format!("struct `{sname}` not found")))?;
+    let s =
+        resolve_struct(b.prog(), sname, targs).ok_or_else(|| missing_struct(b.prog(), sname))?;
     // Builtin-pseudo-type fields (capabilities, `InterruptCell`, scalars,
     // `Option[...]`) size without a populated `LayoutCtx`. A nested user
     // struct field would need one; fail closed rather than guess.
