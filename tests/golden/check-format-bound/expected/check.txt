@@ -1,0 +1,40 @@
+Module path=examples.check_format_bound
+  Struct Point data deriving(Format)
+    field x: u32
+    field y: u32
+    fn max_formatted_len() -> usize
+    fn format(read self) -> String[..33]
+  Enum Hue data deriving(Format)
+    variant Red
+    variant Green
+    fn max_formatted_len() -> usize
+    fn format(read self) -> String[..5]
+  Fn digest(s: read String[..33]) -> u64
+  Fn digest_small(s: read String[..10]) -> u64
+  Fn digest_hue(s: read String[..5]) -> u64
+  Fn digest_concat(s: read String[..3]) -> u64
+  Const FORTY_TWO: u32
+  Const SCALAR: u64
+  Fn bool_digest(s: read String[..5]) -> u64
+  Const FLAG: bool
+  Const BOOL: u64
+  Const CONCAT: u64
+  Const POINT: u64
+  Fn as_u64(n: read usize) -> u64
+  Const BOUND: u64
+  Const HUE: u64
+  Fn t_scalar() -> unit
+  Fn t_bool() -> unit
+  Fn t_concat() -> unit
+  Fn t_point() -> unit
+  Fn t_bound() -> unit
+  Fn t_hue() -> unit
+  Struct Store resource
+    field scalar: u64
+    field boolv: u64
+    field concat: u64
+    field point: u64
+    field bound: u64
+    field hue: u64
+    init(mut self, scalar: read u64, boolv: read u64, concat: read u64, point: read u64, bound: read u64, hue: read u64) -> unit
+  Fn build() -> Image

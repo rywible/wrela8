@@ -1,0 +1,11 @@
+ImageGraph v0
+  Name value=import-alias-deriving-format
+  Target value=Target.wrela_machine_v1
+  Actor index=0 type=Store
+    Arg label=out value=8084097
+    Arg label=mailbox value=4
+  Supervise index=0
+    Arg label=children value=[actor#0]
+    Arg label=strategy value=Restart.OneForOne
+    Arg label=intensity value=(3, 10000000000)
+  Sealed value=true

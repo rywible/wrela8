@@ -383,6 +383,31 @@ pub(crate) fn build_module_ctx(
                         &s.name, field, s.span,
                     )));
                 }
+                // plans/M9.md item C2: matching FnItems for Decl's generated Format.
+                if s.deriving.iter().any(|d| d == "Format") {
+                    let fields: Vec<(String, Type)> = d
+                        .members
+                        .iter()
+                        .filter_map(|m| match m {
+                            types::DeclMember::Field(f) => Some((f.name.clone(), f.ty.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    let bound = types::struct_format_bound(&s.name, &fields, s.span)
+                        .expect("declare already validated Format shape");
+                    ast_members.push(Member::Fn(types::derived_max_formatted_len_fn_item(
+                        bound, s.span,
+                    )));
+                    if fields.is_empty() {
+                        ast_members.push(Member::Fn(types::derived_format_fn_item_struct(
+                            &s.name, s.span,
+                        )));
+                    } else {
+                        ast_members.push(Member::Fn(types::derived_format_fn_item_struct_fields(
+                            &s.name, &fields, bound, s.span,
+                        )));
+                    }
+                }
                 structs.insert(
                     s.name.clone(),
                     StructInfo {
@@ -407,6 +432,17 @@ pub(crate) fn build_module_ctx(
                     };
                     ast_members.push(Member::Fn(types::derived_from_fn_item_enum(
                         &e.name, &v.name, source_ty, e.span,
+                    )));
+                }
+                // plans/M9.md item C2: matching FnItems for Decl's generated Format.
+                if e.deriving.iter().any(|d| d == "Format") {
+                    let bound = e.variants.iter().map(|v| v.name.len()).max().unwrap_or(0) as u64;
+                    let names: Vec<String> = e.variants.iter().map(|v| v.name.clone()).collect();
+                    ast_members.push(Member::Fn(types::derived_max_formatted_len_fn_item(
+                        bound, e.span,
+                    )));
+                    ast_members.push(Member::Fn(types::derived_format_fn_item_enum(
+                        &names, bound, e.span,
                     )));
                 }
                 enums.insert(
@@ -1404,6 +1440,7 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
             DeclVariantPayload::Named(fields) => fields.iter().map(|(_, t)| t.clone()).collect(),
         })
         .collect();
+    validate_format_contract(&e.name, &methods, &assoc_fns, e.span)?;
     Ok(Some(TypedEnum {
         variants: info.variants.iter().map(|v| v.name.clone()).collect(),
         variant_payload_types,
@@ -1552,6 +1589,7 @@ pub(crate) fn check_struct_members(
             _ => {}
         }
     }
+    validate_format_contract(&struct_name, &methods, &assoc_fns, info.decl.span)?;
     Ok(TypedStruct {
         name: struct_name,
         fields,
@@ -1561,6 +1599,262 @@ pub(crate) fn check_struct_members(
         assoc_fns,
         init,
     })
+}
+
+/// plans/M9.md item C2: when both Format contract members are present
+/// with the exact signatures (05 §6), prove the writer's max occupied
+/// length against `max_formatted_len`'s literal bound. A partial pair
+/// (wrong signature / only one name) is ordinary methods, not Format.
+fn validate_format_contract(
+    type_name: &str,
+    methods: &BTreeMap<String, TypedFn>,
+    assoc_fns: &BTreeMap<String, TypedFn>,
+    span: Span,
+) -> Result<(), SemaError> {
+    let Some(max_fn) = assoc_fns.get("max_formatted_len") else {
+        return Ok(());
+    };
+    let Some(fmt_fn) = methods.get("format") else {
+        return Ok(());
+    };
+    if !typed_is_format_max(max_fn) || !typed_is_format_writer(fmt_fn) {
+        return Ok(());
+    }
+    if type_name == "Secret" {
+        return Err(types::secret_has_no_format(span));
+    }
+    let bound = format_bound_from_body(&max_fn.body, span)?;
+    let Type::String(n_expr) = &fmt_fn.ret else {
+        return Err(type_error(
+            "Format.format must return `String[..N]`".to_string(),
+            span,
+        ));
+    };
+    let ret_n = literal_array_len(n_expr).ok_or_else(|| {
+        type_error(
+            "Format.format return capacity must be a literal".to_string(),
+            span,
+        )
+    })?;
+    let ret_n = u64::try_from(ret_n).map_err(|_| {
+        type_error(
+            "Format.format return capacity is out of range".to_string(),
+            span,
+        )
+    })?;
+    if ret_n != bound {
+        return Err(type_error(
+            format!("Format.format returns `String[..{ret_n}]` but max_formatted_len is {bound}"),
+            span,
+        ));
+    }
+    check_format_writer_against_bound(&fmt_fn.body, bound, span)
+}
+
+fn typed_is_format_max(f: &TypedFn) -> bool {
+    f.receiver.is_none() && f.params.is_empty() && f.ret == Type::Usize && !f.is_async
+}
+
+fn typed_is_format_writer(f: &TypedFn) -> bool {
+    matches!(&f.receiver, Some((AccessMode::Read, _)))
+        && f.params.is_empty()
+        && matches!(f.ret, Type::String(_))
+        && !f.is_async
+}
+
+fn format_bound_from_body(body: &[TypedStmt], span: Span) -> Result<u64, SemaError> {
+    let mut bound: Option<u64> = None;
+    collect_format_bound_returns(body, span, &mut |v| {
+        match bound {
+            None => bound = Some(v),
+            Some(b) if b == v => {}
+            Some(b) => {
+                return Err(type_error(
+                    format!("Format max_formatted_len returns disagreeing bounds ({b} vs {v})"),
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    })?;
+    bound.ok_or_else(|| {
+        type_error(
+            "Format max_formatted_len body must return an integer literal so the bound can be proven"
+                .to_string(),
+            span,
+        )
+    })
+}
+
+fn check_format_writer_against_bound(
+    body: &[TypedStmt],
+    bound: u64,
+    span: Span,
+) -> Result<(), SemaError> {
+    let mut saw = false;
+    collect_format_string_returns(body, span, &mut |need| {
+        saw = true;
+        if need > bound {
+            return Err(type_error(
+                format!("Format.format exceeds proven max_formatted_len bound ({need} > {bound})"),
+                span,
+            ));
+        }
+        Ok(())
+    })?;
+    if !saw {
+        return Err(type_error(
+            "Format.format body must return a string expression whose bound can be proven"
+                .to_string(),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn collect_format_bound_returns(
+    body: &[TypedStmt],
+    span: Span,
+    on_ret: &mut dyn FnMut(u64) -> Result<(), SemaError>,
+) -> Result<(), SemaError> {
+    for s in body {
+        match &s.kind {
+            TypedStmtKind::Return(Some(e)) => match &e.kind {
+                TypedExprKind::Int(text) => {
+                    let v = crate::eval::value::parse_int_literal(text).ok_or_else(|| {
+                        type_error(
+                            "Format max_formatted_len must return an integer literal".to_string(),
+                            span,
+                        )
+                    })?;
+                    if v < 0 {
+                        return Err(type_error(
+                            "Format max_formatted_len must return a non-negative integer"
+                                .to_string(),
+                            span,
+                        ));
+                    }
+                    on_ret(v as u64)?;
+                }
+                _ => {
+                    return Err(type_error(
+                        "Format max_formatted_len body must return an integer literal so the bound can be proven"
+                            .to_string(),
+                        span,
+                    ));
+                }
+            },
+            TypedStmtKind::Return(None) => {
+                return Err(type_error(
+                    "Format max_formatted_len body must return an integer literal so the bound can be proven"
+                        .to_string(),
+                    span,
+                ));
+            }
+            TypedStmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    collect_format_bound_returns(&arm.body, span, on_ret)?;
+                }
+            }
+            TypedStmtKind::If {
+                then_branch,
+                elifs,
+                else_branch,
+                ..
+            } => {
+                collect_format_bound_returns(then_branch, span, on_ret)?;
+                for e in elifs {
+                    collect_format_bound_returns(&e.body, span, on_ret)?;
+                }
+                if let Some(eb) = else_branch {
+                    collect_format_bound_returns(eb, span, on_ret)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Max occupied length of a Format writer return expression.
+fn format_expr_max_len(e: &TypedExpr) -> Result<u64, SemaError> {
+    match &e.kind {
+        TypedExprKind::Str(text) => Ok(crate::eval::value::decode_str(text).len() as u64),
+        TypedExprKind::Binary(BinOp::Add, l, r) => {
+            Ok(format_expr_max_len(l)? + format_expr_max_len(r)?)
+        }
+        TypedExprKind::Call {
+            callee: CalleeKey::Method(_, m),
+            ..
+        } if m == "format" => match &e.ty {
+            Type::String(n) => {
+                let n = literal_array_len(n).ok_or_else(|| {
+                    type_error(
+                        "Format.format return capacity must be a literal".to_string(),
+                        Span::default(),
+                    )
+                })?;
+                u64::try_from(n).map_err(|_| {
+                    type_error(
+                        "Format.format return capacity is out of range".to_string(),
+                        Span::default(),
+                    )
+                })
+            }
+            _ => Err(type_error(
+                "Format.format call must return `String[..N]`".to_string(),
+                Span::default(),
+            )),
+        },
+        _ => Err(type_error(
+            "Format.format body must return a string literal, string `+`, or `.format()` call so the bound can be proven"
+                .to_string(),
+            Span::default(),
+        )),
+    }
+}
+
+fn collect_format_string_returns(
+    body: &[TypedStmt],
+    span: Span,
+    on_ret: &mut dyn FnMut(u64) -> Result<(), SemaError>,
+) -> Result<(), SemaError> {
+    for s in body {
+        match &s.kind {
+            TypedStmtKind::Return(Some(e)) => {
+                let need = format_expr_max_len(e).map_err(|err| type_error(err.message, span))?;
+                on_ret(need)?;
+            }
+            TypedStmtKind::Return(None) => {
+                return Err(type_error(
+                    "Format.format body must return a string expression whose bound can be proven"
+                        .to_string(),
+                    span,
+                ));
+            }
+            TypedStmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    collect_format_string_returns(&arm.body, span, on_ret)?;
+                }
+            }
+            TypedStmtKind::If {
+                then_branch,
+                elifs,
+                else_branch,
+                ..
+            } => {
+                collect_format_string_returns(then_branch, span, on_ret)?;
+                for e in elifs {
+                    collect_format_string_returns(&e.body, span, on_ret)?;
+                }
+                if let Some(eb) = else_branch {
+                    collect_format_string_returns(eb, span, on_ret)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // --- statements --------------------------------------------------------
@@ -3388,8 +3682,78 @@ fn check_binary(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
+    // plans/M9.md item C2: `String[..N] + String[..M] -> String[..N+M]`.
+    // Text literals coerce to `String[..len]` in this position.
+    if op == BinOp::Add {
+        if let Some(out) = check_string_add(l, r, span, fctx, mctx)? {
+            return Ok(out);
+        }
+    }
     let (lt, rt) = check_same_type_operands(l, r, fctx, mctx)?;
     build_binop_expr(op, lt, rt, span, mctx)
+}
+
+/// `String[..N] + String[..M]` (and text-literal coercion into that form).
+/// Returns `None` when this is not a string add, so the ordinary numeric
+/// path can run.
+fn check_string_add(
+    l: &Expr,
+    r: &Expr,
+    span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<Option<TypedExpr>, SemaError> {
+    let lt = check_expr(l, None, fctx, mctx)?;
+    let lt = coerce_text_literal_to_string(lt, l.span())?;
+    let Type::String(ln) = &lt.ty else {
+        return Ok(None);
+    };
+    let ln = literal_array_len(ln).ok_or_else(|| {
+        unimplemented_at("a `String[..N]` capacity that is not a literal is", span)
+    })?;
+    let rt = check_expr(r, None, fctx, mctx)?;
+    let rt = coerce_text_literal_to_string(rt, r.span())?;
+    let Type::String(rn) = &rt.ty else {
+        return Err(type_error(
+            format!(
+                "expected `String[..N]`, found `{}`",
+                types::render_type(&rt.ty)
+            ),
+            r.span(),
+        ));
+    };
+    let rn = literal_array_len(rn).ok_or_else(|| {
+        unimplemented_at("a `String[..N]` capacity that is not a literal is", span)
+    })?;
+    let sum = ln
+        .checked_add(rn)
+        .ok_or_else(|| type_error("String concatenation capacity overflows".to_string(), span))?;
+    Ok(Some(TypedExpr {
+        ty: Type::String(Box::new(Expr::Int(span, sum.to_string()))),
+        kind: TypedExprKind::Binary(BinOp::Add, Box::new(lt), Box::new(rt)),
+    }))
+}
+
+/// `Static[Str]` text literal → `String[..byte_len]` for Format concat.
+fn coerce_text_literal_to_string(te: TypedExpr, span: Span) -> Result<TypedExpr, SemaError> {
+    match &te.ty {
+        Type::String(_) => Ok(te),
+        Type::Static(inner) if matches!(inner.as_ref(), Type::Str) => {
+            let TypedExprKind::Str(text) = &te.kind else {
+                return Err(type_error(
+                    "only a text literal coerces from `Static[Str]` to `String[..N]` here"
+                        .to_string(),
+                    span,
+                ));
+            };
+            let n = crate::eval::value::decode_str(text).len();
+            Ok(TypedExpr {
+                ty: Type::String(Box::new(Expr::Int(span, n.to_string()))),
+                kind: te.kind,
+            })
+        }
+        _ => Ok(te),
+    }
 }
 
 /// Checks two operands that must share one type (a binary operator's
@@ -4965,6 +5329,29 @@ fn check_call_by_field(
             ))
         }
         other => {
+            // plans/M9.md item C2: core scalars have standard Format
+            // (archive §10) — `.format() -> String[..K]` with fixed K.
+            if name == "format" {
+                if !args.is_empty() {
+                    return Err(type_error(
+                        format!("too many arguments, expected 0, found {}", args.len()),
+                        call_span,
+                    ));
+                }
+                if let Some(k) = types::scalar_format_bound(other) {
+                    return Ok(TypedExpr {
+                        ty: Type::String(Box::new(Expr::Int(call_span, k.to_string()))),
+                        kind: TypedExprKind::Call {
+                            callee: CalleeKey::Method(
+                                types::render_type(other),
+                                "format".to_string(),
+                            ),
+                            receiver: Some(Box::new(base_t)),
+                            args: vec![],
+                        },
+                    });
+                }
+            }
             let type_name = types::render_type(other);
             Err(missing_method_error(
                 format!("type `{type_name}` has no method `{name}`"),

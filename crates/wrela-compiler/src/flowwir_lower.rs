@@ -2552,6 +2552,36 @@ fn lower_binary_flat(
         });
         return Ok(dst);
     }
+    // plans/M9.md item C2: `String[..N] + String[..M]`.
+    if op == BinOp::Add {
+        if let (Type::String(ln), Type::String(rn), Type::String(_)) = (&l.ty, &r.ty, &e.ty) {
+            let lhs_cap = crate::sema::bodies::literal_array_len(ln)
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| {
+                    FlowError::unimplemented(
+                        "a `String[..N]` capacity that is not a literal is".to_string(),
+                    )
+                })?;
+            let rhs_cap = crate::sema::bodies::literal_array_len(rn)
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| {
+                    FlowError::unimplemented(
+                        "a `String[..N]` capacity that is not a literal is".to_string(),
+                    )
+                })?;
+            let lv = lower_expr_flat(l, b, env)?;
+            let rv = lower_expr_flat(r, b, env)?;
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::StringConcat {
+                dst,
+                lhs: lv,
+                rhs: rv,
+                lhs_cap,
+                rhs_cap,
+            });
+            return Ok(dst);
+        }
+    }
     let lv = lower_expr_flat(l, b, env)?;
     let rv = lower_expr_flat(r, b, env)?;
     let ty = l.ty.clone();

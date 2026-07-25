@@ -1,0 +1,2 @@
+test t_alias_format: ok
+1 passed, 0 failed

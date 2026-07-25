@@ -1,0 +1,11 @@
+module examples.err_format_conflict
+
+# plans/M9.md item C2: deriving(Format) conflicts with an explicit Format
+# member — same rule as deriving(From) vs explicit `from`.
+
+pub struct Tag deriving(Format):
+    pub fn max_formatted_len() -> usize:
+        return 3
+
+    pub fn format(read self) -> String[..3]:
+        return "tag"

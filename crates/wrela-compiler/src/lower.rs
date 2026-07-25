@@ -1513,6 +1513,30 @@ fn lower_call(
     b: &mut FnBuilder,
     env: &mut LEnv,
 ) -> Result<Temp, LowerError> {
+    // plans/M9.md item C2: core-scalar `.format()` — no TypedFn exists.
+    if let CalleeKey::Method(_, m) = callee {
+        if m == "format" {
+            if let Some(recv) = receiver {
+                if let Some(_k) = crate::sema::types::scalar_format_bound(&recv.ty) {
+                    let src = lower_expr(recv, b, env)?;
+                    let Type::String(n_expr) = result_ty else {
+                        return Err(LowerError::internal(
+                            "scalar `.format()` result is not `String[..N]`".to_string(),
+                        ));
+                    };
+                    let capacity = eval_len_expr(n_expr)?;
+                    let dst = b.fresh(result_ty.clone());
+                    b.emit(Inst::FormatScalar {
+                        dst,
+                        src,
+                        src_ty: recv.ty.clone(),
+                        capacity,
+                    });
+                    return Ok(dst);
+                }
+            }
+        }
+    }
     let member_is_init =
         matches!(callee, CalleeKey::Method(_, m) | CalleeKey::MethodInstance(_, m) if m == "init");
     let f = resolve_fn(b.prog(), callee).ok_or_else(|| missing_callee(b.prog(), callee))?;
@@ -2795,6 +2819,24 @@ fn lower_binary(
     b: &mut FnBuilder,
     env: &mut LEnv,
 ) -> Result<Temp, LowerError> {
+    // plans/M9.md item C2: `String[..N] + String[..M] -> String[..N+M]`.
+    if op == BinOp::Add {
+        if let (Type::String(ln), Type::String(rn), Type::String(_)) = (&l.ty, &r.ty, &expr.ty) {
+            let lhs_cap = eval_len_expr(ln)?;
+            let rhs_cap = eval_len_expr(rn)?;
+            let lv = lower_expr(l, b, env)?;
+            let rv = lower_expr(r, b, env)?;
+            let dst = b.fresh(expr.ty.clone());
+            b.emit(Inst::StringConcat {
+                dst,
+                lhs: lv,
+                rhs: rv,
+                lhs_cap,
+                rhs_cap,
+            });
+            return Ok(dst);
+        }
+    }
     let lv = lower_expr(l, b, env)?;
     let rv = lower_expr(r, b, env)?;
     let ty = l.ty.clone();

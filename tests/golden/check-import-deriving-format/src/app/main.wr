@@ -1,0 +1,30 @@
+module app.main
+
+from lib.tag import Tag
+
+# Imported generated Format: Tag(n=9).format() → "Tag(n=9)".
+# settle = len*1e6 + b0*1e3 + b1.
+
+fn digest(s: String[..17]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+const OUT: u64 = digest(Tag(n=9).format())
+
+@test
+pub fn t_import_format():
+    assert OUT == 8084097, "imported derived Format must pin \"Tag(n=9)\""
+
+@actor
+pub struct Store:
+    out: u64
+
+    init(mut self, out: u64):
+        self.out = out
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-deriving-format", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, out=OUT, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -256,6 +256,23 @@ pub enum Inst {
         dst: Temp,
         elems: Vec<Temp>,
     },
+    /// plans/M9.md item C2: format a core scalar into `String[..capacity]`
+    /// (decimal / bool / char). `src_ty` selects the conversion.
+    FormatScalar {
+        dst: Temp,
+        src: Temp,
+        src_ty: Type,
+        capacity: usize,
+    },
+    /// plans/M9.md item C2: concatenate two `String[..lhs_cap]` /
+    /// `String[..rhs_cap]` values into `String[..lhs_cap+rhs_cap]`.
+    StringConcat {
+        dst: Temp,
+        lhs: Temp,
+        rhs: Temp,
+        lhs_cap: usize,
+        rhs_cap: usize,
+    },
     /// A compile-time-known-offset read: a struct field (by
     /// `TypedStruct::fields`'s own index), a tuple component, or a fixed-
     /// array literal element accessed by a *literal* index. Never
@@ -1419,6 +1436,28 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         Inst::Wake { driver } => format!("Wake driver={driver}"),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
+        }
+        Inst::FormatScalar {
+            dst,
+            src,
+            src_ty,
+            capacity,
+        } => {
+            format!(
+                "FormatScalar dst={dst} src={src} src_ty={} capacity={capacity}",
+                crate::sema::types::render_type(src_ty)
+            )
+        }
+        Inst::StringConcat {
+            dst,
+            lhs,
+            rhs,
+            lhs_cap,
+            rhs_cap,
+        } => {
+            format!(
+                "StringConcat dst={dst} lhs={lhs} rhs={rhs} lhs_cap={lhs_cap} rhs_cap={rhs_cap}"
+            )
         }
         Inst::Project { dst, base, index } => {
             format!("Project dst={dst} base={base} index={index}")

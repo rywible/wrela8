@@ -241,6 +241,30 @@ note = """02-language.md §6.2: `String[..N]` is owned UTF-8 with capacity `N`; 
 **Pinned.** `check-string-bound`: settle `2104105` (len=2, 'h'=104, 'i'=105), mwir shows `Temp t0 ty=String[..8]` and `Project` indices 0/1/2, image arg `settled=2104105`. Capacity and exact-form refusals pinned separately."""
 
 [[clause]]
+id = "library.format.contract"
+doc = "05-library.md#6"
+status = "test"
+tests = [
+  "golden/check-format-bound",
+  "golden/err-format-conflict",
+  "golden/err-format-secret",
+  "golden/err-format-payload-enum",
+  "golden/check-import-deriving-format",
+  "golden/check-import-alias-deriving-format",
+]
+note = """05-library.md §6 / 02-language.md §7.5: the static `Format` contract and `deriving(Format)`. plans/M9.md item C2 (decisions 202–206). Does **not** flip `comptime.fstring.bounds` (item D).
+
+**Contract (decision 202).** Associated `max_formatted_len() -> usize` and method `format(read self) -> String[..N]` with `N == max_formatted_len()`. Empty-spec only: `{expr:spec}` is comptime syntax for f-strings (item D), not a runtime parameter. Rejected: typing a runtime `spec: u64` (02 §1.1 writes spec as syntax after a colon); rejected: inventing a `FormatSpec` type this milestone does not need.
+
+**Scalars (decision 203).** Core scalars have standard Format — `u8`/`u16`/`u32`/`u64`/`usize`, signed peers, `bool`, `char` — via builtin `.format() -> String[..K]` with fixed `K` (decimal digit ceilings; `bool` 5; `char` 4). Both tiers: eval formats to `Value::Str`; lower emits `Inst::FormatScalar`.
+
+**Concatenation (decision 204).** `String[..N] + String[..M] -> String[..N+M]` (text literals coerce to `String[..len]` in this position). Eval concatenates byte vectors; lower emits `Inst::StringConcat`. This is the primitive f-strings (D) sum with.
+
+**`deriving(Format)` (decision 205).** Fieldless structs and unit enums format their names. Fieldful structs generate `\"Name(f1=\" + self.f1.format() + \", f2=\" + ... + \")\"` with bound = name + punctuation + each field's scalar Format bound. Payload-bearing enums refuse by name. Conflict with an explicit `format` / `max_formatted_len` refuses (same rule as `deriving(From)` vs explicit `from`). `Secret` has no Format (05 §6) — deriving or hand-declared.
+
+**Pinned.** `check-format-bound`: scalar `42` → settle `2052050`; `true` → `4116114`; `\"hi\"+\"!\"` → `3104105`; `Point(x=3,y=7).format()` → `15080111` with bound `33`; `Hue.Red` → `3082101`; mwir shows `FormatScalar`/`StringConcat` in `Point.format`. Import / alias goldens pin `Tag(n=9)` → `8084097`."""
+
+[[clause]]
 id = "sema.names.imports"
 doc = "02-language.md#2"
 status = "test"
@@ -765,7 +789,7 @@ note = "`comptime assert` (plans/M3.md item D, decision 8: \"`comptime assert` e
 id = "comptime.fstring.bounds"
 doc = "02-language.md#12"
 status = "gap"
-note = "f-string bound computation (the comptime evaluation that sizes an f-string's `String[..N]` result) needs the stdlib `Format` contract, which does not exist until the stdlib milestone (plans/M3.md decision 10's own named gap) — until then every f-string fails closed in sema itself (`sema::bodies`, `error[unimplemented]: f-strings are not checked yet`) before the evaluator could ever see one, so nothing here approximates a bound."
+note = "f-string bound computation (the comptime evaluation that sizes an f-string's `String[..N]` result) needs the Format contract **and** f-string lowering. plans/M9.md item C2 landed the Format contract (`library.format.contract`); this gap stays until item D wires `f\"...\"` to sum each operand's `max_formatted_len` into `String[..N]`. Until then every f-string still fails closed in sema (`error[unimplemented]: f-strings are not checked yet`)."
 
 [[clause]]
 id = "comptime.eval.no-panics"

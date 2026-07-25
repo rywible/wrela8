@@ -30,9 +30,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
-    self, AccessMode, Arg, Attr, ConstItem, EnumItem, Expr, FieldItem, FnItem, GenericArg,
-    GenericParam, InitItem, Item, Member, Module, NamedType, Param, Span, Stmt, StructItem,
-    VariantPayload,
+    self, AccessMode, Arg, Attr, BinOp, ConstItem, EnumItem, Expr, FieldItem, FnItem, GenericArg,
+    GenericParam, InitItem, Item, MatchArm, MatchStmt, Member, Module, NamedType, Param, Pattern,
+    Receiver, Span, Stmt, StructItem, VariantPayload,
 };
 use crate::syntax::printer;
 
@@ -3065,8 +3065,8 @@ enum DerivingShape<'a> {
 }
 
 /// `deriving(...)` validation (02-language.md §7.5, decision closed
-/// list): `Format` needs no shape check; `From` needs exactly one
-/// variant with exactly one field/payload (a struct has no variants, so
+/// list): `Format` (plans/M9.md item C2) and `From` (exactly one
+/// variant with exactly one field/payload — a struct has no variants, so
 /// "one field total" is its version of the same rule); any other name is
 /// an error. Neither `Vec<String>` deriving list nor `StructItem`/
 /// `EnumItem` carries a span of its own for the `deriving(...)` clause,
@@ -3079,7 +3079,7 @@ fn validate_deriving(
 ) -> Result<(), SemaError> {
     for name in deriving {
         match name.as_str() {
-            "Format" => {}
+            "Format" => validate_format_shape(shape, span)?,
             "From" => validate_from_shape(shape, span)?,
             other => {
                 return Err(SemaError::at(
@@ -3091,6 +3091,95 @@ fn validate_deriving(
         }
     }
     Ok(())
+}
+
+/// plans/M9.md item C2: `deriving(Format)` generates
+/// `max_formatted_len() -> usize` and `format(read self) -> String[..N]`
+/// (empty-spec form; `{expr:spec}` is comptime syntax for f-strings /
+/// item D). Fieldless structs and unit enums format their names;
+/// fieldful structs sum scalar field bounds. Payload enums refuse by
+/// name. `Secret` has no Format (05 §6).
+fn validate_format_shape(shape: &DerivingShape, span: Span) -> Result<(), SemaError> {
+    let type_name = match shape {
+        DerivingShape::Struct(s) => s.name.as_str(),
+        DerivingShape::Enum(e) => e.name.as_str(),
+    };
+    if type_name == "Secret" {
+        return Err(secret_has_no_format(span));
+    }
+    match shape {
+        DerivingShape::Struct(s) => {
+            // Fieldful structs are validated for scalar Format-ability
+            // when Decl members are built (need resolved field types).
+            let _ = s;
+        }
+        DerivingShape::Enum(e) => {
+            if e.variants.is_empty() {
+                return Err(SemaError::at(
+                    "type",
+                    "deriving(Format) requires at least one variant".to_string(),
+                    span,
+                ));
+            }
+            for v in &e.variants {
+                if !matches!(v.payload, VariantPayload::None) {
+                    return Err(SemaError::at(
+                        "type",
+                        format!(
+                            "deriving(Format) requires unit variants; `{}.{}` has a payload",
+                            e.name, v.name
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Decimal `Format` bound for a core scalar (archive §10). `None` when
+/// the type has no standard Format — deriving refuses that field.
+pub(crate) fn scalar_format_bound(ty: &Type) -> Option<u64> {
+    match ty {
+        Type::Bool => Some(5), // "false"
+        Type::U8 => Some(3),
+        Type::U16 => Some(5),
+        Type::U32 => Some(10),
+        Type::U64 | Type::Usize => Some(20),
+        Type::I8 => Some(4),
+        Type::I16 => Some(6),
+        Type::I32 => Some(11),
+        Type::I64 | Type::Isize => Some(20),
+        Type::Char => Some(4),
+        _ => None,
+    }
+}
+
+/// 05-library.md §6: "`Secret` has no `Format`." Enforced by type name
+/// today — `Secret[T]` is still the marked-value refusal (item G); a
+/// user `struct`/`enum` spelled `Secret` that tries to declare or
+/// derive Format is refused here by the same rule.
+pub(crate) fn secret_has_no_format(span: Span) -> SemaError {
+    SemaError::at(
+        "type",
+        "`Secret` has no `Format` (05-library.md §6)".to_string(),
+        span,
+    )
+}
+
+/// `String[..N]` as an ast type annotation (Format writer return).
+fn string_bound_ast_ty(span: Span, n: u64) -> ast::Type {
+    ast::Type::Named(NamedType {
+        span,
+        name: "String".to_string(),
+        args: vec![GenericArg::Bound(Expr::Int(span, n.to_string()))],
+    })
+}
+
+/// Resolved `String[..N]` for DeclFn return types.
+fn string_bound_ty(n: u64) -> Type {
+    Type::String(Box::new(Expr::Int(Span::default(), n.to_string())))
 }
 
 fn validate_from_shape(shape: &DerivingShape, span: Span) -> Result<(), SemaError> {
@@ -3252,6 +3341,273 @@ pub(crate) fn derived_from_fn_item_enum(
     }
 }
 
+// ===========================================================================
+// plans/M9.md item C2: `deriving(Format)` generates a real Format contract
+// (05 §6 / 02 §7.5) — associated `max_formatted_len() -> usize` and method
+// `format(read self) -> String[..N]`. Empty-spec only: `{expr:spec}` is
+// comptime syntax for f-strings (item D), not a runtime parameter.
+// Same DeclFn + FnItem shape as B3's `from`.
+// ===========================================================================
+
+fn derived_format_conflict(type_name: &str, span: Span) -> SemaError {
+    SemaError::at(
+        "type",
+        format!("deriving(Format) conflicts with an explicit Format member on `{type_name}`"),
+        span,
+    )
+}
+
+fn format_usize_ret(span: Span) -> ast::Type {
+    ast::Type::Named(NamedType {
+        span,
+        name: "usize".to_string(),
+        args: Vec::new(),
+    })
+}
+
+fn derived_max_formatted_len_decl() -> DeclFn {
+    DeclFn {
+        name: "max_formatted_len".to_string(),
+        is_async: false,
+        is_task: false,
+        generics: Vec::new(),
+        receiver: None,
+        params: Vec::new(),
+        ret: Type::Usize,
+    }
+}
+
+fn derived_format_decl(bound: u64) -> DeclFn {
+    DeclFn {
+        name: "format".to_string(),
+        is_async: false,
+        is_task: false,
+        generics: Vec::new(),
+        receiver: Some(DeclReceiver {
+            mode: AccessMode::Read,
+            is_pub: true,
+            is_init: false,
+        }),
+        params: Vec::new(),
+        ret: string_bound_ty(bound),
+    }
+}
+
+fn int_lit(span: Span, value: u64) -> Expr {
+    Expr::Int(span, value.to_string())
+}
+
+/// A text literal in the same spelling the lexer emits (`"..."` with
+/// escapes), so `eval::value::decode_str` can consume it.
+fn str_lit(span: Span, text: &str) -> Expr {
+    let mut raw = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '\\' => raw.push_str("\\\\"),
+            '"' => raw.push_str("\\\""),
+            '\n' => raw.push_str("\\n"),
+            '\r' => raw.push_str("\\r"),
+            '\t' => raw.push_str("\\t"),
+            '\0' => raw.push_str("\\0"),
+            other => raw.push(other),
+        }
+    }
+    raw.push('"');
+    Expr::Str(span, raw)
+}
+
+/// Associated `max_formatted_len() -> usize` with body `return N`.
+pub(crate) fn derived_max_formatted_len_fn_item(bound: u64, span: Span) -> FnItem {
+    FnItem {
+        span,
+        name: "max_formatted_len".to_string(),
+        is_pub: true,
+        is_async: false,
+        doc: None,
+        attrs: Vec::new(),
+        generics: Vec::new(),
+        receiver: None,
+        params: Vec::new(),
+        ret: Some(format_usize_ret(span)),
+        body: Some(vec![Stmt::Return(span, Some(int_lit(span, bound)))]),
+    }
+}
+
+/// Fieldless-struct `format(read self) -> String[..N]` returning the type name.
+pub(crate) fn derived_format_fn_item_struct(type_name: &str, span: Span) -> FnItem {
+    let bound = type_name.len() as u64;
+    FnItem {
+        span,
+        name: "format".to_string(),
+        is_pub: true,
+        is_async: false,
+        doc: None,
+        attrs: Vec::new(),
+        generics: Vec::new(),
+        receiver: Some(Receiver {
+            span,
+            mode: AccessMode::Read,
+        }),
+        params: Vec::new(),
+        ret: Some(string_bound_ast_ty(span, bound)),
+        body: Some(vec![Stmt::Return(span, Some(str_lit(span, type_name)))]),
+    }
+}
+
+/// Fieldful-struct `format`: `"Name(f1=" + self.f1.format() + ", f2=" + ... + ")"`.
+pub(crate) fn derived_format_fn_item_struct_fields(
+    type_name: &str,
+    fields: &[(String, Type)],
+    bound: u64,
+    span: Span,
+) -> FnItem {
+    let mut expr = str_lit(span, &format!("{type_name}("));
+    for (i, (fname, _)) in fields.iter().enumerate() {
+        if i > 0 {
+            expr = Expr::Binary(
+                span,
+                BinOp::Add,
+                Box::new(expr),
+                Box::new(str_lit(span, ", ")),
+            );
+        }
+        expr = Expr::Binary(
+            span,
+            BinOp::Add,
+            Box::new(expr),
+            Box::new(str_lit(span, &format!("{fname}="))),
+        );
+        let format_call = Expr::Call(
+            Box::new(Expr::Field(
+                Box::new(Expr::Field(
+                    Box::new(Expr::Name(span, "self".to_string())),
+                    span,
+                    fname.clone(),
+                )),
+                span,
+                "format".to_string(),
+            )),
+            span,
+            vec![],
+        );
+        expr = Expr::Binary(span, BinOp::Add, Box::new(expr), Box::new(format_call));
+    }
+    expr = Expr::Binary(
+        span,
+        BinOp::Add,
+        Box::new(expr),
+        Box::new(str_lit(span, ")")),
+    );
+    FnItem {
+        span,
+        name: "format".to_string(),
+        is_pub: true,
+        is_async: false,
+        doc: None,
+        attrs: Vec::new(),
+        generics: Vec::new(),
+        receiver: Some(Receiver {
+            span,
+            mode: AccessMode::Read,
+        }),
+        params: Vec::new(),
+        ret: Some(string_bound_ast_ty(span, bound)),
+        body: Some(vec![Stmt::Return(span, Some(expr))]),
+    }
+}
+
+/// Bound for `deriving(Format)` on a struct: fieldless → name length;
+/// fieldful → `Name(f1=<scalar>, f2=...)` with each scalar's Format bound.
+pub(crate) fn struct_format_bound(
+    type_name: &str,
+    fields: &[(String, Type)],
+    span: Span,
+) -> Result<u64, SemaError> {
+    if fields.is_empty() {
+        return Ok(type_name.len() as u64);
+    }
+    let mut bound = type_name.len() as u64 + 1; // "Name("
+    for (i, (fname, fty)) in fields.iter().enumerate() {
+        if i > 0 {
+            bound += 2; // ", "
+        }
+        bound += fname.len() as u64 + 1; // "f="
+        let Some(fb) = scalar_format_bound(fty) else {
+            return Err(SemaError::at(
+                "type",
+                format!(
+                    "deriving(Format) field `{fname}` has type `{}` with no standard Format",
+                    render_type(fty)
+                ),
+                span,
+            ));
+        };
+        bound += fb;
+    }
+    Ok(bound + 1) // ")"
+}
+
+/// Unit-enum `format(read self) -> String[..N]` matching each variant name.
+pub(crate) fn derived_format_fn_item_enum(variants: &[String], bound: u64, span: Span) -> FnItem {
+    let arms = variants
+        .iter()
+        .map(|v| MatchArm {
+            span,
+            pattern: Pattern::Variant {
+                span,
+                enum_name: None,
+                variant: v.clone(),
+                payload: Vec::new(),
+            },
+            guard: None,
+            body: vec![Stmt::Return(span, Some(str_lit(span, v)))],
+        })
+        .collect();
+    FnItem {
+        span,
+        name: "format".to_string(),
+        is_pub: true,
+        is_async: false,
+        doc: None,
+        attrs: Vec::new(),
+        generics: Vec::new(),
+        receiver: Some(Receiver {
+            span,
+            mode: AccessMode::Read,
+        }),
+        params: Vec::new(),
+        ret: Some(string_bound_ast_ty(span, bound)),
+        body: Some(vec![Stmt::Match(MatchStmt {
+            span,
+            scrutinee: Expr::Name(span, "self".to_string()),
+            arms,
+        })]),
+    }
+}
+
+/// True when a DeclFn is exactly the Format contract's associated bound
+/// member: `max_formatted_len() -> usize`, no receiver.
+pub(crate) fn is_format_max_formatted_len(d: &DeclFn) -> bool {
+    d.name == "max_formatted_len"
+        && d.receiver.is_none()
+        && d.params.is_empty()
+        && d.ret == Type::Usize
+        && !d.is_async
+}
+
+/// True when a DeclFn is exactly the Format contract's writer:
+/// `format(read self) -> String[..N]`.
+pub(crate) fn is_format_writer(d: &DeclFn) -> bool {
+    d.name == "format"
+        && matches!(
+            &d.receiver,
+            Some(r) if r.mode == AccessMode::Read
+        )
+        && d.params.is_empty()
+        && matches!(d.ret, Type::String(_))
+        && !d.is_async
+}
+
 fn declare_struct(
     s: &StructItem,
     shapes: &BTreeMap<String, usize>,
@@ -3320,6 +3676,39 @@ fn declare_struct(
             })
             .expect("validate_from_shape already required exactly one field");
         members.push(DeclMember::Fn(derived_from_decl(&s.name, source_ty)));
+    }
+    // plans/M9.md item C2: generate Format DeclFns for deriving(Format).
+    if s.deriving.iter().any(|d| d == "Format") {
+        if members.iter().any(|m| {
+            matches!(
+                m,
+                DeclMember::Fn(f) if f.name == "format" || f.name == "max_formatted_len"
+            )
+        }) {
+            return Err(derived_format_conflict(&s.name, s.span));
+        }
+        let fields: Vec<(String, Type)> = members
+            .iter()
+            .filter_map(|m| match m {
+                DeclMember::Field(f) => Some((f.name.clone(), f.ty.clone())),
+                _ => None,
+            })
+            .collect();
+        let bound = struct_format_bound(&s.name, &fields, s.span)?;
+        members.push(DeclMember::Fn(derived_max_formatted_len_decl()));
+        members.push(DeclMember::Fn(derived_format_decl(bound)));
+    }
+    // 05 §6: Secret has no Format — catch a hand-declared contract on a
+    // type spelled `Secret` (deriving already refused in validate_format_shape).
+    if s.name == "Secret"
+        && members.iter().any(|m| {
+            matches!(
+                m,
+                DeclMember::Fn(f) if is_format_max_formatted_len(f) || is_format_writer(f)
+            )
+        })
+    {
+        return Err(secret_has_no_format(s.span));
     }
     Ok(DeclStruct {
         name: s.name.clone(),
@@ -3555,6 +3944,27 @@ fn declare_enum(
             }
         };
         members.push(DeclMember::Fn(derived_from_decl(&e.name, source_ty)));
+    }
+    // plans/M9.md item C2: generate Format DeclFns for deriving(Format).
+    if e.deriving.iter().any(|d| d == "Format") {
+        if !seen_names.insert("max_formatted_len".to_string())
+            || !seen_names.insert("format".to_string())
+        {
+            return Err(derived_format_conflict(&e.name, e.span));
+        }
+        let bound = e.variants.iter().map(|v| v.name.len()).max().unwrap_or(0) as u64;
+        members.push(DeclMember::Fn(derived_max_formatted_len_decl()));
+        members.push(DeclMember::Fn(derived_format_decl(bound)));
+    }
+    if e.name == "Secret"
+        && members.iter().any(|m| {
+            matches!(
+                m,
+                DeclMember::Fn(f) if is_format_max_formatted_len(f) || is_format_writer(f)
+            )
+        })
+    {
+        return Err(secret_has_no_format(e.span));
     }
     Ok(DeclEnum {
         name: e.name.clone(),

@@ -1,0 +1,1 @@
+error[type]: `Secret` has no `Format` (05-library.md §6) at 5:1

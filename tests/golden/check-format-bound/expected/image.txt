@@ -1,0 +1,16 @@
+ImageGraph v0
+  Name value=check-format-bound
+  Target value=Target.wrela_machine_v1
+  Actor index=0 type=Store
+    Arg label=scalar value=2052050
+    Arg label=boolv value=4116114
+    Arg label=concat value=3104105
+    Arg label=point value=15080111
+    Arg label=bound value=33
+    Arg label=hue value=3082101
+    Arg label=mailbox value=4
+  Supervise index=0
+    Arg label=children value=[actor#0]
+    Arg label=strategy value=Restart.OneForOne
+    Arg label=intensity value=(3, 10000000000)
+  Sealed value=true

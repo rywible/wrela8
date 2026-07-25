@@ -1315,6 +1315,17 @@ fn eval_call<'a, 'p>(
     loop_marker: usize,
     ctx: &mut Interp<'p>,
 ) -> R<Value> {
+    // plans/M9.md item C2: core-scalar `.format()` — no TypedFn exists.
+    if let CalleeKey::Method(_, m) = callee {
+        if m == "format" {
+            if let Some(recv) = receiver {
+                if crate::sema::types::scalar_format_bound(&recv.ty).is_some() {
+                    let sv = eval_expr(recv, env, dstack, loop_marker, ctx)?;
+                    return Ok(value::format_scalar(&sv));
+                }
+            }
+        }
+    }
     let member_is_init =
         matches!(callee, CalleeKey::Method(_, m) | CalleeKey::MethodInstance(_, m) if m == "init");
     if member_is_init {
@@ -2198,6 +2209,15 @@ fn eval_binary<'a, 'p>(
     use BinOp::*;
     match op {
         Add | Sub | Mul => {
+            // plans/M9.md item C2: `String[..N] + String[..M]`.
+            if op == Add {
+                if let (Value::Str(a), Value::Str(b)) = (&lv, &rv) {
+                    let mut out = a.clone();
+                    out.extend_from_slice(b);
+                    ctx.charge(out.len() as u64)?;
+                    return Ok(Value::Str(out));
+                }
+            }
             // Scalar arithmetic's own operand type is `l.ty` (float or
             // integer); floats never abandon on ordinary `+ - *`.
             match (&lv, &rv) {

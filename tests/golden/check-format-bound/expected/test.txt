@@ -1,0 +1,7 @@
+test t_scalar: ok
+test t_bool: ok
+test t_concat: ok
+test t_point: ok
+test t_bound: ok
+test t_hue: ok
+6 passed, 0 failed

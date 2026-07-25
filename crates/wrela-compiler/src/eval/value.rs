@@ -167,6 +167,29 @@ pub fn as_i128(v: &Value) -> Option<i128> {
     })
 }
 
+/// plans/M9.md item C2: decimal / bool / char Format for core scalars.
+/// Occupied UTF-8 bytes of the formatted form (never padded to the type's
+/// `max_formatted_len` bound — that bound is a capacity ceiling).
+pub fn format_scalar(v: &Value) -> Value {
+    let s = match v {
+        Value::Bool(true) => "true".to_string(),
+        Value::Bool(false) => "false".to_string(),
+        Value::Char(c) => c.to_string(),
+        Value::U8(x) => x.to_string(),
+        Value::U16(x) => x.to_string(),
+        Value::U32(x) => x.to_string(),
+        Value::U64(x) => x.to_string(),
+        Value::Usize(x) => x.to_string(),
+        Value::I8(x) => x.to_string(),
+        Value::I16(x) => x.to_string(),
+        Value::I32(x) => x.to_string(),
+        Value::I64(x) => x.to_string(),
+        Value::Isize(x) => x.to_string(),
+        other => unreachable!("format_scalar: `{other:?}` is not a Format scalar"),
+    };
+    Value::Str(s.into_bytes())
+}
+
 /// Builds an integer-scalar `Value` of type `ty` from a host `i128`,
 /// truncating to the type's own bit pattern (`as`'s own two's-complement
 /// truncation) — callers only ever pass an already-range-checked (or

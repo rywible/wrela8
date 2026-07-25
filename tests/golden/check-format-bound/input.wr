@@ -1,0 +1,102 @@
+module examples.check_format_bound
+
+# plans/M9.md item C2. Format contract on `String[..N]`: scalar `.format()`,
+# `String + String`, and `deriving(Format)` for a fieldful struct and a
+# unit enum. Value pins (not mere compilation).
+
+pub struct Point deriving(Format):
+    x: u32
+    y: u32
+
+pub enum Hue deriving(Format):
+    Red
+    Green
+
+fn digest(s: String[..33]) -> u64:
+    # occupied*1_000_000 + b0*1_000 + b1 — same shape as check-string-bound.
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+fn digest_small(s: String[..10]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+fn digest_hue(s: String[..5]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+fn digest_concat(s: String[..3]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+# Scalar Format: 42u32 → "42" in String[..10].
+const FORTY_TWO: u32 = 42
+const SCALAR: u64 = digest_small(FORTY_TWO.format())
+
+# Bool Format: true → "true".
+fn bool_digest(s: String[..5]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+const FLAG: bool = true
+const BOOL: u64 = bool_digest(FLAG.format())
+
+# String concat: "hi" + "!" → "hi!" in String[..3].
+const CONCAT: u64 = digest_concat("hi" + "!")
+
+# Fieldful deriving: Point(x=3, y=7) → "Point(x=3, y=7)".
+const POINT: u64 = digest(Point(x=3, y=7).format())
+
+# Bound associated fn: Point.max_formatted_len() == 33.
+fn as_u64(n: usize) -> u64:
+    return n.to[u64]()
+
+const BOUND: u64 = as_u64(Point.max_formatted_len())
+
+# Unit enum: Hue.Red → "Red".
+const HUE: u64 = digest_hue(Hue.Red.format())
+
+@test
+pub fn t_scalar():
+    assert SCALAR == 2052050, "u32 42 formats as \"42\""
+
+@test
+pub fn t_bool():
+    assert BOOL == 4116114, "true formats as \"true\""
+
+@test
+pub fn t_concat():
+    assert CONCAT == 3104105, "\"hi\" + \"!\" is \"hi!\""
+
+@test
+pub fn t_point():
+    assert POINT == 15080111, "Point(x=3, y=7) derived Format"
+
+@test
+pub fn t_bound():
+    assert BOUND == 33, "Point.max_formatted_len is Name(x=<u32>, y=<u32>)"
+
+@test
+pub fn t_hue():
+    assert HUE == 3082101, "Hue.Red formats as \"Red\""
+
+@actor
+pub struct Store:
+    scalar: u64
+    boolv: u64
+    concat: u64
+    point: u64
+    bound: u64
+    hue: u64
+
+    init(mut self, scalar: u64, boolv: u64, concat: u64, point: u64, bound: u64, hue: u64):
+        self.scalar = scalar
+        self.boolv = boolv
+        self.concat = concat
+        self.point = point
+        self.bound = bound
+        self.hue = hue
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-format-bound", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, scalar=SCALAR, boolv=BOOL, concat=CONCAT,
+                        point=POINT, bound=BOUND, hue=HUE, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

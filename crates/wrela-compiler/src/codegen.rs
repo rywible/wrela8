@@ -1418,6 +1418,21 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 cur += sz;
             }
         }
+        // plans/M9.md item C2: core-scalar Format into `String[..capacity]`.
+        Inst::FormatScalar {
+            dst,
+            src,
+            src_ty,
+            capacity,
+        } => emit_format_scalar(ctx, *dst, *src, src_ty, *capacity)?,
+        // plans/M9.md item C2: `String[..N] + String[..M]`.
+        Inst::StringConcat {
+            dst,
+            lhs,
+            rhs,
+            lhs_cap,
+            rhs_cap,
+        } => emit_string_concat(ctx, *dst, *lhs, *rhs, *lhs_cap, *rhs_cap),
         Inst::Project { dst, base, index } => {
             let base_ty = f.temp_types[base.0].clone();
             // plans/M7.md item E4 / decision 19: an `own[P] T` base holds a
@@ -3454,6 +3469,640 @@ fn array_elem_type(base_ty: &Type) -> Result<Type, CodegenError> {
 /// `out_reg = &base[index]` (`base_off + index*elem_size`). Shared by
 /// `IndexGet`/`IndexSet`. Clobbers `X_A`, `X_B`, `X_D`, `X_E` and
 /// `out_reg`.
+/// plans/M9.md item C2: write a formatted scalar into a `String[..capacity]`
+/// frame slot (length word + `capacity` byte slots). Occupied length is the
+/// real digit/bool/char width; unused slots stay zero.
+fn emit_format_scalar(
+    ctx: &mut FnCtx,
+    dst: Temp,
+    src: Temp,
+    src_ty: &Type,
+    capacity: usize,
+) -> Result<(), CodegenError> {
+    let dst_off = ctx.frame.off(dst);
+    let src_off = ctx.frame.off(src);
+    // Zero-fill the whole aggregate.
+    for i in 0..=capacity {
+        ctx.load_imm(X_A, 0);
+        ctx.store_slot(X_A, dst_off + 8 * i);
+    }
+    match src_ty {
+        Type::Bool => {
+            ctx.load_slot(X_A, src_off);
+            let to_false = ctx.emit_skip(SkipKind::Cbz(X_A));
+            // "true"
+            ctx.load_imm(X_A, 4);
+            ctx.store_slot(X_A, dst_off);
+            for (i, b) in b"true".iter().enumerate() {
+                ctx.load_imm(X_A, i128::from(*b) as i64);
+                ctx.store_slot(X_A, dst_off + 8 * (1 + i));
+            }
+            let done = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+            ctx.patch_skip(to_false, SkipKind::Cbz(X_A));
+            // "false"
+            ctx.load_imm(X_A, 5);
+            ctx.store_slot(X_A, dst_off);
+            for (i, b) in b"false".iter().enumerate() {
+                ctx.load_imm(X_A, i128::from(*b) as i64);
+                ctx.store_slot(X_A, dst_off + 8 * (1 + i));
+            }
+            ctx.patch_skip(done, SkipKind::Cond(Cond::Al));
+            Ok(())
+        }
+        Type::Char => {
+            // UTF-8 encode one scalar value held as a codepoint in the slot.
+            ctx.load_slot(X_A, src_off); // codepoint
+            // 1-byte ASCII fast path.
+            ctx.load_imm(X_B, 0x80);
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_B, true),
+                format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
+            );
+            let not_ascii = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
+            ctx.load_imm(X_B, 1);
+            ctx.store_slot(X_B, dst_off);
+            ctx.store_slot(X_A, dst_off + 8);
+            let done = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+            ctx.patch_skip(not_ascii, SkipKind::Cond(Cond::Cs));
+            // 2-byte: U+0080..U+07FF
+            ctx.load_imm(X_B, 0x800);
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_B, true),
+                format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
+            );
+            let not_2 = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
+            // b0 = 0xC0 | (cp >> 6); b1 = 0x80 | (cp & 0x3F)
+            ctx.push(
+                encode::enc_lsr_imm(X_C, X_A, 6, true),
+                format!("lsr {}, {}, #6", reg_name(X_C), reg_name(X_A)),
+            );
+            ctx.load_imm(X_D, 0xC0);
+            ctx.push(
+                encode::enc_orr_reg(X_C, X_C, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_C),
+                    reg_name(X_C),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x3F);
+            ctx.push(
+                encode::enc_and_reg(X_E, X_A, X_D, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_A),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x80);
+            ctx.push(
+                encode::enc_orr_reg(X_E, X_E, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_B, 2);
+            ctx.store_slot(X_B, dst_off);
+            ctx.store_slot(X_C, dst_off + 8);
+            ctx.store_slot(X_E, dst_off + 16);
+            let done2 = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+            ctx.patch_skip(not_2, SkipKind::Cond(Cond::Cs));
+            // 3-byte: U+0800..U+FFFF (enough for common Format uses; 4-byte
+            // scalars still fit the bound of 4 and use the same path with
+            // a wider check below).
+            ctx.load_imm(X_B, 0x10000);
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_B, true),
+                format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
+            );
+            let not_3 = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
+            // b0 = 0xE0 | (cp >> 12); b1 = 0x80 | ((cp >> 6) & 0x3F); b2 = 0x80 | (cp & 0x3F)
+            ctx.push(
+                encode::enc_lsr_imm(X_C, X_A, 12, true),
+                format!("lsr {}, {}, #12", reg_name(X_C), reg_name(X_A)),
+            );
+            ctx.load_imm(X_D, 0xE0);
+            ctx.push(
+                encode::enc_orr_reg(X_C, X_C, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_C),
+                    reg_name(X_C),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.push(
+                encode::enc_lsr_imm(X_E, X_A, 6, true),
+                format!("lsr {}, {}, #6", reg_name(X_E), reg_name(X_A)),
+            );
+            ctx.load_imm(X_D, 0x3F);
+            ctx.push(
+                encode::enc_and_reg(X_E, X_E, X_D, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x80);
+            ctx.push(
+                encode::enc_orr_reg(X_E, X_E, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x3F);
+            ctx.push(
+                encode::enc_and_reg(X_F, X_A, X_D, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_F),
+                    reg_name(X_A),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x80);
+            ctx.push(
+                encode::enc_orr_reg(X_F, X_F, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_F),
+                    reg_name(X_F),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_B, 3);
+            ctx.store_slot(X_B, dst_off);
+            ctx.store_slot(X_C, dst_off + 8);
+            ctx.store_slot(X_E, dst_off + 16);
+            ctx.store_slot(X_F, dst_off + 24);
+            let done3 = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+            ctx.patch_skip(not_3, SkipKind::Cond(Cond::Cs));
+            // 4-byte
+            ctx.push(
+                encode::enc_lsr_imm(X_C, X_A, 18, true),
+                format!("lsr {}, {}, #18", reg_name(X_C), reg_name(X_A)),
+            );
+            ctx.load_imm(X_D, 0xF0);
+            ctx.push(
+                encode::enc_orr_reg(X_C, X_C, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_C),
+                    reg_name(X_C),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.push(
+                encode::enc_lsr_imm(X_E, X_A, 12, true),
+                format!("lsr {}, {}, #12", reg_name(X_E), reg_name(X_A)),
+            );
+            ctx.load_imm(X_D, 0x3F);
+            ctx.push(
+                encode::enc_and_reg(X_E, X_E, X_D, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x80);
+            ctx.push(
+                encode::enc_orr_reg(X_E, X_E, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.push(
+                encode::enc_lsr_imm(X_F, X_A, 6, true),
+                format!("lsr {}, {}, #6", reg_name(X_F), reg_name(X_A)),
+            );
+            ctx.load_imm(X_D, 0x3F);
+            ctx.push(
+                encode::enc_and_reg(X_F, X_F, X_D, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_F),
+                    reg_name(X_F),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x80);
+            ctx.push(
+                encode::enc_orr_reg(X_F, X_F, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_F),
+                    reg_name(X_F),
+                    reg_name(X_D)
+                ),
+            );
+            // reuse X_B for last byte
+            ctx.load_imm(X_D, 0x3F);
+            ctx.push(
+                encode::enc_and_reg(X_B, X_A, X_D, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_B),
+                    reg_name(X_A),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_imm(X_D, 0x80);
+            ctx.push(
+                encode::enc_orr_reg(X_B, X_B, X_D, true),
+                format!(
+                    "orr {}, {}, {}",
+                    reg_name(X_B),
+                    reg_name(X_B),
+                    reg_name(X_D)
+                ),
+            );
+            if capacity < 4 {
+                return Err(CodegenError::internal(
+                    "FormatScalar char capacity < 4".to_string(),
+                ));
+            }
+            ctx.load_imm(X_D, 4);
+            ctx.store_slot(X_D, dst_off);
+            ctx.store_slot(X_C, dst_off + 8);
+            ctx.store_slot(X_E, dst_off + 16);
+            ctx.store_slot(X_F, dst_off + 24);
+            ctx.store_slot(X_B, dst_off + 32);
+            ctx.patch_skip(done3, SkipKind::Cond(Cond::Al));
+            ctx.patch_skip(done2, SkipKind::Cond(Cond::Al));
+            ctx.patch_skip(done, SkipKind::Cond(Cond::Al));
+            Ok(())
+        }
+        Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::Usize
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::Isize => {
+            let signed = matches!(
+                src_ty,
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize
+            );
+            if capacity == 0 {
+                return Err(CodegenError::internal(
+                    "FormatScalar integer capacity is 0".to_string(),
+                ));
+            }
+            ctx.load_slot(X_A, src_off); // value
+            ctx.load_imm(X_F, 0); // negative flag
+            if signed {
+                ctx.push(
+                    encode::enc_cmp_reg(X_A, X_ZR, true),
+                    format!("cmp {}, xzr", reg_name(X_A)),
+                );
+                let nonneg = ctx.emit_skip(SkipKind::Cond(Cond::Ge));
+                ctx.load_imm(X_F, 1);
+                ctx.push(
+                    encode::enc_sub_reg(X_A, X_ZR, X_A, true),
+                    format!("neg {}, {}", reg_name(X_A), reg_name(X_A)),
+                );
+                ctx.patch_skip(nonneg, SkipKind::Cond(Cond::Ge));
+            }
+            // Zero → "0" (with optional leading '-').
+            let nonzero = ctx.emit_skip(SkipKind::Cbnz(X_A));
+            // Write '0'
+            ctx.load_imm(X_B, b'0' as i64);
+            ctx.store_slot(X_B, dst_off + 8);
+            ctx.load_imm(X_B, 1);
+            // if negative: write '-' at [0], '0' at [1], len=2
+            ctx.push(
+                encode::enc_cmp_reg(X_F, X_ZR, true),
+                format!("cmp {}, xzr", reg_name(X_F)),
+            );
+            let no_sign0 = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+            ctx.load_imm(X_C, b'-' as i64);
+            ctx.store_slot(X_C, dst_off + 8);
+            ctx.load_imm(X_C, b'0' as i64);
+            ctx.store_slot(X_C, dst_off + 16);
+            ctx.load_imm(X_B, 2);
+            ctx.patch_skip(no_sign0, SkipKind::Cond(Cond::Eq));
+            ctx.store_slot(X_B, dst_off);
+            let done0 = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+            ctx.patch_skip(nonzero, SkipKind::Cbnz(X_A));
+
+            // Digit extraction into the high end of the data area.
+            // X_I = capacity (write index); X_N = digit count; X_A = abs value
+            ctx.load_imm(X_I_REG, capacity as i64);
+            ctx.load_imm(X_N_REG, 0);
+            let loop_start = ctx.cur_word();
+            // dig = X_A % 10; X_A /= 10
+            ctx.load_imm(X_B, 10);
+            ctx.push(
+                encode::enc_udiv(X_C, X_A, X_B, true),
+                format!(
+                    "udiv {}, {}, {}",
+                    reg_name(X_C),
+                    reg_name(X_A),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.push(
+                encode::enc_msub(X_D, X_C, X_B, X_A, true),
+                format!(
+                    "msub {}, {}, {}, {}",
+                    reg_name(X_D),
+                    reg_name(X_C),
+                    reg_name(X_B),
+                    reg_name(X_A)
+                ),
+            );
+            ctx.load_imm(X_B, b'0' as i64);
+            ctx.push(
+                encode::enc_add_reg(X_D, X_D, X_B, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_D),
+                    reg_name(X_D),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.push(
+                encode::enc_sub_imm(X_I_REG, X_I_REG, 1, true),
+                format!("sub {}, {}, #1", reg_name(X_I_REG), reg_name(X_I_REG)),
+            );
+            // store digit at data[X_I]: addr = dst_base + 8 + X_I*8
+            ctx.addr_of_slot(X_E, dst_off + 8);
+            ctx.load_imm(X_B, 8);
+            ctx.push(
+                encode::enc_mul(X_B, X_I_REG, X_B, true),
+                format!(
+                    "mul {}, {}, {}",
+                    reg_name(X_B),
+                    reg_name(X_I_REG),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_B, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.store_ptr(X_D, X_E, 0);
+            ctx.push(
+                encode::enc_add_imm(X_N_REG, X_N_REG, 1, true),
+                format!("add {}, {}, #1", reg_name(X_N_REG), reg_name(X_N_REG)),
+            );
+            ctx.push(
+                encode::enc_mov_reg(X_A, X_C, true),
+                format!("mov {}, {}", reg_name(X_A), reg_name(X_C)),
+            );
+            // loop while X_A != 0
+            let here = ctx.cur_word();
+            let back = (loop_start as i64 - here as i64) as i32 * 4;
+            ctx.push(
+                encode::enc_cbnz(X_A, back, true),
+                format!("cbnz {}, #{back}", reg_name(X_A)),
+            );
+
+            // Optional leading '-': decrement X_I, store '-', bump X_N
+            ctx.push(
+                encode::enc_cmp_reg(X_F, X_ZR, true),
+                format!("cmp {}, xzr", reg_name(X_F)),
+            );
+            let no_sign = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+            ctx.push(
+                encode::enc_sub_imm(X_I_REG, X_I_REG, 1, true),
+                format!("sub {}, {}, #1", reg_name(X_I_REG), reg_name(X_I_REG)),
+            );
+            ctx.load_imm(X_D, b'-' as i64);
+            ctx.addr_of_slot(X_E, dst_off + 8);
+            ctx.load_imm(X_B, 8);
+            ctx.push(
+                encode::enc_mul(X_B, X_I_REG, X_B, true),
+                format!(
+                    "mul {}, {}, {}",
+                    reg_name(X_B),
+                    reg_name(X_I_REG),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_B, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_B)
+                ),
+            );
+            ctx.store_ptr(X_D, X_E, 0);
+            ctx.push(
+                encode::enc_add_imm(X_N_REG, X_N_REG, 1, true),
+                format!("add {}, {}, #1", reg_name(X_N_REG), reg_name(X_N_REG)),
+            );
+            ctx.patch_skip(no_sign, SkipKind::Cond(Cond::Eq));
+
+            // Shift data[X_I ..) down to data[0 .. X_N)
+            ctx.load_imm(X_A, 0); // j
+            let shift_start = ctx.cur_word();
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_N_REG, true),
+                format!("cmp {}, {}", reg_name(X_A), reg_name(X_N_REG)),
+            );
+            let shift_done = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
+            // load data[X_I + j]
+            ctx.push(
+                encode::enc_add_reg(X_B, X_I_REG, X_A, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_B),
+                    reg_name(X_I_REG),
+                    reg_name(X_A)
+                ),
+            );
+            ctx.addr_of_slot(X_E, dst_off + 8);
+            ctx.load_imm(X_C, 8);
+            ctx.push(
+                encode::enc_mul(X_D, X_B, X_C, true),
+                format!(
+                    "mul {}, {}, {}",
+                    reg_name(X_D),
+                    reg_name(X_B),
+                    reg_name(X_C)
+                ),
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_D, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.load_ptr(X_F, X_E, 0);
+            // store data[j]
+            ctx.addr_of_slot(X_E, dst_off + 8);
+            ctx.push(
+                encode::enc_mul(X_D, X_A, X_C, true),
+                format!(
+                    "mul {}, {}, {}",
+                    reg_name(X_D),
+                    reg_name(X_A),
+                    reg_name(X_C)
+                ),
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_D, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+            );
+            ctx.store_ptr(X_F, X_E, 0);
+            ctx.push(
+                encode::enc_add_imm(X_A, X_A, 1, true),
+                format!("add {}, {}, #1", reg_name(X_A), reg_name(X_A)),
+            );
+            let here = ctx.cur_word();
+            let back = (shift_start as i64 - here as i64) as i32 * 4;
+            ctx.push(encode::enc_b(back), format!("b #{back}"));
+            ctx.patch_skip(shift_done, SkipKind::Cond(Cond::Cs));
+
+            // Zero the remaining data slots beyond X_N (unrolled).
+            for i in 0..capacity {
+                ctx.load_imm(X_A, i as i64);
+                ctx.push(
+                    encode::enc_cmp_reg(X_A, X_N_REG, true),
+                    format!("cmp {}, {}", reg_name(X_A), reg_name(X_N_REG)),
+                );
+                let keep = ctx.emit_skip(SkipKind::Cond(Cond::Cc)); // i < n → keep
+                ctx.load_imm(X_B, 0);
+                ctx.store_slot(X_B, dst_off + 8 * (1 + i));
+                ctx.patch_skip(keep, SkipKind::Cond(Cond::Cc));
+            }
+            ctx.store_slot(X_N_REG, dst_off);
+            ctx.patch_skip(done0, SkipKind::Cond(Cond::Al));
+            Ok(())
+        }
+        other => Err(CodegenError::internal(format!(
+            "FormatScalar for non-scalar type `{}`",
+            crate::sema::types::render_type(other)
+        ))),
+    }
+}
+
+/// Scratch aliases used only inside [`emit_format_scalar`]'s digit loop —
+/// kept clear of `X_A`..`X_F` where those are live mid-step.
+const X_I_REG: u8 = 15;
+const X_N_REG: u8 = 16;
+
+/// plans/M9.md item C2: concatenate two String aggregates.
+fn emit_string_concat(
+    ctx: &mut FnCtx,
+    dst: Temp,
+    lhs: Temp,
+    rhs: Temp,
+    lhs_cap: usize,
+    rhs_cap: usize,
+) {
+    let dst_off = ctx.frame.off(dst);
+    let lhs_off = ctx.frame.off(lhs);
+    let rhs_off = ctx.frame.off(rhs);
+    let out_cap = lhs_cap + rhs_cap;
+    // Zero-fill.
+    for i in 0..=out_cap {
+        ctx.load_imm(X_A, 0);
+        ctx.store_slot(X_A, dst_off + 8 * i);
+    }
+    // out_len = lhs_len + rhs_len
+    ctx.load_slot(X_A, lhs_off); // lhs_len
+    ctx.load_slot(X_B, rhs_off); // rhs_len
+    ctx.push(
+        encode::enc_add_reg(X_C, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_C),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_slot(X_C, dst_off);
+    // Copy lhs occupied bytes (unrolled against capacity; gated by lhs_len).
+    for i in 0..lhs_cap {
+        ctx.load_imm(X_D, i as i64);
+        ctx.push(
+            encode::enc_cmp_reg(X_D, X_A, true),
+            format!("cmp {}, {}", reg_name(X_D), reg_name(X_A)),
+        );
+        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // i >= lhs_len
+        ctx.load_slot(X_E, lhs_off + 8 * (1 + i));
+        ctx.store_slot(X_E, dst_off + 8 * (1 + i));
+        ctx.patch_skip(skip, SkipKind::Cond(Cond::Cs));
+    }
+    // Copy rhs occupied bytes to dst[lhs_len + j].
+    for j in 0..rhs_cap {
+        ctx.load_imm(X_D, j as i64);
+        ctx.push(
+            encode::enc_cmp_reg(X_D, X_B, true),
+            format!("cmp {}, {}", reg_name(X_D), reg_name(X_B)),
+        );
+        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // j >= rhs_len
+        ctx.load_slot(X_E, rhs_off + 8 * (1 + j));
+        // dest index = lhs_len + j → byte off = 8 + 8*(lhs_len+j)
+        ctx.addr_of_slot(X_F, dst_off + 8);
+        ctx.push(
+            encode::enc_add_reg(X_C, X_A, X_D, true),
+            format!(
+                "add {}, {}, {}",
+                reg_name(X_C),
+                reg_name(X_A),
+                reg_name(X_D)
+            ),
+        );
+        ctx.load_imm(X_D, 8);
+        ctx.push(
+            encode::enc_mul(X_D, X_C, X_D, true),
+            format!(
+                "mul {}, {}, {}",
+                reg_name(X_D),
+                reg_name(X_C),
+                reg_name(X_D)
+            ),
+        );
+        ctx.push(
+            encode::enc_add_reg(X_F, X_F, X_D, true),
+            format!(
+                "add {}, {}, {}",
+                reg_name(X_F),
+                reg_name(X_F),
+                reg_name(X_D)
+            ),
+        );
+        ctx.store_ptr(X_E, X_F, 0);
+        ctx.patch_skip(skip, SkipKind::Cond(Cond::Cs));
+    }
+}
+
 fn emit_index_addr(
     ctx: &mut FnCtx,
     base_off: usize,

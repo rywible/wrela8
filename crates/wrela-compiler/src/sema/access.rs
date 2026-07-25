@@ -2138,6 +2138,15 @@ fn check_call_by_field(
             }));
         }
     }
+    // plans/M9.md item C2: core-scalar `.format() -> String[..K]`.
+    if name == "format" {
+        if let Some(k) = types::scalar_format_bound(&base_ty) {
+            return Ok(Some(Type::String(Box::new(crate::syntax::ast::Expr::Int(
+                fspan,
+                k.to_string(),
+            )))));
+        }
+    }
     let Type::Named(sname, _targs) = &base_ty else {
         return Err(unimplemented_at(
             "mirroring a method call through this base expression is",
