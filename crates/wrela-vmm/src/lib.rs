@@ -171,6 +171,36 @@ struct ParsedReport {
     /// before this item, so their boot path is unchanged down to the
     /// number of vCPUs this VMM creates.
     core_entries: Vec<(usize, u64)>,
+    /// plans/M8.md item C3, decision 42: this image's own cross-core
+    /// **request** rings, in report order — the order the guest's own
+    /// drain walks its lanes (`layout::build_rt_drain`), which is what
+    /// makes a reconstruction from occupancy words an ordered one. Reply
+    /// rings are parsed for shape and then dropped: a reply is addressed
+    /// to a turn record, not admitted to a mailbox, so it is not part of
+    /// 06 §8's "per-mailbox cross-core admission order". Empty for every
+    /// single-core image.
+    request_rings: Vec<RequestRing>,
+}
+
+/// One `Ring kind=request ...` report line, as the recorder consumes it
+/// (plans/M8.md item C3). `count_addr` is the ring's occupancy word:
+/// `layout::place_runtime_tables` lays each ring out as `capacity *
+/// slot_size` bytes of slots followed by `head`, `tail`, `count`, so the
+/// third bookkeeping word is `base + capacity * slot_size + 16`. That
+/// derivation is the one thing this struct knows that the report line does
+/// not spell outright, and it is stated here rather than inline at the
+/// read site.
+#[derive(Debug, Clone)]
+struct RequestRing {
+    /// The producing core — decision 28: the producer of a cross-core ring
+    /// is a *core*, not an actor, which is exactly what an `Admission`
+    /// entry's `sender` field names.
+    src: usize,
+    /// The consuming core: the one whose drain performs the admission.
+    dst: usize,
+    /// The mailbox root this ring feeds — exactly one, by decision 28.
+    target: String,
+    count_addr: u64,
 }
 
 /// One `IrqHostInject` report line (plans/M7.md item G).
@@ -283,6 +313,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut blk_pools: Vec<devices::PoolWindow> = Vec::new();
     let mut irq_injects: Vec<IrqHostInject> = Vec::new();
     let mut core_entries: Vec<(usize, u64)> = Vec::new();
+    let mut request_rings: Vec<RequestRing> = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
@@ -311,6 +342,73 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                 )));
             }
             core_entries.push((core as usize, base));
+        } else if let Some(rest) = line.strip_prefix("Ring ") {
+            // plans/M8.md item C3, decision 42: a cross-core ring the
+            // recorder must be able to *address*, because 06 §8 makes this
+            // VMM the recorder of "per-mailbox cross-core admission order"
+            // and the admission itself is performed by guest code in guest
+            // memory. Parsed strictly (an unknown field or a missing
+            // `base=` fails the report closed) for the same reason every
+            // device line is: a ring this VMM half-understands is one it
+            // would silently under-record.
+            let fields = parse_report_fields(
+                "Ring",
+                rest,
+                &[
+                    "kind", "src", "dst", "target", "cap", "slot", "bytes", "base",
+                ],
+            )?;
+            let kind = fields.get("kind").copied().ok_or_else(|| {
+                VmmError::MalformedReport("`Ring` is missing required field `kind`".to_string())
+            })?;
+            let src = report_u64("Ring", &fields, "src")?;
+            let dst = report_u64("Ring", &fields, "dst")?;
+            let capacity = report_u64("Ring", &fields, "cap")?;
+            let slot = report_u64("Ring", &fields, "slot")?;
+            let base = report_u64("Ring", &fields, "base")?;
+            let target = fields.get("target").copied().ok_or_else(|| {
+                VmmError::MalformedReport("`Ring` is missing required field `target`".to_string())
+            })?;
+            if src as usize >= wrela_machine::VCPUS || dst as usize >= wrela_machine::VCPUS {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Ring src={src} dst={dst}`: this machine has {} vCPUs (06-machine.md §1)",
+                    wrela_machine::VCPUS
+                )));
+            }
+            if src == dst {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Ring src={src} dst={dst}`: a ring is a *cross*-core edge; same-core edges \
+                     keep the mailbox path (04-compiler.md §3)"
+                )));
+            }
+            match kind {
+                "request" => {
+                    if target == "-" {
+                        return Err(VmmError::MalformedReport(
+                            "`Ring kind=request` with no `target=`: a request ring feeds exactly \
+                             one mailbox root, which is what names the admission"
+                                .to_string(),
+                        ));
+                    }
+                    request_rings.push(RequestRing {
+                        src: src as usize,
+                        dst: dst as usize,
+                        target: target.to_string(),
+                        // `place_runtime_tables`'s own layout: slots, then
+                        // head, tail, count.
+                        count_addr: base + capacity * slot + 16,
+                    });
+                }
+                // A reply is delivered to a turn record, not admitted to a
+                // mailbox: shape-checked above, then deliberately dropped.
+                "reply" => {}
+                other => {
+                    return Err(VmmError::MalformedReport(format!(
+                        "`Ring kind={other}`: the only lanes are `request` and `reply` \
+                         (plans/M8.md decision 29)"
+                    )));
+                }
+            }
         } else if let Some(rest) = line.strip_prefix("BlkDevice ") {
             let fields = parse_report_fields(
                 "BlkDevice",
@@ -476,11 +574,26 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             )));
         }
     }
+    // plans/M8.md item C3: a ring whose consuming core this image never
+    // brings up would be an admission nothing could ever perform — and a
+    // recorder that silently carries one would under-record forever.
+    for r in &request_rings {
+        let brought_up = r.dst == 0 || core_entries.iter().any(|(c, _)| *c == r.dst);
+        let src_up = r.src == 0 || core_entries.iter().any(|(c, _)| *c == r.src);
+        if !brought_up || !src_up {
+            return Err(VmmError::MalformedReport(format!(
+                "`Ring kind=request src={} dst={} target={}` names a core this image never brings \
+                 up (no `CoreEntry` line for it)",
+                r.src, r.dst, r.target
+            )));
+        }
+    }
     Ok(ParsedReport {
         entry,
         blk,
         irq_injects,
         core_entries,
+        request_rings,
     })
 }
 
@@ -818,6 +931,10 @@ fn boot_image_core(
         /// destroying its vCPU, so the watchdog can never force-exit a
         /// handle that no longer exists.
         vcpus: [u64; NCORES],
+        /// plans/M8.md item C3: the cross-core admission witness (06 §8).
+        /// Empty `rings` for every single-core image, which is what makes
+        /// their choice sequences byte-identical to their pre-C3 ones.
+        admission: AdmissionWitness,
     }
     // Every field above is touched only by the thread currently holding the
     // baton (or by the main thread, before any core runs and after all have
@@ -883,6 +1000,7 @@ fn boot_image_core(
         exit_code: None,
         error: None,
         vcpus: [0; NCORES],
+        admission: AdmissionWitness::new(parsed.request_rings.clone()),
     });
     let baton = std::sync::Condvar::new();
 
@@ -1270,8 +1388,27 @@ fn boot_image_core(
                 return;
             }
             {
-                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                g.exits += 1;
+                let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                guard.exits += 1;
+                // plans/M8.md item C3: the admission witness's one and only
+                // call site (06 §8). It runs *before* this exit is decoded,
+                // so every message the guest admitted during the run that
+                // just ended is in the choice sequence ahead of whatever
+                // choice this exit itself resolves — and it runs on every
+                // exit, so no drain can hide between two of them. A
+                // single-core image has no request ring and this returns
+                // immediately, which is why every pre-C3 recording is
+                // byte-identical.
+                let g = &mut *guard;
+                if let Err(e) = witness_admissions(&mut g.admission, &mut g.chooser, host_ram, core)
+                {
+                    g.error.get_or_insert(e);
+                    g.sched.done = true;
+                    g.sched.state[core] = CoreState::Finished;
+                    drop(guard);
+                    baton.notify_all();
+                    return;
+                }
             }
             match handle_exit(core, vcpu, exit_ptr, host_ram, cores_declared, lock) {
                 Ok(Step::Keep) => {}
@@ -1685,6 +1822,136 @@ fn service_blk(
         raise_vector(host_ram, vector);
     }
     Ok(true)
+}
+
+/// plans/M8.md item C3, decision 42 — the recorder's witness on 06 §8's
+/// "per-mailbox cross-core admission order", which is the one scheduling
+/// nondeterminism 04 §2 gives this machine.
+///
+/// **Why a witness can be exact here, stated as the invariant it rests
+/// on.** A cross-core request ring's producer is core `src` and its
+/// consumer is core `dst`, and `src != dst` by construction
+/// (`parse_report` refuses otherwise). Decision 11's baton means exactly
+/// one vCPU is inside `hv_vcpu_run` at any instant. So between two
+/// consecutive vCPU exits **at most one core ran**, and for any one ring
+/// that core is either its producer or its consumer, never both:
+/// a ring whose `dst` just ran can only have *shrunk*, and by exactly the
+/// number of messages that core's drain admitted. The occupancy word is
+/// therefore an exact counter, not a sampled one — no modular head
+/// arithmetic, no lost wrap.
+///
+/// **The order is exact too, for the same reason.**
+/// `layout::build_rt_drain` walks its request lanes in `RuntimeTables::
+/// rings` order and drains each lane to empty before starting the next,
+/// and no other core can produce into any of them meanwhile. Walking the
+/// report's `Ring` lines in that same order reconstructs the order the
+/// guest actually admitted in.
+#[derive(Debug, Default)]
+struct AdmissionWitness {
+    rings: Vec<RequestRing>,
+    /// Each ring's occupancy word as of the last observation, parallel to
+    /// `rings`. Zero-initialized, which is the value guest DRAM's own
+    /// zeroed reservation puts there before the first instruction runs.
+    last_count: Vec<u64>,
+}
+
+impl AdmissionWitness {
+    fn new(rings: Vec<RequestRing>) -> AdmissionWitness {
+        let last_count = vec![0; rings.len()];
+        AdmissionWitness { rings, last_count }
+    }
+
+    /// The whole counting rule, as a pure function of (this observation's
+    /// occupancy words, which core just ran) — separated from the guest
+    /// memory read above it so it can be unit-tested directly
+    /// (`admission_witness_*`, below).
+    ///
+    /// Returns one `(mailbox, sender)` pair per message admitted, in the
+    /// order they were admitted. Fails closed rather than guessing if a
+    /// ring the running core *consumes* somehow grew: that would mean the
+    /// SPSC producer/consumer split this reconstruction rests on is not
+    /// true of the running image, and a silently under-recorded admission
+    /// order is the exact thing 06 §8 exists to prevent.
+    fn observe(&mut self, counts: &[u64], core: usize) -> Result<Vec<(String, String)>, String> {
+        debug_assert_eq!(counts.len(), self.rings.len());
+        let mut admitted = Vec::new();
+        for (i, ring) in self.rings.iter().enumerate() {
+            let now = counts[i];
+            let was = self.last_count[i];
+            if ring.dst == core {
+                if now > was {
+                    return Err(format!(
+                        "cross-core ring src={} dst={} target={} grew from {was} to {now} while \
+                         its own consuming core {core} was the only core running — the SPSC \
+                         producer/consumer split the admission recorder rests on does not hold",
+                        ring.src, ring.dst, ring.target
+                    ));
+                }
+                for _ in 0..(was - now) {
+                    admitted.push((ring.target.clone(), format!("core{}", ring.src)));
+                }
+            }
+            self.last_count[i] = now;
+        }
+        Ok(admitted)
+    }
+}
+
+/// Reads every request ring's occupancy word out of guest memory and
+/// pushes one `ChoiceEntry::Admission` per message core `core`'s drain
+/// just admitted (`AdmissionWitness` above has the whole argument).
+///
+/// **Witness, not injection** — the honest claim, in the words plans/M8.md
+/// item C3 asks for. The drain is guest code and the mailbox is guest
+/// memory; nothing here writes either, in record mode or replay mode. So
+/// replay does not *feed* the recorded admission order back to the guest;
+/// it re-witnesses and **checks**, and a disagreement is
+/// `Divergence::AdmissionMismatch`, named exactly like a device
+/// completion's. Under decision 11's baton there is no alternative order
+/// to feed, which is why the checking form is the honest one — and why a
+/// later schedule enumerator, which would vary the baton hand-off, is the
+/// thing that would make injection mean something.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn witness_admissions(
+    witness: &mut AdmissionWitness,
+    chooser: &mut record::Chooser,
+    host_ram: *const u8,
+    core: usize,
+) -> Result<(), VmmError> {
+    use wrela_machine::layout as machine_layout;
+    if witness.rings.is_empty() {
+        return Ok(());
+    }
+    let counts: Vec<u64> = witness
+        .rings
+        .iter()
+        .map(|r| {
+            let off = (r.count_addr - machine_layout::DRAM_BASE) as usize;
+            let mut b = [0u8; 8];
+            unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
+            u64::from_le_bytes(b)
+        })
+        .collect();
+    let admitted = witness
+        .observe(&counts, core)
+        .map_err(VmmError::GuestFault)?;
+    for (mailbox, sender) in admitted {
+        let request = record::ChoiceRequest::Admission { mailbox, sender };
+        let observed = request.fallback();
+        let index = chooser.resolved_count();
+        let chosen = {
+            let observed = observed.clone();
+            chooser.choose_next(request, move || observed)
+        };
+        if chosen != observed {
+            chooser.note_divergence(record::Divergence::AdmissionMismatch {
+                index,
+                recorded: chosen.to_text_fields(),
+                actual: observed.to_text_fields(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Reads the vCPU's own current `PC` for a fault diagnostic — best-effort
@@ -4429,6 +4696,147 @@ pub fn build() -> Image:
             format!("{head}CoreEntry core=2 base=0x40500200\nCoreEntry core=1 base=0x40500100\n");
         let parsed = parse_report(&ok).expect("parses");
         assert_eq!(parsed.core_entries, vec![(1, 0x40500100), (2, 0x40500200)]);
+    }
+
+    /// plans/M8.md item C3: the `Ring` lines the admission recorder reads.
+    /// Parsed strictly for the same reason every device line is — a ring
+    /// this VMM half-understands is one whose admissions it would silently
+    /// under-record, and 06 §8 makes it the recorder of exactly those.
+    #[test]
+    fn parse_report_reads_request_rings_and_refuses_malformed_ones() {
+        let head = format!(
+            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\n\
+             Entry base=0x40500000\nCoreEntry core=1 base=0x40500100\n\
+             CoreEntry core=2 base=0x40500200\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        for (why, line) in [
+            (
+                "a same-core `ring` is not a cross-core edge",
+                "Ring kind=request src=0 dst=0 target=A cap=4 slot=16 bytes=88 base=0x40501000\n",
+            ),
+            (
+                "a core this machine does not have",
+                "Ring kind=request src=0 dst=7 target=A cap=4 slot=16 bytes=88 base=0x40501000\n",
+            ),
+            (
+                "a lane that is neither request nor reply",
+                "Ring kind=gossip src=0 dst=1 target=A cap=4 slot=16 bytes=88 base=0x40501000\n",
+            ),
+            (
+                "a request ring with no target mailbox",
+                "Ring kind=request src=0 dst=1 target=- cap=4 slot=16 bytes=88 base=0x40501000\n",
+            ),
+            (
+                "a ring with no address to witness at",
+                "Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88\n",
+            ),
+            (
+                "an unknown field",
+                "Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base=0x1 depth=2\n",
+            ),
+        ] {
+            let text = format!("{head}{line}");
+            assert!(
+                matches!(parse_report(&text), Err(VmmError::MalformedReport(_))),
+                "{why} must be refused"
+            );
+        }
+        // A ring naming a core the image never brings up: the `CoreEntry`
+        // set is the machine, and an admission nothing can ever perform is
+        // a report this VMM refuses rather than carries.
+        let single_core = format!(
+            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\n\
+             Entry base=0x40500000\n\
+             Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base=0x40501000\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        assert!(matches!(
+            parse_report(&single_core),
+            Err(VmmError::MalformedReport(_))
+        ));
+
+        // The well-formed set: request rings kept in report order, reply
+        // rings shape-checked and dropped (a reply is delivered to a turn
+        // record, never admitted to a mailbox).
+        let ok = format!(
+            "{head}\
+             Ring kind=request src=0 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502cb8\n\
+             Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502ec0\n\
+             Ring kind=request src=2 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502de8\n"
+        );
+        let parsed = parse_report(&ok).expect("parses");
+        let got: Vec<(usize, usize, &str, u64)> = parsed
+            .request_rings
+            .iter()
+            .map(|r| (r.src, r.dst, r.target.as_str(), r.count_addr))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                // count = base + cap * slot + 16 (slots, head, tail, count)
+                (0, 1, "Sink", 0x40502cb8 + 8 * 24 + 16),
+                (2, 1, "Sink", 0x40502de8 + 8 * 24 + 16),
+            ]
+        );
+    }
+
+    /// plans/M8.md item C3, decision 42: the whole counting rule of the
+    /// admission witness, exercised directly — the guest-memory read
+    /// around it is three lines, this is the part that can be wrong.
+    #[test]
+    fn admission_witness_counts_only_the_running_core_s_own_drain() {
+        let ring = |src: usize, dst: usize, target: &str| RequestRing {
+            src,
+            dst,
+            target: target.to_string(),
+            count_addr: 0,
+        };
+        let mut w = AdmissionWitness::new(vec![
+            ring(0, 1, "Sink"),
+            ring(0, 2, "Far"),
+            ring(2, 1, "Sink"),
+        ]);
+        // Core 0 published two messages into ring 0 and one into ring 1.
+        // It is the *producer* of both, so nothing was admitted.
+        assert_eq!(w.observe(&[2, 1, 0], 0).expect("ok"), Vec::new());
+        // Core 2 runs: it drains its own inbound ring (index 1) and
+        // publishes into ring 2 in the same hold. Only the drain counts,
+        // and it is named by the ring's target and its *producing* core.
+        assert_eq!(
+            w.observe(&[2, 0, 1], 2).expect("ok"),
+            vec![("Far".to_string(), "core0".to_string())]
+        );
+        // Core 1 runs and drains both of its inbound lanes — in ring
+        // order, which is the order `build_rt_drain` walks them.
+        assert_eq!(
+            w.observe(&[0, 0, 0], 1).expect("ok"),
+            vec![
+                ("Sink".to_string(), "core0".to_string()),
+                ("Sink".to_string(), "core0".to_string()),
+                ("Sink".to_string(), "core2".to_string()),
+            ]
+        );
+        // A core that ran and touched nothing admits nothing.
+        assert_eq!(w.observe(&[0, 0, 0], 1).expect("ok"), Vec::new());
+    }
+
+    /// The invariant the exact (non-modular) count rests on: a ring whose
+    /// *consuming* core is the one that just ran cannot have grown,
+    /// because its producer is a different core and the baton
+    /// (plans/M8.md decision 11) means no other core ran. If that ever
+    /// stops being true the witness fails closed rather than silently
+    /// under-recording an admission order.
+    #[test]
+    fn admission_witness_fails_closed_if_a_consumed_ring_grows() {
+        let mut w = AdmissionWitness::new(vec![RequestRing {
+            src: 0,
+            dst: 1,
+            target: "Sink".to_string(),
+            count_addr: 0,
+        }]);
+        let err = w.observe(&[3], 1).expect_err("must fail closed");
+        assert!(err.contains("SPSC producer/consumer split"), "{err}");
     }
 
     /// A report with no `Blk*` lines at all constructs no device model —

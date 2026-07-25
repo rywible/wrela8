@@ -4610,7 +4610,196 @@ fn repro() -> Result<(), String> {
     repro_choice_log_roundtrip(&vmm)?;
     repro_deadline_cancel_replay_is_clock_log_driven(&vmm)?;
     repro_blk_completion_replay(&vmm)?;
+    repro_cross_core_admission_replay(&vmm)?;
     repro_replay_exit_code_contract(&vmm)
+}
+
+/// plans/M8.md item C3, decision 42 (and the milestone's own exit
+/// criterion: "`ChoiceEntry::Admission` is no longer format-only: record →
+/// replay clean → tamper an admission choice → divergence, on a named
+/// workload"): the fourth sibling of this lane's three existing tamper
+/// oracles — a recorded clock read, a recorded device completion, and the
+/// process exit code.
+///
+/// The named workload is **`tests/golden/boot-cross-core-admission-order`**,
+/// written for this lane because no pre-existing image could falsify an
+/// *order*: `boot-cross-core-two-senders` carries two cross-core messages
+/// to one mailbox, but both are produced by core 0, so its two `Admission`
+/// entries are byte-identical and a swap of them is unobservable. In the
+/// named workload `Near` is on core 0, `Far` is on core 2, and both message
+/// `Sink` on core 1, so `Sink`'s admission sequence is `core0` then
+/// `core2` — two entries that differ, whose order the boot's own transcript
+/// independently states (`Near`'s await returns `1`, not `11`, because core
+/// 0's `+1` was admitted before the `+10` core 2 had already published).
+///
+/// **What this proves, in the words the item asks for: witness-only, not
+/// injection.** The admission is performed by guest code
+/// (`layout::build_rt_drain`) in guest memory, and the VMM neither writes
+/// a mailbox nor reorders a ring in either mode — under plans/M8.md
+/// decision 11's baton there is no alternative order to feed back, so
+/// "replay injects the recorded order" would be a claim with no mechanism
+/// behind it. What replay does is re-witness and compare, so the honest
+/// oracle is divergence detection: an admission entry whose mailbox or
+/// producing core has been altered must be **caught by name** during
+/// replay, exactly as the tampered blk completion is. That is what the
+/// third step below asserts, and the second step (`replay clean`) is what
+/// makes the third non-vacuous.
+fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
+    const EXIT_REPLAY_DIVERGENCE: i32 = 3; // mirrors wrela_vmm::main::EXIT_REPLAY_DIVERGENCE
+    const CASE: &str = "boot-cross-core-admission-order";
+    let (img_bytes, report_text) = golden_test_image(CASE)?;
+    let tmp_dir = root().join("target/repro-admission-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE}'s own recording boot did not pass (exit {record_exit}):\n{}{}",
+            String::from_utf8_lossy(&record_out.stdout),
+            String::from_utf8_lossy(&record_out.stderr)
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+
+    // (1) The recording carries exactly the admissions this workload's own
+    // source says it must, in order — the oracle on the *witness* itself,
+    // checked before any replay is attempted, so a recorder that miscounted
+    // a drain, watched the wrong ring, or emitted nothing at all fails here
+    // rather than replaying its own mistake back to itself:
+    //
+    //   - the root turn on core 0 messages `Far` on core 2;
+    //   - `Near`'s turn on core 0 messages `Sink` on core 1;
+    //   - `Far`'s turn on core 2 messages the same `Sink`, and is admitted
+    //     *after* core 0's even though it was published before it (the
+    //     consuming core's drain walks its lanes in ring order — the
+    //     workload's own header has the whole argument, and its assertion
+    //     `n == 1` is the transcript half of this same claim).
+    //
+    // `sender=` is a core, not an actor: decision 28 settled that the
+    // producer of a cross-core ring is a core.
+    let admissions: Vec<&str> = record_text
+        .lines()
+        .filter_map(|l| l.split_once("]=").map(|(_, rhs)| rhs))
+        .filter(|rhs| rhs.starts_with("Admission "))
+        .collect();
+    let expected = [
+        "Admission mailbox=Far sender=core0",
+        "Admission mailbox=Sink sender=core0",
+        "Admission mailbox=Sink sender=core2",
+    ];
+    if admissions != expected {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE} recorded {:?}, expected {:?}",
+            admissions, expected
+        ));
+    }
+
+    // (2) Replay is clean: zero divergence, same guest-authored exit code.
+    let replay_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    if replay_exit != record_exit {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE} replayed with exit {replay_exit}, expected {record_exit}:\n{}",
+            String::from_utf8_lossy(&replay_out.stderr)
+        ));
+    }
+
+    // (3) The tamper: **invert the admission order at `Sink`** — swap the
+    // producing cores of its two entries and leave every other byte of the
+    // log exactly as recorded. Both tampered lines are individually
+    // plausible (each names a core that really does produce into `Sink`),
+    // so the only thing wrong with the log is the *order*, which is the
+    // fact this whole item exists to record. A tamper that broke a line's
+    // shape, or named a core that produces nothing, would be caught by
+    // something weaker.
+    let sink_prefix = "Admission mailbox=Sink sender=";
+    let swapped_sender = |line: &str| -> Option<String> {
+        let (head, rhs) = line.split_once("]=")?;
+        let sender = rhs.strip_prefix(sink_prefix)?;
+        let other = match sender {
+            "core0" => "core2",
+            "core2" => "core0",
+            _ => return None,
+        };
+        Some(format!("{head}]={sink_prefix}{other}"))
+    };
+    let mut tampered = String::new();
+    let mut swapped = 0usize;
+    for line in record_text.lines() {
+        match swapped_sender(line) {
+            Some(rewritten) => {
+                swapped += 1;
+                tampered.push_str(&rewritten);
+            }
+            None => tampered.push_str(line),
+        }
+        tampered.push('\n');
+    }
+    if swapped != 2 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: expected 2 `Sink` admission lines to invert, found {swapped}"
+        ));
+    }
+    let tampered_path = tmp_dir.join("boot.tampered.txt");
+    std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
+    let tampered_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&tampered_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
+    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&tampered_out.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if tampered_exit != EXIT_REPLAY_DIVERGENCE {
+        return Err(format!(
+            "repro: a tampered admission choice replayed with exit {tampered_exit}, expected \
+             {EXIT_REPLAY_DIVERGENCE} (a determinism finding must never be mistaken for a \
+             successful replay):\n{stderr}"
+        ));
+    }
+    if !stderr.contains("admission mismatch") {
+        return Err(format!(
+            "repro: the tampered {CASE} replay diverged, but not by name — stderr must say which \
+             admission disagreed:\n{stderr}"
+        ));
+    }
+    println!(
+        "repro: tests/golden/{CASE}'s {} cross-core admission(s) — two producing cores into one \
+         mailbox — record and replay byte-stable, and an inverted admission order is caught by \
+         name (witness-only: the guest performs the admission, the recorder witnesses it, replay \
+         checks it)",
+        admissions.len()
+    );
+    Ok(())
 }
 
 /// plans/M7.md item F, decision 7 (and the milestone's own exit criterion
@@ -5074,6 +5263,13 @@ fn build_runtime_test_image(
         ));
     }
     report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+    // plans/M8.md item C3: the same VMM-facing lines `bin/wrela.rs`'s own
+    // runtime tier writes — `CoreEntry` (item C1), `Ring` (this item),
+    // `Blk*` and `IrqHostInject`. This copy carried none of them before,
+    // so every image the determinism lanes built was implicitly
+    // single-core and deviceless; a cross-core case failed its release
+    // doorbell rather than booting. One shared writer, no fourth copy.
+    layout::append_vmm_runtime_lines(&mut report_text, &image_layout);
     Ok((image_layout.blob, report_text))
 }
 
@@ -5649,6 +5845,7 @@ fn profile() -> Result<(), String> {
         ));
     }
     report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+    layout::append_vmm_runtime_lines(&mut report_text, &image_layout);
 
     let tmp_dir = root().join("target/profile-tmp");
     if tmp_dir.exists() {

@@ -5,9 +5,9 @@
 //! an enumerator) is the deliverable ROADMAP's constraint names." This
 //! module extends M5's clock-log-only recorder (plans/M5.md item F) into
 //! that shape: `ChoiceEntry` is one tagged nondeterministic decision the
-//! machine made — a clock read, a deadline wake, a vector raise, or (the
-//! format-only, never-yet-emitted) admission choice a future multi-core
-//! milestone needs — and `Chooser::choose_next` is the single function
+//! machine made — a clock read, a deadline wake, a vector raise, a device
+//! completion, or a cross-core mailbox admission — and
+//! `Chooser::choose_next` is the single function
 //! every one of those decisions flows through, in both record and replay
 //! mode (and, later, a schedule enumerator's mode too, without this fn's
 //! own call sites in `lib.rs` changing at all).
@@ -21,15 +21,26 @@
 //! detection logic* (`Chooser`'s own tag-checking, `replay`'s own digest/
 //! exit comparisons) are unit-tested.
 //!
-//! **Admission at M6**: decision 9 names `Admission{mailbox, sender}` as a
-//! real tag the FORMAT must support (a later, multi-core milestone's own
-//! cross-core scheduling nondeterminism, 06 §8: "per-mailbox cross-core
-//! admission order"). At M6 there is exactly one core: admission order is
-//! deterministic program order, the VMM never runs guest-internal mailbox
-//! code, and so it has no admission choice to observe at all — the tag
-//! parses and round-trips (`choice_log_format_is_pinned_including_the_unused_admission_tag`,
-//! below) but nothing in `lib.rs` ever constructs one. This is the honest
-//! M6 form decision 9 itself calls for ("OPTIONAL/absent").
+//! **Admission, M6 → M8 item C3.** Decision 9 named
+//! `Admission{mailbox, sender}` as a real tag the FORMAT must support (06
+//! §8: "per-mailbox cross-core admission order"), and at M6 there was
+//! exactly one core, so nothing in `lib.rs` ever constructed one. M8 item
+//! C2 built the cross-core rings, so an admission finally exists to
+//! record, and item C3 (decision 42) records it:
+//! `crate::witness_admissions` reads each request ring's occupancy word
+//! out of guest memory at every vCPU exit and pushes one `Admission` per
+//! message the owning core's drain just handed to a mailbox root.
+//!
+//! **It is a witness, not an injection, and the distinction is the whole
+//! honest claim of the item.** The drain is guest code and the mailbox is
+//! guest memory; the VMM never writes either, so replay does not *feed*
+//! the recorded order back — under plans/M8.md decision 11's baton there
+//! is no alternative order to feed. What replay does is **check**: the
+//! same witness runs, and an entry that disagrees with the recording is
+//! `Divergence::AdmissionMismatch`, named exactly like a device
+//! completion's. Divergence detection is therefore the entire enforcement
+//! (`xtask repro`'s own cross-core admission lane is its oracle), and this
+//! comment says so rather than implying the stronger property.
 
 use std::path::Path;
 
@@ -76,10 +87,16 @@ pub enum ChoiceEntry {
     /// later milestone's additional vectors need no format change.
     VectorRaise { vector: u64 },
     /// Decision 9: "each admission event is recorded as (mailbox, chosen
-    /// sender)". Format-only at M6 (module doc above) — never
-    /// constructed by `lib.rs` today, but parseable and round-trippable
-    /// so a later milestone's real cross-core admission choices need no
-    /// format migration.
+    /// sender)". **Real since plans/M8.md item C3** (decision 42): one
+    /// message handed to a mailbox root by another core's cross-core
+    /// request ring, in the order the owning core's drain admitted it.
+    /// `mailbox` is the target mailbox root's own name (the ring feeds
+    /// exactly one — decision 28), and `sender` is the *producing core*
+    /// spelled `core<N>`, because decision 28 settled that the producer of
+    /// a cross-core ring is a core and not an actor. The field set is M6's
+    /// unchanged: no timestamp, no address, no interleaving trace — the
+    /// order is the position in the sequence (06 §8's enumerable choice
+    /// sequence).
     Admission { mailbox: String, sender: String },
     /// One device completion (plans/M7.md decision 7: "device completions
     /// join the choice sequence"; 06 §8: the VMM "logs every device
@@ -231,6 +248,17 @@ pub enum ChoiceRequest {
         len: u32,
         digest: String,
     },
+    /// plans/M8.md item C3, decision 42. Like `DeviceCompletion` above and
+    /// for the same reason, this request carries the *whole* answer the
+    /// VMM already observed in guest memory: an admission is not a value
+    /// the VMM invents — the guest's own drain performed it — so the
+    /// recorder's job is to witness it, and replay's job is to check that
+    /// the witnessed one is the recorded one
+    /// (`Divergence::AdmissionMismatch`).
+    Admission {
+        mailbox: String,
+        sender: String,
+    },
 }
 
 impl ChoiceRequest {
@@ -240,6 +268,7 @@ impl ChoiceRequest {
             ChoiceRequest::DeadlineWake { .. } => "DeadlineWake",
             ChoiceRequest::VectorRaise { .. } => "VectorRaise",
             ChoiceRequest::DeviceCompletion { .. } => "DeviceCompletion",
+            ChoiceRequest::Admission { .. } => "Admission",
         }
     }
 
@@ -270,6 +299,10 @@ impl ChoiceRequest {
                 status: *status,
                 len: *len,
                 digest: digest.clone(),
+            },
+            ChoiceRequest::Admission { mailbox, sender } => ChoiceEntry::Admission {
+                mailbox: mailbox.clone(),
+                sender: sender.clone(),
             },
         }
     }
@@ -318,6 +351,19 @@ pub enum Divergence {
         recorded: String,
         actual: String,
     },
+    /// plans/M8.md item C3, decision 42: the tag matched (an admission was
+    /// expected and one happened) but the mailbox or the producing core
+    /// disagrees with the recorded one — this boot's guest admitted a
+    /// different message, at a different mailbox, or from a different
+    /// core, than the recording says it did. Witness-only, exactly like
+    /// `DeviceCompletionMismatch`: nothing about the recorded entry is fed
+    /// back into the guest (the drain is guest code and the VMM never
+    /// writes a mailbox), so this divergence *is* the whole enforcement.
+    AdmissionMismatch {
+        index: usize,
+        recorded: String,
+        actual: String,
+    },
 }
 
 impl std::fmt::Display for Divergence {
@@ -354,6 +400,14 @@ impl std::fmt::Display for Divergence {
             } => write!(
                 f,
                 "choice #{index} device completion mismatch: recorded `{recorded}`, the device model produced `{actual}`"
+            ),
+            Divergence::AdmissionMismatch {
+                index,
+                recorded,
+                actual,
+            } => write!(
+                f,
+                "choice #{index} admission mismatch: recorded `{recorded}`, this boot's guest admitted `{actual}`"
             ),
         }
     }
@@ -462,13 +516,20 @@ impl Chooser {
     ///
     /// `choose_next` above can only ever check a choice's own **tag** — by
     /// design, since a clock read's replayed value is *supposed* to differ
-    /// from whatever the host clock would say now. A device completion is
-    /// the one choice whose value the machine can independently recompute
-    /// (plans/M7.md decision 7: the model derives it deterministically
-    /// from the guest's ring and the VMM's own disk), so `service_blk`
-    /// compares the two and reports a disagreement here rather than
-    /// silently taking one of them. Nothing else calls this: a divergence
-    /// nobody can recompute has no business being invented.
+    /// from whatever the host clock would say now. Exactly two choices have
+    /// a value the machine can independently recompute, and each compares
+    /// the two and reports a disagreement here rather than silently taking
+    /// one of them:
+    ///
+    /// - a **device completion** (plans/M7.md decision 7: the model derives
+    ///   it deterministically from the guest's ring and the VMM's own
+    ///   disk), from `crate::service_blk`; and
+    /// - a cross-core **admission** (plans/M8.md item C3, decision 42: the
+    ///   guest performed it in guest memory and the recorder witnessed it),
+    ///   from `crate::witness_admissions`.
+    ///
+    /// Nothing else calls this: a divergence nobody can recompute has no
+    /// business being invented.
     pub fn note_divergence(&mut self, divergence: Divergence) {
         self.divergences.push(divergence);
     }
@@ -744,8 +805,10 @@ mod tests {
 
     /// Decision 9's own pinned FORMAT (the deliverable, "structure, not
     /// timestamps"): a hand-built log exercising every tag the format
-    /// supports — including `Admission`, which M6 never emits but the
-    /// FORMAT must still carry (module doc above) — compared against an
+    /// supports — `Admission` included, whose field set item C3 kept
+    /// byte-identical when it made the tag real, so no recording written
+    /// before this milestone needs a format migration (module doc above)
+    /// — compared against an
     /// exact, hand-written expected string. This is the golden `to_text`
     /// itself never needs a `tests/golden/` entry for: the format is
     /// small and stable enough to pin as a plain Rust string literal,
@@ -757,7 +820,7 @@ mod tests {
     /// from a device model rather than from the exit loop's own clock/park
     /// handling.
     #[test]
-    fn choice_log_format_is_pinned_including_the_unused_admission_tag() {
+    fn choice_log_format_is_pinned_including_every_tag() {
         let rec = RecordFile {
             choices: vec![
                 ChoiceEntry::ClockRead { value: 12345 },
