@@ -1586,6 +1586,120 @@ mod tests {
         );
     }
 
+    /// plans/M8.md item H Target D / item F's thin claim: "a second
+    /// quiesce inside one turn is legal and simply bumps the count twice
+    /// — nothing needs it; nothing refuses it." Verified here rather than
+    /// assumed: two calls move the host-written count 0 → 1 → 2, and the
+    /// second finds nothing left to finish.
+    #[test]
+    fn a_second_quiesce_bumps_the_count_twice_and_is_not_refused() {
+        let mut h = Harness::new();
+        let mut dev = h.device();
+        dev.set_disk(vec![0xAB; 16 * SECTOR_SIZE as usize]);
+        h.build_request(T_IN, 0, 512, true);
+        h.publish(0, 1);
+        let count_addr = dev.quiesce_count_addr();
+        let first = {
+            let mut mem = h.mem();
+            dev.quiesce(&mut mem, count_addr).expect("first quiesce")
+        };
+        assert_eq!(
+            first.len(),
+            1,
+            "first quiesce finishes the outstanding chain"
+        );
+        assert_eq!(
+            u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap()),
+            1
+        );
+        let second = {
+            let mut mem = h.mem();
+            dev.quiesce(&mut mem, count_addr).expect("second quiesce")
+        };
+        assert_eq!(second.len(), 0, "second quiesce has nothing left to finish");
+        assert_eq!(
+            u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap()),
+            2,
+            "the host-written count moved exactly once per quiesce"
+        );
+    }
+
+    /// Double-quiesce before quarantine cannot open a reclaim that should
+    /// still refuse: `recover` stamps the *live* count, so after two
+    /// quiesces the stamp equals 2 and `reclaim_gate` still says
+    /// `NotQuiesced` until a *later* quiesce moves the count past the stamp.
+    #[test]
+    fn double_quiesce_before_quarantine_cannot_satisfy_a_reclaim_that_should_refuse() {
+        use wrela_compiler::virtqueue::{ReclaimGate, SLOT_FLAG_QUARANTINED, reclaim_gate};
+        let mut h = Harness::new();
+        let mut dev = h.device();
+        let count_addr = dev.quiesce_count_addr();
+        {
+            let mut mem = h.mem();
+            dev.quiesce(&mut mem, count_addr).expect("q1");
+            dev.quiesce(&mut mem, count_addr).expect("q2");
+        }
+        let quiesced = u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap());
+        assert_eq!(quiesced, 2);
+        // Quarantine stamps the live count (decision 38) — equal → refuse.
+        assert_eq!(
+            reclaim_gate(SLOT_FLAG_QUARANTINED, quiesced, quiesced),
+            ReclaimGate::NotQuiesced,
+            "stamp==count after double-quiesce-then-quarantine must refuse reclaim"
+        );
+        // One more quiesce after the stamp opens the gate.
+        {
+            let mut mem = h.mem();
+            dev.quiesce(&mut mem, count_addr).expect("q3");
+        }
+        let quiesced_after = u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap());
+        assert_eq!(quiesced_after, 3);
+        assert_eq!(
+            reclaim_gate(SLOT_FLAG_QUARANTINED, quiesced_after, quiesced),
+            ReclaimGate::Reclaim
+        );
+    }
+
+    /// Two outstanding chains: quiesce finishes both (decision 37), bumps
+    /// once, and a straggler is not left for a later doorbell poll.
+    #[test]
+    fn a_quiesce_finishes_every_outstanding_chain_before_bumping() {
+        let mut h = Harness::new();
+        let mut dev = h.device();
+        // Same two-chain shape as `two_chains_published_under_one_doorbell_*`,
+        // but never polled — quiesce must finish both.
+        h.put(HEADER_ADDR, &T_OUT.to_le_bytes());
+        h.put(HEADER_ADDR + 8, &0u64.to_le_bytes());
+        h.desc(0, HEADER_ADDR, 16, DESC_F_NEXT, 1);
+        h.desc(1, DATA_ADDR, 512, DESC_F_NEXT, 2);
+        h.desc(2, STATUS_ADDR, 1, DESC_F_WRITE, 0);
+        h.put(HEADER_ADDR + 32, &T_FLUSH.to_le_bytes());
+        h.put(HEADER_ADDR + 40, &0u64.to_le_bytes());
+        h.desc(3, HEADER_ADDR + 32, 16, DESC_F_NEXT, 4);
+        h.desc(4, STATUS_ADDR + 1, 1, DESC_F_WRITE, 0);
+        h.put(AVAIL_ADDR + 4, &0u16.to_le_bytes());
+        h.put(AVAIL_ADDR + 6, &3u16.to_le_bytes());
+        h.put(AVAIL_ADDR + 2, &2u16.to_le_bytes());
+        // Doorbell deliberately clear: quiesce ignores it when finishing.
+        h.put(DOORBELL_ADDR, &0u64.to_le_bytes());
+
+        let count_addr = dev.quiesce_count_addr();
+        let completions = {
+            let mut mem = h.mem();
+            dev.quiesce(&mut mem, count_addr).expect("quiesce")
+        };
+        assert_eq!(
+            completions.len(),
+            2,
+            "both outstanding chains finished inside the quiesce"
+        );
+        assert_eq!(
+            u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap()),
+            1,
+            "count moves once after both are finished"
+        );
+    }
+
     /// plans/M8.md item H attack 7: the VMM's quiesce-count address is the
     /// machine contract's formula, not a hand-copied `doorbell + 8 + 16`.
     /// Mutating `wrela_machine::virtio::SLOT_BOOK_QUIESCED` (or
