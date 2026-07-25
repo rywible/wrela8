@@ -2877,6 +2877,32 @@ mod tests {
                 "module t\n\n@layout(dma, endian=little)\nstruct S:\n    @packed n: u32\n",
                 "unknown attribute `@packed`",
             ),
+            // The three field arms whose *sibling* arm is the one a golden
+            // pins, kept honest here rather than left as an untested
+            // branch of a tested rule: `f32`/`f64` are target-dependent on
+            // 02-language.md §6.1's own "where the target enables them"
+            // (`golden/err-layout-target-dependent` pins `usize`); a
+            // capability in a `dma`/`mmio` layout is rejected for the more
+            // basic reason than 03 §3's `wire` sentence
+            // (`golden/err-layout-wire-capability` pins that one); and a
+            // register wrapper is only ever a wrapper *of a sized integer*
+            // (`golden/err-layout-mmio-wrapper` pins the wrong-kind arm).
+            (
+                "module t\n\n@layout(wire, endian=big)\nstruct S:\n    ratio: f32\n",
+                "where the target enables them",
+            ),
+            (
+                "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    cap: DeviceCap[Blk]\n",
+                "no capability has a byte encoding",
+            ),
+            (
+                "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    r: ReadOnly[bool]\n",
+                "wraps `bool`, which is not a sized integer register",
+            ),
+            (
+                "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    r: WriteOnly[u32, u32]\n",
+                "must wrap exactly one register type",
+            ),
         ];
         for (src, needle) in cases {
             let err = layouts_of(src).expect_err("must be rejected");
