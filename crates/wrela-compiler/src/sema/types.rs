@@ -4610,15 +4610,15 @@ pub(crate) fn rekey_decl_struct_name(s: &mut DeclStruct, from: &str, to: &str) {
     }
     for m in &mut s.members {
         match m {
-            DeclMember::Field(f) => rekey_decl_type(&mut f.ty, from, to),
+            DeclMember::Field(f) => rekey_type_name(&mut f.ty, from, to),
             DeclMember::Fn(f) | DeclMember::Init(f) => {
                 for p in &mut f.params {
-                    rekey_decl_type(&mut p.ty, from, to);
+                    rekey_type_name(&mut p.ty, from, to);
                 }
-                rekey_decl_type(&mut f.ret, from, to);
+                rekey_type_name(&mut f.ret, from, to);
                 for g in &mut f.generics {
                     if let DeclGenericKind::Const(ty) = &mut g.kind {
-                        rekey_decl_type(ty, from, to);
+                        rekey_type_name(ty, from, to);
                     }
                 }
             }
@@ -4626,13 +4626,20 @@ pub(crate) fn rekey_decl_struct_name(s: &mut DeclStruct, from: &str, to: &str) {
         }
     }
     for (ty, _) in &mut s.component_types {
-        rekey_decl_type(ty, from, to);
+        rekey_type_name(ty, from, to);
     }
     for g in &mut s.generics {
         if let DeclGenericKind::Const(ty) = &mut g.kind {
-            rekey_decl_type(ty, from, to);
+            rekey_type_name(ty, from, to);
         }
     }
+}
+
+/// Re-key every `Type::Named` spelling `from` to `to` inside `ty`.
+/// Shared by the DeclStruct splice (DD) and `layout::merge_layout_ctx`'s
+/// aliased-import install (FF) — one walk, one rule.
+pub(crate) fn rekey_type_name(ty: &mut Type, from: &str, to: &str) {
+    rekey_decl_type(ty, from, to);
 }
 
 fn rekey_decl_type(ty: &mut Type, from: &str, to: &str) {

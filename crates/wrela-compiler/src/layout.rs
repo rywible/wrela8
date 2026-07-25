@@ -3216,6 +3216,12 @@ fn closure_imported_types(
 /// collision (undisclosed generalization beyond what any of today's
 /// goldens exercise — every real case here has module-unique struct/enum
 /// names).
+///
+/// plans/M9.md item FF: after the own-decl merge, each aliased import is
+/// installed under the *local* spelling (decision 9). Own decls above are
+/// keyed by the exporter's AST name; the typed tree / MWIR / codegen look
+/// up the author's spelling. One install here — never a
+/// `get(local).or_else(|| get(exporter))` at a use site.
 pub fn merge_layout_ctx(modules: &BTreeMap<String, Module>) -> Result<LayoutCtx, SemaError> {
     let imported = closure_imported_types(modules)?;
     let mut merged = LayoutCtx::default();
@@ -3225,7 +3231,56 @@ pub fn merge_layout_ctx(modules: &BTreeMap<String, Module>) -> Result<LayoutCtx,
         merged.enums.extend(ctx.enums);
         merged.struct_field_names.extend(ctx.struct_field_names);
     }
+    install_aliased_import_layouts(&mut merged, modules)?;
     Ok(merged)
+}
+
+/// plans/M9.md item FF / decision 100: for every `from M import T as A`
+/// (and only when `A != T`), copy the exporter's layout entry to key `A`
+/// and re-key any self-`Type::Named` inside it. Unaliased imports need
+/// nothing — the exporter module's own build already contributed under
+/// `T`, which is the local spelling too. Rejected: a lookup-time
+/// fallback that tries both spellings (exactly what let this bug
+/// reappear one layer down, three times).
+fn install_aliased_import_layouts(
+    ctx: &mut LayoutCtx,
+    modules: &BTreeMap<String, Module>,
+) -> Result<(), SemaError> {
+    let mut specialized: BTreeMap<String, Module> = BTreeMap::new();
+    for (addr, m) in modules {
+        specialized.insert(addr.clone(), crate::sema::specialize::specialize(m)?);
+    }
+    let by_addr: Vec<(Vec<String>, &Module)> = specialized
+        .iter()
+        .map(|(addr, m)| (addr.split('.').map(str::to_string).collect(), m))
+        .collect();
+    let shapes = crate::sema::imports::closure_type_shapes(&by_addr);
+    for module in specialized.values() {
+        let targets = crate::sema::imports::imported_type_targets(module, &shapes);
+        for (local, (_target_mod, target_name)) in targets {
+            if local == target_name {
+                continue;
+            }
+            if let Some(mut fields) = ctx.structs.get(&target_name).cloned() {
+                for f in &mut fields {
+                    crate::sema::types::rekey_type_name(f, &target_name, &local);
+                }
+                ctx.structs.insert(local.clone(), fields);
+                if let Some(names) = ctx.struct_field_names.get(&target_name).cloned() {
+                    ctx.struct_field_names.insert(local.clone(), names);
+                }
+            }
+            if let Some(mut payloads) = ctx.enums.get(&target_name).cloned() {
+                for payload in &mut payloads {
+                    for t in payload {
+                        crate::sema::types::rekey_type_name(t, &target_name, &local);
+                    }
+                }
+                ctx.enums.insert(local, payloads);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// plans/M7.md item G, decision 18: fold every checked struct
@@ -9691,6 +9746,67 @@ mod tests {
         let mut m = BTreeMap::new();
         m.insert(name.to_string(), parse_one_module(src));
         m
+    }
+
+    /// plans/M9.md item FF: an aliased import is a LayoutCtx key under the
+    /// local spelling, not only the exporter's AST name.
+    #[test]
+    fn merge_layout_ctx_keys_aliased_imports_under_local_spelling() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "lib.pair".to_string(),
+            parse_one_module(
+                "\
+module lib.pair
+
+pub struct Pair:
+    a: u32
+    b: u32
+
+pub enum Color:
+    Red
+    Blue
+",
+            ),
+        );
+        modules.insert(
+            "app.main".to_string(),
+            parse_one_module(
+                "\
+module app.main
+
+from lib.pair import Pair as Duo
+from lib.pair import Color as Hue
+
+fn use(d: Duo, h: Hue):
+    pass
+",
+            ),
+        );
+        let ctx = merge_layout_ctx(&modules).unwrap();
+        assert!(
+            ctx.structs.contains_key("Duo"),
+            "aliased struct must be keyed under the local spelling"
+        );
+        assert!(
+            ctx.structs.contains_key("Pair"),
+            "exporter's own spelling remains for the exporter module"
+        );
+        assert!(
+            ctx.enums.contains_key("Hue"),
+            "aliased enum must be keyed under the local spelling"
+        );
+        assert!(ctx.enums.contains_key("Color"));
+        assert_eq!(
+            ctx.struct_field_names.get("Duo").map(|v| v.as_slice()),
+            Some(["a".to_string(), "b".to_string()].as_slice())
+        );
+        // size_of under the local spelling must succeed — the codegen miss
+        // that motivated this item.
+        let duo = crate::sema::types::Type::Named("Duo".to_string(), vec![]);
+        assert_eq!(mwir::size_of(&duo, &ctx), Ok(16));
+        let hue = crate::sema::types::Type::Named("Hue".to_string(), vec![]);
+        assert_eq!(mwir::size_of(&hue, &ctx), Ok(8));
     }
 
     fn actor_decl(actor_type: &str, mailbox: Option<u32>) -> crate::eval::image::ActorDecl {
