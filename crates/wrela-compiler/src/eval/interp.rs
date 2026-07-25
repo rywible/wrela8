@@ -30,7 +30,7 @@ use crate::sema::typed::{
     TypedStruct,
 };
 use crate::sema::types::{Type, TypeArg};
-use crate::syntax::ast::BinOp;
+use crate::syntax::ast::{AccessMode, BinOp};
 
 /// One comptime build-error diagnostic (plans/M3.md decision 5):
 /// `message` names the operation/condition that abandoned; `stack` is
@@ -240,7 +240,7 @@ pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError>
             sealed_image: None,
         };
         match run_call(f, None, name.to_string(), |_, _| Ok(()), &mut ctx) {
-            Ok((v, _)) => Ok(v),
+            Ok(outcome) => Ok(outcome.result),
             Err(u) => Err(unwind_to_error(u)),
         }
     })
@@ -277,7 +277,7 @@ pub fn eval_test_case(
             Ok(())
         };
         match run_call(f, None, name.to_string(), bind, &mut ctx) {
-            Ok((v, _)) => Ok(v),
+            Ok(outcome) => Ok(outcome.result),
             Err(u) => Err(unwind_to_error(u)),
         }
     })
@@ -1099,19 +1099,34 @@ fn bind_params<'a, 'p>(
     Ok(())
 }
 
+/// Outcome of one resolved fn/method body: the call's own result, the
+/// final `self` when a receiver was supplied (for a `mut`-receiver's
+/// write-back), and the final value of every non-receiver `mut`
+/// parameter (02-language.md §5.1: non-receiver `mut` is mirrored at the
+/// call site — plans/M9.md item CC).
+struct CallOutcome {
+    result: Value,
+    final_self: Option<Value>,
+    /// `(param index, final value)`, declaration order. Only `mut`
+    /// parameters appear; `read`/`take` never write back.
+    mut_params: Vec<(usize, Value)>,
+}
+
 /// Runs one already-resolved fn/method's body with `self_val` (if any)
 /// and positionally-bound `args` (already-evaluated `Value`s — used by
 /// `CallValue`, which has no defaults to resolve, decision 1's own
 /// "positional only" note). Returns the call's own result value plus,
 /// when `self_val` was supplied, the final value of `self` at the end
-/// of the callee's own frame (for a `mut`-receiver's write-back).
+/// of the callee's own frame (for a `mut`-receiver's write-back), plus
+/// the final value of every non-receiver `mut` parameter (for call-site
+/// write-back — 02-language.md §5.1 / plans/M9.md item CC).
 fn run_call<'p>(
     f: &'p TypedFn,
     self_val: Option<Value>,
     frame_name: String,
     bind: impl FnOnce(&mut Env, &mut Interp<'p>) -> R<()>,
     ctx: &mut Interp<'p>,
-) -> R<(Value, Option<Value>)> {
+) -> R<CallOutcome> {
     ctx.enter(frame_name)?;
     let mut env: Env = vec![BTreeMap::new()];
     if let Some(sv) = self_val {
@@ -1132,7 +1147,50 @@ fn run_call<'p>(
     ctx.leave();
     let result = outcome?;
     let final_self = env[0].remove("self");
-    Ok((result, final_self))
+    let mut mut_params = Vec::new();
+    for (i, param) in f.params.iter().enumerate() {
+        if param.mode == AccessMode::Mut {
+            let v = env[0].remove(&param.name).ok_or_else(|| {
+                ctx.abandon(format!(
+                    "internal error: `mut` parameter `{}` missing from callee frame at return",
+                    param.name
+                ))
+            })?;
+            mut_params.push((i, v));
+        }
+    }
+    Ok(CallOutcome {
+        result,
+        final_self,
+        mut_params,
+    })
+}
+
+/// Writes each non-receiver `mut` parameter's final value back into the
+/// matching call-site place (02-language.md §5.1). A defaulted (`None`)
+/// slot has no place to mirror into — fail closed by name rather than
+/// silently drop the mutation (plans/M9.md item CC, decision 69).
+fn write_back_mut_params<'a, 'p>(
+    f: &TypedFn,
+    args: &'a [Option<TypedExpr>],
+    mut_params: Vec<(usize, Value)>,
+    env: &mut Env,
+    dstack: &mut Vec<&'a TypedDeferBody>,
+    loop_marker: usize,
+    ctx: &mut Interp<'p>,
+) -> R<()> {
+    for (i, val) in mut_params {
+        let param = &f.params[i];
+        let Some(arg_expr) = args.get(i).and_then(|s| s.as_ref()) else {
+            return Err(ctx.abandon(format!(
+                "writing back `mut` parameter `{}` through a defaulted argument is not supported",
+                param.name
+            )));
+        };
+        let place = place_mut(arg_expr, env, dstack, loop_marker, ctx)?;
+        *place = val;
+    }
+    Ok(())
 }
 
 /// `init`'s own special-case (plans/M3.md item B, per the callee-key
@@ -1151,11 +1209,29 @@ fn run_init<'p>(
     ctx: &mut Interp<'p>,
 ) -> R<Value> {
     let placeholder = Value::Struct(vec![Value::Unit; s.fields.len()]);
-    let (body_result, final_self) = run_call(f, Some(placeholder), frame_name, bind, ctx)?;
-    let self_val = final_self.expect("run_call always returns `self` back when given one");
+    let outcome = run_call(f, Some(placeholder), frame_name, bind, ctx)?;
+    let self_val = outcome
+        .final_self
+        .expect("run_call always returns `self` back when given one");
+    // `init`'s non-receiver params are never `mut` in practice (sema
+    // types construction args as ordinary inputs), but if one were, its
+    // write-back has nowhere to go from here — `run_init` is reached
+    // only through a construction expression, not a call site with
+    // places. Dropping them would be a silent wrong answer, so refuse.
+    if !outcome.mut_params.is_empty() {
+        let names: Vec<&str> = outcome
+            .mut_params
+            .iter()
+            .map(|(i, _)| f.params[*i].name.as_str())
+            .collect();
+        return Err(ctx.abandon(format!(
+            "writing back `mut` parameter(s) `{}` from `init` is not supported",
+            names.join("`, `")
+        )));
+    }
     match &f.ret {
         Type::Unit => Ok(self_val),
-        Type::Result(_, _) => match body_result {
+        Type::Result(_, _) => match outcome.result {
             Value::Enum(idx, mut payload) if idx == value::RESULT_OK => {
                 let _ = payload.pop();
                 Ok(Value::Enum(value::RESULT_OK, vec![self_val]))
@@ -1228,51 +1304,51 @@ fn eval_call<'a, 'p>(
     let mode = f.receiver.as_ref().map(|(m, _)| *m);
     let frame = callee.spelling();
     match (receiver, mode) {
-        (Some(recv_expr), Some(mode)) => {
-            use crate::syntax::ast::AccessMode;
-            match mode {
-                AccessMode::Mut => {
+        (Some(recv_expr), Some(mode)) => match mode {
+            AccessMode::Mut => {
+                let place = place_mut(recv_expr, env, dstack, loop_marker, ctx)?;
+                let taken = std::mem::replace(place, Value::Unit);
+                let outcome = run_call(
+                    f,
+                    Some(taken),
+                    frame,
+                    |callee_env, ictx| {
+                        bind_params(f, args, env, dstack, loop_marker, callee_env, ictx)
+                    },
+                    ctx,
+                )?;
+                if let Some(sv) = outcome.final_self {
                     let place = place_mut(recv_expr, env, dstack, loop_marker, ctx)?;
-                    let taken = std::mem::replace(place, Value::Unit);
-                    let (result, final_self) = run_call(
-                        f,
-                        Some(taken),
-                        frame,
-                        |callee_env, ictx| {
-                            bind_params(f, args, env, dstack, loop_marker, callee_env, ictx)
-                        },
-                        ctx,
-                    )?;
-                    if let Some(sv) = final_self {
-                        let place = place_mut(recv_expr, env, dstack, loop_marker, ctx)?;
-                        *place = sv;
-                    }
-                    Ok(result)
+                    *place = sv;
                 }
-                AccessMode::Read | AccessMode::Take => {
-                    let sv = eval_expr(recv_expr, env, dstack, loop_marker, ctx)?;
-                    let (result, _) = run_call(
-                        f,
-                        Some(sv),
-                        frame,
-                        |callee_env, ictx| {
-                            bind_params(f, args, env, dstack, loop_marker, callee_env, ictx)
-                        },
-                        ctx,
-                    )?;
-                    Ok(result)
-                }
+                write_back_mut_params(f, args, outcome.mut_params, env, dstack, loop_marker, ctx)?;
+                Ok(outcome.result)
             }
-        }
+            AccessMode::Read | AccessMode::Take => {
+                let sv = eval_expr(recv_expr, env, dstack, loop_marker, ctx)?;
+                let outcome = run_call(
+                    f,
+                    Some(sv),
+                    frame,
+                    |callee_env, ictx| {
+                        bind_params(f, args, env, dstack, loop_marker, callee_env, ictx)
+                    },
+                    ctx,
+                )?;
+                write_back_mut_params(f, args, outcome.mut_params, env, dstack, loop_marker, ctx)?;
+                Ok(outcome.result)
+            }
+        },
         _ => {
-            let (result, _) = run_call(
+            let outcome = run_call(
                 f,
                 None,
                 frame,
                 |callee_env, ictx| bind_params(f, args, env, dstack, loop_marker, callee_env, ictx),
                 ctx,
             )?;
-            Ok(result)
+            write_back_mut_params(f, args, outcome.mut_params, env, dstack, loop_marker, ctx)?;
+            Ok(outcome.result)
         }
     }
 }
@@ -1388,16 +1464,29 @@ fn eval_expr<'a, 'p>(
         } => eval_call(callee, receiver, args, env, dstack, loop_marker, ctx),
         TypedExprKind::CallValue(callee, args) => {
             let cv = eval_expr(callee, env, dstack, loop_marker, ctx)?;
-            let mut arg_vals = Vec::with_capacity(args.len());
-            for a in args {
-                arg_vals.push(eval_expr(a, env, dstack, loop_marker, ctx)?);
-            }
             match cv {
                 Value::Closure {
                     params,
                     body,
                     env: mut closure_env,
                 } => {
+                    // Bind first, then run; for `mut` params keep the
+                    // call-site places so the final values can be written
+                    // back (02-language.md §5.1 / plans/M9.md item CC) —
+                    // pre-evaluating every arg into a `Value` would lose
+                    // the place and silently discard the mutation.
+                    let mut arg_vals = Vec::with_capacity(args.len());
+                    let mut mut_idxs = Vec::new();
+                    for (i, (p, a)) in params.iter().zip(args.iter()).enumerate() {
+                        if p.mode == AccessMode::Mut {
+                            let place = place_mut(a, env, dstack, loop_marker, ctx)?;
+                            let taken = std::mem::replace(place, Value::Unit);
+                            arg_vals.push(taken);
+                            mut_idxs.push(i);
+                        } else {
+                            arg_vals.push(eval_expr(a, env, dstack, loop_marker, ctx)?);
+                        }
+                    }
                     ctx.enter("<closure>".to_string())?;
                     closure_env.push(BTreeMap::new());
                     for (p, v) in params.iter().zip(arg_vals) {
@@ -1419,8 +1508,27 @@ fn eval_expr<'a, 'p>(
                             }
                         }
                     };
+                    let result = result?;
+                    // Pull finals out of the closure frame before leave.
+                    let mut mut_finals = Vec::new();
+                    for i in mut_idxs {
+                        let name = &params[i].name;
+                        let v = closure_env
+                            .last_mut()
+                            .and_then(|scope| scope.remove(name))
+                            .ok_or_else(|| {
+                                ctx.abandon(format!(
+                                    "internal error: `mut` closure parameter `{name}` missing at return"
+                                ))
+                            })?;
+                        mut_finals.push((i, v));
+                    }
                     ctx.leave();
-                    result
+                    for (i, val) in mut_finals {
+                        let place = place_mut(&args[i], env, dstack, loop_marker, ctx)?;
+                        *place = val;
+                    }
+                    Ok(result)
                 }
                 Value::Fn(key) => {
                     let f = resolve_fn(ctx.program, &key).ok_or_else(|| {
@@ -1429,8 +1537,21 @@ fn eval_expr<'a, 'p>(
                             format!("internal error: fn value `{}` not found", key.spelling()),
                         )
                     })?;
+                    // Same place-preserving bind as the closure arm: a
+                    // `mut` parameter's call-site operand must survive so
+                    // `write_back_mut_params` has somewhere to land.
+                    let mut arg_vals = Vec::with_capacity(args.len());
+                    for (p, a) in f.params.iter().zip(args.iter()) {
+                        if p.mode == AccessMode::Mut {
+                            let place = place_mut(a, env, dstack, loop_marker, ctx)?;
+                            let taken = std::mem::replace(place, Value::Unit);
+                            arg_vals.push(taken);
+                        } else {
+                            arg_vals.push(eval_expr(a, env, dstack, loop_marker, ctx)?);
+                        }
+                    }
                     let frame = key.spelling();
-                    let (result, _) = run_call(
+                    let outcome = run_call(
                         f,
                         None,
                         frame,
@@ -1442,7 +1563,11 @@ fn eval_expr<'a, 'p>(
                         },
                         ctx,
                     )?;
-                    Ok(result)
+                    for (i, val) in outcome.mut_params {
+                        let place = place_mut(&args[i], env, dstack, loop_marker, ctx)?;
+                        *place = val;
+                    }
+                    Ok(outcome.result)
                 }
                 other => Err(ctx.abandon(format!("internal error: `{other:?}` is not callable"))),
             }
@@ -1568,7 +1693,7 @@ fn eval_expr<'a, 'p>(
                         )
                     })?;
                     let frame = key.spelling();
-                    let (result, _) = run_call(
+                    let outcome = run_call(
                         f,
                         None,
                         frame,
@@ -1580,7 +1705,15 @@ fn eval_expr<'a, 'p>(
                         },
                         ctx,
                     )?;
-                    result
+                    // `from(take source)` — never a `mut` param. A
+                    // non-empty write-back list here would mean the
+                    // conversion's signature disagreed with §7.4.
+                    if !outcome.mut_params.is_empty() {
+                        return Err(ctx.abandon(
+                            "writing back a `mut` parameter from a `?` `from` conversion is not supported",
+                        ));
+                    }
+                    outcome.result
                 }
             };
             Err(Unwind::Return(Value::Enum(
@@ -1602,7 +1735,7 @@ fn eval_expr<'a, 'p>(
                 )
             })?;
             let frame = key.spelling();
-            let (result, _) = run_call(
+            let outcome = run_call(
                 f,
                 Some(lv),
                 frame,
@@ -1613,7 +1746,16 @@ fn eval_expr<'a, 'p>(
                 },
                 ctx,
             )?;
-            Ok(result)
+            // Operator methods are `read self` + one `read` operand
+            // (02-language.md §7.4). A `mut` non-receiver here has no
+            // call-site place in this node shape — refuse rather than
+            // drop.
+            if !outcome.mut_params.is_empty() {
+                return Err(ctx.abandon(
+                    "writing back a `mut` parameter from an operator method call is not supported",
+                ));
+            }
+            Ok(outcome.result)
         }
         TypedExprKind::Is(inner, pattern) => {
             let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;

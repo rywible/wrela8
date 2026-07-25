@@ -1,0 +1,106 @@
+module examples.check_mut_param_writeback
+
+# plans/M9.md item CC1. 02-language.md §5.1: "Non-receiver `mut` and
+# `take` are **mirrored at the call site**, and the operand must be an
+# explicit place." Before this item the comptime evaluator returned only
+# the final `self` from `run_call`, so `bump(mut c)` left the caller's
+# `c` untouched — a silent wrong value at build time. The backend is
+# still wrong the same way (CC2); this case has no `@test` so it stays
+# out of `diff-eval`'s scope until both tiers agree.
+#
+# Every const below is chosen so a missing write-back cannot land on the
+# same number: success values are nonzero, and `MIX`'s settle adds the
+# written-back `a` to the callee's return so "mutated inside but not
+# mirrored" (return 6, `a` still 1 → 7) differs from "mirrored"
+# (return 6, `a` is 3 → 9).
+
+struct Inner:
+    x: u32
+
+struct Counter:
+    n: u32
+    nested: Inner
+
+fn bump(mut c: Counter):
+    c.n = 7
+
+fn bump_nested(mut c: Counter):
+    c.nested.x = 9
+
+fn scalar_bump(mut x: u32):
+    x = 42
+
+fn field_bump(mut n: u32):
+    n = 11
+
+fn chain(mut c: Counter):
+    bump(mut c)
+    c.n = c.n + 1
+
+fn mixed(mut a: u32, b: u32, take c: u32) -> u32:
+    a = a + b
+    return a + c
+
+fn drive_agg() -> u32:
+    c = Counter(n=0, nested=Inner(x=0))
+    bump(mut c)
+    return c.n
+
+fn drive_scalar() -> u32:
+    x: u32 = 0
+    scalar_bump(mut x)
+    return x
+
+fn drive_nested() -> u32:
+    c = Counter(n=0, nested=Inner(x=0))
+    bump_nested(mut c)
+    return c.nested.x
+
+fn drive_field() -> u32:
+    c = Counter(n=0, nested=Inner(x=0))
+    field_bump(mut c.n)
+    return c.n
+
+fn drive_chain() -> u32:
+    c = Counter(n=0, nested=Inner(x=0))
+    chain(mut c)
+    return c.n
+
+fn drive_mixed() -> u32:
+    a: u32 = 1
+    b: u32 = 2
+    c: u32 = 3
+    return mixed(mut a, b, take c) + a
+
+const AGG: u32 = drive_agg()
+const SCA: u32 = drive_scalar()
+const NEST: u32 = drive_nested()
+const FIELD: u32 = drive_field()
+const CHAIN: u32 = drive_chain()
+const MIX: u32 = drive_mixed()
+
+@actor
+pub struct Store:
+    agg: u32
+    sca: u32
+    nest: u32
+    field: u32
+    chain: u32
+    mix: u32
+
+    init(mut self, agg: u32, sca: u32, nest: u32, field: u32, chain: u32, mix: u32):
+        self.agg = agg
+        self.sca = sca
+        self.nest = nest
+        self.field = field
+        self.chain = chain
+        self.mix = mix
+
+@image
+pub fn build() -> Image:
+    img = Image(name="mut-param-writeback", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, agg=AGG, sca=SCA, nest=NEST, field=FIELD,
+                        chain=CHAIN, mix=MIX, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

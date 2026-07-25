@@ -1573,3 +1573,25 @@ Opened by plans/M9.md item BB (decisions 60-62), which fixed a defect A1b found 
 **Pinned by value, not by acceptance.** Each `check-try-*` case carries a `@test` fn *and* an `@image` whose actor arguments are consts computed through the `?` in question, so `expected/image.txt` pins the evaluated numbers: 1005 (an `Err(5)` propagated, `settle` adding 1000 to a failure so success and failure can never land on the same number), 777 (a `None` propagated), 7/12/1 (`Ok` unwrapping a scalar, a struct, and `unit` in statement position), 30/20 (`Some` unwrapping a scalar and a struct). `check-try-import` runs all four outcomes through an *imported* body — the path plans/M9.md item A1b made live one item earlier, and the path where the defect panicked the compiler rather than merely lying.
 
 **`?`'s `from` conversion is a named gap, not a working feature (decision 61).** `err-try-from-underived` pins it. Nothing in this compiler generates a `from` method for `deriving(From)`, and `from` is a reserved word, so no user can declare one either — every `?` needing a conversion is unimplemented in both tiers. The backend already said so by name; the evaluator said `internal error: `from` conversion `WrapError.from` not found`, which by house rule is a bug report, not a diagnostic. It now fails closed by name and cites plans/M9.md item B, which owns building it. When B lands, `err-try-from-underived` stops being an `err-` case — that is the intended signal, not a regression."""
+
+[[clause]]
+id = "comptime.eval.mut-param-writeback"
+doc = "02-language.md#5.1"
+status = "test"
+tests = [
+  "golden/check-mut-param-writeback",
+  "golden/err-mut-param-defaulted-writeback",
+]
+note = """02-language.md §5.1, verbatim: "Non-receiver `mut` and `take` are **mirrored at the call site**, and the operand must be an explicit place." This clause holds the *evaluation* half of that mirroring for `mut`: after a call returns, each non-receiver `mut` parameter's final value is written back into the call-site place.
+
+Opened by plans/M9.md item CC (decisions 68–71 for the evaluator; backend generalization is CC2 under the same clause).
+
+**The defect.** `eval::interp::run_call` returned `(result, final_self)` and removed only `"self"` from the callee frame. `eval_call` therefore had nothing to write back for a non-receiver `mut` parameter, so `bump(mut c)` left the caller's `c` at its pre-call value — a silent wrong answer at build time. Sema already required an explicit place and already rejected non-places (`err-access-nonplace`); the analysis was fine, the evaluator just dropped the result.
+
+**The fix (decision 68).** `run_call` hands back every non-receiver `mut` parameter's final value (declaration order, with its param index). `eval_call` writes each into the matching call-site place via the existing `place_mut` (Local / Field / Index — the same shapes sema accepts). `CallValue` (fn values and closures) does the same; pre-evaluating every argument into a `Value` first would lose the place and reintroduce the silent drop (decision 70).
+
+**Fail-closed residue (decision 69).** A `mut` parameter with a default, called with the argument elided, has no place to mirror into. That is reachable from ordinary source (`fn bump(mut x: u32 = 0): ...` then `bump()`). It now abandons by name (`writing back `mut` parameter `x` through a defaulted argument is not supported`) rather than silently discarding the mutation. Pinned as `err-mut-param-defaulted-writeback`. There is no unaddressable *place* shape: every operand sema accepts as a `mut` argument is a Local / Field / Index chain, and `place_mut` already addresses those three.
+
+**Pinned by value.** `check-mut-param-writeback` has no `@test` (deliberately — the backend is still wrong the same way, so a `@test` would make full `diff-eval` knowingly red between CC1 and CC2). Evidence is the `@image` actor args: `agg=7`, `sca=42`, `nest=9`, `field=11`, `chain=8`, `mix=9`. `mix` is the settle: `mixed(mut a, b, take c) + a` is 9 when `a` is written back to 3 and 7 when it is not, so acceptance alone cannot pass.
+
+**Backend still wrong.** `Inst::Call` still carries only `self_write_back`; non-receiver `mut` has no write-back mechanism in `lower`/`codegen`. That is why `diff-eval` never saw this defect: both tiers agreed on the wrong answer. CC2 owns the generalization."""
