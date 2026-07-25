@@ -351,7 +351,78 @@ pub fn declare(module: &Module) -> Result<Vec<DeclItem>, SemaError> {
     // ast-alongside-`DeclItem` zip, the same "at any nesting" recursion.
     // A second pass rather than a second mechanism.
     validate_capability_types(module, &items)?;
+    validate_enum_own_handles(&items)?;
     Ok(items)
+}
+
+/// plans/M7.md item I's sweep: an `own[P] T` inside an **enum variant
+/// payload** is unreachable by the one rule that governs it, so it fails
+/// closed here.
+///
+/// 02-language.md §4 / 03-hardware.md §3: `own[P] T`'s `T` must be the
+/// payload type `P` was bound with, checked by
+/// `eval::image_checks::check_pool_decls` (`golden/err-dma-pool-own-mismatch`).
+/// That check collects every `own[P] T` in the build closure from
+/// `own_handles_in_closure`, which walks consts, fn signatures, **struct**
+/// fields/methods/`init`s, and generic instantiations. It cannot walk an
+/// enum's payloads for a concrete reason rather than an oversight:
+/// `TypedProgram::enums` is `BTreeMap<String, Vec<String>>` — variant
+/// *names* only — because an enum has no body to check, so the typed tree
+/// this compiler produces carries no enum payload type anywhere. Verified
+/// by running: `enum SlotHolder: Held(own[BlockControl] BlkReqStatus)`
+/// against `img.dma_pool[BlkReqHeader](name=BlockControl, ...)` — the
+/// exact mismatch `err-dma-pool-own-mismatch` rejects in a fn signature —
+/// compiled clean and rendered a report.
+///
+/// Refused at the declaration instead of silently unchecked. The real fix
+/// is to carry enum payload types into the typed tree so `check_pool_decls`
+/// can ask about them, which belongs to **plans/M7.md item E**: item E is
+/// what makes an `own[P] T` handle exist at runtime at all, and is the
+/// first item that could want one in an enum. Nothing in the docs'
+/// aspirational driver puts one there today (every `own[P] T` in
+/// `docs/language/examples/virtio-storage.wr` is a parameter, a return, a
+/// struct field, an `Option` field, or an array element — all walked).
+fn validate_enum_own_handles(items: &[DeclItem]) -> Result<(), SemaError> {
+    fn own_in(ty: &Type) -> Option<String> {
+        match ty {
+            Type::Own(..) => Some(render_type(ty)),
+            Type::Array(elem, _) => own_in(elem),
+            Type::Tuple(elems) => elems.iter().find_map(own_in),
+            Type::Static(inner) | Type::Option(inner) => own_in(inner),
+            Type::Result(ok, err) => own_in(ok).or_else(|| own_in(err)),
+            Type::Fn(params, ret) => params
+                .iter()
+                .find_map(|(_, t)| own_in(t))
+                .or_else(|| own_in(ret)),
+            Type::Named(_, targs) => targs.iter().find_map(|a| match a {
+                TypeArg::Type(t) => own_in(t),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+    for item in items {
+        let DeclItem::Enum(e) = item else { continue };
+        for (ty, span) in &e.component_types {
+            if let Some(found) = own_in(ty) {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "enum `{}` declares `{found}` in a variant payload; a pool handle there \
+                         is not implemented (plans/M7.md item E). The rule that gives `own[P] T` \
+                         its meaning — `T` is the payload type the image bound `P` with \
+                         (02-language.md §4, 03-hardware.md §3) — is checked over fn signatures, \
+                         struct fields and generic instantiations, and an enum payload reaches \
+                         none of them, so accepting this would leave the handle's own pool \
+                         binding unchecked. Hold it in a struct field instead",
+                        e.name
+                    ),
+                    *span,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // --- `Actor[T]` validation (plans/M6.md item A) ---------------------------

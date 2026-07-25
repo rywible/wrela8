@@ -1,0 +1,61 @@
+module examples.err_dma_pool_own_in_enum
+
+# plans/M7.md item I (the adversarial sweep), 02-language.md §4 +
+# 03-hardware.md §3: an `own[P] T` handle's `T` is the payload type the
+# image bound `P` with.
+#
+# `golden/err-dma-pool-own-mismatch` is this exact mismatch —
+# `own[BlockControl] BlkReqStatus` against
+# `img.dma_pool[BlkReqHeader](name=BlockControl, ...)` — in a fn
+# signature, rejected with the byte counts spelled out. Move the same
+# handle into an **enum variant payload** and, before this rejection, the
+# whole rule went quiet: the image checked, the pool was placed, and the
+# report rendered.
+#
+# WHY, and why it is a rejection rather than a fix.
+# `eval::image_checks::check_pool_decls` collects every `own[P] T` in the
+# build closure from `own_handles_in_closure`, which walks consts, fn
+# signatures, **struct** fields/methods/`init`s, and generic
+# instantiations. It cannot walk an enum's payloads, and not by oversight:
+# `TypedProgram::enums` is `BTreeMap<String, Vec<String>>` — variant
+# *names* only — because an enum has no body to check, so the typed tree
+# this compiler produces carries no enum payload type anywhere at all.
+# Making the rule reach here means carrying payload types into the typed
+# tree, which is a producer change to a core structure and belongs to
+# **plans/M7.md item E** — the item that makes an `own[P] T` handle exist
+# at runtime, and the first that could want one in an enum.
+#
+# Refused at the declaration meanwhile, because an unchecked pool binding
+# is exactly the "handle names a slot of the wrong shape for a device to
+# read or write" that the sibling golden's own diagnostic describes.
+#
+# Nothing legitimate is blocked today: every `own[P] T` in the docs' own
+# aspirational driver (`docs/language/examples/virtio-storage.wr`) is a
+# parameter, a return type, a struct field, an `Option` field or an array
+# element, and all five are walked.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+struct BlockHw:
+    id: u32
+
+pool BlockControl
+
+enum SlotHolder:
+    Held(own[BlockControl] BlkReqStatus)
+    Empty(u32)
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=4)
+    return img.seal()
