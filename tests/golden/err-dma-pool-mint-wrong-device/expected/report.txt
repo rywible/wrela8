@@ -1,0 +1,1 @@
+error[build]: `driver#0` binds device#0 to `BlkDriver`, but `BlkDriver.init` takes `control: DmaPool[BlockControl, 4096]` and pool `BlockControl` is declared reachable from device#1 — a `DmaPool[P, N]` is authority over memory *this* device can reach (03-hardware.md §1/§3)

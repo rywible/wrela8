@@ -1,0 +1,17 @@
+Module path=examples.check_dma_shared
+  Struct BlkReqHeader data
+    field kind: u32
+    field reserved: u32
+    field sector: u64
+  Struct RingControl data
+    field flags: u16
+    field idx: u16
+  Struct BlockHw data
+    field id: u32
+  Pool BlockControl
+  Struct BlkDriver resource
+    field sectors: u64
+    init(mut self, control: take DmaPool[BlockControl, 4096], sectors: read u64) -> unit
+    fn capacity(read self) -> u64
+    fn install_ring(mut self, ring: take DmaShared[BlockControl, RingControl]) -> unit
+  Fn build() -> Image

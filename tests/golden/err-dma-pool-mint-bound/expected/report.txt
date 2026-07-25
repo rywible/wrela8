@@ -1,0 +1,1 @@
+error[build]: `driver#0` binds a device to `BlkDriver`, but `BlkDriver.init` takes `control: DmaPool[BlockControl, 64]` while pool `BlockControl` reserves 256 bytes (16 slot(s) of 16 bytes) — 03-hardware.md §1 calls this a *bounded* device-reachable pool, and a bound smaller than the memory it admits authority over is not one
