@@ -1,0 +1,45 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/boot_cross_core_two_senders.wr sha256=8bdaba8a0bf8b91349961c092bf75c4d5378df35b465a509b6358d64f129470a
+  Name value=cross-core-two-senders
+  Target value=Target.wrela_machine_v1
+  Actor index=0 type=Sink
+    Mailbox value=4
+  Actor index=1 type=Alpha
+    Mailbox value=4
+  Actor index=2 type=Beta
+    Mailbox value=4
+  Edge from=actor#1 to=actor#0
+  Edge from=actor#2 to=actor#0
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=actor#0
+    Child value=actor#1
+    Child value=actor#2
+  Placement id=actor#0 type=Sink core=1 source=explicit work=0 work_source=unproved bytes=128 bytes_state=8 bytes_mailbox=120 bytes_pool=0
+  Placement id=actor#1 type=Alpha core=0 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Placement id=actor#2 type=Beta core=0 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=2916
+  Section name=rodata base=0x40500bb8 size=658
+  Section name=abort base=0x40500e4c size=120
+  Section name=checkpoint base=0x40500ec4 size=104
+  Section name=rtcode base=0x40500f2c size=4100
+  Section name=rtdata base=0x40501f30 size=1800
+  Entry base=0x40500000
+  CoreEntry core=1 base=0x40501dfc
+  CoreEntry core=2 base=0x40501e64
+  Actor name=Sink mailbox=4 slot=24 frame=56 state=8
+  Actor name=Alpha mailbox=4 slot=16 frame=312 state=8
+  Actor name=Beta mailbox=4 slot=16 frame=312 state=8
+  Turn fn=two_senders_one_ring frame=488
+  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120
+  Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72
+  Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=1800

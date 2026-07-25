@@ -1,0 +1,81 @@
+module examples.err_cross_core_aggregate_reply
+
+# plans/M8.md item C2, decision 31 — one of the two shapes a cross-core
+# edge still refuses, and the reason is an oracle this project does not
+# have rather than an implementation this item skipped.
+#
+# 04-compiler.md §3 requires a cross-core edge to keep *identical message
+# semantics*, and item C2 delivers that by routing the request and the
+# reply **word** over bounded rings. An aggregate reply does not travel that
+# way: `build_rt_select_and_run`'s aggregate arm loads the awaiting turn's
+# own staging-slot address out of its turn record and hands it to the callee
+# in `x8`, and the callee writes the whole aggregate straight into that
+# frame. Across a core boundary that is a direct store into another core's
+# memory, with no ring and no ordering the compiler placed anywhere near it.
+#
+# Two reasons, and the first was found by deleting the refusal and running
+# the gate rather than by reading the diff:
+#
+#   (a) the waker that reaches that arm is **core-tagged** (decision 30), so
+#       `[waker + OFF_TURN_REPLY_SLOT]` dereferences an address with the tag
+#       still in its top bits. With the refusal removed this image faults on
+#       core 1 with `FAR_EL1=0x2000000040501660` — the tag, not memory.
+#       Masking the tag there is a one-line change, which is what makes (b)
+#       the real reason;
+#
+#   (b) even untagged, that store is a direct cross-core write with no
+#       publication this compiler placed. §3's own sentence — "sealed
+#       publish/acquire ordering — no app-visible atomics or fences exist" —
+#       makes the ordering the *compiler's* obligation, and under
+#       plans/M8.md decision 11's baton exactly one vCPU is inside
+#       `hv_vcpu_run` at a time, so **no oracle this project owns could show
+#       it broken**. A green boot here would be evidence of the baton, not
+#       of correct publication, and shipping it would be shipping an
+#       untested claim.
+#
+# The refusal is per target actor, not per method, because the ring's slot
+# format is per actor.
+#
+# Vacuity control: change `both`'s return type to a scalar (`u64`) and this
+# image builds and boots — that shape is `boot-cross-core-call`. Change
+# `core=1` to `core=0` and it also builds: an aggregate reply on a same-core
+# edge is ordinary, already-tested M7 behavior (`boot-actor-reply-struct`).
+# The refusal is about the two facts together.
+
+pub struct Pair:
+    lo: u64
+    hi: u64
+
+@actor
+pub struct Far:
+    v: u64
+
+    init(mut self):
+        self.v = 3
+
+    pub fn both(read self) -> Pair:
+        return Pair(lo=self.v, hi=self.v + 1)
+
+@test(runtime)
+async fn calls_far(f: Actor[Far]):
+    p = await f.both()
+    # Deliberately no binding of the aggregate itself: a root `@test`
+    # turn has no `self` to store it into, and 02 §9.2 lets only a
+    # self-rooted path span an `await`. Binding it would make this file a
+    # golden for *that* rule instead of for the cross-core refusal.
+    match p:
+        case .Ok(_):
+            assert false, "unreachable: this image must not build"
+        case .Err(_):
+            assert false, "unreachable: this image must not build"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cross-core-aggregate", target=Target.wrela_machine_v1)
+    far = img.actor(Far, mailbox=4, core=1)
+    img.supervise(
+        children=[far],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()
