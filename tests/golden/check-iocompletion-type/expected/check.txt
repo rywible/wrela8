@@ -1,0 +1,4 @@
+Module path=examples.check_iocompletion_type
+  Struct Packet data
+    field n: u32
+  Fn hold(_c: read IoCompletion[Packet]) -> unit
