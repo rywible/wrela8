@@ -2394,6 +2394,18 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         let span = self.peek_span();
+        // 02-language.md §1: a `##` doc comment is "attached to the
+        // immediately following declaration". Statements are not
+        // declarations, so a doc comment in a body attaches to nothing.
+        // Say that, rather than letting it fall through to the expression
+        // parser and report the doc text as an unexpected token.
+        if self.at_kind(TokenKind::DocComment) {
+            return Err(self.error_here(
+                "a `##` doc comment attaches to the immediately following declaration \
+                 (02-language.md §1), and a statement is not a declaration — use a plain \
+                 `#` comment inside a body",
+            ));
+        }
         if self.at_keyword("if") {
             return self.parse_if_stmt().map(Stmt::If);
         }

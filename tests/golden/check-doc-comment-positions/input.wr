@@ -1,0 +1,47 @@
+module examples.check_doc_comment_positions
+
+# 02-language.md §1: "`##` begins a documentation comment attached to the
+# immediately following declaration." This case is the parse/check-layer
+# sibling of `lex-doc-comment-layout`: every position a doc comment can
+# legally occupy, in one file, so a regression in the lexer's layout
+# handling of `##` lines shows up as a parse error here rather than as a
+# quietly-dropped comment.
+#
+# Before the fix (found by `cargo xtask fuzz sema`, seed 9101), only ONE of
+# these positions parsed — a doc comment before the file's first
+# block-bodied declaration. Every other one below was a hard parse error,
+# so the rule 02 §1 states was broadly untrue of the implementation.
+#
+# The rejecting sibling is `err-doc-comment-in-body`: a statement is not a
+# declaration, so a `##` inside a body has nothing to attach to.
+
+## Documented, and the first declaration in the file — the one position
+## that always worked. Two `##` lines in a row are one doc comment.
+struct First:
+    x: u32
+
+## Documented, and preceded by a block-bodied declaration. This is the
+## shape the fuzzer found: the DEDENT closing `First` used to be emitted
+## after this token, so `First`'s own member loop swallowed it.
+@actor
+pub struct Counter:
+    ## First line of a block. The INDENT opening the body used to be
+    ## emitted after this token, so the parser never saw the block start.
+    n: u32
+
+    ## A doc comment on `init`, mid-block, after a field.
+    init(mut self):
+        self.n = 0
+
+    ## A doc comment on a method, after another block-bodied member — the
+    ## nested version of the same DEDENT bug.
+    pub fn get(read self) -> u32:
+        return self.n
+
+## A doc comment sitting between an attribute-carrying declaration and the
+## next one, at the outer level again after two nested blocks closed.
+const LIMIT: u32 = 7
+
+@test
+fn positions_hold():
+    assert LIMIT == 7, "the documented const is the one that got compiled"

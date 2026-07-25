@@ -369,14 +369,29 @@ impl<'s> Lexer<'s> {
             }
             // `##` at line start is a doc comment: it emits a DocComment
             // token carrying the raw text after `##` (trailing newline
-            // excluded) but otherwise behaves like a comment-only line — no
-            // INDENT/DEDENT/NEWLINE beyond that (attachment to a
-            // declaration is the parser's job, not the lexer's). Plain `#`
-            // stays silently skipped.
+            // excluded), and its line **participates in layout exactly
+            // like a code line** — the INDENT/DEDENTs its own indentation
+            // implies are emitted first, before the token. 02-language.md
+            // §1: "`##` begins a documentation comment attached to the
+            // immediately following declaration", so a doc comment sits
+            // where its declaration sits. It used to be layout-transparent
+            // like a plain comment, which put it on the wrong side of every
+            // block boundary and made both natural shapes unparseable: as
+            // a block's first line the DocComment preceded the INDENT
+            // (`expected an indented block`), and at the outer level after
+            // a block it preceded the DEDENT, so the enclosing suite's own
+            // member loop swallowed it (`expected a member after doc
+            // comment/attribute`). Found by `xtask fuzz sema` (seed 9101).
+            //
+            // A doc comment still emits no NEWLINE of its own (see
+            // `last_is_content`), and attaching it to a declaration remains
+            // the parser's job. Plain `#` attaches to nothing and stays
+            // silently skipped, layout-transparent as before.
             Some(b'#') => {
                 let (line, col) = (self.line, self.col);
-                self.bump();
-                if self.peek() == Some(b'#') {
+                if self.peek2() == Some(b'#') {
+                    self.dispatch_indent(width)?;
+                    self.bump();
                     self.bump();
                     let start = self.pos;
                     while let Some(b) = self.peek() {
@@ -390,6 +405,7 @@ impl<'s> Lexer<'s> {
                         .to_string();
                     self.push(TokenKind::DocComment, text, line, col);
                 } else {
+                    self.bump();
                     while let Some(b) = self.peek() {
                         if b == b'\n' {
                             break;
@@ -401,11 +417,17 @@ impl<'s> Lexer<'s> {
             }
             _ => {}
         }
-        // Dispatch to whichever indent stack is active at this depth: the
-        // topmost open island if one exactly matches, else the top-level
-        // stack. `run()` only calls `handle_indentation` when
-        // `layout_active()` held at line start, so exactly one of these
-        // applies (module doc comment on layout islands).
+        self.dispatch_indent(width)
+    }
+
+    /// Dispatch to whichever indent stack is active at this depth: the
+    /// topmost open island if one exactly matches, else the top-level
+    /// stack. `run()` only calls `handle_indentation` when
+    /// `layout_active()` held at line start, so exactly one of these
+    /// applies (module doc comment on layout islands). Its own function so
+    /// a doc-comment line can run the identical dispatch before emitting
+    /// its token — a doc comment is a line, not a hole in the layout.
+    fn dispatch_indent(&mut self, width: u32) -> Result<(), LexError> {
         let in_island = matches!(self.islands.last(), Some(i) if i.open_depth == self.depth);
         if in_island {
             self.apply_island_indent(width)

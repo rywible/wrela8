@@ -1,0 +1,9 @@
+Module path=examples.check_doc_comment_positions
+  Struct First data
+    field x: u32
+  Struct Counter resource
+    field n: u32
+    init(mut self) -> unit
+    fn get(read self) -> u32
+  Const LIMIT: u32
+  Fn positions_hold() -> unit

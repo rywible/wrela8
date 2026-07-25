@@ -51,8 +51,14 @@ note = "\\\\ \\\" \\' \\n \\r \\t \\0 everywhere; \\xNN byte-string-only; \\u{H.
 id = "syntax.lexer.doc-comments"
 doc = "02-language.md#1"
 status = "test"
-tests = ["golden/lex-doc-comments"]
-note = "`##` emits a DocComment token (raw text, attachment is the parser's job); `#` stays skipped"
+tests = [
+  "golden/lex-doc-comments",
+  "golden/lex-doc-comment-layout",
+  "golden/check-doc-comment-positions",
+  "golden/err-doc-comment-in-body",
+  "xtask:fuzz",
+]
+note = "`##` emits a DocComment token (raw text, attachment is the parser's job); `#` stays skipped.\n\n**Corrected 2026-07-25.** 02 \u00a71's rule is \"`##` begins a documentation comment attached to the immediately following declaration\", and the implementation was broadly not that. The lexer treated a `##` line as layout-transparent — exactly like a plain `#` line — emitting the DocComment token without running the line\u2019s own indentation through the indent stack. That put every doc comment on the wrong side of a block boundary, so only ONE position in the whole language actually parsed (a doc comment before the file\u2019s first block-bodied declaration, which is all `golden/lex-doc-comments` happened to cover). As a block\u2019s first line the DocComment preceded the INDENT (`expected an indented block`); at the outer level after a block it preceded the DEDENTs, so the enclosing suite\u2019s member loop swallowed it (`expected a member after doc comment/attribute`). Fixed by giving a `##` line the ordinary layout dispatch before its token is emitted (`lexer::dispatch_indent`, factored out of `handle_indentation` for exactly this); plain `#` stays transparent. Token order is pinned by `golden/lex-doc-comment-layout` (INDENT then DOCCOMMENT; DEDENT then DOCCOMMENT), every legal position by `golden/check-doc-comment-positions` (whose `ast.txt` pins *attachment*, not just parsing), and the one illegal position by `golden/err-doc-comment-in-body` — a statement is not a declaration, refused by name in `parser::parse_stmt` with the plain-`#` advice.\n\nFound by `cargo xtask fuzz sema` (seed 9101) as a **roundtrip** failure, not a panic: the mutation moved a doc comment after a struct, and the pretty-printer then emitted source its own parser rejected. That is why `xtask:fuzz` is listed here — the fuzzer is a live oracle for this clause, not incidental coverage."
 
 [[clause]]
 id = "syntax.lexer.triple-quote-reserved"
