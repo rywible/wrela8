@@ -133,6 +133,61 @@ pub struct BootOutcome {
 #[derive(Debug)]
 struct ParsedReport {
     entry: u64,
+    /// plans/M7.md item F: the declared `blk` device, if any (06 §3: "the
+    /// VMM ... preconfigures every device, queue, and shared-memory window
+    /// the report declares — device topology is a *build output*, not a
+    /// probed fact"). `None` for every image built today: the compiler
+    /// emits no `Blk*` lines until the driver-side items (C/D/E) land, and
+    /// a report without them boots exactly as it did before this item, no
+    /// device model constructed at all.
+    blk: Option<devices::BlkConfig>,
+}
+
+/// One `Kind key=value key=value ...` report line's own fields. Shared by
+/// every `Blk*` line below; deliberately strict — a malformed field, a
+/// missing required field, or an unknown key fails the whole report closed
+/// (`VmmError::MalformedReport`), because a device declaration this VMM
+/// half-understands is exactly the configuration it must never boot on.
+fn parse_report_fields<'a>(
+    kind: &str,
+    rest: &'a str,
+    allowed: &[&str],
+) -> Result<std::collections::BTreeMap<&'a str, &'a str>, VmmError> {
+    let mut fields = std::collections::BTreeMap::new();
+    for part in rest.split_whitespace() {
+        let Some((k, v)) = part.split_once('=') else {
+            return Err(VmmError::MalformedReport(format!(
+                "`{kind}` field {part:?} has no `=`"
+            )));
+        };
+        if !allowed.contains(&k) {
+            return Err(VmmError::MalformedReport(format!(
+                "`{kind}` has no field `{k}` (expected one of {allowed:?})"
+            )));
+        }
+        if fields.insert(k, v).is_some() {
+            return Err(VmmError::MalformedReport(format!(
+                "`{kind}` repeats field `{k}`"
+            )));
+        }
+    }
+    Ok(fields)
+}
+
+/// A required `key=<integer>` field, decimal or `0x`-prefixed.
+fn report_u64(
+    kind: &str,
+    fields: &std::collections::BTreeMap<&str, &str>,
+    key: &str,
+) -> Result<u64, VmmError> {
+    let raw = fields.get(key).copied().ok_or_else(|| {
+        VmmError::MalformedReport(format!("`{kind}` is missing required field `{key}`"))
+    })?;
+    let parsed = match raw.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => raw.parse::<u64>(),
+    };
+    parsed.map_err(|e| VmmError::MalformedReport(format!("`{kind}` field `{key}={raw}`: {e}")))
 }
 
 /// Parses the minimal, internal (not itself golden-pinned — `wrela test`'s
@@ -151,6 +206,16 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut has_input = false;
     let mut has_section = false;
     let mut entry: Option<u64> = None;
+    // plans/M7.md item F: the declared `blk` device's own three line
+    // kinds, accumulated here and assembled into one `BlkConfig` below.
+    // Deliberately `Blk`-prefixed rather than reusing `Device`/`Pool`:
+    // `report.rs`'s own full `--stage=report` artifact already spells
+    // those two words with entirely different fields, and `parse_report`
+    // trims indentation away, so a distinct prefix is what keeps the two
+    // formats from ever being silently confusable.
+    let mut blk_device: Option<(u64, u64, Option<u64>)> = None;
+    let mut blk_queue: Option<devices::BlkQueueConfig> = None;
+    let mut blk_pools: Vec<devices::PoolWindow> = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
@@ -162,6 +227,66 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
             let digits = rest.trim_start_matches("0x");
             entry = u64::from_str_radix(digits, 16).ok();
+        } else if let Some(rest) = line.strip_prefix("BlkDevice ") {
+            let fields = parse_report_fields(
+                "BlkDevice",
+                rest,
+                &["capacity_sectors", "features", "vector"],
+            )?;
+            if blk_device.is_some() {
+                return Err(VmmError::MalformedReport(
+                    "more than one `BlkDevice` line (06 §6: the device set is closed and there is no hotplug; machine v1 has exactly one `blk`)".to_string(),
+                ));
+            }
+            let vector = match fields.get("vector") {
+                Some(_) => Some(report_u64("BlkDevice", &fields, "vector")?),
+                None => None,
+            };
+            blk_device = Some((
+                report_u64("BlkDevice", &fields, "capacity_sectors")?,
+                report_u64("BlkDevice", &fields, "features")?,
+                vector,
+            ));
+        } else if let Some(rest) = line.strip_prefix("BlkQueue ") {
+            let fields = parse_report_fields(
+                "BlkQueue",
+                rest,
+                &["index", "size", "desc", "avail", "used", "doorbell"],
+            )?;
+            let index = report_u64("BlkQueue", &fields, "index")?;
+            if index != 0 {
+                return Err(VmmError::MalformedReport(format!(
+                    "`BlkQueue index={index}`: machine v1's `blk` has exactly one queue (index 0)"
+                )));
+            }
+            if blk_queue.is_some() {
+                return Err(VmmError::MalformedReport(
+                    "more than one `BlkQueue index=0` line".to_string(),
+                ));
+            }
+            let size = report_u64("BlkQueue", &fields, "size")?;
+            let size = u16::try_from(size).map_err(|_| {
+                VmmError::MalformedReport(format!(
+                    "`BlkQueue size={size}` does not fit virtio's own 16-bit queue depth"
+                ))
+            })?;
+            blk_queue = Some(devices::BlkQueueConfig {
+                size,
+                desc: report_u64("BlkQueue", &fields, "desc")?,
+                avail: report_u64("BlkQueue", &fields, "avail")?,
+                used: report_u64("BlkQueue", &fields, "used")?,
+                doorbell: report_u64("BlkQueue", &fields, "doorbell")?,
+            });
+        } else if let Some(rest) = line.strip_prefix("BlkPool ") {
+            let fields = parse_report_fields("BlkPool", rest, &["name", "base", "size"])?;
+            let name = fields.get("name").copied().ok_or_else(|| {
+                VmmError::MalformedReport("`BlkPool` is missing required field `name`".to_string())
+            })?;
+            blk_pools.push(devices::PoolWindow {
+                name: name.to_string(),
+                base: report_u64("BlkPool", &fields, "base")?,
+                size: report_u64("BlkPool", &fields, "size")?,
+            });
         }
     }
     let revision = revision
@@ -184,7 +309,45 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     }
     let entry =
         entry.ok_or_else(|| VmmError::MalformedReport("no `Entry base=0x...` line".to_string()))?;
-    Ok(ParsedReport { entry })
+    // The three `Blk*` line kinds are all-or-nothing: a device with no
+    // queue, a queue with no device, or either with no pool is a report
+    // this VMM refuses outright rather than booting on a device model it
+    // would have to guess the shape of.
+    let blk = match (blk_device, blk_queue) {
+        (None, None) => {
+            if !blk_pools.is_empty() {
+                return Err(VmmError::MalformedReport(
+                    "`BlkPool` line(s) with no `BlkDevice`/`BlkQueue` to bind them to".to_string(),
+                ));
+            }
+            None
+        }
+        (Some(_), None) => {
+            return Err(VmmError::MalformedReport(
+                "a `BlkDevice` line with no `BlkQueue index=0` line".to_string(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(VmmError::MalformedReport(
+                "a `BlkQueue` line with no `BlkDevice` line".to_string(),
+            ));
+        }
+        (Some((capacity_sectors, features, vector)), Some(queue)) => {
+            if blk_pools.is_empty() {
+                return Err(VmmError::MalformedReport(
+                    "a `BlkDevice` with no `BlkPool` line: all memory a device can reach originates from its bound pools (03-hardware.md §3)".to_string(),
+                ));
+            }
+            Some(devices::BlkConfig {
+                capacity_sectors,
+                features,
+                vector,
+                queue,
+                pools: blk_pools,
+            })
+        }
+    };
+    Ok(ParsedReport { entry, blk })
 }
 
 /// Boots `img_path` (a flat blob, loaded at `wrela_machine::layout::
@@ -501,6 +664,20 @@ fn boot_image_core(
     // so `now()` measures from the machine coming up rather than from
     // whichever guest read happened to be first (`monotonic_ns`'s own doc).
     let _ = monotonic_ns();
+    // plans/M7.md item F: the declared `blk` device model, preconfigured
+    // from the report (06 §3) before the vCPU ever runs. `None` unless the
+    // report declares one, which nothing the compiler emits does yet — so
+    // every existing image boots down exactly the path it did before.
+    let mut blk: Option<BlkState> = match parsed.blk {
+        None => None,
+        Some(cfg) => {
+            let pools = cfg.pools.clone();
+            let device = devices::BlkDevice::new(cfg).map_err(VmmError::BadImage)?;
+            let mem =
+                unsafe { devices::GuestMem::new(host_ram, pools) }.map_err(VmmError::BadImage)?;
+            Some(BlkState { device, mem })
+        }
+    };
     let mut exits: u64 = 0;
     let exit_code: u64;
     // plans/M6.md item E, decision 9: the single point every
@@ -511,6 +688,14 @@ fn boot_image_core(
     };
 
     loop {
+        // 06 §5: "the VMM's I/O threads poll hot doorbells on their own
+        // host cores and arm wakes when idle." There is one host thread
+        // here, so the poll happens at every vCPU exit — the dumbest
+        // correct placement, and the one that needs no shared-memory
+        // synchronization with a running vCPU at all. The *other* poll
+        // site is the park path below, which is what makes a doorbell rung
+        // immediately before a park impossible to lose.
+        service_blk(&mut blk, &mut chooser, host_ram)?;
         let r = unsafe { hv_vcpu_run(vcpu) };
         if r != HV_SUCCESS {
             return Err(VmmError::Hvf {
@@ -617,6 +802,14 @@ fn boot_image_core(
                         );
                         u64::from_le_bytes(b)
                     };
+                    // plans/M7.md item F: the second doorbell poll site
+                    // (06 §5). A completion serviced *here* — after the
+                    // guest published and rang, before this VMM decides to
+                    // sleep — is exactly the wake the mask-arm-recheck
+                    // discipline exists to keep: a doorbell rung between
+                    // the driver's last check and its park must never
+                    // sleep the core that is waiting for it.
+                    let blk_completed = service_blk(&mut blk, &mut chooser, host_ram)?;
                     // The mask-arm-recheck discipline's own "recheck"
                     // half (`mmio::PARK_MMIO_ADDR`'s own doc): a vector
                     // already pending at the moment of this trap means a
@@ -627,7 +820,7 @@ fn boot_image_core(
                         std::ptr::copy_nonoverlapping(host_ram.add(pending_off), b.as_mut_ptr(), 8);
                         u64::from_le_bytes(b) != 0
                     };
-                    if !already_pending {
+                    if !already_pending && !blk_completed {
                         chooser.choose_next(
                             record::ChoiceRequest::DeadlineWake { deadline_ns },
                             || {
@@ -650,13 +843,7 @@ fn boot_image_core(
                         // core's own pending word. No separate wake is
                         // needed — resuming this already-exited vCPU on
                         // the next loop iteration below *is* the wake.
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                1u64.to_le_bytes().as_ptr(),
-                                host_ram.add(pending_off),
-                                8,
-                            );
-                        }
+                        raise_vector(host_ram, 0);
                     }
                 } else if let Some(imm) = decode_brk(esr) {
                     let pc = read_pc(vcpu).unwrap_or(0);
@@ -696,6 +883,122 @@ fn boot_image_core(
         },
         divergences,
     ))
+}
+
+/// plans/M7.md item F: one declared `blk` device model plus the checked
+/// view of guest memory it is allowed to touch. A pair rather than one
+/// type because `devices::GuestMem` is deliberately the *only* thing in
+/// this VMM holding both a raw DRAM pointer and the declared pool windows
+/// (`devices.rs`'s own module doc: decision 5's security boundary is
+/// enforced by there being no other way to turn a guest address into a
+/// host offset).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct BlkState {
+    device: devices::BlkDevice,
+    mem: devices::GuestMem,
+}
+
+/// 06 §4's raise, both producers' one implementation: set bit `vector` in
+/// core 0's own pending word. **An OR, never a store**, since M7 gives
+/// this machine a second raiser (a `blk` completion) alongside M6's
+/// deadline service — a plain store of `1` would silently drop a
+/// completion vector raised moments earlier in the same park.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn raise_vector(host_ram: *mut u8, vector: u64) {
+    use wrela_machine::layout as machine_layout;
+    let off = (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
+    unsafe {
+        let mut b = [0u8; 8];
+        std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8);
+        let raised = u64::from_le_bytes(b) | (1u64 << (vector & 63));
+        std::ptr::copy_nonoverlapping(raised.to_le_bytes().as_ptr(), host_ram.add(off), 8);
+    }
+}
+
+/// 06 §5's doorbell poll, plans/M7.md decision 7's recording, and the
+/// completion's own vector raise — the whole guest-visible half of the
+/// `blk` device model, in one place, called from exactly two sites in
+/// `boot_image_core`'s loop (every vCPU exit, and the park path before the
+/// sleep decision). Returns whether anything completed.
+///
+/// The record/replay split (decision 7, 06 §8) is the subtle part, so it
+/// is spelled out rather than implied:
+///
+/// - The **model always runs**, in both modes. A completion is not a value
+///   this VMM invents — it is a deterministic function of the ring the
+///   guest published and the disk this VMM owns, and the *payload bytes*
+///   have to be written into guest memory for a replayed guest to see
+///   anything at all. 06 §8's "replay feeds the log from virtual device
+///   models" is exactly this: the models are still there.
+/// - The **used-ring `len` and the status the driver branches on come from
+///   the log** under replay, never from the fresh model run.
+/// - The **`head` always comes from the model**, never the log: a chain's
+///   head is the identity the *guest itself* published in `avail.ring`, so
+///   feeding it from an untrusted log would be precisely the unchecked
+///   index 03 §4 forbids. A log whose head disagrees is a divergence, not
+///   an index.
+/// - A disagreement in any field is `Divergence::DeviceCompletionMismatch`
+///   — named, never silently taken.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn service_blk(
+    blk: &mut Option<BlkState>,
+    chooser: &mut record::Chooser,
+    host_ram: *mut u8,
+) -> Result<bool, VmmError> {
+    let Some(state) = blk.as_mut() else {
+        return Ok(false);
+    };
+    let completions = state
+        .device
+        .service(&mut state.mem)
+        .map_err(|fault| VmmError::GuestFault(format!("virtio-blk: {fault}")))?;
+    if completions.is_empty() {
+        return Ok(false);
+    }
+    for c in &completions {
+        let request = record::ChoiceRequest::DeviceCompletion {
+            device: "blk".to_string(),
+            queue: 0,
+            head: c.head as u32,
+            status: c.status as u32,
+            len: c.len,
+            digest: c.digest.clone(),
+        };
+        let observed = request.fallback();
+        let index = chooser.resolved_count();
+        let chosen = {
+            let observed = observed.clone();
+            chooser.choose_next(request, move || observed)
+        };
+        if chosen != observed {
+            chooser.note_divergence(record::Divergence::DeviceCompletionMismatch {
+                index,
+                recorded: chosen.to_text_fields(),
+                actual: observed.to_text_fields(),
+            });
+        }
+        let len = match &chosen {
+            record::ChoiceEntry::DeviceCompletion { len, .. } => *len,
+            // A replayed tag mismatch already fell back to `observed`
+            // (`ChoiceRequest::fallback`), so this arm is unreachable;
+            // it fails closed rather than inventing a length.
+            _ => c.len,
+        };
+        state
+            .device
+            .commit_used(&mut state.mem, c.head, len)
+            .map_err(|fault| VmmError::GuestFault(format!("virtio-blk: {fault}")))?;
+    }
+    // 06 §4: a completion optionally raises this driver's own vector. A
+    // device declared with none is 03 §7's poll build — the used ring
+    // alone is the signal, and nothing is raised or recorded.
+    if let Some(vector) = state.device.config.vector {
+        chooser.choose_next(record::ChoiceRequest::VectorRaise { vector }, || {
+            record::ChoiceEntry::VectorRaise { vector }
+        });
+        raise_vector(host_ram, vector);
+    }
+    Ok(true)
 }
 
 /// Reads the vCPU's own current `PC` for a fault diagnostic — best-effort
@@ -912,14 +1215,7 @@ pub mod kvm {
     //! until the Raspberry Pi flagship host milestone.
 }
 
-pub mod devices {
-    //! Device models for the closed machine v1 set (06 §6). At M5, the
-    //! console tx-ring drain and the clock MMIO trap live directly in
-    //! `boot_image`'s own exit loop (two devices, dumbest-correct, no seam
-    //! yet — CLAUDE.md's "no traits with one implementation"); a real
-    //! per-device module split arrives with the device milestones, once
-    //! there is more than one device model each to justify it.
-}
+pub mod devices;
 
 pub mod record;
 
@@ -2594,5 +2890,624 @@ pub fn build() -> Image:
         );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    // =======================================================================
+    // plans/M7.md item F: the virtio-blk device model, its doorbell, and its
+    // completions in the recorded choice sequence.
+    //
+    // `devices.rs`'s own `#[cfg(test)]` module drives the *model* directly
+    // (ring shapes, request format, `Flush`, and every malformed-ring
+    // rejection by name) with no VMM and no HVF involved at all. What
+    // follows is the other half — a **real boot** of a hand-assembled guest
+    // that plays the driver's role, exactly the way M5/M6 both established
+    // is the only oracle that catches register-level and protocol-level
+    // bugs a dump review misses (plans/M7.md's own A–H note: "a real HVF
+    // boot as the behavioral oracle wherever the item produces
+    // guest-visible behavior"). No compiled `.wr` source can reach a device
+    // yet — capabilities, layouts, DMA pools, queues, and receipts are
+    // items A/B/C/D/E — so the driver here is hand-assembled, exactly like
+    // this file's own clock/park/actor-runtime conformance guests.
+
+    /// Everything one blk conformance boot needs: the image blob (code +
+    /// a prefilled ring and buffers), the report declaring the device, and
+    /// the expected payload words the guest checks against.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    struct BlkImage {
+        img_bytes: Vec<u8>,
+        report_text: String,
+    }
+
+    /// Builds the hand-assembled blk driver + its ring.
+    ///
+    /// The ring, the two request headers, the source payload, and the
+    /// destination buffer all live in the image's own trailing data region
+    /// — plain image bytes, loaded into DRAM by the ordinary boot path —
+    /// and one declared pool window covers exactly that region and nothing
+    /// else. The descriptor chains are prefilled by this builder (the
+    /// harness playing the driver's build-time role); the guest program
+    /// itself does the two runtime acts a real driver does: publish an
+    /// available entry, and ring the doorbell.
+    ///
+    /// Two operations, in order:
+    /// 1. `T_OUT` sector 0, 512 bytes from `SRC` (chain 0 -> 1 -> 2);
+    /// 2. `T_IN` sector 0, 512 bytes into `DST` (chain 3 -> 4 -> 5).
+    ///
+    /// The read-back therefore proves the write actually reached the
+    /// model's own disk, without the guest ever seeing the disk.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn build_blk_conformance_image() -> BlkImage {
+        use wrela_machine::layout as machine_layout;
+
+        const QUEUE_SIZE: u64 = 8;
+        // Offsets within the data region.
+        const OFF_DESC: u64 = 0x000;
+        const OFF_AVAIL: u64 = 0x080;
+        const OFF_USED: u64 = 0x0C0;
+        const OFF_DOORBELL: u64 = 0x140;
+        const OFF_HDR1: u64 = 0x150;
+        const OFF_HDR2: u64 = 0x160;
+        const OFF_STATUS1: u64 = 0x170;
+        const OFF_STATUS2: u64 = 0x178;
+        const OFF_SRC: u64 = 0x200;
+        const OFF_DST: u64 = 0x400;
+        const DATA_REGION_SIZE: u64 = 0x600;
+        /// The vector bit a completion raises (06 §4). Deliberately not
+        /// bit 0: that is M6's deadline vector, and this test asserts the
+        /// pending word ends up holding *only* the blk bit — which is what
+        /// proves the completion suppressed the park's own sleep rather
+        /// than merely racing it.
+        const BLK_VECTOR: u64 = 1;
+
+        let payload: Vec<u8> = (0..512u32).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+        let expect_first = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+        let expect_last = u64::from_le_bytes(payload[504..512].try_into().unwrap());
+
+        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+
+        // Pass 1 with placeholder addresses purely to measure the entry
+        // sequence's own word count — its length is addr-value-independent
+        // (every embedded constant is a fixed-width `load_imm_words`), the
+        // identical two-pass technique this file's own actor-runtime test
+        // uses.
+        fn build_entry(
+            sp_top: u64,
+            data_base: u64,
+            expect_first: u64,
+            expect_last: u64,
+        ) -> Vec<u32> {
+            use wrela_compiler::encode;
+            use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
+
+            let avail = data_base + OFF_AVAIL;
+            let used = data_base + OFF_USED;
+            let doorbell = data_base + OFF_DOORBELL;
+
+            let mut w = Vec::new();
+            w.extend(load_imm_words(9, sp_top));
+            w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+
+            // One aligned 64-bit store publishes the whole avail header:
+            // `flags: u16 = 0, idx: u16, ring[0]: u16, ring[1]: u16`. No
+            // 16-bit store encoding is needed, and the guest's own view of
+            // the ring stays exactly the little-endian layout the model
+            // reads.
+            let publish = |w: &mut Vec<u32>, idx: u64| {
+                w.extend(load_imm_words(9, avail));
+                w.extend(load_imm_words(10, (idx << 16) | (0 << 32) | (3 << 48)));
+                w.push(encode::enc_str_x_imm(10, 9, 0));
+                // 06 §5's doorbell: an ordinary store to ordinary DRAM.
+                // No trap, no exit — the VMM polls this word.
+                w.extend(load_imm_words(9, doorbell));
+                w.push(encode::enc_movz(10, 1, 0, true));
+                w.push(encode::enc_str_x_imm(10, 9, 0));
+            };
+            // A park is what gives the VMM a chance to poll at all (this
+            // guest has no checkpoint loop of its own). The deadline is
+            // deliberately real and short: if the doorbell path were
+            // broken, this boot would still finish and fail its checks
+            // loudly rather than hanging to `WALL_CAP`.
+            let park = |w: &mut Vec<u32>| {
+                w.extend(load_imm_words(9, mmio::CLOCK_MMIO_ADDR));
+                w.push(encode::enc_ldr_x_imm(11, 9, 0));
+                w.extend(load_imm_words(12, 20_000_000)); // 20ms
+                w.push(encode::enc_add_reg(11, 11, 12, true));
+                w.extend(load_imm_words(
+                    9,
+                    machine_layout::MACHINE_INFO_BASE + machine_info::OFF_NEXT_DEADLINE,
+                ));
+                w.push(encode::enc_str_x_imm(11, 9, 0));
+                w.extend(load_imm_words(9, mmio::PARK_MMIO_ADDR));
+                w.push(encode::enc_str_x_imm(11, 9, 0));
+            };
+
+            publish(&mut w, 1); // chain 0: the write
+            park(&mut w);
+            publish(&mut w, 2); // chain 3: the read-back
+            park(&mut w);
+
+            // --- checks -------------------------------------------------
+            // used[0..8]  = flags(0) | idx(2)<<16 | ring[0].id(0)<<32
+            // used[8..16] = ring[0].len(1) | ring[1].id(3)<<32
+            // used[16..24]= ring[1].len(513) | ring[2].id(0)<<32
+            w.extend(load_imm_words(9, used));
+            w.push(encode::enc_ldr_x_imm(19, 9, 0));
+            w.push(encode::enc_ldr_x_imm(20, 9, 8));
+            w.push(encode::enc_ldr_x_imm(21, 9, 16));
+            w.extend(load_imm_words(9, data_base + OFF_STATUS1));
+            w.push(encode::enc_ldrb_imm(22, 9, 0));
+            w.extend(load_imm_words(9, data_base + OFF_STATUS2));
+            w.push(encode::enc_ldrb_imm(23, 9, 0));
+            w.extend(load_imm_words(9, data_base + OFF_DST));
+            w.push(encode::enc_ldr_x_imm(24, 9, 0));
+            w.push(encode::enc_ldr_x_imm(25, 9, 504));
+            w.extend(load_imm_words(9, pending::core_word_addr(0)));
+            w.push(encode::enc_ldr_x_imm(26, 9, 0));
+
+            w.push(encode::enc_movz(1, 0, 0, true)); // x1 = fail accumulator
+            let check = |w: &mut Vec<u32>, actual: u8, expect: u64, bit: u8| {
+                w.extend(load_imm_words(13, expect));
+                w.push(encode::enc_cmp_reg(actual, 13, true));
+                w.push(encode::enc_cset(14, encode::Cond::Ne, true));
+                if bit > 0 {
+                    w.push(encode::enc_lsl_imm(14, 14, bit, true));
+                }
+                w.push(encode::enc_orr_reg(1, 1, 14, true));
+            };
+            check(&mut w, 19, 2u64 << 16, 0);
+            check(&mut w, 20, 1 | (3u64 << 32), 1);
+            check(&mut w, 21, 513, 2);
+            check(&mut w, 22, 0, 3);
+            check(&mut w, 23, 0, 4);
+            check(&mut w, 24, expect_first, 5);
+            check(&mut w, 25, expect_last, 6);
+            // Only the blk vector, never the deadline's own bit 0: a park
+            // that slept and woke on its deadline would leave bit 0 set
+            // too, so this pins that the completion itself suppressed the
+            // sleep (06 §4's "a wake between test and park cannot be
+            // lost", applied to completions).
+            check(&mut w, 26, 1u64 << BLK_VECTOR, 7);
+
+            w.extend(load_imm_words(15, mmio::EXIT_MMIO_ADDR));
+            w.push(encode::enc_str_x_imm(1, 15, 0));
+            w.push(encode::enc_brk(0));
+            w
+        }
+
+        let entry_len = build_entry(sp_top, 0, 0, 0).len();
+        let data_base = {
+            let after_code = machine_layout::IMAGE_BASE + (entry_len as u64) * 4;
+            after_code.div_ceil(16) * 16
+        };
+        let words = build_entry(sp_top, data_base, expect_first, expect_last);
+        assert_eq!(
+            words.len(),
+            entry_len,
+            "the entry sequence's own length must not depend on the real addresses"
+        );
+
+        let mut img: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        img.resize(
+            (data_base - machine_layout::IMAGE_BASE + DATA_REGION_SIZE) as usize,
+            0,
+        );
+        let data_off = (data_base - machine_layout::IMAGE_BASE) as usize;
+        let put = |img: &mut Vec<u8>, off: u64, bytes: &[u8]| {
+            let at = data_off + off as usize;
+            img[at..at + bytes.len()].copy_from_slice(bytes);
+        };
+        let desc = |img: &mut Vec<u8>, i: u64, addr: u64, len: u32, flags: u16, next: u16| {
+            let at = OFF_DESC + i * devices::DESC_SIZE;
+            put(img, at, &addr.to_le_bytes());
+            put(img, at + 8, &len.to_le_bytes());
+            put(img, at + 12, &flags.to_le_bytes());
+            put(img, at + 14, &next.to_le_bytes());
+        };
+
+        // Chain 0: write 512 bytes of SRC to sector 0.
+        put(&mut img, OFF_HDR1, &devices::T_OUT.to_le_bytes());
+        put(&mut img, OFF_HDR1 + 8, &0u64.to_le_bytes());
+        desc(
+            &mut img,
+            0,
+            data_base + OFF_HDR1,
+            16,
+            devices::DESC_F_NEXT,
+            1,
+        );
+        desc(
+            &mut img,
+            1,
+            data_base + OFF_SRC,
+            512,
+            devices::DESC_F_NEXT,
+            2,
+        );
+        desc(
+            &mut img,
+            2,
+            data_base + OFF_STATUS1,
+            1,
+            devices::DESC_F_WRITE,
+            0,
+        );
+        // Chain 3: read sector 0 back into DST.
+        put(&mut img, OFF_HDR2, &devices::T_IN.to_le_bytes());
+        put(&mut img, OFF_HDR2 + 8, &0u64.to_le_bytes());
+        desc(
+            &mut img,
+            3,
+            data_base + OFF_HDR2,
+            16,
+            devices::DESC_F_NEXT,
+            4,
+        );
+        desc(
+            &mut img,
+            4,
+            data_base + OFF_DST,
+            512,
+            devices::DESC_F_NEXT | devices::DESC_F_WRITE,
+            5,
+        );
+        desc(
+            &mut img,
+            5,
+            data_base + OFF_STATUS2,
+            1,
+            devices::DESC_F_WRITE,
+            0,
+        );
+        // A status byte that is never written would read as the 0 the
+        // whole image is padded with, which is also `STATUS_OK` — so
+        // pre-poison both, and the checks above only pass if the model
+        // genuinely wrote them.
+        put(&mut img, OFF_STATUS1, &[0xEE]);
+        put(&mut img, OFF_STATUS2, &[0xEE]);
+        put(&mut img, OFF_SRC, &payload);
+
+        let report_text = format!(
+            "Machine revision={}\n\
+             Input path=blk-conformance.wr digest=testdigest\n\
+             Section name=entry base={:#x} size={}\n\
+             Entry base={:#x}\n\
+             BlkDevice capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
+             BlkQueue index=0 size={QUEUE_SIZE} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n\
+             BlkPool name=BlockControl base={:#x} size={:#x}\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            machine_layout::IMAGE_BASE,
+            img.len(),
+            machine_layout::IMAGE_BASE,
+            devices::DEVICE_FEATURES,
+            data_base + OFF_DESC,
+            data_base + OFF_AVAIL,
+            data_base + OFF_USED,
+            data_base + OFF_DOORBELL,
+            data_base,
+            DATA_REGION_SIZE,
+        );
+        BlkImage {
+            img_bytes: img,
+            report_text,
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn write_blk_conformance_image(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let built = build_blk_conformance_image();
+        let tmp_dir =
+            std::env::temp_dir().join(format!("wrela-vmm-{tag}-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+        let img_path = tmp_dir.join(format!("{tag}.img"));
+        let report_path = tmp_dir.join(format!("{tag}.report.txt"));
+        std::fs::write(&img_path, &built.img_bytes).expect("write image");
+        std::fs::write(&report_path, &built.report_text).expect("write report");
+        (report_path, img_path)
+    }
+
+    /// The doorbell path end to end, over real HVF: a hand-assembled
+    /// driver publishes a `T_OUT` chain, rings the shared-memory doorbell
+    /// (an ordinary store — **no trap**, 06 §5), parks, and the VMM's own
+    /// park-path poll services the ring, writes the disk, publishes the
+    /// used entry and raises the completion vector *without ever
+    /// sleeping*; then the same guest reads the sector back through a
+    /// second chain and checks every byte of it.
+    ///
+    /// Eight independent checks fold into the exit code (bit N names which
+    /// one failed), so a regression says what broke rather than merely
+    /// that something did.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn blk_doorbell_write_then_read_completes_over_hvf() {
+        let (report_path, img_path) = write_blk_conformance_image("blk-doorbell");
+        let outcome = boot_image(&report_path, &img_path).expect("live boot");
+        let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
+        assert_eq!(
+            outcome.exit_code, 0,
+            "bit 0 = used header (flags/idx/id0), 1 = used[0].len + id1, 2 = used[1].len, \
+             3 = write status byte, 4 = read status byte, 5 = first payload word, \
+             6 = last payload word, 7 = pending word (only the blk vector, no deadline wake)"
+        );
+        // The two completions and their two vector raises, in order — and
+        // nothing else from the park path, since neither park slept.
+        let completions: Vec<_> = outcome
+            .choices
+            .iter()
+            .filter(|c| matches!(c, record::ChoiceEntry::DeviceCompletion { .. }))
+            .collect();
+        assert_eq!(completions.len(), 2, "{:?}", outcome.choices);
+        assert!(
+            !outcome
+                .choices
+                .iter()
+                .any(|c| matches!(c, record::ChoiceEntry::DeadlineWake { .. })),
+            "a completion serviced on the park path must suppress the sleep entirely: {:?}",
+            outcome.choices
+        );
+        match &completions[0] {
+            record::ChoiceEntry::DeviceCompletion {
+                device,
+                queue,
+                head,
+                status,
+                len,
+                digest,
+            } => {
+                assert_eq!((device.as_str(), *queue, *head), ("blk", 0, 0));
+                assert_eq!((*status, *len), (0, 1)); // a write writes only the status byte
+                assert!(!digest.is_empty());
+            }
+            other => panic!("expected a device completion, got {other:?}"),
+        }
+        match &completions[1] {
+            record::ChoiceEntry::DeviceCompletion {
+                head, status, len, ..
+            } => assert_eq!((*head, *status, *len), (3, 0, 513)),
+            other => panic!("expected a device completion, got {other:?}"),
+        }
+    }
+
+    /// plans/M7.md decision 7 + 06 §8: device completions join the
+    /// recorded choice sequence, and a replay reproduces the boot exactly.
+    /// Record -> replay clean -> tamper each field of a completion ->
+    /// named divergence, all over the identical real blk boot above.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn blk_completions_record_and_replay_and_every_tamper_diverges() {
+        let (report_path, img_path) = write_blk_conformance_image("blk-replay");
+
+        let recorded = record::record(&report_path, &img_path).expect("live boot");
+        assert_eq!(recorded.exit_code, 0);
+        let completion_indices: Vec<usize> = recorded
+            .choices
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| matches!(c, record::ChoiceEntry::DeviceCompletion { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(completion_indices.len(), 2);
+        // The record file's own text round-trips with the new tag in it.
+        let text = recorded.to_text();
+        assert!(text.contains("DeviceCompletion device=blk queue=0 head=0 status=0 len=1 digest="));
+        assert_eq!(
+            record::RecordFile::parse(&text).expect("parses"),
+            recorded,
+            "the completion tag must survive the record file's own text format"
+        );
+
+        // --- replay with the real recording: no divergence --------------
+        let divergences = record::replay(&report_path, &img_path, &recorded).expect("replay boot");
+        assert!(
+            divergences.is_empty(),
+            "expected a clean replay, got {divergences:?}"
+        );
+
+        // --- tamper each field of the first completion ------------------
+        let idx = completion_indices[0];
+        let record::ChoiceEntry::DeviceCompletion {
+            device,
+            queue,
+            head,
+            status,
+            len,
+            digest,
+        } = recorded.choices[idx].clone()
+        else {
+            unreachable!("filtered above")
+        };
+        let tampered = [
+            record::ChoiceEntry::DeviceCompletion {
+                device: "net".to_string(),
+                queue,
+                head,
+                status,
+                len,
+                digest: digest.clone(),
+            },
+            record::ChoiceEntry::DeviceCompletion {
+                device: device.clone(),
+                queue,
+                head: head + 1,
+                status,
+                len,
+                digest: digest.clone(),
+            },
+            record::ChoiceEntry::DeviceCompletion {
+                device: device.clone(),
+                queue,
+                head,
+                status: 1,
+                len,
+                digest: digest.clone(),
+            },
+            record::ChoiceEntry::DeviceCompletion {
+                device: device.clone(),
+                queue,
+                head,
+                status,
+                len: len + 8,
+                digest: digest.clone(),
+            },
+            record::ChoiceEntry::DeviceCompletion {
+                device,
+                queue,
+                head,
+                status,
+                len,
+                digest: "0000000000000000".to_string(),
+            },
+        ];
+        for entry in tampered {
+            let mut bad = recorded.clone();
+            bad.choices[idx] = entry.clone();
+            let divergences = record::replay(&report_path, &img_path, &bad).expect("replay boot");
+            assert!(
+                divergences.iter().any(|d| matches!(
+                    d,
+                    record::Divergence::DeviceCompletionMismatch { index, .. } if *index == idx
+                )),
+                "tampering `{}` must be caught by name, got {divergences:?}",
+                entry.to_text_fields()
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
+    }
+
+    /// A malformed ring is a *diagnosable VMM-side error*, over a real
+    /// boot — not a panic, not an out-of-bounds read, and not a silently
+    /// skipped operation (03 §4). The identical conformance image, with
+    /// one descriptor's `addr` repointed at the machine-info page, which
+    /// no declared pool covers (plans/M7.md decision 5).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_descriptor_outside_every_declared_pool_fails_the_boot_closed_over_hvf() {
+        use wrela_machine::layout as machine_layout;
+        let built = build_blk_conformance_image();
+        // Find descriptor 1's own `addr` word (chain 0's data descriptor)
+        // by re-deriving the data region's base from the report itself —
+        // no second copy of the layout constants.
+        let data_base = built
+            .report_text
+            .lines()
+            .find_map(|l| l.strip_prefix("BlkPool name=BlockControl base="))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+            .expect("the report declares the pool this image uses");
+        let mut img = built.img_bytes.clone();
+        let desc1 = (data_base - machine_layout::IMAGE_BASE) as usize + devices::DESC_SIZE as usize; // descriptor index 1
+        img[desc1..desc1 + 8].copy_from_slice(&machine_layout::DRAM_BASE.to_le_bytes());
+
+        let tmp_dir =
+            std::env::temp_dir().join(format!("wrela-vmm-blk-oob-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+        let img_path = tmp_dir.join("blk-oob.img");
+        let report_path = tmp_dir.join("blk-oob.report.txt");
+        std::fs::write(&img_path, &img).expect("write image");
+        std::fs::write(&report_path, &built.report_text).expect("write report");
+        let err = boot_image(&report_path, &img_path)
+            .expect_err("a descriptor outside every declared pool must fail the boot closed");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("virtio-blk") && msg.contains("not device-reachable"),
+            "the diagnostic must name the device and the rule it broke: {msg}"
+        );
+    }
+
+    // --- report parsing for the declared device ---------------------------
+
+    #[test]
+    fn parse_report_accepts_a_declared_blk_device() {
+        let text = format!(
+            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x40500000\n\
+             BlkDevice capacity_sectors=2048 features=0x100000200 vector=1\n\
+             BlkQueue index=0 size=128 desc=0x40600000 avail=0x40601000 used=0x40602000 doorbell=0x40603000\n\
+             BlkPool name=BlockControl base=0x40600000 size=0x10000\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        let parsed = parse_report(&text).expect("parses");
+        let blk = parsed.blk.expect("a declared device");
+        assert_eq!(blk.capacity_sectors, 2048);
+        assert_eq!(blk.features, devices::DEVICE_FEATURES);
+        assert_eq!(blk.vector, Some(1));
+        assert_eq!(blk.queue.size, 128);
+        assert_eq!(blk.queue.desc, 0x4060_0000);
+        assert_eq!(blk.pools.len(), 1);
+        assert_eq!(blk.pools[0].name, "BlockControl");
+    }
+
+    /// Every half-declared, misspelled, or contradictory device
+    /// declaration fails the whole report closed — a device this VMM only
+    /// half-understands is exactly the configuration it must never boot.
+    #[test]
+    fn parse_report_rejects_every_malformed_blk_declaration() {
+        let head = format!(
+            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x0\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        let device = "BlkDevice capacity_sectors=16 features=0x100000200\n";
+        let queue = "BlkQueue index=0 size=8 desc=0x40600000 avail=0x40600100 used=0x40600200 doorbell=0x40600300\n";
+        let pool = "BlkPool name=P base=0x40600000 size=0x1000\n";
+        for (why, extra) in [
+            ("a device with no queue", format!("{device}{pool}")),
+            ("a queue with no device", format!("{queue}{pool}")),
+            ("a device with no pool", format!("{device}{queue}")),
+            ("a pool with no device", pool.to_string()),
+            ("two devices", format!("{device}{device}{queue}{pool}")),
+            ("two queues", format!("{device}{queue}{queue}{pool}")),
+            (
+                "a second queue index",
+                format!(
+                    "{device}BlkQueue index=1 size=8 desc=0x40600000 avail=0x40600100 used=0x40600200 doorbell=0x40600300\n{pool}"
+                ),
+            ),
+            (
+                "an unknown field",
+                format!("BlkDevice capacity_sectors=16 features=0x1 mystery=3\n{queue}{pool}"),
+            ),
+            (
+                "a repeated field",
+                format!(
+                    "BlkDevice capacity_sectors=16 capacity_sectors=32 features=0x1\n{queue}{pool}"
+                ),
+            ),
+            (
+                "a missing required field",
+                format!("BlkDevice capacity_sectors=16\n{queue}{pool}"),
+            ),
+            (
+                "a field with no `=`",
+                format!("BlkDevice capacity_sectors 16 features=0x1\n{queue}{pool}"),
+            ),
+            (
+                "an unparseable number",
+                format!("BlkDevice capacity_sectors=lots features=0x1\n{queue}{pool}"),
+            ),
+            (
+                "a queue depth wider than 16 bits",
+                format!(
+                    "{device}BlkQueue index=0 size=70000 desc=0x40600000 avail=0x40600100 used=0x40600200 doorbell=0x40600300\n{pool}"
+                ),
+            ),
+        ] {
+            let text = format!("{head}{extra}");
+            assert!(
+                matches!(parse_report(&text), Err(VmmError::MalformedReport(_))),
+                "{why} must be refused"
+            );
+        }
+    }
+
+    /// A report with no `Blk*` lines at all constructs no device model —
+    /// the state every image built today is in, and the reason this item
+    /// moves no existing golden.
+    #[test]
+    fn parse_report_without_blk_lines_declares_no_device() {
+        let text = format!(
+            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x0\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        assert!(parse_report(&text).expect("parses").blk.is_none());
     }
 }

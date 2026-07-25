@@ -81,6 +81,28 @@ pub enum ChoiceEntry {
     /// so a later milestone's real cross-core admission choices need no
     /// format migration.
     Admission { mailbox: String, sender: String },
+    /// One device completion (plans/M7.md decision 7: "device completions
+    /// join the choice sequence"; 06 §8: the VMM "logs every device
+    /// completion and DMA-written byte range ... and digests of every
+    /// output"). `head` is the operation's own identity — the descriptor
+    /// chain head, which is also the `id` the used ring reports — `status`
+    /// and `len` are the completion the guest observes, and `digest`
+    /// fingerprints every byte the operation wrote (guest memory first,
+    /// then the disk: `devices::Completion::digest`'s own rule).
+    ///
+    /// Under replay the used-ring entry is written from *this* record
+    /// rather than from the model's own fresh answer, and a model that
+    /// disagrees is reported as `Divergence::DeviceCompletionMismatch` —
+    /// never silently applied (`crate::service_blk`'s own doc has the
+    /// whole shape).
+    DeviceCompletion {
+        device: String,
+        queue: u32,
+        head: u32,
+        status: u32,
+        len: u32,
+        digest: String,
+    },
 }
 
 impl ChoiceEntry {
@@ -90,11 +112,15 @@ impl ChoiceEntry {
             ChoiceEntry::DeadlineWake { .. } => "DeadlineWake",
             ChoiceEntry::VectorRaise { .. } => "VectorRaise",
             ChoiceEntry::Admission { .. } => "Admission",
+            ChoiceEntry::DeviceCompletion { .. } => "DeviceCompletion",
         }
     }
 
     /// One `choice[i]=` line's own right-hand side: `<Tag> key=value ...`.
-    fn to_text_fields(&self) -> String {
+    /// Public because `Divergence::DeviceCompletionMismatch` reports two
+    /// whole entries by name, and this is already the one canonical way
+    /// this format spells one.
+    pub fn to_text_fields(&self) -> String {
         match self {
             ChoiceEntry::ClockRead { value } => format!("ClockRead value={value}"),
             ChoiceEntry::DeadlineWake { deadline_ns } => {
@@ -104,6 +130,16 @@ impl ChoiceEntry {
             ChoiceEntry::Admission { mailbox, sender } => {
                 format!("Admission mailbox={mailbox} sender={sender}")
             }
+            ChoiceEntry::DeviceCompletion {
+                device,
+                queue,
+                head,
+                status,
+                len,
+                digest,
+            } => format!(
+                "DeviceCompletion device={device} queue={queue} head={head} status={status} len={len} digest={digest}"
+            ),
         }
     }
 
@@ -145,6 +181,21 @@ impl ChoiceEntry {
                 mailbox: field("mailbox")?.to_string(),
                 sender: field("sender")?.to_string(),
             }),
+            "DeviceCompletion" => {
+                let num = |k: &str| -> Result<u32, String> {
+                    field(k)?
+                        .parse::<u32>()
+                        .map_err(|e| format!("bad DeviceCompletion {k}: {e}"))
+                };
+                Ok(ChoiceEntry::DeviceCompletion {
+                    device: field("device")?.to_string(),
+                    queue: num("queue")?,
+                    head: num("head")?,
+                    status: num("status")?,
+                    len: num("len")?,
+                    digest: field("digest")?.to_string(),
+                })
+            }
             other => Err(format!("unknown choice tag `{other}`")),
         }
     }
@@ -158,8 +209,28 @@ impl ChoiceEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChoiceRequest {
     ClockRead,
-    DeadlineWake { deadline_ns: u64 },
-    VectorRaise { vector: u64 },
+    DeadlineWake {
+        deadline_ns: u64,
+    },
+    VectorRaise {
+        vector: u64,
+    },
+    /// plans/M7.md decision 7. Unlike every other request shape, this one
+    /// carries the *whole* answer the device model already computed: a
+    /// completion is not a value the VMM invents at choice time (the model
+    /// derives it deterministically from the guest's own ring and the
+    /// disk), it is a value whose *timing and ordering* are the machine's
+    /// nondeterminism. Carrying it here makes the fallback exactly "what
+    /// the model said" and lets `crate::service_blk` compare the model's
+    /// answer against the log's, entry for entry.
+    DeviceCompletion {
+        device: String,
+        queue: u32,
+        head: u32,
+        status: u32,
+        len: u32,
+        digest: String,
+    },
 }
 
 impl ChoiceRequest {
@@ -168,6 +239,7 @@ impl ChoiceRequest {
             ChoiceRequest::ClockRead => "ClockRead",
             ChoiceRequest::DeadlineWake { .. } => "DeadlineWake",
             ChoiceRequest::VectorRaise { .. } => "VectorRaise",
+            ChoiceRequest::DeviceCompletion { .. } => "DeviceCompletion",
         }
     }
 
@@ -177,13 +249,28 @@ impl ChoiceRequest {
     /// precedent): a divergence is diagnosed via `Chooser`'s own
     /// accumulated list, never by silently corrupting an otherwise
     /// perfectly good post-mortem transcript.
-    fn fallback(&self) -> ChoiceEntry {
+    pub fn fallback(&self) -> ChoiceEntry {
         match self {
             ChoiceRequest::ClockRead => ChoiceEntry::ClockRead { value: 0 },
             ChoiceRequest::DeadlineWake { deadline_ns } => ChoiceEntry::DeadlineWake {
                 deadline_ns: *deadline_ns,
             },
             ChoiceRequest::VectorRaise { vector } => ChoiceEntry::VectorRaise { vector: *vector },
+            ChoiceRequest::DeviceCompletion {
+                device,
+                queue,
+                head,
+                status,
+                len,
+                digest,
+            } => ChoiceEntry::DeviceCompletion {
+                device: device.clone(),
+                queue: *queue,
+                head: *head,
+                status: *status,
+                len: *len,
+                digest: digest.clone(),
+            },
         }
     }
 }
@@ -219,6 +306,18 @@ pub enum Divergence {
     TranscriptDigestMismatch { expected: String, actual: String },
     /// The guest's own reported exit code differs.
     ExitCodeMismatch { expected: u64, actual: u64 },
+    /// plans/M7.md decision 7: the tag matched (a device completion was
+    /// expected and one happened) but the device model's own freshly
+    /// computed completion disagrees with the recorded one — a different
+    /// status, length, head, or a different set of DMA-written bytes. The
+    /// *recorded* completion is what gets published in the used ring, so
+    /// the replayed guest still sees the recording; this names the fact
+    /// that the model would have said something else.
+    DeviceCompletionMismatch {
+        index: usize,
+        recorded: String,
+        actual: String,
+    },
 }
 
 impl std::fmt::Display for Divergence {
@@ -247,6 +346,14 @@ impl std::fmt::Display for Divergence {
             Divergence::ExitCodeMismatch { expected, actual } => write!(
                 f,
                 "exit code mismatch: recorded {expected}, replay produced {actual}"
+            ),
+            Divergence::DeviceCompletionMismatch {
+                index,
+                recorded,
+                actual,
+            } => write!(
+                f,
+                "choice #{index} device completion mismatch: recorded `{recorded}`, the device model produced `{actual}`"
             ),
         }
     }
@@ -349,6 +456,28 @@ impl Chooser {
                 entry
             }
         }
+    }
+
+    /// Records a divergence found *outside* the choice mechanism itself.
+    ///
+    /// `choose_next` above can only ever check a choice's own **tag** — by
+    /// design, since a clock read's replayed value is *supposed* to differ
+    /// from whatever the host clock would say now. A device completion is
+    /// the one choice whose value the machine can independently recompute
+    /// (plans/M7.md decision 7: the model derives it deterministically
+    /// from the guest's ring and the VMM's own disk), so `service_blk`
+    /// compares the two and reports a disagreement here rather than
+    /// silently taking one of them. Nothing else calls this: a divergence
+    /// nobody can recompute has no business being invented.
+    pub fn note_divergence(&mut self, divergence: Divergence) {
+        self.divergences.push(divergence);
+    }
+
+    /// How many choices this chooser has resolved so far — the index the
+    /// next one will occupy, used by `note_divergence`'s own callers to
+    /// name *which* choice disagreed.
+    pub fn resolved_count(&self) -> usize {
+        self.log.len()
     }
 
     /// Finalizes this chooser: in replay mode, any recorded choices never
@@ -622,6 +751,11 @@ mod tests {
     /// small and stable enough to pin as a plain Rust string literal,
     /// exactly like M5's own record.rs already did for the clock-only
     /// shape.
+    ///
+    /// Grown at plans/M7.md item F with `DeviceCompletion` — the one tag
+    /// M7 adds (decision 7), and the first one this VMM genuinely emits
+    /// from a device model rather than from the exit loop's own clock/park
+    /// handling.
     #[test]
     fn choice_log_format_is_pinned_including_the_unused_admission_tag() {
         let rec = RecordFile {
@@ -635,17 +769,26 @@ mod tests {
                     mailbox: "Store".to_string(),
                     sender: "root".to_string(),
                 },
+                ChoiceEntry::DeviceCompletion {
+                    device: "blk".to_string(),
+                    queue: 0,
+                    head: 3,
+                    status: 0,
+                    len: 513,
+                    digest: "fedcba9876543210".to_string(),
+                },
             ],
             transcript_digest: "0123456789abcdef".to_string(),
             exit_code: 0,
             exits: 3,
         };
         let expected = "ChoiceLog v1\n\
-             choice_count=4\n\
+             choice_count=5\n\
              choice[0]=ClockRead value=12345\n\
              choice[1]=DeadlineWake deadline_ns=500000\n\
              choice[2]=VectorRaise vector=0\n\
              choice[3]=Admission mailbox=Store sender=root\n\
+             choice[4]=DeviceCompletion device=blk queue=0 head=3 status=0 len=513 digest=fedcba9876543210\n\
              transcript_digest=0123456789abcdef\n\
              exit_code=0\n\
              exits=3\n";
