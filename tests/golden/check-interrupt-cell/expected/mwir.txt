@@ -1,21 +1,23 @@
 Program
-  Fn key=BlkDriver.drain ret=unit temps=6 receiver=t0:mut
+  Fn key=BlkDriver.drain ret=unit temps=7 receiver=t0:mut
     Temp t0 ty=BlkDriver
     Temp t1 ty=u32
     Temp t2 ty=u32
     Temp t3 ty=u32
     Temp t4 ty=u32
     Temp t5 ty=bool
+    Temp t6 ty=unit
     Body
       0000: ConstInt dst=t1 ty=u32 value=0
       0001: InterruptCellSwapAcquire dst=t2 field_off=16 width=4 value=t1
       0002: Copy dst=t3 src=t2
       0003: ConstInt dst=t4 ty=u32 value=0
-      0004: Compare op=== ty=u32 dst=t5 lhs=t3 rhs=t4
-      0005: JumpIfFalse cond=t5 target=0007
-      0006: Jump target=0008
-      0007: AssertFail message="empty"
-      0008: Return
+      0004: Compare op=!= ty=u32 dst=t5 lhs=t3 rhs=t4
+      0005: JumpIfFalse cond=t5 target=0009
+      0006: Wake driver=BlkDriver
+      0007: ConstUnit dst=t6
+      0008: Jump target=0009
+      0009: Return
   Fn key=BlkDriver.init ret=unit temps=11 receiver=t0:mut params=[t1]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]
@@ -43,7 +45,7 @@ Program
       0011: ConstUnit dst=t10
       0012: SetField base=t0 index=1 value=t8
       0013: Return
-  Fn key=BlkDriver.on_queue_irq ret=unit temps=12 receiver=t0:read
+  Fn key=BlkDriver.on_queue_irq ret=unit temps=13 receiver=t0:read
     Temp t0 ty=BlkDriver
     Temp t1 ty=Mmio[VirtioIrqMmio]
     Temp t2 ty=u32
@@ -56,6 +58,7 @@ Program
     Temp t9 ty=u32
     Temp t10 ty=Mmio[VirtioIrqMmio]
     Temp t11 ty=unit
+    Temp t12 ty=unit
     Body
       0000: Project dst=t1 base=t0 index=0
       0001: MmioRead dst=t2 base=t1 offset=0x60 ty=u32
@@ -65,10 +68,12 @@ Program
       0005: Copy dst=t6 src=t5
       0006: ConstInt dst=t7 ty=u32 value=0
       0007: Compare op=!= ty=u32 dst=t8 lhs=t6 rhs=t7
-      0008: JumpIfFalse cond=t8 target=0014
+      0008: JumpIfFalse cond=t8 target=0016
       0009: InterruptCellFetchOrRelease dst=t9 field_off=16 width=4 value=t6
       0010: Project dst=t10 base=t0 index=0
       0011: MmioWrite base=t10 offset=0x64 ty=u32 value=t6
       0012: ConstUnit dst=t11
-      0013: Jump target=0014
-      0014: Return
+      0013: Wake driver=BlkDriver
+      0014: ConstUnit dst=t12
+      0015: Jump target=0016
+      0016: Return

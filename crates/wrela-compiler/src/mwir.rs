@@ -582,6 +582,15 @@ pub enum Inst {
         width: u8,
         value: Temp,
     },
+    /// plans/M7.md item G: `wake(Driver.task)` — sticky store of 1 into
+    /// that driver's wake-pending word in `rtdata`. Layout patches the
+    /// address. Mask–arm–recheck: the bit is level-triggered; a wake
+    /// before/during/after the bottom half's own cell observation is
+    /// never lost (the scheduler rechecks the word before deciding the
+    /// driver is idle — HVF commit of this item).
+    Wake {
+        driver: String,
+    },
 
     /// Unconditional abandonment: `assert`'s own failure path, an
     /// explicit `panic(msg)`, and match's own defensive "no arm matched"
@@ -1152,6 +1161,7 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         } => format!(
             "InterruptCellFetchOrRelease dst={dst} field_off={field_off} width={width} value={value}"
         ),
+        Inst::Wake { driver } => format!("Wake driver={driver}"),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
         }

@@ -156,6 +156,10 @@ pub struct DeclReceiver {
 pub struct DeclFn {
     pub name: String,
     pub is_async: bool,
+    /// plans/M7.md item G: `@task(...)` on a `@driver` method — 03 §6's
+    /// bottom half. Not a top-level marker (`@test`/`@image`); only
+    /// meaningful on a driver member.
+    pub is_task: bool,
     pub generics: Vec<DeclGenericParam>,
     pub receiver: Option<DeclReceiver>,
     pub params: Vec<DeclParam>,
@@ -2805,9 +2809,11 @@ fn declare_fn(
         });
     }
     let ret = resolve_ret(&f.ret, shapes, module_pools, local_pools, &scope)?;
+    let is_task = f.attrs.iter().any(|a| a.name == "task");
     Ok(DeclFn {
         name: f.name.clone(),
         is_async: f.is_async,
+        is_task,
         generics: decl_generics,
         receiver,
         params,
@@ -2845,6 +2851,7 @@ fn declare_init(
     Ok(DeclFn {
         name: "init".to_string(),
         is_async: false,
+        is_task: false,
         generics: Vec::new(),
         receiver: Some(DeclReceiver {
             mode: i.receiver.mode,

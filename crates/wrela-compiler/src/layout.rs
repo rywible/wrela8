@@ -799,6 +799,63 @@ fn patch_load_imm_words(words: &mut [u32], word: usize, value: u64) {
     words[word + 3] = encode::enc_movk(rd, ((value >> 48) & 0xFFFF) as u16, 48, true);
 }
 
+/// Does `@driver` `name` declare any `@task` method? Walks the raw
+/// modules (attrs live on the AST; `LayoutCtx` has types only).
+fn driver_declares_task(modules: &BTreeMap<String, Module>, name: &str) -> bool {
+    for m in modules.values() {
+        for item in &m.items {
+            let crate::syntax::ast::Item::Struct(s) = item else {
+                continue;
+            };
+            if s.name != name {
+                continue;
+            }
+            if !s.attrs.iter().any(|a| a.name == "driver") {
+                continue;
+            }
+            for mem in &s.members {
+                if let crate::syntax::ast::Member::Fn(f) = mem {
+                    if f.attrs.iter().any(|a| a.name == "task") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// plans/M7.md item G: absolute address of `@driver` `driver`'s sticky
+/// wake-pending word (trailing word of its state). `placement.drivers`
+/// already holds absolute addresses (`place_runtime_tables` starts its
+/// cursor at `rtdata_base`).
+fn driver_wake_pending_addr(
+    placement: &RuntimePlacement,
+    tables: &RuntimeTables,
+    driver: &str,
+) -> Result<u64, LayoutError> {
+    for (i, d) in tables.drivers.iter().enumerate() {
+        if d.name != driver {
+            continue;
+        }
+        let Some(off) = d.wake_pending_off else {
+            return Err(LayoutError::new(format!(
+                "internal error: `Wake` for `{driver}` but that driver has no `@task` \
+                 (no wake-pending word was reserved)"
+            )));
+        };
+        let Some(&state_base) = placement.drivers.get(i) else {
+            return Err(LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` has no placed state"
+            )));
+        };
+        return Ok(state_base + off);
+    }
+    Err(LayoutError::new(format!(
+        "internal error: `Wake` names `{driver}`, which this image never declared as a `@driver`"
+    )))
+}
+
 /// plans/M7.md item G, decision 12: the vector bit index an `IrqCap` for
 /// `@driver` `driver` materializes. Read from the sealed graph's
 /// `vector=` on that driver's bound device — the same fact
@@ -1756,6 +1813,18 @@ pub fn layout_program(
                     let vector = driver_irq_vector(boot.as_ref().map(|b| b.graph), driver)?;
                     patch_load_imm_words(&mut all_code_words, base + word, vector);
                 }
+                Reloc::WakePending { word, driver } => {
+                    let (p, t) = match (placement.as_ref(), runtime_live) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(format!(
+                                "internal error: `Wake` for `{driver}` needs rtdata placement"
+                            )));
+                        }
+                    };
+                    let addr = driver_wake_pending_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -1800,11 +1869,12 @@ pub fn layout_program(
                 | Reloc::CheckpointService { .. }
                 | Reloc::TurnFrameAddr { .. }
                 | Reloc::GroupArenaBase { .. }
-                | Reloc::IrqVector { .. } => {
+                | Reloc::IrqVector { .. }
+                | Reloc::WakePending { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit a Rodata/\
                          AbortFixed/AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase/\
-                         IrqVector reloc",
+                         IrqVector/WakePending reloc",
                     ));
                 }
             }
@@ -2125,8 +2195,14 @@ pub struct ActorRuntimeLayout {
 pub struct DriverRuntimeLayout {
     pub name: String,
     /// This driver struct's own field storage (`mwir::size_of`) — where
-    /// the instance lives, exactly like an actor's `state_size`.
+    /// the instance lives, exactly like an actor's `state_size`. When the
+    /// driver declares a `@task`, this also includes one trailing word for
+    /// the sticky wake-pending bit (plans/M7.md item G).
     pub state_size: u64,
+    /// Byte offset of the wake-pending word within `state_size`, when the
+    /// driver has a `@task`. Layout patches `Reloc::WakePending` against
+    /// `driver_state_base + wake_pending_off`.
+    pub wake_pending_off: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -3103,13 +3179,26 @@ pub fn compute_runtime_tables(
     // bytes, sized by the identical `mwir::size_of` an actor's are — which
     // is only answerable at all since this item taught it that a
     // capability is one word.
+    // plans/M7.md item G: a `@task` adds one trailing wake-pending word
+    // (sticky bit; mask–arm–recheck for the ISR→bottom-half edge).
     let mut drivers = Vec::with_capacity(graph.drivers.len());
     for decl in &graph.drivers {
         let name = crate::sema::types::render_type(&decl.actor_type);
-        let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
+        let mut state_size = mwir::size_of(&decl.actor_type, layout_ctx)
             .map_err(|e| format!("driver `{name}`'s own state: {e}"))?
             as u64;
-        drivers.push(DriverRuntimeLayout { name, state_size });
+        let wake_pending_off = if driver_declares_task(modules, &name) {
+            let off = state_size;
+            state_size += 8;
+            Some(off)
+        } else {
+            None
+        };
+        drivers.push(DriverRuntimeLayout {
+            name,
+            state_size,
+            wake_pending_off,
+        });
     }
 
     let free_turns: Vec<(String, u64)> = async_frames
@@ -6296,10 +6385,12 @@ pub fn layout_test_image(
             | Reloc::AbortVal { .. }
             | Reloc::CheckpointService { .. }
             | Reloc::GroupArenaBase { .. }
-            | Reloc::IrqVector { .. } => {
+            | Reloc::IrqVector { .. }
+            | Reloc::WakePending { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit an \
-                     AbortFixed/AbortVal/CheckpointService/GroupArenaBase/IrqVector reloc",
+                     AbortFixed/AbortVal/CheckpointService/GroupArenaBase/IrqVector/\
+                     WakePending reloc",
                 ));
             }
         }
@@ -6383,6 +6474,18 @@ pub fn layout_test_image(
                 Reloc::IrqVector { word, driver } => {
                     let vector = driver_irq_vector(boot.as_ref().map(|b| b.graph), driver)?;
                     patch_load_imm_words(&mut code_words, base + word, vector);
+                }
+                Reloc::WakePending { word, driver } => {
+                    let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(format!(
+                                "internal error: `Wake` for `{driver}` needs rtdata placement"
+                            )));
+                        }
+                    };
+                    let addr = driver_wake_pending_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
                 }
             }
         }

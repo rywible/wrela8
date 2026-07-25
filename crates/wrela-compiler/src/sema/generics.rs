@@ -510,6 +510,7 @@ fn subst_decl_fn_member(f: &DeclFn, subst: &Subst) -> DeclFn {
     DeclFn {
         name: f.name.clone(),
         is_async: f.is_async,
+        is_task: f.is_task,
         generics: f.generics.clone(),
         receiver: f.receiver.clone(),
         params: f
@@ -531,6 +532,7 @@ fn subst_decl_fn_direct(f: &DeclFn, subst: &Subst) -> DeclFn {
     DeclFn {
         name: f.name.clone(),
         is_async: f.is_async,
+        is_task: f.is_task,
         generics: Vec::new(),
         receiver: f.receiver.clone(),
         params: f

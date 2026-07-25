@@ -2689,6 +2689,7 @@ mod tests {
                     ret: Type::Unit,
                     body: vec![],
                     is_async: false,
+                    is_task: false,
                 }),
                 ..TypedStruct::default()
             },

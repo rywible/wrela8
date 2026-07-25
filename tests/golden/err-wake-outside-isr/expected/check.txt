@@ -1,0 +1,1 @@
+error[type]: `wake` in `BlkDriver.init` is outside an ISR and outside a `@task` — 03-hardware.md §6: `wake` is an ISR effect (and a bottom half may re-wake itself); ordinary code cannot

@@ -70,6 +70,10 @@ const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
 /// like `Actor[T]`, not a capability).
 const INTERRUPT_CELL: &[&str] = &["InterruptCell"];
 
+/// plans/M7.md item G: `wake(...)` — 03 §6's bottom-half wake. Bare
+/// call name, always in scope (no import).
+const WAKE: &[&str] = &["wake"];
+
 /// Is `name` one of the fixed prelude names above?
 ///
 /// The one entry with no array of its own here: 03-hardware.md §1's four
@@ -90,6 +94,7 @@ pub fn is_builtin(name: &str) -> bool {
         || ACTOR_SURFACE.contains(&name)
         || MMIO_WRAPPERS.contains(&name)
         || INTERRUPT_CELL.contains(&name)
+        || WAKE.contains(&name)
         || crate::eval::image_checks::is_sealed_authority_type_name(name)
 }
 

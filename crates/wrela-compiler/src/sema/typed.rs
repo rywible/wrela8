@@ -501,6 +501,8 @@ pub struct TypedFn {
     /// own tree, whose existing `Fn`/`Method` line text must not move for
     /// any already-checked async fn, e.g. golden `check-decls`'s `fetch`).
     pub is_async: bool,
+    /// plans/M7.md item G: `@task` bottom half (03-hardware.md §6).
+    pub is_task: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

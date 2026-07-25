@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_interrupt_cell.wr sha256=76b603647e0e4bd2e65a90cd24d1d3a692b7899d7191f8738f3f08c52275a536
+  Input path=examples/check_interrupt_cell.wr sha256=5b32937b1008e0520a40d581f6e749e798a194bb333b5f02c7c8019309f00113
   Name value=check-interrupt-cell
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -23,14 +23,13 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=4194304
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=692
-  Section name=rodata base=0x40500308 size=23
-  Section name=abort base=0x40500320 size=120
-  Section name=checkpoint base=0x40500398 size=104
-  Section name=rtcode base=0x40500400 size=140
-  Section name=rtdata base=0x40500490 size=40
-  Section name=devregs base=0x405004b8 size=104
+  Section name=code base=0x40500050 size=776
+  Section name=abort base=0x40500358 size=120
+  Section name=checkpoint base=0x405003d0 size=104
+  Section name=rtcode base=0x40500438 size=160
+  Section name=rtdata base=0x405004d8 size=48
+  Section name=devregs base=0x40500508 size=104
   Entry base=0x40500000
-  Driver name=BlkDriver state=24
-  Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=40
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405004b8 size=104
+  Driver name=BlkDriver state=32
+  Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500508 size=104

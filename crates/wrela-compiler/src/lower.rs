@@ -1916,6 +1916,40 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         } if crate::sema::bodies::is_interrupt_cell_intrinsic(key) => {
             lower_interrupt_cell_intrinsic(key, receiver.as_deref(), args, &expr.ty, b, env)
         }
+        // plans/M7.md item G: `wake(Driver.task)` — sticky wake-pending bit.
+        TypedExprKind::Intrinsic { key, args, .. }
+            if crate::sema::bodies::is_wake_intrinsic(key) =>
+        {
+            let Some((_, task)) = args.iter().find(|(l, _)| l == "task") else {
+                return Err(LowerError::internal(
+                    "`wake` with no task argument".to_string(),
+                ));
+            };
+            let TypedExprKind::FnRef(callee) = &task.kind else {
+                return Err(LowerError::internal(
+                    "`wake` task is not a FnRef".to_string(),
+                ));
+            };
+            let driver = match callee {
+                crate::sema::typed::CalleeKey::Method(s, _) => s.clone(),
+                crate::sema::typed::CalleeKey::MethodInstance(ikey, _) => ikey
+                    .strip_prefix("struct:")
+                    .unwrap_or(ikey.as_str())
+                    .split('[')
+                    .next()
+                    .unwrap_or(ikey.as_str())
+                    .to_string(),
+                _ => {
+                    return Err(LowerError::internal(
+                        "`wake` task is not a driver method".to_string(),
+                    ));
+                }
+            };
+            b.emit(Inst::Wake { driver });
+            let dst = b.fresh(Type::Unit);
+            b.emit(Inst::ConstUnit { dst });
+            Ok(dst)
+        }
         // plans/M7.md item H1: a typed MMIO access, emitted at last. The
         // base is the `Mmio[L]` receiver's own word; the offset and the
         // width both come from the declaration, looked up in the same

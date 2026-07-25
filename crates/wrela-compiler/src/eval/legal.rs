@@ -1334,6 +1334,527 @@ pub fn check_isr_effects(program: &TypedProgram) -> Result<(), SemaError> {
     Ok(())
 }
 
+/// plans/M7.md item G: every `wake(...)` must sit in an ISR's transitive
+/// closure or in a `@task` body. A wake from ordinary code has no
+/// delivery contract (03 §6's mask–arm–recheck is for the ISR→bottom-half
+/// edge and the bottom half's own re-wake).
+pub fn check_wake_sites(program: &TypedProgram) -> Result<(), SemaError> {
+    let isr_keys = {
+        let roots = collect_isr_roots(program);
+        if roots.is_empty() {
+            BTreeSet::new()
+        } else {
+            let nodes = build_nodes(program);
+            let mut in_isr: BTreeSet<String> = roots
+                .iter()
+                .filter(|k| nodes.contains_key(*k))
+                .cloned()
+                .collect();
+            loop {
+                let mut changed = false;
+                for (key, info) in &nodes {
+                    if !in_isr.contains(key) {
+                        continue;
+                    }
+                    for callee in &info.callees {
+                        if in_isr.insert(callee.clone()) {
+                            changed = true;
+                        }
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            in_isr
+        }
+    };
+    let mut task_keys = BTreeSet::new();
+    for (sname, s) in &program.structs {
+        for (mname, f) in &s.methods {
+            if f.is_task {
+                task_keys.insert(format!("{sname}.{mname}"));
+            }
+        }
+    }
+    for (ikey, inst) in &program.instantiations {
+        if let TypedInstantiation::Struct(s) = inst {
+            for (mname, f) in &s.methods {
+                if f.is_task {
+                    task_keys.insert(format!("{ikey}.{mname}"));
+                }
+            }
+        }
+    }
+
+    let mut bad: Option<String> = None;
+    let mut note = |key: &str, f: &TypedFn| {
+        if bad.is_some() {
+            return;
+        }
+        if fn_contains_wake(f) && !isr_keys.contains(key) && !task_keys.contains(key) {
+            bad = Some(key.to_string());
+        }
+    };
+    for (name, f) in &program.fns {
+        note(name, f);
+    }
+    for (sname, s) in &program.structs {
+        if let Some(f) = &s.init {
+            note(&format!("{sname}.init"), f);
+        }
+        for (m, f) in &s.methods {
+            note(&format!("{sname}.{m}"), f);
+        }
+        for (m, f) in &s.assoc_fns {
+            note(&format!("{sname}.{m}"), f);
+        }
+    }
+    for (ikey, inst) in &program.instantiations {
+        match inst {
+            TypedInstantiation::Fn(f) => note(ikey, f),
+            TypedInstantiation::Struct(s) => {
+                if let Some(f) = &s.init {
+                    note(&format!("{ikey}.init"), f);
+                }
+                for (m, f) in &s.methods {
+                    note(&format!("{ikey}.{m}"), f);
+                }
+                for (m, f) in &s.assoc_fns {
+                    note(&format!("{ikey}.{m}"), f);
+                }
+            }
+            TypedInstantiation::Enum => {}
+        }
+    }
+    if let Some(key) = bad {
+        return Err(SemaError {
+            category: "type",
+            message: format!(
+                "`wake` in `{key}` is outside an ISR and outside a `@task` — 03-hardware.md §6: \
+                 `wake` is an ISR effect (and a bottom half may re-wake itself); ordinary code \
+                 cannot"
+            ),
+            line: 0,
+            col: 0,
+            extra_lines: Vec::new(),
+            omit_location: true,
+            missing_method: None,
+        });
+    }
+    Ok(())
+}
+
+fn fn_contains_wake(f: &TypedFn) -> bool {
+    let mut found = false;
+    fn walk_stmts(stmts: &[TypedStmt], found: &mut bool) {
+        for s in stmts {
+            walk_stmt(s, found);
+        }
+    }
+    fn walk_stmt(stmt: &TypedStmt, found: &mut bool) {
+        match &stmt.kind {
+            TypedStmtKind::Let { value, .. } | TypedStmtKind::ExprStmt(value) => {
+                walk_expr(value, found)
+            }
+            TypedStmtKind::Assign { target, value } => {
+                walk_expr(target, found);
+                walk_expr(value, found);
+            }
+            TypedStmtKind::If {
+                cond,
+                then_branch,
+                elifs,
+                else_branch,
+            } => {
+                walk_expr(cond, found);
+                walk_stmts(then_branch, found);
+                for e in elifs {
+                    walk_expr(&e.cond, found);
+                    walk_stmts(&e.body, found);
+                }
+                if let Some(b) = else_branch {
+                    walk_stmts(b, found);
+                }
+            }
+            TypedStmtKind::Match { scrutinee, arms } => {
+                walk_expr(scrutinee, found);
+                for a in arms {
+                    if let Some(g) = &a.guard {
+                        walk_expr(g, found);
+                    }
+                    walk_stmts(&a.body, found);
+                }
+            }
+            TypedStmtKind::For { iter, body, .. } => {
+                match iter {
+                    TypedForIter::Range(a, b, _) => {
+                        walk_expr(a, found);
+                        walk_expr(b, found);
+                    }
+                    TypedForIter::Expr(e) => walk_expr(e, found),
+                }
+                walk_stmts(body, found);
+            }
+            TypedStmtKind::While { cond, body } => {
+                walk_expr(cond, found);
+                walk_stmts(body, found);
+            }
+            TypedStmtKind::Return(Some(e))
+            | TypedStmtKind::Assert {
+                cond: e,
+                message: None,
+            } => walk_expr(e, found),
+            TypedStmtKind::Assert {
+                cond,
+                message: Some(m),
+            }
+            | TypedStmtKind::ComptimeAssert {
+                cond,
+                message: Some(m),
+                ..
+            } => {
+                walk_expr(cond, found);
+                walk_expr(m, found);
+            }
+            TypedStmtKind::ComptimeAssert {
+                cond,
+                message: None,
+                ..
+            } => walk_expr(cond, found),
+            TypedStmtKind::Defer(TypedDeferBody::Expr(e)) => walk_expr(e, found),
+            TypedStmtKind::Defer(TypedDeferBody::Suite(s)) => walk_stmts(s, found),
+            TypedStmtKind::BareSend { expr, .. } => walk_expr(expr, found),
+            TypedStmtKind::WithGroup {
+                capacity,
+                deadline,
+                body,
+                ..
+            } => {
+                if let Some(c) = capacity {
+                    walk_expr(c, found);
+                }
+                if let Some(d) = deadline {
+                    walk_expr(d, found);
+                }
+                walk_stmts(body, found);
+            }
+            TypedStmtKind::Break
+            | TypedStmtKind::Continue
+            | TypedStmtKind::Pass
+            | TypedStmtKind::Return(None) => {}
+        }
+    }
+    fn walk_expr(e: &TypedExpr, found: &mut bool) {
+        if let TypedExprKind::Intrinsic { key, .. } = &e.kind {
+            if key == "wake" {
+                *found = true;
+            }
+        }
+        match &e.kind {
+            TypedExprKind::Field(b, _)
+            | TypedExprKind::Take(b)
+            | TypedExprKind::Neg(b)
+            | TypedExprKind::BitNot(b)
+            | TypedExprKind::Not(b)
+            | TypedExprKind::ToScalar(b)
+            | TypedExprKind::Await(b)
+            | TypedExprKind::Send(b)
+            | TypedExprKind::Panic(b) => walk_expr(b, found),
+            TypedExprKind::Try(b, _) | TypedExprKind::Is(b, _) => walk_expr(b, found),
+            TypedExprKind::Index(a, b)
+            | TypedExprKind::Binary(_, a, b)
+            | TypedExprKind::OpCall(_, a, b)
+            | TypedExprKind::And(a, b)
+            | TypedExprKind::Or(a, b) => {
+                walk_expr(a, found);
+                walk_expr(b, found);
+            }
+            TypedExprKind::Call { receiver, args, .. } => {
+                if let Some(r) = receiver {
+                    walk_expr(r, found);
+                }
+                for a in args {
+                    if let Some(e) = a {
+                        walk_expr(e, found);
+                    }
+                }
+            }
+            TypedExprKind::Intrinsic { receiver, args, .. } => {
+                if let Some(r) = receiver {
+                    walk_expr(r, found);
+                }
+                for (_, a) in args {
+                    walk_expr(a, found);
+                }
+            }
+            TypedExprKind::CallValue(f, args) => {
+                walk_expr(f, found);
+                for a in args {
+                    walk_expr(a, found);
+                }
+            }
+            TypedExprKind::Closure { body, .. } => match body {
+                TypedClosureBody::Expr(e) => walk_expr(e, found),
+                TypedClosureBody::Suite(s) => walk_stmts(s, found),
+            },
+            TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+                for i in items {
+                    walk_expr(i, found);
+                }
+            }
+            TypedExprKind::StructLiteral { fields, .. } => {
+                for (_, v) in fields {
+                    walk_expr(v, found);
+                }
+            }
+            TypedExprKind::EnumConstruct { args, .. } => {
+                for a in args {
+                    walk_expr(a, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk_stmts(&f.body, &mut found);
+    found
+}
+
+/// plans/M7.md item G: a `@task` bottom half — may drain and re-wake; must
+/// not await (03 §7: "never stays active while waiting"); receipt-shaped
+/// work fails closed naming item E.
+pub fn check_bottom_half(program: &TypedProgram) -> Result<(), SemaError> {
+    let note = |key: &str, f: &TypedFn| -> Result<(), SemaError> {
+        if !f.is_task {
+            return Ok(());
+        }
+        if f.is_async {
+            return Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`@task` `{key}` is `async` — 03-hardware.md §6/§7: the bottom half never \
+                     stays active while waiting (submission turns are not re-entered)"
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        }
+        if let Some(reason) = bottom_half_forbidden_of(f) {
+            return Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`@task` `{key}` {reason} — 03-hardware.md §6/§7: the bottom half drains a \
+                     level signal and re-wakes if work remains; it does not await, and \
+                     receipt-shaped work is plans/M7.md item E"
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        }
+        Ok(())
+    };
+    for (sname, s) in &program.structs {
+        for (m, f) in &s.methods {
+            note(&format!("{sname}.{m}"), f)?;
+        }
+    }
+    for (ikey, inst) in &program.instantiations {
+        if let TypedInstantiation::Struct(s) = inst {
+            for (m, f) in &s.methods {
+                note(&format!("{ikey}.{m}"), f)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bottom_half_forbidden_of(f: &TypedFn) -> Option<String> {
+    let mut scan = BodyScan::default();
+    scan_bottom_half_stmts(&f.body, &mut scan);
+    scan.illegal.map(|r| format!("uses {r}"))
+}
+
+fn scan_bottom_half_stmts(stmts: &[TypedStmt], scan: &mut BodyScan) {
+    for s in stmts {
+        scan_bottom_half_stmt(s, scan);
+    }
+}
+
+fn scan_bottom_half_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
+    match &stmt.kind {
+        TypedStmtKind::Let { value, .. } | TypedStmtKind::ExprStmt(value) => {
+            scan_bottom_half_expr(value, scan);
+        }
+        TypedStmtKind::Assign { target, value } => {
+            scan_bottom_half_expr(target, scan);
+            scan_bottom_half_expr(value, scan);
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            scan_bottom_half_expr(cond, scan);
+            scan_bottom_half_stmts(then_branch, scan);
+            for e in elifs {
+                scan_bottom_half_expr(&e.cond, scan);
+                scan_bottom_half_stmts(&e.body, scan);
+            }
+            if let Some(b) = else_branch {
+                scan_bottom_half_stmts(b, scan);
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            scan_bottom_half_expr(scrutinee, scan);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    scan_bottom_half_expr(g, scan);
+                }
+                scan_bottom_half_stmts(&a.body, scan);
+            }
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(a, b, _) => {
+                    scan_bottom_half_expr(a, scan);
+                    scan_bottom_half_expr(b, scan);
+                }
+                TypedForIter::Expr(e) => scan_bottom_half_expr(e, scan),
+            }
+            scan_bottom_half_stmts(body, scan);
+        }
+        TypedStmtKind::While { cond, body } => {
+            scan_bottom_half_expr(cond, scan);
+            scan_bottom_half_stmts(body, scan);
+        }
+        TypedStmtKind::Return(Some(e)) => scan_bottom_half_expr(e, scan),
+        TypedStmtKind::Assert { cond, message }
+        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            scan_bottom_half_expr(cond, scan);
+            if let Some(m) = message {
+                scan_bottom_half_expr(m, scan);
+            }
+        }
+        TypedStmtKind::Defer(TypedDeferBody::Expr(e)) => scan_bottom_half_expr(e, scan),
+        TypedStmtKind::Defer(TypedDeferBody::Suite(s)) => scan_bottom_half_stmts(s, scan),
+        TypedStmtKind::BareSend { expr, .. } => {
+            scan.note_illegal("a bare `send` (call another actor)");
+            scan_bottom_half_expr(expr, scan);
+        }
+        TypedStmtKind::WithGroup { .. } => {
+            scan.note_illegal("a `with group` (stays active while waiting)");
+        }
+        TypedStmtKind::Break
+        | TypedStmtKind::Continue
+        | TypedStmtKind::Pass
+        | TypedStmtKind::Return(None) => {}
+    }
+}
+
+fn scan_bottom_half_expr(e: &TypedExpr, scan: &mut BodyScan) {
+    match &e.kind {
+        TypedExprKind::Await(_) => scan.note_illegal("an `await` (stays active while waiting)"),
+        TypedExprKind::Send(_) => scan.note_illegal("a `send` (call another actor)"),
+        _ => {}
+    }
+    if type_mentions_receipt(&e.ty) {
+        scan.note_illegal(
+            "a `Receipt`-shaped value (plans/M7.md item E — receipts and completions)",
+        );
+    }
+    match &e.kind {
+        TypedExprKind::Field(b, _)
+        | TypedExprKind::Take(b)
+        | TypedExprKind::Neg(b)
+        | TypedExprKind::BitNot(b)
+        | TypedExprKind::Not(b)
+        | TypedExprKind::ToScalar(b)
+        | TypedExprKind::Await(b)
+        | TypedExprKind::Send(b)
+        | TypedExprKind::Panic(b) => scan_bottom_half_expr(b, scan),
+        TypedExprKind::Try(b, _) | TypedExprKind::Is(b, _) => scan_bottom_half_expr(b, scan),
+        TypedExprKind::Index(a, b)
+        | TypedExprKind::Binary(_, a, b)
+        | TypedExprKind::OpCall(_, a, b)
+        | TypedExprKind::And(a, b)
+        | TypedExprKind::Or(a, b) => {
+            scan_bottom_half_expr(a, scan);
+            scan_bottom_half_expr(b, scan);
+        }
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                scan_bottom_half_expr(r, scan);
+            }
+            for a in args {
+                if let Some(e) = a {
+                    scan_bottom_half_expr(e, scan);
+                }
+            }
+        }
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                scan_bottom_half_expr(r, scan);
+            }
+            for (_, a) in args {
+                scan_bottom_half_expr(a, scan);
+            }
+        }
+        TypedExprKind::CallValue(f, args) => {
+            scan_bottom_half_expr(f, scan);
+            for a in args {
+                scan_bottom_half_expr(a, scan);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => match body {
+            TypedClosureBody::Expr(e) => scan_bottom_half_expr(e, scan),
+            TypedClosureBody::Suite(s) => scan_bottom_half_stmts(s, scan),
+        },
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                scan_bottom_half_expr(i, scan);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                scan_bottom_half_expr(v, scan);
+            }
+        }
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args {
+                scan_bottom_half_expr(a, scan);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn type_mentions_receipt(ty: &crate::sema::types::Type) -> bool {
+    use crate::sema::types::Type;
+    match ty {
+        Type::Named(n, targs) => {
+            n == "Receipt"
+                || targs.iter().any(|a| match a {
+                    crate::sema::types::TypeArg::Type(t) => type_mentions_receipt(t),
+                    _ => false,
+                })
+        }
+        Type::Option(inner) | Type::Static(inner) | Type::Own(_, inner) => {
+            type_mentions_receipt(inner)
+        }
+        Type::Array(elem, _) => type_mentions_receipt(elem),
+        Type::Tuple(elems) => elems.iter().any(type_mentions_receipt),
+        Type::Result(ok, err) => type_mentions_receipt(ok) || type_mentions_receipt(err),
+        _ => false,
+    }
+}
+
 fn collect_isr_roots(program: &TypedProgram) -> BTreeSet<String> {
     let mut roots = BTreeSet::new();
     let mut note = |f: &TypedFn| {
@@ -1920,6 +2441,10 @@ fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
                 None
             } else if crate::sema::bodies::is_interrupt_cell_intrinsic(key) {
                 // plans/M7.md item G, decision 13: on the allowed list.
+                None
+            } else if crate::sema::bodies::is_wake_intrinsic(key) {
+                // plans/M7.md item G: on the allowed list (site check is
+                // `check_wake_sites` — ISR or `@task` only).
                 None
             } else if crate::sema::bodies::is_device_transport_intrinsic(key) {
                 Some("a device bring-up transition (not in the ISR effect set)")
@@ -2512,5 +3037,23 @@ pub fn double(x: u64) -> u64:
             expr_isr_forbidden_reason(&float_expr),
             Some("floating point")
         );
+        // plans/M7.md item G: wake is on the ISR allowlist (site check is
+        // separate); Receipt-shaped work is named for item E even before
+        // `Receipt` is a source type — the scanner arm exists so item E
+        // cannot land a typed node this match would silently accept.
+        let wake_expr = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Intrinsic {
+                key: "wake".into(),
+                receiver: None,
+                type_arg: None,
+                args: vec![],
+            },
+        };
+        assert_eq!(expr_isr_forbidden_reason(&wake_expr), None);
+        assert!(type_mentions_receipt(&Type::Named(
+            "Receipt".into(),
+            vec![crate::sema::types::TypeArg::Type(Type::U32)]
+        )));
     }
 }

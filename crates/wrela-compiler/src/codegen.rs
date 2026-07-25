@@ -481,6 +481,10 @@ pub enum Reloc {
     /// resolves it from the sealed graph's `vector=` on that driver's
     /// device.
     IrqVector { word: usize, driver: String },
+    /// plans/M7.md item G: the four-word `load_imm` starting at `word`
+    /// materializes the absolute address of `@driver` `driver`'s sticky
+    /// wake-pending word (trailing word of its state).
+    WakePending { word: usize, driver: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1806,6 +1810,27 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 InterruptCellRmw::FetchOr,
             )?;
             ctx.store_slot(X_C, dst_off);
+        }
+        // plans/M7.md item G: sticky store of 1 into the driver's
+        // wake-pending word. Level-triggered: a wake before/during/after
+        // the bottom half's cell observation remains set until the
+        // scheduler clears it after a run that finds the bit still clear
+        // on recheck (HVF commit wires that loop).
+        Inst::Wake { driver } => {
+            let word = ctx.words.len();
+            ctx.load_imm(X_A, 0);
+            if let Some((_, text)) = ctx.words.get_mut(word) {
+                *text = format!("wake-pending[{}] {}", driver, reg_name(X_A));
+            }
+            ctx.relocs.push(Reloc::WakePending {
+                word,
+                driver: driver.clone(),
+            });
+            ctx.load_imm(X_B, 1);
+            ctx.push(
+                encode::enc_str_x_imm(X_B, X_A, 0),
+                format!("str {}, [{}]", reg_name(X_B), reg_name(X_A)),
+            );
         }
         Inst::MmioWrite {
             base,
@@ -5870,6 +5895,15 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::IrqVector word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::WakePending { word, .. } => {
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::WakePending word {word} (a 4-word load_imm) is \
                              out of range (code has {} word(s))",
                             f.code.len()
                         ));

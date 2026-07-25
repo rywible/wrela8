@@ -971,12 +971,23 @@ pub(crate) fn check_top_fn(
     if f.is_async {
         check_cross_await(&body)?;
     }
+    if d.is_task {
+        return Err(type_error(
+            format!(
+                "`@task` is only valid on a `@driver` method (03-hardware.md §6's bottom half); \
+                 top-level fn `{}` cannot carry it",
+                f.name
+            ),
+            f.span,
+        ));
+    }
     Ok(Some(TypedFn {
         receiver: None,
         params,
         ret: d.ret.clone(),
         body,
         is_async: f.is_async,
+        is_task: false,
     }))
 }
 
@@ -1092,6 +1103,37 @@ pub(crate) fn check_struct_members(
                 if f.is_async {
                     check_cross_await(&body)?;
                 }
+                if fd.is_task {
+                    if !info.decl.is_driver {
+                        return Err(type_error(
+                            format!(
+                                "`@task` is only valid on a `@driver` method (03-hardware.md §6); \
+                                 `{struct_name}` is not a `@driver`"
+                            ),
+                            f.span,
+                        ));
+                    }
+                    if f.is_async {
+                        return Err(type_error(
+                            format!(
+                                "`@task` `{struct_name}.{}` must be a plain `fn`, not `async fn` \
+                                 (03-hardware.md §6: the bottom half never stays active while \
+                                 waiting)",
+                                f.name
+                            ),
+                            f.span,
+                        ));
+                    }
+                    if f.receiver.is_none() {
+                        return Err(type_error(
+                            format!(
+                                "`@task` `{struct_name}.{}` must be a method with a `self` receiver",
+                                f.name
+                            ),
+                            f.span,
+                        ));
+                    }
+                }
                 let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
                 let tf = TypedFn {
                     receiver,
@@ -1099,6 +1141,7 @@ pub(crate) fn check_struct_members(
                     ret: fd.ret.clone(),
                     body,
                     is_async: f.is_async,
+                    is_task: fd.is_task,
                 };
                 if f.receiver.is_some() {
                     methods.insert(f.name.clone(), tf);
@@ -1117,6 +1160,7 @@ pub(crate) fn check_struct_members(
                     ret: fd.ret.clone(),
                     body,
                     is_async: false,
+                    is_task: false,
                 });
             }
             _ => {}
@@ -3846,6 +3890,9 @@ fn check_call_by_name(
         // (`self.pending = InterruptCell(0)`). Not a capability: the
         // forgery arm below must not catch it.
         "InterruptCell" => check_interrupt_cell_new(args, expected, call_span, fctx, mctx),
+        // plans/M7.md item G: `wake(Driver.method)` — 03 §6's statically
+        // bound bottom-half wake. Prelude-style bare name (no import).
+        "wake" => check_wake_call(args, call_span, fctx, mctx),
         _ => {
             // 03-hardware.md §1 (plans/M7.md item A): a bare
             // `DeviceCap(...)` reaches here (the name resolves — it is a
@@ -4896,6 +4943,11 @@ pub fn is_interrupt_cell_intrinsic(key: &str) -> bool {
     )
 }
 
+/// plans/M7.md item G: `wake(Driver.method)`.
+pub fn is_wake_intrinsic(key: &str) -> bool {
+    key == "wake"
+}
+
 /// Is `ty` an `InterruptCell[_]`?
 pub fn is_interrupt_cell_type(ty: &Type) -> bool {
     matches!(unwrap_own(ty.clone()), Type::Named(n, _) if n == "InterruptCell")
@@ -5320,6 +5372,128 @@ fn check_interrupt_cell_call(
             fspan,
         )),
     }
+}
+
+// --- plans/M7.md item G: wake(Driver.method) (03-hardware.md §6) ------------
+//
+// "wake(...) a statically bound task." The argument is the same method-
+// reference shape `IrqCap.bind` already accepts; the target must carry
+// `@task`. Site legality (ISR or bottom half only) is
+// `eval::legal::check_wake_sites`.
+
+fn check_wake_call(
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`wake(task)` takes exactly one argument, a statically bound `@task` method \
+                 (03-hardware.md §6: `wake(BlkDriver.drain_used)`); found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if let Some(label) = &arg.label {
+        return Err(type_error(
+            format!("`wake(task)`'s argument is positional; `{label}=` names no parameter"),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`wake(task)`'s argument is a method reference, not a moved value: drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let target = resolve_wake_target(&arg.value, arg.span, fctx, mctx)?;
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "wake".to_string(),
+            receiver: None,
+            type_arg: None,
+            args: vec![("task".to_string(), target)],
+        },
+    })
+}
+
+fn resolve_wake_target(
+    expr: &Expr,
+    span: Span,
+    fctx: &FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    // Reuse bind's method-reference resolution, then require `@task`.
+    let handler = resolve_irq_bind_handler(expr, span, fctx, mctx).map_err(|e| {
+        // Retarget the diagnostic wording from bind to wake.
+        if e.message.contains("IrqCap.bind") {
+            SemaError {
+                message: e
+                    .message
+                    .replace("`IrqCap.bind`'s handler", "`wake`'s task")
+                    .replace("to bind as an ISR", "to wake as a bottom half"),
+                ..e
+            }
+        } else {
+            e
+        }
+    })?;
+    let TypedExprKind::FnRef(key) = &handler.kind else {
+        return Err(type_error(
+            "`wake`'s task must be a method reference (`Driver.drain_used`)".to_string(),
+            span,
+        ));
+    };
+    let (sname, method): (String, String) = match key {
+        CalleeKey::Method(s, m) => (s.clone(), m.clone()),
+        CalleeKey::MethodInstance(ikey, m) => {
+            // `struct:Name[Args]` — wake needs the bare struct name for
+            // the `@task` lookup on the unspecialized DeclFn (attrs live
+            // on the declaration, not the instantiation).
+            let bare = ikey
+                .strip_prefix("struct:")
+                .unwrap_or(ikey.as_str())
+                .split('[')
+                .next()
+                .unwrap_or(ikey.as_str());
+            (bare.to_string(), m.clone())
+        }
+        _ => {
+            return Err(type_error(
+                "`wake`'s task must name a `@driver` method".to_string(),
+                span,
+            ));
+        }
+    };
+    let Some(s) = mctx.structs.get(sname.as_str()) else {
+        return Err(type_error(
+            format!("type `{sname}` is not a declared struct"),
+            span,
+        ));
+    };
+    let Some((_, d)) = s.method(&method) else {
+        return Err(type_error(
+            format!("`@driver` `{sname}` has no method `{method}` to wake"),
+            span,
+        ));
+    };
+    if !d.is_task {
+        return Err(type_error(
+            format!(
+                "`wake` requires a statically bound `@task` (03-hardware.md §6); \
+                 `{sname}.{method}` is not marked `@task`"
+            ),
+            span,
+        ));
+    }
+    Ok(handler)
 }
 
 // --- plans/M6.md item A: the actor/async surface --------------------------
