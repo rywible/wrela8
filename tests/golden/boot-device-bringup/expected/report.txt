@@ -1,0 +1,55 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/boot_device_bringup.wr sha256=d3a1239502ad656a94b3b68c52718842fbe869c8a7853852abd27d56c4cb6ddd
+  Name value=boot-device-bringup
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=VirtioBlock
+    Arg label=transport value=8192
+    Arg label=capacity_sectors value=16
+    Arg label=required_features value=[Feature.Flush]
+  Driver index=0 type=BlkDriver
+  Actor index=0 type=Ledger
+    Mailbox value=8
+  Edge from=driver#0 to=device#0
+  DmaPool name=BlockControl type=BlkReqHeader
+    Arg label=device value=device#0
+    Arg label=count value=32
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+    Child value=actor#0
+  Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
+    Padding offset=0x0 size=96
+    Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
+    Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4
+  Layout name=BlkReqHeader kind=dma endian=little size=16 padding=0
+    Field name=kind type=u32 offset=0x0 size=4
+    Field name=reserved type=u32 offset=0x4 size=4
+    Field name=sector type=u64 offset=0x8 size=8
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=2976
+  Section name=rodata base=0x40500bf0 size=464
+  Section name=abort base=0x40500dc0 size=120
+  Section name=checkpoint base=0x40500e38 size=104
+  Section name=rtcode base=0x40500ea0 size=1072
+  Section name=rtdata base=0x405012d0 size=968
+  Section name=devregs base=0x40501698 size=104
+  Section name=pooldata base=0x40501700 size=512
+  Entry base=0x40500000
+  Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
+  Turn fn=bringup_reached_running frame=632
+  Driver name=BlkDriver state=32
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=968
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501698 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40501700 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl base=0x40501700 size=0x200
+  BlkDevice capacity_sectors=16 features=0x100000200
+  BlkQueue index=0 size=8 desc=0x40501700 avail=0x40501780 used=0x40501798 doorbell=0x405017e0
+  BlkAccounting descriptors_per_op=3 queue_depth=8

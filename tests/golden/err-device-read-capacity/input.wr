@@ -1,6 +1,6 @@
 module examples.err_device_read_capacity
 
-# plans/M7.md item H1 self-audit — `claimed.read_capacity_sectors()` — still a named rejection
+# plans/M7.md item E1 — `read_capacity_sectors()` needs a features-accepted (or queues-configured) device.
 #
 # What this case would catch: a virtio-blk config read. Capacity is an image-declared report fact, not a register this guest can read.
 

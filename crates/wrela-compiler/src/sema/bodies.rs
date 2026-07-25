@@ -235,6 +235,11 @@ pub(crate) struct ModuleCtx {
     /// `generics::check` while re-running this pass over a substituted
     /// declaration. See the module-level doc comment above `InstKind`.
     pub(crate) current_chain: RefCell<Vec<Span>>,
+    /// plans/M7.md item E1: every `VirtQueue.configure(pool=take P, ...,
+    /// depth=N)` site observed while typing this module — `(pool name,
+    /// depth)`. Layout/report read this from `TypedProgram` (copied at
+    /// the end of `check`) so the ring geometry has one source of truth.
+    pub(crate) virtqueue_configures: RefCell<Vec<(String, u16)>>,
 }
 
 impl ModuleCtx {
@@ -347,6 +352,7 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
         layouts,
         generics_queue: RefCell::new(BTreeMap::new()),
         current_chain: RefCell::new(Vec::new()),
+        virtqueue_configures: RefCell::new(Vec::new()),
     }
 }
 
@@ -465,6 +471,20 @@ impl FnCtx {
             }
         }
         None
+    }
+
+    /// plans/M7.md item E1: after `VirtQueue.configure(..., device=mut
+    /// <local>, ...)` succeeds, the local's type becomes
+    /// `QueuesConfiguredDevice[D]` — 03 §9's consuming transition, applied
+    /// to a `mut` argument that survives the call (the docs' own spelling).
+    pub(crate) fn retype_local(&mut self, name: &str, ty: Type) -> bool {
+        for scope in self.locals.iter_mut().rev() {
+            if scope.contains_key(name) {
+                scope.insert(name.to_string(), ty);
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn lookup_innermost(&self, name: &str) -> Option<Type> {
@@ -588,9 +608,9 @@ pub(crate) fn check(
     // index `Target`/`Restart` constructions with no evaluator-side
     // special case at all. Harmless for a module that never mentions
     // either name (this field is not part of the `--stage=typed` dump).
-    for name in ["Target", "Restart"] {
+    for name in ["Target", "Restart", "BootError"] {
         let variants = crate::sema::prelude::builtin_enum_variants(name)
-            .expect("both names are in the fixed builtin_enum_variants table")
+            .expect("all three names are in the fixed builtin_enum_variants table")
             .iter()
             .map(|v| v.to_string())
             .collect();
@@ -689,6 +709,8 @@ pub(crate) fn check(
             _ => {}
         }
     }
+    // plans/M7.md item E1: hand the configure sites to layout/report.
+    program.virtqueue_configures = mctx.virtqueue_configures.borrow().clone();
     Ok(program)
 }
 
@@ -3907,6 +3929,13 @@ fn check_call_by_field(
 ) -> Result<TypedExpr, SemaError> {
     if let Expr::Name(_, bname) = base {
         if fctx.lookup_local(bname).is_none() {
+            // plans/M7.md item E1: `VirtQueue.configure(...)` — the sealed
+            // queue constructor, spelled on the builtin type name. Checked
+            // *before* the struct/enum arms so a prelude name that is not
+            // a user declaration still reaches it.
+            if bname == "VirtQueue" && name == "configure" {
+                return check_virtqueue_configure(args, fspan, call_span, fctx, mctx);
+            }
             if let Some(s) = mctx.structs.get(bname.as_str()) {
                 if !s.decl.generics.is_empty() {
                     return Err(unimplemented_at("generic instantiation is", call_span));
@@ -4617,7 +4646,7 @@ fn check_device_claim(
 #[allow(clippy::too_many_arguments)]
 fn check_device_state_call(
     state_expr: TypedExpr,
-    _state: &str,
+    state: &str,
     targs: &[types::TypeArg],
     method: &str,
     args: &[Arg],
@@ -4632,45 +4661,28 @@ fn check_device_state_call(
         "map_partition" => {
             check_map_partition(state_expr, &rendered, args, fspan, call_span, fctx, mctx)
         }
-        // Every remaining transition of the chain, each naming the state
-        // it consumes, the state it produces, and the thing that is
-        // genuinely missing. None of these is "no method": the operation
-        // is normative, it is the *machinery under it* that does not exist.
-        "negotiate" => Err(unimplemented_at(
-            &format!(
-                "`{rendered}.negotiate(required=..., optional=...)` — 03-hardware.md §9's \
-                 `DriverClaimed -> FeaturesAccepted` transition. On this machine the accepted \
-                 feature set is decided *before* the guest runs: the VMM negotiates the image's \
-                 declared `required_features` against its device model at boot (plans/M7.md item \
-                 F) and 06-machine.md §3's own cold-boot sentence (there is nothing to negotiate) is why \
-                 there is no register handshake to run. Nothing carries that already-decided set \
-                 into the guest — no declared window holds it — so the transition",
-            ),
-            call_span,
-        )),
-        "start" => Err(unimplemented_at(
-            &format!(
-                "`{rendered}.start()` — 03-hardware.md §9's final `-> Running` transition, whose \
-                 input state (`FeaturesAcceptedDevice[{device}]`, then \
-                 `QueuesConfiguredDevice[{device}]`) nothing produces yet: `negotiate` and \
-                 `VirtQueue.configure` are the two transitions before it, and publication \
-                 requires the `RunningDevice[{device}]` it would return. That whole span",
-            ),
-            call_span,
-        )),
-        "read_capacity_sectors" => Err(unimplemented_at(
-            &format!(
-                "`{rendered}.read_capacity_sectors()` — a virtio-blk config read. The device's \
-                 capacity is an image-declared, report-carried fact on this machine \
-                 (`BlkDevice capacity_sectors=`, plans/M7.md item F's own VMM configuration), \
-                 not a register this guest can read, and nothing yet hands it to the guest. That",
-            ),
-            call_span,
-        )),
+        // plans/M7.md item E1, decision 12: `negotiate` is a **build-time**
+        // fact. Both sides (the image's `required_features`, and
+        // `virtqueue::DEVICE_FEATURES`) are build outputs; an unofferable
+        // required feature fails the *build*, and the guest's call is a
+        // pure authority transition that always yields
+        // `Ok(FeaturesAcceptedDevice[D])`. The call-site `required=`/
+        // `optional=` arrays are shape-checked here; the bits themselves
+        // are checked against the model when the image seals
+        // (`check_blk_device_features`).
+        "negotiate" => check_device_negotiate(
+            state_expr, state, &device, &rendered, args, fspan, call_span, fctx, mctx,
+        ),
+        "start" => check_device_start(
+            state_expr, state, &device, &rendered, args, fspan, call_span,
+        ),
+        "read_capacity_sectors" => check_device_read_capacity(
+            state_expr, state, &device, &rendered, args, fspan, call_span,
+        ),
         "take_irq" => Err(unimplemented_at(
             &format!(
                 "`{rendered}.take_irq()` — an `IrqCap[V]` out of the claim (03-hardware.md §6). \
-                 Vector binding is plans/M7.md item G; that",
+                 Vector binding is plans/M7.md item G; that"
             ),
             call_span,
         )),
@@ -4683,6 +4695,240 @@ fn check_device_state_call(
             fspan,
         )),
     }
+}
+
+fn boot_error_ty() -> Type {
+    Type::Named("BootError".to_string(), vec![])
+}
+
+fn device_state_ty(state: &str, device: &str) -> Type {
+    Type::Named(
+        state.to_string(),
+        vec![types::TypeArg::Type(Type::Named(
+            device.to_string(),
+            vec![],
+        ))],
+    )
+}
+
+/// `claimed.negotiate(required=..., optional=...)` — DriverClaimed ->
+/// FeaturesAccepted (Result). plans/M7.md decision 12.
+#[allow(clippy::too_many_arguments)]
+fn check_device_negotiate(
+    state_expr: TypedExpr,
+    state: &str,
+    device: &str,
+    rendered: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if state != "DriverClaimedDevice" {
+        return Err(type_error(
+            format!(
+                "`{rendered}.negotiate(...)` consumes a `DriverClaimedDevice[{device}]` \
+                 (03-hardware.md §9: `DriverClaimed -> FeaturesAccepted`); found `{rendered}`"
+            ),
+            fspan,
+        ));
+    }
+    if args.len() != 2 {
+        return Err(type_error(
+            format!(
+                "`{rendered}.negotiate(required=..., optional=...)` takes exactly two labelled \
+                 arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let mut required = None;
+    let mut optional = None;
+    for arg in args {
+        match arg.label.as_deref() {
+            Some("required") => {
+                if required.is_some() {
+                    return Err(type_error(
+                        "`negotiate`'s `required=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`negotiate`'s `required=` is a feature list, not a moved value: \
+                             drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                required = Some(check_expr(&arg.value, None, fctx, mctx)?);
+            }
+            Some("optional") => {
+                if optional.is_some() {
+                    return Err(type_error(
+                        "`negotiate`'s `optional=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`negotiate`'s `optional=` is a feature list, not a moved value: \
+                             drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                optional = Some(check_expr(&arg.value, None, fctx, mctx)?);
+            }
+            Some(other) => {
+                return Err(type_error(
+                    format!(
+                        "`negotiate`'s own arguments are labelled `required=` and `optional=`; \
+                         `{other}=` names no parameter"
+                    ),
+                    arg.span,
+                ));
+            }
+            None => {
+                return Err(type_error(
+                    "`negotiate(required=..., optional=...)` requires labelled arguments \
+                     (03-hardware.md §9 / docs/language/examples/virtio-storage.wr)"
+                        .to_string(),
+                    arg.span,
+                ));
+            }
+        }
+    }
+    let (Some(required), Some(optional)) = (required, optional) else {
+        return Err(type_error(
+            format!(
+                "`{rendered}.negotiate` needs both `required=` and `optional=` \
+                 (03-hardware.md §9)"
+            ),
+            call_span,
+        ));
+    };
+    // Feature lists are arrays (or empty-looking literals). Their element
+    // type is a user enum of feature names; the *bits* are checked at
+    // image seal, not here — this is the shape half.
+    for (label, expr) in [("required", &required), ("optional", &optional)] {
+        match &expr.ty {
+            Type::Array(_, _) => {}
+            other => {
+                return Err(type_error(
+                    format!(
+                        "`negotiate`'s `{label}=` is a feature list (`[...]`); found `{}`",
+                        types::render_type(other)
+                    ),
+                    call_span,
+                ));
+            }
+        }
+    }
+    let _ = fspan;
+    let accepted = device_state_ty("FeaturesAcceptedDevice", device);
+    Ok(TypedExpr {
+        ty: Type::Result(Box::new(accepted), Box::new(boot_error_ty())),
+        kind: TypedExprKind::Intrinsic {
+            key: "Device.negotiate".to_string(),
+            receiver: Some(Box::new(state_expr)),
+            type_arg: Some(Type::Named(device.to_string(), vec![])),
+            args: vec![
+                ("required".to_string(), required),
+                ("optional".to_string(), optional),
+            ],
+        },
+    })
+}
+
+/// `negotiated.start()` — QueuesConfigured -> Running (infallible on
+/// this machine: the queue was already placed at configure).
+fn check_device_start(
+    state_expr: TypedExpr,
+    state: &str,
+    device: &str,
+    rendered: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+) -> Result<TypedExpr, SemaError> {
+    if state != "QueuesConfiguredDevice" {
+        return Err(type_error(
+            format!(
+                "`{rendered}.start()` consumes a `QueuesConfiguredDevice[{device}]` \
+                 (03-hardware.md §9's final `-> Running` transition); found `{rendered}`. \
+                 Call `VirtQueue.configure(...)` first"
+            ),
+            fspan,
+        ));
+    }
+    if !args.is_empty() {
+        return Err(type_error(
+            format!(
+                "`{rendered}.start()` takes no arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    Ok(TypedExpr {
+        ty: device_state_ty("RunningDevice", device),
+        kind: TypedExprKind::Intrinsic {
+            key: "Device.start".to_string(),
+            receiver: Some(Box::new(state_expr)),
+            type_arg: Some(Type::Named(device.to_string(), vec![])),
+            args: Vec::new(),
+        },
+    })
+}
+
+/// `negotiated.read_capacity_sectors()` — capacity is an image-declared,
+/// report-carried fact (`BlkDevice capacity_sectors=`). The guest call
+/// lowers to that build constant (decision recorded with decision 12);
+/// there is no config register to read on this machine.
+fn check_device_read_capacity(
+    state_expr: TypedExpr,
+    state: &str,
+    device: &str,
+    rendered: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+) -> Result<TypedExpr, SemaError> {
+    if state != "FeaturesAcceptedDevice" && state != "QueuesConfiguredDevice" {
+        return Err(type_error(
+            format!(
+                "`{rendered}.read_capacity_sectors()` is a virtio-blk config read on a \
+                 features-accepted (or queues-configured) device; found `{rendered}`"
+            ),
+            fspan,
+        ));
+    }
+    if !args.is_empty() {
+        return Err(type_error(
+            format!(
+                "`{rendered}.read_capacity_sectors()` takes no arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let _ = device;
+    Ok(TypedExpr {
+        ty: Type::Result(Box::new(Type::U64), Box::new(boot_error_ty())),
+        kind: TypedExprKind::Intrinsic {
+            key: "Device.read_capacity_sectors".to_string(),
+            receiver: Some(Box::new(state_expr)),
+            type_arg: None,
+            args: Vec::new(),
+        },
+    })
 }
 
 /// `<state>.map_partition(L)` (03-hardware.md §2/§9).
@@ -4828,7 +5074,311 @@ fn check_map_partition(
 /// Is `key` one of item H1's two sealed-transport intrinsics? Same
 /// three-consumer discipline as `is_mmio_access_intrinsic` above.
 pub fn is_device_transport_intrinsic(key: &str) -> bool {
-    matches!(key, "Device.claim" | "Device.map_partition")
+    matches!(
+        key,
+        "Device.claim"
+            | "Device.map_partition"
+            | "Device.negotiate"
+            | "Device.start"
+            | "Device.read_capacity_sectors"
+            | "VirtQueue.configure"
+    )
+}
+
+/// plans/M7.md item E2/E3/E4 / G fail-closed keys — used by lower and
+/// flowwir so an unimplemented queue/IRQ op names its owner rather than
+/// falling into a generic "intrinsic" rejection.
+pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
+    match key {
+        "VirtQueue.reserve_proven" | "VirtQueue.prepare_block" => {
+            Some("plans/M7.md item E2 (`reserve_proven` / `prepare_block`)")
+        }
+        "VirtQueue.publish" | "VirtQueue.reject" => {
+            Some("plans/M7.md item E3 (`publish` / `reject` / `Receipt[P]`)")
+        }
+        "VirtQueue.drain" | "VirtQueue.suppress_interrupts" => {
+            Some("plans/M7.md item E4 / G (`drain` / `suppress_interrupts`)")
+        }
+        _ => None,
+    }
+}
+
+/// `VirtQueue.configure(pool=take control_pool, device=mut negotiated,
+/// index=0, depth=QDEPTH)?` — FeaturesAccepted -> QueuesConfigured, and
+/// the `DmaShared` mint item D left named (03-hardware.md §3/§4).
+fn check_virtqueue_configure(
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if args.len() != 4 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.configure(pool=take ..., device=mut ..., index=..., depth=...)` \
+                 takes exactly four labelled arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let mut pool = None;
+    let mut device = None;
+    let mut device_local: Option<String> = None;
+    let mut index = None;
+    let mut depth = None;
+    for arg in args {
+        match arg.label.as_deref() {
+            Some("pool") => {
+                if pool.is_some() {
+                    return Err(type_error(
+                        "`VirtQueue.configure`'s `pool=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Take {
+                    return Err(type_error(
+                        "`VirtQueue.configure` consumes the DMA pool: write `pool=take ...` \
+                         (03-hardware.md §3: the queue owns the shared control memory minted \
+                         out of it)"
+                            .to_string(),
+                        arg.span,
+                    ));
+                }
+                pool = Some(check_expr(&arg.value, None, fctx, mctx)?);
+            }
+            Some("device") => {
+                if device.is_some() {
+                    return Err(type_error(
+                        "`VirtQueue.configure`'s `device=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Mut {
+                    return Err(type_error(
+                        "`VirtQueue.configure` takes the device by `mut` so the local becomes \
+                         `QueuesConfiguredDevice[D]` after the call (03-hardware.md §9): write \
+                         `device=mut ...`"
+                            .to_string(),
+                        arg.span,
+                    ));
+                }
+                if let Expr::Name(_, n) = &arg.value {
+                    device_local = Some(n.clone());
+                }
+                device = Some(check_expr(&arg.value, None, fctx, mctx)?);
+            }
+            Some("index") => {
+                if index.is_some() {
+                    return Err(type_error(
+                        "`VirtQueue.configure`'s `index=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`VirtQueue.configure`'s `index=` is a queue index, not a moved \
+                             value: drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                index = Some(check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?);
+            }
+            Some("depth") => {
+                if depth.is_some() {
+                    return Err(type_error(
+                        "`VirtQueue.configure`'s `depth=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`VirtQueue.configure`'s `depth=` is a queue depth, not a moved \
+                             value: drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                depth = Some(check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?);
+            }
+            Some(other) => {
+                return Err(type_error(
+                    format!(
+                        "`VirtQueue.configure`'s own arguments are labelled `pool=`, `device=`, \
+                         `index=`, `depth=`; `{other}=` names no parameter"
+                    ),
+                    arg.span,
+                ));
+            }
+            None => {
+                return Err(type_error(
+                    "`VirtQueue.configure(...)` requires labelled arguments \
+                     (docs/language/examples/virtio-storage.wr)"
+                        .to_string(),
+                    arg.span,
+                ));
+            }
+        }
+    }
+    let (Some(pool), Some(device_expr), Some(index), Some(depth_expr)) =
+        (pool, device, index, depth)
+    else {
+        return Err(type_error(
+            "`VirtQueue.configure` needs `pool=`, `device=`, `index=` and `depth=`".to_string(),
+            call_span,
+        ));
+    };
+    // Pool must be a DmaPool[P, N].
+    let pool_ty = unwrap_own(pool.ty.clone());
+    let Type::Named(pool_name, pool_targs) = &pool_ty else {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.configure`'s `pool=` is a `DmaPool[P, N]`; found `{}`",
+                types::render_type(&pool.ty)
+            ),
+            call_span,
+        ));
+    };
+    if pool_name != "DmaPool" {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.configure`'s `pool=` is a `DmaPool[P, N]`; found `{}`",
+                types::render_type(&pool.ty)
+            ),
+            call_span,
+        ));
+    }
+    let Some(types::TypeArg::Pool(pool_id)) = pool_targs.first() else {
+        return Err(type_error(
+            "`VirtQueue.configure`'s `DmaPool` names no pool".to_string(),
+            call_span,
+        ));
+    };
+    // Device must be FeaturesAcceptedDevice[D].
+    let device_ty = unwrap_own(device_expr.ty.clone());
+    let Type::Named(dev_state, dev_targs) = &device_ty else {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.configure`'s `device=` is a `FeaturesAcceptedDevice[D]`; found `{}`",
+                types::render_type(&device_expr.ty)
+            ),
+            call_span,
+        ));
+    };
+    if dev_state != "FeaturesAcceptedDevice" {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.configure`'s `device=` is a `FeaturesAcceptedDevice[D]` \
+                 (03-hardware.md §9: FeaturesAccepted -> QueuesConfigured); found `{}`",
+                types::render_type(&device_expr.ty)
+            ),
+            call_span,
+        ));
+    }
+    let device_name = device_type_arg(dev_targs).unwrap_or("?").to_string();
+    // Depth must be a comptime-known nonzero power of two. Prefer a
+    // literal; a module const name is accepted when its value is a
+    // literal int (the common `const QDEPTH: usize = 128` spelling).
+    let depth_val = virtqueue_depth_value(&depth_expr, mctx).ok_or_else(|| {
+        type_error(
+            "`VirtQueue.configure`'s `depth=` must be a comptime-known nonzero power of two \
+             (VIRTIO 1.2 §2.6); a runtime value would make the ring geometry — which the \
+             report, the placer and the VMM all read from one derivation — disagree with \
+             itself"
+                .to_string(),
+            call_span,
+        )
+    })?;
+    if depth_val == 0 || !depth_val.is_power_of_two() || depth_val > u16::MAX as u64 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.configure`'s `depth={depth_val}` is not a nonzero power of two that \
+                 fits virtio's 16-bit queue depth (VIRTIO 1.2 §2.6)"
+            ),
+            call_span,
+        ));
+    }
+    // index must be 0 on machine v1 (one queue).
+    if let TypedExprKind::Int(text) = &index.kind {
+        if let Some(v) = parse_int_literal(text) {
+            if v != 0 {
+                return Err(type_error(
+                    format!(
+                        "`VirtQueue.configure`'s `index={v}`: machine v1's `blk` has exactly one \
+                         queue (index 0)"
+                    ),
+                    call_span,
+                ));
+            }
+        }
+    }
+    // Flow-type the mut device local to QueuesConfiguredDevice[D].
+    if let Some(local) = &device_local {
+        let queued = device_state_ty("QueuesConfiguredDevice", &device_name);
+        if !fctx.retype_local(local, queued) {
+            return Err(type_error(
+                "`VirtQueue.configure`'s `device=mut ...` must name a local so its type can \
+                 become `QueuesConfiguredDevice[D]` after the call (03-hardware.md §9)"
+                    .to_string(),
+                call_span,
+            ));
+        }
+    } else {
+        return Err(type_error(
+            "`VirtQueue.configure`'s `device=mut ...` must name a local so its type can \
+             become `QueuesConfiguredDevice[D]` after the call (03-hardware.md §9)"
+                .to_string(),
+            call_span,
+        ));
+    }
+    let _ = (fspan, pool_id);
+    // Record for layout/report: one derivation of (pool, depth).
+    mctx.virtqueue_configures
+        .borrow_mut()
+        .push((pool_id.clone(), depth_val as u16));
+    let queue_ty = Type::Named(
+        "VirtQueue".to_string(),
+        vec![types::TypeArg::Bound(Expr::Int(
+            call_span,
+            depth_val.to_string(),
+        ))],
+    );
+    Ok(TypedExpr {
+        ty: Type::Result(Box::new(queue_ty), Box::new(boot_error_ty())),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.configure".to_string(),
+            receiver: None,
+            type_arg: Some(Type::Named(device_name, vec![])),
+            args: vec![
+                ("pool".to_string(), pool),
+                ("device".to_string(), device_expr),
+                ("index".to_string(), index),
+                ("depth".to_string(), depth_expr),
+            ],
+        },
+    })
+}
+
+/// A comptime depth for `VirtQueue.configure`: a literal int, or a
+/// module `const` whose initializer is a literal int.
+fn virtqueue_depth_value(expr: &TypedExpr, mctx: &ModuleCtx) -> Option<u64> {
+    match &expr.kind {
+        TypedExprKind::Int(text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
+        TypedExprKind::Const(name) => {
+            let init = mctx.const_values.get(name)?;
+            match init {
+                Expr::Int(_, text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 // --- plans/M6.md item A: the actor/async surface --------------------------

@@ -3310,6 +3310,9 @@ fn resolve_named(
         // written by source, so it never needs a annotation-position
         // resolution here).
         "Image" => Some(Type::Named("Image".to_string(), vec![])),
+        // plans/M7.md item E1: 03-hardware.md §1/§9's `BootError` — a
+        // zero-argument prelude enum (variants in `builtin_enum_variants`).
+        "BootError" => Some(Type::Named("BootError".to_string(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {
@@ -3348,6 +3351,46 @@ fn resolve_named(
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named("Actor".to_string(), vec![TypeArg::Type(inner)]));
+        }
+        // plans/M7.md item E1: `VirtQueue[..N]` (03-hardware.md §4) —
+        // bounded occupancy, the same `..N` spelling 05-library.md §10
+        // reserves for "bounded-occupancy parameters". The depth is a
+        // const expression (a literal or a module `const`); it must be a
+        // nonzero power of two at the configure site / report emission,
+        // not here (this resolver has no const evaluator).
+        "VirtQueue" => {
+            expect_arity(n, 1)?;
+            match &n.args[0] {
+                GenericArg::Bound(e) => {
+                    return Ok(Type::Named(
+                        "VirtQueue".to_string(),
+                        vec![TypeArg::Bound(e.clone())],
+                    ));
+                }
+                GenericArg::Expr(e) => {
+                    return Ok(Type::Named(
+                        "VirtQueue".to_string(),
+                        vec![TypeArg::Bound(e.clone())],
+                    ));
+                }
+                GenericArg::Type(ast::Type::Named(inner)) if inner.args.is_empty() => {
+                    // `VirtQueue[..QDEPTH]` where QDEPTH is a const name
+                    // parses as a type-shaped argument; unwrap it.
+                    return Ok(Type::Named(
+                        "VirtQueue".to_string(),
+                        vec![TypeArg::Bound(Expr::Name(inner.span, inner.name.clone()))],
+                    ));
+                }
+                _ => {
+                    return Err(SemaError::at(
+                        "type",
+                        "`VirtQueue[..N]` needs a depth bound (03-hardware.md §4 / 05-library.md \
+                         §10: bounded occupancy is spelled `..N`)"
+                            .to_string(),
+                        n.span,
+                    ));
+                }
+            }
         }
         // `ReadOnly[T]`/`WriteOnly[T]` (plans/M7.md item B, 03-hardware.md
         // §2): the typed-MMIO register wrappers, resolved structurally

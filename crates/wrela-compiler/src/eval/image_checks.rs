@@ -113,7 +113,153 @@ pub fn check_sealed(
     check_pool_decls(graph, programs)?;
     check_init_args(graph, programs)?;
     check_supervision(graph)?;
+    // plans/M7.md item E1, decision 12: required features vs DEVICE_FEATURES
+    // is a *build* error; capacity_sectors is the build constant
+    // `read_capacity_sectors` lowers to.
+    check_blk_device_decls(graph, programs)?;
     Ok(())
+}
+
+/// Image-declared virtio-blk capacity, if any device carries
+/// `capacity_sectors=`. Used by the lowerer (via `TypedProgram`) and the
+/// report emitter.
+pub fn blk_capacity_sectors(graph: &ImageGraph) -> Option<u64> {
+    for d in &graph.devices {
+        if let Some(a) = d.args.iter().find(|a| a.label == "capacity_sectors") {
+            return int_value_as_i128(&a.value).and_then(|v| u64::try_from(v).ok());
+        }
+    }
+    None
+}
+
+/// Accepted feature mask for the image's declared `required_features`,
+/// already validated by `check_blk_device_decls`. Defaults to
+/// `F_VERSION_1` alone when no `required_features=` is declared (the
+/// mandatory bit is always present).
+pub fn blk_accepted_features(
+    graph: &ImageGraph,
+    programs: &BTreeMap<String, TypedProgram>,
+) -> Result<u64, SemaError> {
+    let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in programs.values() {
+        for (name, vs) in &p.enums {
+            enum_variants
+                .entry(name.clone())
+                .or_insert_with(|| vs.clone());
+        }
+    }
+    for d in &graph.devices {
+        if let Some(a) = d.args.iter().find(|a| a.label == "required_features") {
+            let names = feature_names_from_arg(a, &enum_variants)?;
+            return crate::virtqueue::accepted_features(
+                &names.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .map_err(build_error);
+        }
+    }
+    Ok(crate::virtqueue::F_VERSION_1)
+}
+
+/// plans/M7.md item E1 / decision 12: every `img.device`'s
+/// `required_features=` must be offerable by `virtqueue::DEVICE_FEATURES`,
+/// and `capacity_sectors=` (when present) must be a positive integer
+/// under the VMM's disk ceiling.
+fn check_blk_device_decls(
+    graph: &ImageGraph,
+    programs: &BTreeMap<String, TypedProgram>,
+) -> Result<(), SemaError> {
+    // Variant names from every program's enums, for Feature/VirtioFeature.
+    let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in programs.values() {
+        for (name, vs) in &p.enums {
+            enum_variants
+                .entry(name.clone())
+                .or_insert_with(|| vs.clone());
+        }
+    }
+    for (di, d) in graph.devices.iter().enumerate() {
+        if let Some(a) = d.args.iter().find(|a| a.label == "capacity_sectors") {
+            let Some(v) = int_value_as_i128(&a.value) else {
+                return Err(build_error(format!(
+                    "`img.device` device#{di} passes a `capacity_sectors=` that is not an integer"
+                )));
+            };
+            if v <= 0 {
+                return Err(build_error(format!(
+                    "`img.device` device#{di} declares `capacity_sectors={v}`; a block device \
+                     needs a positive sector count"
+                )));
+            }
+            let sectors = u64::try_from(v).map_err(|_| {
+                build_error(format!(
+                    "`img.device` device#{di} declares `capacity_sectors={v}` that does not fit \
+                     a `u64`"
+                ))
+            })?;
+            let bytes = sectors.saturating_mul(512);
+            // Match the VMM's own ceiling so a build that would fail at
+            // `BlkDevice::new` fails here instead, with the same number.
+            const MAX_DISK_BYTES: u64 = 64 << 20;
+            if bytes > MAX_DISK_BYTES {
+                return Err(build_error(format!(
+                    "`img.device` device#{di} declares `capacity_sectors={sectors}` ({bytes} bytes), \
+                     which exceeds the VMM's {MAX_DISK_BYTES}-byte in-memory disk ceiling"
+                )));
+            }
+        }
+        if let Some(a) = d.args.iter().find(|a| a.label == "required_features") {
+            let names = feature_names_from_arg(a, &enum_variants)?;
+            crate::virtqueue::accepted_features(
+                &names.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .map_err(build_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn feature_names_from_arg(
+    a: &DeclArg,
+    enum_variants: &BTreeMap<String, Vec<String>>,
+) -> Result<Vec<String>, SemaError> {
+    let Type::Array(elem, _) = &a.ty else {
+        return Err(build_error(format!(
+            "`required_features=` must be an array of feature variants; found `{}`",
+            types::render_type(&a.ty)
+        )));
+    };
+    let Type::Named(enum_name, _) = &**elem else {
+        return Err(build_error(
+            "`required_features=` elements must be feature-enum variants".to_string(),
+        ));
+    };
+    let Some(variants) = enum_variants.get(enum_name) else {
+        return Err(build_error(format!(
+            "`required_features=` names enum `{enum_name}`, which has no variants in this image"
+        )));
+    };
+    let Value::Array(items) = &a.value else {
+        return Err(build_error(
+            "`required_features=` must be an array value".to_string(),
+        ));
+    };
+    let mut names = Vec::new();
+    for it in items {
+        let Value::Enum(idx, _) = it else {
+            return Err(build_error(
+                "`required_features=` elements must be enum variants".to_string(),
+            ));
+        };
+        let Some(name) = variants.get(*idx) else {
+            return Err(build_error(format!(
+                "`required_features=` names variant index {idx} of `{enum_name}`, which has only \
+                 {} variant(s)",
+                variants.len()
+            )));
+        };
+        names.push(name.clone());
+    }
+    Ok(names)
 }
 
 // --- shared: finding every `ImageDecl` value nested inside an already-
@@ -1023,7 +1169,15 @@ pub(crate) fn is_protocol_state_type_name(name: &str) -> bool {
 /// may; and `mwir::size_of`/`codegen::is_aggregate` carry it as one
 /// opaque 8-byte word.
 pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
-    is_capability_type_name(name) || is_protocol_state_type_name(name)
+    is_capability_type_name(name)
+        || is_protocol_state_type_name(name)
+        // plans/M7.md item E1: `VirtQueue[..N]` is sealed authority over
+        // one split ring (03-hardware.md §4) — unforgeable, a resource,
+        // one opaque word at runtime (the control-pool base the ring
+        // lives in). Not one of §1's four capabilities and not a §9
+        // bring-up state, but every structural rule asks the same
+        // question of it.
+        || name == "VirtQueue"
 }
 
 /// The noun phrase (with its normative citation) a diagnostic uses for one
@@ -1034,6 +1188,8 @@ pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
 pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
     if is_protocol_state_type_name(name) {
         "a sealed protocol state (03-hardware.md §9)"
+    } else if name == "VirtQueue" {
+        "a sealed queue (03-hardware.md §4)"
     } else {
         "a capability type (03-hardware.md §1)"
     }
@@ -1235,15 +1391,15 @@ fn check_capability_substitution(
                 "nothing mints an `IrqCap[V]` yet — that is plans/M7.md item G (a vector is \
                  bound from the image graph)"
             }
-            // 03-hardware.md §3's shared control memory. Not "no pool
-            // exists" — pools are real at item D — but "nothing at the
-            // image binding produces one": in 03 §3's own worked example
-            // a `DmaShared` is what `VirtQueue.configure(pool=take
-            // control_pool, ...)` makes out of a pool, which is item E.
+            // 03-hardware.md §3's shared control memory. Not "no queue
+            // exists" — `VirtQueue.configure` (plans/M7.md item E1) mints
+            // one out of a pool — but "nothing at the image binding
+            // produces one": the image binds the pool; the queue makes
+            // the shared control memory.
             _ => {
-                "nothing mints a `DmaShared[P, L]` yet — that is plans/M7.md item E (a queue \
-                 configures shared control memory out of a pool; 03-hardware.md §3's shared \
-                 control memory is not minted at the image binding)"
+                "`VirtQueue.configure(pool=take ..., ...)` mints a `DmaShared[P, L]` out of a \
+                 DMA pool (plans/M7.md item E1 / 03-hardware.md §3); the image binding does not \
+                 — bind the pool and configure the queue inside the driver's `init`"
             }
         };
         return Err(build_error(format!(
@@ -2431,13 +2587,13 @@ mod tests {
         for (cap, owner) in [
             ("Mmio", "map_partition"),
             ("IrqCap", "item G"),
-            ("DmaShared", "item E"),
+            ("DmaShared", "VirtQueue.configure"),
         ] {
             let programs =
                 programs_map(program_with_init("Blk", vec![cap_param("c", cap, "Thing")]));
             let g = driver_graph(Some("BlockHw"), true, vec![]);
             let err = check_init_args(&g, &programs)
-                .expect_err("nothing mints an Mmio/IrqCap/DmaShared yet");
+                .expect_err("nothing mints an Mmio/IrqCap/DmaShared at the image binding");
             assert!(err.message.contains(owner), "{cap}: {}", err.message);
         }
     }

@@ -243,11 +243,19 @@ struct FnBuilder<'p, 'l> {
     lw: &'l mut Lowerer<'p>,
     temp_types: Vec<Type>,
     body: Vec<Inst>,
+    /// The fn's declared return type — needed by sync `?` (plans/M7.md
+    /// item E1) to build the early `Err` return.
+    ret: Type,
 }
 
 impl<'p, 'l> FnBuilder<'p, 'l> {
     fn prog(&self) -> &'p TypedProgram {
         self.lw.prog
+    }
+
+    /// Image-declared blk capacity, if this program's `@image` sealed one.
+    fn blk_capacity_sectors(&self) -> Option<u64> {
+        self.lw.prog.blk_capacity_sectors
     }
 
     fn fresh(&mut self, ty: Type) -> Temp {
@@ -459,6 +467,7 @@ fn lower_fn(f: &TypedFn, lw: &mut Lowerer) -> Result<MwirFn, LowerError> {
         lw,
         temp_types: Vec::new(),
         body: Vec::new(),
+        ret: f.ret.clone(),
     };
     let mut env: LEnv = vec![BTreeMap::new()];
     let receiver = match &f.receiver {
@@ -1423,6 +1432,79 @@ fn lower_init_call(
 
 // --- expressions ------------------------------------------------------------
 
+/// Sync `?` (plans/M7.md item E1 / 02-language.md §7.4): on `Ok`, project
+/// the payload; on `Err`, build this fn's own `Err`-wrapped return and
+/// early-return. Same shape as `flowwir_lower::lower_try_check`.
+fn lower_try_sync(
+    value_temp: Temp,
+    value_ty: &Type,
+    b: &mut FnBuilder,
+) -> Result<Temp, LowerError> {
+    let (ok_ty, err_ty) = match value_ty {
+        Type::Result(o, e) => ((**o).clone(), (**e).clone()),
+        _ => {
+            return Err(LowerError::unimplemented(
+                "`?` on a non-`Result` (e.g. `Option`) value in a synchronous body is",
+            ));
+        }
+    };
+    let tag_t = b.fresh(Type::U64);
+    b.emit(Inst::EnumTag {
+        dst: tag_t,
+        src: value_temp,
+    });
+    let ok_const = b.fresh(Type::U64);
+    b.emit(Inst::ConstInt {
+        dst: ok_const,
+        ty: Type::U64,
+        value: value::RESULT_OK as i128,
+    });
+    let is_ok = b.fresh(Type::Bool);
+    b.emit(Inst::Compare {
+        dst: is_ok,
+        op: BinOp::Eq,
+        ty: Type::U64,
+        lhs: tag_t,
+        rhs: ok_const,
+    });
+    let err_fixup = b.emit(Inst::JumpIfFalse {
+        cond: is_ok,
+        target: usize::MAX,
+    });
+    let ok_payload = b.fresh(ok_ty);
+    b.emit(Inst::EnumPayload {
+        dst: ok_payload,
+        src: value_temp,
+        index: 0,
+    });
+    let after_fixup = b.emit(Inst::Jump { target: usize::MAX });
+    let err_pos = b.here();
+    b.patch_jump(err_fixup, err_pos);
+    let err_payload = b.fresh(err_ty);
+    b.emit(Inst::EnumPayload {
+        dst: err_payload,
+        src: value_temp,
+        index: 0,
+    });
+    if !matches!(&b.ret, Type::Result(_, _)) {
+        return Err(LowerError::internal(
+            "`?` used inside a fn whose own declared return type is not `Result`".to_string(),
+        ));
+    }
+    let ret_enum = b.fresh(b.ret.clone());
+    b.emit(Inst::MakeEnum {
+        dst: ret_enum,
+        tag: value::RESULT_ERR,
+        payload: vec![err_payload],
+    });
+    b.emit(Inst::Return {
+        value: Some(ret_enum),
+    });
+    let after_pos = b.here();
+    b.patch_jump(after_fixup, after_pos);
+    Ok(ok_payload)
+}
+
 fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Temp, LowerError> {
     match &expr.kind {
         TypedExprKind::Int(text) => {
@@ -1618,7 +1700,22 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         // aggregate element) already gets its own distinct copy at *that*
         // point, so nothing extra happens here.
         TypedExprKind::Take(inner) => lower_expr(inner, b, env),
-        TypedExprKind::Try(..) => Err(LowerError::unimplemented("the `?` operator is")),
+        TypedExprKind::Try(inner, conv) => {
+            // plans/M7.md item E1: sync `?` (02-language.md §7.4), copied
+            // from `flowwir_lower::lower_try_check`. A driver's fallible
+            // `init` is a plain `fn` and must be able to `?`-propagate
+            // `BootError`. Active defers at the early-exit site are not
+            // run here — a driver's `init` that uses both `defer` and `?`
+            // fails closed by name rather than silently skipping cleanup
+            // (none of E1's goldens combine the two).
+            if !matches!(conv, None) {
+                return Err(LowerError::unimplemented(
+                    "a `?` conversion (`From`) in a synchronous body is",
+                ));
+            }
+            let v = lower_expr(inner, b, env)?;
+            lower_try_sync(v, &inner.ty, b)
+        }
         TypedExprKind::Binary(op, l, r) => lower_binary(*op, l, r, expr, b, env),
         TypedExprKind::OpCall(key, l, r) => {
             // A user (`Named`) type's desugared operator method
@@ -1831,18 +1928,96 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             args,
             ..
         } if crate::sema::bodies::is_device_transport_intrinsic(key) => {
-            let src = match (key.as_str(), receiver, args.first()) {
-                ("Device.claim", _, Some((_, cap))) => lower_expr(cap, b, env)?,
-                ("Device.map_partition", Some(state), _) => lower_expr(state, b, env)?,
-                _ => {
-                    return Err(LowerError::internal(format!(
-                        "sealed-transport intrinsic `{key}` reached lowering without its operand"
-                    )));
+            // plans/M7.md item E1: negotiate/start/configure are pure
+            // authority transitions on this machine (decision 12: the
+            // accepted feature set is a build-time fact; capacity is a
+            // build constant). Each lowers to a Copy of the receiver's
+            // word, or — for read_capacity — a ConstInt filled in at the
+            // address pass from the image's declared capacity_sectors.
+            // VirtQueue.configure yields the pool base (decision 11's one
+            // word for the queue).
+            match key.as_str() {
+                "Device.read_capacity_sectors" => {
+                    let capacity = b.blk_capacity_sectors().ok_or_else(|| {
+                        LowerError::unimplemented(
+                            "`read_capacity_sectors`: this image declares no \
+                             `capacity_sectors=` on its `img.device` (plans/M7.md item E1: \
+                             capacity is an image-declared build constant, not a register)",
+                        )
+                    })?;
+                    let ok_payload = b.fresh(Type::U64);
+                    b.emit(Inst::ConstInt {
+                        dst: ok_payload,
+                        ty: Type::U64,
+                        value: capacity as i128,
+                    });
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::MakeEnum {
+                        dst,
+                        tag: value::RESULT_OK,
+                        payload: vec![ok_payload],
+                    });
+                    Ok(dst)
                 }
-            };
-            let dst = b.fresh(expr.ty.clone());
-            b.emit(Inst::Copy { dst, src });
-            Ok(dst)
+                "Device.negotiate" | "VirtQueue.configure" => {
+                    // Both return Result[T, BootError]. The Ok payload is
+                    // the authority word: negotiate copies the claimed
+                    // device's base; configure copies the pool's base.
+                    let src = match (key.as_str(), receiver, args.as_slice()) {
+                        ("Device.negotiate", Some(state), _) => lower_expr(state, b, env)?,
+                        ("VirtQueue.configure", _, args) => {
+                            let (_, pool) =
+                                args.iter().find(|(l, _)| l == "pool").ok_or_else(|| {
+                                    LowerError::internal(
+                                        "`VirtQueue.configure` reached lowering without `pool=`"
+                                            .to_string(),
+                                    )
+                                })?;
+                            lower_expr(pool, b, env)?
+                        }
+                        _ => {
+                            return Err(LowerError::internal(format!(
+                                "sealed-transport intrinsic `{key}` reached lowering without \
+                                 its operand"
+                            )));
+                        }
+                    };
+                    let Type::Result(ok_ty, _) = &expr.ty else {
+                        return Err(LowerError::internal(format!(
+                            "`{key}`'s typed result is not a `Result`"
+                        )));
+                    };
+                    let payload = b.fresh((**ok_ty).clone());
+                    b.emit(Inst::Copy { dst: payload, src });
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::MakeEnum {
+                        dst,
+                        tag: value::RESULT_OK,
+                        payload: vec![payload],
+                    });
+                    Ok(dst)
+                }
+                "Device.start" | "Device.claim" | "Device.map_partition" => {
+                    let src = match (key.as_str(), receiver, args.first()) {
+                        ("Device.claim", _, Some((_, cap))) => lower_expr(cap, b, env)?,
+                        ("Device.map_partition" | "Device.start", Some(state), _) => {
+                            lower_expr(state, b, env)?
+                        }
+                        _ => {
+                            return Err(LowerError::internal(format!(
+                                "sealed-transport intrinsic `{key}` reached lowering without \
+                                 its operand"
+                            )));
+                        }
+                    };
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::Copy { dst, src });
+                    Ok(dst)
+                }
+                other => Err(LowerError::internal(format!(
+                    "unknown sealed-transport intrinsic `{other}`"
+                ))),
+            }
         }
         // plans/M7.md item H1: a typed MMIO access, emitted at last. The
         // base is the `Mmio[L]` receiver's own word; the offset and the
@@ -2277,6 +2452,7 @@ mod builder_tests {
             lw: &mut lw,
             temp_types: Vec::new(),
             body: Vec::new(),
+            ret: Type::Unit,
         };
         let cond = b.fresh(Type::Bool);
         b.emit(Inst::ConstBool {
@@ -2306,6 +2482,7 @@ mod builder_tests {
             lw: &mut lw,
             temp_types: Vec::new(),
             body: Vec::new(),
+            ret: Type::Unit,
         };
         let a = b.intern(b"hello".to_vec());
         let c = b.intern(b"world".to_vec());

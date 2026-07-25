@@ -1,0 +1,2 @@
+FAILED driver init returned Err(BootError)
+0 passed, 1 failed

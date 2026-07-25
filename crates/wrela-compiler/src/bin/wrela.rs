@@ -1121,6 +1121,33 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The real `ImageGraph`, if this file declares an `@image` (plans/M6.md
+    // item D). Evaluated *before* lower so plans/M7.md item E1 can stamp
+    // `capacity_sectors=` onto the TypedProgram `read_capacity_sectors`
+    // lowers from — a build constant, not a register.
+    // The graph checks (`eval::image_checks::check_sealed`) run here too,
+    // on exactly the sealed graph this command is about to boot.
+    let graph = match &program.image_fn {
+        Some(fn_name) => match eval::interp::eval_image(&program, fn_name) {
+            Ok(g) => g,
+            Err(e) => {
+                print_sema_error(&eval::to_sema_error(e));
+                return ExitCode::FAILURE;
+            }
+        },
+        None => eval::image::ImageGraph::default(),
+    };
+    if program.image_fn.is_some() {
+        let mut programs = BTreeMap::new();
+        programs.insert(module.path.join("."), program.clone());
+        if let Err(e) = eval::image_checks::check_sealed(&graph, &program, &programs) {
+            print_sema_error(&e);
+            return ExitCode::FAILURE;
+        }
+    }
+    // plans/M7.md item E1: stamp capacity before lower.
+    let mut program = program;
+    program.blk_capacity_sectors = eval::image_checks::blk_capacity_sectors(&graph);
     let mwir_program = match lower::lower_program(&program) {
         Ok(p) => p,
         Err(e) => {
@@ -1152,58 +1179,6 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // The real `ImageGraph`, if this file declares an `@image` (plans/M6.md
-    // item D: the one necessary step `test_cmd` never took before this
-    // item — no actor could ever exist in a runtime-test image otherwise).
-    // Absent `@image`, an empty graph (no actors, `compute_runtime_tables`'s
-    // own "empty -> None" path) — byte-identical to every pre-M6 `wrela
-    // test` golden.
-    // The graph checks (`eval::image_checks::check_sealed`) run here too,
-    // on exactly the sealed graph this command is about to boot. Until
-    // 2026-07-24 they ran only from `dump --stage=image`/`--stage=report`
-    // and `wrela build`, which is the same placement mistake
-    // `sema::send_proof`'s own module doc already recorded for a sibling
-    // pass ("that pass only runs from `--stage=image`/`report`/`build` ...
-    // Fail closed: the rejection has to live where every consumer of the
-    // checked program passes through it"). `wrela test` is a consumer of
-    // the checked program — it lays out and boots a real image built from
-    // this exact graph — so a wiring mistake that `wrela build` rejects
-    // must not sail through here.
-    //
-    // Two boundaries, both deliberate and both disclosed rather than
-    // silently narrowed:
-    //
-    //   - No `@image` fn: the graph is `ImageGraph::default()` and is not
-    //     checked at all, exactly like `run_image_stage`/`build_report`,
-    //     which only run `check_sealed` when there is a real `@image` to
-    //     seal. Checking a default graph against this module's own
-    //     `declared_pools` would invent a rejection for a program that
-    //     binds nothing precisely because it declares no image.
-    //   - No `@test(runtime)` fn: control never reaches this point at all
-    //     (the comptime-only early return above). That path builds no
-    //     image, lays out nothing and boots nothing — there is no
-    //     consumer of the graph there for the graph checks to guard, and
-    //     it is the same tier `--stage=check`/`--stage=typed` occupy.
-    //     The checks live on the path that actually produces an image,
-    //     which is the whole of what the placement argument above asks.
-    let graph = match &program.image_fn {
-        Some(fn_name) => match eval::interp::eval_image(&program, fn_name) {
-            Ok(g) => g,
-            Err(e) => {
-                print_sema_error(&eval::to_sema_error(e));
-                return ExitCode::FAILURE;
-            }
-        },
-        None => eval::image::ImageGraph::default(),
-    };
-    if program.image_fn.is_some() {
-        let mut programs = BTreeMap::new();
-        programs.insert(module.path.join("."), program.clone());
-        if let Err(e) = eval::image_checks::check_sealed(&graph, &program, &programs) {
-            print_sema_error(&e);
-            return ExitCode::FAILURE;
-        }
-    }
     let method_index = match layout::actor_method_index_tables(&modules, &layout_ctx) {
         Ok(m) => m,
         Err(e) => {
@@ -1289,7 +1264,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         async_frames: &async_frames,
         group_child_index: &group_child_index,
     };
-    let image_layout = match layout::layout_test_image(
+    let mut image_layout = match layout::layout_test_image(
         &codegen_program,
         &runtime_tests,
         &async_tests,
@@ -1308,6 +1283,18 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // plans/M7.md item E1: BlkDevice/BlkQueue from configure + pools.
+    {
+        let mut programs = BTreeMap::new();
+        programs.insert(module.path.join("."), program.clone());
+        if let Err(e) = layout::attach_blk_report(&mut image_layout, &graph, &programs) {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            println!("error[build]: {}", e.message);
+            return ExitCode::FAILURE;
+        }
+    }
 
     let Some(vmm_path) = find_vmm_binary(vmm_arg.as_deref()) else {
         for l in &comptime_lines {
@@ -1346,6 +1333,8 @@ fn test_cmd(args: &[String]) -> ExitCode {
         ));
     }
     report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+    // plans/M7.md item E1: the VMM-facing Blk* lines (absent when no queue).
+    layout::append_blk_vmm_lines(&mut report_text, &image_layout);
     if let Err(e) = std::fs::write(&report_path, &report_text) {
         eprintln!("error: cannot write {}: {e}", report_path.display());
         return ExitCode::FAILURE;

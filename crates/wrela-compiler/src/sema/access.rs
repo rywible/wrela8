@@ -1681,6 +1681,45 @@ fn check_call_by_field(
 ) -> Result<Option<Type>, SemaError> {
     if let Expr::Name(_, bname) = base {
         if !actx.locals.contains_key(bname) {
+            // plans/M7.md item E1: `VirtQueue.configure(...)` — builtin type
+            // name, not a user struct. Mirror `bodies::check_virtqueue_configure`.
+            if bname == "VirtQueue" && name == "configure" {
+                for a in args {
+                    check_arg(a, actx)?;
+                }
+                check_mirroring_named(
+                    &[
+                        types::DeclParam {
+                            mode: AccessMode::Take,
+                            name: "pool".to_string(),
+                            ty: Type::Unit,
+                        },
+                        types::DeclParam {
+                            mode: AccessMode::Mut,
+                            name: "device".to_string(),
+                            ty: Type::Unit,
+                        },
+                        types::DeclParam {
+                            mode: AccessMode::Read,
+                            name: "index".to_string(),
+                            ty: Type::Unit,
+                        },
+                        types::DeclParam {
+                            mode: AccessMode::Read,
+                            name: "depth".to_string(),
+                            ty: Type::Unit,
+                        },
+                    ],
+                    args,
+                )?;
+                return Ok(Some(Type::Result(
+                    Box::new(Type::Named(
+                        "VirtQueue".to_string(),
+                        vec![types::TypeArg::Bound(Expr::Int(fspan, "0".to_string()))],
+                    )),
+                    Box::new(Type::Named("BootError".to_string(), vec![])),
+                )));
+            }
             if let Some(s) = actx.mctx.structs.get(bname.as_str()) {
                 if let Some((_af, d)) = s.assoc_fn(name) {
                     for a in args {
@@ -1839,6 +1878,38 @@ fn check_call_by_field(
                         "Mmio".to_string(),
                         vec![types::TypeArg::Type(Type::Named(layout.clone(), vec![]))],
                     )));
+                }
+            }
+            // plans/M7.md item E1: bring-up transitions beyond map_partition.
+            // Result types mirror `bodies::check_device_state_call` so a
+            // chained assignment keeps tracking.
+            if let Some(types::TypeArg::Type(Type::Named(device, _))) = targs.first() {
+                let device_ty = || {
+                    Type::Named(
+                        "FeaturesAcceptedDevice".to_string(),
+                        vec![types::TypeArg::Type(Type::Named(device.clone(), vec![]))],
+                    )
+                };
+                match name {
+                    "negotiate" => {
+                        return Ok(Some(Type::Result(
+                            Box::new(device_ty()),
+                            Box::new(Type::Named("BootError".to_string(), vec![])),
+                        )));
+                    }
+                    "start" => {
+                        return Ok(Some(Type::Named(
+                            "RunningDevice".to_string(),
+                            vec![types::TypeArg::Type(Type::Named(device.clone(), vec![]))],
+                        )));
+                    }
+                    "read_capacity_sectors" => {
+                        return Ok(Some(Type::Result(
+                            Box::new(Type::U64),
+                            Box::new(Type::Named("BootError".to_string(), vec![])),
+                        )));
+                    }
+                    _ => {}
                 }
             }
             let _ = targs;

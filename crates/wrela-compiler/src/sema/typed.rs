@@ -654,6 +654,17 @@ pub struct TypedProgram {
     /// instead of discarded, never a second computation. Not rendered by
     /// `dump` below, same reasoning as `declared_pools` above.
     pub layouts: Vec<types::LayoutType>,
+    /// plans/M7.md item E1: the image-declared virtio-blk capacity
+    /// (`img.device(..., capacity_sectors=N)`), filled by the image
+    /// check / eval path before lowering so `read_capacity_sectors`
+    /// can emit it as a build constant. `None` until an `@image` seals
+    /// a device that declares one — a call with no capacity then fails
+    /// closed at lower by name.
+    pub blk_capacity_sectors: Option<u64>,
+    /// plans/M7.md item E1: every `VirtQueue.configure(pool=take P, ...,
+    /// depth=N)` site this module typed — `(pool name, depth)`. Layout
+    /// places the ring from these facts and nowhere else.
+    pub virtqueue_configures: Vec<(String, u16)>,
 }
 
 // --- the `--stage=typed` dump (decision 2) --------------------------------

@@ -1,6 +1,6 @@
 module examples.err_device_start
 
-# plans/M7.md item H1 self-audit — `claimed.start()` — still a named rejection
+# plans/M7.md item E1 — `start()` consumes `QueuesConfiguredDevice[D]`; calling it on a claimed device is a type error.
 #
 # What this case would catch: the final `-> Running` transition, whose input state nothing produces yet (`negotiate` and `VirtQueue.configure` are before it).
 

@@ -208,6 +208,44 @@ pub struct ImageLayout {
     /// with its own placed register window in the `devregs` section.
     /// Empty for an image that binds no driver.
     pub device_regs: Vec<DeviceRegs>,
+    /// plans/M7.md item E1: the virtio-blk transport configuration the
+    /// VMM's `parse_report` already consumes (`BlkDevice`/`BlkQueue`),
+    /// derived from the image's `capacity_sectors=`/`required_features=`
+    /// and the driver's `VirtQueue.configure` call. `None` until a
+    /// configure site exists — an image with a device-reachable pool but
+    /// no queue still emits `BlkPool` alone (dump accounting), and the
+    /// test-image hand-built report only learns these lines when this is
+    /// `Some` (so a pool-only image stays bootable without a device model).
+    pub blk: Option<BlkReport>,
+}
+
+/// One virtio-blk queue as the report and the VMM both see it
+/// (`BlkQueue index= size= desc= avail= used= doorbell=`). Addresses come
+/// from `virtqueue::place_ring` against a declared DMA pool — never
+/// invented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlkQueueReport {
+    pub index: u16,
+    pub size: u16,
+    pub desc: u64,
+    pub avail: u64,
+    pub used: u64,
+    pub doorbell: u64,
+    /// Pool whose backing hosts the ring (the `BlkPool` name).
+    pub pool_name: String,
+}
+
+/// The closed virtio-blk device configuration emitted into the report
+/// (`BlkDevice capacity_sectors= features=`). `vector` is omitted at E1
+/// (poll mode; item G owns IRQ vectors).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlkReport {
+    pub capacity_sectors: u64,
+    pub features: u64,
+    pub queue: BlkQueueReport,
+    /// Decision 2c: descriptors a single blk op needs. Occupancy bound /
+    /// exits-per-op need E2/E4.
+    pub descriptors_per_op: u16,
 }
 
 /// One bound pool as it was actually placed: everything the checker
@@ -1034,6 +1072,215 @@ fn verify_pool_windows(sections: &[Section], pools: &[PoolPlacement]) -> Result<
     Ok(())
 }
 
+/// plans/M7.md item E1 / decision 5: every reported ring region
+/// (descriptor table, available ring, used ring, doorbell) is re-derived
+/// to lie wholly inside the named DMA pool's backing — `verify_pool_windows`'
+/// sibling for the ring. A second local derivation that could disagree
+/// about which bytes the device reaches is forbidden: both this check and
+/// the emitter call `virtqueue::place_ring` against the same pool base and
+/// depth.
+fn verify_ring_windows(
+    pools: &[PoolPlacement],
+    blk: &Option<BlkReport>,
+) -> Result<(), LayoutError> {
+    let Some(blk) = blk else {
+        return Ok(());
+    };
+    let q = &blk.queue;
+    let Some(pool) = pools.iter().find(|p| p.backing.name == q.pool_name) else {
+        return Err(LayoutError::new(format!(
+            "internal error: BlkQueue names pool `{}`, which has no placed window",
+            q.pool_name
+        )));
+    };
+    if pool.backing.device.is_none() {
+        return Err(LayoutError::new(format!(
+            "internal error: BlkQueue's pool `{}` is not device-reachable — decision 5: only \
+             DMA pools are device-reachable memory",
+            q.pool_name
+        )));
+    }
+    let Some(placed) = crate::virtqueue::place_ring(pool.base, q.size) else {
+        return Err(LayoutError::new(format!(
+            "internal error: BlkQueue size {} is not a nonzero power of two",
+            q.size
+        )));
+    };
+    if placed.desc != q.desc
+        || placed.avail != q.avail
+        || placed.used != q.used
+        || placed.doorbell != q.doorbell
+    {
+        return Err(LayoutError::new(format!(
+            "internal error: reported BlkQueue ring addresses disagree with \
+             virtqueue::place_ring(pool_base={:#x}, depth={}) — emitter and verifier must share \
+             one derivation",
+            pool.base, q.size
+        )));
+    }
+    if placed.bytes > pool.backing.bytes {
+        return Err(LayoutError::new(format!(
+            "internal error: ring for queue depth {} needs {} bytes but pool `{}` only has {}",
+            q.size, placed.bytes, q.pool_name, pool.backing.bytes
+        )));
+    }
+    let pool_end = pool.base + pool.backing.bytes;
+    for (what, addr, len) in [
+        (
+            "descriptor table",
+            q.desc,
+            crate::virtqueue::desc_bytes(q.size),
+        ),
+        (
+            "available ring",
+            q.avail,
+            crate::virtqueue::avail_bytes(q.size),
+        ),
+        ("used ring", q.used, crate::virtqueue::used_bytes(q.size)),
+        (
+            "doorbell word",
+            q.doorbell,
+            crate::virtqueue::DOORBELL_BYTES,
+        ),
+    ] {
+        let end = addr.checked_add(len).ok_or_else(|| {
+            LayoutError::new(format!(
+                "internal error: blk {what} address overflows a u64"
+            ))
+        })?;
+        if addr < pool.base || end > pool_end {
+            return Err(LayoutError::new(format!(
+                "internal error: blk {what} at [{addr:#x}, {end:#x}) is not inside pool `{}`'s \
+                 window [{:#x}, {pool_end:#x}) — plans/M7.md decision 5",
+                q.pool_name, pool.base
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Collect every module's recorded `VirtQueue.configure` sites
+/// (`TypedProgram::virtqueue_configures`, filled by sema). Machine v1
+/// allows exactly one; more than one fails closed here.
+fn find_virtqueue_configure(
+    programs: &BTreeMap<String, crate::sema::typed::TypedProgram>,
+) -> Result<Option<(String, u16)>, LayoutError> {
+    let mut found: Option<(String, u16)> = None;
+    for prog in programs.values() {
+        for site in &prog.virtqueue_configures {
+            if found.is_some() {
+                return Err(LayoutError::new(
+                    "this image has more than one `VirtQueue.configure` call; machine v1's                      `blk` has exactly one queue"
+                        .to_string(),
+                ));
+            }
+            found = Some(site.clone());
+        }
+    }
+    Ok(found)
+}
+
+/// Build the `BlkDevice`/`BlkQueue` report facts from placed pools and
+/// the driver's `VirtQueue.configure` site. Returns `None` when no
+/// configure exists (pool-only images stay without a device model).
+pub fn derive_blk_report(
+    pools: &[PoolPlacement],
+    graph: &ImageGraph,
+    programs: &BTreeMap<String, crate::sema::typed::TypedProgram>,
+) -> Result<Option<BlkReport>, LayoutError> {
+    let Some((pool_name, depth)) = find_virtqueue_configure(programs)? else {
+        return Ok(None);
+    };
+    let Some(pool) = pools.iter().find(|p| p.backing.name == pool_name) else {
+        return Err(LayoutError::new(format!(
+            "`VirtQueue.configure` consumes pool `{pool_name}`, which has no placed backing"
+        )));
+    };
+    if pool.backing.device.is_none() {
+        return Err(LayoutError::new(format!(
+            "`VirtQueue.configure` consumes pool `{pool_name}`, which is not device-reachable \
+             (`img.dma_pool(..., device=...)`); decision 5: only DMA pools are device-reachable"
+        )));
+    }
+    let Some(placed) = crate::virtqueue::place_ring(pool.base, depth) else {
+        return Err(LayoutError::new(format!(
+            "`VirtQueue.configure`'s depth={depth} is not a nonzero power of two"
+        )));
+    };
+    if placed.bytes > pool.backing.bytes {
+        return Err(LayoutError::new(format!(
+            "`VirtQueue.configure` needs a {depth}-deep ring ({placed_bytes} bytes) but pool \
+             `{pool_name}` only reserves {pool_bytes} bytes — enlarge the `img.dma_pool` or \
+             shrink the depth",
+            placed_bytes = placed.bytes,
+            pool_bytes = pool.backing.bytes,
+        )));
+    }
+    let capacity = crate::eval::image_checks::blk_capacity_sectors(graph).ok_or_else(|| {
+        LayoutError::new(
+            "this image configures a virtio-blk queue but declares no `capacity_sectors=` on \
+             its `img.device` (plans/M7.md item E1: capacity is an image-declared build constant)"
+                .to_string(),
+        )
+    })?;
+    let features = crate::eval::image_checks::blk_accepted_features(graph, programs)
+        .map_err(|e| LayoutError::new(e.message))?;
+    Ok(Some(BlkReport {
+        capacity_sectors: capacity,
+        features,
+        queue: BlkQueueReport {
+            index: 0,
+            size: depth,
+            desc: placed.desc,
+            avail: placed.avail,
+            used: placed.used,
+            doorbell: placed.doorbell,
+            pool_name,
+        },
+        descriptors_per_op: crate::virtqueue::DESCRIPTORS_PER_BLK_OP,
+    }))
+}
+
+/// Append the VMM-facing `BlkDevice`/`BlkQueue`/`BlkPool` lines (and the
+/// decision-2c accounting fact E1 can honestly derive) for a test-image
+/// hand-built report. No-op when `layout.blk` is `None`.
+pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
+    let Some(blk) = &layout.blk else {
+        return;
+    };
+    out.push_str(&format!(
+        "BlkDevice capacity_sectors={} features={:#x}\n",
+        blk.capacity_sectors, blk.features
+    ));
+    let q = &blk.queue;
+    out.push_str(&format!(
+        "BlkQueue index={} size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n",
+        q.index, q.size, q.desc, q.avail, q.used, q.doorbell
+    ));
+    // Only the queue's own pool — the one whose ring the device reaches.
+    if let Some(p) = layout.pools.iter().find(|p| p.backing.name == q.pool_name) {
+        out.push_str(&format!(
+            "BlkPool name={} base={:#x} size={:#x}\n",
+            p.backing.name, p.base, p.backing.bytes
+        ));
+    }
+    out.push_str(&format!(
+        "BlkAccounting descriptors_per_op={}\n",
+        blk.descriptors_per_op
+    ));
+}
+
+/// Fill `layout.blk` from configure sites + placed pools, then re-verify
+/// ring windows. Called by every consumer that has `programs` after layout.
+pub fn attach_blk_report(
+    layout: &mut ImageLayout,
+    graph: &ImageGraph,
+    programs: &BTreeMap<String, crate::sema::typed::TypedProgram>,
+) -> Result<(), LayoutError> {
+    layout.blk = derive_blk_report(&layout.pools, graph, programs)?;
+    verify_ring_windows(&layout.pools, &layout.blk)
+}
+
 // --- device register windows: the `devregs` section (item H1) -------------
 //
 // **Decision 11's other half.** A capability is one word holding a guest
@@ -1813,6 +2060,7 @@ pub fn layout_program(
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
     verify_pool_windows(&sections, &pools)?;
     verify_device_windows(&sections, &device_regs)?;
+    // blk filled later — ring verify runs in attach_blk_report
 
     Ok(ImageLayout {
         blob,
@@ -1821,6 +2069,7 @@ pub fn layout_program(
         runtime: runtime.cloned(),
         pools,
         device_regs,
+        blk: None, // filled by attach_blk_report after layout
     })
 }
 
@@ -1941,9 +2190,15 @@ pub fn try_layout_program(
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
 ) -> Result<Option<ImageLayout>, String> {
+    // plans/M7.md item E1: capacity is an image-declared build constant.
+    // Stamp it onto every TypedProgram before lower so
+    // `read_capacity_sectors` can emit it as a ConstInt.
+    let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
     let mut mwir_programs = Vec::with_capacity(programs.len());
     for typed in programs.values() {
-        match crate::lower::lower_program(typed) {
+        let mut stamped = typed.clone();
+        stamped.blk_capacity_sectors = capacity;
+        match crate::lower::lower_program(&stamped) {
             Ok(p) => mwir_programs.push(p),
             Err(_) => return Ok(None),
         }
@@ -1955,7 +2210,9 @@ pub fn try_layout_program(
     // machines can never disagree with the test-image path's.
     let mut flow_fns = BTreeMap::new();
     for typed in programs.values() {
-        match crate::flowwir_lower::lower_program(typed) {
+        let mut stamped = typed.clone();
+        stamped.blk_capacity_sectors = capacity;
+        match crate::flowwir_lower::lower_program(&stamped) {
             Ok(p) => flow_fns.extend(p.fns),
             Err(_) => return Ok(None),
         }
@@ -2004,8 +2261,12 @@ pub fn try_layout_program(
             group_child_index: &group_child_index,
         }),
     )
-    .map(Some)
-    .map_err(|e| e.message)
+    .and_then(|mut layout| {
+        // plans/M7.md item E1: BlkDevice/BlkQueue from configure + pools.
+        attach_blk_report(&mut layout, graph, programs)?;
+        Ok(Some(layout))
+    })
+    .or_else(|e| Err(e.message))
 }
 
 // ===========================================================================
@@ -2316,6 +2577,10 @@ fn actor_inits(
 struct BootInitCall {
     key: String,
     args: Vec<BootInitArg>,
+    /// plans/M7.md item E1: `true` when `init` returns
+    /// `Result[unit, BootError]` — boot must arm `x8` with a reply slot
+    /// and abort on `Err`.
+    fallible: bool,
 }
 
 /// One materialized `init` argument word — or the promise of one whose
@@ -2670,23 +2935,34 @@ fn one_boot_init_call(
     };
     if init.ret != Type::Unit {
         let rendered = render_type(&init.ret);
-        return Err(LayoutError::new(if matches!(init.ret, Type::Result(..)) {
-            format!(
-                "{kind} `{name}` declares a fallible `init` returning `{rendered}`, and this \
-                 image declares an instance of it — boot would have to handle the failure arm, \
-                 and 03-hardware.md §9's own failure vocabulary (`BootError`, and the transitions \
-                 that route a capability to its restart provision) does not exist in the stdlib \
-                 yet: plans/M7.md item H1 builds the chain's states and its two live transitions \
-                 (`claim`/`map_partition`), both infallible on this machine. Failing closed rather \
-                 than discarding the result."
-            )
-        } else {
-            format!(
-                "{kind} `{name}` declares `init` returning `{rendered}`, and this image \
-                 declares an instance of it — boot can only call an `init` returning \
-                 `unit`, and has nowhere to put a returned value."
-            )
-        }));
+        // plans/M7.md item E1: a fallible `init` returning
+        // `Result[unit, BootError]` is now real — 03 §1's own constructor
+        // signature. Boot allocates a reply slot, calls `init`, and on
+        // `Err` aborts with a diagnosable line (plans/M6.md decision 12 /
+        // plans/M7.md decision 8). Any other non-`unit` return still fails
+        // closed: boot has nowhere to put the value.
+        let ok_fallible = matches!(
+            &init.ret,
+            Type::Result(ok, err)
+                if matches!(ok.as_ref(), Type::Unit)
+                    && matches!(err.as_ref(), Type::Named(n, _) if n == "BootError")
+        );
+        if !ok_fallible {
+            return Err(LayoutError::new(if matches!(init.ret, Type::Result(..)) {
+                format!(
+                    "{kind} `{name}` declares a fallible `init` returning `{rendered}`, and this \
+                     image declares an instance of it — boot can only handle \
+                     `Result[unit, BootError]` (03-hardware.md §1/§9); any other error type \
+                     would need a recovery path this machine does not have yet"
+                )
+            } else {
+                format!(
+                    "{kind} `{name}` declares `init` returning `{rendered}`, and this image \
+                     declares an instance of it — boot can only call an `init` returning \
+                     `unit` or `Result[unit, BootError]`, and has nowhere to put a returned value."
+                )
+            }));
+        }
     }
     if init.params.len() > 8 {
         return Err(LayoutError::new(format!(
@@ -2827,6 +3103,12 @@ fn one_boot_init_call(
     Ok(Some(BootInitCall {
         key: init.key.clone(),
         args,
+        fallible: matches!(
+            &init.ret,
+            Type::Result(ok, err)
+                if matches!(ok.as_ref(), Type::Unit)
+                    && matches!(err.as_ref(), Type::Named(n, _) if n == "BootError")
+        ),
     }))
 }
 
@@ -3239,6 +3521,38 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             &format!(
                 "BlkPool name={} base={:#x} size={:#x}",
                 p.backing.name, p.base, p.backing.bytes
+            ),
+        );
+    }
+    // plans/M7.md item E1: the VMM-facing device/queue lines
+    // `parse_report` already consumes. Absent entirely until a
+    // `VirtQueue.configure` site exists (`layout.blk`).
+    if let Some(blk) = &layout.blk {
+        push_line(
+            out,
+            1,
+            &format!(
+                "BlkDevice capacity_sectors={} features={:#x}",
+                blk.capacity_sectors, blk.features
+            ),
+        );
+        let q = &blk.queue;
+        push_line(
+            out,
+            1,
+            &format!(
+                "BlkQueue index={} size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}",
+                q.index, q.size, q.desc, q.avail, q.used, q.doorbell
+            ),
+        );
+        // Decision 2c: numbers that would decide a bespoke ring later.
+        // Occupancy bound / exits-per-op need E2/E4.
+        push_line(
+            out,
+            1,
+            &format!(
+                "BlkAccounting descriptors_per_op={} queue_depth={}",
+                blk.descriptors_per_op, q.size
             ),
         );
     }
@@ -4356,7 +4670,27 @@ fn build_boot_init(
             a.load_imm(i as u8 + 1, arg.resolve(device_regs, pools)?);
         }
         a.load_imm(0, state);
-        a.bl_call_key(&call.key);
+        // plans/M7.md item E1: a fallible `init` returns
+        // `Result[unit, BootError]` through `x8` (this machine's aggregate
+        // return pointer). Stage 16 bytes on the stack, point `x8` at them,
+        // call, then check the tag — `Err` is image-fatal with a
+        // diagnosable line (plans/M6.md decision 12 / plans/M7.md decision 8).
+        if call.fallible {
+            a.push(encode::enc_sub_imm(31, 31, 16, true)); // reply slot
+            a.push(encode::enc_add_imm(8, 31, 0, true)); // mov x8, sp
+            a.bl_call_key(&call.key);
+            // Load tag from [sp]; RESULT_OK == 0.
+            a.push(encode::enc_ldr_x_imm(9, 31, 0));
+            a.push(encode::enc_add_imm(31, 31, 16, true)); // drop reply slot
+            // cbz x9, ok — skip the BRK when tag == 0.
+            let ok_fixup = a.skip_placeholder();
+            // On Err: BRK with a recognizable immediate so a fallible-init
+            // Err is never silent (plans/M6.md decision 12).
+            a.push(encode::enc_brk(0xE1)); // E1 = item E1
+            a.patch_cbz(ok_fixup, 9);
+        } else {
+            a.bl_call_key(&call.key);
+        }
     }
     a.push(encode::enc_ldr_x_imm(30, 31, 0));
     a.push(encode::enc_add_imm(31, 31, 16, true));
@@ -6331,6 +6665,7 @@ pub fn layout_test_image(
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
     verify_pool_windows(&sections, &pools)?;
     verify_device_windows(&sections, &device_regs)?;
+    // blk filled later — ring verify runs in attach_blk_report
 
     Ok(ImageLayout {
         blob,
@@ -6342,6 +6677,7 @@ pub fn layout_test_image(
         runtime: runtime_tables,
         pools,
         device_regs,
+        blk: None, // filled by attach_blk_report after layout
     })
 }
 
@@ -6891,6 +7227,7 @@ pub struct Store:
             Some(BootInitCall {
                 key: "A.init".to_string(),
                 args: vec![BootInitArg::Word(7)],
+                fallible: false,
             }),
             None,
         ];
@@ -7247,6 +7584,7 @@ fn two():
                     base: 0x2010,
                 },
             ],
+            blk: None,
         };
         let mut out = String::new();
         render_layout_section(&mut out, &layout);
