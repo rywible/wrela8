@@ -1,6 +1,6 @@
 module examples.check_regions_two_disciplines
 
-# plans/M8.md item R, decision 12 — 04-compiler.md §3's group-vs-pool
+# plans/M8.md item R, decision 16 — 04-compiler.md §3's group-vs-pool
 # asymmetry, demonstrated inside ONE function so the comparison needs no
 # second program and no second run: "a group's ... close is a join — a
 # node in the wait-for graph ... A pool is nominal and declared ... it

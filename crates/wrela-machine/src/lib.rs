@@ -210,6 +210,33 @@ pub mod machine_info {
     /// "at most `console::QUEUE_SIZE` *lines*" as a result.
     pub const OFF_LINE_START: u64 = 0x60;
 
+    /// Offset 0x68 (104), `VCPUS` `u64` words: each core's own **bring-up
+    /// mark** (plans/M8.md item C1). 06-machine.md §3's boot sequence has
+    /// the entry "install per-core state, release the other vCPUs ... and
+    /// enter the per-core event loops"; this word is the guest-written
+    /// evidence that a released core actually reached its own loop. Core
+    /// `n`'s own entry block stores `CORE_MARK_RUNNING(n)` — deliberately
+    /// `n + 1`, never a bare `1`, so a core that ran *another* core's entry
+    /// block (a mis-wired secondary entry address) is caught rather than
+    /// blessed, and never `0`, which the zeroed reservation already is.
+    ///
+    /// The VMM reads all `VCPUS` words after the guest halts and refuses a
+    /// boot in which a core it released never marked itself
+    /// (`wrela-vmm`'s own `check_core_marks`) — a released core that never
+    /// executed is a silently-wrong machine, not a slow one.
+    pub const OFF_CORE_MARK: u64 = 0x68;
+    pub const CORE_MARK_STRIDE: u64 = 8;
+
+    /// Core `n`'s own bring-up mark address (`n` in `0..VCPUS`).
+    pub const fn core_mark_addr(core: usize) -> u64 {
+        super::layout::MACHINE_INFO_BASE + OFF_CORE_MARK + (core as u64) * CORE_MARK_STRIDE
+    }
+
+    /// The value core `n` writes to its own mark word.
+    pub const fn core_mark_running(core: usize) -> u64 {
+        core as u64 + 1
+    }
+
     /// Offset 0x100 (256), size 256 bytes: a scratch line buffer the
     /// runtime harness composes a decimal integer's ASCII digits into
     /// (`__wrela_fmt_dec`, used by the summary line's pass/fail counts and
@@ -411,6 +438,24 @@ pub mod mmio {
     /// Placed a further page after `EXIT_MMIO_ADDR`, the identical
     /// separate-page-per-register convention.
     pub const PARK_MMIO_ADDR: u64 = MMIO_BASE + 0x2000;
+
+    /// One `u64` store: **release the other vCPUs** (plans/M8.md item C1).
+    /// 06-machine.md §3 step 3 makes this the entry's own job — "the entry
+    /// installs per-core state, releases the other vCPUs, runs typed driver
+    /// and actor initialization ... and enters the per-core event loops" —
+    /// so it is a guest action the VMM observes, never a host-side decision
+    /// taken behind the guest's back. The stored value is the number of
+    /// cores this image brings up (`1..=VCPUS`); the VMM refuses any other
+    /// value rather than guessing, and refuses a count that disagrees with
+    /// the `CoreEntry` lines the report declares.
+    ///
+    /// A trapping store, exactly like `PARK_MMIO_ADDR` and for the same
+    /// reason (one decode path, one page per register); boot is not a hot
+    /// path, so 06 §5's "hot paths never trap" is not in tension. An image
+    /// whose placement is single-core emits no store at all — there is
+    /// nothing to release, and the dumbest encoding of a no-op is no
+    /// instruction, which is also what keeps every M5-M7 boot byte-identical.
+    pub const RELEASE_MMIO_ADDR: u64 = MMIO_BASE + 0x3000;
 }
 
 /// The closed device set of machine v1 (06-machine.md §6). There is no
@@ -504,6 +549,7 @@ mod tests {
             ("clock_mmio", mmio::CLOCK_MMIO_ADDR, 8),
             ("exit_mmio", mmio::EXIT_MMIO_ADDR, 8),
             ("park_mmio", mmio::PARK_MMIO_ADDR, 8),
+            ("release_mmio", mmio::RELEASE_MMIO_ADDR, 8),
         ]
     }
 
@@ -589,12 +635,41 @@ mod tests {
         assert!(machine_info::OFF_TEST_FAILED + 8 <= machine_info::OFF_RING_DATA_BUMP);
         assert!(machine_info::OFF_RING_DATA_BUMP + 8 <= machine_info::OFF_RING_DESC_BUMP);
         assert!(machine_info::OFF_RING_DESC_BUMP + 8 <= machine_info::OFF_LINE_START);
-        assert!(machine_info::OFF_LINE_START + 8 <= machine_info::OFF_TEST_LINE_BUF);
+        assert!(machine_info::OFF_LINE_START + 8 <= machine_info::OFF_CORE_MARK);
+        assert!(
+            machine_info::OFF_CORE_MARK + VCPUS as u64 * machine_info::CORE_MARK_STRIDE
+                <= machine_info::OFF_TEST_LINE_BUF
+        );
         assert!(
             machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
                 <= machine_info::OFF_VECTOR0_OBSERVED
         );
         assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= layout::MACHINE_INFO_SIZE);
+    }
+
+    /// plans/M8.md item C1: every core's own mark word is distinct, inside
+    /// the machine-info page, and carries a value the zeroed reservation
+    /// cannot produce (never `0`, never another core's).
+    #[test]
+    fn core_marks_are_distinct_and_never_zero() {
+        for core in 0..VCPUS {
+            let addr = machine_info::core_mark_addr(core);
+            assert!(addr >= layout::MACHINE_INFO_BASE);
+            assert!(addr + 8 <= layout::MACHINE_INFO_BASE + layout::MACHINE_INFO_SIZE);
+            assert_ne!(machine_info::core_mark_running(core), 0);
+        }
+        for a in 0..VCPUS {
+            for b in (a + 1)..VCPUS {
+                assert_ne!(
+                    machine_info::core_mark_addr(a),
+                    machine_info::core_mark_addr(b)
+                );
+                assert_ne!(
+                    machine_info::core_mark_running(a),
+                    machine_info::core_mark_running(b)
+                );
+            }
+        }
     }
 
     #[test]

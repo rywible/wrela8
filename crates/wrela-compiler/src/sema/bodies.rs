@@ -8215,7 +8215,7 @@ fn scan_group_starts_expr<'a>(e: &'a Expr, gname: &str, out: &mut Vec<&'a [Arg]>
 /// intrinsic scope) stays fail-closed — the M6 honest-scope line only
 /// lifts `group`.
 ///
-/// plans/M8.md item R, decision 12: the two rejections below are told
+/// plans/M8.md item R, decision 16: the two rejections below are told
 /// apart by name. `with pool` is the language's *other* intrinsic scope,
 /// unimplemented — `error[unimplemented]`, the fail-closed category, and
 /// the only reason 04-compiler.md §3's own group-vs-pool comparison

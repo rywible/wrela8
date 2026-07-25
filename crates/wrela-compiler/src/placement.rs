@@ -84,14 +84,49 @@ pub struct PlacementEntry {
 
 /// The whole image's placement table, construction order (drivers then
 /// actors, matching the report's declaration walk).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementTable {
     pub entries: Vec<PlacementEntry>,
+    /// How many cores this image **brings up** — the single-core floor's
+    /// own live-domain count (`1`, every M5-M7 image) or `VCPUS` for a
+    /// cross-core graph. plans/M8.md item C1 makes this load-bearing: the
+    /// image emits one entry block, one `rt_run_one` and one round-robin
+    /// cursor per live core, and the report publishes a `CoreEntry` line
+    /// for each secondary. One truth: the same predicate that opens the
+    /// packing domain below opens the bring-up set.
+    pub cores: usize,
+}
+
+impl Default for PlacementTable {
+    fn default() -> PlacementTable {
+        PlacementTable {
+            entries: Vec::new(),
+            cores: 1,
+        }
+    }
 }
 
 impl PlacementTable {
     pub fn core_of(&self, id: &ImageDeclRef) -> Option<usize> {
         self.entries.iter().find(|e| e.id == *id).map(|e| e.core)
+    }
+
+    /// The core every actor instance of struct `type_name` is placed on.
+    /// More than one distinct core for one struct name is `None` — the
+    /// caller (plans/M8.md item C1's cross-core edge check) fails closed
+    /// rather than picking one, because the generated admission routine is
+    /// keyed by struct name (`codegen::rt_enqueue_symbol`) and cannot tell
+    /// two same-named instances apart.
+    pub fn core_of_actor_type(&self, type_name: &str) -> Option<usize> {
+        let mut found: Option<usize> = None;
+        for e in self.entries.iter().filter(|e| e.type_name == type_name) {
+            match found {
+                None => found = Some(e.core),
+                Some(c) if c == e.core => {}
+                Some(_) => return None,
+            }
+        }
+        found
     }
 }
 
@@ -241,7 +276,10 @@ pub fn place(
         });
     }
 
-    Ok(PlacementTable { entries })
+    Ok(PlacementTable {
+        entries,
+        cores: live_cores,
+    })
 }
 
 /// Appends the placement section (facts only; absent when the image has

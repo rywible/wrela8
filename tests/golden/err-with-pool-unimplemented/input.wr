@@ -1,6 +1,6 @@
 module examples.err_with_pool_unimplemented
 
-# plans/M8.md item R, decision 12. 02-language.md §10: "`with` opens the
+# plans/M8.md item R, decision 16. 02-language.md §10: "`with` opens the
 # two intrinsic suspend-safe scopes — `group` (§9.5) and scoped `pool`
 # (§4)". Only `group` is implemented; the scoped-pool half must therefore
 # fail closed **by name**, in the `unimplemented` category, so a reader

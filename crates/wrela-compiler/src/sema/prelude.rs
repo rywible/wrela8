@@ -59,7 +59,7 @@ const IMAGE_BUILDER: &[&str] = &[
 /// an entry here, mirroring `Duration`/`ImageDecl`'s own precedent above.
 ///
 /// `pool` joins `group` for exactly the same reason, and for no other
-/// (plans/M8.md item R, decision 12): 02-language.md §10 names **two**
+/// (plans/M8.md item R, decision 16): 02-language.md §10 names **two**
 /// intrinsic `with` scopes, and `symbols::resolve` runs before
 /// `sema::bodies::check_with` ever sees the constructor — so without an
 /// entry here the scoped-pool half of the language's own two-construct

@@ -1,0 +1,71 @@
+module examples.boot_cross_core
+
+# plans/M8.md item C1: THE multicore floor golden — three vCPUs come up and
+# execute, on a real boot, over Hypervisor.framework.
+#
+# The image is cross-core: `Idle` is placed on core 1 by name, which opens
+# the bring-up set to all three cores (item B decision 6's own live-domain
+# rule, now load-bearing). So this boot exercises, end to end:
+#
+#   - the entry driver's own release doorbell (`mmio::RELEASE_MMIO_ADDR`,
+#     06-machine.md §3: "the entry installs per-core state, releases the
+#     other vCPUs, ... and enters the per-core event loops");
+#   - the report's own `CoreEntry core=N base=` lines, one per secondary;
+#   - each secondary core's own entry block: install `sp`, write its own
+#     bring-up mark, run *its own* `rt_run_one` over the actors placed
+#     there, and park with nothing ready — core 2 has no actor at all and
+#     must still come up, find nothing, and park (never spin);
+#   - the single baton (decision 11): three host threads, one `hv_vcpu_run`
+#     at a time, hand-off order a pure function of guest-visible state.
+#
+# **What makes this falsifiable rather than decorative:** the VMM checks
+# every released core's own guest-written mark after the guest halts
+# (`check_core_marks`). Delete the secondary entry blocks, or the release
+# store, or the baton hand-off, and cores 1/2 never write their marks — the
+# boot then fails closed and this transcript becomes an error line instead
+# of `ok`. A passing `test cross_core: ok` is therefore evidence that three
+# cores ran, not merely that one core did the work of three.
+#
+# `Store` (core 0) is what the root turn actually messages: at C1 a
+# cross-core *edge* is refused at build time (`err-placement-cross-core-send`
+# is that sibling), so the message this test sends stays on its own core.
+# `Idle`'s mailbox exists and is empty by construction — nothing can reach
+# core 1 until item C2's rings, which is exactly the floor C1 promises.
+
+@actor
+pub struct Store:
+    value: u64
+
+    init(mut self):
+        self.value = 7
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Idle:
+    ticks: u32
+
+    init(mut self):
+        self.ticks = 0
+
+    pub fn poke(read self) -> u32:
+        return self.ticks
+
+@test(runtime)
+async fn cross_core(store: Actor[Store]):
+    v = await store.get()
+    match v:
+        case .Ok(n):
+            assert n == 7, "expected 7 from Store on core 0"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-cross-core", target=Target.wrela_machine_v1)
+    store = img.actor(Store, mailbox=4, core=0)
+    idle = img.actor(Idle, mailbox=2, core=1)
+    img.supervise(children=[store, idle], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

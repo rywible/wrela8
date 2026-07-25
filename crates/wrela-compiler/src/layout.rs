@@ -223,6 +223,13 @@ pub struct ImageLayout {
     /// report so the HVF path can raise a value the guest could not have
     /// produced (`IRQ_HOST_STATUS_MAGIC`).
     pub irq_host_injects: Vec<IrqHostInject>,
+    /// plans/M8.md item C1: `(core, entry address)` for every **secondary**
+    /// core this image brings up, ascending. Core 0's entry is the
+    /// already-published `entry` field above; these are the addresses the
+    /// VMM starts vCPUs `1..` at once the guest rings
+    /// `mmio::RELEASE_MMIO_ADDR`. Empty for every single-core image, which
+    /// is why no pre-C1 report golden gains a line.
+    pub core_entries: Vec<(usize, u64)>,
 }
 
 /// One virtio-blk queue as the report and the VMM both see it
@@ -933,6 +940,72 @@ fn unresolved_call_target(target: &str, graph: Option<&ImageGraph>) -> LayoutErr
          `img.actor({actor}, mailbox=...)` to the `@image` fn, or remove the call: a \
          handle type with no declared instance has no mailbox to admit into"
     ))
+}
+
+/// plans/M8.md item C1: a `send`/`await` whose sender and target live on
+/// **different cores** is refused, by name, at build time.
+///
+/// 04 §3 says what such an edge must become — "cross-core actor edges keep
+/// identical message semantics, lowered to compiler-generated bounded SPSC
+/// rings in guest memory" — and item C2 is where that lowering lands. Until
+/// then codegen emits the same same-core `__rt_enqueue_X` call it always
+/// has, which writes the target's mailbox from the *sender's* core and
+/// leaves the message for a loop that will never select it. That is the
+/// silent-wrong-answer shape this project ranks worst: before this check,
+/// an actor declared `core=1` ran its turns on core 0 while the report's
+/// Placement section said `core=1`, and every tier reported success.
+///
+/// So the arm fails closed instead, naming both cores and the item that
+/// lifts it (CLAUDE.md: "an unimplemented path errors loudly; it never
+/// approximates"). Same-core edges — every M5-M7 image, and every edge
+/// inside one core of a cross-core image — are untouched.
+///
+/// The caller's own core is its turn owner's (`turn_owner`: an actor
+/// method runs on its actor's core; a `@driver` method on its driver's;
+/// anything else is a free turn, and the only free turns that run are the
+/// root turns core 0's entry driver drives).
+fn check_cross_core_edge(
+    caller_key: &str,
+    target: &str,
+    wiring: Option<&RuntimeWiring>,
+) -> Result<(), LayoutError> {
+    let Some(w) = wiring else {
+        return Ok(());
+    };
+    if w.placement.cores <= 1 {
+        return Ok(());
+    }
+    let Some(target_actor) = crate::codegen::rt_enqueue_actor(target) else {
+        return Ok(());
+    };
+    let actor_names: Vec<String> = w.tables.actors.iter().map(|a| a.name.clone()).collect();
+    let driver_names: Vec<String> = w.tables.drivers.iter().map(|d| d.name.clone()).collect();
+    let caller_core = match turn_owner(caller_key, &actor_names)
+        .or_else(|| turn_owner(caller_key, &driver_names))
+    {
+        Some(owner) => w.placement.core_of_actor_type(owner).unwrap_or(0),
+        None => 0,
+    };
+    let Some(target_core) = w.placement.core_of_actor_type(&target_actor) else {
+        // Two instances of one actor struct on two different cores: the
+        // generated admission routine is keyed by struct name and cannot
+        // tell them apart, so there is no honest core to compare against.
+        return Err(LayoutError::new(format!(
+            "this image declares `{target_actor}` instances on more than one core, but the \
+             generated admission routine (`{target}`) is per actor struct, not per instance — \
+             give each instance its own struct, or place them on one core (plans/M8.md item C1)"
+        )));
+    };
+    if caller_core == target_core {
+        return Ok(());
+    }
+    Err(LayoutError::new(format!(
+        "`{caller_key}` runs on core {caller_core} and sends to actor `{target_actor}` on core \
+         {target_core}: a cross-core edge lowers to a bounded SPSC ring (04-compiler.md §3), and \
+         this image builds none — plans/M8.md item C2 is where cross-core rings land. Until then \
+         place both ends on one core (`core=` in the `@image` fn), or drop the call. Nothing here \
+         is demoted to core 0: the report's Placement section is the assignment the runtime uses"
+    )))
 }
 
 fn patch_bl(
@@ -2442,6 +2515,7 @@ pub fn layout_program(
                     // `code`-section-relative) — the identical two-scheme
                     // lookup `layout_test_image` already does, and the whole
                     // reason a messaged-actor image lays out at all.
+                    check_cross_core_edge(key, target, wiring.as_ref())?;
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4
@@ -2661,6 +2735,16 @@ pub fn layout_program(
     // blk filled later — ring verify runs in attach_blk_report
 
     let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
+    // plans/M8.md item C1: each secondary core's entry, `rtcode`-relative
+    // word index resolved against that section's own placed base.
+    let core_entries: Vec<(usize, u64)> = match (&runtime_block, rtcode_base) {
+        (Some(b), Some(rc)) => b
+            .core_entry_starts
+            .iter()
+            .map(|&(core, word)| (core, rc + (word as u64) * 4))
+            .collect(),
+        _ => Vec::new(),
+    };
     Ok(ImageLayout {
         blob,
         entry: entry_base,
@@ -2670,6 +2754,7 @@ pub fn layout_program(
         device_regs,
         blk: None, // filled by attach_blk_report after layout
         irq_host_injects,
+        core_entries,
     })
 }
 
@@ -3016,10 +3101,35 @@ pub struct RuntimeTables {
     /// wires it). Always `0` in today's report-bearing corpus (no
     /// existing actor-bearing golden uses `with group` yet).
     pub group_arena_capacity: u64,
+    /// How many cores this image brings up (`placement::PlacementTable::
+    /// cores` — `1` for every single-core image, `VCPUS` for a cross-core
+    /// graph). plans/M8.md item C1: the scheduler's own per-core state is
+    /// **striped by this count** — one ready-queue table and one
+    /// round-robin cursor per live core, never one global set shared
+    /// across cores (04 §2: one event loop *per core*, no migration). A
+    /// single-core image stripes by 1, which is byte-for-byte the
+    /// pre-C1 reservation.
+    pub cores: usize,
     /// The exact `rtdata` section size: every actor's own state + ring +
-    /// bookkeeping + frame bytes, plus the ready-queue table, the
-    /// round-robin cursor word, and the group arena.
+    /// bookkeeping + frame bytes, plus the per-core ready-queue tables,
+    /// the per-core round-robin cursor words, and the group arena.
     pub total_bytes: u64,
+}
+
+impl RuntimeTables {
+    /// Restripes the scheduler tables for `cores` live cores, recomputing
+    /// `total_bytes`. Called once, by `RuntimeWiring::derive`, as soon as
+    /// placement is known — `compute_runtime_tables` itself cannot call
+    /// `placement::place` (placement calls *it* for the per-actor sizes it
+    /// packs on, so the dependency runs one way only).
+    pub fn stripe_for_cores(&mut self, cores: usize) {
+        debug_assert!(cores >= 1);
+        let old = self.cores as u64;
+        let new = cores as u64;
+        let per_core = self.ready_queue_capacity * 8 + RR_CURSOR_SIZE;
+        self.total_bytes = self.total_bytes - old * per_core + new * per_core;
+        self.cores = cores;
+    }
 }
 
 /// Per-actor ring bookkeeping beyond the ring bytes themselves: head,
@@ -4166,6 +4276,8 @@ pub fn compute_runtime_tables(
         free_turns,
         ready_queue_capacity,
         group_arena_capacity,
+        // Single-core until placement says otherwise (`stripe_for_cores`).
+        cores: 1,
         total_bytes,
     }))
 }
@@ -4214,6 +4326,14 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         );
     }
     push_line(out, 1, &format!("Entry base={:#x}", layout.entry));
+    // plans/M8.md item C1: one line per secondary core this image brings
+    // up — the address the VMM starts that vCPU at once core 0 rings
+    // `mmio::RELEASE_MMIO_ADDR` (06 §3: "releases the other vCPUs").
+    // Absent entirely for a single-core image, so no pre-C1 report golden
+    // moves; core 0's own entry stays the `Entry base=` line above.
+    for (core, base) in &layout.core_entries {
+        push_line(out, 1, &format!("CoreEntry core={core} base={base:#x}"));
+    }
 
     // --- plans/M6.md item C, decision 3: per-actor runtime-table
     // accounting — facts only, absent entirely when this image has no
@@ -4482,11 +4602,16 @@ pub struct RuntimePlacement {
     pub drivers: Vec<u64>,
     /// fn key -> free-turn area base (`RuntimeTables::free_turns` order).
     pub free_turns: BTreeMap<String, u64>,
-    /// The deterministic round-robin cursor word `rt_run_one` reads/
-    /// advances (04 §2's tie-breaker; at M6 every scheduling key is
-    /// equal, so the cursor is the whole selection order among ready
-    /// actors).
-    pub rr_cursor: u64,
+    /// The deterministic round-robin cursor word each core's own
+    /// `rt_run_one` reads/advances (04 §2's tie-breaker; at M6 every
+    /// scheduling key is equal, so the cursor is the whole selection order
+    /// among that core's ready actors). One per live core
+    /// (`RuntimeTables::cores`) — 04 §2's event loop is per core, so its
+    /// cursor is too; a shared cursor would make one core's selection
+    /// depend on another's, which is exactly the migration/stealing the
+    /// chapter forbids. `rr_cursors[0]` is core 0's, at the identical
+    /// address the single global cursor occupied before item C1.
+    pub rr_cursors: Vec<u64>,
     /// plans/M6.md item F: the whole-image group arena's own base address
     /// — `Reloc::GroupArenaBase`'s own resolution target, placed last
     /// (`RuntimeTables::total_bytes`'s own byte-order doc: actors, free
@@ -4547,15 +4672,23 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         free_turns.insert(key.clone(), cursor);
         cursor += area;
     }
-    cursor += tables.ready_queue_capacity * 8;
-    let rr_cursor = cursor;
-    cursor += RR_CURSOR_SIZE;
+    // plans/M8.md item C1: one ready-queue table + one round-robin cursor
+    // per live core, uniformly strided (each core's pair sits at
+    // `base + core * (ready_queue_capacity * 8 + RR_CURSOR_SIZE)`). With
+    // `cores == 1` this is byte-for-byte the pre-C1 single reservation.
+    let sched_base = cursor;
+    let per_core = tables.ready_queue_capacity * 8 + RR_CURSOR_SIZE;
+    let mut rr_cursors = Vec::with_capacity(tables.cores);
+    for core in 0..tables.cores {
+        rr_cursors.push(sched_base + (core as u64) * per_core + tables.ready_queue_capacity * 8);
+    }
+    cursor = sched_base + (tables.cores as u64) * per_core;
     let group_arena = cursor;
     RuntimePlacement {
         actors,
         drivers,
         free_turns,
-        rr_cursor,
+        rr_cursors,
         group_arena,
     }
 }
@@ -5115,6 +5248,68 @@ fn build_rt_run_one(
     a
 }
 
+/// plans/M8.md item C1: one **secondary core's own entry block** (core
+/// `core` in `1..RuntimeTables::cores`) — 06-machine.md §3's "enters the
+/// per-core event loops", for the cores core 0 releases.
+///
+/// Deliberately the whole of what a secondary core does at C1, in eleven
+/// instructions, with no call outside this same block:
+///
+/// 1. install this core's own stack pointer (`core_stack_base(core) +
+///    CORE_STACK_SIZE` — the per-core state 06 §3 names first; every
+///    codegen'd prologue already assumes `sp` is live);
+/// 2. store this core's own bring-up mark (`machine_info::core_mark_addr`)
+///    — the guest-written evidence the VMM checks at halt, and the one
+///    thing that makes "core 1 executed" falsifiable rather than assumed;
+/// 3. loop: run one tick of **this core's own** event loop
+///    (`rt_run_one_core`, over exactly the actors placed here — 04 §2's
+///    "one per core, over the actors placed there", no stealing, no
+///    migration), and go again while it reports progress;
+/// 4. when nothing on this core is ready, **park** — the ordinary trapping
+///    store to `mmio::PARK_MMIO_ADDR`. The VMM deschedules this core until
+///    its own pending word is raised; it never spins, never polls a wall
+///    clock, and never gets the baton back on its own.
+/// 5. on resume, branch straight back to the loop top: readiness is
+///    re-derived from memory, so a wake decides nothing (the mask-arm-
+///    recheck idempotency 04 §2 requires).
+///
+/// Two things this deliberately does **not** do at C1, each named rather
+/// than silently absent. It does not call `__wrela_checkpoint_service`:
+/// that routine lives in a different image section from this block on the
+/// `layout_program` flavor, and nothing can raise a vector on a secondary
+/// core until cross-core rings exist (item C2), so the call would be an
+/// unreachable cross-section reloc bought on speculation. And it does not
+/// consult `machine_info::OFF_NEXT_DEADLINE`: that word is core 0's park
+/// deadline, and no turn can arm a deadline on a secondary core while no
+/// message can reach one — item C2 gives a woken secondary both.
+fn build_secondary_core_entry(core: usize, rt_run_one_core: usize, start: usize) -> Asm {
+    let mut a = Asm::new(start);
+    let sp_top = machine_layout::core_stack_base(core) + machine_layout::CORE_STACK_SIZE;
+    a.load_imm(9, sp_top);
+    a.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+
+    a.load_imm(9, machine_info::core_mark_running(core));
+    a.load_imm(10, machine_info::core_mark_addr(core));
+    a.push(encode::enc_str_x_imm(9, 10, 0));
+
+    let loop_top = a.abs();
+    a.bl_to(rt_run_one_core);
+    {
+        // cbnz x0, .loop_top — a slice ran; try again before parking.
+        let this = a.abs();
+        let delta = (loop_top as i64 - this as i64) * 4;
+        a.push(encode::enc_cbnz(0, delta as i32, true));
+    }
+    // Nothing ready on this core: park. The stored value is unread by the
+    // VMM (`mmio::PARK_MMIO_ADDR`'s own contract) — the core index it
+    // needs is the vCPU that trapped.
+    a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
+    a.load_imm(10, 0);
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+    a.b_to(loop_top);
+    a
+}
+
 /// One static `g.start` call site's own poll routine (item F #2): checks
 /// its own callee's fixed free-turn area for `busy && suspended &&
 /// resume_ready` and, if ready, resumes it (an ordinary `BL` to the
@@ -5260,15 +5455,25 @@ pub const DEADLOCK_MSG: &str =
 struct RuntimeGlue {
     asms: Vec<Asm>,
     symbols: BTreeMap<String, usize>,
-    /// `rt_run_one`'s own absolute word index (the entry driver's
+    /// Core 0's own `rt_run_one` absolute word index (the entry driver's
     /// scheduler-tick target). Present whenever any glue exists at all.
     rt_run_one_start: usize,
+    /// plans/M8.md item C1: each secondary core's own entry block
+    /// (`build_secondary_core_entry`), absolute word index, in core order
+    /// `1..tables.cores`. Empty for every single-core image — which is
+    /// what keeps their bytes unchanged.
+    core_entry_starts: Vec<usize>,
 }
 
 fn build_runtime_glue_block(
     tables: &RuntimeTables,
     actor_dispatch: &[(String, Vec<(String, bool, bool)>)],
     placement: &RuntimePlacement,
+    // plans/M8.md item C1: each actor's own core, in `tables.actors`
+    // order — the report's Placement section, consumed as the *only*
+    // assignment (shape decision 2: never a second truth). Every entry is
+    // `0` for a single-core image.
+    actor_cores: &[usize],
     // plans/M6.md item F: every static `g.start` call site's own
     // `(callee_key, child_index)` — `BootCtx::group_child_index`, sorted
     // (`BTreeMap`'s own iteration order, CLAUDE.md's determinism rule) so
@@ -5329,18 +5534,53 @@ fn build_runtime_glue_block(
         child_poll_starts.push(poll_start);
         asms.push(poll_asm);
     }
-    let rt_run_one_start = cursor;
-    let run_one_asm = build_rt_run_one(
-        &select_starts,
-        &child_poll_starts,
-        placement.rr_cursor,
-        rt_run_one_start,
-    );
-    asms.push(run_one_asm);
+    // plans/M8.md item C1: one `rt_run_one` per live core, each scanning
+    // exactly the actors placed on it (04 §2: "one per core, over the
+    // actors placed there"). With `cores == 1` every actor is on core 0 by
+    // the single-core floor, so core 0's routine is word-for-word the one
+    // this fn emitted before C1 — that identity is what keeps every M5-M7
+    // boot transcript byte-identical, and it is asserted by the goldens
+    // rather than assumed here.
+    //
+    // Group child polls stay on core 0: a `with group(...)` child is a
+    // free turn, and the only free turns that run are the root test turn's
+    // own, which is core 0's (06 §3: boot and the root turns are the entry
+    // core's). Item C2 revisits this the moment a turn can run elsewhere.
+    let mut rt_run_one_starts = Vec::with_capacity(tables.cores);
+    for core in 0..tables.cores {
+        let core_selects: Vec<usize> = select_starts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| actor_cores.get(*i).copied().unwrap_or(0) == core)
+            .map(|(_, &s)| s)
+            .collect();
+        let core_polls: &[usize] = if core == 0 { &child_poll_starts } else { &[] };
+        let start_here = cursor;
+        let run_one_asm = build_rt_run_one(
+            &core_selects,
+            core_polls,
+            placement.rr_cursors[core],
+            start_here,
+        );
+        cursor += run_one_asm.words.len();
+        rt_run_one_starts.push(start_here);
+        asms.push(run_one_asm);
+    }
+    // Each secondary core's own entry block, after every routine it calls.
+    let mut core_entry_starts = Vec::new();
+    for core in 1..tables.cores {
+        let start_here = cursor;
+        let entry_asm = build_secondary_core_entry(core, rt_run_one_starts[core], start_here);
+        cursor += entry_asm.words.len();
+        core_entry_starts.push(start_here);
+        asms.push(entry_asm);
+    }
+    let _ = cursor;
     RuntimeGlue {
         asms,
         symbols,
-        rt_run_one_start,
+        rt_run_one_start: rt_run_one_starts[0],
+        core_entry_starts,
     }
 }
 
@@ -5698,6 +5938,15 @@ struct RuntimeWiring {
     state_sizes: Vec<u64>,
     driver_state_sizes: Vec<u64>,
     group_child_index: BTreeMap<String, usize>,
+    /// plans/M8.md item C1: each actor instance's own core, in
+    /// `tables.actors` (= `ImageGraph::actors`) order — read straight off
+    /// the report's own Placement table (`placement::place`), never
+    /// re-derived here. Shape decision 2: the report's assignment *is* the
+    /// runtime's assignment, or there are two truths.
+    actor_cores: Vec<usize>,
+    /// The whole placement table, kept for the cross-core edge check both
+    /// image flavors run during reloc resolution.
+    placement: crate::placement::PlacementTable,
 }
 
 impl RuntimeWiring {
@@ -5713,13 +5962,53 @@ impl RuntimeWiring {
     /// the path that does not. Both paths now materialize the same
     /// arguments and fail closed on the same shapes.
     fn derive(boot: &BootCtx) -> Result<Option<RuntimeWiring>, LayoutError> {
-        let Some(tables) =
+        let Some(mut tables) =
             compute_runtime_tables(boot.graph, boot.modules, boot.layout_ctx, boot.async_frames)
                 .map_err(LayoutError::new)?
                 .filter(|t| t.total_bytes > 0)
         else {
             return Ok(None);
         };
+        // plans/M8.md item C1: placement first — it decides how many cores
+        // this image brings up, which stripes the scheduler tables before
+        // anything is placed or emitted against them.
+        let placement = crate::placement::place(boot.graph, boot.modules, boot.layout_ctx)
+            .map_err(LayoutError::new)?;
+        tables.stripe_for_cores(placement.cores);
+        // plans/M8.md item C1's second fail-closed arm. A `@driver`'s ISR
+        // and `@task` bottom half are emitted into the **checkpoint
+        // service**, which only core 0's entry driver and core 0's compiled
+        // code ever call; its `init` likewise runs in core 0's boot
+        // sequence. So a driver inferred or annotated onto a secondary core
+        // would be a second truth of exactly the shape shape decision 2
+        // forbids — the report saying `core=2` while every one of that
+        // driver's own instructions runs on core 0. 04 §3 is explicit
+        // ("a `@driver`'s vectors, pools, permits, and recovery lanes live
+        // on its core; there is no cross-core hardware state"), so this is
+        // refused rather than approximated. Lifting it is item C2's
+        // per-core checkpoint work, not a silent demotion here.
+        for (i, d) in tables.drivers.iter().enumerate() {
+            let core = placement
+                .core_of(&crate::eval::image::ImageDeclRef::Driver(i))
+                .unwrap_or(0);
+            if core != 0 {
+                return Err(LayoutError::new(format!(
+                    "driver#{i} (`{}`) is placed on core {core}, but a `@driver`'s ISR, `@task` \
+                     bottom half and boot `init` all run in core 0's checkpoint service and boot \
+                     sequence — plans/M8.md item C1 brings up secondary cores for actors only. \
+                     Place this driver on core 0 (`core=0`), or wait for item C2's per-core \
+                     device lanes",
+                    d.name
+                )));
+            }
+        }
+        let actor_cores: Vec<usize> = (0..tables.actors.len())
+            .map(|i| {
+                placement
+                    .core_of(&crate::eval::image::ImageDeclRef::Actor(i))
+                    .unwrap_or(0)
+            })
+            .collect();
         let shapes = merge_actor_pub_methods(boot.modules, boot.layout_ctx)?;
         let dispatch = tables
             .actors
@@ -5778,6 +6067,8 @@ impl RuntimeWiring {
             state_sizes,
             driver_state_sizes,
             group_child_index: boot.group_child_index.clone(),
+            actor_cores,
+            placement,
         }))
     }
 }
@@ -5799,6 +6090,9 @@ struct RuntimeBlock {
     relocs: Vec<Reloc>,
     symbols: BTreeMap<String, usize>,
     rt_run_one_start: usize,
+    /// plans/M8.md item C1: `(core, section-relative word index)` for every
+    /// secondary core's own entry block. Empty for a single-core image.
+    core_entry_starts: Vec<(usize, usize)>,
     boot_init_start: usize,
 }
 
@@ -5819,6 +6113,7 @@ fn build_runtime_block(
         &wiring.tables,
         &wiring.dispatch,
         placement,
+        &wiring.actor_cores,
         &wiring.group_child_index,
         start,
     );
@@ -5848,6 +6143,12 @@ fn build_runtime_block(
         relocs,
         symbols: glue.symbols,
         rt_run_one_start: glue.rt_run_one_start,
+        core_entry_starts: glue
+            .core_entry_starts
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (i + 1, w))
+            .collect(),
         boot_init_start,
     })
 }
@@ -6626,12 +6927,38 @@ fn build_entry_driver(
     rodata_cursor: &mut usize,
     boot_init_start: Option<usize>,
     test_args: &BTreeMap<String, Vec<u64>>,
+    // plans/M8.md item C1: how many cores this image brings up
+    // (`RuntimeTables::cores`). `1` emits not one extra instruction — the
+    // whole of what keeps every M5-M7 boot byte-identical.
+    cores: usize,
 ) -> Asm {
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
 
     a.load_imm(9, sp_top);
     a.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+
+    // 06-machine.md §3 step 3, in the order the chapter states it: "the
+    // entry installs per-core state, **releases the other vCPUs**, runs
+    // typed driver and actor initialization in image dependency order,
+    // opens mailboxes atomically, and enters the per-core event loops."
+    // Core 0's own mark goes down first (the same word every secondary
+    // writes — the VMM checks all of them at halt), then the release
+    // doorbell tells the VMM how many cores this image brings up.
+    //
+    // "Released" means eligible to run, not running: the VMM hands the
+    // baton to each released core in turn, and each of them runs before
+    // this one continues (plans/M8.md decision 11 — never concurrently).
+    // Boot init below therefore still runs before any turn anywhere, which
+    // is what the chapter's own ordering requires.
+    if cores > 1 {
+        a.load_imm(9, machine_info::core_mark_running(0));
+        a.load_imm(10, machine_info::core_mark_addr(0));
+        a.push(encode::enc_str_x_imm(9, 10, 0));
+        a.load_imm(9, cores as u64);
+        a.load_imm(10, wrela_machine::mmio::RELEASE_MMIO_ADDR);
+        a.push(encode::enc_str_x_imm(9, 10, 0));
+    }
 
     a.push(encode::enc_movz(9, 0, 0, true)); // x9 = 0
     for off in [
@@ -7247,6 +7574,15 @@ pub fn layout_test_image(
     let runtime_words_len = dummy_block.as_ref().map(|b| b.words.len()).unwrap_or(0);
     let rt_run_one_start = dummy_block.as_ref().map(|b| b.rt_run_one_start);
     let boot_init_start_opt = dummy_block.as_ref().map(|b| b.boot_init_start);
+    // plans/M8.md item C1: word indices only (identical across both
+    // assembly passes, asserted below), so they are known here — before
+    // `rtdata_base` exists — which is what lets the entry driver's own
+    // release store be emitted in the single pass it is built in.
+    let core_entry_starts: Vec<(usize, usize)> = dummy_block
+        .as_ref()
+        .map(|b| b.core_entry_starts.clone())
+        .unwrap_or_default();
+    let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1);
 
     let entry_start = glue_start + runtime_words_len;
     let entry_asm = build_entry_driver(
@@ -7267,6 +7603,7 @@ pub fn layout_test_image(
         &mut rodata_cursor,
         boot_init_start_opt,
         test_args,
+        cores,
     );
 
     let mut harness_words: Vec<u32> = Vec::new();
@@ -7565,6 +7902,7 @@ pub fn layout_test_image(
                     // collide, and why nothing enforces against it yet).
                     // The `else` arm is the audit's one genuinely
                     // user-reachable find — `unresolved_call_target`.
+                    check_cross_core_edge(key, target, wiring.as_ref())?;
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4
@@ -7678,6 +8016,12 @@ pub fn layout_test_image(
     // blk filled later — ring verify runs in attach_blk_report
 
     let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
+    // plans/M8.md item C1: harness-section word indices resolved against
+    // that section's own base (which is `IMAGE_BASE` on this flavor).
+    let core_entries: Vec<(usize, u64)> = core_entry_starts
+        .iter()
+        .map(|&(core, word)| (core, harness_base + (word as u64) * 4))
+        .collect();
     Ok(ImageLayout {
         blob,
         entry: harness_base + (entry_start as u64) * 4,
@@ -7690,6 +8034,7 @@ pub fn layout_test_image(
         device_regs,
         blk: None, // filled by attach_blk_report after layout
         irq_host_injects,
+        core_entries,
     })
 }
 
@@ -8628,6 +8973,7 @@ fn two():
             runtime: None,
             device_regs: Vec::new(),
             irq_host_injects: Vec::new(),
+            core_entries: Vec::new(),
             pools: vec![
                 PoolPlacement {
                     backing: backing("Control", 0x10, 8, Some(0)),

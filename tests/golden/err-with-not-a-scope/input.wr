@@ -1,6 +1,6 @@
 module examples.err_with_not_a_scope
 
-# plans/M8.md item R, decision 12. 02-language.md §10, verbatim: "There
+# plans/M8.md item R, decision 16. 02-language.md §10, verbatim: "There
 # are no other `with` forms and no user-declared scope protocols:
 # acquisition-and-release APIs are ordinary functions used with `defer`,
 # or closure-taking functions (§8.3) when the API wants to guarantee the
