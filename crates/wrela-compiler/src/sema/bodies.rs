@@ -2424,10 +2424,14 @@ fn check_field_expr(
                 }
                 if let Some(dv) = e.variants.iter().find(|v| v.name == name) {
                     if matches!(dv.payload, DeclVariantPayload::None) {
+                        // plans/M9.md item DD / decision 9: the local
+                        // lookup key (`bname`), not `e.name` (the
+                        // exporter's spelling). Same rule as
+                        // `check_struct_construction` — one spelling.
                         return Ok(TypedExpr {
-                            ty: Type::Named(e.name.clone(), vec![]),
+                            ty: Type::Named(bname.clone(), vec![]),
                             kind: TypedExprKind::EnumConstruct {
-                                enum_name: e.name.clone(),
+                                enum_name: bname.clone(),
                                 variant: name.to_string(),
                                 args: vec![],
                             },
@@ -3676,7 +3680,9 @@ fn check_call_index(
                 if !si.decl.generics.is_empty() {
                     let type_args = generics::resolve_call_targs(targs, mctx)?;
                     let si = generics::instantiate_struct(mctx, name, &type_args, call_span)?;
-                    return check_struct_construction(&si, &type_args, args, call_span, fctx, mctx);
+                    return check_struct_construction(
+                        name, &si, &type_args, args, call_span, fctx, mctx,
+                    );
                 }
             }
         }
@@ -4003,7 +4009,7 @@ fn check_call_by_name(
                 call_span,
             ));
         }
-        return check_struct_construction(s, &[], args, call_span, fctx, mctx);
+        return check_struct_construction(name, s, &[], args, call_span, fctx, mctx);
     }
     match name {
         "Some" => {
@@ -4332,10 +4338,12 @@ fn check_call_by_field(
                     let payload_types = decl_variant_payload_types(dv);
                     let typed_args =
                         check_variant_args(&payload_types, args, call_span, fctx, mctx)?;
+                    // plans/M9.md item DD / decision 9: local key, not
+                    // `e.name` — see the fieldless arm in `check_field_expr`.
                     return Ok(TypedExpr {
-                        ty: Type::Named(e.name.clone(), vec![]),
+                        ty: Type::Named(bname.clone(), vec![]),
                         kind: TypedExprKind::EnumConstruct {
-                            enum_name: e.name.clone(),
+                            enum_name: bname.clone(),
                             variant: name.to_string(),
                             args: typed_args,
                         },
@@ -9332,6 +9340,7 @@ fn check_image_decl_method_intrinsic(
 }
 
 fn check_struct_construction(
+    local_name: &str,
     s: &StructInfo,
     targs: &[TypeArg],
     args: &[Arg],
@@ -9348,14 +9357,22 @@ fn check_struct_construction(
     // checking below (`s.init()`/`check_struct_literal`, which read field/
     // init-param types straight off `s.decl`) was already correct; only
     // the *result* type dropped the args.
-    let self_ty = Type::Named(s.decl.name.clone(), targs.to_vec());
+    //
+    // plans/M9.md item DD / decision 9: the name on `Type::Named` (and on
+    // the `StructLiteral` / `init` callee key) is the *local* spelling the
+    // author wrote — the key `mctx.structs` was looked up under — not
+    // `s.decl.name`, which is the exporter's spelling and stays that way
+    // across an `import ... as` alias. Method lookup keys on
+    // `Type::Named`; using `decl.name` made `Duo(...).sum()` look for
+    // `Pair` in a table that only held `Duo`.
+    let self_ty = Type::Named(local_name.to_string(), targs.to_vec());
     if let Some((ia, id)) = s.init() {
         let typed_args = check_call_args(&ia.params, &id.params, args, call_span, fctx, mctx)?;
         let key = if targs.is_empty() {
-            CalleeKey::Method(s.decl.name.clone(), "init".to_string())
+            CalleeKey::Method(local_name.to_string(), "init".to_string())
         } else {
             CalleeKey::MethodInstance(
-                generics::canonical_key(InstKind::Struct, &s.decl.name, targs),
+                generics::canonical_key(InstKind::Struct, local_name, targs),
                 "init".to_string(),
             )
         };
@@ -9390,7 +9407,7 @@ fn check_struct_construction(
     Ok(TypedExpr {
         ty: self_ty,
         kind: TypedExprKind::StructLiteral {
-            name: s.decl.name.clone(),
+            name: local_name.to_string(),
             fields,
         },
     })

@@ -1,0 +1,17 @@
+Module path=app.main
+  Fn pick_annotated(c: read Hue) -> u32
+  Fn pick_constructed() -> u32
+  Const A: u32
+  Const C: u32
+  Const SETTLED: u32
+  Fn t_annotated() -> unit
+  Fn t_constructed() -> unit
+  Fn t_settled() -> unit
+  Struct Store resource
+    field settled: u32
+    init(mut self, settled: read u32) -> unit
+  Fn build() -> Image
+Module path=lib.color
+  Enum Color data
+    variant Red
+    variant Blue

@@ -1225,7 +1225,8 @@ fn check_field(base: &Expr, name: &str, actx: &mut ACtx) -> Result<Option<Type>,
                     .iter()
                     .any(|v| v.name == name && matches!(v.payload, types::DeclVariantPayload::None))
                 {
-                    return Ok(Some(Type::Named(e.name.clone(), vec![])));
+                    // plans/M9.md item DD / decision 9: local key.
+                    return Ok(Some(Type::Named(bname.clone(), vec![])));
                 }
                 return Ok(None);
             }
@@ -1532,7 +1533,7 @@ fn check_call(
                     } else if let Some(s) = actx.mctx.structs.get(name) {
                         if !s.decl.generics.is_empty() {
                             let type_args = generics::resolve_call_targs(targs, actx.mctx)?;
-                            return check_struct_construction(s, &type_args, args, actx);
+                            return check_struct_construction(name, s, &type_args, args, actx);
                         }
                     }
                 }
@@ -1616,7 +1617,7 @@ fn check_call_by_name(
         return Ok(Some(f.decl.ret.clone()));
     }
     if let Some(s) = actx.mctx.structs.get(name) {
-        return check_struct_construction(s, &[], args, actx);
+        return check_struct_construction(name, s, &[], args, actx);
     }
     if name == "Image" {
         // plans/M4.md item B, decision 5: unlike `Some`/`Ok`/`Err`/
@@ -1642,6 +1643,7 @@ fn check_call_by_name(
 }
 
 fn check_struct_construction(
+    local_name: &str,
     s: &StructInfo,
     targs: &[types::TypeArg],
     args: &[Arg],
@@ -1651,7 +1653,8 @@ fn check_struct_construction(
     // carry the instantiation's own args into the synthesized type so
     // this pass's best-effort tracker can keep answering field/method
     // questions through it (`check_field`'s `subst_field_type` above).
-    let self_ty = Type::Named(s.decl.name.clone(), targs.to_vec());
+    // plans/M9.md item DD / decision 9: local spelling, not `decl.name`.
+    let self_ty = Type::Named(local_name.to_string(), targs.to_vec());
     if let Some((_ia, id)) = s.init() {
         for a in args {
             check_arg(a, actx)?;
@@ -1784,7 +1787,8 @@ fn check_call_by_field(
                     check_payload_arg(a, actx)?;
                 }
                 if e.variants.iter().any(|v| v.name == name) {
-                    return Ok(Some(Type::Named(e.name.clone(), vec![])));
+                    // plans/M9.md item DD / decision 9: local key.
+                    return Ok(Some(Type::Named(bname.clone(), vec![])));
                 }
                 return Ok(None);
             }

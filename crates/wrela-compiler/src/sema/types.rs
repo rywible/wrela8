@@ -4590,6 +4590,104 @@ fn render_variant(v: &DeclVariant, depth: usize, out: &mut String) {
     push_line(out, depth, &line);
 }
 
+// --- plans/M9.md item DD: re-key a spliced DeclStruct under its alias ----
+//
+// Decision 9: the local spelling is the one name. The ModuleCtx splice
+// installs under that key; this walk makes every `Type::Named` inside the
+// cloned declaration agree, so an associated fn's return type, a method
+// parameter, and a field of `Self` all resolve the same way construction
+// and method lookup do. Paired with `typed::rekey_struct_name` at the
+// TypedProgram splice (method *bodies* were typed in the exporter).
+
+/// Re-key a spliced `DeclStruct` from the exporter's spelling to the
+/// importer's local (possibly aliased) spelling. No-op when they match.
+pub(crate) fn rekey_decl_struct_name(s: &mut DeclStruct, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    if s.name == from {
+        s.name = to.to_string();
+    }
+    for m in &mut s.members {
+        match m {
+            DeclMember::Field(f) => rekey_decl_type(&mut f.ty, from, to),
+            DeclMember::Fn(f) | DeclMember::Init(f) => {
+                for p in &mut f.params {
+                    rekey_decl_type(&mut p.ty, from, to);
+                }
+                rekey_decl_type(&mut f.ret, from, to);
+                for g in &mut f.generics {
+                    if let DeclGenericKind::Const(ty) = &mut g.kind {
+                        rekey_decl_type(ty, from, to);
+                    }
+                }
+            }
+            DeclMember::Pool(_) => {}
+        }
+    }
+    for (ty, _) in &mut s.component_types {
+        rekey_decl_type(ty, from, to);
+    }
+    for g in &mut s.generics {
+        if let DeclGenericKind::Const(ty) = &mut g.kind {
+            rekey_decl_type(ty, from, to);
+        }
+    }
+}
+
+fn rekey_decl_type(ty: &mut Type, from: &str, to: &str) {
+    match ty {
+        Type::Array(elem, _) => rekey_decl_type(elem, from, to),
+        Type::Tuple(elems) => {
+            for e in elems {
+                rekey_decl_type(e, from, to);
+            }
+        }
+        Type::Option(inner) => rekey_decl_type(inner, from, to),
+        Type::Result(ok, err) => {
+            rekey_decl_type(ok, from, to);
+            rekey_decl_type(err, from, to);
+        }
+        Type::Own(_, inner) | Type::Static(inner) => rekey_decl_type(inner, from, to),
+        Type::Fn(params, ret) => {
+            for (_, p) in params {
+                rekey_decl_type(p, from, to);
+            }
+            rekey_decl_type(ret, from, to);
+        }
+        Type::Named(name, targs) => {
+            if name == from {
+                *name = to.to_string();
+            }
+            for a in targs {
+                match a {
+                    TypeArg::Type(t) => rekey_decl_type(t, from, to),
+                    TypeArg::Const(_) | TypeArg::Bound(_) | TypeArg::Pool(_) => {}
+                }
+            }
+        }
+        Type::Bytes(_)
+        | Type::Bool
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::Usize
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::Isize
+        | Type::F32
+        | Type::F64
+        | Type::Char
+        | Type::Unit
+        | Type::Never
+        | Type::Str
+        | Type::Generic(_) => {}
+    }
+}
+
 // --- tests --------------------------------------------------------------
 //
 // 02-language.md §7.1: "`struct` is a product value — data if every field

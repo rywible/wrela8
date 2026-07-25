@@ -1,0 +1,4 @@
+test t_annotated: ok
+test t_constructed: ok
+test t_settled: ok
+3 passed, 0 failed

@@ -1,0 +1,6 @@
+test t_assoc: ok
+test t_read: ok
+test t_mut: ok
+test t_take: ok
+test t_settled: ok
+5 passed, 0 failed

@@ -1259,3 +1259,389 @@ fn dump_expr(e: &TypedExpr, depth: usize, out: &mut String) {
         }
     }
 }
+
+// --- plans/M9.md item DD: re-key an imported struct under its local alias --
+//
+// Decision 9: an imported type resolves to `Type::Named(<local name>)`.
+// The `ModuleCtx` / `TypedProgram` splices install the declaration under
+// that local key, but the *body* of a spliced `TypedStruct` was typed in
+// the exporting module, so every `Type::Named` / `CalleeKey::Method` /
+// `StructLiteral` still carries the exporter's spelling. Evaluating
+// `Duo(...).sum()` then looked up `Pair` inside the method body and hit
+// A1b's `unresolvable` table (`Pair` is not a name the importer bound).
+// One rewrite at the typed splice, keyed by the same `(from, to)` the
+// import binding already knows — not a second lookup path at every
+// consumer.
+
+/// Re-key a spliced `TypedStruct` from the exporter's spelling to the
+/// importer's local (possibly aliased) spelling. No-op when they match.
+pub(crate) fn rekey_struct_name(s: &mut TypedStruct, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    if s.name == from {
+        s.name = to.to_string();
+    }
+    for ty in s.field_types.values_mut() {
+        rekey_type(ty, from, to);
+    }
+    for e in s.field_defaults.values_mut() {
+        rekey_expr(e, from, to);
+    }
+    for f in s.methods.values_mut() {
+        rekey_fn(f, from, to);
+    }
+    for f in s.assoc_fns.values_mut() {
+        rekey_fn(f, from, to);
+    }
+    if let Some(f) = s.init.as_mut() {
+        rekey_fn(f, from, to);
+    }
+}
+
+fn rekey_fn(f: &mut TypedFn, from: &str, to: &str) {
+    if let Some((_, ty)) = f.receiver.as_mut() {
+        rekey_type(ty, from, to);
+    }
+    for p in &mut f.params {
+        rekey_type(&mut p.ty, from, to);
+        if let Some(d) = p.default.as_mut() {
+            rekey_expr(d, from, to);
+        }
+    }
+    rekey_type(&mut f.ret, from, to);
+    for st in &mut f.body {
+        rekey_stmt(st, from, to);
+    }
+}
+
+fn rekey_type(ty: &mut Type, from: &str, to: &str) {
+    match ty {
+        Type::Array(elem, _) => rekey_type(elem, from, to),
+        Type::Tuple(elems) => {
+            for e in elems {
+                rekey_type(e, from, to);
+            }
+        }
+        Type::Option(inner) => rekey_type(inner, from, to),
+        Type::Result(ok, err) => {
+            rekey_type(ok, from, to);
+            rekey_type(err, from, to);
+        }
+        Type::Own(_, inner) | Type::Static(inner) => rekey_type(inner, from, to),
+        Type::Fn(params, ret) => {
+            for (_, p) in params {
+                rekey_type(p, from, to);
+            }
+            rekey_type(ret, from, to);
+        }
+        Type::Named(name, targs) => {
+            if name == from {
+                *name = to.to_string();
+            }
+            for a in targs {
+                rekey_type_arg(a, from, to);
+            }
+        }
+        Type::Bytes(_)
+        | Type::Bool
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::Usize
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::Isize
+        | Type::F32
+        | Type::F64
+        | Type::Char
+        | Type::Unit
+        | Type::Never
+        | Type::Str
+        | Type::Generic(_) => {}
+    }
+}
+
+fn rekey_type_arg(a: &mut types::TypeArg, from: &str, to: &str) {
+    match a {
+        types::TypeArg::Type(t) => rekey_type(t, from, to),
+        types::TypeArg::Const(_) | types::TypeArg::Bound(_) | types::TypeArg::Pool(_) => {}
+    }
+}
+
+fn rekey_callee(key: &mut CalleeKey, from: &str, to: &str) {
+    match key {
+        CalleeKey::Method(sname, _) if sname == from => *sname = to.to_string(),
+        // Instantiation keys keep the exporter's `canonical_key` spelling
+        // (ImportedDecls::instantiations is keyed that way); do not touch.
+        CalleeKey::Fn(_)
+        | CalleeKey::FnInstance(_)
+        | CalleeKey::Method(_, _)
+        | CalleeKey::MethodInstance(_, _) => {}
+    }
+}
+
+fn rekey_expr(e: &mut TypedExpr, from: &str, to: &str) {
+    rekey_type(&mut e.ty, from, to);
+    match &mut e.kind {
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::Local(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::PoolName(_) => {}
+        TypedExprKind::FnRef(key) | TypedExprKind::GroupChild(key) => rekey_callee(key, from, to),
+        TypedExprKind::Field(base, _)
+        | TypedExprKind::ToScalar(base)
+        | TypedExprKind::Neg(base)
+        | TypedExprKind::BitNot(base)
+        | TypedExprKind::Take(base)
+        | TypedExprKind::Not(base)
+        | TypedExprKind::Panic(base)
+        | TypedExprKind::Await(base)
+        | TypedExprKind::Send(base) => rekey_expr(base, from, to),
+        TypedExprKind::Index(base, idx) => {
+            rekey_expr(base, from, to);
+            rekey_expr(idx, from, to);
+        }
+        TypedExprKind::Call {
+            callee,
+            receiver,
+            args,
+        } => {
+            rekey_callee(callee, from, to);
+            if let Some(r) = receiver {
+                rekey_expr(r, from, to);
+            }
+            for a in args {
+                if let Some(a) = a {
+                    rekey_expr(a, from, to);
+                }
+            }
+        }
+        TypedExprKind::CallValue(f, args) => {
+            rekey_expr(f, from, to);
+            for a in args {
+                rekey_expr(a, from, to);
+            }
+        }
+        TypedExprKind::Try(inner, conv) => {
+            rekey_expr(inner, from, to);
+            if let Some(key) = conv {
+                rekey_callee(key, from, to);
+            }
+        }
+        TypedExprKind::Binary(_, l, r) | TypedExprKind::And(l, r) | TypedExprKind::Or(l, r) => {
+            rekey_expr(l, from, to);
+            rekey_expr(r, from, to);
+        }
+        TypedExprKind::OpCall(key, l, r) => {
+            rekey_callee(key, from, to);
+            rekey_expr(l, from, to);
+            rekey_expr(r, from, to);
+        }
+        TypedExprKind::Is(inner, pat) => {
+            rekey_expr(inner, from, to);
+            rekey_pattern(pat, from, to);
+        }
+        TypedExprKind::EnumConstruct {
+            enum_name, args, ..
+        } => {
+            if enum_name == from {
+                *enum_name = to.to_string();
+            }
+            for a in args {
+                rekey_expr(a, from, to);
+            }
+        }
+        TypedExprKind::Closure { params, body } => {
+            for p in params {
+                rekey_type(&mut p.ty, from, to);
+            }
+            match body {
+                TypedClosureBody::Expr(e) => rekey_expr(e, from, to),
+                TypedClosureBody::Suite(stmts) => {
+                    for st in stmts {
+                        rekey_stmt(st, from, to);
+                    }
+                }
+            }
+        }
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                rekey_expr(i, from, to);
+            }
+        }
+        TypedExprKind::StructLiteral { name, fields } => {
+            if name == from {
+                *name = to.to_string();
+            }
+            for (_, f) in fields {
+                rekey_expr(f, from, to);
+            }
+        }
+        TypedExprKind::Intrinsic {
+            receiver,
+            type_arg,
+            args,
+            ..
+        } => {
+            if let Some(r) = receiver {
+                rekey_expr(r, from, to);
+            }
+            if let Some(t) = type_arg {
+                rekey_type(t, from, to);
+            }
+            for (_, a) in args {
+                rekey_expr(a, from, to);
+            }
+        }
+    }
+}
+
+fn rekey_pattern(p: &mut TypedPattern, from: &str, to: &str) {
+    rekey_type(&mut p.ty, from, to);
+    match &mut p.kind {
+        TypedPatternKind::Wildcard | TypedPatternKind::Binding(_) => {}
+        TypedPatternKind::Literal(e) => rekey_expr(e, from, to),
+        TypedPatternKind::Take(inner) => rekey_pattern(inner, from, to),
+        TypedPatternKind::Variant {
+            enum_name, payload, ..
+        } => {
+            if enum_name == from {
+                *enum_name = to.to_string();
+            }
+            for sp in payload {
+                rekey_pattern(sp, from, to);
+            }
+        }
+        TypedPatternKind::Tuple(items) | TypedPatternKind::Array(items) => {
+            for sp in items {
+                rekey_pattern(sp, from, to);
+            }
+        }
+        TypedPatternKind::Or(alts) => {
+            for a in alts {
+                rekey_pattern(a, from, to);
+            }
+        }
+    }
+}
+
+fn rekey_stmt(st: &mut TypedStmt, from: &str, to: &str) {
+    match &mut st.kind {
+        TypedStmtKind::Let { ty, value, .. } => {
+            rekey_type(ty, from, to);
+            rekey_expr(value, from, to);
+        }
+        TypedStmtKind::Assign { target, value } => {
+            rekey_expr(target, from, to);
+            rekey_expr(value, from, to);
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            rekey_expr(cond, from, to);
+            for s in then_branch {
+                rekey_stmt(s, from, to);
+            }
+            for e in elifs {
+                rekey_expr(&mut e.cond, from, to);
+                for s in &mut e.body {
+                    rekey_stmt(s, from, to);
+                }
+            }
+            if let Some(body) = else_branch {
+                for s in body {
+                    rekey_stmt(s, from, to);
+                }
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            rekey_expr(scrutinee, from, to);
+            for arm in arms {
+                rekey_pattern(&mut arm.pattern, from, to);
+                if let Some(g) = arm.guard.as_mut() {
+                    rekey_expr(g, from, to);
+                }
+                for s in &mut arm.body {
+                    rekey_stmt(s, from, to);
+                }
+            }
+        }
+        TypedStmtKind::For {
+            elem_ty,
+            iter,
+            body,
+            ..
+        } => {
+            rekey_type(elem_ty, from, to);
+            match iter {
+                TypedForIter::Range(a, b, _) => {
+                    rekey_expr(a, from, to);
+                    rekey_expr(b, from, to);
+                }
+                TypedForIter::Expr(e) => rekey_expr(e, from, to),
+            }
+            for s in body {
+                rekey_stmt(s, from, to);
+            }
+        }
+        TypedStmtKind::While { cond, body } => {
+            rekey_expr(cond, from, to);
+            for s in body {
+                rekey_stmt(s, from, to);
+            }
+        }
+        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
+        TypedStmtKind::Return(v) => {
+            if let Some(e) = v {
+                rekey_expr(e, from, to);
+            }
+        }
+        TypedStmtKind::Assert { cond, message }
+        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            rekey_expr(cond, from, to);
+            if let Some(m) = message {
+                rekey_expr(m, from, to);
+            }
+        }
+        TypedStmtKind::Defer(body) => match body {
+            TypedDeferBody::Expr(e) => rekey_expr(e, from, to),
+            TypedDeferBody::Suite(stmts) => {
+                for s in stmts {
+                    rekey_stmt(s, from, to);
+                }
+            }
+        },
+        TypedStmtKind::ExprStmt(e) | TypedStmtKind::BareSend { expr: e, .. } => {
+            rekey_expr(e, from, to);
+        }
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                rekey_expr(c, from, to);
+            }
+            if let Some(d) = deadline {
+                rekey_expr(d, from, to);
+            }
+            for s in body {
+                rekey_stmt(s, from, to);
+            }
+        }
+    }
+}

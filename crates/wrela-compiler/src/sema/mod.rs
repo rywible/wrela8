@@ -526,10 +526,20 @@ pub fn check_program_typed(
                 dst.const_values.insert(local.clone(), v);
             }
         }
-        if let Some(s) = struct_entry {
+        if let Some(mut s) = struct_entry {
+            // plans/M9.md item DD / decision 9: the map key is the local
+            // spelling; `DeclStruct::name` and every `Type::Named` inside
+            // the declaration must match it, or construction / assoc-fn
+            // returns / method params still emit the exporter's spelling.
+            if local != target_name {
+                types::rekey_decl_struct_name(&mut s.decl, &target_name, &local);
+            }
             dst.structs.insert(local.clone(), s);
         }
-        if let Some(e) = enum_entry {
+        if let Some(mut e) = enum_entry {
+            if local != target_name {
+                e.name = local.clone();
+            }
             dst.enums.insert(local, e);
         }
     }
@@ -798,7 +808,14 @@ fn splice_imported_decls(
             if let Some(f) = fn_entry {
                 dst.imported.fns.insert(local.clone(), f);
             }
-            if let Some(s) = struct_entry {
+            if let Some(mut s) = struct_entry {
+                // plans/M9.md item DD / decision 9: re-key the typed body
+                // from the exporter's spelling to the local alias, so
+                // method bodies that name `Self` as `Type::Named` resolve
+                // under the same key the splice installed.
+                if local != target_name {
+                    typed::rekey_struct_name(&mut s, &target_name, &local);
+                }
                 dst.imported.structs.insert(local.clone(), s);
             }
             for (ikey, inst) in inst_entries {
