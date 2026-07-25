@@ -1,0 +1,33 @@
+module app.main
+
+from lib.pk import Hand
+from lib.pk import Src
+
+# plans/M9.md item GG: unaliased peer in a signature must keep working
+# under whole-signature re-key (identity subs). PLAIN = 5 + 300 = 305.
+
+fn drive() -> u32:
+    s = Src(n=5)
+    h = Hand.make(take s)
+    return h.inner.n + 300
+
+const PLAIN: u32 = drive()
+
+@test
+pub fn t_plain():
+    assert PLAIN == 305, "unaliased peer signature"
+
+@actor
+pub struct Store:
+    plain: u32
+
+    init(mut self, plain: u32):
+        self.plain = plain
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-sig-peer", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, plain=PLAIN, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

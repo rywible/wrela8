@@ -1,0 +1,14 @@
+Module path=app.main
+  Fn drive() -> u32
+  Const PLAIN: u32
+  Fn t_plain() -> unit
+  Struct Store resource
+    field plain: u32
+    init(mut self, plain: read u32) -> unit
+  Fn build() -> Image
+Module path=lib.pk
+  Struct Src data
+    field n: u32
+  Struct Hand data
+    field inner: Src
+    fn make(source: take Src) -> Hand

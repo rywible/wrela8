@@ -1,0 +1,34 @@
+module app.main
+
+from lib.pk import Hand as Grip
+from lib.pk import Src as Item
+
+# plans/M9.md item GG: peer type aliased in *parameter* position on a
+# hand-written associated fn. Before GG, Grip.make expected `Src` (not in
+# scope) and rejected `Item`. PARAM = 5 + 300 = 305 — identity cannot forge it.
+
+fn drive() -> u32:
+    s = Item(n=5)
+    h = Grip.make(take s)
+    return h.inner.n + 300
+
+const PARAM: u32 = drive()
+
+@test
+pub fn t_param():
+    assert PARAM == 305, "peer-aliased param on hand-written assoc fn"
+
+@actor
+pub struct Store:
+    param: u32
+
+    init(mut self, param: u32):
+        self.param = param
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-alias-sig-param", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, param=PARAM, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

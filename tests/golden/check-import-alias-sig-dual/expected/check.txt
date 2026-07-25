@@ -1,0 +1,25 @@
+Module path=app.main
+  Fn param_path() -> u32
+  Fn return_path() -> u32
+  Const P: u32
+  Const R: u32
+  Const SETTLED: u32
+  Fn t_param() -> unit
+  Fn t_return() -> unit
+  Fn t_settled() -> unit
+  Struct Store resource
+    field settled: u32
+    init(mut self, settled: read u32) -> unit
+  Fn build() -> Image
+Module path=lib.pk
+  Struct Src data
+    field n: u32
+  Struct Hand data
+    field inner: Src
+    fn make(source: take Src) -> Hand
+Module path=lib.ret
+  Struct Inner data
+    field n: u32
+  Struct Outer data
+    field n: u32
+    fn peel(read self) -> Inner

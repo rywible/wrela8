@@ -1,0 +1,275 @@
+Program
+  Fn key=Grip.make frame=32 bytes
+    0000: d10083ff  sub sp, sp, #32
+    0001: f9000ffe  str lr, [sp, #24]
+    0002: f9400009  ldr x9, [x0, #0]
+    0003: f90003e9  str x9, [sp, #0]
+    0004: f9000be8  str x8, [sp, #16]
+    0005: f94003e9  ldr x9, [sp, #0]
+    0006: f90007e9  str x9, [sp, #8]
+    0007: f9400be9  ldr x9, [sp, #16]
+    0008: f94007ea  ldr x10, [sp, #8]
+    0009: f900012a  str x10, [x9, #0]
+    0010: 14000002  b #8
+    0011: 14000001  b #4
+    0012: f9400ffe  ldr lr, [sp, #24]
+    0013: 910083ff  add sp, sp, #32
+    0014: d65f03c0  ret
+  Fn key=Out.peel frame=48 bytes
+    0000: d100c3ff  sub sp, sp, #48
+    0001: f90017fe  str lr, [sp, #40]
+    0002: f9000fe0  str x0, [sp, #24]
+    0003: f9400009  ldr x9, [x0, #0]
+    0004: f90003e9  str x9, [sp, #0]
+    0005: f90013e8  str x8, [sp, #32]
+    0006: f94003e9  ldr x9, [sp, #0]
+    0007: f90007e9  str x9, [sp, #8]
+    0008: f94007e9  ldr x9, [sp, #8]
+    0009: f9000be9  str x9, [sp, #16]
+    0010: f94013e9  ldr x9, [sp, #32]
+    0011: f9400bea  ldr x10, [sp, #16]
+    0012: f900012a  str x10, [x9, #0]
+    0013: 14000002  b #8
+    0014: 14000001  b #4
+    0015: f94017fe  ldr lr, [sp, #40]
+    0016: 9100c3ff  add sp, sp, #48
+    0017: d65f03c0  ret
+  Fn key=Store.init frame=32 bytes
+    0000: d10083ff  sub sp, sp, #32
+    0001: f9000ffe  str lr, [sp, #24]
+    0002: f9000be0  str x0, [sp, #16]
+    0003: f9400009  ldr x9, [x0, #0]
+    0004: f90003e9  str x9, [sp, #0]
+    0005: f90007e1  str x1, [sp, #8]
+    0006: f94007e9  ldr x9, [sp, #8]
+    0007: f90003e9  str x9, [sp, #0]
+    0008: 14000001  b #4
+    0009: f9400be9  ldr x9, [sp, #16]
+    0010: f94003ea  ldr x10, [sp, #0]
+    0011: f900012a  str x10, [x9, #0]
+    0012: f9400ffe  ldr lr, [sp, #24]
+    0013: 910083ff  add sp, sp, #32
+    0014: d65f03c0  ret
+  Fn key=param_path frame=80 bytes
+    0000: d10143ff  sub sp, sp, #80
+    0001: f90027fe  str lr, [sp, #72]
+    0002: d2800069  movz x9, #0x3
+    0003: f2a00009  movk x9, #0x0, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: f94003e9  ldr x9, [sp, #0]
+    0008: f90007e9  str x9, [sp, #8]
+    0009: f94007e9  ldr x9, [sp, #8]
+    0010: f9000be9  str x9, [sp, #16]
+    0011: 910043e0  add x0, sp, #16
+    0012: 910063e8  add x8, sp, #24
+    0013: 94000000  bl <Grip.make>
+    0014: f9400fe9  ldr x9, [sp, #24]
+    0015: f90013e9  str x9, [sp, #32]
+    0016: f94013e9  ldr x9, [sp, #32]
+    0017: f90017e9  str x9, [sp, #40]
+    0018: f94017e9  ldr x9, [sp, #40]
+    0019: f9001be9  str x9, [sp, #48]
+    0020: d2803209  movz x9, #0x190
+    0021: f2a00009  movk x9, #0x0, lsl #16
+    0022: f2c00009  movk x9, #0x0, lsl #32
+    0023: f2e00009  movk x9, #0x0, lsl #48
+    0024: f9001fe9  str x9, [sp, #56]
+    0025: f9401be9  ldr x9, [sp, #48]
+    0026: f9401fea  ldr x10, [sp, #56]
+    0027: 8b0a012b  add x11, x9, x10
+    0028: d280000c  movz x12, #0x0
+    0029: f2a0000c  movk x12, #0x0, lsl #16
+    0030: f2c0000c  movk x12, #0x0, lsl #32
+    0031: f2e0000c  movk x12, #0x0, lsl #48
+    0032: eb0c017f  cmp x11, x12
+    0033: 5400010a  b.ge #32
+    0034: 90000000  adrp x0, rodata+0x0
+    0035: 91000000  add x0, x0, rodata+0x0
+    0036: d2800341  movz x1, #0x1a
+    0037: f2a00001  movk x1, #0x0, lsl #16
+    0038: f2c00001  movk x1, #0x0, lsl #32
+    0039: f2e00001  movk x1, #0x0, lsl #48
+    0040: 94000000  bl <__wrela_abort>
+    0041: d29fffec  movz x12, #0xffff
+    0042: f2bfffec  movk x12, #0xffff, lsl #16
+    0043: f2c0000c  movk x12, #0x0, lsl #32
+    0044: f2e0000c  movk x12, #0x0, lsl #48
+    0045: eb0c017f  cmp x11, x12
+    0046: 5400010d  b.le #32
+    0047: 90000000  adrp x0, rodata+0x0
+    0048: 91000000  add x0, x0, rodata+0x0
+    0049: d2800341  movz x1, #0x1a
+    0050: f2a00001  movk x1, #0x0, lsl #16
+    0051: f2c00001  movk x1, #0x0, lsl #32
+    0052: f2e00001  movk x1, #0x0, lsl #48
+    0053: 94000000  bl <__wrela_abort>
+    0054: f90023eb  str x11, [sp, #64]
+    0055: f94023e0  ldr x0, [sp, #64]
+    0056: 14000002  b #8
+    0057: 14000001  b #4
+    0058: f94027fe  ldr lr, [sp, #72]
+    0059: 910143ff  add sp, sp, #80
+    0060: d65f03c0  ret
+  Fn key=return_path frame=80 bytes
+    0000: d10143ff  sub sp, sp, #80
+    0001: f90023fe  str lr, [sp, #64]
+    0002: d2800169  movz x9, #0xb
+    0003: f2a00009  movk x9, #0x0, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: f94003e9  ldr x9, [sp, #0]
+    0008: f90007e9  str x9, [sp, #8]
+    0009: f94007e9  ldr x9, [sp, #8]
+    0010: f9000be9  str x9, [sp, #16]
+    0011: 910043e0  add x0, sp, #16
+    0012: 910063e8  add x8, sp, #24
+    0013: 94000000  bl <Out.peel>
+    0014: f9400fe9  ldr x9, [sp, #24]
+    0015: f90013e9  str x9, [sp, #32]
+    0016: f94013e9  ldr x9, [sp, #32]
+    0017: f90017e9  str x9, [sp, #40]
+    0018: d2805789  movz x9, #0x2bc
+    0019: f2a00009  movk x9, #0x0, lsl #16
+    0020: f2c00009  movk x9, #0x0, lsl #32
+    0021: f2e00009  movk x9, #0x0, lsl #48
+    0022: f9001be9  str x9, [sp, #48]
+    0023: f94017e9  ldr x9, [sp, #40]
+    0024: f9401bea  ldr x10, [sp, #48]
+    0025: 8b0a012b  add x11, x9, x10
+    0026: d280000c  movz x12, #0x0
+    0027: f2a0000c  movk x12, #0x0, lsl #16
+    0028: f2c0000c  movk x12, #0x0, lsl #32
+    0029: f2e0000c  movk x12, #0x0, lsl #48
+    0030: eb0c017f  cmp x11, x12
+    0031: 5400010a  b.ge #32
+    0032: 90000000  adrp x0, rodata+0x0
+    0033: 91000000  add x0, x0, rodata+0x0
+    0034: d2800341  movz x1, #0x1a
+    0035: f2a00001  movk x1, #0x0, lsl #16
+    0036: f2c00001  movk x1, #0x0, lsl #32
+    0037: f2e00001  movk x1, #0x0, lsl #48
+    0038: 94000000  bl <__wrela_abort>
+    0039: d29fffec  movz x12, #0xffff
+    0040: f2bfffec  movk x12, #0xffff, lsl #16
+    0041: f2c0000c  movk x12, #0x0, lsl #32
+    0042: f2e0000c  movk x12, #0x0, lsl #48
+    0043: eb0c017f  cmp x11, x12
+    0044: 5400010d  b.le #32
+    0045: 90000000  adrp x0, rodata+0x0
+    0046: 91000000  add x0, x0, rodata+0x0
+    0047: d2800341  movz x1, #0x1a
+    0048: f2a00001  movk x1, #0x0, lsl #16
+    0049: f2c00001  movk x1, #0x0, lsl #32
+    0050: f2e00001  movk x1, #0x0, lsl #48
+    0051: 94000000  bl <__wrela_abort>
+    0052: f9001feb  str x11, [sp, #56]
+    0053: f9401fe0  ldr x0, [sp, #56]
+    0054: 14000002  b #8
+    0055: 14000001  b #4
+    0056: f94023fe  ldr lr, [sp, #64]
+    0057: 910143ff  add sp, sp, #80
+    0058: d65f03c0  ret
+  Fn key=t_param frame=32 bytes
+    0000: d10083ff  sub sp, sp, #32
+    0001: f9000ffe  str lr, [sp, #24]
+    0002: d2803269  movz x9, #0x193
+    0003: f2a00009  movk x9, #0x0, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: d2803269  movz x9, #0x193
+    0008: f2a00009  movk x9, #0x0, lsl #16
+    0009: f2c00009  movk x9, #0x0, lsl #32
+    0010: f2e00009  movk x9, #0x0, lsl #48
+    0011: f90007e9  str x9, [sp, #8]
+    0012: f94003e9  ldr x9, [sp, #0]
+    0013: f94007ea  ldr x10, [sp, #8]
+    0014: eb0a013f  cmp x9, x10
+    0015: 9a9f17eb  cset x11, eq
+    0016: f9000beb  str x11, [sp, #16]
+    0017: f9400be9  ldr x9, [sp, #16]
+    0018: b4000049  cbz x9, #8
+    0019: 14000008  b #32
+    0020: 90000000  adrp x0, rodata+0x1a
+    0021: 91000000  add x0, x0, rodata+0x1a
+    0022: d2800381  movz x1, #0x1c
+    0023: f2a00001  movk x1, #0x0, lsl #16
+    0024: f2c00001  movk x1, #0x0, lsl #32
+    0025: f2e00001  movk x1, #0x0, lsl #48
+    0026: 94000000  bl <__wrela_abort>
+    0027: 14000001  b #4
+    0028: f9400ffe  ldr lr, [sp, #24]
+    0029: 910083ff  add sp, sp, #32
+    0030: d65f03c0  ret
+  Fn key=t_return frame=32 bytes
+    0000: d10083ff  sub sp, sp, #32
+    0001: f9000ffe  str lr, [sp, #24]
+    0002: d28058e9  movz x9, #0x2c7
+    0003: f2a00009  movk x9, #0x0, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: d28058e9  movz x9, #0x2c7
+    0008: f2a00009  movk x9, #0x0, lsl #16
+    0009: f2c00009  movk x9, #0x0, lsl #32
+    0010: f2e00009  movk x9, #0x0, lsl #48
+    0011: f90007e9  str x9, [sp, #8]
+    0012: f94003e9  ldr x9, [sp, #0]
+    0013: f94007ea  ldr x10, [sp, #8]
+    0014: eb0a013f  cmp x9, x10
+    0015: 9a9f17eb  cset x11, eq
+    0016: f9000beb  str x11, [sp, #16]
+    0017: f9400be9  ldr x9, [sp, #16]
+    0018: b4000049  cbz x9, #8
+    0019: 14000008  b #32
+    0020: 90000000  adrp x0, rodata+0x36
+    0021: 91000000  add x0, x0, rodata+0x36
+    0022: d28003a1  movz x1, #0x1d
+    0023: f2a00001  movk x1, #0x0, lsl #16
+    0024: f2c00001  movk x1, #0x0, lsl #32
+    0025: f2e00001  movk x1, #0x0, lsl #48
+    0026: 94000000  bl <__wrela_abort>
+    0027: 14000001  b #4
+    0028: f9400ffe  ldr lr, [sp, #24]
+    0029: 910083ff  add sp, sp, #32
+    0030: d65f03c0  ret
+  Fn key=t_settled frame=32 bytes
+    0000: d10083ff  sub sp, sp, #32
+    0001: f9000ffe  str lr, [sp, #24]
+    0002: d2851fe9  movz x9, #0x28ff
+    0003: f2a000c9  movk x9, #0x6, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: d2851fe9  movz x9, #0x28ff
+    0008: f2a000c9  movk x9, #0x6, lsl #16
+    0009: f2c00009  movk x9, #0x0, lsl #32
+    0010: f2e00009  movk x9, #0x0, lsl #48
+    0011: f90007e9  str x9, [sp, #8]
+    0012: f94003e9  ldr x9, [sp, #0]
+    0013: f94007ea  ldr x10, [sp, #8]
+    0014: eb0a013f  cmp x9, x10
+    0015: 9a9f17eb  cset x11, eq
+    0016: f9000beb  str x11, [sp, #16]
+    0017: f9400be9  ldr x9, [sp, #16]
+    0018: b4000049  cbz x9, #8
+    0019: 14000008  b #32
+    0020: 90000000  adrp x0, rodata+0x53
+    0021: 91000000  add x0, x0, rodata+0x53
+    0022: d2800461  movz x1, #0x23
+    0023: f2a00001  movk x1, #0x0, lsl #16
+    0024: f2c00001  movk x1, #0x0, lsl #32
+    0025: f2e00001  movk x1, #0x0, lsl #48
+    0026: 94000000  bl <__wrela_abort>
+    0027: 14000001  b #4
+    0028: f9400ffe  ldr lr, [sp, #24]
+    0029: 910083ff  add sp, sp, #32
+    0030: d65f03c0  ret
+  Rodata
+    0: offset=0x0 arithmetic overflow in `+`
+    1: offset=0x1a assertion failed: dual param
+    2: offset=0x36 assertion failed: dual return
+    3: offset=0x53 assertion failed: asymmetric settle

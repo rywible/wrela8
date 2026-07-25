@@ -1,0 +1,34 @@
+module app.main
+
+from lib.boxy import Box
+from lib.boxy import Src as Item
+from lib.boxy import peel_box
+
+# plans/M9.md item GG: peer type aliased as a *generic argument*
+# (`Box[Src]` in an imported signature → `Box[Item]`). GEN = 6 + 400 = 406.
+
+fn drive() -> u32:
+    b = Box[Item](v=Item(n=6))
+    i: Item = peel_box(take b)
+    return i.n + 400
+
+const GEN: u32 = drive()
+
+@test
+pub fn t_generic():
+    assert GEN == 406, "peer-aliased generic argument"
+
+@actor
+pub struct Store:
+    gen: u32
+
+    init(mut self, gen: u32):
+        self.gen = gen
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-alias-sig-generic", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, gen=GEN, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

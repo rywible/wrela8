@@ -1,0 +1,10 @@
+module lib.boxy
+
+pub struct Src:
+    n: u32
+
+pub struct Box[T]:
+    v: T
+
+pub fn peel_box(take b: Box[Src]) -> Src:
+    return b.v

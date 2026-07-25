@@ -65,6 +65,24 @@ pub struct ImportBinding {
 /// Local name introduced by an import -> what it refers to.
 pub type ImportBindings = BTreeMap<String, ImportBinding>;
 
+/// Exporter→local substitution for one exporting module, from an
+/// importer's bindings. Only non-identity entries (aliased imports).
+/// plans/M9.md item GG: applied in one simultaneous pass at the splice
+/// — never chained — so an adversarial swap (`Src as Inner` + `Inner as
+/// Src` from two modules) cannot transpose through order dependence.
+pub(crate) fn alias_subs_for_exporter(
+    bindings: &ImportBindings,
+    target_module: &[String],
+) -> BTreeMap<String, String> {
+    let mut subs = BTreeMap::new();
+    for (local, b) in bindings {
+        if b.target_module.as_slice() == target_module && local != &b.target_name {
+            subs.insert(b.target_name.clone(), local.clone());
+        }
+    }
+    subs
+}
+
 /// Every name `module` exports for another module to import: its own
 /// `pub const`/`fn`/`struct`/`enum` declarations, nothing re-exported
 /// (see the module doc comment above).

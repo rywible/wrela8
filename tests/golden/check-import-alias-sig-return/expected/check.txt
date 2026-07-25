@@ -1,0 +1,14 @@
+Module path=app.main
+  Fn drive() -> u32
+  Const RET: u32
+  Fn t_return() -> unit
+  Struct Store resource
+    field ret: u32
+    init(mut self, ret: read u32) -> unit
+  Fn build() -> Image
+Module path=lib.ret
+  Struct Inner data
+    field n: u32
+  Struct Outer data
+    field n: u32
+    fn peel(read self) -> Inner

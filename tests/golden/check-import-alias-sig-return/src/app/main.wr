@@ -1,0 +1,33 @@
+module app.main
+
+from lib.ret import Outer as Out
+from lib.ret import Inner as In
+
+# plans/M9.md item GG: peer type aliased in *return* position. Before GG,
+# peel returned `Inner` while the annotation said `In`. RET = 5 + 300 = 305.
+
+fn drive() -> u32:
+    o = Out(n=5)
+    i: In = o.peel()
+    return i.n + 300
+
+const RET: u32 = drive()
+
+@test
+pub fn t_return():
+    assert RET == 305, "peer-aliased return type"
+
+@actor
+pub struct Store:
+    ret: u32
+
+    init(mut self, ret: u32):
+        self.ret = ret
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-alias-sig-return", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, ret=RET, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -3257,26 +3257,39 @@ fn install_aliased_import_layouts(
     let shapes = crate::sema::imports::closure_type_shapes(&by_addr);
     for module in specialized.values() {
         let targets = crate::sema::imports::imported_type_targets(module, &shapes);
-        for (local, (_target_mod, target_name)) in targets {
+        // Group non-identity aliases by exporting module so each layout
+        // copy gets the whole-signature substitution (plans/M9.md item GG),
+        // not only the owning type (FF).
+        let mut subs_by_exporter: BTreeMap<Vec<String>, BTreeMap<String, String>> = BTreeMap::new();
+        for (local, (target_mod, target_name)) in &targets {
+            if local != target_name {
+                subs_by_exporter
+                    .entry(target_mod.clone())
+                    .or_default()
+                    .insert(target_name.clone(), local.clone());
+            }
+        }
+        for (local, (target_mod, target_name)) in &targets {
             if local == target_name {
                 continue;
             }
-            if let Some(mut fields) = ctx.structs.get(&target_name).cloned() {
+            let subs = &subs_by_exporter[target_mod];
+            if let Some(mut fields) = ctx.structs.get(target_name).cloned() {
                 for f in &mut fields {
-                    crate::sema::types::rekey_type_name(f, &target_name, &local);
+                    crate::sema::types::rekey_type_names(f, subs);
                 }
                 ctx.structs.insert(local.clone(), fields);
-                if let Some(names) = ctx.struct_field_names.get(&target_name).cloned() {
+                if let Some(names) = ctx.struct_field_names.get(target_name).cloned() {
                     ctx.struct_field_names.insert(local.clone(), names);
                 }
             }
-            if let Some(mut payloads) = ctx.enums.get(&target_name).cloned() {
+            if let Some(mut payloads) = ctx.enums.get(target_name).cloned() {
                 for payload in &mut payloads {
                     for t in payload {
-                        crate::sema::types::rekey_type_name(t, &target_name, &local);
+                        crate::sema::types::rekey_type_names(t, subs);
                     }
                 }
-                ctx.enums.insert(local, payloads);
+                ctx.enums.insert(local.clone(), payloads);
             }
         }
     }

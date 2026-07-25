@@ -1,0 +1,52 @@
+module app.main
+
+# plans/M9.md item GG: two peer aliases in one importer, simultaneous
+# substitution, asymmetric settle. P = 3+400 = 403; R = 11+700 = 711;
+# SETTLED = 403*1000 + 711 = 403711. Swapping the additives or the
+# inputs cannot forge 403711 from a transposed map.
+
+from lib.pk import Src as In
+from lib.pk import Hand as Grip
+from lib.ret import Inner as Item
+from lib.ret import Outer as Out
+
+fn param_path() -> u32:
+    s = In(n=3)
+    h = Grip.make(take s)
+    return h.inner.n + 400
+
+fn return_path() -> u32:
+    o = Out(n=11)
+    i: Item = o.peel()
+    return i.n + 700
+
+const P: u32 = param_path()
+const R: u32 = return_path()
+const SETTLED: u32 = P * 1000 + R
+
+@test
+pub fn t_param():
+    assert P == 403, "dual param"
+
+@test
+pub fn t_return():
+    assert R == 711, "dual return"
+
+@test
+pub fn t_settled():
+    assert SETTLED == 403711, "asymmetric settle"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-alias-sig-dual", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=SETTLED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -1,0 +1,10 @@
+module lib.pk
+
+pub struct Src:
+    n: u32
+
+pub struct Hand:
+    inner: Src
+
+    pub fn make(take source: Src) -> Hand:
+        return Hand(inner=source)

@@ -517,31 +517,33 @@ pub fn check_program_typed(
             )
         };
         let dst = mctxs.get_mut(&key).expect("key is a key of mctxs");
-        if let Some(f) = fn_entry {
+        // plans/M9.md item GG: one simultaneous substitution of every
+        // exporter spelling this importer aliased from `target_module`.
+        // Applied even when the owning name itself is unaliased (a peer
+        // in the signature may still be). Empty when nothing is aliased.
+        let subs = imports::alias_subs_for_exporter(&bindings[&key], &target_module);
+        if let Some(mut f) = fn_entry {
+            types::rekey_decl_fn_names(&mut f.decl, &subs);
             dst.fns.insert(local.clone(), f);
         }
-        if let Some(c) = const_entry {
+        if let Some(mut c) = const_entry {
+            types::rekey_type_names(&mut c, &subs);
             dst.consts.insert(local.clone(), c);
             if let Some(v) = const_val_entry {
                 dst.const_values.insert(local.clone(), v);
             }
         }
         if let Some(mut s) = struct_entry {
-            // plans/M9.md item DD / decision 9: the map key is the local
-            // spelling; `DeclStruct::name` and every `Type::Named` inside
-            // the declaration must match it, or construction / assoc-fn
-            // returns / method params still emit the exporter's spelling.
-            if local != target_name {
-                types::rekey_decl_struct_name(&mut s.decl, &target_name, &local);
-            }
+            // plans/M9.md items DD / GG / decision 9: the map key is the
+            // local spelling; every `Type::Named` in the declaration —
+            // owner, parameters, returns, fields, generic args — must
+            // match the importer's bindings.
+            types::rekey_decl_struct_names(&mut s.decl, &subs);
             dst.structs.insert(local.clone(), s);
         }
         if let Some(mut e) = enum_entry {
-            // plans/M9.md item B2: same local-spelling re-key as structs
-            // — an enum's method signatures name `Self` as Type::Named.
-            if local != target_name {
-                types::rekey_decl_enum_name(&mut e.decl, &target_name, &local);
-            }
+            // plans/M9.md item B2 / GG: same whole-signature re-key.
+            types::rekey_decl_enum_names(&mut e.decl, &subs);
             dst.enums.insert(local, e);
         }
     }
@@ -807,29 +809,32 @@ fn splice_imported_decls(
                 ),
             );
         } else {
-            if let Some(c) = const_entry {
+            // plans/M9.md item GG: same whole-signature substitution the
+            // ModuleCtx splice applies — one map, one simultaneous pass.
+            let subs = imports::alias_subs_for_exporter(
+                bindings.get(&key).expect("key is a key of bindings"),
+                &target_module,
+            );
+            if let Some(mut c) = const_entry {
+                typed::rekey_const_names(&mut c, &subs);
                 dst.imported.consts.insert(local.clone(), c);
             }
-            if let Some(f) = fn_entry {
+            if let Some(mut f) = fn_entry {
+                typed::rekey_fn_names(&mut f, &subs);
                 dst.imported.fns.insert(local.clone(), f);
             }
             if let Some(mut s) = struct_entry {
-                // plans/M9.md item DD / decision 9: re-key the typed body
-                // from the exporter's spelling to the local alias, so
-                // method bodies that name `Self` as `Type::Named` resolve
-                // under the same key the splice installed.
-                if local != target_name {
-                    typed::rekey_struct_name(&mut s, &target_name, &local);
-                }
+                // plans/M9.md items DD / GG / decision 9: re-key the typed
+                // body under every aliased exporter spelling, so method
+                // bodies that name `Self` or a peer type as `Type::Named`
+                // resolve under the same keys the splice installed.
+                typed::rekey_struct_names(&mut s, &subs);
                 dst.imported.structs.insert(local.clone(), s);
             }
             if let Some(mut e) = enum_entry {
-                // plans/M9.md item B2: enums now carry methods; re-key
-                // like structs. Before B2 an enum was only a variant-name
-                // list and always crossed without a shadowing question.
-                if local != target_name {
-                    typed::rekey_enum_name(&mut e, &target_name, &local);
-                }
+                // plans/M9.md item B2 / GG: enums carry methods; re-key
+                // like structs.
+                typed::rekey_enum_names(&mut e, &subs);
                 dst.imported.enums.insert(local.clone(), e);
             }
             for (ikey, inst) in inst_entries {

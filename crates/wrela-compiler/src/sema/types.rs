@@ -4833,73 +4833,56 @@ fn render_variant(v: &DeclVariant, depth: usize, out: &mut String) {
     push_line(out, depth, &line);
 }
 
-// --- plans/M9.md item DD: re-key a spliced DeclStruct under its alias ----
+// --- plans/M9.md items DD / GG: re-key a spliced declaration ------------
 //
 // Decision 9: the local spelling is the one name. The ModuleCtx splice
 // installs under that key; this walk makes every `Type::Named` inside the
-// cloned declaration agree, so an associated fn's return type, a method
-// parameter, and a field of `Self` all resolve the same way construction
-// and method lookup do. Paired with `typed::rekey_struct_name` at the
-// TypedProgram splice (method *bodies* were typed in the exporter).
+// cloned declaration agree. DD re-keyed only the owning type; GG applies
+// one simultaneous substitution of *every* exporter spelling the
+// importer bound (parameter, return, field, generic argument, const
+// type) — keeping the exporter's spelling only where the importer has
+// no binding. Paired with `typed::rekey_struct_names` at the TypedProgram
+// splice. Rejected (DD 86 / FF 100 / GG): a fallback that tries local
+// then exporter — two sources of truth about the canonical spelling.
 
-/// Re-key a spliced `DeclStruct` from the exporter's spelling to the
-/// importer's local (possibly aliased) spelling. No-op when they match.
-pub(crate) fn rekey_decl_struct_name(s: &mut DeclStruct, from: &str, to: &str) {
-    if from == to {
+/// Re-key a spliced `DeclStruct` under the importer's whole-signature
+/// substitution. No-op when `subs` is empty.
+pub(crate) fn rekey_decl_struct_names(s: &mut DeclStruct, subs: &BTreeMap<String, String>) {
+    if subs.is_empty() {
         return;
     }
-    if s.name == from {
-        s.name = to.to_string();
+    if let Some(to) = subs.get(&s.name) {
+        s.name = to.clone();
     }
     for m in &mut s.members {
         match m {
-            DeclMember::Field(f) => rekey_type_name(&mut f.ty, from, to),
-            DeclMember::Fn(f) | DeclMember::Init(f) => {
-                for p in &mut f.params {
-                    rekey_type_name(&mut p.ty, from, to);
-                }
-                rekey_type_name(&mut f.ret, from, to);
-                for g in &mut f.generics {
-                    if let DeclGenericKind::Const(ty) = &mut g.kind {
-                        rekey_type_name(ty, from, to);
-                    }
-                }
-            }
+            DeclMember::Field(f) => rekey_type_names(&mut f.ty, subs),
+            DeclMember::Fn(f) | DeclMember::Init(f) => rekey_decl_fn_names(f, subs),
             DeclMember::Pool(_) => {}
         }
     }
     for (ty, _) in &mut s.component_types {
-        rekey_type_name(ty, from, to);
+        rekey_type_names(ty, subs);
     }
     for g in &mut s.generics {
         if let DeclGenericKind::Const(ty) = &mut g.kind {
-            rekey_type_name(ty, from, to);
+            rekey_type_names(ty, subs);
         }
     }
 }
 
-/// plans/M9.md item B2: same local-spelling re-key as
-/// `rekey_decl_struct_name`, for an imported enum's method signatures.
-pub(crate) fn rekey_decl_enum_name(e: &mut DeclEnum, from: &str, to: &str) {
-    if from == to {
+/// plans/M9.md item B2 / GG: same whole-signature re-key for an imported
+/// enum's method signatures and variant payloads.
+pub(crate) fn rekey_decl_enum_names(e: &mut DeclEnum, subs: &BTreeMap<String, String>) {
+    if subs.is_empty() {
         return;
     }
-    if e.name == from {
-        e.name = to.to_string();
+    if let Some(to) = subs.get(&e.name) {
+        e.name = to.clone();
     }
     for m in &mut e.members {
         match m {
-            DeclMember::Fn(f) => {
-                for p in &mut f.params {
-                    rekey_type_name(&mut p.ty, from, to);
-                }
-                rekey_type_name(&mut f.ret, from, to);
-                for g in &mut f.generics {
-                    if let DeclGenericKind::Const(ty) = &mut g.kind {
-                        rekey_type_name(ty, from, to);
-                    }
-                }
-            }
+            DeclMember::Fn(f) => rekey_decl_fn_names(f, subs),
             DeclMember::Field(_) | DeclMember::Init(_) | DeclMember::Pool(_) => {}
         }
     }
@@ -4908,60 +4891,79 @@ pub(crate) fn rekey_decl_enum_name(e: &mut DeclEnum, from: &str, to: &str) {
             DeclVariantPayload::None => {}
             DeclVariantPayload::Tuple(types) => {
                 for t in types {
-                    rekey_type_name(t, from, to);
+                    rekey_type_names(t, subs);
                 }
             }
             DeclVariantPayload::Named(fields) => {
                 for (_, t) in fields {
-                    rekey_type_name(t, from, to);
+                    rekey_type_names(t, subs);
                 }
             }
         }
     }
     for (ty, _) in &mut e.component_types {
-        rekey_type_name(ty, from, to);
+        rekey_type_names(ty, subs);
     }
     for g in &mut e.generics {
         if let DeclGenericKind::Const(ty) = &mut g.kind {
-            rekey_type_name(ty, from, to);
+            rekey_type_names(ty, subs);
         }
     }
 }
 
-/// Re-key every `Type::Named` spelling `from` to `to` inside `ty`.
-/// Shared by the DeclStruct splice (DD) and `layout::merge_layout_ctx`'s
-/// aliased-import install (FF) — one walk, one rule.
-pub(crate) fn rekey_type_name(ty: &mut Type, from: &str, to: &str) {
-    rekey_decl_type(ty, from, to);
+/// Re-key a free / associated `DeclFn`'s signature under `subs`.
+pub(crate) fn rekey_decl_fn_names(f: &mut DeclFn, subs: &BTreeMap<String, String>) {
+    if subs.is_empty() {
+        return;
+    }
+    for p in &mut f.params {
+        rekey_type_names(&mut p.ty, subs);
+    }
+    rekey_type_names(&mut f.ret, subs);
+    for g in &mut f.generics {
+        if let DeclGenericKind::Const(ty) = &mut g.kind {
+            rekey_type_names(ty, subs);
+        }
+    }
 }
 
-fn rekey_decl_type(ty: &mut Type, from: &str, to: &str) {
+/// Re-key every `Type::Named` whose spelling is a key of `subs`, in one
+/// simultaneous pass. Shared by the DeclStruct splice (DD/GG) and
+/// `layout::merge_layout_ctx`'s aliased-import install (FF/GG).
+pub(crate) fn rekey_type_names(ty: &mut Type, subs: &BTreeMap<String, String>) {
+    if subs.is_empty() {
+        return;
+    }
+    rekey_decl_type(ty, subs);
+}
+
+fn rekey_decl_type(ty: &mut Type, subs: &BTreeMap<String, String>) {
     match ty {
-        Type::Array(elem, _) => rekey_decl_type(elem, from, to),
+        Type::Array(elem, _) => rekey_decl_type(elem, subs),
         Type::Tuple(elems) => {
             for e in elems {
-                rekey_decl_type(e, from, to);
+                rekey_decl_type(e, subs);
             }
         }
-        Type::Option(inner) => rekey_decl_type(inner, from, to),
+        Type::Option(inner) => rekey_decl_type(inner, subs),
         Type::Result(ok, err) => {
-            rekey_decl_type(ok, from, to);
-            rekey_decl_type(err, from, to);
+            rekey_decl_type(ok, subs);
+            rekey_decl_type(err, subs);
         }
-        Type::Own(_, inner) | Type::Static(inner) => rekey_decl_type(inner, from, to),
+        Type::Own(_, inner) | Type::Static(inner) => rekey_decl_type(inner, subs),
         Type::Fn(params, ret) => {
             for (_, p) in params {
-                rekey_decl_type(p, from, to);
+                rekey_decl_type(p, subs);
             }
-            rekey_decl_type(ret, from, to);
+            rekey_decl_type(ret, subs);
         }
         Type::Named(name, targs) => {
-            if name == from {
-                *name = to.to_string();
+            if let Some(to) = subs.get(name) {
+                *name = to.clone();
             }
             for a in targs {
                 match a {
-                    TypeArg::Type(t) => rekey_decl_type(t, from, to),
+                    TypeArg::Type(t) => rekey_decl_type(t, subs),
                     TypeArg::Const(_) | TypeArg::Bound(_) | TypeArg::Pool(_) => {}
                 }
             }

@@ -1,0 +1,26 @@
+module app.main
+
+# plans/M9.md item GG: the adversarial swap — each local name is the other
+# module's original. ModuleCtx whole-signature re-key must accept both
+# call shapes; a sequential flat map Src↔Inner would transpose and
+# type-error. Comptime evaluation of these bodies is A1b decision 15's
+# shadow withhold (pinned by err-import-alias-sig-swap-comptime); values
+# for the simultaneous-map mechanism live in check-import-alias-sig-dual.
+
+from lib.pk import Src as Inner
+from lib.pk import Hand as Grip
+from lib.ret import Inner as Src
+from lib.ret import Outer as Out
+
+fn param_path() -> u32:
+    s = Inner(n=3)
+    h = Grip.make(take s)
+    return h.inner.n + 400
+
+fn return_path() -> u32:
+    o = Out(n=11)
+    i: Src = o.peel()
+    return i.n + 700
+
+fn settle() -> u32:
+    return param_path() * 1000 + return_path()
