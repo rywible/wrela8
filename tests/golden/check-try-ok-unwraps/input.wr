@@ -1,0 +1,85 @@
+module examples.check_try_ok_unwraps
+
+# plans/M9.md item BB, the half that must not regress: `Ok(v)?` still
+# yields `v` and execution continues (02-language.md §8.2). Fixing the
+# failure paths by branching on the operand's static type rather than on
+# the variant index has to leave this alone, and a `?` whose success
+# payload is a struct, and one in statement position over `Result[unit,
+# E]`, exercise the two payload shapes the unwrap can carry.
+
+struct Point:
+    x: u32
+    y: u32
+
+fn fallible(x: u32) -> Result[u32, u32]:
+    if x == 0:
+        return Err(5)
+    return Ok(x * 2)
+
+fn unwrap_scalar(x: u32) -> Result[u32, u32]:
+    v = fallible(x)?
+    return Ok(v + 1)
+
+fn point(ok: bool) -> Result[Point, u32]:
+    if ok:
+        return Ok(Point(x = 3, y = 4))
+    return Err(9)
+
+fn unwrap_struct(ok: bool) -> Result[u32, u32]:
+    p = point(ok)?
+    return Ok(p.x * p.y)
+
+fn nothing(ok: bool) -> Result[unit, u32]:
+    if ok:
+        return Ok(unit)
+    return Err(3)
+
+fn unwrap_unit(ok: bool) -> Result[u32, u32]:
+    nothing(ok)?
+    return Ok(1)
+
+fn settle(r: Result[u32, u32]) -> u32:
+    match r:
+        case .Ok(v):
+            return v
+        case .Err(e):
+            return e + 1000
+
+# Evaluated at build time; pinned in `expected/image.txt` as
+# `Arg label=scalar value=7`, `Arg label=structured value=12`,
+# `Arg label=nothing value=1`.
+const SCALAR: u32 = settle(unwrap_scalar(3))
+const STRUCTURED: u32 = settle(unwrap_struct(true))
+const NOTHING: u32 = settle(unwrap_unit(true))
+
+@test
+pub fn test_ok_unwraps_a_scalar():
+    assert SCALAR == 7, "`Ok(6)?` yields 6 and the body continues"
+
+@test
+pub fn test_ok_unwraps_a_struct():
+    assert STRUCTURED == 12, "`Ok(Point)?` yields the struct, fields intact"
+
+@test
+pub fn test_ok_unwraps_unit_in_statement_position():
+    assert NOTHING == 1, "`Ok(unit)?` as a bare statement continues the body"
+
+@actor
+pub struct Store:
+    scalar: u32
+    structured: u32
+    nothing: u32
+
+    init(mut self, scalar: u32, structured: u32, nothing: u32):
+        self.scalar = scalar
+        self.structured = structured
+        self.nothing = nothing
+
+@image
+pub fn build() -> Image:
+    img = Image(name="try-ok-unwraps", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, scalar=SCALAR, structured=STRUCTURED,
+                        nothing=NOTHING, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

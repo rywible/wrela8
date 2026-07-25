@@ -1,0 +1,23 @@
+Module path=examples.check_try_ok_unwraps
+  Struct Point data
+    field x: u32
+    field y: u32
+  Fn fallible(x: read u32) -> Result[u32, u32]
+  Fn unwrap_scalar(x: read u32) -> Result[u32, u32]
+  Fn point(ok: read bool) -> Result[Point, u32]
+  Fn unwrap_struct(ok: read bool) -> Result[u32, u32]
+  Fn nothing(ok: read bool) -> Result[unit, u32]
+  Fn unwrap_unit(ok: read bool) -> Result[u32, u32]
+  Fn settle(r: read Result[u32, u32]) -> u32
+  Const SCALAR: u32
+  Const STRUCTURED: u32
+  Const NOTHING: u32
+  Fn test_ok_unwraps_a_scalar() -> unit
+  Fn test_ok_unwraps_a_struct() -> unit
+  Fn test_ok_unwraps_unit_in_statement_position() -> unit
+  Struct Store resource
+    field scalar: u32
+    field structured: u32
+    field nothing: u32
+    init(mut self, scalar: read u32, structured: read u32, nothing: read u32) -> unit
+  Fn build() -> Image

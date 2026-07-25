@@ -1498,31 +1498,71 @@ fn eval_expr<'a, 'p>(
             eval_expr(inner, env, dstack, loop_marker, ctx)
         }
         TypedExprKind::Try(inner, conv) => {
+            // Which sum this is comes from the *operand's own static
+            // type*, never from the variant index (plans/M9.md item BB,
+            // decision 60): `value.rs` numbers both builtin sums from
+            // zero, so index 0 is `None` in one and `Ok` in the other and
+            // index 1 is `Some` in one and `Err` in the other — an
+            // index-only test cannot tell success from failure at all.
+            // 02-language.md §8.2 is what makes reading the type legal
+            // here: "`?` applies to `Result` (and, in `Option`-returning
+            // functions, to `Option`)", and `bodies::check_try` has
+            // already proved the operand is exactly one of the two and
+            // that the enclosing fn returns the same sum.
             let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;
+            let on_option = match &inner.ty {
+                Type::Option(_) => true,
+                Type::Result(_, _) => false,
+                other => {
+                    return Err(ctx.abandon(format!(
+                        "internal error: `?` on `{}`, which is neither `Option` nor `Result`",
+                        crate::sema::types::render_type(other)
+                    )));
+                }
+            };
             let Value::Enum(idx, mut payload) = iv else {
                 return Err(ctx.abandon("internal error: `?` on a non-enum value"));
             };
-            if idx == value::OPTION_SOME || idx == value::RESULT_OK {
-                return Ok(payload
+            let succeeded = if on_option {
+                idx == value::OPTION_SOME
+            } else {
+                idx == value::RESULT_OK
+            };
+            if succeeded {
+                return payload
                     .pop()
-                    .expect("Some/Ok always carries one payload value"));
+                    .ok_or_else(|| ctx.abandon("internal error: `Some`/`Ok` with no payload"));
             }
             // `None` or `Err(e)`: run every currently active defer (the
             // whole stack — a `?` exit leaves the entire function, just
             // like `return`) before propagating.
             run_defers(&dstack[..], env, ctx)?;
-            if idx == value::OPTION_NONE {
+            if on_option {
                 return Err(Unwind::Return(Value::Enum(value::OPTION_NONE, vec![])));
             }
-            let e = payload.pop().expect("Err always carries one payload value");
+            let e = payload
+                .pop()
+                .ok_or_else(|| ctx.abandon("internal error: `Err` with no payload"))?;
             let converted = match conv {
                 None => e,
                 Some(key) => {
+                    // Not an `internal error:` (plans/M9.md item BB,
+                    // decision 61): `deriving(From)` generates no `from`
+                    // method anywhere in this compiler yet, and `from`
+                    // is a reserved word so no user can declare one
+                    // either — so *every* `?` that needs a conversion
+                    // reaches here, from ordinary source. That is a
+                    // named, fail-closed gap owned by item B, not a bug
+                    // in the evaluator; the backend already refuses the
+                    // same shape by name (`lower::lower_expr`'s own "a
+                    // `?` conversion (`From`) in a synchronous body is").
                     let f = resolve_fn(ctx.program, key).ok_or_else(|| {
                         ctx.abandon_missing(
                             &callee_decl_name(key),
                             format!(
-                                "internal error: `from` conversion `{}` not found",
+                                "`?`'s error conversion `{}` is not available: nothing generates \
+                                 it yet — `deriving(From)` produces no `from` method \
+                                 (plans/M9.md item B)",
                                 key.spelling()
                             ),
                         )

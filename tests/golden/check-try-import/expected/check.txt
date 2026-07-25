@@ -1,0 +1,19 @@
+Module path=lib
+  Fn fallible(x: read u32) -> Result[u32, u32]
+  Fn propagates(x: read u32) -> Result[u32, u32]
+  Fn opt(x: read u32) -> Option[u32]
+  Fn opt_propagates(x: read u32) -> Option[u32]
+Module path=main
+  Fn settle_r(r: read Result[u32, u32]) -> u32
+  Fn settle_o(o: read Option[u32]) -> u32
+  Const ERR_VIA_IMPORT: u32
+  Const OK_VIA_IMPORT: u32
+  Const NONE_VIA_IMPORT: u32
+  Const SOME_VIA_IMPORT: u32
+  Struct Store resource
+    field err: u32
+    field ok: u32
+    field none: u32
+    field some: u32
+    init(mut self, err: read u32, ok: read u32, none: read u32, some: read u32) -> unit
+  Fn build() -> Image

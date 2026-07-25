@@ -1,0 +1,55 @@
+module main
+
+from lib import propagates, opt_propagates, fallible, opt
+
+# All four `?` outcomes, each evaluated at build time through an imported
+# body, each pinned by value in `expected/image.txt`:
+#
+#   Err  -> `Arg label=err value=1011`   (11 propagated, + 1000 by `settle_r`)
+#   Ok   -> `Arg label=ok value=7`       (3 * 2 = 6, then + 1)
+#   None -> `Arg label=none value=777`
+#   Some -> `Arg label=some value=103`
+#
+# `settle_r`/`settle_o` map the failure outcome into a range the success
+# outcome cannot reach, so "accepted" and "correct" are different results.
+
+fn settle_r(r: Result[u32, u32]) -> u32:
+    match r:
+        case .Ok(v):
+            return v
+        case .Err(e):
+            return e + 1000
+
+fn settle_o(o: Option[u32]) -> u32:
+    match o:
+        case .Some(v):
+            return v
+        case .None:
+            return 777
+
+const ERR_VIA_IMPORT: u32 = settle_r(propagates(0))
+const OK_VIA_IMPORT: u32 = settle_r(propagates(3))
+const NONE_VIA_IMPORT: u32 = settle_o(opt_propagates(0))
+const SOME_VIA_IMPORT: u32 = settle_o(opt_propagates(3))
+
+@actor
+pub struct Store:
+    err: u32
+    ok: u32
+    none: u32
+    some: u32
+
+    init(mut self, err: u32, ok: u32, none: u32, some: u32):
+        self.err = err
+        self.ok = ok
+        self.none = none
+        self.some = some
+
+@image
+pub fn build() -> Image:
+    img = Image(name="try-import", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, err=ERR_VIA_IMPORT, ok=OK_VIA_IMPORT,
+                        none=NONE_VIA_IMPORT, some=SOME_VIA_IMPORT, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

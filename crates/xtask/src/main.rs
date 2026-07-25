@@ -2031,6 +2031,53 @@ fn image_outcome_is_well_formed(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Invariant (e), plans/M9.md item BB (decision 62): an
+/// `"internal error: "`-prefixed message is a **bug**, never an outcome
+/// (CLAUDE.md's own wording for what every lane checks). The `lower` and
+/// `async` lanes have applied exactly this rule to every stage they touch
+/// since M7 — `async_sema_outcome`'s own doc comment even names
+/// `eval/interp.rs`'s ~50 such guards as the class it exists to falsify —
+/// but this lane, the one that actually *evaluates* comptime code, never
+/// applied it: a `check_typed` `Err` was accepted as long as its category
+/// was in the fixed set, and an `internal error:` inside a `@test`'s own
+/// `FAILED` verdict was accepted as long as the line was well-formed.
+/// Item BB is what made that visible (`?`'s missing `from` conversion
+/// abandoned with an `internal error:` from ordinary source, and this
+/// lane would have shrugged at it). Three surfaces, because a comptime
+/// abandonment can surface as any of them: a whole-program diagnostic, a
+/// per-`@test` verdict, or the image pipeline's own one-line diagnostic.
+fn eval_outcome_carries_no_internal_error(outcome: &EvalPipelineOutcome) -> Result<(), String> {
+    const PREFIX: &str = "internal error: ";
+    match outcome {
+        EvalPipelineOutcome::SemaErr { message, .. } => {
+            if message.starts_with(PREFIX) {
+                return Err(format!("eval: sema::check_typed reported {message}"));
+            }
+        }
+        EvalPipelineOutcome::Ok(report, image_outcome) => {
+            for line in report.lines() {
+                if let Some((_, verdict)) = line.split_once(": FAILED ") {
+                    if verdict.starts_with(PREFIX) {
+                        return Err(format!("eval: run_tests reported {verdict}"));
+                    }
+                }
+            }
+            // `error[<cat>]: internal error: ...` — the one-line
+            // diagnostic shape `image_outcome_is_well_formed` already
+            // parses, split at the same `]: ` boundary it uses.
+            if let Some(first_line) = image_outcome.as_ref().and_then(|t| t.lines().next()) {
+                if let Some((_, rest)) = first_line.split_once("]: ") {
+                    if rest.starts_with(PREFIX) {
+                        return Err(format!("eval: the image pipeline reported {rest}"));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Every invariant the eval fuzzer checks, once per iteration, on one
 /// input. Runs the whole lex-then-parse-then-check_typed-then-(run_tests,
 /// then — plans/M4.md item E — the image pipeline when exactly one
@@ -2058,6 +2105,7 @@ fn check_eval_invariants(input: &str) -> Result<(), String> {
             image_outcome_is_well_formed(text)?;
         }
     }
+    eval_outcome_carries_no_internal_error(&first)?;
 
     match (&first, &second) {
         (EvalPipelineOutcome::Ok(r1, image1), EvalPipelineOutcome::Ok(r2, image2)) => {

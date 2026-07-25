@@ -1,0 +1,60 @@
+module examples.check_try_none_propagates
+
+# plans/M9.md item BB, the panic half. 02-language.md §8.2: "`?` applies
+# to `Result` (and, in `Option`-returning functions, to `Option`)".
+# Before item BB the comptime evaluator decided success from the variant
+# *index* alone, and `None`'s index (0) is also `Ok`'s — so `None?` took
+# the success branch and then popped a payload off an empty `None`,
+# panicking the compiler outright (`thread panicked at
+# crates/wrela-compiler/src/eval/interp.rs`, "Some/Ok always carries one
+# payload value"). A panic is never an acceptable outcome (CLAUDE.md).
+#
+# `settle` maps `None` to 777 and `Some(v)` to `v`, so the two outcomes
+# can never be confused by accident.
+
+fn opt(x: u32) -> Option[u32]:
+    if x == 0:
+        return None
+    return Some(x + 1)
+
+fn propagate(x: u32) -> Option[u32]:
+    v = opt(x)?
+    return Some(v * 10)
+
+fn settle(o: Option[u32]) -> u32:
+    match o:
+        case .Some(v):
+            return v
+        case .None:
+            return 777
+
+# Evaluated at build time; pinned in `expected/image.txt` as
+# `Arg label=settled value=777`.
+const SETTLED: u32 = settle(propagate(0))
+
+@test
+pub fn test_none_propagates():
+    match propagate(0):
+        case .Some(v):
+            assert false, "`None?` produced a `Some`"
+        case .None:
+            pass
+
+@test
+pub fn test_none_reaches_the_caller_as_none():
+    assert SETTLED == 777, "the propagated `None` reached the caller as a `None`"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="try-none-propagates", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=SETTLED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

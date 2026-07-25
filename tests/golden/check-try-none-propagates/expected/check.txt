@@ -1,0 +1,11 @@
+Module path=examples.check_try_none_propagates
+  Fn opt(x: read u32) -> Option[u32]
+  Fn propagate(x: read u32) -> Option[u32]
+  Fn settle(o: read Option[u32]) -> u32
+  Const SETTLED: u32
+  Fn test_none_propagates() -> unit
+  Fn test_none_reaches_the_caller_as_none() -> unit
+  Struct Store resource
+    field settled: u32
+    init(mut self, settled: read u32) -> unit
+  Fn build() -> Image

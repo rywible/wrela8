@@ -1,0 +1,30 @@
+module lib
+
+# plans/M9.md item BB's fixture: `?` on both builtin sums, in bodies that
+# only ever run at build time *through an import*. plans/M9.md item A1b
+# made that path live one item earlier; before item BB, evaluating
+# `propagates(0)` from the importing module panicked the compiler outright
+# (`None?`) or handed the error payload back as a success value (`Err?`).
+#
+# `fallible`/`opt` are `pub` because decision 15 withholds a body-bearing
+# splice for any declaration the *importing* module does not itself name:
+# an imported body that reaches a private declaration is reported by name,
+# never guessed at.
+
+pub fn fallible(x: u32) -> Result[u32, u32]:
+    if x == 0:
+        return Err(11)
+    return Ok(x * 2)
+
+pub fn propagates(x: u32) -> Result[u32, u32]:
+    v = fallible(x)?
+    return Ok(v + 1)
+
+pub fn opt(x: u32) -> Option[u32]:
+    if x == 0:
+        return None
+    return Some(x)
+
+pub fn opt_propagates(x: u32) -> Option[u32]:
+    v = opt(x)?
+    return Some(v + 100)

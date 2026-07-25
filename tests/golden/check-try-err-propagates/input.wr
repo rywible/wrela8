@@ -1,0 +1,62 @@
+module examples.check_try_err_propagates
+
+# plans/M9.md item BB. 02-language.md §8.2: "`Err(e)?` runs lexical
+# teardown, applies the target's `from` conversion if needed, and returns
+# from the enclosing function." Before item BB the comptime evaluator
+# decided success from the variant *index* alone — and `eval::value`
+# numbers both builtin sums from zero, so `Err`'s index 1 read as `Some`
+# and `Err(5)?` yielded `5` as the **success** value. A silent wrong
+# answer, from ordinary single-module source.
+#
+# Every fn below is written so `Ok` and `Err` can never be confused by
+# accident: `settle` maps `Err(e)` to `e + 1000`, so a value of 1005
+# means "propagated the `Err`, payload intact" and a value of 5 would
+# mean "took the success branch".
+
+fn fallible(x: u32) -> Result[u32, u32]:
+    if x == 0:
+        return Err(5)
+    return Ok(x * 2)
+
+fn propagate(x: u32) -> Result[u32, u32]:
+    v = fallible(x)?
+    return Ok(v + 1)
+
+fn settle(r: Result[u32, u32]) -> u32:
+    match r:
+        case .Ok(v):
+            return v
+        case .Err(e):
+            return e + 1000
+
+# Evaluated at build time; its value is pinned in `expected/image.txt` as
+# `Arg label=settled value=1005`, so mere acceptance is not enough to
+# pass this case.
+const SETTLED: u32 = settle(propagate(0))
+
+@test
+pub fn test_err_propagates():
+    match propagate(0):
+        case .Ok(v):
+            assert false, "`Err(5)?` produced an `Ok`"
+        case .Err(e):
+            assert e == 5, "`Err(5)?` propagates its payload unchanged"
+
+@test
+pub fn test_err_payload_is_not_the_success_value():
+    assert SETTLED == 1005, "the propagated `Err` reached the caller as an `Err`"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="try-err-propagates", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=SETTLED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

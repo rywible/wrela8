@@ -1,0 +1,66 @@
+module examples.check_try_some_unwraps
+
+# plans/M9.md item BB, the other half that must not regress: `Some(v)?`
+# still yields `v` (02-language.md §8.2's parenthesis, "and, in
+# `Option`-returning functions, to `Option`"). `Some`'s index is 1, which
+# is also `Err`'s — so this is the shape a fix that read the index and
+# merely swapped the constants around would break.
+
+struct Point:
+    x: u32
+    y: u32
+
+fn opt(x: u32) -> Option[u32]:
+    if x == 0:
+        return None
+    return Some(x + 1)
+
+fn unwrap_scalar(x: u32) -> Option[u32]:
+    v = opt(x)?
+    return Some(v * 10)
+
+fn point(ok: bool) -> Option[Point]:
+    if ok:
+        return Some(Point(x = 4, y = 5))
+    return None
+
+fn unwrap_struct(ok: bool) -> Option[u32]:
+    p = point(ok)?
+    return Some(p.x * p.y)
+
+fn settle(o: Option[u32]) -> u32:
+    match o:
+        case .Some(v):
+            return v
+        case .None:
+            return 777
+
+# Evaluated at build time; pinned in `expected/image.txt` as
+# `Arg label=scalar value=30` and `Arg label=structured value=20`.
+const SCALAR: u32 = settle(unwrap_scalar(2))
+const STRUCTURED: u32 = settle(unwrap_struct(true))
+
+@test
+pub fn test_some_unwraps_a_scalar():
+    assert SCALAR == 30, "`Some(3)?` yields 3 and the body continues"
+
+@test
+pub fn test_some_unwraps_a_struct():
+    assert STRUCTURED == 20, "`Some(Point)?` yields the struct, fields intact"
+
+@actor
+pub struct Store:
+    scalar: u32
+    structured: u32
+
+    init(mut self, scalar: u32, structured: u32):
+        self.scalar = scalar
+        self.structured = structured
+
+@image
+pub fn build() -> Image:
+    img = Image(name="try-some-unwraps", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, scalar=SCALAR, structured=STRUCTURED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -1,0 +1,18 @@
+Module path=examples.check_try_some_unwraps
+  Struct Point data
+    field x: u32
+    field y: u32
+  Fn opt(x: read u32) -> Option[u32]
+  Fn unwrap_scalar(x: read u32) -> Option[u32]
+  Fn point(ok: read bool) -> Option[Point]
+  Fn unwrap_struct(ok: read bool) -> Option[u32]
+  Fn settle(o: read Option[u32]) -> u32
+  Const SCALAR: u32
+  Const STRUCTURED: u32
+  Fn test_some_unwraps_a_scalar() -> unit
+  Fn test_some_unwraps_a_struct() -> unit
+  Struct Store resource
+    field scalar: u32
+    field structured: u32
+    init(mut self, scalar: read u32, structured: read u32) -> unit
+  Fn build() -> Image

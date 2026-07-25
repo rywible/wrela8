@@ -1,0 +1,11 @@
+Module path=examples.check_try_err_propagates
+  Fn fallible(x: read u32) -> Result[u32, u32]
+  Fn propagate(x: read u32) -> Result[u32, u32]
+  Fn settle(r: read Result[u32, u32]) -> u32
+  Const SETTLED: u32
+  Fn test_err_propagates() -> unit
+  Fn test_err_payload_is_not_the_success_value() -> unit
+  Struct Store resource
+    field settled: u32
+    init(mut self, settled: read u32) -> unit
+  Fn build() -> Image
