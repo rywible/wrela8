@@ -10,24 +10,18 @@
 //! functions. A second, local derivation that could disagree about which
 //! bytes the device reaches is deliberately forbidden.
 //!
-//! Numbers match `wrela_vmm::devices` byte-for-byte (`DESC_SIZE`,
-//! `avail_bytes` / `used_bytes` formulas, `DEVICE_FEATURES`). The VMM is
-//! the other half of the same contract; inventing a different layout here
-//! would make `BlkDevice::new` refuse the report at boot.
+//! The numeric contract itself lives in `wrela_machine::virtio` (plans/M8.md
+//! item H attack 7) — this module re-exports it so every existing
+//! `crate::virtqueue::DESC_SIZE` site keeps working, and adds the
+//! compiler-only surface on top (`place_ring`, feature-name mapping,
+//! per-slot packaging).
 
-/// Descriptor table entry size (`struct virtq_desc`: addr/len/flags/next).
-pub const DESC_SIZE: u64 = 16;
-
-/// Doorbell word (06-machine.md §5): one guest-writable `u64`.
-pub const DOORBELL_BYTES: u64 = 8;
-
-/// `VIRTIO_BLK_F_FLUSH` (feature bit 9).
-pub const F_BLK_FLUSH: u64 = 1 << 9;
-/// `VIRTIO_F_VERSION_1` (feature bit 32) — mandatory on this machine.
-pub const F_VERSION_1: u64 = 1 << 32;
-
-/// Everything the VMM's virtio-blk model offers (`devices::DEVICE_FEATURES`).
-pub const DEVICE_FEATURES: u64 = F_VERSION_1 | F_BLK_FLUSH;
+pub use wrela_machine::virtio::{
+    DESC_F_NEXT, DESC_F_WRITE, DESC_SIZE, DEVICE_FEATURES, DOORBELL_BYTES, F_BLK_FLUSH,
+    F_VERSION_1, REQ_HEADER_SIZE, REQ_STATUS_SIZE, SLOT_BOOK_BYTES, SLOT_BOOK_EPOCH,
+    SLOT_BOOK_LAST_USED, SLOT_BOOK_QUARANTINE_STAMP, SLOT_BOOK_QUIESCED, avail_bytes, desc_bytes,
+    used_bytes,
+};
 
 /// One queue's ring regions, contiguous inside a DMA pool starting at
 /// `pool_base`. Layout (decision: pack tightly, 8-byte-align each region
@@ -49,22 +43,6 @@ pub struct RingPlacement {
     /// Total bytes consumed from the pool (desc..doorbell+8), including
     /// alignment padding between regions.
     pub bytes: u64,
-}
-
-/// Descriptor-table byte count for a `depth`-deep queue.
-pub fn desc_bytes(depth: u16) -> u64 {
-    depth as u64 * DESC_SIZE
-}
-
-/// Available-ring byte count: `flags: u16, idx: u16, ring: [u16; depth]`.
-/// (No event-idx: this machine never offers `VIRTIO_RING_F_EVENT_IDX`.)
-pub fn avail_bytes(depth: u16) -> u64 {
-    4 + 2 * depth as u64
-}
-
-/// Used-ring byte count: `flags: u16, idx: u16, ring: [(id,len); depth]`.
-pub fn used_bytes(depth: u16) -> u64 {
-    4 + 8 * depth as u64
 }
 
 /// Round `addr` up to a multiple of `align` (power of two).
@@ -156,21 +134,11 @@ pub const DESCRIPTORS_PER_BLK_OP: u16 = 3;
 pub const PUBLISH_WRITE_ORDER: &[&str] =
     &["write_descriptors", "publish_available", "notify_queue"];
 
-/// Descriptor flags (VIRTIO 1.2 §2.6) — same numbers as
-/// `wrela_vmm::devices::{DESC_F_NEXT, DESC_F_WRITE}`.
-pub const DESC_F_NEXT: u16 = 1;
-pub const DESC_F_WRITE: u16 = 2;
-
-/// Virtio-blk request header size (`type`/`reserved`/`sector`).
-pub const REQ_HEADER_SIZE: u64 = 16;
-/// Status descriptor length (one device-writable byte).
-pub const REQ_STATUS_SIZE: u64 = 1;
-
 /// Bytes of per-queue bookkeeping that sit in the control pool immediately
 /// after the ring (plans/M7.md item E4 / decisions 20–22; H2b / decision 23
-/// adds the live reset epoch). Single-flight for revision 0.1: one
-/// `last_used` cursor, one live `current_epoch`, one meta record, one
-/// header slot, one status byte.
+/// adds the live reset epoch; M8 item F grew the quiesce/quarantine words).
+/// Single-flight for revision 0.1: one `last_used` cursor, one live
+/// `current_epoch`, one meta record, one header slot, one status byte.
 ///
 /// ```text
 ///   [ring … | last_used 8 | current_epoch 8 | quiesced 8 | quarantine_stamp 8
@@ -184,22 +152,9 @@ pub const REQ_STATUS_SIZE: u64 = 1;
 /// Decision 23: `current_epoch` starts at 0; `RunningDevice.reset` bumps
 /// it; `prepare_block` stamps it into `SLOT_META_EPOCH`; drain rejects a
 /// mismatch as `CompletionFault::StaleId`.
-pub const SLOT_BOOK_LAST_USED: u64 = 0;
-pub const SLOT_BOOK_EPOCH: u64 = 8;
-/// plans/M8.md item F / **decision 36**: the queue's **host-written**
-/// quiesce count. Nothing in the guest ever stores here — the VMM
-/// increments it, in place, when `RunningDevice.reset`'s trapping store to
-/// `mmio::QUIESCE_MMIO_ADDR` has actually stopped the device model using
-/// the ring. It is the one word on this machine that says "the device
-/// cannot write your buffers any more", and it is the whole gate on
-/// reclaim (03-hardware.md §9: "only then is memory reclaimed").
-pub const SLOT_BOOK_QUIESCED: u64 = 16;
-/// plans/M8.md item F / **decision 37**: the value `SLOT_BOOK_QUIESCED`
-/// held when `recover` quarantined the slot. `reclaim` refuses while the
-/// two are equal — no quiescence has happened since the quarantine — which
-/// is 03-hardware.md §9's "no reclaim precedes quiescence" as one compare.
-pub const SLOT_BOOK_QUARANTINE_STAMP: u64 = 24;
-pub const SLOT_BOOK_BYTES: u64 = 32;
+///
+/// The `SLOT_BOOK_*` offsets themselves are `wrela_machine::virtio` (item H
+/// attack 7); the meta / flag / packaging surface below is compiler-only.
 pub const SLOT_META_BYTES: u64 = 64;
 pub const SLOT_META_PAYLOAD: u64 = 0;
 pub const SLOT_META_HEADER: u64 = 8;

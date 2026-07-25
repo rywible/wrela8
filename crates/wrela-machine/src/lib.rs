@@ -532,6 +532,93 @@ pub mod display {
     pub const BYTES_PER_PIXEL: u32 = 4;
 }
 
+/// Virtio-blk split-ring and feature contract shared by the compiler and
+/// the VMM (06-machine.md §6's closed `blk` row; OASIS VIRTIO 1.2 as
+/// profiled by that table).
+///
+/// plans/M8.md item H attack 7: these numbers used to live in *both*
+/// `wrela_compiler::virtqueue` and `wrela_vmm::devices`, copied by hand.
+/// This crate's whole purpose (AGENTS.md) is "machine-contract types
+/// shared by compiler & VMM", so the contract lives here once; both sides
+/// `pub use` / import. Drift between them is unrepresentable.
+pub mod virtio {
+    /// Descriptor table entry: `addr: u64, len: u32, flags: u16, next: u16`.
+    pub const DESC_SIZE: u64 = 16;
+
+    /// Doorbell word (06-machine.md §5): one guest-writable `u64`.
+    pub const DOORBELL_BYTES: u64 = 8;
+
+    /// `VIRTQ_DESC_F_NEXT` — this descriptor continues into `next`.
+    pub const DESC_F_NEXT: u16 = 1;
+    /// `VIRTQ_DESC_F_WRITE` — device-writable (from the device's point of
+    /// view); its absence means device-readable.
+    pub const DESC_F_WRITE: u16 = 2;
+
+    /// `VIRTIO_BLK_F_FLUSH` (feature bit 9) — the `Flush` request type 06
+    /// §6's own device table names explicitly.
+    pub const F_BLK_FLUSH: u64 = 1 << 9;
+    /// `VIRTIO_F_VERSION_1` (feature bit 32). This machine is modern-only:
+    /// there is no legacy transport to fall back to.
+    pub const F_VERSION_1: u64 = 1 << 32;
+
+    /// Everything the virtio-blk model offers. A driver may accept a
+    /// subset (subject to `F_VERSION_1` being mandatory); it may never
+    /// accept a bit outside it.
+    pub const DEVICE_FEATURES: u64 = F_VERSION_1 | F_BLK_FLUSH;
+
+    /// `struct virtio_blk_req`'s own header: `type: u32, reserved: u32,
+    /// sector: u64`.
+    pub const REQ_HEADER_SIZE: u64 = 16;
+
+    /// Status descriptor length (one device-writable byte).
+    pub const REQ_STATUS_SIZE: u64 = 1;
+
+    /// Per-queue bookkeeping that sits in the control pool immediately
+    /// after the ring + doorbell (plans/M7.md item E4; M8 item F grew
+    /// `SLOT_BOOK_QUIESCED` / `SLOT_BOOK_QUARANTINE_STAMP`). Offsets are
+    /// from the book base (`doorbell + DOORBELL_BYTES`).
+    ///
+    /// ```text
+    ///   [ring … | doorbell 8 | last_used 8 | current_epoch 8 | quiesced 8
+    ///                       | quarantine_stamp 8 | …]
+    /// ```
+    pub const SLOT_BOOK_LAST_USED: u64 = 0;
+    pub const SLOT_BOOK_EPOCH: u64 = 8;
+    /// Host-written quiesce count (plans/M8.md item F / decision 36). The
+    /// VMM increments it when a `RunningDevice.reset` has actually stopped
+    /// the device model using the ring; the guest never stores here.
+    pub const SLOT_BOOK_QUIESCED: u64 = 16;
+    /// Value `SLOT_BOOK_QUIESCED` held when `recover` quarantined the slot
+    /// (plans/M8.md item F / decision 37). `reclaim` refuses while the two
+    /// are equal.
+    pub const SLOT_BOOK_QUARANTINE_STAMP: u64 = 24;
+    pub const SLOT_BOOK_BYTES: u64 = 32;
+
+    /// Descriptor-table byte count for a `depth`-deep queue.
+    pub const fn desc_bytes(depth: u16) -> u64 {
+        depth as u64 * DESC_SIZE
+    }
+
+    /// Available-ring byte count: `flags: u16, idx: u16, ring: [u16; depth]`.
+    /// (No event-idx: this machine never offers `VIRTIO_RING_F_EVENT_IDX`.)
+    pub const fn avail_bytes(depth: u16) -> u64 {
+        4 + 2 * depth as u64
+    }
+
+    /// Used-ring byte count: `flags: u16, idx: u16, ring: [(id,len); depth]`.
+    pub const fn used_bytes(depth: u16) -> u64 {
+        4 + 8 * depth as u64
+    }
+
+    /// Guest address of the host-written quiesce count for a queue whose
+    /// doorbell sits at `doorbell`. One formula, both sides: the compiler
+    /// emits the address the guest gates reclaim on; the VMM refuses any
+    /// other address at `mmio::QUIESCE_MMIO_ADDR`.
+    pub const fn quiesce_count_addr(doorbell: u64) -> u64 {
+        doorbell + DOORBELL_BYTES + SLOT_BOOK_QUIESCED
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,5 +789,45 @@ mod tests {
     #[test]
     fn machine_revision_str_fits_its_fixed_field() {
         assert!(MACHINE_REVISION_STR.len() as u64 <= machine_info::REVISION_FIELD_SIZE);
+    }
+
+    /// plans/M8.md item H attack 7: the virtio-blk numbers both the
+    /// compiler and the VMM consume are locked here. Changing one used to
+    /// be a silent mirror drift; now there is one definition, and this
+    /// test is the oracle that the protocol values themselves have not
+    /// wandered (VIRTIO 1.2 as profiled by 06 §6).
+    #[test]
+    fn virtio_blk_contract_numbers_are_locked() {
+        assert_eq!(virtio::DESC_SIZE, 16);
+        assert_eq!(virtio::DOORBELL_BYTES, 8);
+        assert_eq!(virtio::DESC_F_NEXT, 1);
+        assert_eq!(virtio::DESC_F_WRITE, 2);
+        assert_eq!(virtio::F_BLK_FLUSH, 1 << 9);
+        assert_eq!(virtio::F_VERSION_1, 1 << 32);
+        assert_eq!(
+            virtio::DEVICE_FEATURES,
+            virtio::F_VERSION_1 | virtio::F_BLK_FLUSH
+        );
+        assert_eq!(virtio::REQ_HEADER_SIZE, 16);
+        assert_eq!(virtio::REQ_STATUS_SIZE, 1);
+        assert_eq!(virtio::SLOT_BOOK_LAST_USED, 0);
+        assert_eq!(virtio::SLOT_BOOK_EPOCH, 8);
+        assert_eq!(virtio::SLOT_BOOK_QUIESCED, 16);
+        assert_eq!(virtio::SLOT_BOOK_QUARANTINE_STAMP, 24);
+        assert_eq!(virtio::SLOT_BOOK_BYTES, 32);
+        assert_eq!(virtio::desc_bytes(8), 8 * 16);
+        assert_eq!(virtio::avail_bytes(8), 4 + 2 * 8);
+        assert_eq!(virtio::used_bytes(8), 4 + 8 * 8);
+        // Book words do not overlap and fit the book.
+        assert_eq!(virtio::SLOT_BOOK_QUIESCED, virtio::SLOT_BOOK_EPOCH + 8);
+        assert_eq!(
+            virtio::SLOT_BOOK_QUARANTINE_STAMP,
+            virtio::SLOT_BOOK_QUIESCED + 8
+        );
+        assert_eq!(
+            virtio::SLOT_BOOK_QUARANTINE_STAMP + 8,
+            virtio::SLOT_BOOK_BYTES
+        );
+        assert_eq!(virtio::quiesce_count_addr(0x1000), 0x1000 + 8 + 16);
     }
 }
