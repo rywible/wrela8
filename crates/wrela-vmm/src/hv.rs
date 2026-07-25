@@ -143,8 +143,55 @@ unsafe extern "C" {
     pub fn hv_vcpu_set_reg(vcpu: u64, reg: u32, value: u64) -> i32;
     pub fn hv_vcpu_set_sys_reg(vcpu: u64, reg: u16, value: u64) -> i32;
     pub fn hv_vcpu_get_sys_reg(vcpu: u64, reg: u16, value: *mut u64) -> i32;
-    pub fn hv_vcpu_run(vcpu: u64) -> i32;
+    /// Raw FFI. Callers go through [`hv_vcpu_run`], which asserts decision
+    /// 11's baton (exactly one vCPU inside the call at a time).
+    #[link_name = "hv_vcpu_run"]
+    fn hv_vcpu_run_raw(vcpu: u64) -> i32;
     pub fn hv_vcpus_exit(vcpus: *mut u64, vcpu_count: u32) -> i32;
+}
+
+/// plans/M8.md decision 11 / item H attack 4: count of host threads
+/// currently inside the raw `hv_vcpu_run`. The baton means this is 0 or 1
+/// at every instant; a value ≥ 2 is the invariant broken, and is what
+/// would make a missing cross-core barrier observable.
+static HV_VCPU_RUN_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many host threads are inside [`hv_vcpu_run`] right now. Exposed for
+/// the unit test that pins the counter starts at zero; the live assert is
+/// inside the wrapper.
+pub fn hv_vcpu_run_depth() -> usize {
+    HV_VCPU_RUN_DEPTH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Enter the guest on `vcpu`, asserting plans/M8.md decision 11's baton:
+/// exactly one host thread may be inside this call at any instant. The
+/// three vCPU threads still exist (Hypervisor.framework binds a vCPU to
+/// its creating thread); the baton in `lib.rs` is what keeps them from
+/// overlapping here. This wrapper makes that assumption fail closed
+/// rather than merely believed — the day true concurrent `hv_vcpu_run`
+/// lands, this assert fires before any silent memory-ordering bug can
+/// masquerade as a green boot.
+///
+/// # Safety
+/// Same contract as the Hypervisor.framework `hv_vcpu_run`: `vcpu` must
+/// be a live handle created on this thread.
+pub unsafe fn hv_vcpu_run(vcpu: u64) -> i32 {
+    use std::sync::atomic::Ordering;
+    let prev = HV_VCPU_RUN_DEPTH.fetch_add(1, Ordering::SeqCst);
+    assert!(
+        prev == 0,
+        "plans/M8.md decision 11 baton broken: {prev} host thread(s) already inside \
+         hv_vcpu_run when another entered — exactly one vCPU may run at a time under \
+         the baton (item H attack 4). True concurrent vCPU execution would make this \
+         fire and is also the day a missing cross-core DMB must become observable"
+    );
+    let r = unsafe { hv_vcpu_run_raw(vcpu) };
+    let left = HV_VCPU_RUN_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    debug_assert!(
+        left >= 1,
+        "plans/M8.md decision 11 baton counter underflowed inside hv_vcpu_run"
+    );
+    r
 }
 
 // --- ESR decoder (item E's own "keep it tiny + unit-tested" requirement) --
@@ -308,5 +355,14 @@ mod tests {
     fn non_brk_ec_is_not_decoded_as_one() {
         let esr = (EC_DATA_ABORT_LOWER_EL as u64) << 26;
         assert_eq!(decode_brk(esr), None);
+    }
+
+    #[test]
+    fn baton_run_depth_starts_at_zero() {
+        // plans/M8.md item H attack 4: the counter `hv_vcpu_run` asserts
+        // against must be idle outside any call. A boot that overlapped
+        // two `hv_vcpu_run`s would trip the wrapper's assert; this pins
+        // the quiescent half so the assumption is not merely believed.
+        assert_eq!(hv_vcpu_run_depth(), 0);
     }
 }
