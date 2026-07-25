@@ -4760,7 +4760,21 @@ fn check_map_partition(
         .iter()
         .map(|(n, s)| (n.clone(), &s.decl))
         .collect();
-    let Some(mints) = types::mmio_mints_of(&owner, &structs) else {
+    // The nesting table item I's sweep made this walk need: a layout
+    // reached through a wrapper struct *or* an enum variant payload, which
+    // is why enums are here beside structs (`types::components_by_name`'s
+    // own content, built from this pass's own already-declared tables).
+    let components: std::collections::BTreeMap<String, &[(Type, Span)]> = mctx
+        .structs
+        .iter()
+        .map(|(n, s)| (n.clone(), s.decl.component_types.as_slice()))
+        .chain(
+            mctx.enums
+                .iter()
+                .map(|(n, e)| (n.clone(), e.component_types.as_slice())),
+        )
+        .collect();
+    let Some(mints) = types::mmio_mints_of(&owner, &structs, &components) else {
         return Err(type_error(
             format!(
                 "`map_partition({layout_name})` partitions a `@driver`'s own claim, and \
@@ -4878,9 +4892,25 @@ pub(crate) fn compose_call_error(raw: &Type) -> Type {
 /// same "one shared definition" reason `sema::types::validate_message_shape`
 /// calls `codegen::is_aggregate` directly rather than copying it: the day
 /// the table above changes, both halves are on the same screen and cannot
-/// silently disagree. The pair is total in the direction that matters —
+/// silently disagree.
+///
+/// **The pair is NOT total, and the exception is load-bearing** (found by
+/// plans/M7.md item I's sweep; this comment used to claim
 /// `decompose_call_error(&compose_call_error(t)) == Some(t)` for every
-/// `t` (both arms), which is the only property either caller relies on.
+/// `t`, which is false). `compose_call_error` is not injective: `t = T`
+/// and `t = Result[T, never]` both compose to `Result[T, CallError[never]]`,
+/// because §9.4's two rows genuinely collide when `E` is `never`. This
+/// answers `T` for that composed type, so a `Result[T, never]` reply
+/// round-tripped to the *wrong* declared type — and item Z1's transport
+/// then read the two ends of one `await` through two different
+/// predicates (this one caller-side, `codegen::is_aggregate(&f.ret)`
+/// callee-side), which turned the ambiguity into a shifted payload for an
+/// aggregate `T` and a write through a null `x8` for a scalar one. The
+/// collision is refused at the declaration now
+/// (`sema::types::validate_message_shape`, `golden/err-actor-reply-never-error`),
+/// which is what restores totality over every reply shape that can reach
+/// here — a `never` nested any deeper (`Result[T, Option[never]]`)
+/// composes and decomposes correctly and is untouched.
 pub(crate) fn decompose_call_error(composed: &Type) -> Option<Type> {
     let Type::Result(t, e) = composed else {
         return None;

@@ -351,7 +351,78 @@ pub fn declare(module: &Module) -> Result<Vec<DeclItem>, SemaError> {
     // ast-alongside-`DeclItem` zip, the same "at any nesting" recursion.
     // A second pass rather than a second mechanism.
     validate_capability_types(module, &items)?;
+    validate_enum_own_handles(&items)?;
     Ok(items)
+}
+
+/// plans/M7.md item I's sweep: an `own[P] T` inside an **enum variant
+/// payload** is unreachable by the one rule that governs it, so it fails
+/// closed here.
+///
+/// 02-language.md §4 / 03-hardware.md §3: `own[P] T`'s `T` must be the
+/// payload type `P` was bound with, checked by
+/// `eval::image_checks::check_pool_decls` (`golden/err-dma-pool-own-mismatch`).
+/// That check collects every `own[P] T` in the build closure from
+/// `own_handles_in_closure`, which walks consts, fn signatures, **struct**
+/// fields/methods/`init`s, and generic instantiations. It cannot walk an
+/// enum's payloads for a concrete reason rather than an oversight:
+/// `TypedProgram::enums` is `BTreeMap<String, Vec<String>>` — variant
+/// *names* only — because an enum has no body to check, so the typed tree
+/// this compiler produces carries no enum payload type anywhere. Verified
+/// by running: `enum SlotHolder: Held(own[BlockControl] BlkReqStatus)`
+/// against `img.dma_pool[BlkReqHeader](name=BlockControl, ...)` — the
+/// exact mismatch `err-dma-pool-own-mismatch` rejects in a fn signature —
+/// compiled clean and rendered a report.
+///
+/// Refused at the declaration instead of silently unchecked. The real fix
+/// is to carry enum payload types into the typed tree so `check_pool_decls`
+/// can ask about them, which belongs to **plans/M7.md item E**: item E is
+/// what makes an `own[P] T` handle exist at runtime at all, and is the
+/// first item that could want one in an enum. Nothing in the docs'
+/// aspirational driver puts one there today (every `own[P] T` in
+/// `docs/language/examples/virtio-storage.wr` is a parameter, a return, a
+/// struct field, an `Option` field, or an array element — all walked).
+fn validate_enum_own_handles(items: &[DeclItem]) -> Result<(), SemaError> {
+    fn own_in(ty: &Type) -> Option<String> {
+        match ty {
+            Type::Own(..) => Some(render_type(ty)),
+            Type::Array(elem, _) => own_in(elem),
+            Type::Tuple(elems) => elems.iter().find_map(own_in),
+            Type::Static(inner) | Type::Option(inner) => own_in(inner),
+            Type::Result(ok, err) => own_in(ok).or_else(|| own_in(err)),
+            Type::Fn(params, ret) => params
+                .iter()
+                .find_map(|(_, t)| own_in(t))
+                .or_else(|| own_in(ret)),
+            Type::Named(_, targs) => targs.iter().find_map(|a| match a {
+                TypeArg::Type(t) => own_in(t),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+    for item in items {
+        let DeclItem::Enum(e) = item else { continue };
+        for (ty, span) in &e.component_types {
+            if let Some(found) = own_in(ty) {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "enum `{}` declares `{found}` in a variant payload; a pool handle there \
+                         is not implemented (plans/M7.md item E). The rule that gives `own[P] T` \
+                         its meaning — `T` is the payload type the image bound `P` with \
+                         (02-language.md §4, 03-hardware.md §3) — is checked over fn signatures, \
+                         struct fields and generic instantiations, and an enum payload reaches \
+                         none of them, so accepting this would leave the handle's own pool \
+                         binding unchecked. Hold it in a struct field instead",
+                        e.name
+                    ),
+                    *span,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // --- `Actor[T]` validation (plans/M6.md item A) ---------------------------
@@ -504,49 +575,87 @@ fn validate_fn_actor_types(
 //
 // "At any nesting" (array/struct-of-handle counts): `type_contains_actor_handle`
 // recurses through every composite shape `validate_actor_type` does, plus
-// one more `validate_actor_type` never needed — a *named struct*'s own
-// declared fields (`component_types`), so a plain data struct with an
+// one more `validate_actor_type` never needed — a *named* type's own
+// declared components (`component_types`), so a plain data struct with an
 // `Actor[T]` field, passed by value as a message argument, is caught too
 // (a `BTreeSet` cycle guard, `seen`, makes this safe against a
 // self-referential struct shape — `classify_all`'s own infinite-size
 // check already rejects a genuinely infinite one before this ever runs,
 // but a merely self-*referential-through-`own`* one is legal data and
 // must not infinite-loop this walk).
+
+/// Every declared **struct's *and enum's*** own component types, by name —
+/// the one input each composite-containment walk in this file needs
+/// (`type_contains_actor_handle`, `type_contains_capability`,
+/// `collect_mmio_layouts`).
+///
+/// Deliberately a *second* map alongside the `BTreeMap<String,
+/// &DeclStruct>` those walks used to take. That map answers genuinely
+/// struct-shaped questions — `is_actor` for `validate_actor_type`,
+/// `layout_kind` for `validate_capability_args` — which an enum has no
+/// answer to. But it was silently answering a third, differently shaped
+/// question too: *"what does this named type hold?"*, for which an enum's
+/// variant payloads are exactly as load-bearing as a struct's fields, and
+/// for which `structs.get(name)` returned `None` on every enum.
+///
+/// plans/M7.md item I's sweep found all three walks failing open through
+/// that one word at once: a `DeviceCap[D]`, an `Mmio[L]` or an `Actor[T]`
+/// held inside an enum **variant payload** was invisible, so
+/// 03-hardware.md §1's `@actor` containment *and* its unforgeability
+/// floor, §2's no-alias rule, and 02-language.md §9.1's handle rules each
+/// silently admitted the enum-wrapped spelling of the shape they reject
+/// directly (`golden/err-cap-actor-enum-field`, `err-cap-enum-return`,
+/// `err-mmio-alias-enum`, `err-actor-handle-in-enum-message`).
+fn components_by_name(items: &[DeclItem]) -> BTreeMap<String, &[(Type, Span)]> {
+    let mut out: BTreeMap<String, &[(Type, Span)]> = BTreeMap::new();
+    for item in items {
+        match item {
+            DeclItem::Struct(s) => {
+                out.insert(s.name.clone(), s.component_types.as_slice());
+            }
+            DeclItem::Enum(e) => {
+                out.insert(e.name.clone(), e.component_types.as_slice());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn type_contains_actor_handle(
     ty: &Type,
-    structs: &BTreeMap<String, &DeclStruct>,
+    components: &BTreeMap<String, &[(Type, Span)]>,
     seen: &mut BTreeSet<String>,
 ) -> bool {
     match ty {
         Type::Named(name, _) if name == "Actor" => true,
-        Type::Array(elem, _) => type_contains_actor_handle(elem, structs, seen),
+        Type::Array(elem, _) => type_contains_actor_handle(elem, components, seen),
         Type::Tuple(elems) => elems
             .iter()
-            .any(|e| type_contains_actor_handle(e, structs, seen)),
+            .any(|e| type_contains_actor_handle(e, components, seen)),
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-            type_contains_actor_handle(inner, structs, seen)
+            type_contains_actor_handle(inner, components, seen)
         }
         Type::Result(ok, err) => {
-            type_contains_actor_handle(ok, structs, seen)
-                || type_contains_actor_handle(err, structs, seen)
+            type_contains_actor_handle(ok, components, seen)
+                || type_contains_actor_handle(err, components, seen)
         }
         Type::Fn(params, ret) => {
             params
                 .iter()
-                .any(|(_, t)| type_contains_actor_handle(t, structs, seen))
-                || type_contains_actor_handle(ret, structs, seen)
+                .any(|(_, t)| type_contains_actor_handle(t, components, seen))
+                || type_contains_actor_handle(ret, components, seen)
         }
         Type::Named(name, targs) => {
             if !seen.insert(name.clone()) {
                 return false; // already visited on this path: cycle guard.
             }
-            let via_fields = structs.get(name.as_str()).is_some_and(|s| {
-                s.component_types
-                    .iter()
-                    .any(|(t, _)| type_contains_actor_handle(t, structs, seen))
+            let via_fields = components.get(name.as_str()).is_some_and(|c| {
+                c.iter()
+                    .any(|(t, _)| type_contains_actor_handle(t, components, seen))
             });
             let via_targs = targs.iter().any(
-                |a| matches!(a, TypeArg::Type(t) if type_contains_actor_handle(t, structs, seen)),
+                |a| matches!(a, TypeArg::Type(t) if type_contains_actor_handle(t, components, seen)),
             );
             seen.remove(name);
             via_fields || via_targs
@@ -561,10 +670,10 @@ fn validate_message_shape(
     span: Span,
     params: &[DeclParam],
     ret: &Type,
-    structs: &BTreeMap<String, &DeclStruct>,
+    components: &BTreeMap<String, &[(Type, Span)]>,
 ) -> Result<(), SemaError> {
     for p in params {
-        if type_contains_actor_handle(&p.ty, structs, &mut BTreeSet::new()) {
+        if type_contains_actor_handle(&p.ty, components, &mut BTreeSet::new()) {
             return Err(SemaError::at(
                 "actor",
                 format!(
@@ -577,7 +686,7 @@ fn validate_message_shape(
             ));
         }
     }
-    if type_contains_actor_handle(ret, structs, &mut BTreeSet::new()) {
+    if type_contains_actor_handle(ret, components, &mut BTreeSet::new()) {
         return Err(SemaError::at(
             "actor",
             format!(
@@ -588,9 +697,71 @@ fn validate_message_shape(
             span,
         ));
     }
-    // No reply-shape rule beyond the `Actor[T]` one above survives here,
-    // and the history is worth keeping because it was a *wrong answer*,
-    // not a missing feature.
+    // plans/M7.md item I's sweep: `Result[T, never]` is the one declared
+    // reply 02-language.md §9.4's composition table cannot round-trip,
+    // and it produced a **wrong answer** at M7.
+    //
+    // The table's two rows collide there. `declared Result[T, E] ->
+    // Result[T, CallError[E]]` with `E = never` is character-for-character
+    // `declared R -> Result[R, CallError[never]]` with `R = T`, so the
+    // composed type carries no evidence of which row made it —
+    // `sema::bodies::compose_call_error` is not injective, and
+    // `decompose_call_error` (whose own doc claimed the pair was total
+    // "for every `t`, both arms") answers `T`.
+    //
+    // Item Z1's transport then reads the two ends of one `await` through
+    // two different predicates, which is exactly where the ambiguity
+    // becomes bytes: the *caller* sizes its staging slot from the
+    // decomposed declared reply (`codegen::flow_reply_stage_size`), while
+    // the *callee*'s dispatch arm decides whether to hand over a staging
+    // pointer at all from `codegen::is_aggregate(&f.ret)` on the real
+    // declared return (`layout.rs`'s own `reply_is_aggregate`). Verified
+    // by running, both ways:
+    //
+    //   - aggregate `T` — the caller reserves `sizeof(T)` and the callee
+    //     writes `sizeof(Result[T, never])`, one tag word more. Every
+    //     payload field arrives shifted by a word (a declared
+    //     `Ok(Triple(1001, 2002, 3003))` read back as `a=0` (the tag),
+    //     `b=1001`, `c=2002`) and the extra word lands past the slot, on
+    //     the frame's own `lr` save — masked today only because the
+    //     resume path re-saves `lr` on entry. A silent wrong answer.
+    //   - scalar `T` — the caller decides the reply is scalar and never
+    //     publishes a staging address at all, while the callee's dispatch
+    //     arm still loads `[waker + OFF_TURN_REPLY_SLOT]` (never written,
+    //     so zero) into `x8` and writes through it. Observed as a real
+    //     guest fault at `ipa=0x0`.
+    //
+    // The docs do not disambiguate the two rows, so this compiler does not
+    // get to pick one: 03/02 are normative and a guess here would be a
+    // silent language decision. Refused by name at the declaration
+    // instead, which is also where every other message/reply shape rule in
+    // this fn is enforced (`golden/err-actor-reply-never-error`). A
+    // `never` nested any deeper (`Result[T, Option[never]]`) is untouched
+    // and correct — only the error type *itself* collides.
+    if let Type::Result(_, e) = ret {
+        if matches!(**e, Type::Never) {
+            return Err(SemaError::at(
+                "actor",
+                format!(
+                    "`{struct_name}.{method_name}` declares the reply `{}`, and \
+                     02-language.md §9.4's composition table cannot round-trip it: `declared \
+                     Result[T, E] -> Result[T, CallError[E]]` with `E = never` is the same \
+                     composed type as `declared T -> Result[T, CallError[never]]`, so a caller \
+                     cannot tell which reply it is awaiting. Declare the reply as `{}` if it \
+                     never fails, or give the error an inhabited type",
+                    render_type(ret),
+                    render_type(match ret {
+                        Type::Result(t, _) => t,
+                        _ => unreachable!(),
+                    })
+                ),
+                span,
+            ));
+        }
+    }
+    // No further reply-shape rule beyond the `Actor[T]` one above
+    // survives here, and the history is worth keeping because it was a
+    // *wrong answer*, not a missing feature.
     //
     // plans/M6.md item H1 rejected EVERY aggregate reply at this point:
     // the turn record carried one scalar word, an aggregate return travels
@@ -627,6 +798,7 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
             structs.insert(s.name.clone(), s);
         }
     }
+    let components = components_by_name(items);
     let ast_items: Vec<&Item> = module
         .items
         .iter()
@@ -660,7 +832,12 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
                             // here rather than only at the call site).
                             if d.is_actor && f.is_pub && f.receiver.is_some() {
                                 validate_message_shape(
-                                    &d.name, &f.name, f.span, &fd.params, &fd.ret, &structs,
+                                    &d.name,
+                                    &f.name,
+                                    f.span,
+                                    &fd.params,
+                                    &fd.ret,
+                                    &components,
                                 )?;
                             }
                         }
@@ -730,43 +907,43 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
 
 /// The capability type `ty` contains, at any nesting, rendered — or
 /// `None`. The same walk `type_contains_actor_handle` performs (including
-/// its `seen` cycle guard and its recursion through a named struct's own
-/// declared fields, so a plain data struct wrapping a capability is caught
+/// its `seen` cycle guard and its recursion through a named type's own
+/// declared components, so a plain data struct — or an enum variant
+/// payload, `components_by_name` — wrapping a capability is caught
 /// wherever the wrapper appears), asking about a different type set.
 fn type_contains_capability(
     ty: &Type,
-    structs: &BTreeMap<String, &DeclStruct>,
+    components: &BTreeMap<String, &[(Type, Span)]>,
     seen: &mut BTreeSet<String>,
 ) -> Option<String> {
     match ty {
         Type::Named(name, _) if crate::eval::image_checks::is_sealed_authority_type_name(name) => {
             Some(render_type(ty))
         }
-        Type::Array(elem, _) => type_contains_capability(elem, structs, seen),
+        Type::Array(elem, _) => type_contains_capability(elem, components, seen),
         Type::Tuple(elems) => elems
             .iter()
-            .find_map(|e| type_contains_capability(e, structs, seen)),
+            .find_map(|e| type_contains_capability(e, components, seen)),
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-            type_contains_capability(inner, structs, seen)
+            type_contains_capability(inner, components, seen)
         }
-        Type::Result(ok, err) => type_contains_capability(ok, structs, seen)
-            .or_else(|| type_contains_capability(err, structs, seen)),
+        Type::Result(ok, err) => type_contains_capability(ok, components, seen)
+            .or_else(|| type_contains_capability(err, components, seen)),
         Type::Fn(params, ret) => params
             .iter()
-            .find_map(|(_, t)| type_contains_capability(t, structs, seen))
-            .or_else(|| type_contains_capability(ret, structs, seen)),
+            .find_map(|(_, t)| type_contains_capability(t, components, seen))
+            .or_else(|| type_contains_capability(ret, components, seen)),
         Type::Named(name, targs) => {
             if !seen.insert(name.clone()) {
                 return None; // already visited on this path: cycle guard.
             }
-            let via_fields = structs.get(name.as_str()).and_then(|s| {
-                s.component_types
-                    .iter()
-                    .find_map(|(t, _)| type_contains_capability(t, structs, seen))
+            let via_fields = components.get(name.as_str()).and_then(|c| {
+                c.iter()
+                    .find_map(|(t, _)| type_contains_capability(t, components, seen))
             });
             let found = via_fields.or_else(|| {
                 targs.iter().find_map(|a| match a {
-                    TypeArg::Type(t) => type_contains_capability(t, structs, seen),
+                    TypeArg::Type(t) => type_contains_capability(t, components, seen),
                     _ => None,
                 })
             });
@@ -777,8 +954,11 @@ fn type_contains_capability(
     }
 }
 
-fn contains_capability(ty: &Type, structs: &BTreeMap<String, &DeclStruct>) -> Option<String> {
-    type_contains_capability(ty, structs, &mut BTreeSet::new())
+fn contains_capability(
+    ty: &Type,
+    components: &BTreeMap<String, &[(Type, Span)]>,
+) -> Option<String> {
+    type_contains_capability(ty, components, &mut BTreeSet::new())
 }
 
 /// 03-hardware.md §1/§2: "`Mmio[L]` — a typed register layout derived from
@@ -940,23 +1120,56 @@ enum CapOwner {
 /// question, because 03-hardware.md §3's rule is `DmaShared`'s alone and
 /// not every capability's (a `DeviceCap[D]` parameter lent `read` is
 /// ordinary driver code).
-fn dma_shared_in_type(ty: &Type) -> Option<String> {
+/// plans/M7.md item I's sweep: this walk used to stop at a named type,
+/// looking only into its *type arguments* — so a `DmaShared[P, L]` held
+/// as a **field of a plain wrapper struct** was invisible, and
+/// `read bundle: RingBundle` lent exactly the ordinary borrow of shared
+/// control memory that `read ring: DmaShared[..]` is rejected for
+/// (`golden/err-dma-shared-lend-wrapped`). It recurses through the shared
+/// `components_by_name` table now, the same reach
+/// `type_contains_capability` has always had for the containment rules —
+/// which is where the discrepancy showed: `DmaShared` *is* a capability
+/// type, so an `@actor` field or a `pub` method parameter carrying one
+/// through a wrapper was already caught; only a `@driver`'s own private
+/// method, which containment deliberately permits, reached this rule and
+/// found it shallower.
+fn dma_shared_in_type(
+    ty: &Type,
+    components: &BTreeMap<String, &[(Type, Span)]>,
+    seen: &mut BTreeSet<String>,
+) -> Option<String> {
     match ty {
         Type::Named(name, _) if name == "DmaShared" => Some(render_type(ty)),
-        Type::Array(elem, _) => dma_shared_in_type(elem),
-        Type::Tuple(elems) => elems.iter().find_map(dma_shared_in_type),
+        Type::Array(elem, _) => dma_shared_in_type(elem, components, seen),
+        Type::Tuple(elems) => elems
+            .iter()
+            .find_map(|e| dma_shared_in_type(e, components, seen)),
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-            dma_shared_in_type(inner)
+            dma_shared_in_type(inner, components, seen)
         }
-        Type::Result(ok, err) => dma_shared_in_type(ok).or_else(|| dma_shared_in_type(err)),
+        Type::Result(ok, err) => dma_shared_in_type(ok, components, seen)
+            .or_else(|| dma_shared_in_type(err, components, seen)),
         Type::Fn(params, ret) => params
             .iter()
-            .find_map(|(_, t)| dma_shared_in_type(t))
-            .or_else(|| dma_shared_in_type(ret)),
-        Type::Named(_, targs) => targs.iter().find_map(|a| match a {
-            TypeArg::Type(t) => dma_shared_in_type(t),
-            _ => None,
-        }),
+            .find_map(|(_, t)| dma_shared_in_type(t, components, seen))
+            .or_else(|| dma_shared_in_type(ret, components, seen)),
+        Type::Named(name, targs) => {
+            if !seen.insert(name.clone()) {
+                return None; // already visited on this path: cycle guard.
+            }
+            let via_fields = components.get(name.as_str()).and_then(|c| {
+                c.iter()
+                    .find_map(|(t, _)| dma_shared_in_type(t, components, seen))
+            });
+            let found = via_fields.or_else(|| {
+                targs.iter().find_map(|a| match a {
+                    TypeArg::Type(t) => dma_shared_in_type(t, components, seen),
+                    _ => None,
+                })
+            });
+            seen.remove(name);
+            found
+        }
         _ => None,
     }
 }
@@ -970,6 +1183,7 @@ fn validate_fn_capability_types(
     owner: CapOwner,
     is_pub_method: bool,
     structs: &BTreeMap<String, &DeclStruct>,
+    components: &BTreeMap<String, &[(Type, Span)]>,
 ) -> Result<(), SemaError> {
     let where_ = match struct_name {
         Some(s) => format!("{s}.{fn_name}"),
@@ -990,13 +1204,23 @@ fn validate_fn_capability_types(
         // — those are methods on the builtin type, which no source can
         // declare.
         if p.mode != AccessMode::Take {
-            if let Some(found) = dma_shared_in_type(&p.ty) {
+            if let Some(found) = dma_shared_in_type(&p.ty, components, &mut BTreeSet::new()) {
+                // The parameter's own declared type, plus what it carries
+                // when the two differ — a wrapper struct's name alone
+                // would not say why it is refused, and the capability's
+                // name alone would not match anything the reader wrote.
+                let declared = render_type(&p.ty);
+                let carries = if declared == found {
+                    String::new()
+                } else {
+                    format!(", which carries `{found}`")
+                };
                 return Err(SemaError::at(
                     "type",
                     format!(
-                        "`{where_}` lends `{}: {found}` — 03-hardware.md §3: shared control \
-                         memory \"cannot be read as bytes or lent as a plain value\", it exposes \
-                         only field-wise typed operations that carry the target's \
+                        "`{where_}` lends `{}: {declared}`{carries} — 03-hardware.md §3: shared \
+                         control memory \"cannot be read as bytes or lent as a plain value\", it \
+                         exposes only field-wise typed operations that carry the target's \
                          volatile/cache/ordering semantics. Move it with `take` instead",
                         p.name
                     ),
@@ -1004,7 +1228,7 @@ fn validate_fn_capability_types(
                 ));
             }
         }
-        let Some(found) = contains_capability(&p.ty, structs) else {
+        let Some(found) = contains_capability(&p.ty, components) else {
             continue;
         };
         if is_pub_method && owner != CapOwner::Plain {
@@ -1034,7 +1258,7 @@ fn validate_fn_capability_types(
         }
     }
     validate_capability_args(ret, span, structs)?;
-    let Some(found) = contains_capability(ret, structs) else {
+    let Some(found) = contains_capability(ret, components) else {
         return Ok(());
     };
     if is_pub_method && owner != CapOwner::Plain {
@@ -1075,6 +1299,7 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
             structs.insert(s.name.clone(), s);
         }
     }
+    let components = components_by_name(items);
     let ast_items: Vec<&Item> = module
         .items
         .iter()
@@ -1088,7 +1313,7 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
             // typed as one is a constructor claim with nothing behind it.
             (Item::Const(c), DeclItem::Const(d)) => {
                 validate_capability_args(&d.ty, c.span, &structs)?;
-                if let Some(found) = contains_capability(&d.ty, &structs) {
+                if let Some(found) = contains_capability(&d.ty, &components) {
                     return Err(SemaError::at(
                         "type",
                         format!(
@@ -1110,6 +1335,7 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
                     CapOwner::Plain,
                     false,
                     &structs,
+                    &components,
                 )?;
             }
             (Item::Struct(s), DeclItem::Struct(d)) => {
@@ -1125,7 +1351,7 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
                     if owner != CapOwner::Actor {
                         continue;
                     }
-                    if let Some(found) = contains_capability(ty, &structs) {
+                    if let Some(found) = contains_capability(ty, &components) {
                         return Err(SemaError::at(
                             "type",
                             format!(
@@ -1156,6 +1382,7 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
                                 owner,
                                 f.is_pub && f.receiver.is_some(),
                                 &structs,
+                                &components,
                             )?;
                         }
                         Member::Init(i) => {
@@ -1180,6 +1407,7 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
                                 owner,
                                 false,
                                 &structs,
+                                &components,
                             )?;
                         }
                         _ => {}
@@ -1234,18 +1462,14 @@ pub struct CapabilityAuthority {
 }
 
 pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAuthority {
-    let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
-    for item in items {
-        if let DeclItem::Struct(s) = item {
-            structs.insert(s.name.clone(), s);
-        }
-    }
+    let components = components_by_name(items);
     let mut roots = BTreeSet::new();
     let mut capability_bearing = BTreeSet::new();
     for item in items {
         match item {
             DeclItem::Struct(s) => {
-                if contains_capability(&Type::Named(s.name.clone(), Vec::new()), &structs).is_some()
+                if contains_capability(&Type::Named(s.name.clone(), Vec::new()), &components)
+                    .is_some()
                 {
                     capability_bearing.insert(s.name.clone());
                 }
@@ -1265,7 +1489,16 @@ pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAu
                 }
             }
             DeclItem::Enum(e) => {
-                if contains_capability(&Type::Named(e.name.clone(), Vec::new()), &structs).is_some()
+                // Item I's sweep: this arm was written but could never
+                // fire — `contains_capability` consulted a struct-only
+                // map, so `structs.get(<enum name>)` was always `None`
+                // and no enum ever entered `capability_bearing`. A fn
+                // taking a capability-bearing enum was therefore invisible
+                // to `eval::legal::check_provenance` — 03-hardware.md §1's
+                // provenance sentence failing open through the same hole
+                // `components_by_name`'s own doc comment describes.
+                if contains_capability(&Type::Named(e.name.clone(), Vec::new()), &components)
+                    .is_some()
                 {
                     capability_bearing.insert(e.name.clone());
                 }
@@ -1860,6 +2093,29 @@ fn check_one_layout(
             }
         }
         let offset = explicit.unwrap_or(cursor);
+        // plans/M7.md item I's sweep: `@offset(n)` accepts any `n` a
+        // `u64` holds, and the two additions below (`offset + size`, and
+        // the `cursor` advance) both overflowed on one. In a debug build
+        // that was a `panic!` out of `wrela dump --stage=layout-types`; in
+        // a release build it would have *wrapped*, so
+        // `@offset(0xFFFFFFFFFFFFFFFF) z: u8` would have reported a
+        // `size=0` layout — a zero-byte `@layout(dma)` type, hence a DMA
+        // pool of `count` slots and zero bytes of backing, which is the
+        // fail-open this chapter exists to prevent. A field whose last
+        // byte does not exist is rejected here by name instead, before
+        // either addition runs.
+        let field_end = offset.checked_add(size).ok_or_else(|| {
+            layout_error(
+                format!(
+                    "field `{name}.{}: {}` at offset {offset:#x} is {size} byte(s) wide, so its \
+                     last byte lies past the end of a 64-bit address space; a `@layout` type's \
+                     offsets and size are exact (03-hardware.md §3)",
+                    f.name,
+                    printer::print_type_bare(&f.ty)
+                ),
+                f.span,
+            )
+        })?;
         if offset < cursor {
             let (prev_name, prev_start, prev_end) = last_field
                 .clone()
@@ -1872,7 +2128,7 @@ fn check_one_layout(
             // fact that is false — `earlier` at 0x0..0x4 does not touch
             // `later` at 0x10..0x14 — and a reader who checks it loses
             // trust in the rest of the message.
-            let overlaps = offset + size > prev_start;
+            let overlaps = field_end > prev_start;
             return Err(layout_error(
                 if overlaps {
                     format!(
@@ -1921,7 +2177,7 @@ fn check_one_layout(
             offset,
             size,
         }));
-        cursor = offset + size;
+        cursor = field_end;
         last_field = Some((f.name.clone(), offset, cursor));
     }
     if last_field.is_none() {
@@ -2256,13 +2512,14 @@ struct Mint {
 }
 
 /// Collects every `Mmio[L]` a driver field's declared type carries, at any
-/// nesting — including through a plain wrapper struct, which is the same
-/// reach `type_contains_capability` already gives the containment rules
-/// (one walk's shape, two questions). Order is the type's own structural
-/// order, so the diagnostic is deterministic.
+/// nesting — including through a plain wrapper struct or an enum variant
+/// payload, which is the same reach `type_contains_capability` already
+/// gives the containment rules (one walk's shape, two questions;
+/// `components_by_name` is the shared table). Order is the type's own
+/// structural order, so the diagnostic is deterministic.
 fn collect_mmio_layouts(
     ty: &Type,
-    structs: &BTreeMap<String, &DeclStruct>,
+    components: &BTreeMap<String, &[(Type, Span)]>,
     seen: &mut BTreeSet<String>,
     out: &mut Vec<String>,
 ) {
@@ -2272,36 +2529,36 @@ fn collect_mmio_layouts(
                 out.push(layout.clone());
             }
         }
-        Type::Array(elem, _) => collect_mmio_layouts(elem, structs, seen, out),
+        Type::Array(elem, _) => collect_mmio_layouts(elem, components, seen, out),
         Type::Tuple(elems) => {
             for e in elems {
-                collect_mmio_layouts(e, structs, seen, out);
+                collect_mmio_layouts(e, components, seen, out);
             }
         }
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-            collect_mmio_layouts(inner, structs, seen, out)
+            collect_mmio_layouts(inner, components, seen, out)
         }
         Type::Result(ok, err) => {
-            collect_mmio_layouts(ok, structs, seen, out);
-            collect_mmio_layouts(err, structs, seen, out);
+            collect_mmio_layouts(ok, components, seen, out);
+            collect_mmio_layouts(err, components, seen, out);
         }
         Type::Fn(params, ret) => {
             for (_, t) in params {
-                collect_mmio_layouts(t, structs, seen, out);
+                collect_mmio_layouts(t, components, seen, out);
             }
-            collect_mmio_layouts(ret, structs, seen, out);
+            collect_mmio_layouts(ret, components, seen, out);
         }
         Type::Named(name, targs) => {
             if seen.insert(name.clone()) {
-                if let Some(s) = structs.get(name.as_str()) {
-                    for (t, _) in &s.component_types {
-                        collect_mmio_layouts(t, structs, seen, out);
+                if let Some(c) = components.get(name.as_str()) {
+                    for (t, _) in c.iter() {
+                        collect_mmio_layouts(t, components, seen, out);
                     }
                 }
             }
             for a in targs {
                 if let TypeArg::Type(t) = a {
-                    collect_mmio_layouts(t, structs, seen, out);
+                    collect_mmio_layouts(t, components, seen, out);
                 }
             }
         }
@@ -2340,19 +2597,30 @@ pub fn driver_mmio_mints(items: &[DeclItem], driver: &str) -> Option<Vec<String>
             structs.insert(s.name.clone(), s);
         }
     }
-    mmio_mints_of(driver, &structs)
+    mmio_mints_of(driver, &structs, &components_by_name(items))
 }
 
-/// The same walk over an already-built struct table — `sema::bodies` has
-/// one (`ModuleCtx::structs`) and `layout.rs` builds one from `DeclItem`s,
-/// and they must agree about which layouts a driver mints or the mint
-/// operation and the window that backs it would disagree.
-pub fn mmio_mints_of(driver: &str, structs: &BTreeMap<String, &DeclStruct>) -> Option<Vec<String>> {
+/// The same walk over already-built tables — `sema::bodies` has them
+/// (`ModuleCtx::structs`/`enums`) and `layout.rs` builds them from
+/// `DeclItem`s, and they must agree about which layouts a driver mints or
+/// the mint operation and the window that backs it would disagree.
+///
+/// Two tables and not one, because the two questions are different:
+/// `structs` answers "is `driver` a `@driver`, and which types does it
+/// declare as *fields*" — a field is a mint and a parameter is not
+/// (`hardware.mmio.no-alias`) — while `components` is the shared nesting
+/// table `collect_mmio_layouts` walks to reach a layout through a wrapper
+/// struct or an enum variant payload.
+pub fn mmio_mints_of(
+    driver: &str,
+    structs: &BTreeMap<String, &DeclStruct>,
+    components: &BTreeMap<String, &[(Type, Span)]>,
+) -> Option<Vec<String>> {
     let d = structs.get(driver).filter(|d| d.is_driver)?;
     let mut out = Vec::new();
     for m in &d.members {
         if let DeclMember::Field(f) = m {
-            collect_mmio_layouts(&f.ty, structs, &mut BTreeSet::new(), &mut out);
+            collect_mmio_layouts(&f.ty, components, &mut BTreeSet::new(), &mut out);
         }
     }
     Some(out)
@@ -2387,12 +2655,7 @@ pub fn check_mmio_claims(
     items: &[DeclItem],
     layouts: &[LayoutType],
 ) -> Result<(), SemaError> {
-    let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
-    for item in items {
-        if let DeclItem::Struct(s) = item {
-            structs.insert(s.name.clone(), s);
-        }
-    }
+    let components = components_by_name(items);
     let by_name: BTreeMap<&str, &LayoutType> =
         layouts.iter().map(|l| (l.name.as_str(), l)).collect();
 
@@ -2431,7 +2694,7 @@ pub fn check_mmio_claims(
         let mut mints: Vec<Mint> = Vec::new();
         for (af, df) in ast_fields.iter().zip(decl_fields.iter()) {
             let mut found = Vec::new();
-            collect_mmio_layouts(&df.ty, &structs, &mut BTreeSet::new(), &mut found);
+            collect_mmio_layouts(&df.ty, &components, &mut BTreeSet::new(), &mut found);
             for layout in found {
                 mints.push(Mint {
                     field: df.name.clone(),

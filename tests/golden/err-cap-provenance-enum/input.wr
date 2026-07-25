@@ -1,0 +1,39 @@
+module examples.err_cap_provenance_enum
+
+# plans/M7.md item I (the adversarial sweep), 03-hardware.md §1: "The
+# compiler checks provenance transitively — a function that touches MMIO,
+# DMA, or IRQ state must be reachable through the owning driver's
+# authority."
+#
+# `golden/err-cap-provenance` is this program with the capability spelled
+# bare (`vector: IrqCap[u32]`). Here it arrives inside an **enum variant
+# payload**, and the check went quiet.
+#
+# The mechanism is worth stating exactly, because the dead code was
+# already written and looked right:
+# `sema::types::capability_authority` has an explicit `DeclItem::Enum`
+# arm whose job is to put a capability-bearing enum's own name into
+# `capability_bearing` — the flattened set `eval::legal::capability_in_type`
+# reads. That arm could never fire: it asked `contains_capability`, which
+# consulted a struct-only map, so `structs.get(<enum name>)` was always
+# `None`. No enum ever entered the set, so no fn holding one ever counted
+# as touching hardware state, so provenance had nothing to authorize.
+# One shared table (`components_by_name`) is what makes the arm real.
+#
+# The accepting sibling is `golden/check-capabilities`: there the driver's
+# own method calls the helper, so the helper is reachable through the
+# driver's authority.
+
+enum Held:
+    Bound(IrqCap[u32])
+    Unbound(u32)
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    fn service(read self) -> u64:
+        return self.sectors
+
+fn ack_vector(read held: Held) -> u64:
+    return 1

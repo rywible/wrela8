@@ -1,0 +1,1 @@
+error[type]: `forge` declares the return type `DeviceCap[VirtioBlock]`, but a capability's constructor is not source-visible (03-hardware.md §1) — no function can produce one, so none may claim to return one at 26:1

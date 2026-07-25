@@ -1,0 +1,27 @@
+module examples.err_cap_enum_return
+
+# plans/M7.md item I (the adversarial sweep), 03-hardware.md §1: "Their
+# constructors are not source-visible: no address, import, or cast creates
+# one."
+#
+# Item A's general unforgeability arm rejects any fn whose declared return
+# type carries a capability — `golden/err-cap-return` is that arm through
+# a bare `DeviceCap[D]`. Wrapping the same capability in an **enum variant
+# payload** slipped past it, because the containment walk consulted a
+# struct-only map (see `err-cap-actor-enum-field` for the whole finding).
+#
+# The value below is `Holder.Idle(1)`, which carries no capability at all
+# — and that is the point. The rule is about the declared *type*: a
+# signature returning `Holder` is a signature that may hand back
+# `Holder.Armed(cap)`, so the declaration is the forgery surface whatever
+# any one body happens to return.
+
+struct VirtioBlock:
+    id: u32
+
+enum Holder:
+    Armed(DeviceCap[VirtioBlock])
+    Idle(u32)
+
+pub fn forge() -> Holder:
+    return Holder.Idle(1)

@@ -1,0 +1,1 @@
+error[actor]: an `Actor[T]` handle cannot appear in a message (`Sink.take_it`'s own `h: Holder` — 02-language.md §9.1) at 33:5

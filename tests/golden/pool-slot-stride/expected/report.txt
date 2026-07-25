@@ -1,0 +1,47 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/pool_slot_stride.wr sha256=c1a30407cf983d3deb7ca8c2b0753b7f6b902b4a741a2056a90ee5bf818acadd
+  Name value=pool-slot-stride
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=BlockHw
+    Arg label=transport value=8192
+  Driver index=0 type=BlkDriver
+    Arg label=sectors value=2048
+  Edge from=driver#0 to=device#0
+  DmaPool name=Control type=Odd
+    Arg label=device value=device#0
+    Arg label=count value=4
+  DmaPool name=Scratch type=Tiny
+    Arg label=device value=device#0
+    Arg label=count value=1
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+  Layout name=Odd kind=dma endian=little size=9 padding=0
+    Field name=sector type=u64 offset=0x0 size=8
+    Field name=status type=u8 offset=0x8 size=1
+  Layout name=Tiny kind=dma endian=little size=1 padding=0
+    Field name=status type=u8 offset=0x0 size=1
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=112
+  Section name=abort base=0x405000c0 size=120
+  Section name=checkpoint base=0x40500138 size=104
+  Section name=rtcode base=0x405001a0 size=100
+  Section name=rtdata base=0x40500208 size=24
+  Section name=devregs base=0x40500220 size=8
+  Section name=pooldata base=0x40500228 size=37
+  Entry base=0x40500000
+  Driver name=BlkDriver state=8
+  Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=24
+  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40500220 size=8
+  Pool name=Control kind=dma payload=Odd slots=4 slot_bytes=9 base=0x40500228 size=36 align=8 coherency=coherent device=device#0
+  Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x4050024c size=1 align=1 coherency=coherent device=device#0
+  BlkPool name=Control base=0x40500228 size=0x24
+  BlkPool name=Scratch base=0x4050024c size=0x1
