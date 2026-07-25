@@ -1,0 +1,40 @@
+module examples.err_mmio_alias_enum
+
+# plans/M7.md item I (the adversarial sweep), 03-hardware.md §2: "Minting
+# a layout consumes those byte ranges from the claim; two live layouts can
+# never alias a register."
+#
+# `golden/err-mmio-alias` is this driver with both partitions spelled as
+# bare `Mmio[L]` fields. Here one of the two arrives through an **enum
+# variant payload**, and `check_mmio_claims` saw only one mint:
+# `collect_mmio_layouts` recursed through a named type's components via a
+# struct-only map, so an enum contributed nothing and the pair the rule is
+# about never formed. Both layouts claim 0x60..0x64 and the driver
+# compiled clean.
+#
+# The diagnostic still names both halves, and names the *field* that
+# carries the wrapper (`held: Holder`) rather than the enum's payload
+# type: the field is what the driver declares, and what a reader has to
+# change.
+#
+# `err-cap-actor-enum-field` carries the full finding — one missing map
+# entry, five rules failing open at once.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(mmio, endian=little)
+struct VirtioTransportMmio:
+    @offset(0x060) device_status: WriteOnly[u32]
+
+enum Holder:
+    Mapped(Mmio[VirtioIrqMmio])
+    Unmapped(u32)
+
+@driver
+pub struct BlkDriver:
+    held: Holder
+    transport_regs: Mmio[VirtioTransportMmio]
+    handled_bits: u32

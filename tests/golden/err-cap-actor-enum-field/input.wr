@@ -1,0 +1,34 @@
+module examples.err_cap_actor_enum_field
+
+# plans/M7.md item I (the adversarial sweep), 03-hardware.md §1: "`@actor`
+# structs cannot hold capabilities in fields, parameters, messages, or
+# captures."
+#
+# `golden/err-cap-actor-field` already pins that rule "at any nesting"
+# through an array of a plain data *struct*. This is the same sentence
+# through an **enum variant payload**, which item A's walk could not see
+# at all: `type_contains_capability` consulted a
+# `BTreeMap<String, &DeclStruct>`, so `structs.get("Holder")` was `None`
+# for every enum and the recursion simply stopped there. The declaration
+# below compiled clean before item I.
+#
+# One missing map entry, five rules failing open at once — each pinned by
+# its own sibling golden here: `err-cap-enum-return` (§1's unforgeability
+# floor), `err-cap-enum-driver-export` (§1's "never raw capabilities"),
+# `err-cap-provenance-enum` (§1's provenance sentence),
+# `err-mmio-alias-enum` (§2's no-alias rule) and
+# `err-actor-handle-in-enum-message` (02-language.md §9.1, an M6 rule with
+# the identical hole). `sema::types::components_by_name` is the one table
+# all of them now read.
+
+struct VirtioBlock:
+    id: u32
+
+enum Holder:
+    Armed(DeviceCap[VirtioBlock])
+    Idle(u32)
+
+@actor
+pub struct Sink:
+    held: Holder
+    n: u32

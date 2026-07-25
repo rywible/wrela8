@@ -1,0 +1,29 @@
+module examples.err_cap_enum_driver_export
+
+# plans/M7.md item I (the adversarial sweep), 03-hardware.md §1: "a driver
+# may export safe actor APIs but never raw capabilities."
+#
+# `golden/err-cap-driver-export` pins that arm through a bare
+# `Mmio[VirtioIrqMmio]` reply. This is the same export through an **enum
+# variant payload** — the wrapper that made the whole containment walk
+# blind (`err-cap-actor-enum-field` carries the finding).
+#
+# It is its own case rather than folded into `err-cap-enum-return`
+# because a different arm fires: a `@driver`'s `pub` method is a message
+# shape (02-language.md §9.4), so the driver-export rule answers first and
+# names the sentence a reader of *this* declaration needs, before the
+# general unforgeability arm would have rejected the same signature.
+
+struct BlockHw:
+    id: u32
+
+enum Holder:
+    Armed(DeviceCap[BlockHw])
+    Idle(u32)
+
+@driver
+pub struct BlkDriver:
+    n: u64
+
+    pub fn leak(read self) -> Holder:
+        return Holder.Idle(1)

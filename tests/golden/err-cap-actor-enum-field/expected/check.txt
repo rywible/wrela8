@@ -1,0 +1,1 @@
+error[type]: `@actor` struct `Sink` cannot hold a capability in a field (`DeviceCap[VirtioBlock]` — 03-hardware.md §1); only a `@driver` may at 33:5
