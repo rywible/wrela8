@@ -204,29 +204,199 @@ and instructions with no expression form (`eret`, `brk`, barriers,
 measure of how little the machine needs). Those stay hand-encoded in
 `layout.rs`, pinned as a byte golden, and never grow.
 
-Everything above the floor needs one narrow intrinsic surface — raw
-load/store at a comptime-known address, plus the handful of system
-instructions above — normative doc change and ledger clause first, in its
-own commit, before any migration. **Rejected: `@naked` + inline asm.** It
-is a real language feature with real semantic weight (no prologue, no
-stack, register discipline sema cannot verify) — a large surface to add to
-a language whose premise is that it checks everything, bought only to
-delete twenty reviewable, byte-pinned words.
+**The one rule that makes the rest fall out.** *Every runtime-varying
+reference in the machine is an index into a statically-sized, uniformly-
+strided array — no exceptions.* The machine already obeys this everywhere
+but one place: method dispatch is an index into a build-time table, the
+round-robin cursor is an index, the ready queue is `actor_count + 1`
+slots, the group arena is sized from a static count of `with group` sites.
+The single anomaly is the **waker**, which is a raw address into some other
+actor's turn area — and it is an address for exactly one reason: in
+hand-written assembly an address is a cheaper instruction than an index.
+That is an artifact of the medium, not a design decision.
 
-**Migration discipline (what makes this safe at all).** One routine at a
-time, console formatter first (lowest risk, immediately testable), the
-scheduler last. Each routine's wrela version must produce a
-**byte-identical boot transcript** against every existing boot/replay
-golden *before* its hand-assembled version is deleted — the transcripts
-already pinned by M5–M9 are the differential oracle, and the hand-asm
-implementation is the reference the new one is diffed against, exactly as
-`diff-eval` uses the evaluator against the backend.
+Conforming the waker costs one thing: turn areas are variable-size today
+(`ActorRuntimeLayout::frame_size` — record plus that actor's widest async
+frame). Make them **uniform**, sized to the image-wide max and rounded to a
+power of two. You spend padding bytes and you buy an array type; index →
+address becomes a single shifted-register add, and the report already
+publishes peak memory so the cost is visible and locked rather than hidden.
+Spending bytes to buy a type is the trade this project already makes with
+fixed frames and spill-everything.
+
+With that rule in force the whole `rtdata` section is one typed static:
+
+```text
+@layout(runtime) struct RuntimeTables {
+    turns:     [TurnArea; N_TURNS],     // uniform stride, TurnId indexes it
+    mailboxes: [Mailbox;  N_ACTORS],
+    groups:    [GroupSlot; GROUP_CAP],
+    rr_cursor: usize,
+}
+@placed(RTDATA_BASE) static RT: RuntimeTables;
+```
+
+**One intrinsic, one use site, in the entire system** — and `@layout(runtime)`
+is not a new mechanism but a fourth layout class beside M7's
+`@layout(mmio|dma|wire)`, so exact offsets/padding/sizes land in the report
+through machinery that already exists. `verify_section_sizes` already knows
+how to check the placed size against `compute_runtime_tables`. A `TurnId`
+newtype over an index makes a waker a *value* sema can reason about, whose
+only legal use is indexing `RT.turns` — which also sets up bounds-check
+elision later as a **proof** (the same shape as the existing erasure of
+impossible `CallError` variants, 02 §9.4) rather than as a fast path. Do
+not do that elision in M11; only make it possible.
+
+Intrinsic surface, target: **`@placed`. One.** It is barely new —
+`wrela-machine` already defines fixed addresses; this is the language
+naming one. The normative doc change and ledger clause come **first, in
+their own commit, before any migration** — both because CLAUDE.md's house
+rule requires it, and because migrating routine-by-routine and adding
+whatever intrinsic each one turns out to need designs the permanent surface
+by accretion, in the one place this project can least afford it.
+
+**`@brk` is deliberately *not* on that list**, and the reason generalizes.
+Today every `BRK` in an image is compiler-internal: no wrela source spells
+one, no author can opt out of one, and the only way an author meets one is
+as a VMM diagnostic line after something already broke
+(`decode_brk`/"unexpected `BRK #imm`"). Making it spellable would trade
+that property away and hand user code a trap-with-no-diagnostic competing
+with `panic`. It is also unnecessary, because typed wrela dissolves the
+sites rather than translating them:
+`BRK_ASYNC_DISPATCH_NO_STATE_MATCHED` is emitted by codegen itself at every
+resume dispatch tail, so the runtime inherits it free;
+`BRK_LINE_APPEND_OVERFLOW`/`BRK_LINE_COMMIT_OVERFLOW` become ordinary
+array-bounds checks on the fixed-size console ring, which codegen already
+emits everywhere — better than today, since a bounds failure gains a
+diagnostic instead of a bare trap; and `BRK_REPLY_SLOT_NO_WAKER` becomes
+*unrepresentable* once the waker is a non-optional `TurnId` field. The two
+that resist — `BRK_ACTOR_TURN_CANCELLED`/`BRK_AWAIT_ACTOR_REJECTED` — are
+not unreachability guards at all but a **representation gap**, named as
+such in their own comment ("the turn record carries one scalar reply word
+and no error tag, so there is nothing to hand the awaiting turn but a
+lie"). So the standing rule for this milestone: **a surviving explicit trap
+is a finding about the representation, not a case for an escape hatch** —
+it says the reply channel needs a tag, which that code already predicts.
+`@brk` may be added only per-site, with that argument made and rejected in
+writing first. The floor keeps `BRK` regardless (the halt tail); nothing
+above the floor spells it.
+
+**Rejected: `@naked` + inline asm.** It is a real language feature with real
+semantic weight (no prologue, no stack, register discipline sema cannot
+verify) — a large surface to add to a language whose premise is that it
+checks everything, bought only to relocate twenty reviewable, byte-pinned
+words. It also requires an assembler (mnemonics, operands, labels,
+relocation) — plausibly `encode.rs`-sized plus a parser, permanently, with
+its own goldens and fuzz lane. And it is a general escape hatch in a
+language that deliberately has none: today an inexpressible thing is a
+fail-closed error with a named gap, and that pressure is what has been
+improving the language every milestone. The asymmetry decides it — twenty
+hand-encoded words cannot grow, because nothing in the language can reach
+them; `@naked` grows by default. It can be added later on evidence M11
+itself would produce. It cannot be removed later.
+
+**Migration discipline (what makes this safe at all).** Item order, and
+item 0 matters most:
+
+0. **Uniform turn areas + `TurnId` instead of waker addresses — still
+   hand-assembled.** A pure representation refactor in Rust, verified
+   byte-identical on every boot golden, landing before any language change
+   is in flight. This is the highest-value split in the milestone: it means
+   the wrela migration afterwards is a **pure translation with no design
+   decisions left in it**. One variable at a time; two easy steps instead
+   of one hard one.
+1. `@layout(runtime)` + `@placed` as the doc/ledger commit (above).
+2. Console formatter — touches no runtime table at all, pure computation
+   over a buffer. Proves the toolchain end to end at zero risk.
+3. Abort path — the *body* only (print `x0..x5`'s message over the ring);
+   the halt tail (exit code, `EXIT_MMIO_ADDR`, `BRK #0`) stays floor. Still
+   no tables.
+4. `rt_enqueue` — first table access, one mailbox, no dispatch.
+5. `rt_run_one` / group child poll.
+6. `rt_select_and_run` last: most complex, most evidence available by then.
+
+Each routine's wrela version must produce a **byte-identical boot
+transcript** against every existing boot/replay golden *before* its
+hand-assembled version is deleted — the transcripts pinned by M5–M9 are the
+differential oracle, and the hand-asm implementation is the reference the
+new one is diffed against, exactly as `diff-eval` uses the evaluator
+against the backend.
+
+**What M11 costs, stated honestly up front.** It will probably make the
+scheduler *slower*: bounds checks on every index (the hand-asm has none)
+and the spill-everything frame convention (the current scheduler keeps
+everything in registers across its whole body). Some of that is offset —
+the current mailbox slot computation uses a `mul`, which power-of-two
+striding turns into a shifted add — but assume a regression and do not
+pre-optimize to avoid it. **That is the trade, and it is the right one:**
+because the transcripts are byte-identical, `bench guest` measures the
+identical workload before and after, so M11 hands you an exact before/after
+on an identical recording — precisely the evidence the cleverness budget
+demands and which has never been obtainable for this code. Lock the bench
+before migrating, measure after, and record the delta in the plan as a
+known number.
+
+**Two things to verify before this becomes plan text** (neither is
+established): that uniform turn areas are actually cheap for real images —
+`compute_runtime_tables` already knows every frame size, so a short
+measurement over the existing goldens settles it, and if the padding
+multiplies badly the fallback is a `[u64; N_TURNS]` offset table (one extra
+load, back to today's cost, still an index and never an address); and that
+nothing else in the runtime holds a raw address — the group arena and the
+checkpoint stub's saved-register area have not been traced closely.
 
 Opens: `runtime.*` clauses (there are none today — every one is opened
 here). Non-goals: self-hosting the compiler; touching codegen; and
 optimizing the scheduler — M11 makes the scheduler *reachable* by the
 cleverness budget, it does not spend it. The first optimization pays the
 full three-part price like everything else.
+
+**Settled here (two rejected alternatives; do not relitigate).**
+
+- **A single fused "global state machine" for the whole image's async
+  structure.** Rejected as the wrong first move, on three grounds. (a) The
+  real per-turn cost is two linear scans, not the dispatch mechanism:
+  selection is O(actors) (`build_rt_select_and_run`; the ready-queue table
+  is already sized and placed and deliberately unpopulated —
+  `RuntimeTables::ready_queue_capacity`'s own doc comment) and dispatch is
+  an O(methods) compare chain (`build_rt_select_and_run_core`'s
+  `methods.iter().enumerate()` loop). Fusion buys neither — a fused machine
+  still has to *pick* which actor runs. (b) One giant switch is a single
+  polymorphic indirect branch with N targets — the classic interpreter
+  dispatch problem, whose usual remedy is itself heavy cleverness; N
+  distinct `BL` sites predict individually. "Fuse to go faster" is a
+  hypothesis that could measure negative on an A76. (c) It collapses N
+  per-function FlowWir dumps and goldens into one enormous dump, trading
+  the primary review surface for an unmeasured win. Note the dispatch chain
+  exists *because of the medium*: a dense match over a comptime-known index
+  is a jump table, and nobody hand-patches a jump table by index — so
+  migrating to wrela relocates that fix to one codegen improvement
+  benefiting every `match` in the language. And after M11 fusion is a
+  *lowering* decision with `diff-eval` as its oracle, not a rewrite —
+  another reason it comes after, never instead.
+- **`WFE`/exclusive-monitor "yield on a memory address" as the idle or
+  wake mechanism.** Rejected, and largely already decided. The instinct is
+  correct and is *already the architecture* one layer up (06 §5: a
+  shared-memory doorbell word per queue plus one host-visible wake; park
+  writes its next deadline and the VMM sleeps the vCPU thread) —
+  implemented where the recorder can see it. `wrela-machine`'s park
+  doorbell already records the rationale for a trapping store over a WFI
+  trap. Three further reasons it stays rejected: `WFET`/`WFIT` (wait *with
+  timeout*, which a deadline park needs) is ARMv8.7-A while this machine's
+  baseline is **ARMv8.2-A** (06 §1), and bounding plain `WFE` with the
+  generic-timer event stream would make a deliberately tickless design
+  tick; `HCR_EL2.TWE` means WFE traps under both KVM and HVF anyway, so the
+  imagined in-guest sleep is an exit either way, and a trapping store reuses
+  the `decode_data_abort` the VMM already has. Decisively: a core woken by
+  another core's `STXR` clearing its exclusive monitor is a hardware event
+  the VMM cannot observe — not recordable, not injectable — which would
+  blow a hole through record/replay, the enumerable choice sequence, and
+  all of the DST work that rests on them. The one nuance worth preserving:
+  WFE wakeups are architecturally permitted to be spurious, so a park loop
+  that re-derives readiness from memory is idempotent and the wake decides
+  nothing. That leaves WFE admissible *later* as a pure power optimization
+  underneath an already-recorded park/unpark decision — a cleverness-budget
+  purchase against idle cores, which do not exist before M8.
 
 ### Recorded language intentions (not yet scheduled)
 
@@ -294,6 +464,20 @@ Rules that follow:
   is unreachable by this budget until it stops being hand-assembly) wait
   their turn like everything else: the profile says when, and until then
   dumb code calling stdlib SIMD ops is the answer.
+- **The scheduler's own spend order** (recorded so it is not improvised
+  the first time someone profiles a boot). Each step manufactures the
+  evidence the next one needs: (1) M11 — the runtime becomes wrela, and
+  the dispatch compare chain stops being hand-written by construction;
+  (2) **measure** — `bench guest` over byte-identical transcripts gives the
+  exact before/after that has never existed for this code; (3) the two
+  dumb wins, if and only if the profile asks for them — populate the
+  already-reserved ready-queue table (O(actors) scan → O(1) pop, no layout
+  change, the slots are placed already) and lower a dense comptime-known
+  `match` to a jump table (one codegen change that lifts every `match` in
+  the language, not a bespoke scheduler hack); (4) only then consider
+  fusion, as a FlowWir → mwir *lowering* validated by `diff-eval`, never a
+  rewrite. Nothing in this list needs `WFE`, an interrupt controller, or a
+  global state machine — see M11's settled rejections.
 
 Also permanently out: abstractions serving futures that are not ledger
 clauses; incremental/parallel/cached anything in the compiler until a
