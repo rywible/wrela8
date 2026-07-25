@@ -70,8 +70,10 @@ pub struct BlkDriver:
 
     init(mut self,
          take cap: DeviceCap[VirtioBlock],
-         take control_pool: DmaPool[BlockControl, 512])
+         take control_pool: DmaPool[BlockControl, 512],
+         bell: Actor[Bell])
         -> Result[unit, BootError]:
+        self.bell = bell
         claimed = VirtioBlock.claim(cap=take cap)
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         self.pending = InterruptCell(0)
