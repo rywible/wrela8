@@ -205,11 +205,12 @@ pub fn enc_ldrh_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
 // names for every other encoder): every constant below is the assembled
 // word, not re-derived by hand a second time.
 //
-// `InterruptCell[T]` (03-hardware.md §6) emits these for the ISR/ordinary
-// channel. Single-word load/store use LDAR/STLR; RMW (`swap_acquire`,
-// `fetch_or_release`) uses LDAXR/STLXR with a retry loop — see the
-// ledger note on `hardware.interrupt-cell` for why exclusives are needed
-// under checkpoint-only delivery and why the retry terminates.
+// `InterruptCell[T]` (03-hardware.md §6) emits LDAR/STLR for every op —
+// pure load/store and RMW (`swap_acquire`, `fetch_or_release`). The
+// exclusive pair encoders below are hand-checked and kept for the day
+// multicore or nested delivery lands; revision 0.1 does not emit them.
+// See `hardware.interrupt-cell` for why acquire/release alone suffice
+// under checkpoint-only, single-core, no-nesting delivery.
 
 /// `LDAR Wt, [Xn]` — 32-bit load-acquire. `as`: `ldar w0, [x1]` = `0x88dffc20`.
 pub fn enc_ldar_w(rt: u8, rn: u8) -> u32 {
@@ -620,28 +621,40 @@ pub fn enc_umulh(rd: u8, rn: u8, rm: u8) -> u32 {
 //
 // `MOV Rd, Rm` is the standard alias `ORR Rd, XZR/WZR, Rm`.
 
-fn logical_shifted_reg(sf: bool, opc: u32, rm: u8, rn: u8, rd: u8) -> u32 {
-    (sf_bit(sf) << 31) | (opc << 29) | (0b01010 << 24) | (reg(rm) << 16) | (reg(rn) << 5) | reg(rd)
+fn logical_shifted_reg(sf: bool, opc: u32, n: bool, rm: u8, rn: u8, rd: u8) -> u32 {
+    (sf_bit(sf) << 31)
+        | (opc << 29)
+        | (0b01010 << 24)
+        | ((n as u32) << 21)
+        | (reg(rm) << 16)
+        | (reg(rn) << 5)
+        | reg(rd)
 }
 
 /// `AND Rd, Rn, Rm`.
 pub fn enc_and_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b00, rm, rn, rd)
+    logical_shifted_reg(sf, 0b00, false, rm, rn, rd)
+}
+
+/// `BIC Rd, Rn, Rm` — `Rd = Rn & ~Rm`. plans/M7.md item G: multi-vector
+/// checkpoint clear (AND-clear only the bit(s) just serviced).
+pub fn enc_bic_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
+    logical_shifted_reg(sf, 0b00, true, rm, rn, rd)
 }
 
 /// `ORR Rd, Rn, Rm`.
 pub fn enc_orr_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b01, rm, rn, rd)
+    logical_shifted_reg(sf, 0b01, false, rm, rn, rd)
 }
 
 /// `EOR Rd, Rn, Rm`.
 pub fn enc_eor_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b10, rm, rn, rd)
+    logical_shifted_reg(sf, 0b10, false, rm, rn, rd)
 }
 
 /// `MOV Rd, Rm` — alias of `ORR Rd, XZR/WZR, Rm`.
 pub fn enc_mov_reg(rd: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b01, rm, 31, rd)
+    logical_shifted_reg(sf, 0b01, false, rm, 31, rd)
 }
 
 // --- LSL/LSR/ASR (immediate) -----------------------------------------------
@@ -1018,6 +1031,9 @@ mod tests {
         assert_eq!(enc_and_reg(0, 1, 2, true), 0x8a020020);
         assert_eq!(enc_orr_reg(0, 1, 2, true), 0xaa020020);
         assert_eq!(enc_eor_reg(0, 1, 2, true), 0xca020020);
+        // Hand-checked against `as -arch arm64`: `bic x0, x1, x2` →
+        // `0x8a220020` (AND's encoding with N=1).
+        assert_eq!(enc_bic_reg(0, 1, 2, true), 0x8a220020);
     }
 
     #[test]

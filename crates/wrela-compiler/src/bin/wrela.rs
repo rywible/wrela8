@@ -1346,6 +1346,15 @@ fn test_cmd(args: &[String]) -> ExitCode {
         ));
     }
     report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+    // plans/M7.md item G: host `interrupt_status` write + vector raise,
+    // carried into the runtime report the VMM parses (the full
+    // `--stage=report` artifact already emits the same line).
+    for inj in &image_layout.irq_host_injects {
+        report_text.push_str(&format!(
+            "IrqHostInject base={:#x} offset={:#x} status={:#x} vector={}\n",
+            inj.base, inj.offset, inj.status, inj.vector
+        ));
+    }
     if let Err(e) = std::fs::write(&report_path, &report_text) {
         eprintln!("error: cannot write {}: {e}", report_path.display());
         return ExitCode::FAILURE;

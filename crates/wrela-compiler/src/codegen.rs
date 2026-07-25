@@ -2449,16 +2449,19 @@ fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), Cod
     Ok(())
 }
 
-/// Exclusive RMW loop. Leaves the previous cell value in `X_C`.
+/// Interrupt-atomic RMW. Leaves the previous cell value in `X_C`.
 ///
-/// **No checkpoint inside the loop** — a compiler-emitted checkpoint
-/// between LDAXR and STLXR would be the only same-core observer that
-/// could clear the exclusive monitor under 06 §4's delivery rule, and
-/// would also let an ISR mutate the cell mid-RMW. Termination: STLXR
-/// fails only when the monitor was cleared; with single-core, no nesting
-/// (03 §6 rev 0.1), and no checkpoint in this sequence, no conflicting
-/// observer exists, so a failed STLXR is at most a spurious local clear
-/// and the next iteration succeeds. See ledger `hardware.interrupt-cell`.
+/// Emits `LDAR` / compute / `STLR`, **not** `LDAXR`/`STLXR`. 06 §4
+/// delivers vectors only at compiler-emitted checkpoints; revision 0.1
+/// is single-core with no nesting (03 §6). No checkpoint is emitted
+/// inside this sequence, so no same-core observer can interleave with
+/// the RMW — acquire/release alone give the interrupt-atomicity the
+/// cell promises. An exclusive pair would be needed if a second core or
+/// a nested ISR could clear a monitor mid-RMW; neither exists here.
+///
+/// (HVF probe, plans/M7.md item G: `LDAXR` against guest DRAM took a
+/// data abort on the flagship host; the non-exclusive form is also the
+/// one the machine's own delivery rule makes sufficient.)
 fn emit_interrupt_cell_rmw(
     ctx: &mut FnCtx,
     field_off: usize,
@@ -2468,18 +2471,17 @@ fn emit_interrupt_cell_rmw(
 ) -> Result<(), CodegenError> {
     emit_interrupt_cell_addr(ctx, field_off)?;
     ctx.load_slot(X_B, value_off);
-    let loop_word = ctx.words.len();
     match width {
         4 => {
             ctx.push(
-                encode::enc_ldaxr_w(X_C, X_A),
-                format!("ldaxr w{}, [{}]", X_C, reg_name(X_A)),
+                encode::enc_ldar_w(X_C, X_A),
+                format!("ldar w{}, [{}]", X_C, reg_name(X_A)),
             );
             match kind {
                 InterruptCellRmw::Swap => {
                     ctx.push(
-                        encode::enc_stlxr_w(X_E, X_B, X_A),
-                        format!("stlxr w{}, w{}, [{}]", X_E, X_B, reg_name(X_A)),
+                        encode::enc_stlr_w(X_B, X_A),
+                        format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
                     );
                 }
                 InterruptCellRmw::FetchOr => {
@@ -2488,22 +2490,22 @@ fn emit_interrupt_cell_rmw(
                         format!("orr w{}, w{}, w{}", X_D, X_C, X_B),
                     );
                     ctx.push(
-                        encode::enc_stlxr_w(X_E, X_D, X_A),
-                        format!("stlxr w{}, w{}, [{}]", X_E, X_D, reg_name(X_A)),
+                        encode::enc_stlr_w(X_D, X_A),
+                        format!("stlr w{}, [{}]", X_D, reg_name(X_A)),
                     );
                 }
             }
         }
         8 => {
             ctx.push(
-                encode::enc_ldaxr_x(X_C, X_A),
-                format!("ldaxr {}, [{}]", reg_name(X_C), reg_name(X_A)),
+                encode::enc_ldar_x(X_C, X_A),
+                format!("ldar {}, [{}]", reg_name(X_C), reg_name(X_A)),
             );
             match kind {
                 InterruptCellRmw::Swap => {
                     ctx.push(
-                        encode::enc_stlxr_x(X_E, X_B, X_A),
-                        format!("stlxr w{}, {}, [{}]", X_E, reg_name(X_B), reg_name(X_A)),
+                        encode::enc_stlr_x(X_B, X_A),
+                        format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
                     );
                 }
                 InterruptCellRmw::FetchOr => {
@@ -2517,8 +2519,8 @@ fn emit_interrupt_cell_rmw(
                         ),
                     );
                     ctx.push(
-                        encode::enc_stlxr_x(X_E, X_D, X_A),
-                        format!("stlxr w{}, {}, [{}]", X_E, reg_name(X_D), reg_name(X_A)),
+                        encode::enc_stlr_x(X_D, X_A),
+                        format!("stlr {}, [{}]", reg_name(X_D), reg_name(X_A)),
                     );
                 }
             }
@@ -2529,13 +2531,6 @@ fn emit_interrupt_cell_rmw(
             )));
         }
     }
-    // cbnz status, loop — status is W in X_E; use 32-bit form.
-    let here = ctx.words.len();
-    let byte_off = (loop_word as i32 - here as i32) * 4;
-    ctx.push(
-        encode::enc_cbnz(X_E, byte_off, false),
-        format!("cbnz w{}, #{byte_off}", X_E),
-    );
     Ok(())
 }
 

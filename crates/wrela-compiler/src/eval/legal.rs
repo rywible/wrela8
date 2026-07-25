@@ -1279,6 +1279,31 @@ fn scan_pattern(p: &TypedPattern, scan: &mut BodyScan) {
 // carries a forbidden effect is rejected, with the call path from the
 // ISR root naming the effect.
 
+/// Every `@task` method key in `program`. A `wake(Driver.task)` names
+/// one of these as a `FnRef` callee edge, but that edge is a *schedule*
+/// edge — 03 §6's bottom half is ordinary code, not an ISR helper, so
+/// ISR reachability must not follow it.
+fn task_method_keys(program: &TypedProgram) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    for (sname, s) in &program.structs {
+        for (mname, f) in &s.methods {
+            if f.is_task {
+                keys.insert(format!("{sname}.{mname}"));
+            }
+        }
+    }
+    for (ikey, inst) in &program.instantiations {
+        if let TypedInstantiation::Struct(s) = inst {
+            for (mname, f) in &s.methods {
+                if f.is_task {
+                    keys.insert(format!("{ikey}.{mname}"));
+                }
+            }
+        }
+    }
+    keys
+}
+
 /// 03-hardware.md §6's ISR effect restriction.
 pub fn check_isr_effects(program: &TypedProgram) -> Result<(), SemaError> {
     let roots = collect_isr_roots(program);
@@ -1286,6 +1311,7 @@ pub fn check_isr_effects(program: &TypedProgram) -> Result<(), SemaError> {
         return Ok(());
     }
     let nodes = build_nodes(program);
+    let tasks = task_method_keys(program);
     let mut in_isr: BTreeSet<String> = roots
         .iter()
         .filter(|k| nodes.contains_key(*k))
@@ -1298,6 +1324,10 @@ pub fn check_isr_effects(program: &TypedProgram) -> Result<(), SemaError> {
                 continue;
             }
             for callee in &info.callees {
+                // plans/M7.md item G: `wake`'s FnRef is not an ISR call.
+                if tasks.contains(callee) {
+                    continue;
+                }
                 if in_isr.insert(callee.clone()) {
                     changed = true;
                 }
@@ -1339,6 +1369,7 @@ pub fn check_isr_effects(program: &TypedProgram) -> Result<(), SemaError> {
 /// delivery contract (03 §6's mask–arm–recheck is for the ISR→bottom-half
 /// edge and the bottom half's own re-wake).
 pub fn check_wake_sites(program: &TypedProgram) -> Result<(), SemaError> {
+    let task_keys = task_method_keys(program);
     let isr_keys = {
         let roots = collect_isr_roots(program);
         if roots.is_empty() {
@@ -1357,6 +1388,9 @@ pub fn check_wake_sites(program: &TypedProgram) -> Result<(), SemaError> {
                         continue;
                     }
                     for callee in &info.callees {
+                        if task_keys.contains(callee) {
+                            continue;
+                        }
                         if in_isr.insert(callee.clone()) {
                             changed = true;
                         }
@@ -1369,23 +1403,6 @@ pub fn check_wake_sites(program: &TypedProgram) -> Result<(), SemaError> {
             in_isr
         }
     };
-    let mut task_keys = BTreeSet::new();
-    for (sname, s) in &program.structs {
-        for (mname, f) in &s.methods {
-            if f.is_task {
-                task_keys.insert(format!("{sname}.{mname}"));
-            }
-        }
-    }
-    for (ikey, inst) in &program.instantiations {
-        if let TypedInstantiation::Struct(s) = inst {
-            for (mname, f) in &s.methods {
-                if f.is_task {
-                    task_keys.insert(format!("{ikey}.{mname}"));
-                }
-            }
-        }
-    }
 
     let mut bad: Option<String> = None;
     let mut note = |key: &str, f: &TypedFn| {

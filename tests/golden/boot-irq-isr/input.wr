@@ -1,0 +1,105 @@
+module examples.boot_irq_isr
+
+# plans/M7.md item G's **real-boot oracle**: the VMM raises a device
+# vector, the guest's ISR runs at a compiler-emitted checkpoint, reads a
+# register the *host* wrote, masks it against declared handled bits,
+# acknowledges it, wakes the bottom half, and the bottom half observes
+# the InterruptCell level signal.
+#
+# Every value below is hand-computed. What each assertion would catch is
+# on the line. The vacuity twin is `err-boot-irq-isr-runs`.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+    pending: InterruptCell[u32]
+    seen: u32
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        self.seen = 0
+        # Host wrote IRQ_HOST_STATUS_MAGIC = 0xA501 before the first
+        # instruction (`IrqHostInject`). Proves DeviceCap addresses the
+        # inject window. Zero here means the host write never landed or
+        # the claim base is wrong.
+        s0 = self.regs.interrupt_status.read()
+        assert s0 == 42241, "init saw host-written interrupt_status (0xA501) through the claimed Mmio window"
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+
+    fn on_queue_irq(self):
+        status = self.regs.interrupt_status.read()
+        # Declared handled bits: bit 0 only. Undefined bits (0xA500) must
+        # not be published or acknowledged (03 §6).
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.regs.interrupt_ack.write(handled)
+            wake(BlkDriver.drain)
+
+    @task
+    fn drain(mut self):
+        # Level signal the ISR published after masking. Zero means the
+        # ISR never ran, never saw a handled bit, or never woke.
+        status = self.pending.swap_acquire(0)
+        assert status == 1, "bottom half observed the InterruptCell level signal the ISR published"
+        self.seen = status
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks * 10 + n
+        return unit
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@test(runtime)
+async fn irq_delivered(led: Actor[Ledger]):
+    # The host raised vector 1 before the first instruction. This await's
+    # resume checkpoint delivers the ISR and drains the wake bit
+    # (06 §4: vectors fire only at compiler-emitted checkpoints). Surviving
+    # to the mark means every assert in init and drain held.
+    a = await led.mark(n=4)
+    match a:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    b = await led.mark(n=2)
+    match b:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    m = await led.read_marks()
+    match m:
+        case .Ok(v):
+            assert v == 42, "two marks in admission order after a real ISR + bottom-half turn"
+        case .Err(_):
+            assert false, "read_marks rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-irq-isr", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver, device=blk)
+    led = img.actor(Ledger, mailbox=8)
+    img.supervise(children=[disk, led], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

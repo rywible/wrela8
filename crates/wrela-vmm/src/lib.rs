@@ -141,6 +141,19 @@ struct ParsedReport {
     /// a report without them boots exactly as it did before this item, no
     /// device model constructed at all.
     blk: Option<devices::BlkConfig>,
+    /// plans/M7.md item G: host writes into `interrupt_status` plus the
+    /// vector to raise, applied before the vCPU runs. Empty for images
+    /// that bind no ISR.
+    irq_injects: Vec<IrqHostInject>,
+}
+
+/// One `IrqHostInject` report line (plans/M7.md item G).
+#[derive(Debug, Clone)]
+struct IrqHostInject {
+    base: u64,
+    offset: u64,
+    status: u32,
+    vector: u64,
 }
 
 /// One `Kind key=value key=value ...` report line's own fields. Shared by
@@ -216,6 +229,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut blk_device: Option<(u64, u64, Option<u64>)> = None;
     let mut blk_queue: Option<devices::BlkQueueConfig> = None;
     let mut blk_pools: Vec<devices::PoolWindow> = Vec::new();
+    let mut irq_injects: Vec<IrqHostInject> = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
@@ -287,6 +301,27 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                 base: report_u64("BlkPool", &fields, "base")?,
                 size: report_u64("BlkPool", &fields, "size")?,
             });
+        } else if let Some(rest) = line.strip_prefix("IrqHostInject ") {
+            // plans/M7.md item G: host `interrupt_status` writer + vector
+            // raise. Applied before the vCPU runs so the guest's first
+            // checkpoint delivers a status word the guest did not produce.
+            let fields = parse_report_fields(
+                "IrqHostInject",
+                rest,
+                &["base", "offset", "status", "vector"],
+            )?;
+            let status = report_u64("IrqHostInject", &fields, "status")?;
+            let status = u32::try_from(status).map_err(|_| {
+                VmmError::MalformedReport(format!(
+                    "`IrqHostInject status={status:#x}` does not fit a u32 register"
+                ))
+            })?;
+            irq_injects.push(IrqHostInject {
+                base: report_u64("IrqHostInject", &fields, "base")?,
+                offset: report_u64("IrqHostInject", &fields, "offset")?,
+                status,
+                vector: report_u64("IrqHostInject", &fields, "vector")?,
+            });
         }
     }
     let revision = revision
@@ -347,7 +382,11 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             })
         }
     };
-    Ok(ParsedReport { entry, blk })
+    Ok(ParsedReport {
+        entry,
+        blk,
+        irq_injects,
+    })
 }
 
 /// Boots `img_path` (a flat blob, loaded at `wrela_machine::layout::
@@ -678,6 +717,29 @@ fn boot_image_core(
             Some(BlkState { device, mem })
         }
     };
+    // plans/M7.md item G: write `interrupt_status` then raise the vector
+    // before the guest's first instruction. The status value is the
+    // compiler's `IRQ_HOST_STATUS_MAGIC` — a word the zeroed reservation
+    // cannot produce — so an ISR that asserts equality has proved the
+    // host write, not a vacuous zero read.
+    for inj in &parsed.irq_injects {
+        let guest = inj.base.checked_add(inj.offset).ok_or_else(|| {
+            VmmError::BadImage(format!(
+                "IrqHostInject base={:#x}+offset={:#x} overflows",
+                inj.base, inj.offset
+            ))
+        })?;
+        if guest < machine_layout::DRAM_BASE {
+            return Err(VmmError::BadImage(format!(
+                "IrqHostInject address {guest:#x} is below DRAM_BASE"
+            )));
+        }
+        let off = (guest - machine_layout::DRAM_BASE) as usize;
+        unsafe {
+            std::ptr::copy_nonoverlapping(inj.status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
+        }
+        raise_vector(host_ram, inj.vector);
+    }
     let mut exits: u64 = 0;
     let exit_code: u64;
     // plans/M6.md item E, decision 9: the single point every
