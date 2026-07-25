@@ -2,25 +2,25 @@ module examples.boot_handle_index_distinct
 
 # plans/M8.md item H attack 6: `resolve_runtime_test_args` (and the twin
 # `boot_init_arg_word` path that materialises `decl.handle()` into an
-# init argument) used to give `actor#i` and `driver#i` the *same* handle
-# word — their own kind-local construction-order index. Item D's decision
-# 22 recorded that as "harmless only while nothing reads a handle word";
-# the guest *does* read them, through the `u32` `decl.handle()` spelling
-# `boot-init-args` already pins.
+# init argument) used to give distinct image declarations the *same*
+# handle word — each kind's own construction-order index. Item D's
+# decision 22 recorded the actor/driver half as "harmless only while
+# nothing reads a handle word"; the guest *does* read them, through the
+# `u32` `decl.handle()` spelling `boot-init-args` already pins.
+# `check_image_decl_method_intrinsic` accepts `handle()` on any
+# `ImageDecl`, devices included.
 #
-# Witness: `Marker` is `actor#0` and `Stub` is `driver#0`. `Tags` stores
-# both identities as `u32` via `.handle()`. Before the shared index space,
-# both words were 0 and `distinct` returned 0 — a silent wrong answer
-# about identity. After the fix, actors occupy `0..n_actors` and drivers
-# occupy `n_actors..`, so the two words differ and `distinct` returns 1.
-# A one-line revert of `actor_driver_handle_word`'s driver arm makes this
-# boot fail its assertion.
+# Witness: `Marker` is `actor#0`, `Stub` is `driver#0`, `Hw` is
+# `device#0`. `Tags` stores all three identities as `u32` via `.handle()`.
+# The shared space is actors, then drivers, then devices, so the words
+# are 0, 2, 3 (Tags itself is actor#1). A kind-local scheme for any one
+# of the three fails a concrete assert below. The first attack-6 fix
+# covered only actors and drivers; the device half was found by
+# orchestrator spot-probe (`device#0` colliding with `actor#0` at word 0).
 #
 # Dispatch itself is still static-by-type today (codegen never loads the
 # handle word to pick a mailbox), so this is an identity hole, not a
-# live mis-delivery — but identity is what a handle *is*, and the day
-# handles become dynamic the colliding space would deliver to the wrong
-# root.
+# live mis-delivery — but identity is what a handle *is*.
 
 struct Hw:
     id: u32
@@ -52,15 +52,12 @@ pub struct Marker:
 pub struct Tags:
     actor_id: u32
     driver_id: u32
+    device_id: u32
 
-    init(mut self, actor_id: u32, driver_id: u32):
+    init(mut self, actor_id: u32, driver_id: u32, device_id: u32):
         self.actor_id = actor_id
         self.driver_id = driver_id
-
-    pub fn distinct(read self) -> u64:
-        if self.actor_id != self.driver_id:
-            return 1
-        return 0
+        self.device_id = device_id
 
     pub fn actor_word(read self) -> u32:
         return self.actor_id
@@ -68,17 +65,17 @@ pub struct Tags:
     pub fn driver_word(read self) -> u32:
         return self.driver_id
 
+    pub fn device_word(read self) -> u32:
+        return self.device_id
+
 @test(runtime)
 async fn handle_words_are_distinct(t: Actor[Tags]):
-    v = await t.distinct()
-    match v:
-        case .Ok(n):
-            assert n == 1, "actor#0 and driver#0 must not share a handle word"
-        case .Err(_):
-            assert false, "distinct rejected"
-    # Concrete values: Marker is actor#0 → word 0; Tags is actor#1; Stub
-    # is driver#0 → word 2 (= n_actors). A kind-local scheme would give
-    # Stub word 0 and fail the first assert; a wrong shift fails these.
+    # Concrete layout for this image (2 actors, 1 driver, 1 device):
+    #   Marker actor#0 → 0
+    #   Tags   actor#1 → 1  (not stored; only used as the test receiver)
+    #   Stub   driver#0 → 2
+    #   Hw     device#0 → 3
+    # A wrong shift or a kind-local collision fails one of these by name.
     a = await t.actor_word()
     match a:
         case .Ok(n):
@@ -89,8 +86,16 @@ async fn handle_words_are_distinct(t: Actor[Tags]):
     match d:
         case .Ok(n):
             assert n == 2, "Stub is driver#0 after two actors"
+            assert n != 0, "a driver handle must not share actor#0's word"
         case .Err(_):
             assert false, "driver_word rejected"
+    v = await t.device_word()
+    match v:
+        case .Ok(n):
+            assert n == 3, "Hw is device#0 after two actors and one driver"
+            assert n != 0, "a device handle must not share actor#0's word"
+        case .Err(_):
+            assert false, "device_word rejected"
 
 @image
 pub fn build() -> Image:
@@ -98,7 +103,13 @@ pub fn build() -> Image:
     hw = img.device[Hw](transport=0x1000, required_features=[Feature.Flush])
     marker = img.actor(Marker, mailbox=4, n=7)
     stub = img.driver(Stub, device=hw, n=9)
-    tags = img.actor(Tags, mailbox=4, actor_id=marker.handle(), driver_id=stub.handle())
+    tags = img.actor(
+        Tags,
+        mailbox=4,
+        actor_id=marker.handle(),
+        driver_id=stub.handle(),
+        device_id=hw.handle(),
+    )
     img.supervise(
         children=[marker, stub, tags],
         strategy=Restart.OneForOne,
