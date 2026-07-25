@@ -896,6 +896,24 @@ fn walk_expr<'a>(
             set_state(&path, state, PathState::Moved);
             Ok(())
         }
+        // plans/M7.md item E4 / 03-hardware.md §5: `completion = await
+        // receipt` consumes the `Receipt[P]`. Without this, a local
+        // receipt looks live after the await and fails protocol-
+        // consumption as an illegal drop. Actor-call awaits
+        // (`await handle.m(...)`) are not places — fall through.
+        Expr::Unary(span, UnaryOp::Await, inner) => {
+            if let Some(path) = as_path(inner, fctx, wctx.mctx) {
+                if let Some(ty) = place_type(inner, fctx, wctx.mctx) {
+                    if crate::eval::image_checks::is_protocol_consuming_type(&ty) {
+                        walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
+                        check_takeable(&path, state, wctx, *span)?;
+                        set_state(&path, state, PathState::Moved);
+                        return Ok(());
+                    }
+                }
+            }
+            walk_expr(inner, state, fctx, wctx, dstack, loop_marker)
+        }
         Expr::Unary(_, _, inner) => walk_expr(inner, state, fctx, wctx, dstack, loop_marker),
         Expr::Try(_, inner) => {
             // `?` returns from the enclosing function on `Err` (02-
@@ -1073,11 +1091,18 @@ fn receiver_of<'e>(callee: &'e Expr, fctx: &FnCtx, wctx: &WCtx) -> Option<(&'e E
             if crate::eval::image_checks::is_protocol_state_type_name(sname) {
                 let mode = match name.as_str() {
                     // Fallible / final transitions consume the input state
-                    // (03-hardware.md §9). `take_irq` is item G's — same
-                    // shape when it lands.
-                    "negotiate" | "start" | "take_irq" => AccessMode::Take,
+                    // (03-hardware.md §9).
+                    "negotiate" | "start" => AccessMode::Take,
                     // Partition hand-out and capacity read keep the state.
                     "map_partition" | "read_capacity_sectors" => AccessMode::Read,
+                    // `take_irq`: on `DriverClaimedDevice` it is the terminal
+                    // mint (boot-irq-isr / check-device-take-irq — no
+                    // negotiate/start). On `FeaturesAcceptedDevice` it must
+                    // keep the state so `start` can follow (virtio-storage.wr
+                    // / the E4 flagship). Decision 15's blanket Take was the
+                    // claimed-only shape; the accepted-state half is Read.
+                    "take_irq" if sname.starts_with("FeaturesAccepted") => AccessMode::Read,
+                    "take_irq" => AccessMode::Take,
                     _ => AccessMode::Read,
                 };
                 return Some((base.as_ref(), mode));

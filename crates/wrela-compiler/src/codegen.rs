@@ -551,14 +551,30 @@ impl RodataPool {
 
 fn strip_wrappers(ty: &Type) -> &Type {
     match ty {
-        Type::Own(_, inner) => strip_wrappers(inner),
+        // plans/M7.md item E4 / decision 19: do **not** strip `Own` here.
+        // `own[P] T` is one word (a pool-slot address); treating it as `T`
+        // for aggregate classification would pass the address-of-the-word
+        // instead of the word, and field offset math would look past an
+        // 8-byte slot as if it held `T` inline. Callers that need the
+        // payload type use `sema::bodies::unwrap_own` explicitly.
         Type::Static(inner) => strip_wrappers(inner),
+        other => other,
+    }
+}
+
+/// Payload type inside an `own[P] T`, or `ty` unchanged.
+fn unwrap_own_ref(ty: &Type) -> &Type {
+    match ty {
+        Type::Own(_, inner) => inner,
         other => other,
     }
 }
 
 pub(crate) fn is_aggregate(ty: &Type) -> bool {
     match strip_wrappers(ty) {
+        // plans/M7.md item E4 / decision 19: `own[P] T` is one opaque word
+        // (a guest pool-slot address), passed by value like a capability.
+        Type::Own(..) => false,
         // plans/M6.md item D (verification fix, decision 11b's own boot
         // exercised this for the first time): the M6 builtin-pseudo-type
         // vehicle (`mwir::size_of`'s own doc comment has the full list) is
@@ -765,6 +781,39 @@ fn field_offset_size(
             Ok((sz * index, sz))
         }
         Type::Named(name, targs) => {
+            // plans/M7.md item E4: `IoCompletion[P]` is a real aggregate
+            // (payload + status + written_len), not a sealed one-word
+            // authority type.
+            if name == "IoCompletion" {
+                let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
+                    return Err(CodegenError::internal(
+                        "`IoCompletion` with no payload type".to_string(),
+                    ));
+                };
+                let fields = [
+                    payload.clone(),
+                    Type::Result(
+                        Box::new(Type::Unit),
+                        Box::new(Type::Named("IoError".to_string(), vec![])),
+                    ),
+                    Type::Named(
+                        "Untrusted".to_string(),
+                        vec![crate::sema::types::TypeArg::Type(Type::Usize)],
+                    ),
+                ];
+                if index >= fields.len() {
+                    return Err(CodegenError::internal(format!(
+                        "`IoCompletion` field index {index} out of range"
+                    )));
+                }
+                let mut off = 0usize;
+                for f in &fields[..index] {
+                    off += mwir::size_of(f, layout).map_err(|e| CodegenError::unimplemented(&e))?;
+                }
+                let sz = mwir::size_of(&fields[index], layout)
+                    .map_err(|e| CodegenError::unimplemented(&e))?;
+                return Ok((off, sz));
+            }
             // plans/M7.md item G, decision 18: look up by rendered type.
             let key = if targs.is_empty() {
                 name.clone()
@@ -1345,13 +1394,42 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         }
         Inst::Project { dst, base, index } => {
             let base_ty = f.temp_types[base.0].clone();
-            let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
-            ctx.copy_slot_to_slot(ctx.frame.off(*dst), ctx.frame.off(*base) + off, size);
+            // plans/M7.md item E4 / decision 19: an `own[P] T` base holds a
+            // pool-slot address; project the field from guest memory at
+            // that address, not from the 8-byte handle word itself.
+            if matches!(base_ty, Type::Own(..)) {
+                let payload_ty = unwrap_own_ref(&base_ty);
+                let (off, size) = field_offset_size(payload_ty, *index, ctx.layout)?;
+                ctx.load_slot(X_A, ctx.frame.off(*base));
+                let dst_off = ctx.frame.off(*dst);
+                let mut w = 0;
+                while w < size {
+                    ctx.load_ptr(X_B, X_A, off + w);
+                    ctx.store_slot(X_B, dst_off + w);
+                    w += 8;
+                }
+            } else {
+                let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
+                ctx.copy_slot_to_slot(ctx.frame.off(*dst), ctx.frame.off(*base) + off, size);
+            }
         }
         Inst::SetField { base, index, value } => {
             let base_ty = f.temp_types[base.0].clone();
-            let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
-            ctx.copy_slot_to_slot(ctx.frame.off(*base) + off, ctx.frame.off(*value), size);
+            if matches!(base_ty, Type::Own(..)) {
+                let payload_ty = unwrap_own_ref(&base_ty);
+                let (off, size) = field_offset_size(payload_ty, *index, ctx.layout)?;
+                ctx.load_slot(X_A, ctx.frame.off(*base));
+                let src_off = ctx.frame.off(*value);
+                let mut w = 0;
+                while w < size {
+                    ctx.load_slot(X_B, src_off + w);
+                    ctx.store_ptr(X_B, X_A, off + w);
+                    w += 8;
+                }
+            } else {
+                let (off, size) = field_offset_size(&base_ty, *index, ctx.layout)?;
+                ctx.copy_slot_to_slot(ctx.frame.off(*base) + off, ctx.frame.off(*value), size);
+            }
         }
         Inst::IndexGet {
             dst,
@@ -1856,24 +1934,1009 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
         }
-        // plans/M7.md item E3 / decision 16: the sealed write *order* is an
-        // mwir fact (`QueuePublish order=[...]`). Real DRAM stores against
-        // pool-backed addresses wait for E4's image-bound `own[P] T`
-        // wiring — inventing stack addresses as descriptor targets would
-        // pretend a transfer payload lived in a declared pool. Mint the
-        // Receipt word; keep the operands live.
+        // plans/M7.md item E4 / decision 20: package into the control-pool
+        // area after the ring, then mint QueueOp = desc head 0.
+        Inst::QueuePrepare {
+            dst,
+            queue,
+            permit: _,
+            header,
+            payload,
+            status,
+            device_writes,
+            payload_len,
+        } => {
+            emit_queue_prepare(
+                ctx,
+                f,
+                *dst,
+                *queue,
+                *header,
+                *payload,
+                *status,
+                *device_writes,
+                *payload_len,
+            )?;
+        }
+        // plans/M7.md item E3/E4 / decision 16/20: sealed write order with
+        // real DRAM stores against pool-backed addresses.
         Inst::QueuePublish {
             dst,
             queue,
             operation,
             steps: _,
         } => {
-            ctx.load_slot(X_A, ctx.frame.off(*queue));
-            ctx.load_slot(X_B, ctx.frame.off(*operation));
-            ctx.load_imm(0, 0);
-            ctx.store_slot(0, ctx.frame.off(*dst));
+            emit_queue_publish(ctx, f, *dst, *queue, *operation)?;
+        }
+        Inst::QueueDrain { queue, max } => {
+            emit_queue_drain(ctx, f, *queue, *max)?;
+        }
+        Inst::QueueSuppressInterrupts { queue } => {
+            emit_queue_suppress_interrupts(ctx, f, *queue)?;
+        }
+        Inst::QueueClaim {
+            dst,
+            queue,
+            receipt,
+        } => {
+            emit_queue_claim(ctx, f, *dst, *queue, *receipt)?;
         }
     }
+    Ok(())
+}
+
+/// Descriptor-table depth of a `VirtQueue[..N]` temp, or a named error.
+fn virtqueue_depth_of(ty: &Type) -> Result<u16, CodegenError> {
+    let Type::Named(name, targs) = ty else {
+        return Err(CodegenError::internal(format!(
+            "queue temp is `{}`, not `VirtQueue[..N]`",
+            crate::sema::types::render_type(ty)
+        )));
+    };
+    if name != "VirtQueue" {
+        return Err(CodegenError::internal(format!(
+            "queue temp is `{name}`, not `VirtQueue[..N]`"
+        )));
+    }
+    let Some(crate::sema::types::TypeArg::Bound(expr)) = targs.first() else {
+        return Err(CodegenError::internal(
+            "`VirtQueue` with no bound depth".to_string(),
+        ));
+    };
+    let text = match expr {
+        crate::syntax::ast::Expr::Int(_, t) => t.as_str(),
+        _ => {
+            return Err(CodegenError::unimplemented(
+                "`VirtQueue[..N]` whose depth is not an integer literal (const-name depths need \
+                 folding before codegen)",
+            ));
+        }
+    };
+    let n: u64 = text.parse().map_err(|_| {
+        CodegenError::internal(format!("`VirtQueue[..{text}]` depth is not a u64 literal"))
+    })?;
+    u16::try_from(n)
+        .map_err(|_| CodegenError::internal(format!("`VirtQueue[..{n}]` depth does not fit u16")))
+}
+
+/// `prepare_block`: write header/status into packaging, record meta, mint
+/// QueueOp = absolute meta address (decision 22). Ring head stays 0.
+#[allow(clippy::too_many_arguments)]
+fn emit_queue_prepare(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+    header: Temp,
+    payload: Temp,
+    status: Temp,
+    device_writes: bool,
+    payload_len: u32,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let meta = crate::virtqueue::meta_offset(placed.bytes);
+    let header_off = meta + crate::virtqueue::SLOT_META_BYTES;
+    let status_off = header_off + crate::virtqueue::REQ_HEADER_SIZE;
+
+    // X_C = pool base (queue word).
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    // X_D = header destination = pool + header_off.
+    ctx.load_imm(X_D, header_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // Pack BlkReqHeader: frame ABI is three 8-byte slots (kind, reserved,
+    // sector); device layout is u32/u32/u64 at +0/+4/+8.
+    let hdr_base = ctx.frame.off(header);
+    ctx.load_slot(X_A, hdr_base); // kind
+    ctx.push(
+        encode::enc_str_w_imm(X_A, X_D, 0),
+        format!("str w{}, [{}, #0]", X_A, reg_name(X_D)),
+    );
+    ctx.load_slot(X_A, hdr_base + 8); // reserved
+    ctx.push(
+        encode::enc_str_w_imm(X_A, X_D, 4),
+        format!("str w{}, [{}, #4]", X_A, reg_name(X_D)),
+    );
+    ctx.load_slot(X_A, hdr_base + 16); // sector
+    ctx.push(
+        encode::enc_str_x_imm(X_A, X_D, 8),
+        format!("str {}, [{}, #8]", reg_name(X_A), reg_name(X_D)),
+    );
+
+    // Status byte at pool + status_off.
+    ctx.load_imm(X_D, status_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_slot(X_A, ctx.frame.off(status));
+    ctx.push(
+        encode::enc_strb_imm(X_A, X_D, 0),
+        format!("strb w{}, [{}, #0]", X_A, reg_name(X_D)),
+    );
+
+    // Meta base = pool + meta.
+    ctx.load_imm(X_D, meta as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // payload addr
+    ctx.load_slot(X_A, ctx.frame.off(payload));
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    // header addr
+    ctx.load_imm(X_A, header_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_HEADER as usize);
+    // status addr
+    ctx.load_imm(X_A, status_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
+    // payload_len
+    ctx.load_imm(X_A, payload_len as i64);
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    // flags = DEVICE_WRITES? | INFLIGHT (RESOLVED cleared)
+    let flags = crate::virtqueue::SLOT_FLAG_INFLIGHT
+        | if device_writes {
+            crate::virtqueue::SLOT_FLAG_DEVICE_WRITES
+        } else {
+            0
+        };
+    ctx.load_imm(X_A, flags as i64);
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    // generation: bump (load, add 1, store); start from 1 on first use.
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_GENERATION as usize);
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_GENERATION as usize);
+    // Clear waiter / reply_stage for a fresh op.
+    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
+    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
+    // QueueOp = absolute meta address (X_D).
+    ctx.store_slot(X_D, ctx.frame.off(dst));
+    Ok(())
+}
+
+/// `publish`: write_descriptors → publish_available → notify_queue.
+fn emit_queue_publish(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+    operation: Temp,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let meta = crate::virtqueue::meta_offset(placed.bytes);
+    // X_C = pool base; X_D = meta (QueueOp word — absolute address).
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_slot(X_D, ctx.frame.off(operation));
+
+    // Load packaging.
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_HEADER as usize); // header addr → will reuse
+    // Spill header/payload/status/len/flags into frame-adjacent? Use
+    // registers carefully: after each desc write we reload from meta.
+    // Desc 0 (header): NEXT, device-readable, len=16, next=1
+    // X_A already header addr. Write desc[0].
+    emit_desc_entry(
+        ctx,
+        /*pool*/ X_C,
+        /*desc_index*/ 0,
+        /*addr_reg*/ X_A,
+        /*len*/ crate::virtqueue::REQ_HEADER_SIZE as u32,
+        /*flags*/ crate::virtqueue::DESC_F_NEXT,
+        /*next*/ 1,
+        placed.desc,
+    )?;
+
+    // Desc 1 (payload)
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    ctx.load_ptr(0, X_D, crate::virtqueue::SLOT_META_FLAGS as usize); // flags → x0 temporarily
+    // data flags: NEXT | (WRITE if device_writes)
+    // Build flags in X_SCRATCH: start NEXT, OR WRITE if bit0 of meta flags.
+    // Reload meta base — X_D still holds it if nothing clobbered it.
+    // emit_desc_entry clobbers X_A/X_B/X_C? It uses pool reg — keep X_C as pool.
+    // After first emit_desc, X_C should still be pool if emit_desc doesn't clobber.
+    // Re-load pool and meta to be safe.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_slot(X_D, ctx.frame.off(operation));
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    let data_flags_base = crate::virtqueue::DESC_F_NEXT;
+    // flags = NEXT | ((meta_flags & DEVICE_WRITES) << 1) — mask so INFLIGHT
+    // does not become a spurious WRITE bit.
+    ctx.load_ptr(0, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(1, crate::virtqueue::SLOT_FLAG_DEVICE_WRITES as i64);
+    ctx.push(
+        encode::enc_and_reg(0, 0, 1, true),
+        format!("and {}, {}, {}", reg_name(0), reg_name(0), reg_name(1)),
+    );
+    ctx.push(
+        encode::enc_lsl_imm(0, 0, 1, true),
+        format!("lsl {}, {}, #1", reg_name(0), reg_name(0)),
+    );
+    ctx.load_imm(1, data_flags_base as i64);
+    ctx.push(
+        encode::enc_orr_reg(0, 0, 1, true),
+        format!("orr {}, {}, {}", reg_name(0), reg_name(0), reg_name(1)),
+    );
+    // x0 = data flags, x1 = len (from X_B), xA = addr. emit_desc with len in reg?
+    // Refactor emit_desc to take len as u32 immediate — payload_len is known
+    // at prepare but publish reads it from meta. Use the register len.
+    emit_desc_entry_len_reg(
+        ctx,
+        X_C,
+        1,
+        X_A,
+        X_B, // len reg
+        0,   // flags reg
+        2,   // next
+        placed.desc,
+    )?;
+
+    // Desc 2 (status): WRITE only, len=1, next=0
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_slot(X_D, ctx.frame.off(operation));
+    let _ = meta; // geometry used for ring offsets below
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
+    emit_desc_entry(
+        ctx,
+        X_C,
+        2,
+        X_A,
+        crate::virtqueue::REQ_STATUS_SIZE as u32,
+        crate::virtqueue::DESC_F_WRITE,
+        0,
+        placed.desc,
+    )?;
+
+    // publish_available: avail.ring[avail.idx % depth] = head (0); then
+    // avail.idx++.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, placed.avail as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // Load avail.idx (u16 at +2)
+    ctx.push(
+        encode::enc_ldrh_imm(X_A, X_D, 2),
+        format!("ldrh w{}, [{}, #2]", X_A, reg_name(X_D)),
+    );
+    // slot = idx & (depth-1)
+    ctx.load_imm(X_B, (depth as u64 - 1) as i64);
+    ctx.push(
+        encode::enc_and_reg(X_B, X_A, X_B, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    // ring entry addr = avail + 4 + 2*slot
+    ctx.push(
+        encode::enc_lsl_imm(X_B, X_B, 1, true),
+        format!("lsl {}, {}, #1", reg_name(X_B), reg_name(X_B)),
+    );
+    ctx.load_imm(0, 4);
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, 0, true),
+        format!("add {}, {}, {}", reg_name(X_B), reg_name(X_B), reg_name(0)),
+    );
+    ctx.push(
+        encode::enc_add_reg(X_B, X_D, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_D),
+            reg_name(X_B)
+        ),
+    );
+    // store head 0 as u16
+    ctx.load_imm(0, 0);
+    ctx.push(
+        encode::enc_strh_imm(0, X_B, 0),
+        format!("strh w{}, [{}, #0]", 0, reg_name(X_B)),
+    );
+    // avail.idx++
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.push(
+        encode::enc_strh_imm(X_A, X_D, 2),
+        format!("strh w{}, [{}, #2]", X_A, reg_name(X_D)),
+    );
+
+    // notify_queue: store 1 to doorbell
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, placed.doorbell as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_imm(X_A, 1);
+    ctx.store_ptr(X_A, X_D, 0);
+
+    // Receipt word = operation (meta absolute address).
+    ctx.load_slot(X_A, ctx.frame.off(operation));
+    ctx.store_slot(X_A, ctx.frame.off(dst));
+    Ok(())
+}
+
+/// `suppress_interrupts`: store `VIRTQ_AVAIL_F_NO_INTERRUPT` into avail.flags.
+fn emit_queue_suppress_interrupts(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    queue: Temp,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, placed.avail as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_imm(X_A, crate::virtqueue::AVAIL_F_NO_INTERRUPT as i64);
+    ctx.push(
+        encode::enc_strh_imm(X_A, X_D, 0),
+        format!("strh w{}, [{}, #0]", X_A, reg_name(X_D)),
+    );
+    Ok(())
+}
+
+/// Used-ring walk for one completion (single-flight). `max` is the source
+/// bound; revision 0.1 never has more than one in flight, so one resolve
+/// per call is the whole drain. Validation faults abort by name.
+///
+/// When the used ring is quiet, this emits one 06 §5 park (clock + short
+/// deadline + `PARK_MMIO`) so the VMM's doorbell poll can run before the
+/// bottom half claims — the same shape the hand-assembled blk conformance
+/// guest uses after ringing the doorbell. A completion on that park
+/// suppresses the sleep; an empty ring after the park returns without
+/// resolving (claim then fails closed by name).
+fn emit_queue_drain(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    queue: Temp,
+    max: u16,
+) -> Result<(), CodegenError> {
+    let _ = max; // source bound; single-flight processes at most one
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let meta_off = crate::virtqueue::meta_offset(placed.bytes);
+    let comp_off = crate::virtqueue::completion_offset(placed.bytes);
+    let book_off = placed.bytes; // last_used u64
+
+    // X_C = pool
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    // X_D = book (last_used)
+    ctx.load_imm(X_D, book_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, 0); // last_used
+    // X_B = used.idx
+    ctx.load_imm(X_E, placed.used as i64);
+    ctx.push(
+        encode::enc_add_reg(X_E, X_C, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_C),
+            reg_name(X_E)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldrh_imm(X_B, X_E, 2),
+        format!("ldrh w{}, [{}, #2]", X_B, reg_name(X_E)),
+    );
+    // pending = used_idx - last (both as u16 in low half)
+    ctx.push(
+        encode::enc_sub_reg(0, X_B, X_A, true),
+        format!("sub {}, {}, {}", reg_name(0), reg_name(X_B), reg_name(X_A)),
+    );
+    // if pending != 0, skip the empty→park→recheck path
+    let skip_empty = ctx.emit_skip(SkipKind::Cbnz(0));
+    // Used ring quiet: yield once so the host can poll the doorbell
+    // (06 §5; VMM blk conformance parks after publish for the same reason).
+    emit_doorbell_poll_park(ctx);
+    // Recheck used.idx vs last_used after the park.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, book_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, 0);
+    ctx.load_imm(X_E, placed.used as i64);
+    ctx.push(
+        encode::enc_add_reg(X_E, X_C, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_C),
+            reg_name(X_E)
+        ),
+    );
+    ctx.push(
+        encode::enc_ldrh_imm(X_B, X_E, 2),
+        format!("ldrh w{}, [{}, #2]", X_B, reg_name(X_E)),
+    );
+    ctx.push(
+        encode::enc_sub_reg(0, X_B, X_A, true),
+        format!("sub {}, {}, {}", reg_name(0), reg_name(X_B), reg_name(X_A)),
+    );
+    let skip_still_empty = ctx.emit_skip(SkipKind::Cbnz(0));
+    let done_from_empty = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(skip_still_empty, SkipKind::Cbnz(0));
+    ctx.patch_skip(skip_empty, SkipKind::Cbnz(0));
+
+    // slot = last & (depth-1)
+    ctx.load_imm(X_B, (depth as u64 - 1) as i64);
+    ctx.push(
+        encode::enc_and_reg(X_B, X_A, X_B, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    // entry = used + 4 + slot*8 → X_F
+    ctx.push(
+        encode::enc_lsl_imm(X_B, X_B, 3, true),
+        format!("lsl {}, {}, #3", reg_name(X_B), reg_name(X_B)),
+    );
+    ctx.load_imm(0, 4);
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, 0, true),
+        format!("add {}, {}, {}", reg_name(X_B), reg_name(X_B), reg_name(0)),
+    );
+    ctx.push(
+        encode::enc_add_reg(X_F, X_E, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_E),
+            reg_name(X_B)
+        ),
+    );
+    // id (u32) → X_B, len (u32) → x0
+    ctx.push(
+        encode::enc_ldr_w_imm(X_B, X_F, 0),
+        format!("ldr w{}, [{}, #0]", X_B, reg_name(X_F)),
+    );
+    ctx.push(
+        encode::enc_ldr_w_imm(0, X_F, 4),
+        format!("ldr w{}, [{}, #4]", 0, reg_name(X_F)),
+    );
+
+    // --- validate id (unknown / duplicate); epoch is always 0 in rev 0.1 ---
+    ctx.load_imm(X_F, crate::virtqueue::EXPECTED_HEAD as i64);
+    ctx.push(
+        encode::enc_cmp_reg(X_B, X_F, true),
+        format!("cmp {}, {}", reg_name(X_B), reg_name(X_F)),
+    );
+    let id_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+    ctx.abort_fixed(crate::virtqueue::CompletionFault::UnknownId { id: 0 }.abort_message());
+    ctx.patch_skip(id_ok, SkipKind::Cond(Cond::Eq));
+
+    // meta → X_D
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, meta_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
+    ctx.push(
+        encode::enc_and_reg(X_F, X_B, X_F, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    let inflight_ok = ctx.emit_skip(SkipKind::Cbnz(X_F));
+    ctx.abort_fixed(crate::virtqueue::CompletionFault::DuplicateId { id: 0 }.abort_message());
+    ctx.patch_skip(inflight_ok, SkipKind::Cbnz(X_F));
+
+    // --- length ---
+    // x0 = used.len; payload_len in X_E; device_writes bit in X_F
+    ctx.load_ptr(X_E, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_DEVICE_WRITES as i64);
+    ctx.push(
+        encode::enc_and_reg(X_F, X_B, X_F, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.push(
+        encode::enc_cmp_imm(0, 1, true),
+        format!("cmp {}, #1", reg_name(0)),
+    );
+    let len_ge1 = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // used.len >= 1 (HS)
+    ctx.abort_fixed(
+        crate::virtqueue::CompletionFault::BadLength {
+            reported: 0,
+            capacity: 0,
+        }
+        .abort_message(),
+    );
+    ctx.patch_skip(len_ge1, SkipKind::Cond(Cond::Cs));
+    // buffer_facing = used.len - 1 → X_A
+    ctx.load_imm(X_A, 1);
+    ctx.push(
+        encode::enc_sub_reg(X_A, 0, X_A, true),
+        format!("sub {}, {}, {}", reg_name(X_A), reg_name(0), reg_name(X_A)),
+    );
+    // if device_writes: buffer_facing <= payload_len; else buffer_facing == 0
+    let is_write = ctx.emit_skip(SkipKind::Cbnz(X_F)); // skip OUT path when DEVICE_WRITES
+    // OUT path
+    ctx.push(
+        encode::enc_cmp_imm(X_A, 0, true),
+        format!("cmp {}, #0", reg_name(X_A)),
+    );
+    let out_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+    ctx.abort_fixed(
+        crate::virtqueue::CompletionFault::BadLength {
+            reported: 0,
+            capacity: 0,
+        }
+        .abort_message(),
+    );
+    ctx.patch_skip(out_ok, SkipKind::Cond(Cond::Eq));
+    let after_len = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(is_write, SkipKind::Cbnz(X_F));
+    // IN path: buffer_facing <= payload_len
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_E, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_E)),
+    );
+    let in_ok = ctx.emit_skip(SkipKind::Cond(Cond::Ls));
+    ctx.abort_fixed(
+        crate::virtqueue::CompletionFault::BadLength {
+            reported: 0,
+            capacity: 0,
+        }
+        .abort_message(),
+    );
+    ctx.patch_skip(in_ok, SkipKind::Cond(Cond::Ls));
+    ctx.patch_skip(after_len, SkipKind::Cond(Cond::Al));
+
+    // --- build IoCompletion in stash ---
+    // Reload meta/pool; X_A still buffer_facing
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, meta_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // Spill buffer_facing to X_E
+    ctx.push(
+        encode::enc_mov_reg(X_E, X_A, true),
+        format!("mov {}, {}", reg_name(X_E), reg_name(X_A)),
+    );
+    // status byte
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
+    ctx.push(
+        encode::enc_ldrb_imm(X_B, X_A, 0),
+        format!("ldrb w{}, [{}, #0]", X_B, reg_name(X_A)),
+    );
+    // payload own handle
+    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    // comp base → X_A
+    ctx.load_imm(X_A, comp_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_F, X_A, 0); // payload
+    // status Result: tag 0 if STATUS_OK else 1
+    ctx.push(
+        encode::enc_cmp_imm(X_B, 0, true),
+        format!("cmp {}, #0", reg_name(X_B)),
+    );
+    ctx.load_imm(X_F, 0);
+    ctx.load_imm(0, 1);
+    ctx.push(
+        encode::enc_csel(X_F, X_F, 0, Cond::Eq, true),
+        format!(
+            "csel {}, {}, {}, eq",
+            reg_name(X_F),
+            reg_name(X_F),
+            reg_name(0)
+        ),
+    );
+    ctx.store_ptr(X_F, X_A, 8); // Result tag
+    ctx.store_ptr(X_ZR, X_A, 16); // Ok(unit) / Err(OutOfRange=0)
+    ctx.store_ptr(X_E, X_A, 24); // written_len
+
+    // flags: clear INFLIGHT, set RESOLVED
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
+    ctx.push(
+        encode::enc_bic_reg(X_B, X_B, X_F, true),
+        format!(
+            "bic {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+    ctx.push(
+        encode::enc_orr_reg(X_B, X_B, X_F, true),
+        format!(
+            "orr {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+
+    // Copy to reply_stage if registered; wake waiter if registered.
+    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
+    let no_stage = ctx.emit_skip(SkipKind::Cbz(X_F));
+    // copy 32 bytes X_A → X_F
+    for w in [0usize, 8, 16, 24] {
+        ctx.load_ptr(X_B, X_A, w);
+        ctx.store_ptr(X_B, X_F, w);
+    }
+    ctx.patch_skip(no_stage, SkipKind::Cbz(X_F));
+
+    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
+    let no_waiter = ctx.emit_skip(SkipKind::Cbz(X_F));
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_str_x_imm(X_B, X_F, OFF_TURN_RESUME_READY as u16),
+        format!(
+            "str {}, [{}, #{OFF_TURN_RESUME_READY}]",
+            reg_name(X_B),
+            reg_name(X_F)
+        ),
+    );
+    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
+    ctx.patch_skip(no_waiter, SkipKind::Cbz(X_F));
+
+    // last_used++
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, book_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, 0);
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, 0);
+
+    ctx.patch_skip(done_from_empty, SkipKind::Cond(Cond::Al));
+    Ok(())
+}
+
+/// One 06 §5 park so the VMM's doorbell poll can run: read the clock,
+/// write `now + 20ms` to `OFF_NEXT_DEADLINE`, trap on `PARK_MMIO`. A blk
+/// completion on that park suppresses the sleep (same numbers as the
+/// hand-assembled conformance guest in `wrela-vmm`).
+fn emit_doorbell_poll_park(ctx: &mut FnCtx) {
+    ctx.load_imm(X_A, wrela_machine::mmio::CLOCK_MMIO_ADDR as i64);
+    ctx.load_ptr(X_B, X_A, 0);
+    ctx.load_imm(X_C, 20_000_000);
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, X_C, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_C)
+        ),
+    );
+    let deadline_addr =
+        wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_NEXT_DEADLINE;
+    ctx.load_imm(X_A, deadline_addr as i64);
+    ctx.store_ptr(X_B, X_A, 0);
+    ctx.load_imm(X_A, wrela_machine::mmio::PARK_MMIO_ADDR as i64);
+    ctx.store_ptr(X_B, X_A, 0);
+}
+
+/// Sync claim of a drain-resolved receipt's IoCompletion stash (decision 22).
+/// `receipt` holds the meta absolute address (same word publish minted).
+fn emit_queue_claim(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+    receipt: Temp,
+) -> Result<(), CodegenError> {
+    let _ = queue; // pool is recoverable from meta; kept for API symmetry
+    let _ = f;
+    // X_D = meta (receipt word)
+    ctx.load_slot(X_D, ctx.frame.off(receipt));
+    // flags must include RESOLVED
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+    ctx.push(
+        encode::enc_and_reg(X_A, X_A, X_B, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    let ok = ctx.emit_skip(SkipKind::Cbnz(X_A));
+    ctx.abort_fixed("driver fault: claim of a receipt that is not RESOLVED");
+    ctx.patch_skip(ok, SkipKind::Cbnz(X_A));
+    // stash = meta + SLOT_META_BYTES + header + status pad
+    let stash_delta = crate::virtqueue::SLOT_META_BYTES + crate::virtqueue::REQ_HEADER_SIZE + 8;
+    ctx.load_imm(X_A, stash_delta as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_D, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_D),
+            reg_name(X_A)
+        ),
+    );
+    // Copy 32-byte IoCompletion stash → dst
+    let dst_off = ctx.frame.off(dst);
+    for w in [0usize, 8, 16, 24] {
+        ctx.load_ptr(X_B, X_A, w);
+        ctx.store_slot(X_B, dst_off + w);
+    }
+    // Clear RESOLVED so a second claim aborts (single resolve).
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+    ctx.push(
+        encode::enc_bic_reg(X_A, X_A, X_B, true),
+        format!(
+            "bic {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_desc_entry(
+    ctx: &mut FnCtx,
+    pool_reg: u8,
+    desc_index: u16,
+    addr_reg: u8,
+    len: u32,
+    flags: u16,
+    next: u16,
+    desc_base_off: u64,
+) -> Result<(), CodegenError> {
+    // desc_addr = pool + desc_base_off + index*16. Use X_TMP = 1 as scratch
+    // for the descriptor entry pointer — but addr_reg might be X_A; pool X_C.
+    // Scratch: use register 1 (X_B) only if addr_reg isn't X_B.
+    let entry = if addr_reg == X_B { 0u8 } else { X_B };
+    ctx.load_imm(entry, (desc_base_off + desc_index as u64 * 16) as i64);
+    ctx.push(
+        encode::enc_add_reg(entry, pool_reg, entry, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(entry),
+            reg_name(pool_reg),
+            reg_name(entry)
+        ),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(addr_reg, entry, 0),
+        format!("str {}, [{}, #0]", reg_name(addr_reg), reg_name(entry)),
+    );
+    // len as u32 — materialize into a free reg
+    let len_reg = if addr_reg == 0 { X_A } else { 0 };
+    ctx.load_imm(len_reg, len as i64);
+    ctx.push(
+        encode::enc_str_w_imm(len_reg, entry, 8),
+        format!("str w{}, [{}, #8]", len_reg, reg_name(entry)),
+    );
+    ctx.load_imm(len_reg, flags as i64);
+    ctx.push(
+        encode::enc_strh_imm(len_reg, entry, 12),
+        format!("strh w{}, [{}, #12]", len_reg, reg_name(entry)),
+    );
+    ctx.load_imm(len_reg, next as i64);
+    ctx.push(
+        encode::enc_strh_imm(len_reg, entry, 14),
+        format!("strh w{}, [{}, #14]", len_reg, reg_name(entry)),
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_desc_entry_len_reg(
+    ctx: &mut FnCtx,
+    pool_reg: u8,
+    desc_index: u16,
+    addr_reg: u8,
+    len_reg: u8,
+    flags_reg: u8,
+    next: u16,
+    desc_base_off: u64,
+) -> Result<(), CodegenError> {
+    // Find a scratch that isn't pool/addr/len/flags.
+    let used = [pool_reg, addr_reg, len_reg, flags_reg];
+    let entry = (0u8..8).find(|r| !used.contains(r)).ok_or_else(|| {
+        CodegenError::internal("no scratch register for descriptor entry pointer".to_string())
+    })?;
+    ctx.load_imm(entry, (desc_base_off + desc_index as u64 * 16) as i64);
+    ctx.push(
+        encode::enc_add_reg(entry, pool_reg, entry, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(entry),
+            reg_name(pool_reg),
+            reg_name(entry)
+        ),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(addr_reg, entry, 0),
+        format!("str {}, [{}, #0]", reg_name(addr_reg), reg_name(entry)),
+    );
+    ctx.push(
+        encode::enc_str_w_imm(len_reg, entry, 8),
+        format!("str w{}, [{}, #8]", len_reg, reg_name(entry)),
+    );
+    ctx.push(
+        encode::enc_strh_imm(flags_reg, entry, 12),
+        format!("strh w{}, [{}, #12]", flags_reg, reg_name(entry)),
+    );
+    let next_reg = (0u8..8)
+        .find(|r| !used.contains(r) && *r != entry)
+        .ok_or_else(|| CodegenError::internal("no scratch for desc next".to_string()))?;
+    ctx.load_imm(next_reg, next as i64);
+    ctx.push(
+        encode::enc_strh_imm(next_reg, entry, 14),
+        format!("strh w{}, [{}, #14]", next_reg, reg_name(entry)),
+    );
     Ok(())
 }
 
@@ -3255,23 +4318,33 @@ fn flow_reply_stage_size(f: &FlowWirFn, layout: &LayoutCtx) -> Result<usize, Cod
     let mut widest = 0usize;
     for s in &f.states {
         let Transition::Await {
-            what: AwaitKind::ActorCall { .. },
-            result_temp,
-            ..
+            what, result_temp, ..
         } = &s.transition
         else {
             continue;
         };
-        let Some(declared) =
-            crate::sema::bodies::decompose_call_error(&f.frame.temp_types[result_temp.0])
-        else {
-            continue;
-        };
-        if !is_aggregate(&declared) {
-            continue;
+        match what {
+            AwaitKind::ActorCall { .. } => {
+                let Some(declared) =
+                    crate::sema::bodies::decompose_call_error(&f.frame.temp_types[result_temp.0])
+                else {
+                    continue;
+                };
+                if !is_aggregate(&declared) {
+                    continue;
+                }
+                let sz = mwir::size_of(&declared, layout)
+                    .map_err(|e| CodegenError::unimplemented(&e))?;
+                widest = widest.max(sz);
+            }
+            AwaitKind::Receipt { .. } => {
+                // `IoCompletion[P]` is the await result — always an aggregate.
+                let ty = &f.frame.temp_types[result_temp.0];
+                let sz = mwir::size_of(ty, layout).map_err(|e| CodegenError::unimplemented(&e))?;
+                widest = widest.max(sz);
+            }
+            AwaitKind::GroupJoin { .. } => {}
         }
-        let sz = mwir::size_of(&declared, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-        widest = widest.max(sz);
     }
     Ok(widest)
 }
@@ -4928,6 +6001,89 @@ fn emit_await_suspend(
             ctx.push(encode::enc_ret(X_LR), "ret".to_string());
             Ok(())
         }
+        AwaitKind::Receipt { receipt_temp } => {
+            // Decision 22: receipt word = meta absolute address.
+            ctx.load_imm(X_A, resume_state as i64);
+            ctx.store_slot(X_A, ctx.frame.off(state_temp));
+            let stage_off = ctx.frame.reply_stage_off.ok_or_else(|| {
+                CodegenError::internal(
+                    "`await receipt` needs a reply staging slot for `IoCompletion` \
+                     (`flow_reply_stage_size` disagrees with this site)",
+                )
+            })?;
+            let result_size = mwir::size_of(&f.temp_types[result_temp.0], ctx.layout)
+                .map_err(|e| CodegenError::unimplemented(&e))?;
+            // Publish stage address, then waiter, then observe RESOLVED
+            // (mask–arm–recheck against a drain that already finished).
+            ctx.addr_of_slot(X_A, stage_off);
+            ctx.load_slot(X_D, ctx.frame.off(*receipt_temp)); // meta
+            ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
+            ctx.push(
+                encode::enc_str_x_imm(X_FRAME, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+                format!(
+                    "str {}, [{}, #{}]",
+                    reg_name(X_FRAME),
+                    reg_name(X_D),
+                    crate::virtqueue::SLOT_META_WAITER
+                ),
+            );
+            ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+            ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+            ctx.push(
+                encode::enc_and_reg(X_A, X_A, X_B, true),
+                format!(
+                    "and {}, {}, {}",
+                    reg_name(X_A),
+                    reg_name(X_A),
+                    reg_name(X_B)
+                ),
+            );
+            let need_park = ctx.emit_skip(SkipKind::Cbz(X_A));
+            // Already resolved: copy completion stash → result_temp and
+            // continue into the resume state without leaving the fn.
+            // Stash sits at meta - META + (header+status pad) = meta + 64+16+8
+            // = meta + 88; equivalently pool-relative completion_offset, but
+            // we only have meta here: completion = meta + SLOT_META_BYTES +
+            // REQ_HEADER_SIZE + 8.
+            let stash_delta =
+                crate::virtqueue::SLOT_META_BYTES + crate::virtqueue::REQ_HEADER_SIZE + 8;
+            ctx.load_imm(X_A, stash_delta as i64);
+            ctx.push(
+                encode::enc_add_reg(X_A, X_D, X_A, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(X_A),
+                    reg_name(X_D),
+                    reg_name(X_A)
+                ),
+            );
+            let result_off = ctx.frame.off(result_temp);
+            let mut w = 0usize;
+            while w < result_size {
+                ctx.load_ptr(X_B, X_A, w);
+                ctx.store_slot(X_B, result_off + w);
+                w += 8;
+            }
+            ctx.checkpoint();
+            emit_checkpoint_cancellation_test(ctx, gctx);
+            ctx.b_unconditional(state_flat_base[resume_state]);
+            ctx.patch_skip(need_park, SkipKind::Cbz(X_A));
+            // Park until drain sets resume_ready.
+            ctx.load_imm(X_A, 1);
+            ctx.push(
+                encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+                format!(
+                    "str {}, [{}, #{OFF_TURN_SUSPENDED}]",
+                    reg_name(X_A),
+                    reg_name(X_FRAME)
+                ),
+            );
+            ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
+            ctx.load_slot(X_LR, ctx.frame.lr_off);
+            ctx.push(encode::enc_ret(X_LR), "ret".to_string());
+            let _ = (scratch0, scratch1);
+            Ok(())
+        }
     }
 }
 
@@ -5328,6 +6484,27 @@ fn emit_await_resume(
         } => {
             emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
             emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
+            ctx.checkpoint();
+            emit_checkpoint_cancellation_test(ctx, gctx);
+            ctx.b_unconditional(state_flat_base[resume_state]);
+            Ok(())
+        }
+        AwaitKind::Receipt { .. } => {
+            let stage_off = ctx.frame.reply_stage_off.ok_or_else(|| {
+                CodegenError::internal(
+                    "`await receipt` resume needs the reply staging slot \
+                     (`flow_reply_stage_size` disagrees with this site)",
+                )
+            })?;
+            let result_off = ctx.frame.off(result_temp);
+            let result_size = mwir::size_of(&f.temp_types[result_temp.0], ctx.layout)
+                .map_err(|e| CodegenError::unimplemented(&e))?;
+            let mut w = 0usize;
+            while w < result_size {
+                ctx.load_slot(X_A, stage_off + w);
+                ctx.store_slot(X_A, result_off + w);
+                w += 8;
+            }
             ctx.checkpoint();
             emit_checkpoint_cancellation_test(ctx, gctx);
             ctx.b_unconditional(state_flat_base[resume_state]);

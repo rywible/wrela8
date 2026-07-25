@@ -592,18 +592,61 @@ pub enum Inst {
         driver: String,
     },
 
-    /// `VirtQueue.publish` (plans/M7.md item E3, 03-hardware.md §3/§5,
-    /// decision 15/16): the sealed ring-write sequence in normative order.
-    /// `steps` is exactly `virtqueue::PUBLISH_WRITE_ORDER` — pinned in the
-    /// mwir dump and by unit test. Real DRAM stores against pool-backed
-    /// addresses wait for E4's image-bound `own[P] T` wiring (decision 16);
-    /// this node is the oracle that the order lives in `publish`, not in
-    /// `prepare_block`. `dst` is the minted `Receipt[P]` word.
+    /// `VirtQueue.prepare_block` (plans/M7.md item E4 / decisions 20–22):
+    /// copy the header and status into the control-pool packaging area,
+    /// record the payload address / length / direction in the meta slot,
+    /// and mint a `QueueOp` word = absolute address of that meta record
+    /// (the ring still uses descriptor head 0 for single-flight).
+    /// `payload_len` is the `@layout(dma)` size of the own'd type — the
+    /// descriptor length the device model validates against `SECTOR_SIZE`.
+    QueuePrepare {
+        dst: Temp,
+        queue: Temp,
+        permit: Temp,
+        header: Temp,
+        payload: Temp,
+        status: Temp,
+        device_writes: bool,
+        payload_len: u32,
+    },
+
+    /// `VirtQueue.publish` (plans/M7.md item E3/E4, 03-hardware.md §3/§5,
+    /// decision 15/16/20): the sealed ring-write sequence in normative
+    /// order. `steps` is exactly `virtqueue::PUBLISH_WRITE_ORDER`. Real
+    /// DRAM stores against pool-backed addresses (decision 20). `dst` is
+    /// the minted `Receipt[P]` word (same identity as the operation).
     QueuePublish {
         dst: Temp,
         queue: Temp,
         operation: Temp,
         steps: &'static [&'static str],
+    },
+
+    /// `VirtQueue.drain` (plans/M7.md item E4, 03-hardware.md §4/§6):
+    /// acquire used-ring visibility, validate the device-reported id
+    /// against generation/epoch, check the reported length, resolve the
+    /// matching receipt (wake its waiter with an `IoCompletion[P]`).
+    /// `max` is the bounded drain count from source.
+    QueueDrain {
+        queue: Temp,
+        max: u16,
+    },
+
+    /// `VirtQueue.suppress_interrupts` (03-hardware.md §7 / poll builds):
+    /// set `VIRTQ_AVAIL_F_NO_INTERRUPT` on the available ring.
+    QueueSuppressInterrupts {
+        queue: Temp,
+    },
+
+    /// `VirtQueue.claim(receipt=take r)` (plans/M7.md item E4 / decision 22):
+    /// sync claim of a drain-resolved receipt's `IoCompletion` stash — the
+    /// bottom-half dual of `await receipt` when the driver holds the
+    /// receipt itself (no parked waiter). Aborts if the meta is not
+    /// `RESOLVED`.
+    QueueClaim {
+        dst: Temp,
+        queue: Temp,
+        receipt: Temp,
     },
 
     /// Unconditional abandonment: `assert`'s own failure path, an
@@ -850,7 +893,13 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         }
         Type::Option(inner) => Ok(SLOT + size_of(inner, ctx)?),
         Type::Result(ok, err) => Ok(SLOT + size_of(ok, ctx)?.max(size_of(err, ctx)?)),
-        Type::Own(_, inner) => size_of(inner, ctx),
+        // plans/M7.md item E4 / decision 19: `own[P] T` is one 64-bit word
+        // holding the guest address of a pool slot. The payload bytes live
+        // in `pooldata`; the handle is authority over them, not a by-value
+        // copy (which would either invent an allocator at publish time or
+        // put device-reachable bytes in actor state). Field/method access
+        // through an `own` loads via that address — see codegen's Own arms.
+        Type::Own(_, _) => Ok(SLOT),
         Type::Static(inner) => size_of(inner, ctx),
         Type::Bytes(Some(len_expr)) => {
             let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
@@ -927,6 +976,24 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                 return Err("`Untrusted` with no payload type argument".to_string());
             };
             size_of(inner, ctx)
+        }
+        // plans/M7.md item E4: `IoCompletion[P]` = payload + status +
+        // written_len. Field order is load-bearing for Project indices:
+        // 0 = payload (`P`), 1 = status (`Result[unit, IoError]`),
+        // 2 = written_len (`Untrusted[usize]`).
+        Type::Named(name, targs) if name == "IoCompletion" => {
+            let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
+                return Err("`IoCompletion` with no payload type argument".to_string());
+            };
+            let status = Type::Result(
+                Box::new(Type::Unit),
+                Box::new(Type::Named("IoError".to_string(), vec![])),
+            );
+            let written = Type::Named(
+                "Untrusted".to_string(),
+                vec![crate::sema::types::TypeArg::Type(Type::Usize)],
+            );
+            Ok(size_of(payload, ctx)? + size_of(&status, ctx)? + size_of(&written, ctx)?)
         }
         Type::Named(name, targs) if name == "CallError" => {
             let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
@@ -1190,6 +1257,20 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             "MmioWrite base={base} offset={offset:#x} ty={} value={value}",
             types::render_type(ty)
         ),
+        Inst::QueuePrepare {
+            dst,
+            queue,
+            permit,
+            header,
+            payload,
+            status,
+            device_writes,
+            payload_len,
+        } => format!(
+            "QueuePrepare dst={dst} queue={queue} permit={permit} header={header} \
+             payload={payload} status={status} device_writes={device_writes} \
+             payload_len={payload_len}"
+        ),
         Inst::QueuePublish {
             dst,
             queue,
@@ -1199,6 +1280,19 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             "QueuePublish dst={dst} queue={queue} operation={operation} order=[{}]",
             steps.join(", ")
         ),
+        Inst::QueueDrain { queue, max } => {
+            format!("QueueDrain queue={queue} max={max}")
+        }
+        Inst::QueueSuppressInterrupts { queue } => {
+            format!("QueueSuppressInterrupts queue={queue}")
+        }
+        Inst::QueueClaim {
+            dst,
+            queue,
+            receipt,
+        } => {
+            format!("QueueClaim dst={dst} queue={queue} receipt={receipt}")
+        }
         Inst::LoadIrqVector { dst, driver } => {
             format!("LoadIrqVector dst={dst} driver={driver}")
         }

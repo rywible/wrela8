@@ -1251,6 +1251,27 @@ fn check_field(base: &Expr, name: &str, actx: &mut ACtx) -> Result<Option<Type>,
                 )));
             }
         }
+        // plans/M7.md item E4: `IoCompletion[P]` fields — sealed builtin,
+        // same three names `bodies` projects (`payload` / `status` /
+        // `written_len`). Needed so `c.written_len.checked_le(...)` keeps
+        // tracking through this pass.
+        if sname == "IoCompletion" {
+            let Some(types::TypeArg::Type(payload)) = targs.first() else {
+                return Ok(None);
+            };
+            return Ok(Some(match name {
+                "payload" => payload.clone(),
+                "status" => Type::Result(
+                    Box::new(Type::Unit),
+                    Box::new(Type::Named("IoError".to_string(), vec![])),
+                ),
+                "written_len" => Type::Named(
+                    "Untrusted".to_string(),
+                    vec![types::TypeArg::Type(Type::Usize)],
+                ),
+                _ => return Ok(None),
+            }));
+        }
     }
     Ok(None)
 }
@@ -1912,6 +1933,33 @@ fn check_call_by_field(
                         )
                     };
                     return Ok(Some(ret));
+                }
+                "drain" | "suppress_interrupts" => {
+                    if !allows_mut_receiver(root_mode) {
+                        return Err(receiver_mutability_error(
+                            AccessMode::Mut,
+                            root_mode,
+                            root_name.as_deref(),
+                            fspan,
+                        ));
+                    }
+                    return Ok(Some(Type::Unit));
+                }
+                "claim" => {
+                    if !allows_mut_receiver(root_mode) {
+                        return Err(receiver_mutability_error(
+                            AccessMode::Mut,
+                            root_mode,
+                            root_name.as_deref(),
+                            fspan,
+                        ));
+                    }
+                    // Precise `IoCompletion[P]` brand is bodies' job; a
+                    // placeholder keeps the assignment tracked.
+                    return Ok(Some(Type::Named(
+                        "IoCompletion".to_string(),
+                        vec![types::TypeArg::Type(Type::Unit)],
+                    )));
                 }
                 _ => return Ok(None),
             }

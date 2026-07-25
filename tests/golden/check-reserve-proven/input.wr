@@ -25,8 +25,8 @@ struct BlkReqStatus:
 
 @layout(dma, endian=little)
 struct DmaBlock:
-    kind: u64
-    pad: u64
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
 
 struct VirtioBlock:
     id: u32

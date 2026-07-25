@@ -1,0 +1,11 @@
+module examples.check_iocompletion_type
+
+# plans/M7.md item E4: `IoCompletion[P]` resolves (03-hardware.md §3/§8).
+# Field projection and `await receipt` land in the same item's later
+# commits; this golden pins that the type is no longer fail-closed by name.
+
+struct Packet:
+    n: u32
+
+fn hold(_c: IoCompletion[Packet]) -> unit:
+    return unit

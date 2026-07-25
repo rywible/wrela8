@@ -46,9 +46,10 @@
 //! ## Fail-closed set (this file's own, beyond `flowwir.rs`'s headline
 //! list)
 //!
-//! - A plain (non-actor, non-group) fn/method call inside an async body's
-//!   expression position (`Call`/`CallValue`/`FnRef`/`OpCall`) — no
-//!   required golden needs one.
+//! - `CallValue`/`FnRef`/`OpCall` (a first-class fn value). Plain
+//!   `Call` to a top-level sync helper is live (plans/M7.md item E4:
+//!   field access after await is refused by the §9.2 scan, so the
+//!   flagship finishes through sync helpers).
 //! - `Option`-typed `?` (only `Result` is supported); a `?` needing a
 //!   `From` conversion (`conv: Some(_)`).
 //! - A `match`/`for` containing an `await` anywhere inside (scrutinee,
@@ -81,7 +82,7 @@ use crate::sema::typed::{
     TypedMatchArm, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
 };
 use crate::sema::types::Type;
-use crate::syntax::ast::BinOp;
+use crate::syntax::ast::{AccessMode, BinOp};
 
 /// The one FlowWir lowering diagnostic — printed by `bin/wrela.rs` the
 /// same way `lower::LowerError` already is (`error[unimplemented]: ...`);
@@ -1013,9 +1014,18 @@ fn build_await_kind(
                 await_expr.ty.clone(),
             ))
         }
-        _ => Err(FlowError::unimplemented(
-            "an `await` target other than an actor call or a group's `join_all()` is",
-        )),
+        // plans/M7.md item E4: `await receipt` — inner is already the
+        // Receipt value (not a call).
+        _ => {
+            let receipt_temp = lower_expr_flat(inner, b, env)?;
+            if !matches!(&inner.ty, Type::Named(n, _) if n == "Receipt") {
+                return Err(FlowError::unimplemented(
+                    "an `await` target other than an actor call, a group's `join_all()`, or a \
+                     `Receipt[P]` is",
+                ));
+            }
+            Ok((AwaitKind::Receipt { receipt_temp }, await_expr.ty.clone()))
+        }
     }
 }
 
@@ -1918,6 +1928,63 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             });
             Ok(dst)
         }
+        // Move is a type-system fact; lowering just evaluates the place
+        // (mirrors `lower.rs`).
+        TypedExprKind::Take(inner) => lower_expr_flat(inner, b, env),
+        TypedExprKind::Const(name) => {
+            let v = crate::eval::interp::eval_const(b.prog, name).map_err(|err| {
+                FlowError::internal(format!(
+                    "const `{name}` failed to evaluate during flowwir lowering: {}",
+                    err.message
+                ))
+            })?;
+            lower_flow_const_value(&v, &e.ty, b)
+        }
+        TypedExprKind::Call {
+            callee,
+            receiver,
+            args,
+        } => lower_flow_call(callee, receiver, args, &e.ty, b, env),
+        TypedExprKind::StructLiteral { name, fields } => {
+            let Type::Named(sname, _) = &e.ty else {
+                return Err(FlowError::internal("struct literal type is not `Named`"));
+            };
+            debug_assert_eq!(name, sname);
+            let s = b
+                .prog
+                .structs
+                .get(sname)
+                .ok_or_else(|| FlowError::internal(format!("struct `{sname}` not found")))?;
+            let mut slots: Vec<Option<Temp>> = vec![None; s.fields.len()];
+            for (fname, fval) in fields {
+                let idx = s
+                    .fields
+                    .iter()
+                    .position(|f| f == fname)
+                    .ok_or_else(|| FlowError::internal(format!("unknown field `{fname}`")))?;
+                slots[idx] = Some(lower_expr_flat(fval, b, env)?);
+            }
+            for (i, fname) in s.fields.iter().enumerate() {
+                if slots[i].is_none() {
+                    return Err(FlowError::unimplemented(format!(
+                        "a struct literal missing field `{fname}` (defaults in async) is"
+                    )));
+                }
+            }
+            let elems: Vec<Temp> = slots.into_iter().map(|s| s.expect("filled")).collect();
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::MakeAggregate { dst, elems });
+            Ok(dst)
+        }
+        TypedExprKind::Tuple(items) => {
+            let mut elems = Vec::with_capacity(items.len());
+            for i in items {
+                elems.push(lower_expr_flat(i, b, env)?);
+            }
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::MakeAggregate { dst, elems });
+            Ok(dst)
+        }
         TypedExprKind::Binary(op, l, r) => lower_binary_flat(*op, l, r, e, b, env),
         TypedExprKind::Try(inner, conv) => {
             let v = lower_expr_flat(inner, b, env)?;
@@ -1993,19 +2060,24 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                  (plans/M7.md item H2a); an async narrowing is",
             ))
         }
-        // plans/M7.md item E2/E3: reserve/prepare/publish/reject lower on
-        // the sync path; an async body that uses them still fails closed
-        // until a real async submit path exists (handoff methods themselves
-        // are synchronous — 03 §5).
+        // plans/M7.md item E4: the flagship's own `async` roundtrip
+        // publishes on the same path as the sync handoff methods — emit
+        // the same MWIR ops `lower.rs` does (decision 20's package +
+        // ring write order).
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            type_arg,
+            args,
+        } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
+            lower_flow_queue_op(key, receiver, type_arg, args, e, b, env)
+        }
         TypedExprKind::Intrinsic { key, .. }
-            if crate::sema::bodies::is_queue_op_intrinsic(key)
-                || crate::sema::bodies::is_queue_op_deferred(key).is_some() =>
+            if crate::sema::bodies::is_queue_op_deferred(key).is_some() =>
         {
-            Err(FlowError::unimplemented(
-                "a queue operation (03-hardware.md §4/§5) inside an `async fn`: the synchronous \
-                 path types and lowers `reserve_proven`/`prepare_block`/`publish`/`reject` \
-                 (plans/M7.md items E2/E3); an async body that publishes is",
-            ))
+            Err(FlowError::unimplemented(format!(
+                "deferred queue operation `{key}` inside an async body is"
+            )))
         }
         TypedExprKind::Await(_) | TypedExprKind::GroupChild(_) => Err(FlowError::unimplemented(
             "an `await`/group-child nested inside a larger expression (only a direct \
@@ -2013,6 +2085,298 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
         )),
         other => Err(FlowError::unimplemented(format!(
             "lowering this expression shape ({other:?}) inside an async body is"
+        ))),
+    }
+}
+
+fn lower_flow_const_value(
+    v: &crate::eval::value::Value,
+    ty: &Type,
+    b: &mut FlowBuilder,
+) -> Result<Temp, FlowError> {
+    use crate::eval::value::Value;
+    match v {
+        Value::U8(_)
+        | Value::U16(_)
+        | Value::U32(_)
+        | Value::U64(_)
+        | Value::Usize(_)
+        | Value::I8(_)
+        | Value::I16(_)
+        | Value::I32(_)
+        | Value::I64(_)
+        | Value::Isize(_) => {
+            let raw = value::as_i128(v).expect("integer Value");
+            let dst = b.fresh(ty.clone());
+            b.emit_mwir(Inst::ConstInt {
+                dst,
+                ty: ty.clone(),
+                value: raw,
+            });
+            Ok(dst)
+        }
+        Value::Bool(x) => {
+            let dst = b.fresh(Type::Bool);
+            b.emit_mwir(Inst::ConstBool { dst, value: *x });
+            Ok(dst)
+        }
+        Value::Unit => {
+            let dst = b.fresh(Type::Unit);
+            b.emit_mwir(Inst::ConstUnit { dst });
+            Ok(dst)
+        }
+        _ => Err(FlowError::unimplemented(
+            "this const value shape inside an async body is",
+        )),
+    }
+}
+
+/// Sync-helper / in-process call from an async body (plans/M7.md item E4).
+/// Mirrors `lower.rs::lower_call`'s receiver/write-back shape, using this
+/// file's `Binding::Temp` environment.
+fn lower_flow_call(
+    callee: &CalleeKey,
+    receiver: &Option<Box<TypedExpr>>,
+    args: &[Option<TypedExpr>],
+    _result_ty: &Type,
+    b: &mut FlowBuilder,
+    env: &mut FEnv,
+) -> Result<Temp, FlowError> {
+    let f = resolve_callee_fn(b.prog, callee)?;
+    let key = callee.spelling();
+    let mode = f.receiver.as_ref().map(|(m, _)| *m);
+    match (receiver, mode) {
+        (Some(recv_expr), Some(AccessMode::Mut)) => {
+            let TypedExprKind::Local(recv_name) = &recv_expr.kind else {
+                return Err(FlowError::unimplemented(
+                    "calling a `mut self` method through a nested field/index receiver \
+                     inside an async body is",
+                ));
+            };
+            let self_temp = match env_lookup(env, recv_name) {
+                Some(Binding::Temp(t)) => t,
+                _ => {
+                    return Err(FlowError::internal(format!(
+                        "unbound (or self-path) local `{recv_name}` as mut receiver"
+                    )));
+                }
+            };
+            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let mut call_args = vec![self_temp];
+            call_args.extend(arg_temps);
+            let dst = b.fresh(f.ret.clone());
+            b.emit_mwir(Inst::Call {
+                dst,
+                self_write_back: Some(self_temp),
+                key,
+                args: call_args,
+            });
+            Ok(dst)
+        }
+        (Some(recv_expr), Some(AccessMode::Read | AccessMode::Take)) => {
+            let recv_temp = lower_expr_flat(recv_expr, b, env)?;
+            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let mut call_args = vec![recv_temp];
+            call_args.extend(arg_temps);
+            let dst = b.fresh(f.ret.clone());
+            b.emit_mwir(Inst::Call {
+                dst,
+                self_write_back: None,
+                key,
+                args: call_args,
+            });
+            Ok(dst)
+        }
+        _ => {
+            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let dst = b.fresh(f.ret.clone());
+            b.emit_mwir(Inst::Call {
+                dst,
+                self_write_back: None,
+                key,
+                args: arg_temps,
+            });
+            Ok(dst)
+        }
+    }
+}
+
+fn lower_flow_queue_op(
+    key: &str,
+    receiver: &Option<Box<TypedExpr>>,
+    type_arg: &Option<Type>,
+    args: &[(String, TypedExpr)],
+    e: &TypedExpr,
+    b: &mut FlowBuilder,
+    env: &mut FEnv,
+) -> Result<Temp, FlowError> {
+    match key {
+        "VirtQueue.prepare_block" => {
+            let permit = args
+                .iter()
+                .find(|(l, _)| l == "permit")
+                .ok_or_else(|| FlowError::internal("`prepare_block` without `permit=`"))?;
+            let header = args
+                .iter()
+                .find(|(l, _)| l == "header")
+                .ok_or_else(|| FlowError::internal("`prepare_block` without `header=`"))?;
+            let payload = args
+                .iter()
+                .find(|(l, _)| l == "payload")
+                .ok_or_else(|| FlowError::internal("`prepare_block` without `payload=`"))?;
+            let status = args
+                .iter()
+                .find(|(l, _)| l == "status")
+                .ok_or_else(|| FlowError::internal("`prepare_block` without `status=`"))?;
+            let device_writes_arg = args
+                .iter()
+                .find(|(l, _)| l == "device_writes_payload")
+                .ok_or_else(|| {
+                    FlowError::internal("`prepare_block` without `device_writes_payload=`")
+                })?;
+            let device_writes = match &device_writes_arg.1.kind {
+                TypedExprKind::Bool(v) => *v,
+                _ => {
+                    return Err(FlowError::unimplemented(
+                        "`prepare_block`'s `device_writes_payload=` as a non-literal bool is",
+                    ));
+                }
+            };
+            let queue = match receiver {
+                Some(q) => lower_expr_flat(q, b, env)?,
+                None => {
+                    return Err(FlowError::internal(
+                        "`prepare_block` without a queue receiver",
+                    ));
+                }
+            };
+            let permit_t = lower_expr_flat(&permit.1, b, env)?;
+            let header_t = lower_expr_flat(&header.1, b, env)?;
+            let payload_t = lower_expr_flat(&payload.1, b, env)?;
+            let status_t = lower_expr_flat(&status.1, b, env)?;
+            let payload_len =
+                crate::lower::layout_dma_size(&payload.1.ty, b.prog).ok_or_else(|| {
+                    FlowError::internal("`prepare_block` payload has no `@layout(dma)` size")
+                })?;
+            if payload_len == 0 || payload_len % 512 != 0 {
+                return Err(FlowError::unimplemented(format!(
+                    "`prepare_block` with payload layout size {payload_len}: virtio-blk requires \
+                     a positive multiple of 512"
+                )));
+            }
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::QueuePrepare {
+                dst,
+                queue,
+                permit: permit_t,
+                header: header_t,
+                payload: payload_t,
+                status: status_t,
+                device_writes,
+                payload_len: payload_len as u32,
+            });
+            Ok(dst)
+        }
+        "VirtQueue.reserve_proven" => {
+            let _ = args
+                .iter()
+                .find(|(l, _)| l == "descriptors")
+                .ok_or_else(|| FlowError::internal("`reserve_proven` without `descriptors=`"))?;
+            let _ = receiver;
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::ConstInt {
+                dst,
+                ty: Type::U64,
+                value: 0,
+            });
+            Ok(dst)
+        }
+        "VirtQueue.publish" => {
+            let op = args
+                .iter()
+                .find(|(l, _)| l == "operation")
+                .ok_or_else(|| FlowError::internal("`publish` without `operation=`"))?;
+            let queue = match receiver {
+                Some(q) => lower_expr_flat(q, b, env)?,
+                None => {
+                    return Err(FlowError::internal("`publish` without a queue receiver"));
+                }
+            };
+            let operation = lower_expr_flat(&op.1, b, env)?;
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::QueuePublish {
+                dst,
+                queue,
+                operation,
+                steps: crate::virtqueue::PUBLISH_WRITE_ORDER,
+            });
+            Ok(dst)
+        }
+        "VirtQueue.reject" => {
+            for (_, a) in args {
+                let _ = lower_expr_flat(a, b, env)?;
+            }
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::ConstInt {
+                dst,
+                ty: Type::U64,
+                value: 0,
+            });
+            let _ = receiver;
+            Ok(dst)
+        }
+        "VirtQueue.drain" => {
+            let queue = match receiver {
+                Some(q) => lower_expr_flat(q, b, env)?,
+                None => {
+                    return Err(FlowError::internal("`drain` without a queue receiver"));
+                }
+            };
+            let max_val = match type_arg {
+                Some(Type::Named(_, targs)) => match targs.first() {
+                    Some(crate::sema::types::TypeArg::Bound(crate::syntax::ast::Expr::Int(
+                        _,
+                        text,
+                    ))) => text
+                        .parse::<u16>()
+                        .map_err(|_| FlowError::internal(format!("drain max `{text}`")))?,
+                    _ => {
+                        return Err(FlowError::internal(
+                            "`drain` type_arg Bound is not an integer literal",
+                        ));
+                    }
+                },
+                _ => {
+                    return Err(FlowError::internal("`drain` without a folded max Bound"));
+                }
+            };
+            let _ = args;
+            b.emit_mwir(Inst::QueueDrain {
+                queue,
+                max: max_val,
+            });
+            let dst = b.fresh(Type::Unit);
+            b.emit_mwir(Inst::ConstUnit { dst });
+            Ok(dst)
+        }
+        "VirtQueue.suppress_interrupts" => {
+            let queue = match receiver {
+                Some(q) => lower_expr_flat(q, b, env)?,
+                None => {
+                    return Err(FlowError::internal(
+                        "`suppress_interrupts` without a queue receiver",
+                    ));
+                }
+            };
+            let _ = type_arg;
+            let _ = args;
+            b.emit_mwir(Inst::QueueSuppressInterrupts { queue });
+            let dst = b.fresh(Type::Unit);
+            b.emit_mwir(Inst::ConstUnit { dst });
+            Ok(dst)
+        }
+        other => Err(FlowError::unimplemented(format!(
+            "queue operation `{other}` inside an async body is"
         ))),
     }
 }

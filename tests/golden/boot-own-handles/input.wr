@@ -1,0 +1,66 @@
+module examples.boot_own_handles
+
+# plans/M7.md item E4 / decision 19: image-bound `own[P] T` substitution.
+# An `img.dma_pool` wired as `block=take payloads` materializes one own
+# handle — the guest address of slot 0 — into the actor's `init`. Writing
+# through that handle and reading it back proves the word addresses the
+# pool slot, not a by-value copy in actor state.
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    word: u64
+    pad: u64
+
+struct BlockHw:
+    id: u32
+
+pool BlockPayloads
+
+@actor
+pub struct Holder:
+    block: own[BlockPayloads] DmaBlock
+    seen: u64
+
+    init(mut self, take block: own[BlockPayloads] DmaBlock):
+        # Nested `self.block.word =` is not lowered yet; take the handle,
+        # write through it (Own Project/SetField), put it back. Hand-
+        # computed value 0xA11CE — a handle that pointed at actor state
+        # (or nowhere) would leave the pool zero and fail the read-back.
+        b = take block
+        b.word = 0xA11CE
+        self.seen = b.word
+        self.block = take b
+
+    pub fn read_seen(read self) -> u64:
+        return self.seen
+
+    pub fn read_word(mut self) -> u64:
+        b = take self.block
+        w = b.word
+        self.block = take b
+        return w
+
+@test(runtime)
+async fn own_handle_addresses_pool_slot(h: Actor[Holder]):
+    s = await h.read_seen()
+    match s:
+        case .Ok(v):
+            assert v == 0xA11CE, "init wrote 0xA11CE through the image-bound own handle"
+        case .Err(_):
+            assert false, "read_seen rejected"
+    w = await h.read_word()
+    match w:
+        case .Ok(v):
+            assert v == 0xA11CE, "read-back through the same own still sees the pool slot"
+        case .Err(_):
+            assert false, "read_word rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-own-handles", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=1)
+    h = img.actor(Holder, mailbox=8, block=take payloads)
+    img.supervise(children=[h], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

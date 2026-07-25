@@ -242,16 +242,21 @@ pub struct BlkQueueReport {
 }
 
 /// The closed virtio-blk device configuration emitted into the report
-/// (`BlkDevice capacity_sectors= features=`). `vector` is omitted at E1
-/// (poll mode; item G owns IRQ vectors).
+/// (`BlkDevice capacity_sectors= features=` / optional `vector=`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlkReport {
     pub capacity_sectors: u64,
     pub features: u64,
+    /// Device-owned pending-word bit (`1..=63`). `None` is 03 §7's poll
+    /// build — no vector, and the used ring alone is the completion signal.
+    pub vector: Option<u64>,
     pub queue: BlkQueueReport,
     /// Decision 2c: descriptors a single blk op needs, and the occupancy
     /// bound `floor(queue_depth / descriptors_per_op)` (plans/M7.md item
-    /// E2 / 03-hardware.md §4). Exits-per-op needs E4's publish workload.
+    /// E2 / 03-hardware.md §4). Expected exits-per-op stays deferred —
+    /// plans/M7.md decision 21: a doorbell is a polled shared-memory write
+    /// (06 §5), not a fixed exit count, and inventing `1` spends E1's
+    /// deferral without a prediction the VMM's measured `exits` can check.
     pub descriptors_per_op: u16,
     pub occupancy_bound: u16,
 }
@@ -1701,12 +1706,20 @@ pub fn derive_blk_report(
             "`VirtQueue.configure`'s depth={depth} is not a nonzero power of two"
         )));
     };
-    if placed.bytes > pool.backing.bytes {
+    // plans/M7.md item E4 / decision 20: ring + single-flight packaging
+    // (meta/header/status) must both fit; the VMM reaches only declared
+    // pool bytes, so a prepare that wrote past the window would be a
+    // guest fault rather than a build error.
+    let Some(needed) = crate::virtqueue::control_bytes_needed(depth) else {
         return Err(LayoutError::new(format!(
-            "`VirtQueue.configure` needs a {depth}-deep ring ({placed_bytes} bytes) but pool \
-             `{pool_name}` only reserves {pool_bytes} bytes — enlarge the `img.dma_pool` or \
+            "`VirtQueue.configure`'s depth={depth} is not a nonzero power of two"
+        )));
+    };
+    if needed > pool.backing.bytes {
+        return Err(LayoutError::new(format!(
+            "`VirtQueue.configure` needs a {depth}-deep ring plus packaging ({needed} bytes) but \
+             pool `{pool_name}` only reserves {pool_bytes} bytes — enlarge the `img.dma_pool` or \
              shrink the depth",
-            placed_bytes = placed.bytes,
             pool_bytes = pool.backing.bytes,
         )));
     }
@@ -1719,9 +1732,14 @@ pub fn derive_blk_report(
     })?;
     let features = crate::eval::image_checks::blk_accepted_features(graph, programs)
         .map_err(|e| LayoutError::new(e.message))?;
+    let vector = graph
+        .devices
+        .iter()
+        .find_map(|d| crate::eval::image_checks::device_vector(&d.args));
     Ok(Some(BlkReport {
         capacity_sectors: capacity,
         features,
+        vector,
         queue: BlkQueueReport {
             index: 0,
             size: depth,
@@ -1747,16 +1765,27 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
         return;
     };
     out.push_str(&format!(
-        "BlkDevice capacity_sectors={} features={:#x}\n",
-        blk.capacity_sectors, blk.features
+        "BlkDevice capacity_sectors={} features={:#x}{}\n",
+        blk.capacity_sectors,
+        blk.features,
+        match blk.vector {
+            Some(v) => format!(" vector={v}"),
+            None => String::new(),
+        }
     ));
     let q = &blk.queue;
     out.push_str(&format!(
         "BlkQueue index={} size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n",
         q.index, q.size, q.desc, q.avail, q.used, q.doorbell
     ));
-    // Only the queue's own pool — the one whose ring the device reaches.
-    if let Some(p) = layout.pools.iter().find(|p| p.backing.name == q.pool_name) {
+    // Every device-reachable pool — ring *and* payload — matching the
+    // full `--stage=report` `BlkPool` set (decision 5: the VMM maps exactly
+    // these windows). Emitting only the queue's control pool left payload
+    // DMA unmapped and failed the flagship write at the first descriptor.
+    for p in &layout.pools {
+        if p.backing.device.is_none() {
+            continue;
+        }
         out.push_str(&format!(
             "BlkPool name={} base={:#x} size={:#x}\n",
             p.backing.name, p.base, p.backing.bytes
@@ -3219,6 +3248,21 @@ enum BootInitArg {
     /// 11's word for a `DmaPool[P, N]`, which item D placed and reported
     /// but nothing could yet pass to an `init`.
     PoolBase(String),
+    /// plans/M7.md item E4 / decision 19: one `own[P] T` — the guest
+    /// address of slot `index` in pool `name` (`base + index * slot_bytes`).
+    OwnSlot {
+        pool: String,
+        index: u64,
+        slot_bytes: u64,
+    },
+    /// plans/M7.md item E4: `[own[P] T; N]` — boot builds a table of
+    /// `count` slot addresses on its own stack and passes the table's
+    /// address (this machine's bare-pointer aggregate ABI).
+    OwnHandleArray {
+        pool: String,
+        count: u64,
+        slot_bytes: u64,
+    },
 }
 
 impl BootInitArg {
@@ -3250,6 +3294,27 @@ impl BootInitArg {
                          placed backing"
                     ))
                 }),
+            BootInitArg::OwnSlot {
+                pool,
+                index,
+                slot_bytes,
+            } => {
+                let p = pools
+                    .iter()
+                    .find(|p| &p.backing.name == pool)
+                    .ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: boot passes an `own` into pool `{pool}`, which has no \
+                             placed backing"
+                        ))
+                    })?;
+                Ok(p.base + *index * *slot_bytes)
+            }
+            BootInitArg::OwnHandleArray { .. } => Err(LayoutError::new(
+                "internal error: `OwnHandleArray` has no single resolve word — emit via \
+                 `emit_boot_init_arg`"
+                    .to_string(),
+            )),
         }
     }
 }
@@ -3476,12 +3541,11 @@ fn check_field_wired_args(
 ///   §9 lets an actor handle be substituted by type rather than wired by
 ///   name, and boot materializes only what the image explicitly wired.
 /// - a **pool handle argument** (05-library.md §9's "create the initial
-///   handles", wired as `blocks=take cache_blocks`): the pool itself is
-///   real at plans/M7.md item D — declared, checked, sized and placed —
-///   but the *runtime* value 02-language.md §4's own worked example
-///   passes is an `[own[P] T; N]` array of handles into that backing, and
-///   nothing constructs an `own[P] T` yet. Fails closed by name rather
-///   than passing the pool's construction index as if it were one.
+///   handles", wired as `blocks=take cache_blocks`): plans/M7.md item E4
+///   / decision 19 materializes each `own[P] T` as the guest address of
+///   one pool slot. A single `own` is that word; an `[own; N]` is a
+///   stack-built table of them passed by the bare-pointer aggregate ABI.
+///   Any other parameter type wired from a pool still fails closed.
 /// - an **argument whose value has no register representation**
 ///   (an aggregate, a float, ...).
 /// - **more than eight arguments**, the register budget `x1..x8` leaves
@@ -3489,6 +3553,7 @@ fn check_field_wired_args(
 fn build_boot_init_calls(
     graph: &ImageGraph,
     inits: &BTreeMap<String, ActorInit>,
+    backings: &BTreeMap<String, crate::eval::image_checks::PoolBacking>,
 ) -> Result<(Vec<Option<BootInitCall>>, Vec<Option<BootInitCall>>), LayoutError> {
     let mut actors = Vec::with_capacity(graph.actors.len());
     for decl in &graph.actors {
@@ -3499,6 +3564,7 @@ fn build_boot_init_calls(
             None,
             graph,
             inits,
+            backings,
         )?);
     }
     let mut drivers = Vec::with_capacity(graph.drivers.len());
@@ -3511,6 +3577,7 @@ fn build_boot_init_calls(
             device,
             graph,
             inits,
+            backings,
         )?);
     }
     Ok((actors, drivers))
@@ -3542,6 +3609,7 @@ fn one_boot_init_call(
     device: Option<usize>,
     graph: &ImageGraph,
     inits: &BTreeMap<String, ActorInit>,
+    backings: &BTreeMap<String, crate::eval::image_checks::PoolBacking>,
 ) -> Result<Option<BootInitCall>, LayoutError> {
     use crate::sema::types::{Type, render_type};
 
@@ -3708,11 +3776,12 @@ fn one_boot_init_call(
                 p.name, p.name
             )));
         };
-        // plans/M7.md item D: a pool handle gets its own diagnostic
-        // rather than the generic "no register representation" one,
-        // because the pool it names *is* real now (declared, checked,
-        // sized and placed) and only the runtime handle value is
-        // missing — a reader deserves to be told which of the two.
+        // plans/M7.md item E4 / decision 19: a pool wired to an `own[P] T`
+        // or `[own[P] T; N]` parameter becomes the initial handles
+        // 05-library.md §9 promises. Each handle is one word — the guest
+        // address of a pool slot. A single `own` is that word; an array
+        // is a pre-built table of them passed by the bare-pointer
+        // aggregate ABI.
         if matches!(
             a.value,
             crate::eval::value::Value::ImageDecl(
@@ -3720,13 +3789,72 @@ fn one_boot_init_call(
                     | crate::eval::image::ImageDeclRef::DmaPool(_)
             )
         ) {
+            let pool_name = match &a.value {
+                crate::eval::value::Value::ImageDecl(
+                    crate::eval::image::ImageDeclRef::Pool(n)
+                    | crate::eval::image::ImageDeclRef::DmaPool(n),
+                ) => n.clone(),
+                _ => unreachable!(),
+            };
+            let backing = backings.get(&pool_name).ok_or_else(|| {
+                LayoutError::new(format!(
+                    "internal error: `{name}.init` wires pool `{pool_name}`, which has no \
+                     PoolBacking — `check_pool_decls` should have rejected first"
+                ))
+            })?;
+            match &p.ty {
+                Type::Own(own_pool, _) if own_pool == &pool_name => {
+                    if backing.slots < 1 {
+                        return Err(LayoutError::new(format!(
+                            "{kind} `{name}` wires `{}=...` to a single `own[{pool_name}] _`, but \
+                             pool `{pool_name}` declares zero slots",
+                            a.label
+                        )));
+                    }
+                    args.push(BootInitArg::OwnSlot {
+                        pool: pool_name,
+                        index: 0,
+                        slot_bytes: backing.slot_bytes,
+                    });
+                    continue;
+                }
+                Type::Array(elem, len_expr) => {
+                    if let Type::Own(own_pool, _) = elem.as_ref() {
+                        if own_pool == &pool_name {
+                            let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(
+                                || {
+                                    LayoutError::new(format!(
+                                        "{kind} `{name}`'s own `{}: {}` has a non-literal array \
+                                         length — boot can only materialize a fixed `[own; N]`",
+                                        p.name,
+                                        render_type(&p.ty),
+                                    ))
+                                },
+                            )?;
+                            if n as u64 != backing.slots {
+                                return Err(LayoutError::new(format!(
+                                    "{kind} `{name}` wires `{}=...` to `[own[{pool_name}] _; {n}]`, \
+                                     but pool `{pool_name}` declares {} slots — 05-library.md §9's \
+                                     initial handles are exactly one per slot",
+                                    a.label, backing.slots
+                                )));
+                            }
+                            args.push(BootInitArg::OwnHandleArray {
+                                pool: pool_name,
+                                count: backing.slots,
+                                slot_bytes: backing.slot_bytes,
+                            });
+                            continue;
+                        }
+                    }
+                }
+                _ => {}
+            }
             return Err(LayoutError::new(format!(
-                "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}` from a \
-                 declared pool. The pool is real — bound, sized and placed in this image's \
-                 own `pooldata` section (plans/M7.md item D) — but 05-library.md §9's \
-                 \"create the initial handles\" means a runtime `own[P] T` per slot, and \
-                 nothing constructs one yet. Failing closed rather than passing the pool's \
-                 construction index as if it were a handle.",
+                "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}` from a declared \
+                 pool. The pool is real, but that parameter is not an `own[{pool_name}] T` or \
+                 `[own[{pool_name}] T; N]` — 05-library.md §9's \"create the initial handles\" \
+                 only substitutes those shapes (plans/M7.md item E4 / decision 19).",
                 a.label,
                 p.name,
                 render_type(&p.ty),
@@ -4237,8 +4365,13 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             out,
             1,
             &format!(
-                "BlkDevice capacity_sectors={} features={:#x}",
-                blk.capacity_sectors, blk.features
+                "BlkDevice capacity_sectors={} features={:#x}{}",
+                blk.capacity_sectors,
+                blk.features,
+                match blk.vector {
+                    Some(v) => format!(" vector={v}"),
+                    None => String::new(),
+                }
             ),
         );
         let q = &blk.queue;
@@ -4251,7 +4384,8 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             ),
         );
         // Decision 2c / plans/M7.md item E2: occupancy bound is
-        // floor(queue_depth / descriptors_per_op). Exits-per-op needs E4.
+        // floor(queue_depth / descriptors_per_op). Exits-per-op stays
+        // deferred (decision 21).
         push_line(
             out,
             1,
@@ -5381,8 +5515,12 @@ fn build_boot_init(
         .chain(actor_addrs.iter().map(|a| a.state).zip(init_calls));
     for (state, call) in calls {
         let Some(call) = call else { continue };
+        // plans/M7.md item E4: `[own; N]` args build a temporary table on
+        // this stack frame; free it after the call (and after any fallible
+        // reply slot, which is nested inside).
+        let mut array_stack: u64 = 0;
         for (i, arg) in call.args.iter().enumerate() {
-            a.load_imm(i as u8 + 1, arg.resolve(device_regs, pools)?);
+            array_stack += emit_boot_init_arg(&mut a, i as u8 + 1, arg, device_regs, pools)?;
         }
         a.load_imm(0, state);
         // plans/M7.md item E1: a fallible `init` returns
@@ -5425,11 +5563,74 @@ fn build_boot_init(
         } else {
             a.bl_call_key(&call.key);
         }
+        if array_stack > 0 {
+            // Immediate ADD only reaches 12 bits unsigned; handle tables
+            // for M7's working images stay well under that (CACHE_BLOCKS=64
+            // → 512 bytes). Fail closed rather than emit a wrong free.
+            if array_stack >= 4096 {
+                return Err(LayoutError::new(format!(
+                    "internal error: own-handle array stack frame is {array_stack} bytes; the \
+                     unsigned-immediate ADD encoder reaches 4095"
+                )));
+            }
+            a.push(encode::enc_add_imm(31, 31, array_stack as u16, true));
+        }
     }
     a.push(encode::enc_ldr_x_imm(30, 31, 0));
     a.push(encode::enc_add_imm(31, 31, 16, true));
     a.push(encode::enc_ret(30));
     Ok(a)
+}
+
+/// Emit one boot `init` argument into `reg`. Returns stack bytes allocated
+/// for an `[own; N]` table (0 for every other shape).
+fn emit_boot_init_arg(
+    a: &mut Asm,
+    reg: u8,
+    arg: &BootInitArg,
+    regs: &[DeviceRegs],
+    pools: &[PoolPlacement],
+) -> Result<u64, LayoutError> {
+    match arg {
+        BootInitArg::OwnHandleArray {
+            pool,
+            count,
+            slot_bytes,
+        } => {
+            let pool_base = pools
+                .iter()
+                .find(|p| &p.backing.name == pool)
+                .map(|p| p.base)
+                .ok_or_else(|| {
+                    LayoutError::new(format!(
+                        "internal error: boot builds an own-handle array for pool `{pool}`, which \
+                         has no placed backing"
+                    ))
+                })?;
+            let raw = count.checked_mul(8).ok_or_else(|| {
+                LayoutError::new("own-handle array byte count overflow".to_string())
+            })?;
+            // AAPCS64: SP must stay 16-byte aligned.
+            let bytes = ((raw + 15) / 16) * 16;
+            if bytes == 0 || bytes >= 4096 {
+                return Err(LayoutError::new(format!(
+                    "internal error: own-handle array for pool `{pool}` wants {bytes} bytes \
+                     (count={count}); boot's unsigned-immediate SUB reaches 4095"
+                )));
+            }
+            a.push(encode::enc_sub_imm(31, 31, bytes as u16, true));
+            for i in 0..*count {
+                a.load_imm(SCRATCH_A, pool_base + i * *slot_bytes);
+                a.push(encode::enc_str_x_imm(SCRATCH_A, 31, (i * 8) as u16));
+            }
+            a.push(encode::enc_add_imm(reg, 31, 0, true)); // mov reg, sp
+            Ok(bytes)
+        }
+        other => {
+            a.load_imm(reg, other.resolve(regs, pools)?);
+            Ok(0)
+        }
+    }
 }
 
 // ===========================================================================
@@ -5541,8 +5742,17 @@ impl RuntimeWiring {
         // struct is ordinary, legal code (`Pair.init(lo, hi)` in
         // `golden/boot-actor-reply-struct`) and is none of this pass's
         // business.
+        let layouts = closure_layout_types(boot.modules)?;
+        let backings =
+            crate::eval::image_checks::pool_backings(boot.graph, &layouts).map_err(|e| {
+                LayoutError::new(format!(
+                    "internal error: a pool declaration this image's own graph check accepted \
+                     cannot be read for own-handle materialization: {}",
+                    e.message
+                ))
+            })?;
         let (init_calls, driver_init_calls) =
-            build_boot_init_calls(boot.graph, &actor_inits(boot.modules)?)?;
+            build_boot_init_calls(boot.graph, &actor_inits(boot.modules)?, &backings)?;
         debug_assert_eq!(
             init_calls.len(),
             tables.actors.len(),
@@ -7777,7 +7987,7 @@ pub struct Store:
                 wired("lo", Type::U8, Value::U8(200)),
             ],
         ));
-        let (calls, _) = build_boot_init_calls(&graph, &inits).unwrap();
+        let (calls, _) = build_boot_init_calls(&graph, &inits, &BTreeMap::new()).unwrap();
         let call = calls[0].as_ref().expect("Store declares an `init`");
         assert_eq!(call.key, "Store.init");
         assert_eq!(
@@ -7799,7 +8009,7 @@ pub struct Store:
         let inits = actor_inits(&modules).unwrap();
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", Some(4)));
-        let (calls, _) = build_boot_init_calls(&graph, &inits).unwrap();
+        let (calls, _) = build_boot_init_calls(&graph, &inits, &BTreeMap::new()).unwrap();
         assert!(
             calls[0].is_none(),
             "no `init` means the zero-fill is the whole construction"
@@ -7838,7 +8048,7 @@ pub struct Store:
             });
             let mut graph = ImageGraph::default();
             graph.actors.push(d);
-            build_boot_init_calls(&graph, &inits)
+            build_boot_init_calls(&graph, &inits, &BTreeMap::new())
         };
 
         // Exact, not conservative: a wired zero *is* what the state-fill
@@ -7866,7 +8076,7 @@ pub struct Store:
         // two can never disagree about which is which.
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", Some(4)));
-        assert!(build_boot_init_calls(&graph, &inits).is_ok());
+        assert!(build_boot_init_calls(&graph, &inits, &BTreeMap::new()).is_ok());
     }
 
     /// One `init` taking one capability parameter of type `cap_ty`.
@@ -7925,7 +8135,7 @@ pub struct Store:
                 crate::eval::value::Value::ImageDecl(crate::eval::image::ImageDeclRef::Device(0)),
             )],
         });
-        let (actors, drivers) = build_boot_init_calls(&graph, &inits).unwrap();
+        let (actors, drivers) = build_boot_init_calls(&graph, &inits, &BTreeMap::new()).unwrap();
         assert!(actors.is_empty());
         let call = drivers[0].as_ref().expect("the driver declares an `init`");
         assert_eq!(call.args, vec![BootInitArg::DeviceRegsBase(0)]);
@@ -7957,7 +8167,7 @@ pub struct Store:
         let inits = cap_init(named1("DeviceCap", "VirtioBlock"));
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Blk", Some(4)));
-        let err = build_boot_init_calls(&graph, &inits).unwrap_err();
+        let err = build_boot_init_calls(&graph, &inits, &BTreeMap::new()).unwrap_err();
         assert!(err.message.contains("binds no device"), "{}", err.message);
     }
 
@@ -7992,7 +8202,7 @@ pub struct Store:
                     )),
                 )],
             });
-            let err = build_boot_init_calls(&graph, &inits).unwrap_err();
+            let err = build_boot_init_calls(&graph, &inits, &BTreeMap::new()).unwrap_err();
             assert!(err.message.contains(needle), "{}", err.message);
         }
     }
@@ -8030,7 +8240,7 @@ pub struct Store:
             .collect();
         let mut graph = ImageGraph::default();
         graph.actors.push(decl_with("Wide", args));
-        let err = build_boot_init_calls(&graph, &inits).unwrap_err();
+        let err = build_boot_init_calls(&graph, &inits, &BTreeMap::new()).unwrap_err();
         assert!(err.message.contains("at most 8"), "{}", err.message);
     }
 

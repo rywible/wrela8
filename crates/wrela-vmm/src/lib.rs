@@ -711,10 +711,25 @@ fn boot_image_core(
         None => None,
         Some(cfg) => {
             let pools = cfg.pools.clone();
+            let vector = cfg.vector;
             let device = devices::BlkDevice::new(cfg).map_err(VmmError::BadImage)?;
             let mem =
                 unsafe { devices::GuestMem::new(host_ram, pools) }.map_err(VmmError::BadImage)?;
-            Some(BlkState { device, mem })
+            // Completion-time `interrupt_status` writer: same GPA the
+            // boot-time `IrqHostInject` names, when this device owns a
+            // vector. Plans/M7.md item E4: the ISR masks bit 0 after a
+            // real used-ring completion, not only the one-shot boot inject.
+            let irq_status_gpa = vector.and_then(|v| {
+                parsed
+                    .irq_injects
+                    .iter()
+                    .find_map(|inj| (inj.vector == v).then_some(inj.base.checked_add(inj.offset)?))
+            });
+            Some(BlkState {
+                device,
+                mem,
+                irq_status_gpa,
+            })
         }
     };
     // plans/M7.md item G: write `interrupt_status` then raise the vector
@@ -958,6 +973,9 @@ fn boot_image_core(
 struct BlkState {
     device: devices::BlkDevice,
     mem: devices::GuestMem,
+    /// Guest GPA of `interrupt_status` (devregs + 0x60), when the image
+    /// declared a vector and bound an ISR. `None` for poll builds.
+    irq_status_gpa: Option<u64>,
 }
 
 /// 06 §4's raise, both producers' one implementation: set bit `vector` in
@@ -1007,6 +1025,7 @@ fn service_blk(
     chooser: &mut record::Chooser,
     host_ram: *mut u8,
 ) -> Result<bool, VmmError> {
+    use wrela_machine::layout as machine_layout;
     let Some(state) = blk.as_mut() else {
         return Ok(false);
     };
@@ -1054,7 +1073,27 @@ fn service_blk(
     // 06 §4: a completion optionally raises this driver's own vector. A
     // device declared with none is 03 §7's poll build — the used ring
     // alone is the signal, and nothing is raised or recorded.
+    //
+    // plans/M7.md item E4: also OR `INT_VRING` (bit 0) into the guest's
+    // `interrupt_status` so the ISR's mask-against-declared-bits path
+    // sees a real level after a used-ring publish (boot-time
+    // `IrqHostInject` only covers the pre-first-instruction oracle).
     if let Some(vector) = state.device.config.vector {
+        if let Some(gpa) = state.irq_status_gpa {
+            if gpa >= machine_layout::DRAM_BASE {
+                let off = (gpa - machine_layout::DRAM_BASE) as usize;
+                unsafe {
+                    let mut b = [0u8; 4];
+                    std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 4);
+                    let status = u32::from_le_bytes(b) | 1;
+                    std::ptr::copy_nonoverlapping(
+                        status.to_le_bytes().as_ptr(),
+                        host_ram.add(off),
+                        4,
+                    );
+                }
+            }
+        }
         chooser.choose_next(record::ChoiceRequest::VectorRaise { vector }, || {
             record::ChoiceEntry::VectorRaise { vector }
         });

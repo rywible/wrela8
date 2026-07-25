@@ -1,0 +1,7 @@
+Program
+  Fn name=hold ret=unit
+    Param name=_c mode=read ty=IoCompletion[Packet]
+    Body
+      Return
+        Unit ty=unit
+  Struct name=Packet

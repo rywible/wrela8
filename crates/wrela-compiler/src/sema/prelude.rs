@@ -83,7 +83,7 @@ const MARKED_VALUES: &[&str] = &["Untrusted", "Validated", "Secret"];
 /// (plans/M7.md item H2a → E4): recognized so `symbols::resolve` does
 /// not report `unknown name` before `types::resolve_named` can name the
 /// owning item.
-const FAIL_CLOSED_TYPES: &[&str] = &["IoCompletion"];
+const FAIL_CLOSED_TYPES: &[&str] = &[];
 
 /// plans/M7.md item E1: `BootError` (03-hardware.md §1/§9's own `init`
 /// failure vocabulary) and `VirtQueue` (03 §4's queue type). Both must
@@ -94,6 +94,8 @@ const FAIL_CLOSED_TYPES: &[&str] = &["IoCompletion"];
 // `error=` / `IoCompletion.status`'s Err arm). `Receipt[P]`'s argument
 // is resolved in `sema::types::resolve_named`; `IoError`'s variants are
 // in `builtin_enum_variants`.
+// plans/M7.md item E4: `IoCompletion[P]` — 03 §3/§8's completion value
+// (`payload`, `status`, `written_len: Untrusted[usize]`).
 const HARDWARE_SURFACE: &[&str] = &[
     "BootError",
     "VirtQueue",
@@ -101,6 +103,7 @@ const HARDWARE_SURFACE: &[&str] = &[
     "QueueOp",
     "Receipt",
     "IoError",
+    "IoCompletion",
 ];
 
 /// plans/M7.md item G: 03-hardware.md §6's ISR/ordinary channel. Prelude

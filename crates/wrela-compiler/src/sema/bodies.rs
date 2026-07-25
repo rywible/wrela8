@@ -2355,6 +2355,49 @@ fn check_field_expr(
             return Err(mmio_bare_selection_error(targs, name, span, mctx));
         }
     }
+    // plans/M7.md item E4: `IoCompletion[P]` fields — 03 §3/§8.
+    // 0 payload, 1 status (`Result[unit, IoError]`), 2 written_len
+    // (`Untrusted[usize]`).
+    if let Type::Named(n, targs) = &base_ty {
+        if n == "IoCompletion" {
+            let Some(types::TypeArg::Type(payload)) = targs.first() else {
+                return Err(type_error(
+                    "`IoCompletion` with no payload type argument".to_string(),
+                    span,
+                ));
+            };
+            let field_ty = match name {
+                "payload" => payload.clone(),
+                "status" => Type::Result(
+                    Box::new(Type::Unit),
+                    Box::new(Type::Named("IoError".to_string(), vec![])),
+                ),
+                "written_len" => untrusted_type(Type::Usize),
+                other => {
+                    return Err(type_error(
+                        format!(
+                            "`IoCompletion[P]` has fields `payload`, `status`, and `written_len`; \
+                             found `{other}`"
+                        ),
+                        span,
+                    ));
+                }
+            };
+            let index: usize = match name {
+                "payload" => 0,
+                "status" => 1,
+                "written_len" => 2,
+                _ => unreachable!(),
+            };
+            // Reuse Field spelling; lower maps the name to Project index
+            // via the same order size_of uses.
+            let _ = index;
+            return Ok(TypedExpr {
+                ty: field_ty,
+                kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
+            });
+        }
+    }
     match &base_ty {
         Type::Named(sname, targs) => {
             // A generic instantiation's field (item H): substitute +
@@ -5490,14 +5533,14 @@ pub fn is_device_transport_intrinsic(key: &str) -> bool {
 /// falling into a generic "intrinsic" rejection.
 pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
     match key {
-        "VirtQueue.drain" | "VirtQueue.suppress_interrupts" => {
-            Some("plans/M7.md item E4 / G (`drain` / `suppress_interrupts`)")
+        "VirtQueue.poll_sources" | "VirtQueue.completions_pending" => {
+            Some("plans/M7.md item G (`poll_sources` / `completions_pending`)")
         }
         _ => None,
     }
 }
 
-/// Is `key` one of item E2/E3's live queue operations?
+/// Is `key` one of item E2/E3/E4's live queue operations?
 pub fn is_queue_op_intrinsic(key: &str) -> bool {
     matches!(
         key,
@@ -5505,6 +5548,9 @@ pub fn is_queue_op_intrinsic(key: &str) -> bool {
             | "VirtQueue.prepare_block"
             | "VirtQueue.publish"
             | "VirtQueue.reject"
+            | "VirtQueue.drain"
+            | "VirtQueue.suppress_interrupts"
+            | "VirtQueue.claim"
     )
 }
 
@@ -5525,16 +5571,20 @@ fn check_virtqueue_method(
         "prepare_block" => check_virtqueue_prepare_block(queue, args, fspan, call_span, fctx, mctx),
         "publish" => check_virtqueue_publish(queue, args, fspan, call_span, fctx, mctx),
         "reject" => check_virtqueue_reject(queue, args, fspan, call_span, fctx, mctx),
-        "drain" | "suppress_interrupts" | "poll_sources" | "completions_pending" => {
-            Err(unimplemented_at(
-                &format!("`VirtQueue.{name}(...)` — plans/M7.md item E4 / G (`{name}`) is"),
-                call_span,
-            ))
+        "drain" => check_virtqueue_drain(queue, args, fspan, call_span, fctx, mctx),
+        "suppress_interrupts" => {
+            check_virtqueue_suppress_interrupts(queue, args, fspan, call_span, fctx, mctx)
         }
+        "claim" => check_virtqueue_claim(queue, args, fspan, call_span, fctx, mctx),
+        "poll_sources" | "completions_pending" => Err(unimplemented_at(
+            &format!("`VirtQueue.{name}(...)` — plans/M7.md item G (`{name}`) is"),
+            call_span,
+        )),
         other => Err(type_error(
             format!(
                 "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4 gives \
-                 `reserve_proven`, `prepare_block`, `publish`, `reject` and `drain`"
+                 `reserve_proven`, `prepare_block`, `publish`, `reject`, `drain`, \
+                 `suppress_interrupts`, and `claim`"
             ),
             fspan,
         )),
@@ -6036,6 +6086,184 @@ fn check_virtqueue_reject(
                 ("payload".to_string(), payload),
                 ("error".to_string(), error),
             ],
+        },
+    })
+}
+
+/// `queue.drain(max=N)` — bounded used-ring walk (03-hardware.md §4/§6).
+fn check_virtqueue_drain(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    let depth = virtqueue_type_depth(&queue.ty, mctx).ok_or_else(|| {
+        type_error(
+            "`drain` needs a `VirtQueue[..N]` whose depth is a comptime-known nonzero power of two"
+                .to_string(),
+            call_span,
+        )
+    })?;
+    if args.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.drain(max=N)` takes exactly one labelled argument; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let arg = &args[0];
+    if arg.label.as_deref() != Some("max") {
+        return Err(type_error(
+            "`VirtQueue.drain`'s own argument is labelled `max=` (03-hardware.md §6)".to_string(),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`drain`'s `max=` is a bound, not a moved value: drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let max_expr = check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?;
+    let max_val = virtqueue_depth_value(&max_expr, mctx).ok_or_else(|| {
+        type_error(
+            "`drain`'s `max=` must be a comptime-known integer (03-hardware.md §6)".to_string(),
+            arg.span,
+        )
+    })?;
+    if max_val == 0 || max_val > depth {
+        return Err(type_error(
+            format!("`drain(max={max_val})` on `VirtQueue[..{depth}]`: max must be in 1..={depth}"),
+            arg.span,
+        ));
+    }
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.drain".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: Some(Type::Named(
+                "VirtQueue".to_string(),
+                vec![types::TypeArg::Bound(Expr::Int(
+                    call_span,
+                    max_val.to_string(),
+                ))],
+            )),
+            args: vec![("max".to_string(), max_expr)],
+        },
+    })
+}
+
+/// `queue.claim(receipt=take r) -> IoCompletion[P]` — plans/M7.md item E4 /
+/// decision 22: sync claim of a drain-resolved receipt (bottom-half dual
+/// of `await receipt`).
+fn check_virtqueue_claim(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    if args.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.claim(receipt=take ...)` takes exactly one labelled argument; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let arg = &args[0];
+    if arg.label.as_deref() != Some("receipt") {
+        return Err(type_error(
+            "`VirtQueue.claim`'s own argument is labelled `receipt=` (plans/M7.md item E4)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Take {
+        return Err(type_error(
+            "`claim` consumes the receipt: write `receipt=take ...` (03-hardware.md §5)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    let receipt = check_expr(&arg.value, None, fctx, mctx)?;
+    let Type::Named(n, targs) = &receipt.ty else {
+        return Err(type_error(
+            format!(
+                "`claim`'s `receipt=` must be a `Receipt[P]`; found `{}`",
+                types::render_type(&receipt.ty)
+            ),
+            arg.span,
+        ));
+    };
+    if n != "Receipt" {
+        return Err(type_error(
+            format!(
+                "`claim`'s `receipt=` must be a `Receipt[P]`; found `{}`",
+                types::render_type(&receipt.ty)
+            ),
+            arg.span,
+        ));
+    }
+    let Some(types::TypeArg::Type(payload)) = targs.first() else {
+        return Err(type_error(
+            "`Receipt` with no payload type argument".to_string(),
+            arg.span,
+        ));
+    };
+    let payload = payload.clone();
+    Ok(TypedExpr {
+        ty: Type::Named(
+            "IoCompletion".to_string(),
+            vec![types::TypeArg::Type(payload)],
+        ),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.claim".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: vec![("receipt".to_string(), receipt)],
+        },
+    })
+}
+
+/// `queue.suppress_interrupts()` — set `VIRTQ_AVAIL_F_NO_INTERRUPT` (poll builds).
+fn check_virtqueue_suppress_interrupts(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    _fctx: &mut FnCtx,
+    _mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    if !args.is_empty() {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.suppress_interrupts()` takes no arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.suppress_interrupts".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: Vec::new(),
         },
     })
 }
@@ -7137,10 +7365,15 @@ fn check_message_args(
             ));
         }
         if a.mode == AccessMode::Take && is_resource_type(&vt.ty, mctx) {
-            return Err(unimplemented_at(
-                "`take` of a resource in a message is",
-                a.span,
-            ));
+            // plans/M7.md item E4 / 03-hardware.md §5: a handoff may
+            // `take` an `own[P] T` transfer payload into an awaitable
+            // driver call. Other resource takes in messages stay closed.
+            if !matches!(&vt.ty, Type::Own(..)) {
+                return Err(unimplemented_at(
+                    "`take` of a non-`own` resource in a message is",
+                    a.span,
+                ));
+            }
         }
         slots[idx] = Some(vt);
     }
@@ -7155,13 +7388,9 @@ fn check_message_args(
     Ok(slots)
 }
 
-/// `await expr` (02-language.md §9.4/§9.5): `expr` must be exactly a
-/// method call through an `Actor[T]` handle, or `g.join_all()` on a
-/// `with group(...) as g:` binding — the plan's own "actor-call
-/// awaitable or group join". Nothing else is an awaitable at M6 (a
-/// self-call to an async method, or a bare free async fn call, is
-/// out of scope — see the module's own "only invocation forms" note on
-/// `TypedExprKind::GroupChild`).
+/// `await expr` (02-language.md §9.4/§9.5 + 03-hardware.md §3/§5): an
+/// actor-handle method call, a group's `join_all()`, or a `Receipt[P]`
+/// value (plans/M7.md item E4: `completion = await receipt`).
 fn check_await(
     inner: &Expr,
     await_span: Span,
@@ -7176,11 +7405,35 @@ fn check_await(
             await_span,
         ));
     }
-    let Expr::Call(callee_expr, call_span, args) = inner else {
+    // plans/M7.md item E4: `await receipt` — not a call.
+    if !matches!(inner, Expr::Call(..)) {
+        let inner_t = check_expr(inner, None, fctx, mctx)?;
+        if let Type::Named(n, targs) = &inner_t.ty {
+            if n == "Receipt" {
+                let Some(types::TypeArg::Type(payload)) = targs.first() else {
+                    return Err(type_error(
+                        "`Receipt` with no payload type argument".to_string(),
+                        await_span,
+                    ));
+                };
+                return Ok(TypedExpr {
+                    ty: Type::Named(
+                        "IoCompletion".to_string(),
+                        vec![types::TypeArg::Type(payload.clone())],
+                    ),
+                    kind: TypedExprKind::Await(Box::new(inner_t)),
+                });
+            }
+        }
         return Err(actor_error(
-            "`await` requires an actor call or a group's `join_all()` (M6 scope)".to_string(),
+            "`await` requires an actor call, a group's `join_all()`, or a `Receipt[P]` \
+             (03-hardware.md §3: `completion = await receipt`)"
+                .to_string(),
             await_span,
         ));
+    }
+    let Expr::Call(callee_expr, call_span, args) = inner else {
+        unreachable!("checked above");
     };
     let Expr::Field(base, fspan, method_name) = callee_expr.as_ref() else {
         return Err(actor_error(

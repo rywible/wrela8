@@ -320,6 +320,10 @@ pub enum AwaitKind {
         group_temp: Temp,
         child_count: usize,
     },
+    /// `await receipt` (plans/M7.md item E4, 03-hardware.md §3/§5):
+    /// park until the driver's `drain` resolves this `Receipt[P]` into
+    /// an `IoCompletion[P]`.
+    Receipt { receipt_temp: Temp },
 }
 
 // --- the `--stage=flowwir` dump (M1 dump style) -----------------------------
@@ -470,5 +474,8 @@ fn fmt_await_kind(k: &AwaitKind) -> String {
             group_temp,
             child_count,
         } => format!("GroupJoin{{group={group_temp},children={child_count}}}"),
+        AwaitKind::Receipt { receipt_temp } => {
+            format!("Receipt{{receipt={receipt_temp}}}")
+        }
     }
 }

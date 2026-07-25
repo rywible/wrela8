@@ -381,6 +381,24 @@ fn mmio_register_offset(
     }
 }
 
+/// Exact `@layout(dma)` byte size of an `own[P] T` payload (or bare `T`).
+/// Used by `prepare_block` for the descriptor length — mwir `size_of` is
+/// the frame ABI (8-byte slots), not the device-visible layout.
+pub(crate) fn layout_dma_size(ty: &Type, prog: &TypedProgram) -> Option<u64> {
+    let name = match ty {
+        Type::Own(_, inner) => match inner.as_ref() {
+            Type::Named(n, args) if args.is_empty() => n.as_str(),
+            _ => return None,
+        },
+        Type::Named(n, args) if args.is_empty() => n.as_str(),
+        _ => return None,
+    };
+    prog.layouts
+        .iter()
+        .find(|l| l.name == name && matches!(l.kind, crate::sema::types::LayoutKind::Dma))
+        .map(|l| l.size)
+}
+
 /// plans/M7.md item H2a: lower `reported.checked_le(bound)` to a compare
 /// against the bound and a branch that builds `Ok(payload)` or `Err(unit)`.
 fn lower_untrusted_checked_le(
@@ -2258,12 +2276,97 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         TypedExprKind::Intrinsic {
             key,
             receiver,
+            type_arg,
             args,
-            ..
         } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
             match key.as_str() {
+                "VirtQueue.prepare_block" => {
+                    // plans/M7.md item E4 / decision 20: package header/
+                    // status into the control pool and record the payload
+                    // address. Payload length is the `@layout(dma)` size.
+                    let permit = args.iter().find(|(l, _)| l == "permit").ok_or_else(|| {
+                        LowerError::internal(
+                            "`prepare_block` reached lowering without `permit=`".to_string(),
+                        )
+                    })?;
+                    let header = args.iter().find(|(l, _)| l == "header").ok_or_else(|| {
+                        LowerError::internal(
+                            "`prepare_block` reached lowering without `header=`".to_string(),
+                        )
+                    })?;
+                    let payload = args.iter().find(|(l, _)| l == "payload").ok_or_else(|| {
+                        LowerError::internal(
+                            "`prepare_block` reached lowering without `payload=`".to_string(),
+                        )
+                    })?;
+                    let status = args.iter().find(|(l, _)| l == "status").ok_or_else(|| {
+                        LowerError::internal(
+                            "`prepare_block` reached lowering without `status=`".to_string(),
+                        )
+                    })?;
+                    let device_writes_arg = args
+                        .iter()
+                        .find(|(l, _)| l == "device_writes_payload")
+                        .ok_or_else(|| {
+                            LowerError::internal(
+                                "`prepare_block` reached lowering without `device_writes_payload=`"
+                                    .to_string(),
+                            )
+                        })?;
+                    let device_writes = match &device_writes_arg.1.kind {
+                        TypedExprKind::Bool(v) => *v,
+                        _ => {
+                            return Err(LowerError::unimplemented(
+                                "`prepare_block`'s `device_writes_payload=` as a non-literal bool \
+                                 (revision 0.1 requires a literal `true`/`false`)",
+                            ));
+                        }
+                    };
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`prepare_block` reached lowering without a queue receiver"
+                                    .to_string(),
+                            ));
+                        }
+                    };
+                    let permit_t = lower_expr(&permit.1, b, env)?;
+                    let header_t = lower_expr(&header.1, b, env)?;
+                    let payload_t = lower_expr(&payload.1, b, env)?;
+                    let status_t = lower_expr(&status.1, b, env)?;
+                    let payload_len =
+                        layout_dma_size(&payload.1.ty, b.prog()).ok_or_else(|| {
+                            LowerError::internal(
+                            "`prepare_block`'s payload type has no `@layout(dma)` size in this \
+                             program"
+                                .to_string(),
+                        )
+                        })?;
+                    if payload_len == 0 || payload_len % 512 != 0 {
+                        return Err(LowerError::unimplemented(&format!(
+                            "`prepare_block` with payload layout size {payload_len}: the virtio-blk \
+                             model requires a positive multiple of 512 (SECTOR_SIZE)"
+                        )));
+                    }
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::QueuePrepare {
+                        dst,
+                        queue,
+                        permit: permit_t,
+                        header: header_t,
+                        payload: payload_t,
+                        status: status_t,
+                        device_writes,
+                        payload_len: payload_len as u32,
+                    });
+                    Ok(dst)
+                }
                 "VirtQueue.reserve_proven" => {
-                    let desc = args
+                    // plans/M7.md item E4 / decision 20: the permit word is
+                    // the descriptor-table head (single-flight: always 0).
+                    // The `descriptors=` argument is proof-only.
+                    let _ = args
                         .iter()
                         .find(|(l, _)| l == "descriptors")
                         .ok_or_else(|| {
@@ -2272,29 +2375,13 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                                     .to_string(),
                             )
                         })?;
-                    let src = lower_expr(&desc.1, b, env)?;
-                    let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::Copy { dst, src });
                     let _ = receiver;
-                    Ok(dst)
-                }
-                "VirtQueue.prepare_block" => {
-                    // Consume operands so their side effects / moves land,
-                    // then mint the opaque QueueOp word from the permit.
-                    let permit = args.iter().find(|(l, _)| l == "permit").ok_or_else(|| {
-                        LowerError::internal(
-                            "`prepare_block` reached lowering without `permit=`".to_string(),
-                        )
-                    })?;
-                    for (label, a) in args {
-                        if label != "permit" {
-                            let _ = lower_expr(a, b, env)?;
-                        }
-                    }
-                    let src = lower_expr(&permit.1, b, env)?;
                     let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::Copy { dst, src });
-                    let _ = receiver;
+                    b.emit(Inst::ConstInt {
+                        dst,
+                        ty: Type::U64,
+                        value: 0,
+                    });
                     Ok(dst)
                 }
                 "VirtQueue.publish" => {
@@ -2323,6 +2410,9 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 }
                 "VirtQueue.reject" => {
                     // Consume payload + error; mint a Receipt word (opaque).
+                    // Revision 0.1: reject still mints 0 — `await` of a
+                    // rejected receipt is fail-closed until reject writes a
+                    // resolved IoCompletion stash (flagship does not reject).
                     for (_, a) in args {
                         let _ = lower_expr(a, b, env)?;
                     }
@@ -2333,6 +2423,83 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                         value: 0,
                     });
                     let _ = receiver;
+                    Ok(dst)
+                }
+                "VirtQueue.drain" => {
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`drain` reached lowering without a queue receiver".to_string(),
+                            ));
+                        }
+                    };
+                    // `check_virtqueue_drain` folds `max=` into `type_arg`'s Bound.
+                    let max_val = match type_arg {
+                        Some(Type::Named(_, targs)) => match targs.first() {
+                            Some(crate::sema::types::TypeArg::Bound(
+                                crate::syntax::ast::Expr::Int(_, text),
+                            )) => text
+                                .parse::<u16>()
+                                .map_err(|_| LowerError::internal(format!("drain max `{text}`")))?,
+                            _ => {
+                                return Err(LowerError::internal(
+                                    "`drain` type_arg Bound is not an integer literal".to_string(),
+                                ));
+                            }
+                        },
+                        _ => {
+                            return Err(LowerError::internal(
+                                "`drain` reached lowering without a folded max Bound".to_string(),
+                            ));
+                        }
+                    };
+                    let _ = args;
+                    b.emit(Inst::QueueDrain {
+                        queue,
+                        max: max_val,
+                    });
+                    let dst = b.fresh(Type::Unit);
+                    b.emit(Inst::ConstUnit { dst });
+                    Ok(dst)
+                }
+                "VirtQueue.suppress_interrupts" => {
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`suppress_interrupts` reached lowering without a queue receiver"
+                                    .to_string(),
+                            ));
+                        }
+                    };
+                    b.emit(Inst::QueueSuppressInterrupts { queue });
+                    let dst = b.fresh(Type::Unit);
+                    b.emit(Inst::ConstUnit { dst });
+                    Ok(dst)
+                }
+                "VirtQueue.claim" => {
+                    let receipt_arg =
+                        args.iter().find(|(l, _)| l == "receipt").ok_or_else(|| {
+                            LowerError::internal(
+                                "`claim` reached lowering without `receipt=`".to_string(),
+                            )
+                        })?;
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`claim` reached lowering without a queue receiver".to_string(),
+                            ));
+                        }
+                    };
+                    let receipt = lower_expr(&receipt_arg.1, b, env)?;
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::QueueClaim {
+                        dst,
+                        queue,
+                        receipt,
+                    });
                     Ok(dst)
                 }
                 other => Err(LowerError::internal(format!(
@@ -2630,6 +2797,17 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
     let Type::Named(sname, targs) = base_ty else {
         return Err(LowerError::internal("field base is not a `Named` type"));
     };
+    // plans/M7.md item E4: IoCompletion is not a DeclStruct.
+    if sname == "IoCompletion" {
+        return match field_name {
+            "payload" => Ok(0),
+            "status" => Ok(1),
+            "written_len" => Ok(2),
+            other => Err(LowerError::internal(format!(
+                "unknown IoCompletion field `{other}`"
+            ))),
+        };
+    }
     let s = resolve_struct(prog, sname, targs)
         .ok_or_else(|| LowerError::internal(format!("struct `{sname}` not found")))?;
     s.fields

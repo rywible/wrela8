@@ -64,7 +64,7 @@ Program
       0033: MakeEnum dst=t26 tag=0 payload=[t25]
       0034: Return value=t26
       0035: Return
-  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=20 receiver=t0:mut params=[t1,t2]
+  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=19 receiver=t0:mut params=[t1,t2]
     Temp t0 ty=BlkDriver
     Temp t1 ty=u64
     Temp t2 ty=own[BlockPayloads] DmaBlock
@@ -72,19 +72,18 @@ Program
     Temp t4 ty=bool
     Temp t5 ty=IoError
     Temp t6 ty=Receipt[own[BlockPayloads] DmaBlock]
-    Temp t7 ty=usize
+    Temp t7 ty=QueuePermit
     Temp t8 ty=QueuePermit
-    Temp t9 ty=QueuePermit
+    Temp t9 ty=VirtQueue[..8]
     Temp t10 ty=u32
     Temp t11 ty=u32
     Temp t12 ty=BlkReqHeader
-    Temp t13 ty=bool
-    Temp t14 ty=u8
-    Temp t15 ty=BlkReqStatus
+    Temp t13 ty=u8
+    Temp t14 ty=BlkReqStatus
+    Temp t15 ty=QueueOp[own[BlockPayloads] DmaBlock]
     Temp t16 ty=QueueOp[own[BlockPayloads] DmaBlock]
-    Temp t17 ty=QueueOp[own[BlockPayloads] DmaBlock]
-    Temp t18 ty=VirtQueue[..8]
-    Temp t19 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t17 ty=VirtQueue[..8]
+    Temp t18 ty=Receipt[own[BlockPayloads] DmaBlock]
     Body
       0000: Project dst=t3 base=t0 index=3
       0001: Compare op=>= ty=u64 dst=t4 lhs=t1 rhs=t3
@@ -93,18 +92,17 @@ Program
       0004: ConstInt dst=t6 ty=u64 value=0
       0005: Return value=t6
       0006: Jump target=0007
-      0007: ConstInt dst=t7 ty=usize value=3
+      0007: ConstInt dst=t7 ty=u64 value=0
       0008: Copy dst=t8 src=t7
-      0009: Copy dst=t9 src=t8
+      0009: Project dst=t9 base=t0 index=2
       0010: ConstInt dst=t10 ty=u32 value=0
       0011: ConstInt dst=t11 ty=u32 value=0
       0012: MakeAggregate dst=t12 elems=[t10,t11,t1]
-      0013: ConstBool dst=t13 value=true
-      0014: ConstInt dst=t14 ty=u8 value=255
-      0015: MakeAggregate dst=t15 elems=[t14]
-      0016: Copy dst=t16 src=t9
-      0017: Copy dst=t17 src=t16
-      0018: Project dst=t18 base=t0 index=2
-      0019: QueuePublish dst=t19 queue=t18 operation=t17 order=[write_descriptors, publish_available, notify_queue]
-      0020: Return value=t19
-      0021: Return
+      0013: ConstInt dst=t13 ty=u8 value=255
+      0014: MakeAggregate dst=t14 elems=[t13]
+      0015: QueuePrepare dst=t15 queue=t9 permit=t8 header=t12 payload=t2 status=t14 device_writes=true payload_len=512
+      0016: Copy dst=t16 src=t15
+      0017: Project dst=t17 base=t0 index=2
+      0018: QueuePublish dst=t18 queue=t17 operation=t16 order=[write_descriptors, publish_available, notify_queue]
+      0019: Return value=t18
+      0020: Return

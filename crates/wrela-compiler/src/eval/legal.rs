@@ -518,6 +518,12 @@ fn capability_in_type(ty: &crate::sema::types::Type, authority: &Authority) -> O
         {
             Some(render_type(ty))
         }
+        // An `Actor[T]` handle is not the driver's authority — holding one
+        // lets a `@test`/`@actor` call public methods; the callee still has
+        // to be reachable from a `@driver` root. Recursing into `T` would
+        // mark every `Actor[BlkDriver]` parameter as a hardware touch and
+        // refuse the flagship caller (plans/M7.md item E4).
+        Type::Named(name, _) if name == "Actor" => None,
         Type::Array(elem, _) => capability_in_type(elem, authority),
         Type::Tuple(elems) => elems.iter().find_map(|e| capability_in_type(e, authority)),
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
@@ -1675,9 +1681,11 @@ fn fn_contains_wake(f: &TypedFn) -> bool {
     found
 }
 
-/// plans/M7.md item G: a `@task` bottom half — may drain and re-wake; must
-/// not await (03 §7: "never stays active while waiting"); receipt-shaped
-/// work fails closed naming item E.
+/// plans/M7.md item G / E4 decision 22: a `@task` bottom half — may drain,
+/// claim resolved receipts, and re-wake; must not await or send (03 §7:
+/// "never stays active while waiting"). Receipt-shaped work is live in
+/// the bottom half (that is where completions resolve); the caller's
+/// `await receipt` remains the parked-waiter path.
 pub fn check_bottom_half(program: &TypedProgram) -> Result<(), SemaError> {
     let note = |key: &str, f: &TypedFn| -> Result<(), SemaError> {
         if !f.is_task {
@@ -1702,8 +1710,7 @@ pub fn check_bottom_half(program: &TypedProgram) -> Result<(), SemaError> {
                 category: "type",
                 message: format!(
                     "`@task` `{key}` {reason} — 03-hardware.md §6/§7: the bottom half drains a \
-                     level signal and re-wakes if work remains; it does not await, and \
-                     receipt-shaped work is plans/M7.md item E"
+                     level signal and re-wakes if work remains; it does not await"
                 ),
                 line: 0,
                 col: 0,
@@ -1813,23 +1820,16 @@ fn scan_bottom_half_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
     }
 }
 
-/// plans/M7.md item G self-audit: the bottom-half scanner's own reason
-/// strings, extracted so a unit test can name every arm a sync `@task`
-/// cannot currently spell from source (await/send require async; `Receipt`
-/// is not a source type yet — item E).
+/// plans/M7.md item G / E4 decision 22: bottom-half forbidden reasons.
+/// `await`/`send` stay refused (stays-active-while-waiting). Receipt /
+/// `IoCompletion` are allowed — the bottom half is where drain resolves
+/// them (03 §5).
 fn bottom_half_expr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
     match &e.kind {
         TypedExprKind::Await(_) => Some("an `await` (stays active while waiting)"),
         TypedExprKind::Send(_) => Some("a `send` (call another actor)"),
         _ => None,
     }
-    .or_else(|| {
-        if type_mentions_receipt(&e.ty) {
-            Some("a `Receipt`-shaped value (plans/M7.md item E — receipts and completions)")
-        } else {
-            None
-        }
-    })
 }
 
 fn scan_bottom_half_expr(e: &TypedExpr, scan: &mut BodyScan) {
@@ -1902,6 +1902,9 @@ fn scan_bottom_half_expr(e: &TypedExpr, scan: &mut BodyScan) {
     }
 }
 
+/// Kept for the decision-22 unit test that pins Receipt is *not* an
+/// ISR/`@task` forbidden shape; production scanning no longer consults it.
+#[cfg(test)]
 fn type_mentions_receipt(ty: &crate::sema::types::Type) -> bool {
     use crate::sema::types::Type;
     match ty {
@@ -2515,6 +2518,10 @@ fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
                 None
             } else if crate::sema::bodies::is_device_transport_intrinsic(key) {
                 Some("a device bring-up transition (not in the ISR effect set)")
+            } else if crate::sema::bodies::is_queue_op_intrinsic(key) {
+                // 03 §6: substantive queue work (including `drain`) is the
+                // bottom half's job, never the ISR's.
+                Some("a queue operation (not in the ISR effect set — drain belongs in `@task`)")
             } else if crate::sema::bodies::is_irq_cap_intrinsic(key) {
                 Some("an interrupt-vector bind/unmask (not in the ISR effect set)")
             } else if key.starts_with("Group.") {
@@ -3145,13 +3152,10 @@ pub fn double(x: u64) -> u64:
         )));
     }
 
-    /// plans/M7.md item G self-audit: `@task` bottom-half arms that a
-    /// sync task cannot currently spell from source. `await`/`send` need
-    /// async (refused by `err-task-async` / bodies before this pass);
-    /// `Receipt` is item E's type. Same honesty standard as the ISR
-    /// `send` arm.
+    /// plans/M7.md item G / E4 decision 22: `@task` forbids await/send;
+    /// Receipt-shaped values are allowed (bottom half resolves them).
     #[test]
-    fn bottom_half_forbidden_reason_names_await_send_receipt() {
+    fn bottom_half_forbidden_reason_names_await_send_not_receipt() {
         use crate::sema::types::Type;
         let await_expr = TypedExpr {
             ty: Type::U64,
@@ -3183,9 +3187,6 @@ pub fn double(x: u64) -> u64:
             ty: receipt_ty,
             kind: TypedExprKind::Unit,
         };
-        assert_eq!(
-            bottom_half_expr_forbidden_reason(&receipt_expr),
-            Some("a `Receipt`-shaped value (plans/M7.md item E — receipts and completions)")
-        );
+        assert_eq!(bottom_half_expr_forbidden_reason(&receipt_expr), None);
     }
 }
