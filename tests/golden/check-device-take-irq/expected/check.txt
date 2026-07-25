@@ -1,4 +1,4 @@
-Module path=examples.err_device_take_irq
+Module path=examples.check_device_take_irq
   Struct VirtioIrqMmio data
     field interrupt_status: ReadOnly[u32]
   Struct VirtioBlock data
