@@ -1,0 +1,43 @@
+module examples.err_isr_dma
+
+# plans/M7.md item G: 03-hardware.md §6 — an ISR may not touch device-owned
+# DMA payloads. A helper in the ISR's transitive closure that takes an
+# `own[P] T` is that touch; the call path names the helper.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReq:
+    @offset(0) sector: u64
+
+struct VirtioBlock:
+    id: u32
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+
+    fn on_queue_irq(self):
+        peek_dma(None)
+
+fn peek_dma(read slot: Option[own[BlockControl] BlkReq]):
+    pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-isr-dma", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

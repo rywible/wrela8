@@ -1,0 +1,39 @@
+module examples.err_isr_float_via_helper
+
+# plans/M7.md item G: forbidden effect reached through a helper — the
+# diagnostic names the call path ISR -> helper. The helper returns unit
+# so the call site itself is not float-typed.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+
+    fn on_queue_irq(self):
+        scale()
+
+fn scale():
+    x: f64 = 1.0
+    if x > 0.0:
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-isr-float-helper", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
