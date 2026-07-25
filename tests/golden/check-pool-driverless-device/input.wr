@@ -1,0 +1,62 @@
+module examples.check_pool_driverless_device
+
+# plans/M8.md item P, decision 24: the **accepting** shape that the M7
+# post-closure sweep's `err-pool-driverless-device` guard used to refuse —
+# a DMA pool bound to a device that no `@driver` binds, in an image where
+# some *other* device is driven.
+#
+# The guard's ground was the artifact, not the language: the `BlkPool name=
+# base= size=` mapping line carried no device, so `wrela-vmm` handed every
+# window to its one device model and `Control`'s bytes would have been
+# reachable from device#0's blk model. The line now names `device#1`, and
+# `devices::GuestMem::window_offset` admits a range only from the device
+# that owns the window — so nothing maps these bytes for anything.
+#
+# **Why it is not refused on capability grounds instead** (03-hardware.md
+# §1: capabilities are minted while the image binds a declared device to a
+# `@driver`, so a device nothing binds mints nothing). That argument is
+# real, but it does not single out *this* image: it applies identically to
+# a device with a pool and no driver at all, which is
+# `golden/boot-dma-pool` — a deliberately pinned, legal M7 shape. The
+# guard's actual shape ("driverless, *and* some other device is driven")
+# has no principle behind it once the mapping is per-device; it was a proxy
+# for "there exists a model that would wrongly receive this window", and
+# that model no longer would. Refusing it uniformly would be a widening,
+# not a relaxation, and would need its own normative sentence.
+#
+# What 03 §1's mint rule does refuse is unchanged and one pass later: a
+# driver bound to device#Y taking `DmaPool[P, N]` for a pool declared
+# reachable from device#X — `golden/err-dma-pool-mint-wrong-device`. The
+# capability cannot be handed over; that is where §1 puts the rule.
+
+@layout(dma, endian=little)
+struct Hdr:
+    sector: u64
+
+struct BlockHw:
+    id: u32
+
+struct OtherHw:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    held: DeviceCap[BlockHw]
+    x: u32
+
+    init(mut self, take cap: DeviceCap[BlockHw]):
+        self.held = take cap
+        self.x = 0
+
+pool Control
+
+@image
+pub fn build() -> Image:
+    img = Image(name="pool-driverless", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    other = img.device[OtherHw](transport=0x3000)
+    d = img.driver(BlkDriver, device=blk)
+    p = img.dma_pool[Hdr](name=Control, device=other, count=2)
+    img.supervise(children=[d], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

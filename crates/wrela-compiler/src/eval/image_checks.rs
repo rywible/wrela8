@@ -125,6 +125,15 @@ pub fn check_sealed(
     // is a *build* error; capacity_sectors is the build constant
     // `read_capacity_sectors` lowers to.
     check_blk_device_decls(graph, programs)?;
+    // plans/M8.md item P, decision 25: and that configuration belongs to
+    // the device whose pool hosts the ring, not to whichever device
+    // declared it first. Needs the resolved pool backings, which
+    // `check_pool_decls` above has already proved well-formed.
+    check_blk_config_names_the_blk_device(
+        graph,
+        programs,
+        &pool_backings(graph, &closure_layouts(programs)?)?,
+    )?;
     // DriverMode before vector-binding: an Irq build without `vector=`
     // would also trip `take_irq` unowned (§6); name the §7 mode
     // contradiction first when MODE is present.
@@ -319,6 +328,73 @@ fn check_blk_device_decls(
                 &names.iter().map(String::as_str).collect::<Vec<_>>(),
             )
             .map_err(build_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// plans/M8.md item P, decision 25: **blk configuration belongs to the blk
+/// device.**
+///
+/// Until item P an image could declare at most one pool-bearing device, so
+/// "the device that declares `capacity_sectors=`" and "the device whose
+/// pool hosts the ring" were the same device by construction, and
+/// `blk_capacity_sectors`/`blk_accepted_features` could scan the device
+/// list in declaration order. With two devices legal they are different
+/// questions — and the answer to the second is only reachable through the
+/// image's single `VirtQueue.configure` site, which the lowerer (reading
+/// `TypedProgram::blk_capacity_sectors`) does not have in scope.
+///
+/// Rather than grow a second, device-scoped derivation and let the two
+/// disagree, this refuses the only shape in which they could: blk
+/// configuration on a device that is not the blk device. 06-machine.md §6's
+/// device set is closed and machine v1 has exactly one `blk`, so the
+/// report's own `BlkDevice device=device#N` line can carry only that
+/// device's configuration.
+///
+/// Silent for an image with no configure site: no device is the blk device
+/// yet, nothing consumes these arguments as a device model's
+/// configuration, and refusing on a guess is the fail-open this exists to
+/// avoid.
+fn check_blk_config_names_the_blk_device(
+    graph: &ImageGraph,
+    programs: &BTreeMap<String, TypedProgram>,
+    backings: &BTreeMap<String, PoolBacking>,
+) -> Result<(), SemaError> {
+    let mut configured: Option<&str> = None;
+    for p in programs.values() {
+        for (pool_name, _depth) in &p.virtqueue_configures {
+            if configured.is_some() {
+                // `layout::find_virtqueue_configure` owns this rejection
+                // (machine v1 has exactly one queue); nothing to say here.
+                return Ok(());
+            }
+            configured = Some(pool_name.as_str());
+        }
+    }
+    let Some(pool_name) = configured else {
+        return Ok(());
+    };
+    let Some(blk_device) = backings.get(pool_name).and_then(|b| b.device) else {
+        // An unplaced or non-device-reachable configure pool is
+        // `derive_blk_report`'s own rejection, with its own wording.
+        return Ok(());
+    };
+    for (di, d) in graph.devices.iter().enumerate() {
+        if di == blk_device {
+            continue;
+        }
+        for label in ["capacity_sectors", "required_features"] {
+            if d.args.iter().any(|a| a.label == label) {
+                return Err(build_error(format!(
+                    "`img.device` device#{di} declares `{label}=`, but this image's virtio-blk \
+                     queue lives in pool `{pool_name}`, which is bound to device#{blk_device} — \
+                     06-machine.md §6's device set is closed and machine v1 has exactly one \
+                     `blk`, so the report's own `BlkDevice device=device#{blk_device}` line can \
+                     carry only that device's configuration. Move the declaration to \
+                     device#{blk_device}, or drop it"
+                )));
+            }
         }
     }
     Ok(())
@@ -918,96 +994,32 @@ pub fn pool_backings(
         );
     }
 
-    // Post-closure M7 sweep (and its earlier item-I sibling). Decision 5's
-    // security property is per-*device* ("the VMM maps exactly the declared
-    // pools and nothing else ... the device model can reach declared pool
-    // pages and no other guest memory, enforced by what the VMM maps"),
-    // but the `BlkPool name= base= size=` line that carries a window to
-    // the VMM has **no device field at all**: `wrela-vmm`'s own
-    // `parse_report` collects every one of them into a single
-    // `Vec<PoolWindow>` and hands the whole list to its one `BlkDevice`.
-    // So an image declaring `img.dma_pool(..., device=a)` alongside
-    // `img.dma_pool(..., device=b)` renders two windows that the *one*
-    // device model treats as equally reachable — pool `b`'s bytes
-    // reachable from device `a`.
+    // **The two M7 post-closure guards that used to stand here are gone
+    // (plans/M8.md item P, decision 24).** They refused two pool-bearing
+    // devices, and a pool bound to a driverless device when some other
+    // device was driven — not because either shape is illegal, but
+    // because the `BlkPool name= base= size=` mapping line carried no
+    // device and `wrela-vmm`'s `parse_report` handed every window to its
+    // one device model. That was a fail-open in the *artifact*, held shut
+    // by refusing images the language allows.
     //
-    // Item E1/E4 made those lines real and the VMM maps every
-    // device-reachable pool, so the fail-open is no longer latent. The
-    // real fix is a report-format change (`device=` on `BlkPool` /
-    // `BlkDevice`, and a VMM that binds windows per device) — owned by
-    // plans/M8.md item H until that lands or is re-homed. Until then
-    // this fails closed and names that item.
+    // The line now carries `device=device#N` (`layout::render_layout_section`
+    // / `append_blk_vmm_lines`), `devices::GuestMem` carries the device
+    // whose view it is, and its `window_offset` — still the single
+    // guest→host conversion site — admits a range only if it lies inside a
+    // window bound to *that* device. 03-hardware.md §3's "all memory a
+    // device can reach originates from *its* bound pools" is therefore
+    // enforced where reaching happens, and the oracle is a boot:
+    // `golden/err-boot-blk-cross-device-pool` hands the blk driver a
+    // payload from another device's pool and the model refuses the
+    // descriptor by name.
     //
-    // Checked here, in the one derivation the checker, the placer and the
-    // report all read (this section's own doc comment), rather than in
-    // `layout::verify_pool_windows`: it is a fact about the *declaration*,
-    // like the ceiling below, and a `@image` whose declaration is refused
-    // must be refused identically by every entry point.
-    let mut devices: Vec<(usize, &str)> = out
-        .values()
-        .filter_map(|b| b.device.map(|d| (d, b.name.as_str())))
-        .collect();
-    devices.sort();
-    devices.dedup_by_key(|(d, _)| *d);
-    if devices.len() > 1 {
-        let named = devices
-            .iter()
-            .map(|(d, n)| format!("`{n}` (device#{d})"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(build_error(format!(
-            "this image declares device-reachable pools for {} different devices — {named}. The \
-             report's `BlkPool name= base= size=` mapping line carries no device, and the VMM \
-             maps every one of them for its single device model, so pool bytes declared \
-             reachable from one device would be reachable from another (03-hardware.md §3: all \
-             memory a device can reach originates from *its* bound pools; plans/M7.md decision \
-             5). Failing closed until the report can say which device a window belongs to \
-             (plans/M8.md item H: `device=` on `BlkPool`/`BlkDevice` and per-device VMM binding).",
-            devices.len()
-        )));
-    }
-
-    // Sibling of the two-devices guard above. A DMA pool's `device=` names
-    // which device can reach its bytes, and the `BlkPool` mapping line
-    // still carries no device — so the VMM maps every one of them for its
-    // single device model. When this image *has* a driven device and a
-    // pool is bound to a different, driverless one, those bytes become
-    // reachable from the wrong model (item E1/E4 made the mapping real).
-    //
-    // An image with *no* driven device at all (e.g. `golden/boot-dma-pool`:
-    // pool backing under an actor conversation, deliberately no `@driver`)
-    // is a different shape: nothing configures a device model, so there
-    // is no "wrong" model to attach the window to. That case stays open.
-    let mut driven: BTreeSet<usize> = BTreeSet::new();
-    for d in &graph.drivers {
-        if let Some(Value::ImageDecl(ImageDeclRef::Device(i))) = d
-            .args
-            .iter()
-            .find(|a| a.label == "device")
-            .map(|a| &a.value)
-        {
-            driven.insert(*i);
-        }
-    }
-    if !driven.is_empty() {
-        for b in out.values() {
-            let Some(dev) = b.device else {
-                continue;
-            };
-            if !driven.contains(&dev) {
-                return Err(build_error(format!(
-                    "`img.dma_pool(name={}, device=device#{dev})` binds a device no `@driver` binds \
-                     — the report's `BlkPool name= base= size=` mapping line carries no device, and \
-                     the VMM maps every one of them for its single device model, so these bytes \
-                     would be reachable from whichever driven device the image configures \
-                     (03-hardware.md §3: all memory a device can reach originates from *its* bound \
-                     pools; plans/M7.md decision 5). Bind a `@driver` to device#{dev}, or bind this \
-                     pool to a device that already has one (real fix: plans/M8.md item H)",
-                    b.name
-                )));
-            }
-        }
-    }
+    // What 03 §1 still refuses, unchanged and one pass later, is the
+    // *capability*: `check_dma_pool_mint` rejects a driver bound to
+    // device#Y taking `DmaPool[P, N]` for a pool declared reachable from
+    // device#X (`golden/err-dma-pool-mint-wrong-device`). That is the
+    // mint-time rule, at the binding §1 puts it at; it is not a
+    // restatement of the reachability rule, and neither implies the other.
 
     let total: u64 = out.values().map(|b| b.bytes).fold(0, u64::saturating_add);
     if total > MAX_POOL_BYTES {
@@ -2871,11 +2883,15 @@ mod tests {
         assert!(err.message.contains("does not declare"), "{}", err.message);
     }
 
+    /// plans/M8.md item P, decision 24: the inverse of the M7 post-closure
+    /// guard this replaced. A pool bound to a driverless device, and a
+    /// second pool bound to a *different*, driven one, both resolve — each
+    /// carrying its own `device`, which is the fact the `BlkPool device=`
+    /// mapping line and `GuestMem`'s per-device `window_offset` are built
+    /// on. Neither shape is refused here any more; reachability is
+    /// enforced where reaching happens.
     #[test]
-    fn a_dma_pool_on_a_driverless_device_is_rejected() {
-        // Post-closure M7 sweep port: BlkPool has no device field, so a
-        // pool on a device no driver binds would be mapped for whichever
-        // BlkDevice the driven device configures.
+    fn pools_on_two_devices_one_of_them_driverless_each_keep_their_own_device() {
         let mut g = ImageGraph::default();
         g.devices.push(crate::eval::image::DeviceDecl {
             device_type: Type::Named("BlockHw".to_string(), vec![]),
@@ -2889,24 +2905,22 @@ mod tests {
             actor_type: Type::Named("Blk".to_string(), vec![]),
             args: vec![handle_arg("device", ImageDeclRef::Device(0))],
         });
-        g.dma_pools.insert(
-            "Control".to_string(),
-            crate::eval::image::PoolDecl {
-                payload_type: Type::Named("Hdr".to_string(), vec![]),
-                args: vec![
-                    handle_arg("device", ImageDeclRef::Device(1)),
-                    decl_arg("count", Type::I64, Value::I64(2)),
-                ],
-            },
-        );
+        for (name, dev) in [("Control", 0usize), ("Other", 1usize)] {
+            g.dma_pools.insert(
+                name.to_string(),
+                crate::eval::image::PoolDecl {
+                    payload_type: Type::Named("Hdr".to_string(), vec![]),
+                    args: vec![
+                        handle_arg("device", ImageDeclRef::Device(dev)),
+                        decl_arg("count", Type::I64, Value::I64(2)),
+                    ],
+                },
+            );
+        }
         let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 8)])]);
-        let err = pool_backings(&g, &layouts).expect_err("driverless device");
-        assert!(
-            err.message.contains("binds a device no `@driver` binds")
-                && err.message.contains("device#1"),
-            "{}",
-            err.message
-        );
+        let out = pool_backings(&g, &layouts).expect("both pools resolve");
+        assert_eq!(out["Control"].device, Some(0));
+        assert_eq!(out["Other"].device, Some(1));
     }
 
     #[test]

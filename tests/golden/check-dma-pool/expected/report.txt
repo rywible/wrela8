@@ -50,4 +50,4 @@ ImageReport v0
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40500830 size=8
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40500838 size=128 align=8 coherency=coherent device=device#0
   Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x405008b8 size=256 align=8 coherency=coherent device=none
-  BlkPool name=BlockControl base=0x40500838 size=0x80
+  BlkPool name=BlockControl device=device#0 base=0x40500838 size=0x80

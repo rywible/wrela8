@@ -38,4 +38,4 @@ ImageReport v0
   Turn fn=own_handle_addresses_pool_slot frame=488
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=736
   Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=16 base=0x40501008 size=16 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockPayloads base=0x40501008 size=0x10
+  BlkPool name=BlockPayloads device=device#0 base=0x40501008 size=0x10

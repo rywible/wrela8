@@ -42,4 +42,4 @@ ImageReport v0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=24
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40500280 size=8
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=16 slot_bytes=16 base=0x40500288 size=256 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl base=0x40500288 size=0x100
+  BlkPool name=BlockControl device=device#0 base=0x40500288 size=0x100

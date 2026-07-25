@@ -1,0 +1,1 @@
+error[build]: `img.device` device#1 declares `capacity_sectors=`, but this image's virtio-blk queue lives in pool `BlockControl`, which is bound to device#0 — 06-machine.md §6's device set is closed and machine v1 has exactly one `blk`, so the report's own `BlkDevice device=device#0` line can carry only that device's configuration. Move the declaration to device#0, or drop it

@@ -229,6 +229,32 @@ fn report_u64(
     parsed.map_err(|e| VmmError::MalformedReport(format!("`{kind}` field `{key}={raw}`: {e}")))
 }
 
+/// A required `device=device#<N>` field (plans/M8.md item P). The report
+/// spells a declared device the same way everywhere — `device#0` — and
+/// this VMM parses that spelling rather than a bare integer so a line that
+/// lost its prefix is a malformed report rather than a silently different
+/// device.
+fn report_device_index(
+    kind: &str,
+    fields: &std::collections::BTreeMap<&str, &str>,
+) -> Result<u64, VmmError> {
+    let raw = fields.get("device").copied().ok_or_else(|| {
+        VmmError::MalformedReport(format!(
+            "`{kind}` is missing required field `device` — 03-hardware.md §3: all memory a device \
+             can reach originates from *its* bound pools, which is not a statement this VMM can \
+             enforce about an unnamed device"
+        ))
+    })?;
+    let digits = raw.strip_prefix("device#").ok_or_else(|| {
+        VmmError::MalformedReport(format!(
+            "`{kind}` field `device={raw}`: expected `device#<index>`"
+        ))
+    })?;
+    digits
+        .parse::<u64>()
+        .map_err(|e| VmmError::MalformedReport(format!("`{kind}` field `device={raw}`: {e}")))
+}
+
 /// Parses the minimal, internal (not itself golden-pinned — `wrela test`'s
 /// own merged stdout is the golden surface, not this file) report format
 /// `bin/wrela.rs`'s runtime tier writes alongside the image (a `Machine
@@ -252,7 +278,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     // those two words with entirely different fields, and `parse_report`
     // trims indentation away, so a distinct prefix is what keeps the two
     // formats from ever being silently confusable.
-    let mut blk_device: Option<(u64, u64, Option<u64>)> = None;
+    let mut blk_device: Option<(u64, u64, u64, Option<u64>)> = None;
     let mut blk_queue: Option<devices::BlkQueueConfig> = None;
     let mut blk_pools: Vec<devices::PoolWindow> = Vec::new();
     let mut irq_injects: Vec<IrqHostInject> = Vec::new();
@@ -289,7 +315,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             let fields = parse_report_fields(
                 "BlkDevice",
                 rest,
-                &["capacity_sectors", "features", "vector"],
+                &["device", "capacity_sectors", "features", "vector"],
             )?;
             if blk_device.is_some() {
                 return Err(VmmError::MalformedReport(
@@ -301,6 +327,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                 None => None,
             };
             blk_device = Some((
+                report_device_index("BlkDevice", &fields)?,
                 report_u64("BlkDevice", &fields, "capacity_sectors")?,
                 report_u64("BlkDevice", &fields, "features")?,
                 vector,
@@ -336,12 +363,13 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                 doorbell: report_u64("BlkQueue", &fields, "doorbell")?,
             });
         } else if let Some(rest) = line.strip_prefix("BlkPool ") {
-            let fields = parse_report_fields("BlkPool", rest, &["name", "base", "size"])?;
+            let fields = parse_report_fields("BlkPool", rest, &["name", "device", "base", "size"])?;
             let name = fields.get("name").copied().ok_or_else(|| {
                 VmmError::MalformedReport("`BlkPool` is missing required field `name`".to_string())
             })?;
             blk_pools.push(devices::PoolWindow {
                 name: name.to_string(),
+                device: report_device_index("BlkPool", &fields)?,
                 base: report_u64("BlkPool", &fields, "base")?,
                 size: report_u64("BlkPool", &fields, "size")?,
             });
@@ -411,13 +439,21 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                 "a `BlkQueue` line with no `BlkDevice` line".to_string(),
             ));
         }
-        (Some((capacity_sectors, features, vector)), Some(queue)) => {
-            if blk_pools.is_empty() {
-                return Err(VmmError::MalformedReport(
-                    "a `BlkDevice` with no `BlkPool` line: all memory a device can reach originates from its bound pools (03-hardware.md §3)".to_string(),
-                ));
+        (Some((device, capacity_sectors, features, vector)), Some(queue)) => {
+            // plans/M8.md item P: per *this* device. A `BlkPool` naming
+            // some other device is a declared window this model may not
+            // reach — it is carried into `GuestMem` (which is what makes
+            // the refusal observable), but it cannot stand in for the
+            // device's own bound pool.
+            if !blk_pools.iter().any(|p| p.device == device) {
+                return Err(VmmError::MalformedReport(format!(
+                    "a `BlkDevice device=device#{device}` with no `BlkPool device=device#{device}` \
+                     line: all memory a device can reach originates from its bound pools \
+                     (03-hardware.md §3)"
+                )));
             }
             Some(devices::BlkConfig {
+                device,
                 capacity_sectors,
                 features,
                 vector,
@@ -627,9 +663,13 @@ fn boot_image_core(
         Some(cfg) => {
             let pools = cfg.pools.clone();
             let vector = cfg.vector;
+            let device_index = cfg.device;
             let device = devices::BlkDevice::new(cfg).map_err(VmmError::BadImage)?;
-            let mem =
-                unsafe { devices::GuestMem::new(host_ram, pools) }.map_err(VmmError::BadImage)?;
+            // plans/M8.md item P: the view is *this device's*. Every
+            // declared window goes in; only the ones bound to
+            // `device_index` are reachable through it.
+            let mem = unsafe { devices::GuestMem::new(host_ram, pools, device_index) }
+                .map_err(VmmError::BadImage)?;
             // Completion-time `interrupt_status` writer: same GPA the
             // boot-time `IrqHostInject` names, when this device owns a
             // vector. Plans/M7.md item E4: the ISR masks bit 0 after a
@@ -3784,9 +3824,9 @@ pub fn build() -> Image:
              Input path=blk-conformance.wr digest=testdigest\n\
              Section name=entry base={:#x} size={}\n\
              Entry base={:#x}\n\
-             BlkDevice capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
+             BlkDevice device=device#0 capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
              BlkQueue index=0 size={QUEUE_SIZE} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n\
-             BlkPool name=BlockControl base={:#x} size={:#x}\n",
+             BlkPool name=BlockControl device=device#0 base={:#x} size={:#x}\n",
             wrela_machine::MACHINE_REVISION_STR,
             machine_layout::IMAGE_BASE,
             img.len(),
@@ -4003,7 +4043,7 @@ pub fn build() -> Image:
         let data_base = built
             .report_text
             .lines()
-            .find_map(|l| l.strip_prefix("BlkPool name=BlockControl base="))
+            .find_map(|l| l.strip_prefix("BlkPool name=BlockControl device=device#0 base="))
             .and_then(|rest| rest.split_whitespace().next())
             .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
             .expect("the report declares the pool this image uses");
@@ -4034,9 +4074,10 @@ pub fn build() -> Image:
     fn parse_report_accepts_a_declared_blk_device() {
         let text = format!(
             "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x40500000\n\
-             BlkDevice capacity_sectors=2048 features=0x100000200 vector=1\n\
+             BlkDevice device=device#0 capacity_sectors=2048 features=0x100000200 vector=1\n\
              BlkQueue index=0 size=128 desc=0x40600000 avail=0x40601000 used=0x40602000 doorbell=0x40603000\n\
-             BlkPool name=BlockControl base=0x40600000 size=0x10000\n",
+             BlkPool name=BlockControl device=device#0 base=0x40600000 size=0x10000\n\
+             BlkPool name=Foreign device=device#1 base=0x40700000 size=0x1000\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         let parsed = parse_report(&text).expect("parses");
@@ -4046,8 +4087,15 @@ pub fn build() -> Image:
         assert_eq!(blk.vector, Some(1));
         assert_eq!(blk.queue.size, 128);
         assert_eq!(blk.queue.desc, 0x4060_0000);
-        assert_eq!(blk.pools.len(), 1);
+        assert_eq!(blk.device, 0);
+        // plans/M8.md item P: **every** declared window is carried, each
+        // with the device it is bound to — the foreign one is what
+        // `GuestMem` refuses rather than never hears about.
+        assert_eq!(blk.pools.len(), 2);
         assert_eq!(blk.pools[0].name, "BlockControl");
+        assert_eq!(blk.pools[0].device, 0);
+        assert_eq!(blk.pools[1].name, "Foreign");
+        assert_eq!(blk.pools[1].device, 1);
     }
 
     /// Every half-declared, misspelled, or contradictory device
@@ -4059,9 +4107,9 @@ pub fn build() -> Image:
             "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x0\n",
             wrela_machine::MACHINE_REVISION_STR
         );
-        let device = "BlkDevice capacity_sectors=16 features=0x100000200\n";
+        let device = "BlkDevice device=device#0 capacity_sectors=16 features=0x100000200\n";
         let queue = "BlkQueue index=0 size=8 desc=0x40600000 avail=0x40600100 used=0x40600200 doorbell=0x40600300\n";
-        let pool = "BlkPool name=P base=0x40600000 size=0x1000\n";
+        let pool = "BlkPool name=P device=device#0 base=0x40600000 size=0x1000\n";
         for (why, extra) in [
             ("a device with no queue", format!("{device}{pool}")),
             ("a queue with no device", format!("{queue}{pool}")),
@@ -4077,25 +4125,51 @@ pub fn build() -> Image:
             ),
             (
                 "an unknown field",
-                format!("BlkDevice capacity_sectors=16 features=0x1 mystery=3\n{queue}{pool}"),
+                format!(
+                    "BlkDevice device=device#0 capacity_sectors=16 features=0x1 mystery=3\n{queue}{pool}"
+                ),
             ),
             (
                 "a repeated field",
                 format!(
-                    "BlkDevice capacity_sectors=16 capacity_sectors=32 features=0x1\n{queue}{pool}"
+                    "BlkDevice device=device#0 capacity_sectors=16 capacity_sectors=32 features=0x1\n{queue}{pool}"
                 ),
             ),
             (
                 "a missing required field",
-                format!("BlkDevice capacity_sectors=16\n{queue}{pool}"),
+                format!("BlkDevice device=device#0 capacity_sectors=16\n{queue}{pool}"),
             ),
             (
                 "a field with no `=`",
-                format!("BlkDevice capacity_sectors 16 features=0x1\n{queue}{pool}"),
+                format!(
+                    "BlkDevice device=device#0 capacity_sectors 16 features=0x1\n{queue}{pool}"
+                ),
             ),
             (
                 "an unparseable number",
-                format!("BlkDevice capacity_sectors=lots features=0x1\n{queue}{pool}"),
+                format!(
+                    "BlkDevice device=device#0 capacity_sectors=lots features=0x1\n{queue}{pool}"
+                ),
+            ),
+            // plans/M8.md item P: the device field is required on both
+            // line kinds, and only in the `device#<n>` spelling.
+            (
+                "a device line with no `device=`",
+                format!("BlkDevice capacity_sectors=16 features=0x1\n{queue}{pool}"),
+            ),
+            (
+                "a pool line with no `device=`",
+                format!("{device}{queue}BlkPool name=P base=0x40600000 size=0x1000\n"),
+            ),
+            (
+                "a bare integer device index",
+                format!("{device}{queue}BlkPool name=P device=0 base=0x40600000 size=0x1000\n"),
+            ),
+            (
+                "a pool bound to a device with no model",
+                format!(
+                    "{device}{queue}BlkPool name=P device=device#1 base=0x40600000 size=0x1000\n"
+                ),
             ),
             (
                 "a queue depth wider than 16 bits",
