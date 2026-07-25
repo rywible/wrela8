@@ -253,14 +253,12 @@ pub struct BlkReport {
     pub queue: BlkQueueReport,
     /// Decision 2c: descriptors a single blk op needs, and the occupancy
     /// bound `floor(queue_depth / descriptors_per_op)` (plans/M7.md item
-    /// E2 / 03-hardware.md §4). Exits-per-op (06 §5): one doorbell per
-    /// `publish` — plans/M7.md item E4.
+    /// E2 / 03-hardware.md §4). Expected exits-per-op stays deferred —
+    /// plans/M7.md decision 21: a doorbell is a polled shared-memory write
+    /// (06 §5), not a fixed exit count, and inventing `1` spends E1's
+    /// deferral without a prediction the VMM's measured `exits` can check.
     pub descriptors_per_op: u16,
     pub occupancy_bound: u16,
-    /// Expected guest→host exits per published operation (decision 2c /
-    /// 06-machine.md §5). Revision 0.1 does not batch doorbells, so this
-    /// is always 1.
-    pub exits_per_op: u16,
 }
 
 /// One host-side interrupt injection the VMM performs before the vCPU
@@ -1756,7 +1754,6 @@ pub fn derive_blk_report(
             depth,
             crate::virtqueue::DESCRIPTORS_PER_BLK_OP,
         ),
-        exits_per_op: 1,
     }))
 }
 
@@ -1789,8 +1786,8 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
         ));
     }
     out.push_str(&format!(
-        "BlkAccounting descriptors_per_op={} occupancy_bound={} exits_per_op={}\n",
-        blk.descriptors_per_op, blk.occupancy_bound, blk.exits_per_op
+        "BlkAccounting descriptors_per_op={} occupancy_bound={}\n",
+        blk.descriptors_per_op, blk.occupancy_bound
     ));
 }
 
@@ -4380,15 +4377,15 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
                 q.index, q.size, q.desc, q.avail, q.used, q.doorbell
             ),
         );
-        // Decision 2c / plans/M7.md item E2+E4: occupancy bound is
-        // floor(queue_depth / descriptors_per_op); exits_per_op is 1
-        // (one doorbell per publish; no batching in revision 0.1).
+        // Decision 2c / plans/M7.md item E2: occupancy bound is
+        // floor(queue_depth / descriptors_per_op). Exits-per-op stays
+        // deferred (decision 21).
         push_line(
             out,
             1,
             &format!(
-                "BlkAccounting descriptors_per_op={} queue_depth={} occupancy_bound={} exits_per_op={}",
-                blk.descriptors_per_op, q.size, blk.occupancy_bound, blk.exits_per_op
+                "BlkAccounting descriptors_per_op={} queue_depth={} occupancy_bound={}",
+                blk.descriptors_per_op, q.size, blk.occupancy_bound
             ),
         );
     }
