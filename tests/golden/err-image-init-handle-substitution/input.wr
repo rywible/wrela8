@@ -1,0 +1,63 @@
+module examples.err_image_init_handle_substitution
+
+# plans/M7.md item W's second named floor: boot materializes exactly the
+# arguments the image wires **by name**, and nothing else.
+#
+# 05-library.md §9 says an `img.actor(...)` call's arguments "must match
+# `A.init` (or its literal constructor) **after generated capabilities and
+# handles are substituted**", and `eval::image_checks::check_one_decl`
+# implements that acceptance half: an `init` parameter whose declared type
+# is named `Actor` is treated as satisfiable by substitution, with no
+# explicit argument at all. Item W does not implement the *materializing*
+# half of that sentence — resolving which declared instance the parameter
+# means, by type — so an image that relies on it is rejected here rather
+# than booted with a zero in the handle slot.
+#
+# The distinction that keeps this narrow: `led=led` wired explicitly (as
+# `golden/boot-init-args` does, and as the fixture below would if it named
+# the argument) materializes fine. This is only the *implicit* form.
+#
+# 03-hardware.md §1's `@driver` constructor takes its `DeviceCap`/`DmaPool`
+# entirely by substitution, so plans/M7.md item A — which is what mints a
+# capability in the first place — owns the same mechanism; it is named
+# here rather than half-built.
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@actor
+pub struct Sink:
+    led: Actor[Ledger]
+    depth: u32
+
+    init(mut self, led: Actor[Ledger], depth: u32):
+        self.led = led
+        self.depth = depth
+
+    pub fn read_depth(read self) -> u32:
+        return self.depth
+
+@test(runtime)
+async fn boots(s: Actor[Sink]):
+    d = await s.read_depth()
+    match d:
+        case .Ok(v):
+            assert v == 7, "unreachable: this image never lays out"
+        case .Err(_):
+            assert false, "read_depth rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-image-init-handle-substitution", target=Target.wrela_machine_v1)
+    led = img.actor(Ledger, mailbox=4)
+    # `led=led` is deliberately absent: `Sink.init`'s own `led` parameter
+    # is accepted by the graph checker through handle substitution, and
+    # boot cannot honour that yet.
+    s = img.actor(Sink, mailbox=4, depth=7)
+    img.supervise(children=[led, s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

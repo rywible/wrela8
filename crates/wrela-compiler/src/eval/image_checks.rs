@@ -325,11 +325,31 @@ fn reserved_args(kind: DeclKind) -> &'static [&'static str] {
     }
 }
 
-fn is_capability_type_name(name: &str) -> bool {
+/// The labels an `img.actor(...)` call owns as image wiring rather than as
+/// constructor arguments — the decision-7 sub-note above, made available to
+/// the one other pass that has to agree with it.
+///
+/// plans/M7.md item W: `layout::build_boot_init_calls` materializes those
+/// same arguments into boot's own `init` call and must skip exactly the set
+/// this module skips when it accepts them. Sharing the predicate rather
+/// than restating the two labels is the whole point — a divergence would
+/// mean an argument accepted here and dropped there (or the reverse), which
+/// is the precise failure mode item W exists to close.
+pub(crate) fn is_reserved_actor_arg(label: &str) -> bool {
+    reserved_args(DeclKind::Actor).contains(&label)
+}
+
+/// Shared with `layout::build_boot_init_calls` for the same reason
+/// `is_reserved_actor_arg` above is: this pass *accepts* a parameter of
+/// one of these types with no explicit argument (decision 7's own
+/// substitution rule), and boot has to recognize exactly the same set to
+/// fail closed on it by name until plans/M7.md item A mints one. Two
+/// copies of this list could disagree; one cannot.
+pub(crate) fn is_capability_type_name(name: &str) -> bool {
     matches!(name, "DeviceCap" | "DmaPool" | "Mmio" | "IrqCap")
 }
 
-fn is_handle_type_name(name: &str) -> bool {
+pub(crate) fn is_handle_type_name(name: &str) -> bool {
     name == "Actor"
 }
 

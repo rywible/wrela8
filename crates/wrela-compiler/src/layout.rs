@@ -892,7 +892,7 @@ pub fn layout_program(
     let image_base = machine_layout::IMAGE_BASE;
 
     let wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b, false)?,
+        Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
     let runtime: Option<&RuntimeTables> = wiring.as_ref().map(|w| &w.tables);
@@ -1700,47 +1700,41 @@ fn merge_actor_pub_methods(
     Ok(out)
 }
 
-/// plans/M6.md item D (boot-wiring follow-up, decision 11b's own
-/// verification): which actor structs declare a *zero-argument* `init`
-/// (beyond the implicit `mut self` receiver) — the one shape this item's
-/// boot sequence can call safely without a real init-arg materialization
-/// pass (`layout::build_boot_init`'s own doc comment names that pass as
-/// real, further, deferred work).
+/// plans/M7.md item W: every struct's own declared `init`, in the shape
+/// boot needs to *call* it — the `program.fns` key, the declared
+/// parameter list (name, access mode, declared type, declaration order)
+/// and the declared return type. `build_boot_init_calls` (below) turns
+/// one of these plus one `ActorDecl`'s own wiring arguments into the
+/// argument words `build_boot_init` loads into `x1..`.
 ///
-/// Both shapes are returned, because the parameterized one is not a
-/// silent floor any more — it is a **rejection**. Until this pass
-/// materializes `init` arguments, an image that declares an actor whose
-/// `init` takes parameters cannot be laid out at all: the wiring is
-/// accepted by `eval::image_checks` (the argument really does name a
-/// real `init` parameter), and then boot would never call that `init`,
-/// leaving the actor's state plain zero-initialized. A verified probe:
-/// an actor declaring `init(mut self, depth: u32)` wired `depth=7` in
-/// the image booted with `depth == 0` and said nothing. That is a wrong
-/// answer, not a missing feature, and CLAUDE.md's "an unimplemented path
-/// errors loudly; it never approximates" governs — a comment disclosing
-/// the floor is not the same as failing closed, which is why this
-/// returns the set rather than merely omitting it.
-///
-/// Deliberately keyed on the struct's `init`, not on the wiring
-/// arguments: an `init` with parameters is never called by boot no
-/// matter what the image passes, so a declaration with no arguments at
-/// all is equally wrong (and `check_one_decl` would have rejected it
-/// first for the missing argument, which is why no golden shows that
-/// spelling).
-struct ActorInitShapes {
-    /// Struct name -> its `Name.init` call key, for the one shape boot
-    /// can call: a zero-argument `init`.
-    zero_arg: BTreeMap<String, String>,
-    /// Struct name -> how many parameters its `init` declares, for the
-    /// shape that must be rejected.
-    parameterized: BTreeMap<String, usize>,
+/// What this replaced, recorded because it was a *rejection* and is not
+/// one any more: until item W this returned only which structs declared
+/// a **zero-argument** `init` — the one shape a boot sequence with no
+/// argument marshalling could call — plus the parameter count of every
+/// other one, purely so `RuntimeWiring::derive` could refuse to lay the
+/// image out at all. That guard existed because the two halves of the
+/// rule had silently composed into a wrong answer: `eval::image_checks`
+/// accepts `depth=7` (it really does name a real `Sink.init` parameter),
+/// boot never called that `init`, and the actor booted with `depth == 0`
+/// while every assertion over it read 0 and all three tiers reported
+/// success. Boot now calls a declared `init` with its declared
+/// arguments, so the guard is gone; what remains fails closed on the
+/// *specific shape it cannot marshal*, named one at a time in
+/// `build_boot_init_calls`, never on "declares parameters at all".
+struct ActorInit {
+    /// `"{Struct}.init"` — `lower::lower_struct`'s own key for the
+    /// compiled body, which is what `Asm::bl_call_key` resolves against.
+    key: String,
+    params: Vec<crate::sema::types::DeclParam>,
+    ret: crate::sema::types::Type,
 }
 
-fn actor_init_shapes(modules: &BTreeMap<String, Module>) -> Result<ActorInitShapes, LayoutError> {
+fn actor_inits(
+    modules: &BTreeMap<String, Module>,
+) -> Result<BTreeMap<String, ActorInit>, LayoutError> {
     use crate::sema::types::{DeclItem, DeclMember};
 
-    let mut zero_arg = BTreeMap::new();
-    let mut parameterized = BTreeMap::new();
+    let mut out: BTreeMap<String, ActorInit> = BTreeMap::new();
     for module in modules.values() {
         let specialized = crate::sema::specialize::specialize(module)
             .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
@@ -1750,19 +1744,286 @@ fn actor_init_shapes(modules: &BTreeMap<String, Module>) -> Result<ActorInitShap
             let DeclItem::Struct(s) = item else { continue };
             for m in &s.members {
                 if let DeclMember::Init(f) = m {
-                    if f.params.is_empty() {
-                        zero_arg.insert(s.name.clone(), format!("{}.init", s.name));
-                    } else {
-                        parameterized.insert(s.name.clone(), f.params.len());
-                    }
+                    out.insert(
+                        s.name.clone(),
+                        ActorInit {
+                            key: format!("{}.init", s.name),
+                            params: f.params.clone(),
+                            ret: f.ret.clone(),
+                        },
+                    );
                 }
             }
         }
     }
-    Ok(ActorInitShapes {
-        zero_arg,
-        parameterized,
+    Ok(out)
+}
+
+/// One declared actor instance's own boot-time `init` call: the compiled
+/// body's key and its already-materialized argument words, in declared
+/// parameter order. `build_boot_init` loads word `i` into `x{i+1}`.
+///
+/// **The ABI is not restated here, it is derived**: `codegen::emit_prologue`
+/// spills the receiver from `x0` into the frame's `self_ptr` slot (a
+/// pointer — the receiver is always by address), then walks `f.params` in
+/// declaration order spilling each one from the next register up, by
+/// value for a non-aggregate and by address for an aggregate
+/// (`codegen::is_aggregate`), and refuses past `x8`. `codegen`'s own
+/// `Inst::Call` emitter is the mirror image of that, and
+/// `build_rt_select_and_run_core`'s hand-assembled dispatch already
+/// relies on the `x0`-is-`self`-pointer half (`a.load_imm(0, addrs.state)`
+/// before every method call). Boot is a third caller of the identical
+/// convention: `x0` = the actor's own state address, `x1..` = the
+/// scalar arguments. Aggregates are not passed at all — they would need
+/// a staging buffer boot has nowhere to put — so `boot_init_arg_word`
+/// fails closed on every one of them instead.
+#[derive(Debug)]
+struct BootInitCall {
+    key: String,
+    args: Vec<u64>,
+}
+
+/// The one place a build-time `eval::value::Value` becomes the 64-bit
+/// word boot loads into an argument register. Deliberately exhaustive and
+/// deliberately narrow: `None` means "this compiler has no register
+/// representation for this value", and the caller turns that into a named
+/// diagnostic rather than into a zero.
+///
+/// The encodings are `codegen`'s own, not new ones — an integer is
+/// `Inst::ConstInt`'s `load_imm(value as i64)` (a negative value is
+/// therefore its sign-extended two's complement, exactly as a compiled
+/// `-5` would be), a bool is `Inst::ConstBool`'s 0/1, a char is
+/// `Inst::ConstChar`'s code point, and `unit` is all-zero (the same fact
+/// `build_boot_init`'s own zero-fill already rests on).
+///
+/// A declaration handle (`Value::ImageDecl`) becomes its own
+/// construction-order index within its kind — the identical number
+/// `build_test_root_args` hands a `@test(runtime)` root for an `Actor[T]`
+/// parameter. **What that number is and is not**: nothing in the machine
+/// reads a handle's value yet, because `codegen` routes every
+/// `await`/`send` statically, by actor type, to that actor's own
+/// `rt_enqueue` routine (`codegen::rt_enqueue_symbol`) — so this word is
+/// the build-time identity the report already prints as `actor#0`/
+/// `driver#0`, not an address and not a mailbox. It is materialized
+/// rather than skipped because the guest can store and compare it, and
+/// because the day handles become dynamic this is the one place that has
+/// to change. A pool reference is named by a string, not an index
+/// (`ImageDeclRef`'s own two recording disciplines), so it has no word at
+/// all and fails closed.
+fn boot_init_arg_word(value: &crate::eval::value::Value) -> Option<u64> {
+    use crate::eval::image::ImageDeclRef;
+    use crate::eval::value::Value;
+
+    Some(match value {
+        Value::U8(n) => *n as u64,
+        Value::U16(n) => *n as u64,
+        Value::U32(n) => *n as u64,
+        Value::U64(n) | Value::Usize(n) => *n,
+        Value::I8(n) => *n as i64 as u64,
+        Value::I16(n) => *n as i64 as u64,
+        Value::I32(n) => *n as i64 as u64,
+        Value::I64(n) | Value::Isize(n) => *n as u64,
+        Value::Bool(b) => u64::from(*b),
+        Value::Char(c) => *c as u32 as u64,
+        Value::Unit => 0,
+        Value::ImageDecl(ImageDeclRef::Device(i))
+        | Value::ImageDecl(ImageDeclRef::Driver(i))
+        | Value::ImageDecl(ImageDeclRef::Actor(i)) => *i as u64,
+        // Every remaining shape is either an aggregate (no register
+        // representation: `Struct`/`Tuple`/`Array`/`Enum`/`Str`/`Bytes`),
+        // a float (`codegen` has no FP/SIMD encoder subset at all —
+        // `Inst::ConstFloat` fails closed for the identical reason), a
+        // callable (`Fn`/`Closure` — not a value this machine passes), or
+        // a pool handle, which is named rather than indexed.
+        Value::F32(_)
+        | Value::F64(_)
+        | Value::Str(_)
+        | Value::Bytes(_)
+        | Value::Tuple(_)
+        | Value::Array(_)
+        | Value::Struct(_)
+        | Value::Enum(_, _)
+        | Value::Fn(_)
+        | Value::Closure { .. }
+        | Value::ImageDecl(ImageDeclRef::Pool(_))
+        | Value::ImageDecl(ImageDeclRef::DmaPool(_)) => return None,
     })
+}
+
+/// A `Value`'s own shape, for a diagnostic that has to name what it
+/// could not marshal without printing the whole value.
+fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
+    use crate::eval::image::ImageDeclRef;
+    use crate::eval::value::Value;
+
+    match value {
+        Value::U8(_)
+        | Value::U16(_)
+        | Value::U32(_)
+        | Value::U64(_)
+        | Value::Usize(_)
+        | Value::I8(_)
+        | Value::I16(_)
+        | Value::I32(_)
+        | Value::I64(_)
+        | Value::Isize(_) => "an integer",
+        Value::Bool(_) => "a bool",
+        Value::Char(_) => "a char",
+        Value::Unit => "unit",
+        Value::F32(_) | Value::F64(_) => "a floating-point value",
+        Value::Str(_) => "a string",
+        Value::Bytes(_) => "a byte string",
+        Value::Tuple(_) => "a tuple",
+        Value::Array(_) => "an array",
+        Value::Struct(_) => "a struct value",
+        Value::Enum(_, _) => "an enum value",
+        Value::Fn(_) => "a function reference",
+        Value::Closure { .. } => "a closure",
+        Value::ImageDecl(ImageDeclRef::Device(_)) => "a device handle",
+        Value::ImageDecl(ImageDeclRef::Driver(_)) => "a driver handle",
+        Value::ImageDecl(ImageDeclRef::Actor(_)) => "an actor handle",
+        Value::ImageDecl(ImageDeclRef::Pool(_)) => "a pool handle",
+        Value::ImageDecl(ImageDeclRef::DmaPool(_)) => "a DMA-pool handle",
+    }
+}
+
+/// plans/M7.md item W: every declared actor instance's own boot `init`
+/// call, in `graph.actors` order — which is `RuntimeTables::actors` order
+/// too (`compute_runtime_tables` builds one entry per `graph.actors`
+/// entry, in that same walk), so the result indexes 1:1 against
+/// `RuntimeWiring::state_sizes`/`RuntimePlacement::actors`.
+///
+/// `None` for an actor whose struct declares no `init` at all: its state
+/// is its own literal constructor's, and `build_boot_init`'s zero-fill
+/// already gave every field a defined value (`eval::image_checks`'s own
+/// missing-slot note rests on exactly that).
+///
+/// Everything this cannot do fails closed with an ordinary named
+/// diagnostic — never `internal error:` (that spelling is reserved for a
+/// producer bug), and never a zero. The shapes, all of them:
+///
+/// - a **fallible `init`** (`-> Result[...]`): running one means driving
+///   03-hardware.md §9's consuming transition chain from boot, which is
+///   plans/M7.md item H's bring-up work. Until then a fallible `init`
+///   fails closed rather than having its `Result` dropped on the floor.
+///   Note this arm also closes a live defect that predates item W: a
+///   *zero-argument* `init` returning a `Result` was called by the old
+///   boot sequence with no `x8`, so the callee wrote its aggregate reply
+///   through whatever `x8` happened to hold — a real guest fault at
+///   `ipa=0x0`, verified by running it.
+/// - any other **non-`unit` return**, for the same reason with no item to
+///   name: boot has nowhere to put the value.
+/// - a **capability parameter** (`DeviceCap`/`DmaPool`/`Mmio`/`IrqCap`,
+///   recognized by name exactly as `eval::image_checks` recognizes them):
+///   03-hardware.md §1's `@driver` `init` takes these by `take`, and
+///   nothing mints one until plans/M7.md item A.
+/// - an **`Actor[T]` parameter with no explicit argument**: 05-library.md
+///   §9 lets an actor handle be substituted by type rather than wired by
+///   name, and boot materializes only what the image explicitly wired.
+/// - an **argument whose value has no register representation**
+///   (an aggregate, a float, ...).
+/// - **more than eight arguments**, the register budget `x1..x8` leaves
+///   once `x0` carries the receiver — `codegen`'s own identical limit.
+fn build_boot_init_calls(
+    graph: &ImageGraph,
+    inits: &BTreeMap<String, ActorInit>,
+) -> Result<Vec<Option<BootInitCall>>, LayoutError> {
+    use crate::sema::types::{Type, render_type};
+
+    let mut out = Vec::with_capacity(graph.actors.len());
+    for decl in &graph.actors {
+        let name = render_type(&decl.actor_type);
+        let Some(init) = inits.get(&name) else {
+            out.push(None);
+            continue;
+        };
+        if init.ret != Type::Unit {
+            let rendered = render_type(&init.ret);
+            return Err(LayoutError::new(if matches!(init.ret, Type::Result(..)) {
+                format!(
+                    "actor `{name}` declares a fallible `init` returning `{rendered}`, and this \
+                     image declares an instance of it — boot would have to drive \
+                     03-hardware.md §9's own consuming transition chain to handle the failure \
+                     arm, which is plans/M7.md item H's work. Failing closed rather than \
+                     discarding the result."
+                )
+            } else {
+                format!(
+                    "actor `{name}` declares `init` returning `{rendered}`, and this image \
+                     declares an instance of it — boot can only call an `init` returning \
+                     `unit`, and has nowhere to put a returned value."
+                )
+            }));
+        }
+        if init.params.len() > 8 {
+            return Err(LayoutError::new(format!(
+                "actor `{name}`'s own `init` declares {} parameters; boot can pass at most 8 \
+                 (`x0` carries the receiver, leaving `x1..x8`) — the identical limit \
+                 `codegen` places on every other call.",
+                init.params.len()
+            )));
+        }
+        let mut args = Vec::with_capacity(init.params.len());
+        for p in &init.params {
+            // Reserved labels are skipped through the same predicate
+            // `eval::image_checks` accepts them by, so the acceptance rule
+            // and this materialization rule can never disagree about which
+            // label is image-wiring metadata rather than an `init`
+            // argument (a parameter that happens to be named `mailbox` is
+            // therefore unsatisfiable on both sides alike, not satisfiable
+            // on one).
+            let wired = decl.args.iter().find(|a| {
+                a.label == p.name && !crate::eval::image_checks::is_reserved_actor_arg(&a.label)
+            });
+            let Some(a) = wired else {
+                let param_ty = render_type(&p.ty);
+                if let Type::Named(tn, _) = &p.ty {
+                    if crate::eval::image_checks::is_capability_type_name(tn) {
+                        return Err(LayoutError::new(format!(
+                            "actor `{name}`'s own `init` takes `{}: {param_ty}`, a capability \
+                             this image never wires explicitly — capabilities are minted by the \
+                             image, and nothing mints one until plans/M7.md item A. Failing \
+                             closed rather than passing a zero.",
+                            p.name
+                        )));
+                    }
+                    if crate::eval::image_checks::is_handle_type_name(tn) {
+                        return Err(LayoutError::new(format!(
+                            "actor `{name}`'s own `init` takes `{}: {param_ty}` with no \
+                             `{}=...` argument in this image — 05-library.md §9 allows an actor \
+                             handle to be substituted by type there, but boot materializes only \
+                             the arguments the image wires by name. Wire it explicitly, or wait \
+                             for handle substitution.",
+                            p.name, p.name
+                        )));
+                    }
+                }
+                return Err(LayoutError::new(format!(
+                    "actor `{name}`'s own `init` takes `{}: {param_ty}` and this image wires no \
+                     `{}=...` argument for it, so boot has no value to pass.",
+                    p.name, p.name
+                )));
+            };
+            let Some(word) = boot_init_arg_word(&a.value) else {
+                return Err(LayoutError::new(format!(
+                    "actor `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}`, but the \
+                     value is {} — boot passes arguments in registers (`x1..`), and this \
+                     compiler has no register representation for that shape. Failing closed \
+                     rather than passing a zero.",
+                    a.label,
+                    p.name,
+                    render_type(&p.ty),
+                    value_shape_name(&a.value)
+                )));
+            };
+            args.push(word);
+        }
+        out.push(Some(BootInitCall {
+            key: init.key.clone(),
+            args,
+        }));
+    }
+    Ok(out)
 }
 
 /// plans/M6.md item D: `(actor name) -> (method name) -> its own 0-based
@@ -3082,24 +3343,34 @@ pub fn resolve_runtime_test_args(
     Ok(out)
 }
 
-/// plans/M6.md item D: the real boot sequence's own actor-state half —
-/// every actor's own state slot, zero-initialized before any root turn
-/// runs (`build_entry_driver`'s own `bl_to(boot_init_start)`, right after
-/// the console/test-counter zeroing it already did). **Disclosed floor,
-/// not silently narrowed**: calling a declared `init` (materializing
-/// `ActorDecl::args` against its own declared parameter list, in
-/// dependency order) is real, further work this item does not ship —
-/// every M6-D required conformance actor's own fields are plain data with
-/// no declared `init` of their own, so plain zero-initialization is exact
-/// for them; a real `init`-arg materialization pass is named, deferred
-/// follow-up for whichever later item's own flagship boot actually
-/// declares one (recorded in the ledger clause, not silently assumed
-/// solved).
+/// plans/M6.md item D, completed by plans/M7.md item W: the real boot
+/// sequence's own actor-state half — every actor's own state slot
+/// zero-initialized, then every declared `init` called with its declared
+/// arguments, before any root turn runs (`build_entry_driver`'s own
+/// `bl_to(boot_init_start)`, right after the console/test-counter zeroing
+/// it already did).
+///
+/// **Two passes, not one interleaved walk**, and that is the point:
+/// every actor's whole state is defined before *any* `init` body runs, so
+/// an `init` can be handed another actor's handle (item W's own
+/// `Value::ImageDecl` argument) without depending on which declaration
+/// order the image happened to use. The word count is identical either
+/// way — this is a sequencing guarantee, not a size change — and no
+/// pinned golden's bytes move for it, because no golden dumps this
+/// fragment (the report pins section *sizes*, which are unchanged for
+/// every image whose `init`s take no arguments).
+///
+/// The arguments themselves are `build_boot_init_calls`'s product: word
+/// `i` goes to `x{i+1}`, `x0` is the actor's own state address (the
+/// receiver, by pointer). That convention is `codegen::emit_prologue`'s,
+/// derived rather than assumed — `BootInitCall`'s own doc comment has the
+/// derivation. Item W's own doc comment on `ActorInit` records what this
+/// used to be (a zero-argument-only call, and a rejection for everything
+/// else) and why it is not that any more.
 fn build_boot_init(
-    actor_names: &[String],
     actor_addrs: &[ActorAddrs],
     state_sizes: &[u64],
-    init_keys: &BTreeMap<String, String>,
+    init_calls: &[Option<BootInitCall>],
     start: usize,
 ) -> Asm {
     let mut a = Asm::new(start);
@@ -3115,20 +3386,21 @@ fn build_boot_init(
     // oracle" real-boot test this comment now documents.
     a.push(encode::enc_sub_imm(31, 31, 16, true));
     a.push(encode::enc_str_x_imm(30, 31, 0));
-    for ((name, addrs), &size) in actor_names.iter().zip(actor_addrs).zip(state_sizes) {
+    for (addrs, &size) in actor_addrs.iter().zip(state_sizes) {
         let mut w = 0u64;
         while w < size {
             a.load_imm(9, addrs.state + w);
             a.push(encode::enc_str_x_imm(31, 9, 0)); // store xzr (unit is Copy/all-zero-valid)
             w += 8;
         }
-        // A zero-argument `init` runs after the zero-fill, overwriting
-        // whichever fields it sets — `build_boot_init`'s own module doc
-        // has the full reasoning for why only this shape is handled here.
-        if let Some(key) = init_keys.get(name) {
-            a.load_imm(0, addrs.state);
-            a.bl_call_key(key);
+    }
+    for (addrs, call) in actor_addrs.iter().zip(init_calls) {
+        let Some(call) = call else { continue };
+        for (i, word) in call.args.iter().enumerate() {
+            a.load_imm(i as u8 + 1, *word);
         }
+        a.load_imm(0, addrs.state);
+        a.bl_call_key(&call.key);
     }
     a.push(encode::enc_ldr_x_imm(30, 31, 0));
     a.push(encode::enc_add_imm(31, 31, 16, true));
@@ -3181,25 +3453,32 @@ struct RuntimeWiring {
     /// each one's asyncness and (plans/M7.md item Z1) whether its declared
     /// reply is an aggregate.
     dispatch: Vec<(String, Vec<(String, bool, bool)>)>,
-    /// Actor name -> its zero-argument `init`'s own `program.fns` key.
-    init_keys: BTreeMap<String, String>,
-    actor_names: Vec<String>,
+    /// Per declared actor *instance*, in `tables.actors` order: the boot
+    /// `init` call to make for it, or `None` if its struct declares no
+    /// `init` at all (plans/M7.md item W, `build_boot_init_calls`).
+    ///
+    /// Per instance rather than per struct name, because the arguments
+    /// come from the *declaration* (`ActorDecl::args`) and not from the
+    /// struct: two `img.actor(Same, ...)` calls are two calls with two
+    /// argument lists.
+    init_calls: Vec<Option<BootInitCall>>,
     state_sizes: Vec<u64>,
     group_child_index: BTreeMap<String, usize>,
 }
 
 impl RuntimeWiring {
-    /// `reject_parameterized_init` is set only by the image flavor that
-    /// is actually booted (`layout_test_image`). `layout_program`'s own
-    /// entry stub halts with `EXIT_CODE_NO_RUNTIME` and never calls the
-    /// runtime block at all (this module's own note above says so), so a
-    /// `wrela build` image cannot yet run an `init` of any shape — its
-    /// report stays a description of the image's wiring, which is exactly
-    /// what it claims to be, and its goldens keep their coverage.
-    fn derive(
-        boot: &BootCtx,
-        reject_parameterized_init: bool,
-    ) -> Result<Option<RuntimeWiring>, LayoutError> {
+    /// One derivation for both image flavors, with no flavor-conditional
+    /// behavior in it at all. plans/M6.md item F/G's own found-and-fixed
+    /// defect (this module's block comment above) is exactly that the
+    /// runtime block **is** part of the image, tests or not, so the day
+    /// `layout_program` grows a real entry it must find the identical boot
+    /// sequence `wrela test` already boots. plans/M7.md item W removed the
+    /// one exception that had grown back: a `reject_parameterized_init`
+    /// flag, set only by `layout_test_image`, that made a parameterized
+    /// `init` a build error on the path that boots and a silent no-op on
+    /// the path that does not. Both paths now materialize the same
+    /// arguments and fail closed on the same shapes.
+    fn derive(boot: &BootCtx) -> Result<Option<RuntimeWiring>, LayoutError> {
         let Some(tables) =
             compute_runtime_tables(boot.graph, boot.modules, boot.layout_ctx, boot.async_frames)
                 .map_err(LayoutError::new)?
@@ -3226,37 +3505,25 @@ impl RuntimeWiring {
                 (a.name.clone(), keys)
             })
             .collect();
-        let shapes_init = actor_init_shapes(boot.modules)?;
-        // Fail closed before anything is emitted: this image declares an
-        // actor whose `init` boot cannot call, so booting it would run a
-        // zero-initialized actor and report success. Checked against the
-        // *declared* actor set (`tables.actors`), never against every
-        // struct in the closure — a parameterized `init` on a plain data
-        // struct is ordinary, legal code and is none of this pass's
+        // Every rejection this pass can still make lives in here, keyed on
+        // the shape boot genuinely cannot marshal rather than on "declares
+        // parameters at all" (`build_boot_init_calls`'s own doc comment
+        // lists them). Derived against the *declared* actor set, never
+        // against every struct in the closure — an `init` on a plain data
+        // struct is ordinary, legal code (`Pair.init(lo, hi)` in
+        // `golden/boot-actor-reply-struct`) and is none of this pass's
         // business.
-        for a in &tables.actors {
-            if !reject_parameterized_init {
-                continue;
-            }
-            if let Some(n) = shapes_init.parameterized.get(&a.name) {
-                return Err(LayoutError::new(format!(
-                    "actor `{}` declares `init` with {n} parameter(s), and this image declares an \
-                     instance of it — boot can only call a zero-argument `init`, so the actor's \
-                     state would silently stay zero-initialized instead of carrying its wired \
-                     arguments. Init-argument materialization is not implemented (plans/M7.md); \
-                     failing closed rather than booting a wrong answer.",
-                    a.name
-                )));
-            }
-        }
-        let init_keys = shapes_init.zero_arg;
-        let actor_names = tables.actors.iter().map(|a| a.name.clone()).collect();
+        let init_calls = build_boot_init_calls(boot.graph, &actor_inits(boot.modules)?)?;
+        debug_assert_eq!(
+            init_calls.len(),
+            tables.actors.len(),
+            "one boot `init` call per declared actor instance"
+        );
         let state_sizes = tables.actors.iter().map(|a| a.state_size).collect();
         Ok(Some(RuntimeWiring {
             tables,
             dispatch,
-            init_keys,
-            actor_names,
+            init_calls,
             state_sizes,
             group_child_index: boot.group_child_index.clone(),
         }))
@@ -3303,10 +3570,9 @@ fn build_runtime_block(
     }
     let boot_init_start = start + words.len();
     let boot_init = build_boot_init(
-        &wiring.actor_names,
         &placement.actors,
         &wiring.state_sizes,
-        &wiring.init_keys,
+        &wiring.init_calls,
         boot_init_start,
     );
     words.extend(boot_init.words.iter().copied());
@@ -4562,7 +4828,7 @@ pub fn layout_test_image(
     // one copy `layout_program` uses too (that fn's own module block above
     // has the full reasoning).
     let wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b, true)?,
+        Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
     let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());
@@ -5127,6 +5393,261 @@ pub struct Store:
         // `helper`'s own three-`u64`-param body never widens the slot
         // past the 16-byte idx+waker floor.
         assert_eq!(tables.actors[0].slot_size, 16);
+    }
+
+    // --- plans/M7.md item W: init-argument materialization ----------------
+
+    fn wired(
+        label: &str,
+        ty: crate::sema::types::Type,
+        value: crate::eval::value::Value,
+    ) -> crate::eval::image::DeclArg {
+        crate::eval::image::DeclArg {
+            label: label.to_string(),
+            ty,
+            value,
+        }
+    }
+
+    fn decl_with(
+        actor_type: &str,
+        args: Vec<crate::eval::image::DeclArg>,
+    ) -> crate::eval::image::ActorDecl {
+        crate::eval::image::ActorDecl {
+            actor_type: crate::sema::types::Type::Named(actor_type.to_string(), vec![]),
+            args,
+        }
+    }
+
+    #[test]
+    fn an_integer_init_argument_is_its_own_sign_extended_word() {
+        use crate::eval::value::Value;
+        // `codegen`'s own `Inst::ConstInt` encoding (`load_imm(value as
+        // i64)`), restated as an assertion rather than as a comment: a
+        // negative argument must arrive sign-extended, or an `i32 -3`
+        // becomes 4294967293 in the callee's 8-byte slot.
+        assert_eq!(boot_init_arg_word(&Value::U8(200)), Some(200));
+        assert_eq!(boot_init_arg_word(&Value::U16(40000)), Some(40000));
+        assert_eq!(boot_init_arg_word(&Value::U64(u64::MAX)), Some(u64::MAX));
+        assert_eq!(
+            boot_init_arg_word(&Value::I32(-3)),
+            Some(0xFFFF_FFFF_FFFF_FFFD)
+        );
+        assert_eq!(boot_init_arg_word(&Value::I64(-1)), Some(u64::MAX));
+        assert_eq!(boot_init_arg_word(&Value::Bool(true)), Some(1));
+        assert_eq!(boot_init_arg_word(&Value::Bool(false)), Some(0));
+        assert_eq!(boot_init_arg_word(&Value::Char('A')), Some(65));
+        assert_eq!(boot_init_arg_word(&Value::Unit), Some(0));
+    }
+
+    #[test]
+    fn a_handle_init_argument_is_its_own_construction_order_index() {
+        use crate::eval::image::ImageDeclRef;
+        use crate::eval::value::Value;
+        assert_eq!(
+            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Actor(2))),
+            Some(2)
+        );
+        assert_eq!(
+            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Driver(1))),
+            Some(1)
+        );
+        assert_eq!(
+            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Device(0))),
+            Some(0)
+        );
+        // A pool is named, never indexed (`ImageDeclRef`'s own two
+        // recording disciplines) — there is no word for it, so it fails
+        // closed rather than picking one.
+        assert_eq!(
+            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Pool("Buffers".to_string()))),
+            None
+        );
+    }
+
+    #[test]
+    fn an_aggregate_or_float_init_argument_has_no_word_at_all() {
+        use crate::eval::value::Value;
+        assert_eq!(boot_init_arg_word(&Value::F64(1.0)), None);
+        assert_eq!(boot_init_arg_word(&Value::Str(b"hi".to_vec())), None);
+        assert_eq!(boot_init_arg_word(&Value::Tuple(vec![Value::U8(1)])), None);
+        assert_eq!(boot_init_arg_word(&Value::Array(vec![Value::U8(1)])), None);
+        assert_eq!(boot_init_arg_word(&Value::Struct(vec![Value::U8(1)])), None);
+        assert_eq!(boot_init_arg_word(&Value::Enum(0, vec![])), None);
+    }
+
+    #[test]
+    fn init_arguments_are_ordered_by_the_declared_parameter_list_not_the_wiring() {
+        use crate::eval::value::Value;
+        use crate::sema::types::Type;
+        let src = "\
+module m
+
+@actor
+pub struct Store:
+    lo: u8
+    hi: u16
+
+    init(mut self, lo: u8, hi: u16):
+        self.lo = lo
+        self.hi = hi
+";
+        let modules = one_module("m", src);
+        let inits = actor_inits(&modules).unwrap();
+        let mut graph = ImageGraph::default();
+        // Wired hi-then-lo, with the reserved `mailbox=` in between — the
+        // materialized order must still be `lo`, `hi` (the `init`'s own
+        // declaration order), and `mailbox` must not become an argument.
+        graph.actors.push(decl_with(
+            "Store",
+            vec![
+                wired("hi", Type::U16, Value::U16(40000)),
+                wired("mailbox", Type::U32, Value::U32(4)),
+                wired("lo", Type::U8, Value::U8(200)),
+            ],
+        ));
+        let calls = build_boot_init_calls(&graph, &inits).unwrap();
+        let call = calls[0].as_ref().expect("Store declares an `init`");
+        assert_eq!(call.key, "Store.init");
+        assert_eq!(call.args, vec![200, 40000]);
+    }
+
+    #[test]
+    fn an_actor_with_no_declared_init_gets_no_boot_call() {
+        let src = "\
+module m
+
+@actor
+pub struct Store:
+    count: u32
+";
+        let modules = one_module("m", src);
+        let inits = actor_inits(&modules).unwrap();
+        let mut graph = ImageGraph::default();
+        graph.actors.push(actor_decl("Store", Some(4)));
+        let calls = build_boot_init_calls(&graph, &inits).unwrap();
+        assert!(
+            calls[0].is_none(),
+            "no `init` means the zero-fill is the whole construction"
+        );
+    }
+
+    #[test]
+    fn a_capability_typed_init_param_fails_closed_naming_item_a() {
+        use crate::sema::types::{DeclParam, Type};
+        use crate::syntax::ast::AccessMode;
+        // Unrepresentable from source — none of `DeviceCap`/`DmaPool`/
+        // `Mmio`/`IrqCap` resolves as a type annotation anywhere in this
+        // compiler yet (`sema::types::resolve_named`'s own fixed arm
+        // list), exactly as `eval::image_checks`'s own substitution half
+        // records. Recognized defensively by name anyway, and unit-tested
+        // here for the same reason that half is: so the arm is real code
+        // on the day item A mints one, not a comment.
+        let mut inits = BTreeMap::new();
+        inits.insert(
+            "Blk".to_string(),
+            ActorInit {
+                key: "Blk.init".to_string(),
+                params: vec![DeclParam {
+                    mode: AccessMode::Take,
+                    name: "cap".to_string(),
+                    ty: Type::Named(
+                        "DeviceCap".to_string(),
+                        vec![crate::sema::types::TypeArg::Type(Type::Named(
+                            "VirtioBlock".to_string(),
+                            vec![],
+                        ))],
+                    ),
+                }],
+                ret: Type::Unit,
+            },
+        );
+        let mut graph = ImageGraph::default();
+        graph.actors.push(actor_decl("Blk", Some(4)));
+        let err = build_boot_init_calls(&graph, &inits).unwrap_err();
+        assert!(err.message.contains("capability"), "{}", err.message);
+        assert!(err.message.contains("item A"), "{}", err.message);
+    }
+
+    #[test]
+    fn more_than_eight_init_arguments_fails_closed() {
+        use crate::eval::value::Value;
+        use crate::sema::types::{DeclParam, Type};
+        use crate::syntax::ast::AccessMode;
+        // `codegen` reaches this shape first in practice (its own
+        // prologue refuses a ninth parameter, `error[unimplemented]:
+        // codegen for more than 8 call arguments`), so no source golden
+        // can pin this arm — it is boot's own restatement of the same
+        // register budget, and this test is what keeps it honest. Eight
+        // is genuinely reachable and genuinely works: the eighth argument
+        // lands in `x8`.
+        let params: Vec<DeclParam> = (0..9)
+            .map(|i| DeclParam {
+                mode: AccessMode::Read,
+                name: format!("a{i}"),
+                ty: Type::U32,
+            })
+            .collect();
+        let mut inits = BTreeMap::new();
+        inits.insert(
+            "Wide".to_string(),
+            ActorInit {
+                key: "Wide.init".to_string(),
+                params,
+                ret: Type::Unit,
+            },
+        );
+        let args = (0..9)
+            .map(|i| wired(&format!("a{i}"), Type::U32, Value::U32(i)))
+            .collect();
+        let mut graph = ImageGraph::default();
+        graph.actors.push(decl_with("Wide", args));
+        let err = build_boot_init_calls(&graph, &inits).unwrap_err();
+        assert!(err.message.contains("at most 8"), "{}", err.message);
+    }
+
+    #[test]
+    fn boot_init_zero_fills_every_actor_before_it_calls_any_init() {
+        // The sequencing guarantee `build_boot_init`'s own doc comment
+        // claims, asserted rather than described: with two actors and an
+        // `init` on the first, the `BL` must come after *both* state
+        // slots are zeroed, so an `init` handed another actor's handle
+        // never observes an undefined neighbour.
+        let addrs = vec![
+            ActorAddrs {
+                state: 0x1000,
+                ring: 0x2000,
+                head: 0x3000,
+                tail: 0x3008,
+                count: 0x3010,
+                turn: 0x4000,
+            },
+            ActorAddrs {
+                state: 0x5000,
+                ring: 0x6000,
+                head: 0x7000,
+                tail: 0x7008,
+                count: 0x7010,
+                turn: 0x8000,
+            },
+        ];
+        let calls = vec![
+            Some(BootInitCall {
+                key: "A.init".to_string(),
+                args: vec![7],
+            }),
+            None,
+        ];
+        let asm = build_boot_init(&addrs, &[8, 8], &calls, 0);
+        let bl_word = asm.relocs.iter().find_map(|r| match r {
+            Reloc::Call { word, key } if key == "A.init" => Some(*word),
+            _ => None,
+        });
+        let bl_word = bl_word.expect("the declared `init` is called");
+        // Prologue (2) + two actors' zero-fill (4 + 1 each) = 12 words
+        // before the first argument load; the call itself is at 12 + 4
+        // (the argument) + 4 (`x0`) = 20.
+        assert_eq!(bl_word, 20);
     }
 
     #[test]

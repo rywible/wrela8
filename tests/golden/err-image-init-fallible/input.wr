@@ -1,0 +1,67 @@
+module examples.err_image_init_fallible
+
+# plans/M7.md item W's own named floor: boot materializes an `init`'s
+# declared arguments now, but it cannot run a **fallible** `init`.
+#
+# 03-hardware.md §1's real driver constructor is
+# `init(mut self, take cap: DeviceCap[VirtioBlock], ...) -> Result[unit, BootError]`,
+# and handling its failure arm means driving 03-hardware.md §9's own
+# consuming transition chain from boot — plans/M7.md item H's bring-up
+# work, not item W's. Until that exists, dropping the `Result` on the
+# floor would be exactly the class of silent wrong answer item W was
+# opened to remove, so the layout pass says so instead.
+#
+# `BootError` itself does not resolve as a type anywhere in this compiler
+# yet (`error[name]: unknown name `BootError``), so this fixture spells
+# the same shape with a user enum — the rule is keyed on the `init`'s
+# declared *return type* being something other than `unit`, never on the
+# error type's spelling.
+#
+# **This arm also closes a defect that predates item W**, found while
+# implementing it and verified by running it: a *zero-argument* `init`
+# returning an aggregate was already reachable, and the old boot sequence
+# called it with no `x8` (this machine's aggregate-return pointer
+# register), so the callee wrote its reply through whatever `x8` happened
+# to hold. That booted straight into `wrela-vmm: guest fault: unhandled
+# exception ... ipa=0x0`. The rejection below is keyed on the return type
+# alone, so it covers that spelling too.
+#
+# Pinned from both tiers on purpose. `test.txt` is `wrela test`, the path
+# that actually boots; `build-err.txt` is `wrela build`, the path that
+# does not. They must agree, because item W deleted the one flag that let
+# them disagree: before it, a parameterized `init` was a build error on
+# the booting path and a silent no-op on the other, which is precisely
+# the divergence plans/M6.md item F/G's own found-and-fixed defect
+# established must not exist ("the runtime block is part of the image,
+# tests or not").
+
+enum SinkError:
+    Unavailable
+
+@actor
+pub struct Sink:
+    depth: u32
+
+    init(mut self, depth: u32) -> Result[unit, SinkError]:
+        self.depth = depth
+        return .Ok(unit)
+
+    pub fn read_depth(read self) -> u32:
+        return self.depth
+
+@test(runtime)
+async fn boots(s: Actor[Sink]):
+    d = await s.read_depth()
+    match d:
+        case .Ok(v):
+            assert v == 7, "unreachable: this image never lays out"
+        case .Err(_):
+            assert false, "read_depth rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-image-init-fallible", target=Target.wrela_machine_v1)
+    s = img.actor(Sink, mailbox=4, depth=7)
+    img.supervise(children=[s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -1,0 +1,58 @@
+module examples.err_image_init_arg_aggregate
+
+# plans/M7.md item W's third named floor: an `init` argument whose value
+# has no register representation.
+#
+# Boot hands an `init` its arguments in registers — `x0` is the actor's
+# own state address (the receiver) and `x1..x8` the scalar arguments,
+# exactly `codegen::emit_prologue`'s own convention. An aggregate is
+# passed by *address* in that convention, and boot has no staging buffer
+# to put one in: it is a hand-assembled fragment in `rtcode` with a
+# 16-byte frame that holds nothing but the saved link register.
+#
+# A user enum is `Type::Named`, so `codegen::is_aggregate` classifies it
+# as one — which makes `mode=Mode.Fast` below a perfectly ordinary,
+# graph-legal wiring argument (`eval::image_checks::value_fits_param_type`
+# accepts it: the recorded static type and the declared parameter type are
+# the same `Mode`) that boot cannot marshal. That is exactly the asymmetry
+# item W exists to police, so it is a named diagnostic rather than a zero
+# in the field — `Mode.Fast` is variant 0, so a silent zero would have
+# looked right here and been wrong for `Mode.Slow`.
+#
+# The same arm covers every other unrepresentable shape: a struct, tuple,
+# array, string or byte-string value, a float (`codegen` has no FP/SIMD
+# encoder subset at all), and a pool handle, which `ImageDeclRef` names by
+# string rather than by index.
+
+enum Mode:
+    Fast
+    Slow
+
+@actor
+pub struct Sink:
+    mode: Mode
+    depth: u32
+
+    init(mut self, mode: Mode, depth: u32):
+        self.mode = mode
+        self.depth = depth
+
+    pub fn read_depth(read self) -> u32:
+        return self.depth
+
+@test(runtime)
+async fn boots(s: Actor[Sink]):
+    d = await s.read_depth()
+    match d:
+        case .Ok(v):
+            assert v == 7, "unreachable: this image never lays out"
+        case .Err(_):
+            assert false, "read_depth rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-image-init-arg-aggregate", target=Target.wrela_machine_v1)
+    s = img.actor(Sink, mailbox=4, mode=Mode.Fast, depth=7)
+    img.supervise(children=[s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

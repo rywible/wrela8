@@ -1,0 +1,1 @@
+error[build]: the runtime test tier could not lay out the test image: actor `Sink` declares a fallible `init` returning `Result[unit, SinkError]`, and this image declares an instance of it — boot would have to drive 03-hardware.md §9's own consuming transition chain to handle the failure arm, which is plans/M7.md item H's work. Failing closed rather than discarding the result.

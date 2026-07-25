@@ -1,0 +1,3 @@
+test scalar_init_args: ok
+test handle_init_args: ok
+2 passed, 0 failed
