@@ -87,6 +87,9 @@
 //!              itself just proved match the pinned expectation — this
 //!              oracle instead proves two *fresh* runs agree with each
 //!              other, a distinct property golden alone does not).
+//!              (wired into `check` at plans/M8.md item C3's finding,
+//!              2026-07-25: the four tamper lanes are the strongest
+//!              oracles here and were opt-in while `check` was the gate.)
 //!   repro      plans/M5.md decision 10: the identical oracle as
 //!              `report-determinism` above, runnable standalone (no
 //!              separate "full corpus" form exists yet — every report-
@@ -282,6 +285,22 @@ fn check() -> Result<(), String> {
     // `diff-eval`/`profile`/`bench guest` themselves stayed unwired before
     // their own items landed.
     roundtrip()?;
+    // plans/M8.md item C3's finding, acted on 2026-07-25. `report_determinism`
+    // above proves the *build* is byte-reproducible; `repro` is what proves
+    // the **replay** oracles still work — and it is where all four tamper
+    // lanes live (a tampered clock read, a tampered device completion, a
+    // tampered exit code, and now a tampered admission order, each of which
+    // must be *caught by name*). Those are the strongest oracles in this
+    // repo, and until now every one of them was opt-in while CLAUDE.md
+    // called `check` "the gate": a regression that let a tampered log
+    // replay clean would have passed every gate run anyone made.
+    //
+    // The cost argument that kept it out does not survive measurement:
+    // `cargo xtask repro` is ~1.8s wall, against a `check` that is minutes,
+    // and it introduces no new dependency class — `check` already runs
+    // `test_wrela_vmm_signed` and `bench_guest_lane`, both of which boot
+    // over Hypervisor.framework.
+    repro()?;
     bench_compiler()?;
     bench_build_lane()?;
     bench_guest_lane()?;
