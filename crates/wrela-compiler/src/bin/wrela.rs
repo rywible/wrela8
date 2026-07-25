@@ -275,6 +275,29 @@ fn build_report(
                                 let target = first_field_value(&text, "Target value=")
                                     .unwrap_or("")
                                     .to_string();
+                                // plans/M7.md item B: the exact-bytes
+                                // section (03-hardware.md §3's own "the
+                                // compiler reports"), appended between
+                                // `report::render`'s own sections and the
+                                // M5 memory map below — declaration facts
+                                // before emission facts. Every module in
+                                // the closure is walked in `BTreeMap` key
+                                // order, and `check_layouts` already ran
+                                // (and passed) for each of them inside the
+                                // sema check that produced `programs`, so
+                                // neither call here can fail; both are
+                                // still handled as real errors rather than
+                                // unwrapped.
+                                let mut layout_types = Vec::new();
+                                for module in modules.values() {
+                                    let specialized = sema::specialize::specialize(module)
+                                        .map_err(|e| render_sema_error(&e))?;
+                                    layout_types.extend(
+                                        sema::types::check_layouts(&specialized)
+                                            .map_err(|e| render_sema_error(&e))?,
+                                    );
+                                }
+                                report::render_exact_bytes_section(&mut text, &layout_types);
                                 let layout_ctx = layout::merge_layout_ctx(modules)
                                     .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout::try_layout_program(
