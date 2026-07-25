@@ -1,0 +1,17 @@
+Module path=examples.check_capabilities
+  Struct VirtioIrqMmio data
+    field interrupt_status: ReadOnly[u32]
+    field interrupt_ack: WriteOnly[u32]
+  Struct VirtioBlock data
+    field id: u32
+  Struct RegsBundle resource
+    field regs: Mmio[VirtioIrqMmio]
+  Struct IrqPartition resource
+    field irq_regs: Mmio[VirtioIrqMmio]
+    field bundle: RegsBundle
+  Struct BlkDriver resource
+    field sectors: u64
+    init(mut self, cap: take DeviceCap[VirtioBlock], sectors: read u64) -> unit
+    fn service(read self, vector: read IrqCap[u32], regs: read Mmio[VirtioIrqMmio]) -> u64
+    fn capacity(read self) -> u64
+  Fn ack_vector(vector: read IrqCap[u32]) -> u64

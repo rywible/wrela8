@@ -1,0 +1,1 @@
+error[type]: `DeviceCap` is a capability type (03-hardware.md §1) and cannot be constructed: its constructor is not source-visible, and a capability is minted only where the image binds a declared device to a `@driver` at 15:33

@@ -135,6 +135,24 @@ pub fn resolve_imports(
                 ));
             }
             let local_name = name.alias.clone().unwrap_or_else(|| name.name.clone());
+            // 03-hardware.md §1 (plans/M7.md item A): "no address,
+            // **import**, or cast creates one." Checked on the *local*
+            // name, which is what an alias controls — `from d import Thing
+            // as Mmio` binds a real, constructible declaration under a
+            // capability's name and is the exact shape the sentence
+            // forbids. The exporting module could never have declared the
+            // name in the first place (`symbols::collect` rejects it),
+            // so this arm is specifically about the alias.
+            if crate::eval::image_checks::is_capability_type_name(&local_name) {
+                return Err(SemaError::at(
+                    "name",
+                    format!(
+                        "`{local_name}` is a capability type (03-hardware.md §1) and cannot be \
+                         bound by an import: no import creates a capability"
+                    ),
+                    name.span,
+                ));
+            }
             if local.contains_key(&local_name) {
                 return Err(SemaError::at(
                     "name",

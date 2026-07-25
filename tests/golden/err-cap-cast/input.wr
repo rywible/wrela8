@@ -1,0 +1,16 @@
+module examples.err_cap_cast
+
+# plans/M7.md item A, 03-hardware.md §1: "no address, import, or **cast**
+# creates one." 02-language.md §6.1 has no cast operator at all —
+# conversion is the method `.to[T]` — so this is the address-to-capability
+# cast that sentence forbids, spelled the only way this language can spell
+# it.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+pub fn forge(addr: u64) -> u64:
+    regs = addr.to[Mmio[VirtioIrqMmio]]()
+    return 0

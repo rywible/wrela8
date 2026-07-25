@@ -339,14 +339,43 @@ pub(crate) fn is_reserved_actor_arg(label: &str) -> bool {
     reserved_args(DeclKind::Actor).contains(&label)
 }
 
+/// 03-hardware.md §1's own capability list, with each name's fixed
+/// generic arity: `DeviceCap[D]`, `Mmio[L]`, `IrqCap[V]`, `DmaPool[P, N]`.
+/// One list, in one place, deliberately (plans/M7.md item A): it is read
+/// by `layout::build_boot_init_calls` (which must fail closed on exactly
+/// the parameters this pass accepts by substitution), by
+/// `sema::prelude::is_builtin` (so the names are in scope with no import),
+/// by `sema::types::resolve_named` (which mints the type), and by
+/// `sema::types::check_layouts` (03 §3 forbids a capability inside a
+/// layout). Several copies could disagree; one cannot.
+///
+/// 03 §1's fifth bullet — "target-specific narrow capabilities (queue
+/// notifiers, ...)" — is deliberately absent: no target-specific
+/// capability is named by any normative rule yet, and inventing one here
+/// would be a list entry with nothing behind it. The day one exists it is
+/// added here and every consumer above picks it up unchanged.
+const CAPABILITY_TYPES: &[(&str, usize)] =
+    &[("DeviceCap", 1), ("DmaPool", 2), ("IrqCap", 1), ("Mmio", 1)];
+
 /// Shared with `layout::build_boot_init_calls` for the same reason
 /// `is_reserved_actor_arg` above is: this pass *accepts* a parameter of
 /// one of these types with no explicit argument (decision 7's own
 /// substitution rule), and boot has to recognize exactly the same set to
-/// fail closed on it by name until plans/M7.md item A mints one. Two
-/// copies of this list could disagree; one cannot.
+/// fail closed on it by name. Two copies of this list could disagree; one
+/// cannot.
 pub(crate) fn is_capability_type_name(name: &str) -> bool {
-    matches!(name, "DeviceCap" | "DmaPool" | "Mmio" | "IrqCap")
+    capability_generic_arity(name).is_some()
+}
+
+/// How many generic arguments `name` takes, if it is a capability type at
+/// all — the same single list, asked a second question. `sema::types`'
+/// own resolver needs the arity to reject `Mmio[A, B]` or a bare
+/// `DeviceCap` by name rather than by accident.
+pub(crate) fn capability_generic_arity(name: &str) -> Option<usize> {
+    CAPABILITY_TYPES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, arity)| *arity)
 }
 
 pub(crate) fn is_handle_type_name(name: &str) -> bool {

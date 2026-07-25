@@ -51,6 +51,26 @@ pub fn collect(module: &Module) -> Result<SymbolTable, SemaError> {
                 span,
             ));
         }
+        // 03-hardware.md §1 (plans/M7.md item A): "Their constructors are
+        // not source-visible: no address, import, or cast creates one."
+        // Declaring a struct under a capability's own name is the one
+        // route that would hand a source author a real, constructible
+        // value spelled `DeviceCap(...)` — every other prelude name is
+        // merely shadowed by such a declaration, harmlessly, but these
+        // four are the names an *unforgeable* rule is about. Rejected
+        // here, at the one pass that already owns "what names does this
+        // module declare".
+        if crate::eval::image_checks::is_capability_type_name(name) {
+            return Err(SemaError::at(
+                "name",
+                format!(
+                    "`{name}` is a capability type (03-hardware.md §1) and cannot be declared: \
+                     its constructor is not source-visible, and a declaration under its name \
+                     would be one"
+                ),
+                span,
+            ));
+        }
         table.insert(name.to_string(), span);
     }
     Ok(table)

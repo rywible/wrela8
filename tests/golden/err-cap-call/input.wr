@@ -1,0 +1,12 @@
+module examples.err_cap_call
+
+# plans/M7.md item A, 03-hardware.md §1. The bare-call spelling: a
+# capability name is a prelude name (it must resolve, or an ordinary
+# annotation naming one would not), but nothing declares it, so the call
+# falls through every fn/struct arm. Before this item that produced
+# `` `Mmio` is not callable `` — true, and silent about the rule that
+# makes it so.
+
+pub fn forge() -> u64:
+    regs = Mmio(0x1000)
+    return 0

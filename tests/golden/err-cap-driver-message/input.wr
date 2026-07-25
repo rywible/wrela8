@@ -1,0 +1,23 @@
+module examples.err_cap_driver_message
+
+# plans/M7.md item A, 03-hardware.md §1, the other half of "a driver may
+# export safe actor APIs but never raw capabilities": a `pub` method's
+# *parameters* are the message (02-language.md §9.4), so a capability
+# parameter there is a raw capability in the driver's exported API — a
+# message no caller could ever compose, since composing it would mean
+# holding a capability outside the driver.
+#
+# The same signature on a *private* method of the same `@driver` is legal
+# and exercised by `golden/check-capabilities`: that is the driver
+# delegating to its own helper, which is what §1's provenance sentence is
+# about.
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    n: u64
+
+    pub fn arm(read self, read cap: DeviceCap[VirtioBlock]) -> u64:
+        return self.n

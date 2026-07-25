@@ -191,6 +191,23 @@ pub struct DeclStruct {
     /// checks need that `is_resource_fiat` alone cannot answer (a plain
     /// `resource struct` is not an actor).
     pub(crate) is_actor: bool,
+    /// `@driver` specifically, where `is_actor` above conflates
+    /// `@actor` with it (plans/M7.md item A). 03-hardware.md §1 turns on
+    /// exactly this distinction and nothing else does: a `@driver` **may**
+    /// hold capabilities (§1's own worked example holds
+    /// `Mmio[VirtioIrqMmio]` in a field and takes `DeviceCap`/`DmaPool`
+    /// through its `init`), and an `@actor` may not, "in fields,
+    /// parameters, messages, or captures".
+    pub(crate) is_driver: bool,
+    /// `@layout(<kind>, ...)`'s kind, for a struct carrying that
+    /// attribute (plans/M7.md items A/B). Read by
+    /// `validate_capability_types` for 03-hardware.md §1/§2's "`Mmio[L]`
+    /// — a typed register layout": `L` must name an `@layout(mmio)`
+    /// struct. `check_layouts` owns the attribute's *validation* (and has
+    /// already run by the time any `DeclStruct` exists); this is only the
+    /// already-validated fact, carried forward so the resolved-type passes
+    /// can ask it.
+    pub(crate) layout_kind: Option<LayoutKind>,
     /// Every field's resolved type + the field's own span, for the
     /// classification/infinite-size pass below — methods/init/pool
     /// members carry no data and do not contribute. `pub(crate)`: see
@@ -320,6 +337,12 @@ pub fn declare(module: &Module) -> Result<Vec<DeclItem>, SemaError> {
     }
     classify_all(&mut items)?;
     validate_actor_handles(module, &items)?;
+    // plans/M7.md item A, decision 3: 03-hardware.md §1's capability rules
+    // are the same *shape* as `validate_actor_handles` above, over a
+    // different type set — the same post-declare position, the same
+    // ast-alongside-`DeclItem` zip, the same "at any nesting" recursion.
+    // A second pass rather than a second mechanism.
+    validate_capability_types(module, &items)?;
     Ok(items)
 }
 
@@ -645,6 +668,428 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
                         }
                         _ => {}
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// --- capability containment + unforgeability (plans/M7.md item A) ---------
+//
+// 03-hardware.md §1, the three sentences this pass implements:
+//
+//   "Their constructors are not source-visible: no address, import, or
+//    cast creates one."
+//   "`@actor` structs cannot hold capabilities in fields, parameters,
+//    messages, or captures; a driver may export safe actor APIs but never
+//    raw capabilities."
+//
+// plans/M7.md decision 3 fixes where: "Capabilities are checked where
+// `Actor[T]` already is ... Extend that pass; do not build a second
+// mechanism." So this runs in `declare`, immediately after
+// `validate_actor_handles`, walks the same ast-alongside-`DeclItem` zip,
+// and recurses through composites with the same cycle-guarded walk.
+//
+// **The asymmetry is the rule.** A `@driver` *may* hold capabilities —
+// §1's own worked example declares `irq_regs: Mmio[VirtioIrqMmio]` as a
+// field and takes `DeviceCap`/`DmaPool` through its `init`. An `@actor`
+// may not, anywhere. And neither may export one: a `pub` method of either
+// is a message shape (02-language.md §9.4 — its parameters are the
+// message and its return is the reply), which is exactly what "a driver
+// may export safe actor APIs but never raw capabilities" forbids.
+//
+// **`init` is not exempt here, unlike the `Actor[T]` rule.** An `init`'s
+// parameters are image wiring rather than a message
+// (`validate_message_shape`'s own note), which is precisely why a
+// *driver*'s `init` is the one place a capability legitimately enters a
+// program at all. For an `@actor` that same reasoning inverts: an
+// `init` capability parameter is the image handing an actor a capability,
+// which is the thing §1 forbids — and, left unchecked, it is *reachable*,
+// because `eval::image_checks`' own substitution rule accepts an unwired
+// capability parameter for `img.actor(...)` exactly as it does for
+// `img.driver(...)`.
+//
+// **What is NOT checked here, named rather than implied.** "Captures" —
+// a closure inside an `@actor` body capturing a capability. With fields
+// and parameters both closed there is no expression of capability type an
+// actor body can name at all (an actor cannot read one from `self`, cannot
+// receive one, and cannot construct one), so no capture can exist to
+// check; the arm would be dead code and is deliberately absent rather
+// than written and untested. The moment an actor can name a capability,
+// this is where the arm goes.
+
+/// The capability type `ty` contains, at any nesting, rendered — or
+/// `None`. The same walk `type_contains_actor_handle` performs (including
+/// its `seen` cycle guard and its recursion through a named struct's own
+/// declared fields, so a plain data struct wrapping a capability is caught
+/// wherever the wrapper appears), asking about a different type set.
+fn type_contains_capability(
+    ty: &Type,
+    structs: &BTreeMap<String, &DeclStruct>,
+    seen: &mut BTreeSet<String>,
+) -> Option<String> {
+    match ty {
+        Type::Named(name, _) if crate::eval::image_checks::is_capability_type_name(name) => {
+            Some(render_type(ty))
+        }
+        Type::Array(elem, _) => type_contains_capability(elem, structs, seen),
+        Type::Tuple(elems) => elems
+            .iter()
+            .find_map(|e| type_contains_capability(e, structs, seen)),
+        Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+            type_contains_capability(inner, structs, seen)
+        }
+        Type::Result(ok, err) => type_contains_capability(ok, structs, seen)
+            .or_else(|| type_contains_capability(err, structs, seen)),
+        Type::Fn(params, ret) => params
+            .iter()
+            .find_map(|(_, t)| type_contains_capability(t, structs, seen))
+            .or_else(|| type_contains_capability(ret, structs, seen)),
+        Type::Named(name, targs) => {
+            if !seen.insert(name.clone()) {
+                return None; // already visited on this path: cycle guard.
+            }
+            let via_fields = structs.get(name.as_str()).and_then(|s| {
+                s.component_types
+                    .iter()
+                    .find_map(|(t, _)| type_contains_capability(t, structs, seen))
+            });
+            let found = via_fields.or_else(|| {
+                targs.iter().find_map(|a| match a {
+                    TypeArg::Type(t) => type_contains_capability(t, structs, seen),
+                    _ => None,
+                })
+            });
+            seen.remove(name);
+            found
+        }
+        _ => None,
+    }
+}
+
+fn contains_capability(ty: &Type, structs: &BTreeMap<String, &DeclStruct>) -> Option<String> {
+    type_contains_capability(ty, structs, &mut BTreeSet::new())
+}
+
+/// 03-hardware.md §1/§2: "`Mmio[L]` — a typed register layout derived from
+/// that device", whose §2 example is `Mmio[VirtioIrqMmio]` over an
+/// `@layout(mmio)` struct. `L` must therefore name one. Structured exactly
+/// like `validate_actor_type` — a whole-module question the per-annotation
+/// resolver cannot ask (forward references must work), asked once here.
+///
+/// The other three capabilities' arguments are deliberately unvalidated:
+/// `DeviceCap[D]`'s `D` is a device type, and the device set that names
+/// one is 06-machine.md §6's closed stdlib list, which does not exist
+/// yet — `img.device[D](...)` accepts any declared struct today, and this
+/// pass would have to invent a rule to say otherwise; `IrqCap[V]`'s vector
+/// is bound from the image graph by plans/M7.md item G; `DmaPool[P, N]`'s
+/// pool identity is item D. Each is left structural rather than given a
+/// made-up rule.
+fn validate_capability_args(
+    ty: &Type,
+    span: Span,
+    structs: &BTreeMap<String, &DeclStruct>,
+) -> Result<(), SemaError> {
+    match ty {
+        Type::Named(name, targs) if name == "Mmio" => {
+            let inner = match targs.first() {
+                Some(TypeArg::Type(t)) => t,
+                _ => {
+                    return Err(SemaError::at(
+                        "type",
+                        "`Mmio` requires a type argument (03-hardware.md §1)".to_string(),
+                        span,
+                    ));
+                }
+            };
+            let Type::Named(layout_name, _) = inner else {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`Mmio[{}]` must name an `@layout(mmio)` struct (03-hardware.md §2)",
+                        render_type(inner)
+                    ),
+                    span,
+                ));
+            };
+            match structs.get(layout_name.as_str()) {
+                Some(s) if s.layout_kind == Some(LayoutKind::Mmio) => Ok(()),
+                _ => Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`Mmio[{layout_name}]` requires `{layout_name}` to be an \
+                         `@layout(mmio)` struct (03-hardware.md §2: a typed register layout)"
+                    ),
+                    span,
+                )),
+            }
+        }
+        Type::Array(elem, _) => validate_capability_args(elem, span, structs),
+        Type::Tuple(elems) => {
+            for e in elems {
+                validate_capability_args(e, span, structs)?;
+            }
+            Ok(())
+        }
+        Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+            validate_capability_args(inner, span, structs)
+        }
+        Type::Result(ok, err) => {
+            validate_capability_args(ok, span, structs)?;
+            validate_capability_args(err, span, structs)
+        }
+        Type::Fn(params, ret) => {
+            for (_, t) in params {
+                validate_capability_args(t, span, structs)?;
+            }
+            validate_capability_args(ret, span, structs)
+        }
+        Type::Named(_, targs) => {
+            for a in targs {
+                if let TypeArg::Type(t) = a {
+                    validate_capability_args(t, span, structs)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Who a fn belongs to, for the capability rules that turn on it. The
+/// three cases 03-hardware.md §1 distinguishes and nothing more.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CapOwner {
+    /// A `@driver` struct's member: the one holder §1 permits.
+    Driver,
+    /// An `@actor` struct's member: "cannot hold capabilities in fields,
+    /// parameters, messages, or captures".
+    Actor,
+    /// A free fn, or a plain (non-actor, non-driver) struct's member.
+    /// May *hold* a capability in a parameter — that is how a driver
+    /// delegates to a helper — subject to provenance
+    /// (`eval::legal::check_provenance`), which is the rule that decides
+    /// whether such a fn is reachable through a driver's authority at all.
+    Plain,
+}
+
+/// Every capability rule that applies to one fn/method/init signature.
+///
+/// `is_pub_method` is true only for a `pub` method with a receiver — the
+/// exact gate `validate_message_shape` uses for the `Actor[T]` rule, and
+/// for the same reason: only such a method is reachable through an
+/// `Actor[T]` handle, so only such a method's signature is a message
+/// shape (02-language.md §9.4).
+fn validate_fn_capability_types(
+    struct_name: Option<&str>,
+    fn_name: &str,
+    span: Span,
+    params: &[DeclParam],
+    ret: &Type,
+    owner: CapOwner,
+    is_pub_method: bool,
+    structs: &BTreeMap<String, &DeclStruct>,
+) -> Result<(), SemaError> {
+    let where_ = match struct_name {
+        Some(s) => format!("{s}.{fn_name}"),
+        None => fn_name.to_string(),
+    };
+    for p in params {
+        validate_capability_args(&p.ty, span, structs)?;
+        let Some(found) = contains_capability(&p.ty, structs) else {
+            continue;
+        };
+        if is_pub_method && owner != CapOwner::Plain {
+            return Err(SemaError::at(
+                "type",
+                format!(
+                    "`{where_}` is a `pub` method of an `@actor`/`@driver` struct, so its \
+                     parameters are a message shape — a capability cannot appear there \
+                     (`{}: {found}`; 03-hardware.md §1: a driver may export safe actor APIs but \
+                     never raw capabilities)",
+                    p.name
+                ),
+                span,
+            ));
+        }
+        if owner == CapOwner::Actor {
+            return Err(SemaError::at(
+                "type",
+                format!(
+                    "`@actor` struct `{}` cannot hold a capability in a parameter \
+                     (`{where_}`'s own `{}: {found}` — 03-hardware.md §1)",
+                    struct_name.unwrap_or_default(),
+                    p.name
+                ),
+                span,
+            ));
+        }
+    }
+    validate_capability_args(ret, span, structs)?;
+    let Some(found) = contains_capability(ret, structs) else {
+        return Ok(());
+    };
+    if is_pub_method && owner != CapOwner::Plain {
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "`{where_}` is a `pub` method of an `@actor`/`@driver` struct and returns \
+                 `{found}` — 03-hardware.md §1: a driver may export safe actor APIs but never \
+                 raw capabilities"
+            ),
+            span,
+        ));
+    }
+    // The general unforgeability arm. Nothing in the source language can
+    // *produce* a capability (03-hardware.md §1: "their constructors are
+    // not source-visible"), so a signature claiming to return one is
+    // either unimplementable or laundering a capability it received —
+    // and either way it is the source-visible constructor the sentence
+    // forbids. This is the floor, and it is deliberately wider than any
+    // rule §1 spells out: the day a real minting operation exists in the
+    // language (item C partitions an `Mmio[L]` out of a claim; item D
+    // sub-allocates a pool), it is this arm that has to learn about it.
+    Err(SemaError::at(
+        "type",
+        format!(
+            "`{where_}` declares the return type `{found}`, but a capability's constructor is \
+             not source-visible (03-hardware.md §1) — no function can produce one, so none may \
+             claim to return one"
+        ),
+        span,
+    ))
+}
+
+fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), SemaError> {
+    let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
+    for item in items {
+        if let DeclItem::Struct(s) = item {
+            structs.insert(s.name.clone(), s);
+        }
+    }
+    let ast_items: Vec<&Item> = module
+        .items
+        .iter()
+        .filter(|i| !matches!(i, Item::ComptimeIf(_)))
+        .collect();
+    for (ai, di) in ast_items.iter().zip(items.iter()) {
+        match (ai, di) {
+            // A module `const`'s declared type. A `const` is a
+            // comptime-evaluated value (02-language.md §12), and no
+            // comptime evaluation can produce a capability — a `const`
+            // typed as one is a constructor claim with nothing behind it.
+            (Item::Const(c), DeclItem::Const(d)) => {
+                validate_capability_args(&d.ty, c.span, &structs)?;
+                if let Some(found) = contains_capability(&d.ty, &structs) {
+                    return Err(SemaError::at(
+                        "type",
+                        format!(
+                            "`const {}` is declared `{found}`, but a capability's constructor is \
+                             not source-visible (03-hardware.md §1) — no comptime value is one",
+                            d.name
+                        ),
+                        c.span,
+                    ));
+                }
+            }
+            (Item::Fn(f), DeclItem::Fn(d)) => {
+                validate_fn_capability_types(
+                    None,
+                    &d.name,
+                    f.span,
+                    &d.params,
+                    &d.ret,
+                    CapOwner::Plain,
+                    false,
+                    &structs,
+                )?;
+            }
+            (Item::Struct(s), DeclItem::Struct(d)) => {
+                let owner = if d.is_driver {
+                    CapOwner::Driver
+                } else if d.is_actor {
+                    CapOwner::Actor
+                } else {
+                    CapOwner::Plain
+                };
+                for (ty, span) in &d.component_types {
+                    validate_capability_args(ty, *span, &structs)?;
+                    if owner != CapOwner::Actor {
+                        continue;
+                    }
+                    if let Some(found) = contains_capability(ty, &structs) {
+                        return Err(SemaError::at(
+                            "type",
+                            format!(
+                                "`@actor` struct `{}` cannot hold a capability in a field \
+                                 (`{found}` — 03-hardware.md §1); only a `@driver` may",
+                                d.name
+                            ),
+                            *span,
+                        ));
+                    }
+                }
+                for m in &s.members {
+                    match m {
+                        Member::Fn(f) => {
+                            let Some(DeclMember::Fn(fd)) = d
+                                .members
+                                .iter()
+                                .find(|dm| matches!(dm, DeclMember::Fn(x) if x.name == f.name))
+                            else {
+                                continue;
+                            };
+                            validate_fn_capability_types(
+                                Some(&d.name),
+                                &f.name,
+                                f.span,
+                                &fd.params,
+                                &fd.ret,
+                                owner,
+                                f.is_pub && f.receiver.is_some(),
+                                &structs,
+                            )?;
+                        }
+                        Member::Init(i) => {
+                            let Some(DeclMember::Init(id)) = d
+                                .members
+                                .iter()
+                                .find(|dm| matches!(dm, DeclMember::Init(_)))
+                            else {
+                                continue;
+                            };
+                            // Never a `pub` method: an `init` has no
+                            // message shape at all (it is image wiring),
+                            // which is exactly what makes a *driver*'s
+                            // `init` the one legitimate entry point for a
+                            // capability into a program.
+                            validate_fn_capability_types(
+                                Some(&d.name),
+                                "init",
+                                i.span,
+                                &id.params,
+                                &id.ret,
+                                owner,
+                                false,
+                                &structs,
+                            )?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            (Item::Enum(_), DeclItem::Enum(e)) => {
+                // An enum variant's payload is ordinary data composition:
+                // a capability inside one would be a capability held by
+                // whatever holds the enum, and constructing that variant
+                // would be constructing a capability container. The
+                // *field*-level rules above already catch it wherever the
+                // enum is held by an actor; this catches the declaration
+                // itself, which is where it is legible.
+                for (ty, span) in &e.component_types {
+                    validate_capability_args(ty, *span, &structs)?;
                 }
             }
             _ => {}
@@ -1710,9 +2155,34 @@ fn declare_struct(
         members,
         is_resource_fiat: s.is_resource || has_actor_or_driver(&s.attrs),
         is_actor: has_actor_or_driver(&s.attrs),
+        is_driver: s.attrs.iter().any(|a| a.name == "driver"),
+        layout_kind: declared_layout_kind(&s.attrs),
         component_types,
         span: s.span,
     })
+}
+
+/// `@layout(<kind>, ...)`'s kind, for a struct that carries the attribute
+/// at all — `None` for every ordinary struct, and `None` too for a
+/// malformed `@layout` this cannot read (which `check_layouts` has
+/// already rejected before `declare` ever runs: `sema::mod`'s pipeline
+/// calls it first, deliberately, before name resolution). Deliberately
+/// tolerant rather than a second parser: the one consumer is
+/// `validate_capability_types`' own "`Mmio[L]` needs `L` to be an
+/// `@layout(mmio)` type" check, and a program that reaches it has a
+/// well-formed `@layout` on every struct that has one at all.
+fn declared_layout_kind(attrs: &[Attr]) -> Option<LayoutKind> {
+    let attr = attrs.iter().find(|a| a.name == "layout")?;
+    let arg = attr.args.iter().find(|a| a.label.is_none())?;
+    let Expr::Name(_, kind) = &arg.value else {
+        return None;
+    };
+    match kind.as_str() {
+        "dma" => Some(LayoutKind::Dma),
+        "mmio" => Some(LayoutKind::Mmio),
+        "wire" => Some(LayoutKind::Wire),
+        _ => None,
+    }
 }
 
 fn declare_enum(
@@ -2009,6 +2479,41 @@ fn resolve_named(
         }
         _ => {}
     }
+    // 03-hardware.md §1's four capability types (plans/M7.md item A):
+    // `DeviceCap[D]`, `Mmio[L]`, `IrqCap[V]`, `DmaPool[P, N]`. Arity comes
+    // from the one shared list (`eval::image_checks::CAPABILITY_TYPES`);
+    // each argument resolves through the *general* `resolve_type_arg`, not
+    // `expect_type_args`, so a type argument stays a type and a const
+    // argument (`DmaPool[BlockControl, 256.KiB]`'s own `N`) stays an
+    // unevaluated const expression — exactly what a user struct's own
+    // generic arguments already do. Nothing is invented about what the
+    // arguments *mean*: `Mmio[L]`'s "`L` is a `@layout(mmio)` type" is a
+    // whole-module question, asked once by `validate_capability_types`
+    // below (the same split `Actor[T]` already uses), and `IrqCap[V]`'s
+    // vector and `DmaPool`'s pool identity belong to plans/M7.md items G
+    // and D, which are where they first mean anything.
+    //
+    // Resolving here is the *whole* of "the type exists". Being spellable
+    // is not being constructible: 03 §1's "their constructors are not
+    // source-visible" is enforced separately and by name — a declaration
+    // or import taking one of these names (`symbols::collect`,
+    // `imports::resolve_imports`), a construction or cast attempt
+    // (`bodies`' own arms), a fn claiming to return one, an `@actor`
+    // holding one (`validate_capability_types`).
+    if let Some(arity) = crate::eval::image_checks::capability_generic_arity(&n.name) {
+        expect_arity(n, arity)?;
+        let mut targs = Vec::with_capacity(n.args.len());
+        for a in &n.args {
+            targs.push(resolve_type_arg(
+                a,
+                shapes,
+                module_pools,
+                local_pools,
+                generics,
+            )?);
+        }
+        return Ok(Type::Named(n.name.clone(), targs));
+    }
     if let Some(kind) = generics.get(&n.name) {
         if !n.args.is_empty() {
             return Err(SemaError::at(
@@ -2187,6 +2692,19 @@ fn classify_named(
                 resource = true;
             }
         }
+    } else if crate::eval::image_checks::is_capability_type_name(name) {
+        // 03-hardware.md §1, its own first words: hardware operations
+        // require "unforgeable **resource** values". A capability is a
+        // resource by fiat, exactly like `@actor`/`@driver`/`resource
+        // struct` above — it is never copied, and a struct that holds one
+        // is a resource too (which is how `@actor`'s own containment rule
+        // and the provenance walk both see through a plain wrapper
+        // struct). Recorded here rather than left to the builtin
+        // fall-through below, whose whole premise ("every one of these is
+        // plain data") is exactly what stops being true for these four.
+        in_progress.remove(name);
+        memo.insert(name.to_string(), Classification::Resource);
+        return Ok(Classification::Resource);
     } else {
         // Neither a declared struct nor enum: a builtin `Type::Named`
         // this module resolves without a backing declaration (plans/
@@ -2951,6 +3469,189 @@ mod tests {
                 .and_then(|t| crate::syntax::parser::parse(t).ok())
                 .map(|m| check_layouts(&m).is_err())
                 .unwrap_or(true)
+        );
+    }
+
+    // --- capabilities (plans/M7.md item A, 03-hardware.md §1) ------------
+
+    fn check_err(src: &str) -> SemaError {
+        let tokens = crate::syntax::lexer::lex(src).expect("test source lexes");
+        let module = crate::syntax::parser::parse(tokens).expect("test source parses");
+        crate::sema::check(&module, "test.wr").expect_err("test source must be rejected")
+    }
+
+    fn check_ok(src: &str) {
+        let tokens = crate::syntax::lexer::lex(src).expect("test source lexes");
+        let module = crate::syntax::parser::parse(tokens).expect("test source parses");
+        if let Err(e) = crate::sema::check(&module, "test.wr") {
+            panic!(
+                "expected acceptance, got error[{}]: {}",
+                e.category, e.message
+            );
+        }
+    }
+
+    /// One prefix every capability case below shares: an `@layout(mmio)`
+    /// type for `Mmio[L]` to name and a plain struct for `DeviceCap[D]`.
+    const CAP_PRELUDE: &str = "module t\n\n\
+         @layout(mmio, endian=little)\n\
+         struct Regs:\n\
+         \x20   @offset(0x000) status: ReadOnly[u32]\n\n\
+         struct Blk:\n\
+         \x20   id: u32\n\n";
+
+    /// Every capability *shape* guard with no source-shaped story of its
+    /// own — arity, and the argument-kind rules — kept here rather than
+    /// each getting a golden that would say nothing a reader could not
+    /// predict (`declaration_shape_guards` above set the precedent).
+    #[test]
+    fn capability_shape_guards() {
+        let cases: &[(&str, &str)] = &[
+            // Arity comes from the one shared list
+            // (`eval::image_checks::CAPABILITY_TYPES`): each name's count
+            // is fixed, and a bare or over-applied spelling is a named
+            // rejection rather than a silently different type.
+            (
+                "fn f(read c: DeviceCap) -> u32:\n    return 0\n",
+                "`DeviceCap` expects 1 generic argument(s), found 0",
+            ),
+            (
+                "fn f(read c: Mmio[Regs, Regs]) -> u32:\n    return 0\n",
+                "`Mmio` expects 1 generic argument(s), found 2",
+            ),
+            (
+                "fn f(read c: DmaPool[Blk]) -> u32:\n    return 0\n",
+                "`DmaPool` expects 2 generic argument(s), found 1",
+            ),
+            // `Mmio[L]`'s own argument rule (03 §2), in the two shapes no
+            // golden covers: a scalar, and a struct with no `@layout` at
+            // all. `golden/err-cap-mmio-layout` pins the third — a
+            // `@layout` of the wrong *kind*, which is the interesting one.
+            (
+                "fn f(read c: Mmio[u32]) -> u32:\n    return 0\n",
+                "must name an `@layout(mmio)` struct",
+            ),
+            (
+                "fn f(read c: Mmio[Blk]) -> u32:\n    return 0\n",
+                "requires `Blk` to be an `@layout(mmio)` struct",
+            ),
+        ];
+        for (body, needle) in cases {
+            let src = format!("{CAP_PRELUDE}{body}");
+            let err = check_err(&src);
+            assert_eq!(err.category, "type", "for {body:?}");
+            assert!(
+                err.message.contains(needle),
+                "expected {needle:?} in {:?}",
+                err.message
+            );
+        }
+    }
+
+    /// The unforgeability claim, made checkable rather than argued.
+    ///
+    /// 03-hardware.md §1: "Their constructors are not source-visible: no
+    /// address, import, or cast creates one." The claim this table backs
+    /// is stronger and more mechanical than that sentence: **the only
+    /// declaration positions from which a capability-typed value can
+    /// originate are a `@driver`'s own fields and a fn's own parameters**
+    /// — because every other position that could introduce one is
+    /// rejected by name below, and every *expression* that could produce
+    /// one out of nothing is rejected too.
+    ///
+    /// Why that is the whole list: a typed expression's type comes from
+    /// exactly one of (a) a literal — none of which is ever a named type,
+    /// (b) a declared annotation reached by reading it (a field, a
+    /// parameter, a local, a `const`), (c) a callee's declared return
+    /// type, (d) a builtin intrinsic's own fixed result type — none of
+    /// which is a capability, `sema::bodies`' intrinsic table, or (e) a
+    /// composition of those (tuple/array/field/index/`Option`/`Result`
+    /// unwrapping), which introduces no new named type. The cases below
+    /// close (b) for `const`s and (c) for every fn; locals are closed by
+    /// induction, since a local's type is its initializer's; and the
+    /// construction/call/cast/declare/import cases close the routes that
+    /// would have manufactured a value with no annotation at all. What
+    /// remains — a `@driver` field and a fn parameter — is exactly what
+    /// `check_provenance` and the image binding govern.
+    #[test]
+    fn no_source_construct_produces_a_capability() {
+        let cases: &[(&str, &str, &str)] = &[
+            // (a) construction, by every spelling the grammar has.
+            (
+                "a struct-literal construction",
+                "fn f() -> u32:\n    c = DeviceCap[Blk](id=1)\n    return 0\n",
+                "cannot be constructed",
+            ),
+            (
+                "a bare call",
+                "fn f() -> u32:\n    c = DeviceCap(1)\n    return 0\n",
+                "cannot be called",
+            ),
+            (
+                "a conversion (this language's only cast)",
+                "fn f(a: u64) -> u32:\n    c = a.to[DeviceCap[Blk]]()\n    return 0\n",
+                "cannot be cast to",
+            ),
+            // (b) a declaration under the name, which would make every
+            // spelling above legal at once.
+            (
+                "a module declaration under the name",
+                "struct Mmio:\n    base: u64\n",
+                "cannot be declared",
+            ),
+            // (c) a signature claiming to return one, at any nesting.
+            (
+                "a fn returning one",
+                "fn f() -> DeviceCap[Blk]:\n    panic(\"x\")\n",
+                "none may claim to return one",
+            ),
+            (
+                "a fn returning one inside a composite",
+                "fn f() -> Option[(u32, Mmio[Regs])]:\n    return None\n",
+                "none may claim to return one",
+            ),
+            (
+                "a method returning one",
+                "struct S:\n    n: u32\n\n    fn f(read self) -> IrqCap[u32]:\n\
+                 \x20       panic(\"x\")\n",
+                "none may claim to return one",
+            ),
+            // (b) a comptime value claiming to be one.
+            (
+                "a const declared as one",
+                "const C: DmaPool[Blk, 4096] = 0\n",
+                "no comptime value is one",
+            ),
+        ];
+        for (what, body, needle) in cases {
+            let src = format!("{CAP_PRELUDE}{body}");
+            let err = check_err(&src);
+            assert!(
+                err.message.contains(needle),
+                "{what}: expected {needle:?} in {:?}",
+                err.message
+            );
+        }
+    }
+
+    /// The asymmetry 03-hardware.md §1 turns on, both directions, in one
+    /// test — a `@driver` may hold what an `@actor` may not. Without the
+    /// accepting half, the containment rule could be satisfied by
+    /// rejecting capabilities everywhere, which would be a different
+    /// (and wrong) rule.
+    #[test]
+    fn a_driver_may_hold_a_capability_and_an_actor_may_not() {
+        check_ok(&format!(
+            "{CAP_PRELUDE}@driver\npub struct D:\n    regs: Mmio[Regs]\n"
+        ));
+        let err = check_err(&format!(
+            "{CAP_PRELUDE}@actor\npub struct A:\n    regs: Mmio[Regs]\n\n\
+             \x20   init(mut self):\n        pass\n"
+        ));
+        assert!(
+            err.message.contains("cannot hold a capability in a field"),
+            "{:?}",
+            err.message
         );
     }
 }

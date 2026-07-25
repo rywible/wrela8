@@ -1,0 +1,25 @@
+module examples.err_cap_actor_field
+
+# plans/M7.md item A, 03-hardware.md §1: "`@actor` structs cannot hold
+# capabilities in fields, parameters, messages, or captures."
+#
+# At any nesting — this holds the capability two composites deep, inside a
+# plain data struct held inside an array, so the walk (not a shallow
+# field-type equality) is what rejects it. The identical recursion
+# `type_contains_actor_handle` already performs for `Actor[T]`, over a
+# different type set (plans/M7.md decision 3).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct RegsBundle:
+    regs: Mmio[VirtioIrqMmio]
+
+@actor
+pub struct Cache:
+    bundles: [RegsBundle; 2]
+
+    pub fn count(read self) -> u64:
+        return 2

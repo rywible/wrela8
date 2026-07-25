@@ -1,0 +1,88 @@
+module examples.check_capabilities
+
+# plans/M7.md item A's accept case, 03-hardware.md §1 — the *positive*
+# half of every rejection in the `err-cap-*` corpus, written so that each
+# accepted line is one a sibling golden rejects when moved one struct over.
+#
+# What this pins:
+#
+#   - All four capability types resolve as ordinary type annotations, in
+#     every position a driver needs: a field, an `init` parameter, a
+#     private method's parameter, a free fn's parameter. The `--stage=check`
+#     dump prints each resolved type, so a resolver that quietly dropped a
+#     generic argument would move this file.
+#   - A `@driver` **may** hold them (§1's own worked example holds
+#     `Mmio[VirtioIrqMmio]`), where an `@actor` may not
+#     (`golden/err-cap-actor-field`) — the asymmetry that makes the
+#     containment rule a rule rather than a blanket ban.
+#   - A `@driver`'s `init` is the one place a capability enters a program:
+#     `golden/err-cap-actor-init` is the same signature on an `@actor`.
+#   - A capability is a **resource** (§1: "unforgeable resource values"),
+#     visible in the dump as `Struct RegsBundle resource` — a plain data
+#     struct that holds one is a resource by composition, which is what
+#     makes the containment walk see through a wrapper.
+#   - Provenance accepts what it should: `ack_vector` is a free fn taking
+#     a capability, reachable from `BlkDriver.service`, so it is reachable
+#     through the owning driver's authority. `golden/err-cap-provenance`
+#     is the identical fn with the driver's call removed.
+#   - A `pub` driver method exporting only scalars is a safe actor API
+#     (§1's "a driver may export safe actor APIs"), where the same method
+#     returning or taking a capability is not
+#     (`golden/err-cap-driver-export`, `golden/err-cap-driver-message`).
+#
+# **Why the capability field and the capability `init` live on two
+# different drivers here**, rather than on §1's single worked example: a
+# field must be fully initialized by any `init` the struct declares
+# (02-language.md §3), and nothing in item A produces a capability
+# *value* to assign — the mint is typed, not yet constructed. So a driver
+# holding `Mmio[L]` can have no `init` yet. That is item A's honest floor,
+# written into the fixture rather than hidden by omitting one of the two
+# shapes; plans/M7.md items C and D are what give the field a value.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+# The device type `DeviceCap[D]` names. 06-machine.md §6's closed device
+# set ships with the stdlib and does not exist yet, so this stands in for
+# it as an ordinary declared struct — exactly as `golden/appliance`'s own
+# `BlockHw` stands in at `img.device[BlockHw](...)`.
+struct VirtioBlock:
+    id: u32
+
+# A plain data struct holding a capability: legal (§1 restricts `@actor`,
+# not every struct), a resource by composition, and the shape the
+# containment walk must see through.
+struct RegsBundle:
+    regs: Mmio[VirtioIrqMmio]
+
+# 03 §1's own field shape: the driver "maps only what its ISR needs".
+@driver
+pub struct IrqPartition:
+    irq_regs: Mmio[VirtioIrqMmio]
+    bundle: RegsBundle
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    # §1's own worked-example constructor shape, minus the parts later
+    # items own: `take pool: DmaPool[P, N]` needs item D to mint a pool
+    # and `-> Result[unit, BootError]` needs item H's bring-up chain.
+    init(mut self, take cap: DeviceCap[VirtioBlock], sectors: u64):
+        self.sectors = sectors
+
+    # A private helper taking a capability: the driver delegating inside
+    # its own authority. The same signature on a `pub` method is
+    # `golden/err-cap-driver-message`.
+    fn service(read self, read vector: IrqCap[u32], read regs: Mmio[VirtioIrqMmio]) -> u64:
+        return ack_vector(vector) + self.sectors
+
+    # A safe actor API: scalars in, scalars out.
+    pub fn capacity(read self) -> u64:
+        return self.sectors
+
+# A free fn holding a capability, reachable only through the driver above.
+fn ack_vector(read vector: IrqCap[u32]) -> u64:
+    return 1

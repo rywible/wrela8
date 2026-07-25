@@ -64,6 +64,17 @@ const ACTOR_SURFACE: &[&str] = &["Actor", "group", "now", "ms"];
 const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
 
 /// Is `name` one of the fixed prelude names above?
+///
+/// The one entry with no array of its own here: 03-hardware.md §1's four
+/// capability type names (`DeviceCap`/`Mmio`/`IrqCap`/`DmaPool`), which
+/// live in `eval::image_checks`'s own `CAPABILITY_TYPES` because the
+/// image checker and `layout::build_boot_init_calls` already shared that
+/// list before this file needed it (plans/M7.md item A: one list, read by
+/// every consumer, never copied). They are prelude names for the same
+/// reason `Actor` is — an annotation naming one must resolve with no
+/// import — and for no other: being in scope is not being constructible
+/// (`sema::types::validate_capability_types` and `sema::bodies`' own
+/// forgery arms).
 pub fn is_builtin(name: &str) -> bool {
     SCALARS.contains(&name)
         || OPTION_RESULT.contains(&name)
@@ -71,6 +82,7 @@ pub fn is_builtin(name: &str) -> bool {
         || IMAGE_BUILDER.contains(&name)
         || ACTOR_SURFACE.contains(&name)
         || MMIO_WRAPPERS.contains(&name)
+        || crate::eval::image_checks::is_capability_type_name(name)
 }
 
 /// The `@image` builder surface's own fixed prelude enums (plans/M4.md

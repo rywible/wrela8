@@ -1,0 +1,1 @@
+error[type]: `@actor` struct `Cache` cannot hold a capability in a parameter (`Cache.init`'s own `cap: DeviceCap[VirtioBlock]` — 03-hardware.md §1) at 25:5

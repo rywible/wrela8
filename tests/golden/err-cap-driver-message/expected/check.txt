@@ -1,0 +1,1 @@
+error[type]: `BlkDriver.arm` is a `pub` method of an `@actor`/`@driver` struct, so its parameters are a message shape — a capability cannot appear there (`cap: DeviceCap[VirtioBlock]`; 03-hardware.md §1: a driver may export safe actor APIs but never raw capabilities) at 22:5

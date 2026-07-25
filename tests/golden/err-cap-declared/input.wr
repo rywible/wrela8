@@ -1,0 +1,13 @@
+module examples.err_cap_declared
+
+# plans/M7.md item A, 03-hardware.md §1. The subtlest forgery route, and
+# the one that worked before this item: every other prelude name in this
+# language may be shadowed by a module declaration (a `struct Actor` is
+# accepted today, harmlessly — the annotation `Actor[T]` still resolves to
+# the builtin), but a `struct DmaPool` would hand a source author a real,
+# constructible value spelled `DmaPool(...)`. A capability's constructor
+# is not source-visible, and a declaration under its name is one.
+
+pub struct DmaPool:
+    base: u64
+    len: u64

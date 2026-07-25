@@ -1,0 +1,25 @@
+module examples.err_cap_driver_export
+
+# plans/M7.md item A, 03-hardware.md §1: "a driver may export safe actor
+# APIs but never raw capabilities."
+#
+# A `@driver`'s own `pub` method is a message shape (02-language.md §9.4:
+# its parameters are the message and its return type is the reply), so
+# returning a capability is exactly the export §1 forbids. The general
+# unforgeability arm (`golden/err-cap-return`) would reject this signature
+# too — every capability return is rejected — but this arm runs first and
+# names the driver-export rule, which is the one a reader of this
+# declaration needs.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    n: u64
+
+    pub fn expose(read self) -> Mmio[VirtioIrqMmio]:
+        return self.irq_regs

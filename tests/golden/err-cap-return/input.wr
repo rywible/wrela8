@@ -1,0 +1,18 @@
+module examples.err_cap_return
+
+# plans/M7.md item A, 03-hardware.md §1. The general unforgeability floor:
+# nothing in the source language can produce a capability, so a signature
+# claiming to return one is either unimplementable or laundering a
+# capability it received — either way it is the source-visible constructor
+# §1 forbids.
+#
+# Deliberately wider than any sentence §1 spells out. The day a real
+# minting operation exists (item C partitions an `Mmio[L]` out of a claim;
+# item D sub-allocates a pool), this is the arm that has to learn about
+# it — named here rather than discovered then.
+
+struct VirtioBlock:
+    id: u32
+
+pub fn mint() -> Result[DeviceCap[VirtioBlock], u32]:
+    panic("unreachable")

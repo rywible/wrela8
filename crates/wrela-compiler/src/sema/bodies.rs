@@ -3201,6 +3201,15 @@ fn check_call_index(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
+    // 03-hardware.md §1 (plans/M7.md item A): `DeviceCap[VirtioBlock](...)`
+    // is the construction spelling a source author reaches for first, and
+    // it must be rejected as forgery rather than as the "generic
+    // instantiation is not checked yet" this function's own fall-through
+    // would report — a diagnostic naming the wrong cause. Checked before
+    // anything else here, since no other arm can produce a capability.
+    if let Expr::Name(_, name) = inner {
+        capability_forgery_check(name, "constructed", call_span)?;
+    }
     if let Expr::Field(base, fspan, mname) = inner {
         if mname == "device" || mname == "pool" || mname == "dma_pool" {
             // `img.device[D](...)`/`img.pool[T](...)`/`img.dma_pool[T](...)`
@@ -3221,6 +3230,16 @@ fn check_call_index(
                     "a conversion needs exactly one type argument".to_string(),
                     ispan,
                 ));
+            }
+            // 03-hardware.md §1's "no address, import, or **cast** creates
+            // one" (plans/M7.md item A). `.to[T]` is this language's only
+            // conversion form (02-language.md §6.1: "no cast operator" —
+            // conversion is a method), so `0x1000.to[Mmio[VirtioIrqMmio]]()`
+            // is *the* address-to-capability cast the sentence names. It
+            // already fails ("`.to` target must be a scalar type"), which
+            // is true but describes the wrong rule; this says which rule.
+            if let Some(name) = capability_name_in_type_expr(&targs[0]) {
+                capability_forgery_check(name, "cast to", ispan)?;
             }
             let base_t = check_expr(base, None, fctx, mctx)?;
             if !is_scalar(&base_t.ty) {
@@ -3785,8 +3804,54 @@ fn check_call_by_name(
                 },
             })
         }
-        _ => Err(type_error(format!("`{name}` is not callable"), call_span)),
+        _ => {
+            // 03-hardware.md §1 (plans/M7.md item A): a bare
+            // `DeviceCap(...)` reaches here (the name resolves — it is a
+            // prelude name — but nothing declares it, so no fn/struct arm
+            // above matched). "`DeviceCap` is not callable" is true and
+            // says nothing; this names the rule instead.
+            capability_forgery_check(name, "called", call_span)?;
+            Err(type_error(format!("`{name}` is not callable"), call_span))
+        }
     }
+}
+
+/// 03-hardware.md §1's unforgeability sentence, in one place (plans/M7.md
+/// item A): "Their constructors are not source-visible: no address,
+/// import, or cast creates one." `attempt` is the verb of whatever the
+/// source just tried — `constructed`, `called`, `cast to` — so each
+/// rejection names the construct the author actually wrote rather than
+/// the generic shape it happens to share with something else. A no-op for
+/// every non-capability name, so a call site can ask unconditionally.
+fn capability_forgery_check(name: &str, attempt: &str, span: Span) -> Result<(), SemaError> {
+    if !crate::eval::image_checks::is_capability_type_name(name) {
+        return Ok(());
+    }
+    Err(type_error(
+        format!(
+            "`{name}` is a capability type (03-hardware.md §1) and cannot be {attempt}: its \
+             constructor is not source-visible, and a capability is minted only where the image \
+             binds a declared device to a `@driver`"
+        ),
+        span,
+    ))
+}
+
+/// The capability name a *type-shaped* expression names at its head, if
+/// any: `Mmio` in both `Mmio` and `Mmio[VirtioIrqMmio]`. The grammar
+/// hands `.to[T]`'s own target back as an `Expr` (types and values share
+/// one production there), so this reads the same two shapes
+/// `scalar_type_by_name_expr` does, asking a different question.
+fn capability_name_in_type_expr(e: &Expr) -> Option<&str> {
+    let name = match e {
+        Expr::Name(_, n) => n.as_str(),
+        Expr::Index(base, _, _) => match base.as_ref() {
+            Expr::Name(_, n) => n.as_str(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    crate::eval::image_checks::is_capability_type_name(name).then_some(name)
 }
 
 fn check_call_by_field(
