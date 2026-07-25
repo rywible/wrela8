@@ -26,6 +26,10 @@ pub mod flow;
 pub mod generics;
 pub mod handoff;
 pub mod imports;
+/// plans/M9.md item AA: the compiler's intrinsic surface, written down
+/// and locked against `bodies.rs` (there is no runtime code here — the
+/// list *is* the deliverable, and its test is the ratchet).
+pub mod intrinsics;
 pub mod matches;
 pub mod paths;
 pub mod prelude;

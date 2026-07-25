@@ -6921,6 +6921,36 @@ fn bench(args: &[String]) -> Result<(), String> {
 // paths) or "gap" (explicit, visible debt). This measures coverage of the
 // SPEC, not of the code.
 
+/// Does any `.rs` file under `crates/` contain `needle`? Backs the
+/// ledger's `unit:<fn name>` test references (plans/M9.md item AA): a
+/// clause may not name a unit test that does not exist. Walks the tree
+/// rather than shelling out, and fails closed — an unreadable tree
+/// yields no hits, which reports the clause as unbacked.
+fn crate_sources_contain(needle: &str) -> bool {
+    fn walk(dir: &std::path::Path, needle: &str) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                if walk(&path, needle) {
+                    return true;
+                }
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && std::fs::read_to_string(&path).is_ok_and(|s| s.contains(needle))
+            {
+                return true;
+            }
+        }
+        false
+    }
+    walk(&root().join("crates"), needle)
+}
+
 fn ledger() -> Result<(), String> {
     let path = root().join("ledger/ledger.toml");
     let text =
@@ -6989,6 +7019,26 @@ fn ledger() -> Result<(), String> {
                                 | "report-determinism"
                         ) {
                             return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
+                        }
+                        continue;
+                    }
+                    // `unit:<fn name>` names a `#[test]` inside a crate
+                    // (plans/M9.md item AA: the intrinsic-surface guard
+                    // locks compiler *source* against a written-down
+                    // list, so it is a cargo unit test rather than a
+                    // golden — there is no artifact to dump). Verified
+                    // mechanically the only way a name can be: the
+                    // function must exist under `crates/`. `cargo test`
+                    // is already the first step of `xtask check`, so a
+                    // failing one cannot reach here.
+                    if let Some(f) = t.strip_prefix("unit:") {
+                        if f.is_empty() {
+                            return Err(format!("clause `{id}`: empty unit test name"));
+                        }
+                        if !crate_sources_contain(&format!("fn {f}(")) {
+                            return Err(format!(
+                                "clause `{id}`: unit test `{f}` does not exist under crates/"
+                            ));
                         }
                         continue;
                     }

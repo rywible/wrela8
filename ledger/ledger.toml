@@ -1486,3 +1486,40 @@ plans/M8.md item H attack 4 (2026-07-25). Item C2 discharged the sentence by *or
 
 **Pinned now, so the assumption is not merely believed.** `hv::hv_vcpu_run` asserts that no two host threads overlap inside the call (`HV_VCPU_RUN_DEPTH`); `baton_run_depth_starts_at_zero` pins the quiescent half. That is the baton invariant, not the barrier — the barrier stays a gap until (1)–(3)."""
 
+
+[[clause]]
+id = "library.intrinsics.closed-surface"
+doc = "05-library.md#9"
+status = "test"
+tests = [
+  "unit:intrinsic_surface_equals_the_written_down_list",
+  "unit:format_key_guards_are_locked",
+  "unit:bodies_rs_is_the_only_producer",
+  "unit:image_builder_surface_matches_the_restriction_predicate",
+  "unit:unproduced_consumer_keys_are_still_unproduced",
+]
+note = """05-library.md §9, verbatim: "`Image`, `group`, actor admission, and pool construction **are compiler-recognized intrinsics** even when a package supplies their surface". §9 then enumerates that surface one bullet at a time. This clause holds the *complement* of that sentence: everything else the compiler recognizes by name is an exception, and the exception set is closed, enumerated, and justified line by line.
+
+Opened by plans/M9.md item AA (decisions 56–59). Its premise, restated: ROADMAP M10 warns that migrating item-by-item while adding whatever intrinsic each item needs "designs the permanent surface by accretion, in the one place this project can least afford it." That pressure is in **M9** — every stdlib item can reach for a compiler-recognized name instead of writing wrela. plans/M9.md shape decision 1 forbids it in prose; nothing enforced it.
+
+**The census (2026-07-25, at c714491).** 44 distinct intrinsic keys, from 38 construction sites in `sema/bodies.rs` — 34 literal `key: "..."` sites plus four that build the key with `format!`, which is why the surface could not be counted by grepping. All four templated sites are statically knowable and were resolved by reading: `Image.{mname}` → `device`/`pool`/`dma_pool`; `Mmio.{op}` → `read`/`write`; `InterruptCell.{method}` → `store_release`/`swap_acquire`/`fetch_or_release`; `Image.{name}` → `driver`/`actor`. Of the 44, **10 are §9's builder surface** (identical to `sema::typed::is_restricted_intrinsic`'s set) and **34 are exceptions**, grouped as time (3), builder vocabulary (1), typed MMIO (2), marked values (1), device bring-up (7), queues/receipts (10), interrupts and bottom halves (8), scoped concurrency (2).
+
+**Where it is written down.** `crates/wrela-compiler/src/sema/intrinsics.rs` — `IMAGE_BUILDER_SURFACE` (§9, stays intrinsic: comptime-only, emits no code, effects land on the compiler's own image graph, and making it ordinary wrela would mean exposing the image IR as a language type) and `EXCEPTIONS`, one line of justification each. The bar: an intrinsic is justified when wrela source *cannot* express the thing (no expression form, a build-time graph edge, a sealed wrapper, a recorded effect), not when writing it in wrela would merely be inconvenient.
+
+**The guard, and why it is a unit test rather than a golden.** There is no artifact to dump: the live set exists only while a program is being checked, so the honest oracle is over compiler *source*. `sema/bodies.rs` is embedded with `include_str!` (a missing file is a build error, never an empty scan), every construction site is located, and the `key:` line that must follow it is parsed — a site whose first field is not `key:` fails loudly rather than dropping a name.
+
+Three holes were found by mutation-testing the guard itself and closed:
+
+- *A widened `format!` guard.* The four expansions are hand-resolved, so adding a fourth `InterruptCell` method to its match arm produces a new key from an unchanged construction site. `format_key_guards_are_locked` pins each bounding guard's exact source text, which fails on exactly that edit.
+- *A construction site in another file.* `bodies_rs_is_the_only_producer` walks the crate and locks exact per-file marker counts. Its first version truncated each file at `#[cfg(test)]` and was defeated by an intrinsic appended after the test module; exact counts have no such blind spot.
+- *A field reorder hiding the key from the scanner.* Covered by the parse strictness above.
+
+**Mutation evidence (all five run, all fail as intended, tree restored):** a new `List.push` key → "in the compiler, not in the list"; a deleted `ms` arm → "in the list, not in the compiler"; a widened `InterruptCell` match arm → guard-lock failure (the closure test alone passed, which is the point); `key:` moved out of first position → named parse failure with a line number; an intrinsic built in `lower.rs` after its test module → per-file count failure.
+
+**Recorded, not acted on** (AA measures and locks; it removes nothing):
+
+- `ms` and `seconds` are marked `ACCRETION` in `EXCEPTIONS` and cite plans/M9.md item E, which deletes both arms for `stdlib/core/time.wr`. That removal is a two-line diff here.
+- `is_queue_op_deferred` accepts `VirtQueue.poll_sources` and `VirtQueue.completions_pending`, which **no construction site produces** — `check_virtqueue_method` rejects both methods with `unimplemented_at` first, so the consumer arms in `lower.rs`/`flowwir_lower.rs` are unreachable. Kept as `UNPRODUCED_CONSUMER_KEYS` with a test that fails if either gains a producer or loses its consumer.
+- `InterruptCell.new` is the weakest exception: it lowers to a plain `Copy`, unlike its four siblings which lower to dedicated ordered instructions. Named in its own justification line as the answer to item E's "investigate, don't presume" question — the *ops* genuinely need compiler knowledge (wrela has no atomic or ordering expression form, and ROADMAP M10's floor says so); the *constructor* is intrinsic only because the type is compiler-known.
+
+**Deliberately not covered.** `sema::prelude`'s bare-name table is a different surface — resolution, not meaning — and the two are not in bijection (`Target` is a prelude name with no intrinsic key; `Mmio.read` is an intrinsic key that is not a prelude name). plans/M9.md item I owns shrinking `prelude.rs`; this clause owns holding the intrinsic surface still while that happens."""
