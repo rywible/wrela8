@@ -2937,8 +2937,7 @@ pub fn build() -> Image:
     /// model's own disk, without the guest ever seeing the disk.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn build_blk_conformance_image() -> BlkImage {
-        use wrela_compiler::encode;
-        use wrela_machine::{layout as machine_layout, machine_info, mmio};
+        use wrela_machine::layout as machine_layout;
 
         const QUEUE_SIZE: u64 = 8;
         // Offsets within the data region.
@@ -3166,12 +3165,6 @@ pub fn build() -> Image:
         put(&mut img, OFF_STATUS1, &[0xEE]);
         put(&mut img, OFF_STATUS2, &[0xEE]);
         put(&mut img, OFF_SRC, &payload);
-
-        let _ = (
-            encode::enc_brk(0),
-            machine_info::OFF_EXIT_CODE,
-            mmio::MMIO_BASE,
-        );
 
         let report_text = format!(
             "Machine revision={}\n\
