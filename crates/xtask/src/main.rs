@@ -4550,7 +4550,350 @@ fn repro() -> Result<(), String> {
     let vmm = build_and_sign_vmm()?;
     repro_choice_log_roundtrip(&vmm)?;
     repro_deadline_cancel_replay_is_clock_log_driven(&vmm)?;
+    repro_blk_completion_replay(&vmm)?;
     repro_replay_exit_code_contract(&vmm)
+}
+
+/// plans/M7.md item F, decision 7 (and the milestone's own exit criterion
+/// "`cargo xtask repro` covers a blk workload: record → replay clean →
+/// tamper a device-completion choice → divergence"): a real boot that
+/// publishes two virtio-blk requests through the split ring, rings the
+/// shared-memory doorbell (06 §5 — an ordinary store, no trap), records
+/// the resulting `DeviceCompletion` choices, replays them byte-stable, and
+/// then proves a tampered completion is *caught* rather than replayed.
+///
+/// **The guest here is hand-assembled, and that is the honest state of the
+/// milestone**: the compiled driver is items A–E/G/H (capabilities,
+/// `@layout`, typed MMIO, DMA pools, queues/receipts, ISRs, bring-up), so
+/// no `.wr` source can publish a descriptor yet. This lane plays the
+/// driver's role directly, exactly the way `wrela-vmm`'s own conformance
+/// tests do — and it is deliberately its own copy of that builder rather
+/// than a shared one: `xtask` does not link `wrela-vmm` (this file's own
+/// established "xtask stays unsigned, only the one signed binary calls
+/// HVF" boundary — the identical reason `report_determinism` carries its
+/// own copy of `bin/wrela.rs`'s report driver). The two copies are kept
+/// honest by both booting: a drift in either fails here or there.
+///
+/// Once the compiled driver exists, this lane's own image builder is what
+/// gets deleted in favour of a golden's real image — named here rather
+/// than left to be discovered.
+fn repro_blk_completion_replay(vmm: &Path) -> Result<(), String> {
+    const EXIT_REPLAY_DIVERGENCE: i32 = 3; // mirrors wrela_vmm::main::EXIT_REPLAY_DIVERGENCE
+    let (img_bytes, report_text) = blk_conformance_image();
+    let tmp_dir = root().join("target/repro-blk-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("blk.img");
+    let report_path = tmp_dir.join("blk.report.txt");
+    let record_path = tmp_dir.join("blk.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: the blk conformance boot failed (exit {record_exit}; the guest folds one bit \
+             per failed check into its exit code — see `blk_conformance_image`):\n{}",
+            String::from_utf8_lossy(&record_out.stderr)
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    let completions = record_text.matches("=DeviceCompletion ").count();
+    if completions != 2 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: the blk workload recorded {completions} DeviceCompletion choice(s), expected 2 \
+             (one write, one read-back)"
+        ));
+    }
+
+    let replay_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    if replay_exit != record_exit {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: the blk workload's replay diverged from its own recording (exit {replay_exit}, \
+             expected {record_exit}):\n{}",
+            String::from_utf8_lossy(&replay_out.stderr)
+        ));
+    }
+
+    // The tamper: flip the recorded status byte of the first completion
+    // from `0` (OK) to `1` (IOERR). Everything else is left exactly as
+    // recorded, so the *only* thing that can be caught is the completion
+    // itself — the model recomputes the operation deterministically and
+    // must report the disagreement rather than replaying the tampered
+    // answer.
+    let mut tampered = String::new();
+    let mut done = false;
+    for line in record_text.lines() {
+        if !done && line.contains("=DeviceCompletion ") && line.contains(" status=0 ") {
+            tampered.push_str(&line.replace(" status=0 ", " status=1 "));
+            tampered.push('\n');
+            done = true;
+            continue;
+        }
+        tampered.push_str(line);
+        tampered.push('\n');
+    }
+    if !done {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err("repro: no DeviceCompletion line to tamper in the recording".to_string());
+    }
+    let tampered_path = tmp_dir.join("blk.tampered.txt");
+    std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
+    let tampered_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&tampered_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
+    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&tampered_out.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if tampered_exit != EXIT_REPLAY_DIVERGENCE {
+        return Err(format!(
+            "repro: a tampered device completion replayed with exit {tampered_exit}, expected \
+             {EXIT_REPLAY_DIVERGENCE} (a determinism finding must never be mistaken for a \
+             successful replay):\n{stderr}"
+        ));
+    }
+    if !stderr.contains("device completion mismatch") {
+        return Err(format!(
+            "repro: the tampered blk replay diverged, but not by name — stderr must say which \
+             completion disagreed:\n{stderr}"
+        ));
+    }
+    println!(
+        "repro: the blk workload's 2 device completion(s) record and replay byte-stable, and a \
+         tampered completion is caught by name"
+    );
+    Ok(())
+}
+
+/// The hand-assembled virtio-blk driver `repro_blk_completion_replay`
+/// boots (its own doc comment has the whole rationale, including why this
+/// is deliberately a second copy of `wrela-vmm`'s own conformance
+/// builder). Returns `(image bytes, report text)`.
+///
+/// The ring, both request headers, the source payload and the destination
+/// buffer live in the image's own trailing data region, covered by exactly
+/// one declared pool window; the descriptor chains are prefilled here (a
+/// driver's build-time role), and the guest program does the two runtime
+/// acts a real driver does — publish an available entry, ring the doorbell
+/// — then parks so the VMM's own poll site runs, and finally checks every
+/// observable fact, folding one bit per failed check into its exit code.
+fn blk_conformance_image() -> (Vec<u8>, String) {
+    use wrela_compiler::encode;
+    use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
+
+    // The split ring's own shape and the virtio-blk request format, as
+    // `wrela-vmm`'s `devices` module implements them. Spelled out here
+    // rather than imported for the boundary reason above.
+    const QUEUE_SIZE: u64 = 8;
+    const DESC_SIZE: u64 = 16;
+    const DESC_F_NEXT: u16 = 1;
+    const DESC_F_WRITE: u16 = 2;
+    const T_IN: u32 = 0;
+    const T_OUT: u32 = 1;
+    const DEVICE_FEATURES: u64 = (1 << 32) | (1 << 9); // VERSION_1 | BLK_F_FLUSH
+    const BLK_VECTOR: u64 = 1;
+
+    const OFF_DESC: u64 = 0x000;
+    const OFF_AVAIL: u64 = 0x080;
+    const OFF_USED: u64 = 0x0C0;
+    const OFF_DOORBELL: u64 = 0x140;
+    const OFF_HDR1: u64 = 0x150;
+    const OFF_HDR2: u64 = 0x160;
+    const OFF_STATUS1: u64 = 0x170;
+    const OFF_STATUS2: u64 = 0x178;
+    const OFF_SRC: u64 = 0x200;
+    const OFF_DST: u64 = 0x400;
+    const DATA_REGION_SIZE: u64 = 0x600;
+
+    fn load_imm(reg: u8, value: u64) -> Vec<u32> {
+        use wrela_compiler::encode;
+        vec![
+            encode::enc_movz(reg, (value & 0xFFFF) as u16, 0, true),
+            encode::enc_movk(reg, ((value >> 16) & 0xFFFF) as u16, 16, true),
+            encode::enc_movk(reg, ((value >> 32) & 0xFFFF) as u16, 32, true),
+            encode::enc_movk(reg, ((value >> 48) & 0xFFFF) as u16, 48, true),
+        ]
+    }
+
+    let payload: Vec<u8> = (0..512u32).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+    let expect_first = u64::from_le_bytes(payload[0..8].try_into().expect("8 bytes"));
+    let expect_last = u64::from_le_bytes(payload[504..512].try_into().expect("8 bytes"));
+    let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+
+    let build_entry = |data_base: u64| -> Vec<u32> {
+        let avail = data_base + OFF_AVAIL;
+        let used = data_base + OFF_USED;
+        let doorbell = data_base + OFF_DOORBELL;
+        let mut w = Vec::new();
+        w.extend(load_imm(9, sp_top));
+        w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+
+        // One aligned 64-bit store publishes the whole avail header
+        // (`flags: u16 = 0, idx, ring[0] = 0, ring[1] = 3`), so no 16-bit
+        // store encoding is needed.
+        let publish = |w: &mut Vec<u32>, idx: u64| {
+            w.extend(load_imm(9, avail));
+            w.extend(load_imm(10, (idx << 16) | (3 << 48)));
+            w.push(encode::enc_str_x_imm(10, 9, 0));
+            w.extend(load_imm(9, doorbell));
+            w.push(encode::enc_movz(10, 1, 0, true));
+            w.push(encode::enc_str_x_imm(10, 9, 0));
+        };
+        let park = |w: &mut Vec<u32>| {
+            w.extend(load_imm(9, mmio::CLOCK_MMIO_ADDR));
+            w.push(encode::enc_ldr_x_imm(11, 9, 0));
+            w.extend(load_imm(12, 20_000_000)); // 20ms — a real, bounded fallback
+            w.push(encode::enc_add_reg(11, 11, 12, true));
+            w.extend(load_imm(
+                9,
+                machine_layout::MACHINE_INFO_BASE + machine_info::OFF_NEXT_DEADLINE,
+            ));
+            w.push(encode::enc_str_x_imm(11, 9, 0));
+            w.extend(load_imm(9, mmio::PARK_MMIO_ADDR));
+            w.push(encode::enc_str_x_imm(11, 9, 0));
+        };
+        publish(&mut w, 1);
+        park(&mut w);
+        publish(&mut w, 2);
+        park(&mut w);
+
+        w.extend(load_imm(9, used));
+        w.push(encode::enc_ldr_x_imm(19, 9, 0));
+        w.push(encode::enc_ldr_x_imm(20, 9, 8));
+        w.push(encode::enc_ldr_x_imm(21, 9, 16));
+        w.extend(load_imm(9, data_base + OFF_STATUS1));
+        w.push(encode::enc_ldrb_imm(22, 9, 0));
+        w.extend(load_imm(9, data_base + OFF_STATUS2));
+        w.push(encode::enc_ldrb_imm(23, 9, 0));
+        w.extend(load_imm(9, data_base + OFF_DST));
+        w.push(encode::enc_ldr_x_imm(24, 9, 0));
+        w.push(encode::enc_ldr_x_imm(25, 9, 504));
+        w.extend(load_imm(9, pending::core_word_addr(0)));
+        w.push(encode::enc_ldr_x_imm(26, 9, 0));
+
+        w.push(encode::enc_movz(1, 0, 0, true)); // fail accumulator
+        let check = |w: &mut Vec<u32>, actual: u8, expect: u64, bit: u8| {
+            w.extend(load_imm(13, expect));
+            w.push(encode::enc_cmp_reg(actual, 13, true));
+            w.push(encode::enc_cset(14, encode::Cond::Ne, true));
+            if bit > 0 {
+                w.push(encode::enc_lsl_imm(14, 14, bit, true));
+            }
+            w.push(encode::enc_orr_reg(1, 1, 14, true));
+        };
+        check(&mut w, 19, 2u64 << 16, 0); // used.idx == 2, ring[0].id == 0
+        check(&mut w, 20, 1 | (3u64 << 32), 1); // ring[0].len == 1, ring[1].id == 3
+        check(&mut w, 21, 513, 2); // ring[1].len == 512 + status
+        check(&mut w, 22, 0, 3); // write status == OK
+        check(&mut w, 23, 0, 4); // read status == OK
+        check(&mut w, 24, expect_first, 5); // first payload word survived the round trip
+        check(&mut w, 25, expect_last, 6); // last payload word too
+        check(&mut w, 26, 1u64 << BLK_VECTOR, 7); // only the blk vector: neither park slept
+
+        w.extend(load_imm(15, mmio::EXIT_MMIO_ADDR));
+        w.push(encode::enc_str_x_imm(1, 15, 0));
+        w.push(encode::enc_brk(0));
+        w
+    };
+
+    // The entry sequence's own length is independent of the addresses it
+    // embeds (every constant is a fixed-width `load_imm`), so one
+    // measuring pass fixes the data region's base.
+    let entry_len = build_entry(0).len();
+    let data_base = {
+        let after_code = machine_layout::IMAGE_BASE + (entry_len as u64) * 4;
+        after_code.div_ceil(16) * 16
+    };
+    let words = build_entry(data_base);
+    assert_eq!(words.len(), entry_len, "entry length must not move");
+
+    let mut img: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    img.resize(
+        (data_base - machine_layout::IMAGE_BASE + DATA_REGION_SIZE) as usize,
+        0,
+    );
+    let data_off = (data_base - machine_layout::IMAGE_BASE) as usize;
+    let put = |img: &mut Vec<u8>, off: u64, bytes: &[u8]| {
+        let at = data_off + off as usize;
+        img[at..at + bytes.len()].copy_from_slice(bytes);
+    };
+    let desc = |img: &mut Vec<u8>, i: u64, addr: u64, len: u32, flags: u16, next: u16| {
+        let at = OFF_DESC + i * DESC_SIZE;
+        put(img, at, &addr.to_le_bytes());
+        put(img, at + 8, &len.to_le_bytes());
+        put(img, at + 12, &flags.to_le_bytes());
+        put(img, at + 14, &next.to_le_bytes());
+    };
+    put(&mut img, OFF_HDR1, &T_OUT.to_le_bytes());
+    put(&mut img, OFF_HDR1 + 8, &0u64.to_le_bytes());
+    desc(&mut img, 0, data_base + OFF_HDR1, 16, DESC_F_NEXT, 1);
+    desc(&mut img, 1, data_base + OFF_SRC, 512, DESC_F_NEXT, 2);
+    desc(&mut img, 2, data_base + OFF_STATUS1, 1, DESC_F_WRITE, 0);
+    put(&mut img, OFF_HDR2, &T_IN.to_le_bytes());
+    put(&mut img, OFF_HDR2 + 8, &0u64.to_le_bytes());
+    desc(&mut img, 3, data_base + OFF_HDR2, 16, DESC_F_NEXT, 4);
+    desc(
+        &mut img,
+        4,
+        data_base + OFF_DST,
+        512,
+        DESC_F_NEXT | DESC_F_WRITE,
+        5,
+    );
+    desc(&mut img, 5, data_base + OFF_STATUS2, 1, DESC_F_WRITE, 0);
+    // Both status bytes are pre-poisoned: `0` is `STATUS_OK`, and the
+    // image is zero-padded, so an unwritten status byte would otherwise
+    // read as a pass.
+    put(&mut img, OFF_STATUS1, &[0xEE]);
+    put(&mut img, OFF_STATUS2, &[0xEE]);
+    put(&mut img, OFF_SRC, &payload);
+
+    let report_text = format!(
+        "Machine revision={}\n\
+         Input path=<xtask blk conformance> digest=deadbeef\n\
+         Section name=entry base={:#x} size={}\n\
+         Entry base={:#x}\n\
+         BlkDevice capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
+         BlkQueue index=0 size={QUEUE_SIZE} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n\
+         BlkPool name=BlockControl base={:#x} size={:#x}\n",
+        wrela_machine::MACHINE_REVISION_STR,
+        machine_layout::IMAGE_BASE,
+        img.len(),
+        machine_layout::IMAGE_BASE,
+        DEVICE_FEATURES,
+        data_base + OFF_DESC,
+        data_base + OFF_AVAIL,
+        data_base + OFF_USED,
+        data_base + OFF_DOORBELL,
+        data_base,
+        DATA_REGION_SIZE,
+    );
+    (img, report_text)
 }
 
 // --- diff-eval (plans/M5.md decision 9, item F) -----------------------------
