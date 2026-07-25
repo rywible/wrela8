@@ -1,0 +1,17 @@
+Module path=image_report
+  Struct ImageReport data
+    field machine_revision: u32
+    field entry: u64
+    field pages_base: u64
+    field pages_size: u64
+    field stacks_base: u64
+    field stacks_size: u64
+    field code_base: u64
+    field code_size: u64
+Module path=examples.err_layout_assert_fails
+  Struct Store resource
+    field n: u32
+    init(mut self) -> unit
+    fn get(read self) -> u32
+  Fn code_must_be_tiny(report: read ImageReport) -> unit
+  Fn build() -> Image

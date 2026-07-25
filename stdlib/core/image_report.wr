@@ -1,0 +1,17 @@
+# plans/M9.md item H: the reflection value `@layout_assert` bodies read
+# after layout (02-language.md §12 / §12.1, 04-compiler.md §8). Ordinary
+# wrela data — fixed section bases/sizes plus the machine revision —
+# synthesized by the compiler from the real `ImageLayout`, never a
+# hardcoded fake. Name-keyed lookup (`report.queue("...")`) waits on
+# `String[..N]` (not on master); fixed fields pin real layout facts today.
+module image_report
+
+pub struct ImageReport:
+    pub machine_revision: u32
+    pub entry: u64
+    pub pages_base: u64
+    pub pages_size: u64
+    pub stacks_base: u64
+    pub stacks_size: u64
+    pub code_base: u64
+    pub code_size: u64

@@ -1,1 +1,1 @@
-error[type]: fn `build` carries more than one `@test`/`@image` marker attribute (`@image` and `@image`) — at most one is valid at 4:1
+error[type]: fn `build` carries more than one `@test`/`@image`/`@layout_assert` marker attribute (`@image` and `@image`) — at most one is valid at 4:1

@@ -15,5 +15,4 @@ Module path=examples.image_basic
     init(mut self, disk: read Actor[Blk]) -> unit
     fn get(read self) -> u32
   Pool Buffers
-  Fn check_limits() -> unit
   Fn build() -> Image

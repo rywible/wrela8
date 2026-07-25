@@ -1,0 +1,28 @@
+module examples.err_layout_assert_fails
+
+# plans/M9.md item H: a `@layout_assert` that reads a real section size
+# and fails closed. The diagnostic must name the fn.
+from core.image_report import ImageReport
+
+@actor
+pub struct Store:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+@layout_assert
+fn code_must_be_tiny(report: ImageReport):
+    assert report.code_size < 16, "code section must be under 16 bytes"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="layout-assert-fail", target=Target.wrela_machine_v1)
+    a = img.actor(Store, mailbox=4)
+    img.check_layout(code_must_be_tiny)
+    img.supervise(children=[a], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

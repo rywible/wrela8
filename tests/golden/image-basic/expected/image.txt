@@ -17,5 +17,4 @@ ImageGraph v0
     Arg label=children value=[driver#0, actor#0]
     Arg label=strategy value=Restart.OneForOne
     Arg label=intensity value=(3, 10000000000)
-  LayoutAssert fn=check_limits
   Sealed value=true

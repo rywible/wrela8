@@ -416,9 +416,28 @@ fn build_report(
                                 ) {
                                     Ok(Some(image_layout)) => {
                                         layout::render_layout_section(&mut text, &image_layout);
+                                        // plans/M9.md item H: run registered
+                                        // `@layout_assert` fns against a real
+                                        // ImageReport after layout (04 §8).
+                                        eval::layout_assert::run(program, &graph, &image_layout)?;
                                         Some(image_layout.blob)
                                     }
-                                    Ok(None) => None,
+                                    Ok(None) => {
+                                        if !graph.layout_asserts.is_empty() {
+                                            let names: Vec<&str> = graph
+                                                .layout_asserts
+                                                .iter()
+                                                .map(|a| a.fn_key.as_str())
+                                                .collect();
+                                            return Err(format!(
+                                                "error[build]: registered `@layout_assert` fn(s) \
+                                                 ({}) require a laid-out image; this program's \
+                                                 reachable surface did not fully lower\n",
+                                                names.join(", ")
+                                            ));
+                                        }
+                                        None
+                                    }
                                     Err(e) => {
                                         return Err(format!("error[build]: layout: {e}\n"));
                                     }
@@ -470,10 +489,10 @@ fn build_report(
 /// from the module's own address (never the real path in `file_paths`
 /// itself, which can be absolute or working-directory-relative —
 /// `report.rs`'s own module doc explains why that would break byte-
-/// stability). `report::render`'s own decision-10 boundary (a registered
-/// `@layout_assert` fails the *report*, never the raw `--stage=image`
-/// dump) surfaces here as an ordinary `error[build]` diagnostic, exactly
-/// like every other rejection this stage can produce. Plans/M4.md item E:
+/// stability). Registered `@layout_assert` fns run after layout
+/// (`eval::layout_assert`); a failure surfaces here as an ordinary
+/// `error[build]` diagnostic, exactly like every other rejection this
+/// stage can produce. Plans/M4.md item E:
 /// this now just calls the shared `build_report` (above, also used by
 /// `wrela build`/`build_cmd`) and prints whichever of its two outcomes
 /// came back — zero behavior change from before the refactor, since both

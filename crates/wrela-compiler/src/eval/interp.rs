@@ -283,6 +283,42 @@ pub fn eval_test_case(
     })
 }
 
+/// Runs one `@layout_assert` fn with a synthesized `ImageReport` argument
+/// (plans/M9.md item H). Fresh `Interp`/`Quota` per call — the same
+/// discipline `eval_test_case` uses — so one assert cannot starve the
+/// next. `f` is the already-resolved typed fn (local or imported); the
+/// caller looked it up so a miss is a build error there, not a
+/// producer-bug diagnostic here.
+pub fn eval_layout_assert(
+    program: &TypedProgram,
+    name: &str,
+    f: &TypedFn,
+    report: Value,
+) -> Result<(), EvalError> {
+    run_on_guarded_stack(move || {
+        let mut ctx = Interp {
+            program,
+            quota: Quota::new(),
+            stack: Vec::new(),
+            image: None,
+            sealed_image: None,
+        };
+        let bind = |env: &mut Env, ctx: &mut Interp| {
+            let Some(p) = f.params.first() else {
+                return Err(ctx.abandon(format!(
+                    "`@layout_assert` fn `{name}` takes no parameters (expected `report: ImageReport`)"
+                )));
+            };
+            env_insert(env, p.name.clone(), report.clone());
+            Ok(())
+        };
+        match run_call(f, None, name.to_string(), bind, &mut ctx) {
+            Ok(_) => Ok(()),
+            Err(u) => Err(unwind_to_error(u)),
+        }
+    })
+}
+
 /// Evaluates the one reachable `@image` fn (plans/M4.md item B): a
 /// fresh `Interp`/`Quota` exactly like every other top-level entry point
 /// here, with one active (empty) builder slot the fn's own body fills in

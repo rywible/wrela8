@@ -4530,9 +4530,34 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                                 ) {
                                     Ok(Some(image_layout)) => {
                                         layout::render_layout_section(&mut text, &image_layout);
+                                        // plans/M9.md item H: mirror
+                                        // `bin/wrela.rs::build_report`.
+                                        if let Err(diag) =
+                                            eval::layout_assert::run(program, &graph, &image_layout)
+                                        {
+                                            return Ok((diag, None));
+                                        }
                                         Some(image_layout.blob)
                                     }
-                                    Ok(None) => None,
+                                    Ok(None) => {
+                                        if !graph.layout_asserts.is_empty() {
+                                            let names: Vec<&str> = graph
+                                                .layout_asserts
+                                                .iter()
+                                                .map(|a| a.fn_key.as_str())
+                                                .collect();
+                                            return Ok((
+                                                format!(
+                                                    "error[build]: registered `@layout_assert` fn(s) \
+                                                     ({}) require a laid-out image; this program's \
+                                                     reachable surface did not fully lower\n",
+                                                    names.join(", ")
+                                                ),
+                                                None,
+                                            ));
+                                        }
+                                        None
+                                    }
                                     // A layout error is a *rendered
                                     // diagnostic* on the production path
                                     // (`bin/wrela.rs`: `error[build]:

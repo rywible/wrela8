@@ -810,6 +810,9 @@ pub(crate) fn check(
                 if test_kind == Some(TestKind::Runtime) {
                     check_runtime_test_params(f, d)?;
                 }
+                // plans/M9.md item H: `@layout_assert` signature before
+                // the body walk, same timing as `@test`/`@image` shape.
+                check_layout_assert_fn(f, d, mctx)?;
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
                     if is_image_fn(f) {
                         // plans/M4.md item B's own minimal slice of
@@ -880,22 +883,22 @@ pub(crate) fn check(
     Ok(program)
 }
 
-/// M4-F sweep fix (plans/M4.md item F): the `@test`/`@image` marker
-/// attributes were previously read through `find`/`any`, so a duplicate
-/// (`@image @image fn ...`) or a conflicting pair (`@test @image`)
-/// silently collapsed to one — a silent approximation of a declaration
-/// shape the docs never define. The dumb rule, pinned by goldens: at
-/// most one marker from the {`@test`, `@image`} family per fn, and the
-/// family is only valid on a *top-level* fn — on a struct's method or
-/// assoc fn the marker used to be ignored entirely (the fn just never
-/// registered), which was a silent accept, not a decision. Category
-/// `type` (a bad declaration shape), same as `test_attr_kind`'s own
-/// diagnostics.
+/// M4-F sweep fix (plans/M4.md item F): the `@test`/`@image`/
+/// `@layout_assert` marker attributes were previously read through
+/// `find`/`any`, so a duplicate (`@image @image fn ...`) or a conflicting
+/// pair (`@test @image`) silently collapsed to one — a silent
+/// approximation of a declaration shape the docs never define. The dumb
+/// rule, pinned by goldens: at most one marker from the {`@test`,
+/// `@image`, `@layout_assert`} family per fn, and the family is only
+/// valid on a *top-level* fn — on a struct's method or assoc fn the
+/// marker used to be ignored entirely (the fn just never registered),
+/// which was a silent accept, not a decision. Category `type` (a bad
+/// declaration shape), same as `test_attr_kind`'s own diagnostics.
 pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Result<(), SemaError> {
     let markers: Vec<&ast::Attr> = f
         .attrs
         .iter()
-        .filter(|a| a.name == "test" || a.name == "image")
+        .filter(|a| a.name == "test" || a.name == "image" || a.name == "layout_assert")
         .collect();
     if let Some(first) = markers.first() {
         if !top_level {
@@ -910,7 +913,8 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
         if markers.len() > 1 {
             return Err(type_error(
                 format!(
-                    "fn `{}` carries more than one `@test`/`@image` marker attribute (`@{}` and `@{}`) — at most one is valid",
+                    "fn `{}` carries more than one `@test`/`@image`/`@layout_assert` marker \
+                     attribute (`@{}` and `@{}`) — at most one is valid",
                     f.name, markers[0].name, markers[1].name
                 ),
                 markers[1].span,
@@ -922,6 +926,120 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
 
 pub(crate) fn is_image_fn(f: &ast::FnItem) -> bool {
     f.attrs.iter().any(|a| a.name == "image")
+}
+
+pub(crate) fn is_layout_assert_fn(f: &ast::FnItem) -> bool {
+    f.attrs.iter().any(|a| a.name == "layout_assert")
+}
+
+/// `@layout_assert` shape (plans/M9.md item H, 02-language.md §12.1):
+/// exactly one plain (read) parameter whose type is the stdlib
+/// `ImageReport` (named `ImageReport` after import, possibly aliased —
+/// identified by the fixed field set decision 220 freezes), returning
+/// `unit`. Attribute takes no arguments.
+fn check_layout_assert_fn(
+    f: &ast::FnItem,
+    d: &types::DeclFn,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    let Some(attr) = f.attrs.iter().find(|a| a.name == "layout_assert") else {
+        return Ok(());
+    };
+    if !attr.args.is_empty() {
+        return Err(type_error(
+            "`@layout_assert` takes no arguments".to_string(),
+            attr.span,
+        ));
+    }
+    if d.params.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`@layout_assert` fn `{}` must take exactly one parameter (`report: ImageReport`)",
+                f.name
+            ),
+            f.span,
+        ));
+    }
+    let p = &d.params[0];
+    if p.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`@layout_assert` fn `{}`'s parameter `{}` must be a plain (read) parameter",
+                f.name, p.name
+            ),
+            f.span,
+        ));
+    }
+    let Type::Named(type_name, args) = &p.ty else {
+        return Err(type_error(
+            format!(
+                "`@layout_assert` fn `{}`'s parameter must have type `ImageReport`, found `{}`",
+                f.name,
+                types::render_type(&p.ty)
+            ),
+            f.span,
+        ));
+    };
+    if !args.is_empty() {
+        return Err(type_error(
+            format!(
+                "`@layout_assert` fn `{}`'s parameter must have type `ImageReport`, found `{}`",
+                f.name,
+                types::render_type(&p.ty)
+            ),
+            f.span,
+        ));
+    }
+    if !mctx_has_image_report(mctx, type_name) {
+        return Err(type_error(
+            format!(
+                "`@layout_assert` fn `{}`'s parameter type `{type_name}` is not the stdlib \
+                 `ImageReport` (import it with `from core.image_report import ImageReport`)",
+                f.name
+            ),
+            f.span,
+        ));
+    }
+    if d.ret != Type::Unit {
+        return Err(type_error(
+            format!(
+                "`@layout_assert` fn `{}` must return `unit`, found `{}`",
+                f.name,
+                types::render_type(&d.ret)
+            ),
+            f.span,
+        ));
+    }
+    Ok(())
+}
+
+/// True when `type_name` resolves in this module to a struct with the
+/// fixed `ImageReport` field set (decision 220) — the import's local
+/// spelling, or a same-module declaration of that shape.
+fn mctx_has_image_report(mctx: &ModuleCtx, type_name: &str) -> bool {
+    const FIELDS: &[&str] = &[
+        "machine_revision",
+        "entry",
+        "pages_base",
+        "pages_size",
+        "stacks_base",
+        "stacks_size",
+        "code_base",
+        "code_size",
+    ];
+    let Some(info) = mctx.structs.get(type_name) else {
+        return false;
+    };
+    let names: BTreeSet<&str> = info
+        .decl
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            DeclMember::Field(f) => Some(f.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    FIELDS.iter().all(|n| names.contains(n)) && names.len() == FIELDS.len()
 }
 
 /// `@test`/`@test(runtime)` recognition (plans/M3.md item E,
@@ -9482,6 +9600,40 @@ fn check_image_method_intrinsic(
                 ));
             }
             let f = check_expr(&args[0].value, None, fctx, mctx)?;
+            // plans/M9.md item H: the argument must be a `@layout_assert`
+            // fn reference — validated against the resolved declaration
+            // so a plain `fn` cannot be registered and then fail only at
+            // report time.
+            match &f.kind {
+                TypedExprKind::FnRef(key) => {
+                    let name = key.spelling();
+                    let Some(info) = mctx.fns.get(&name) else {
+                        return Err(type_error(
+                            format!("`img.check_layout` argument `{name}` is not a resolvable fn"),
+                            call_span,
+                        ));
+                    };
+                    if !is_layout_assert_fn(&info.ast) {
+                        return Err(type_error(
+                            format!(
+                                "`img.check_layout` argument `{name}` must carry `@layout_assert`"
+                            ),
+                            call_span,
+                        ));
+                    }
+                    // Signature already checked at the fn's own declaration
+                    // (`check_layout_assert_fn`); re-check here so an
+                    // imported assert whose shape was somehow skipped still
+                    // fails closed at the registration site.
+                    check_layout_assert_fn(&info.ast, &info.decl, mctx)?;
+                }
+                _ => {
+                    return Err(type_error(
+                        "`img.check_layout` takes a bare `@layout_assert` fn name".to_string(),
+                        call_span,
+                    ));
+                }
+            }
             Ok(TypedExpr {
                 ty: Type::Unit,
                 kind: TypedExprKind::Intrinsic {

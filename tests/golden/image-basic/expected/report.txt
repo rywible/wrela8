@@ -1,1 +1,44 @@
-error[build]: the image report cannot be produced: 1 registered `@layout_assert` fn(s) (check_limits) — registered @layout_assert fns cannot run yet: the stdlib ImageReport reflection type does not exist (gap image.report.layout-asserts); this compiler never asserts against nothing (decision 10); `--stage=image` still dumps the raw graph for such an image, only the report itself refuses
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/image_basic.wr sha256=5ade76bddcdb88c460aa74e9523a154c7ffdd4e486504fc7dedf9ca3dc9052bd
+  Name value=basic-appliance
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=NicHw
+    Arg label=transport value=4096
+    Arg label=required_features value=[Feature.Flush]
+  Driver index=0 type=Blk
+    Arg label=queue_depth value=8
+  Actor index=0 type=Store
+    Mailbox value=16
+  Edge from=driver#0 to=device#0
+  Edge from=actor#0 to=driver#0
+  Pool name=Buffers type=u32
+    Arg label=slots value=4
+    Arg label=max_payload value=64
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+    Child value=actor#0
+  Placement id=driver#0 type=Blk core=0 source=inferred work=0 work_source=unproved bytes=16 bytes_state=16 bytes_mailbox=0 bytes_pool=0
+  Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=296 bytes_state=16 bytes_mailbox=280 bytes_pool=0
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=328
+  Section name=abort base=0x40500198 size=120
+  Section name=checkpoint base=0x40500210 size=104
+  Section name=rtcode base=0x40500278 size=1024
+  Section name=rtdata base=0x40500678 size=392
+  Section name=devregs base=0x40500800 size=8
+  Section name=pooldata base=0x40500808 size=256
+  Entry base=0x40500000
+  Actor name=Store mailbox=16 slot=16 frame=56 state=16
+  Driver name=Blk state=16
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=392
+  DeviceRegs device=device#0 type=NicHw driver=Blk base=0x40500800 size=8
+  Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40500808 size=256 align=8 coherency=coherent device=none

@@ -1,0 +1,2 @@
+error[build]: `@layout_assert` fn `code_must_be_tiny` failed: assertion failed: code section must be under 16 bytes
+  while evaluating `code_must_be_tiny`

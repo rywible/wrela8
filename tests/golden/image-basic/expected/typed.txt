@@ -36,9 +36,6 @@ Program
             Int text=4 ty=i64
           Arg label=max_payload
             Int text=64 ty=i64
-      Intrinsic key=Image.check_layout ty=unit
-        Arg label=f
-          FnRef key=check_limits ty=fn() -> unit
       Intrinsic key=Image.supervise ty=unit
         Arg label=children
           List ty=[ImageDecl; 2]
@@ -56,9 +53,6 @@ Program
                   Int text=10 ty=u64
       Return
         Intrinsic key=Image.seal ty=Image
-  Fn name=check_limits ret=unit
-    Body
-      Pass
   Struct name=Blk
     Method name=ping ret=u32
       Receiver mode=read ty=Blk

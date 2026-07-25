@@ -80,19 +80,12 @@
 //!    over-approximation is "declared in the closure" rather than an
 //!    invented reachability rule. Narrowing it belongs to the item that
 //!    makes `Mmio[L]` bind a layout to a device.
-//! 9. Registered layout asserts: **never actually rendered** — decision
-//!    10's own report-boundary enforcement (`render`'s first act) fails
-//!    the whole report closed, citing the gap `image.report.layout-asserts`
-//!    (plans/M5.md item D's own reword of this diagnostic — the stdlib
-//!    `ImageReport` reflection type a real `@layout_assert` run needs
-//!    still does not exist), the instant even one `@layout_assert` is
-//!    registered, so a *successful* report can never
-//!    reach this section with anything to print. No dead rendering code
-//!    exists for it here for exactly that reason (unlike
-//!    `eval::image_checks::check_construction_dag`'s own unrepresentable-
-//!    but-real-code cycle case): there is no "empty" shape this section
-//!    could ever take other than total absence, and total absence needs
-//!    no code to produce.
+//! 9. Registered layout asserts: recorded in the raw `--stage=image`
+//!    graph dump, then **run** after layout against a real stdlib
+//!    `ImageReport` value (`eval::layout_assert`, plans/M9.md item H).
+//!    A failing assert fails the build (never a second layout pass,
+//!    04-compiler.md §8). Successful asserts leave the report text and
+//!    emitted image untouched — they are not themselves report sections.
 //!
 //! **Decision-8 sub-notes** (recorded at item D execution, 2026-07-23 —
 //! every choice the plan left open):
@@ -284,37 +277,16 @@ fn render_pool_args(program: &TypedProgramEnums, args: &[image::DeclArg], out: &
 /// file; it renders `inputs` in the order given (the caller supplies them
 /// in `BTreeMap`-by-address order, so the report's own `Input` lines come
 /// out deterministically path-sorted with no further sorting needed
-/// here). `Err` is decision 10's own report-boundary enforcement: a
-/// registered `@layout_assert` fails the whole report closed, citing the
-/// gap `image.report.layout-asserts` (plans/M5.md item D's own reword,
-/// replacing the earlier "M5" milestone-number wording with the actual
-/// missing capability it names — the stdlib `ImageReport` reflection
-/// type) — this is the *only* way `render` ever fails; a sealed, checked graph
-/// has nothing else left to reject (every other rejection already
-/// happened earlier in the pipeline, at `check_sealed` or before).
+/// here). A sealed, checked graph has nothing left for `render` itself to
+/// reject — registered `@layout_assert` fns are run *after* layout by
+/// `eval::layout_assert` (plans/M9.md item H), never refused here with a
+/// fake or partial reflection value.
 pub fn render(
     inputs: &[BuildInput],
     enums: &BTreeMap<String, Vec<String>>,
     graph: &ImageGraph,
     placement: &PlacementTable,
 ) -> Result<String, String> {
-    if !graph.layout_asserts.is_empty() {
-        let names: Vec<String> = graph
-            .layout_asserts
-            .iter()
-            .map(|a| a.fn_key.clone())
-            .collect();
-        return Err(format!(
-            "the image report cannot be produced: {} registered `@layout_assert` fn(s) ({}) — \
-             registered @layout_assert fns cannot run yet: the stdlib ImageReport reflection \
-             type does not exist (gap image.report.layout-asserts); this compiler never \
-             asserts against nothing (decision 10); `--stage=image` still dumps the raw \
-             graph for such an image, only the report itself refuses",
-            graph.layout_asserts.len(),
-            names.join(", ")
-        ));
-    }
-
     let program = TypedProgramEnums { enums };
     let mut out = String::new();
     out.push_str("ImageReport v0\n");
@@ -835,13 +807,16 @@ mod tests {
     }
 
     #[test]
-    fn a_registered_layout_assert_fails_the_report_closed() {
+    fn a_registered_layout_assert_no_longer_blocks_render() {
+        // plans/M9.md item H: decision 10's report-boundary refusal is
+        // retired. `render` produces the report; `eval::layout_assert`
+        // runs the registered fns after layout. End-to-end pins:
+        // golden/check-layout-assert-passes, golden/err-layout-assert-fails.
         let (mut g, enums) = sample_graph();
         g.declare_check_layout("check_limits".to_string());
-        let err = render(&[], &enums, &g, &PlacementTable::default())
-            .expect_err("decision 10: never asserted against nothing");
-        assert!(err.contains("check_limits"));
-        assert!(err.contains("image.report.layout-asserts"));
+        let text = render(&[], &enums, &g, &PlacementTable::default())
+            .expect("registered layout asserts must not block render");
+        assert!(text.starts_with("ImageReport v0\n"));
     }
 
     /// plans/M7.md item B: the exact-bytes section is appended by the

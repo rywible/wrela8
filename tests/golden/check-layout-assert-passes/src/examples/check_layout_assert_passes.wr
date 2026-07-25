@@ -1,0 +1,33 @@
+module examples.check_layout_assert_passes
+
+# plans/M9.md item H: a `@layout_assert` that reads real section facts
+# from the synthesized `ImageReport` and passes. Pins that the assert
+# ran against layout (entry == IMAGE_BASE, code_size > 0), not vacuously.
+from core.image_report import ImageReport
+
+@actor
+pub struct Store:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+@layout_assert
+fn entry_and_code(report: ImageReport):
+    assert report.machine_revision == 1, "machine revision is wrela-machine-v1"
+    assert report.entry == 0x40500000, "entry is IMAGE_BASE"
+    assert report.pages_base == 0x40000000, "pages region starts at DRAM_BASE"
+    assert report.code_base > report.entry, "code follows entry"
+    assert report.code_size > 0, "code section is nonempty"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="layout-assert-ok", target=Target.wrela_machine_v1)
+    a = img.actor(Store, mailbox=4)
+    img.check_layout(entry_and_code)
+    img.supervise(children=[a], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

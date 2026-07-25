@@ -26,9 +26,10 @@
 //! real checks (a `@layout(dma)` payload, a reachable device, an exact
 //! count) live in `eval::image_checks::check_pool_decls`, over the whole
 //! finished graph, like every other graph rule.
-//! `img.check_layout` registers a `@layout_assert` fn and runs
-//! nothing (decision 10's other half) — `LayoutAssertDecl` is the whole
-//! of what M4 records for it.
+//! `img.check_layout` registers a `@layout_assert` fn; the registered
+//! fns run after layout against a real stdlib `ImageReport`
+//! (`eval::layout_assert`, plans/M9.md item H). `LayoutAssertDecl` is
+//! the graph record this module keeps.
 
 use std::collections::BTreeMap;
 
