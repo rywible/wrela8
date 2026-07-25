@@ -19,6 +19,8 @@ ImageReport v0
   Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
     Child value=driver#0
     Child value=actor#0
+  Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=40 bytes_state=40 bytes_mailbox=0 bytes_pool=0
+  Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
     Padding offset=0x0 size=96
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4

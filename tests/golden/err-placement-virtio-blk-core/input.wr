@@ -1,0 +1,27 @@
+module examples.err_placement_virtio_blk_core
+
+# plans/M8.md item B / shape decision 2: the virtio-blk driver stays on
+# core 0; `core=` ≠ 0 on it fails closed until an item deliberately
+# moves it with an oracle.
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    held: DeviceCap[VirtioBlock]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        self.held = take cap
+
+@image
+pub fn build() -> Image:
+    img = Image(name="blk-off-core", target=Target.wrela_machine_v1)
+    blk_device = img.device[VirtioBlock](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk_device, core=1)
+    img.supervise(
+        children=[disk],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

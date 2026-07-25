@@ -122,6 +122,10 @@ pub fn check_sealed(
     // contradiction first when MODE is present.
     check_driver_mode(graph)?;
     check_vector_bindings(graph, programs)?;
+    // plans/M8.md item B: `core=` range / virtio-blk pin — sizing and the
+    // inferred table themselves live in `placement::place` (report/build),
+    // which needs a LayoutCtx this pass does not have.
+    crate::placement::check_annotations(graph).map_err(build_error)?;
     Ok(())
 }
 

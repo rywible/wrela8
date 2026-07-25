@@ -1,0 +1,47 @@
+module examples.check_placement_cross
+
+# plans/M8.md item B: a cross-core graph (explicit `core=` ≥ 1) opens the
+# full 04 §3 packing domain. Work is unproved (=0 for everyone); bytes
+# decide. Hand-worked:
+#   - actor#0 Light  mailbox=2  core=1  → fixed on core 1
+#   - actor#1 Heavy  mailbox=32         → unfixed; after Light is fixed,
+#     core loads are (0,0)/(0,Light)/(0,0); lex-smallest is core 0
+#     (lowest index among equal minima).
+# Vacuity: drop `core=1` and both land on core 0 (single-core floor);
+# swap mailboxes and Heavy still prefers core 0 while Light stays on 1.
+
+@actor
+pub struct Light:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+@actor
+pub struct Heavy:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+    # Widen the mailbox slot so Heavy's bytes clearly exceed Light's.
+    pub fn bump(read self, a: u64, b: u64, c: u64, d: u64) -> u64:
+        return a
+
+@image
+pub fn build() -> Image:
+    img = Image(name="placement-cross", target=Target.wrela_machine_v1)
+    light = img.actor(Light, mailbox=2, core=1)
+    heavy = img.actor(Heavy, mailbox=32)
+    img.supervise(
+        children=[light, heavy],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

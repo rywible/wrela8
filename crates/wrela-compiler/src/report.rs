@@ -36,15 +36,16 @@
 //! 3. `Device` blocks (args verbatim — 05-library.md §9 never checks a
 //!    device's own args against anything, so nothing is pulled out of
 //!    them).
-//! 4. `Driver`/`Actor` blocks: every non-handle, non-`mailbox` argument
-//!    as an `Arg` line (05 §9's own "arguments ... match `A.init` ...
+//! 4. `Driver`/`Actor` blocks: every non-handle, non-`mailbox`, non-`core`
+//!    argument as an `Arg` line (05 §9's own "arguments ... match `A.init` ...
 //!    after ... substituted" — decision 7's "reserved args are wiring
 //!    metadata" already strips `device`/`core`/`mailbox` from ordinary
 //!    matching, and this renderer goes one step further: it pulls every
 //!    *handle* argument, reserved or not, out into its own `Edge` fact
-//!    below instead of an `Arg` line, and pulls `mailbox` out into its
+//!    below instead of an `Arg` line, pulls `mailbox` out into its
 //!    own `Mailbox` fact — "declared mailboxes (recorded as-declared, no
-//!    derivation)" per decision 8).
+//!    derivation)" per decision 8 — and pulls `core=` into the Placement
+//!    section (8a), never an `Arg`).
 //! 5. `Edge from=<decl> to=<decl>` — every logical actor edge (decision-8
 //!    sub-note on direction, below), one line each, in the same
 //!    construction order the edges were discovered in (devices, then
@@ -55,6 +56,12 @@
 //!    any other labeled argument (there is no other in 05 §9's own
 //!    surface, but the renderer does not silently drop a real fact it
 //!    cannot name) falls back to an ordinary `Arg` line.
+//! 8a. **Placement** (plans/M8.md item B, 04-compiler.md §3): one
+//!    `Placement id=... type=... core=... source=... work=... ...` line
+//!    per driver/actor, in declaration order. The table is computed by
+//!    `placement::place` (needs a `LayoutCtx` this module does not own)
+//!    and passed into `render`; a section with nothing to say is absent.
+//!    `core=` is wiring metadata (like `mailbox`), never an `Arg` line.
 //! 8b. **The exact-bytes section** (plans/M7.md item B, 03-hardware.md §3:
 //!    "For every `@layout` type the compiler reports exact size, offsets,
 //!    padding, and endianness"): one `Layout name=... kind=... endian=...
@@ -147,6 +154,7 @@ use std::collections::BTreeMap;
 use crate::eval::image::{self, ImageDeclRef, ImageGraph, TypedProgramEnums};
 use crate::eval::quota;
 use crate::eval::value::Value;
+use crate::placement::{self, PlacementTable};
 use crate::sema::types;
 
 /// This crate's own static version string (`wrela-compiler`'s own
@@ -201,12 +209,16 @@ enum DeclFact {
 /// handle-valued argument (`Value::ImageDecl`, with or without its own
 /// `.handle()` — indistinguishable once evaluated, exactly like
 /// `eval::image_checks`'s own construction-DAG note) becomes an `Edge`;
-/// an argument labeled `mailbox` becomes a `Mailbox` fact; everything
+/// an argument labeled `mailbox` becomes a `Mailbox` fact; `core=` is
+/// omitted here (it appears only in the Placement section, 8a); everything
 /// else is an ordinary `Arg` fact, rendered with `eval::image`'s own
 /// `render_value` verbatim.
 fn decl_facts(program: &TypedProgramEnums, args: &[image::DeclArg]) -> Vec<DeclFact> {
     let mut out = Vec::with_capacity(args.len());
     for a in args {
+        if a.label == "core" {
+            continue;
+        }
         if let Value::ImageDecl(r) = &a.value {
             out.push(DeclFact::Edge { to: r.clone() });
             continue;
@@ -284,6 +296,7 @@ pub fn render(
     inputs: &[BuildInput],
     enums: &BTreeMap<String, Vec<String>>,
     graph: &ImageGraph,
+    placement: &PlacementTable,
 ) -> Result<String, String> {
     if !graph.layout_asserts.is_empty() {
         let names: Vec<String> = graph
@@ -539,6 +552,9 @@ pub fn render(
         }
     }
 
+    // --- 8a. placement (04 §3 / plans/M8.md item B) -----------------------
+    placement::render_placement_section(&mut out, placement);
+
     // --- 8b/9. the exact-bytes section (appended by the caller) and
     // registered layout asserts (never reached): see module doc ------------
 
@@ -783,7 +799,8 @@ mod tests {
             path: "image.wr".to_string(),
             digest: sha256_hex(b"placeholder"),
         }];
-        let text = render(&inputs, &enums, &g).expect("no layout asserts registered");
+        let text = render(&inputs, &enums, &g, &PlacementTable::default())
+            .expect("no layout asserts registered");
 
         let expected = format!(
             "ImageReport v0\n\
@@ -821,7 +838,8 @@ mod tests {
     fn a_registered_layout_assert_fails_the_report_closed() {
         let (mut g, enums) = sample_graph();
         g.declare_check_layout("check_limits".to_string());
-        let err = render(&[], &enums, &g).expect_err("decision 10: never asserted against nothing");
+        let err = render(&[], &enums, &g, &PlacementTable::default())
+            .expect_err("decision 10: never asserted against nothing");
         assert!(err.contains("check_limits"));
         assert!(err.contains("image.report.layout-asserts"));
     }
@@ -879,8 +897,8 @@ mod tests {
             path: "image.wr".to_string(),
             digest: sha256_hex(b"x"),
         }];
-        let a = render(&inputs, &enums, &g).unwrap();
-        let b = render(&inputs, &enums, &g).unwrap();
+        let a = render(&inputs, &enums, &g, &PlacementTable::default()).unwrap();
+        let b = render(&inputs, &enums, &g, &PlacementTable::default()).unwrap();
         assert_eq!(a, b);
     }
 }

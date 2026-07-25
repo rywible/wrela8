@@ -1,0 +1,1 @@
+error[build]: `driver#0` (BlkDriver) is the virtio-blk driver; plans/M8.md keeps it and its ISR/bottom half on core 0 until an item deliberately moves them (refusing `core=1`)

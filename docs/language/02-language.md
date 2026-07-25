@@ -553,7 +553,7 @@ mutable fields. Other actors hold generated `Actor[T]` handles minted by the
 image — every possible call edge is a build-time fact. Handles cannot appear
 in messages, replies, or runtime collections.
 
-Every actor also has exactly one build-time **core** on the machine's four
+Every actor also has exactly one build-time **core** on the machine's three
 cores — inferred deterministically ([04 §3](04-compiler.md)) or set with
 `core=` in the image wiring. Nothing in this chapter changes across cores:
 a cross-core call is the same typed call. Cross-core parallelism is

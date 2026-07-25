@@ -37,6 +37,7 @@ pub mod layout;
 pub mod loader;
 pub mod lower;
 pub mod mwir;
+pub mod placement;
 pub mod report;
 pub mod sema;
 pub mod syntax;

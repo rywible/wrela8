@@ -33,6 +33,9 @@ ImageReport v0
     Child value=driver#0
     Child value=actor#0
     Child value=actor#1
+  Placement id=driver#0 type=StorageDriver core=0 source=inferred work=0 work_source=unproved bytes=16 bytes_state=16 bytes_mailbox=0 bytes_pool=0
+  Placement id=actor#0 type=CacheActor core=0 source=inferred work=0 work_source=unproved bytes=176 bytes_state=24 bytes_mailbox=152 bytes_pool=0
+  Placement id=actor#1 type=StatsActor core=0 source=inferred work=0 work_source=unproved bytes=144 bytes_state=24 bytes_mailbox=120 bytes_pool=0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
