@@ -250,6 +250,21 @@ fn render_decl_block(
     }
 }
 
+/// One pool declaration's own recorded arguments, at depth 2 under its
+/// `Pool`/`DmaPool` header. A decl-reference argument (only
+/// `img.dma_pool`'s own `device=`) renders as an ordinary `Arg` line
+/// naming the declaration — see section 6's own note for why it is not an
+/// `Edge`.
+fn render_pool_args(program: &TypedProgramEnums, args: &[image::DeclArg], out: &mut String) {
+    for a in args {
+        let rendered = match &a.value {
+            Value::ImageDecl(r) => r.render(),
+            v => image::render_value(program, &a.ty, v),
+        };
+        image::push_line(out, 2, &format!("Arg label={} value={rendered}", a.label));
+    }
+}
+
 /// Renders the whole `ImageReport` (plans/M4.md item D). `inputs` must
 /// already carry one entry per file in the build closure — this function
 /// does no I/O and trusts its caller (`bin/wrela.rs::run_report_stage`,
@@ -421,6 +436,27 @@ pub fn render(
     }
 
     // --- 6. pools (capacities are just their own recorded args) -------------
+    //
+    // Both forms, in one block, plain-then-DMA — `Pool`/`DmaPool` headers
+    // are distinct `Kind` words, exactly as `eval::image::dump`'s own raw
+    // graph dump already spells them, so the two are never confusable and
+    // neither needs the other's fields.
+    //
+    // Pool args never carry a decl-reference *except* `img.dma_pool`'s own
+    // `device=` (05 §9 wires no other pool argument to another
+    // declaration). `render_decl_block`'s edge-detecting rule still runs
+    // uniformly here rather than special-casing pools out of it (this
+    // module's own doc comment: "dumb and correct," not "correct because
+    // special-cased") — so a DMA pool's `device=` becomes an `Edge` fact
+    // discovered too late for section 5's already-written output. That is
+    // why it is rendered here, explicitly, as the pool's own
+    // `device=<decl>` field: the reachability fact 03-hardware.md §3
+    // requires is a property *of the pool*, not a wiring edge between two
+    // actors, and section 5's own `Edge` lines are documented as "every
+    // logical actor edge". The emission-side `Pool ... device=device#N`
+    // line (`layout::render_layout_section`) carries the *resolved* device
+    // — this one carries the declaration exactly as source wrote it,
+    // driver spelling included.
     for (name, d) in &graph.pools {
         image::push_line(
             &mut out,
@@ -430,26 +466,18 @@ pub fn render(
                 types::render_type(&d.payload_type)
             ),
         );
-        // Pool args never carry a decl-reference in practice (05 §9 never
-        // wires a pool to another declaration — `img.dma_pool`'s own
-        // `device=` argument is the one exception, and `dma_pools` is
-        // always empty by the time a report can ever be rendered, decision
-        // 10) — `render_decl_block`'s edge-detecting rule still runs
-        // uniformly here rather than special-casing pools out of it (this
-        // module's own doc comment: "dumb and correct," not "correct
-        // because special-cased"). Any such edge would simply be appended
-        // to `edges` too late for section 5's own already-written output —
-        // acceptable because it cannot happen today; not silently wrong
-        // because it is real code that would need to change, not a gap
-        // hidden behind a check.
-        let mut unused_edges = Vec::new();
-        render_decl_block(
-            &program,
-            &ImageDeclRef::Pool(name.clone()),
-            &d.args,
+        render_pool_args(&program, &d.args, &mut out);
+    }
+    for (name, d) in &graph.dma_pools {
+        image::push_line(
             &mut out,
-            &mut unused_edges,
+            1,
+            &format!(
+                "DmaPool name={name} type={}",
+                types::render_type(&d.payload_type)
+            ),
         );
+        render_pool_args(&program, &d.args, &mut out);
     }
 
     // --- 7. supervision tree ---------------------------------------------------

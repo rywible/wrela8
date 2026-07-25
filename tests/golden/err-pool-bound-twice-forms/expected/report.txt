@@ -1,0 +1,2 @@
+error[comptime]: pool `Shared` is already bound
+  while evaluating `build`

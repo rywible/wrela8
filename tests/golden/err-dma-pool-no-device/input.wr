@@ -1,0 +1,23 @@
+module examples.err_dma_pool_no_device
+
+# plans/M7.md item D, 03-hardware.md §3: "All memory a device can reach
+# originates from its bound pools" — read the other way round, a DMA pool
+# with no device is memory nothing can reach, which is an `img.pool`
+# spelled wrong rather than a DMA pool.
+#
+# plans/M7.md decision 5 is why this is not a shrug: the flagship has no
+# IOMMU, so the declared pools *are* the mapping the VMM installs. A pool
+# that names no device would either map nothing (silently useless) or map
+# everything (silently catastrophic); it fails closed instead.
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+pool Statuses
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    buffers = img.dma_pool[BlkReqStatus](name=Statuses, count=4)
+    return img.seal()

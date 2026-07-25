@@ -1,0 +1,48 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/check_dma_pool.wr sha256=c31c2093ac64b743b1d0c8fc797232e95f8631cbbbd18fe4a67e20745436f8f8
+  Name value=dma-pool
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=BlockHw
+    Arg label=transport value=8192
+  Driver index=0 type=BlkDriver
+    Arg label=sectors value=2048
+  Actor index=0 type=Store
+    Mailbox value=8
+  Edge from=driver#0 to=device#0
+  Edge from=actor#0 to=driver#0
+  Pool name=CacheBuffers type=u32
+    Arg label=slots value=4
+    Arg label=max_payload value=64
+  DmaPool name=BlockControl type=BlkReqHeader
+    Arg label=device value=driver#0
+    Arg label=count value=8
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+    Child value=actor#0
+  Layout name=BlkReqHeader kind=dma endian=little size=16 padding=0
+    Field name=kind type=u32 offset=0x0 size=4
+    Field name=reserved type=u32 offset=0x4 size=4
+    Field name=sector type=u64 offset=0x8 size=8
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=452
+  Section name=rodata base=0x40500218 size=26
+  Section name=abort base=0x40500234 size=120
+  Section name=checkpoint base=0x405002ac size=104
+  Section name=rtcode base=0x40500314 size=952
+  Section name=rtdata base=0x405006d0 size=312
+  Section name=pooldata base=0x40500808 size=384
+  Entry base=0x40500000
+  Actor name=Store mailbox=8 slot=24 frame=56 state=16
+  Totals actors=1 ready_queue=2 group_arena=0 bytes=312
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40500808 size=128 align=8 coherency=coherent device=device#0
+  Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40500888 size=256 align=8 coherency=coherent device=none
+  BlkPool name=BlockControl base=0x40500808 size=0x80

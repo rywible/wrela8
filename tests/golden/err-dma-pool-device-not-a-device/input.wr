@@ -1,0 +1,33 @@
+module examples.err_dma_pool_device_not_a_device
+
+# plans/M7.md item D, 03-hardware.md §3: a DMA pool's `device=` names the
+# device that can reach it. Two spellings are normative and both are
+# accepted — a declared device (05-library.md §9's own `device=d`) and the
+# driver bound to one (03 §3's worked example, `device=disk`, which
+# resolves through 03 §1's "the device is named once, at the image
+# binding").
+#
+# An *actor* is neither. Accepting it would produce a mapped window with
+# no device behind it, which is exactly the fact plans/M7.md decision 5
+# calls a security property; it is rejected by name instead.
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@actor
+pub struct Store:
+    seen: u64
+
+    pub fn note(mut self, n: u64) -> unit:
+        self.seen = n
+        return unit
+
+pool Statuses
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    store = img.actor(Store, mailbox=4)
+    buffers = img.dma_pool[BlkReqStatus](name=Statuses, device=store, count=4)
+    return img.seal()

@@ -1,0 +1,26 @@
+module examples.err_pool_backing_too_large
+
+# plans/M7.md item D, 05-library.md §9: pool intrinsics "reserve exact
+# backing". The reservation is zeroed image bytes, exactly like the actor
+# runtime tables, and guest DRAM is 1 GiB (06-machine.md §2) — so a
+# declared count this compiler cannot place must fail closed by name
+# rather than attempt to emit it. The identical shape (and the identical
+# reasoning) as the VMM's own `devices::MAX_DISK_BYTES`.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct BlockHw:
+    id: u32
+
+pool BlockControl
+
+@image
+pub fn build() -> Image:
+    img = Image(name="x", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=4194304)
+    return img.seal()

@@ -1,0 +1,1 @@
+error[build]: `img.dma_pool[Payload](name=Payloads, ...)` — `Payload` is not a `@layout(dma)` type in this build closure. 03-hardware.md §3: a transfer payload's `T` is `@layout(dma)`, so the compiler can report its exact size, offsets, padding and endianness before a device ever reads it

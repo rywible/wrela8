@@ -183,14 +183,18 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     // an ordinary annotation; and 03-hardware.md §3's capability rule must
     // be live before plans/M7.md item A makes a capability name
     // resolvable at all). Its table is discarded here — `--stage=layout-types`
-    // and the image report call the same fn for it — and only its
-    // rejections matter.
-    types::check_layouts(&specialized)?;
+    // and the image report call the same fn for it — and its rejections
+    // are still the point; plans/M7.md item D additionally *keeps* the
+    // table on the typed program (`TypedProgram::layouts`) so the
+    // post-seal pool checks can ask whether an `img.dma_pool[T]`'s own
+    // `T` is `@layout(dma)` without recomputing it.
+    let layouts = types::check_layouts(&specialized)?;
     let symtab = symbols::collect(&specialized)?;
     symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
     let decl_items = types::declare(&specialized)?;
     let mctx = bodies::build_module_ctx(&specialized, &decl_items);
     let mut program = bodies::check(&specialized, &decl_items, &mctx)?;
+    program.layouts = layouts;
     access::check(&specialized, &decl_items, &mctx)?;
     flow::check(&specialized, &decl_items, &mctx)?;
     matches::check(&specialized, &decl_items, &mctx)?;
@@ -332,14 +336,16 @@ pub fn check_program_typed(
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<BTreeMap<Vec<String>, typed::TypedProgram>, SemaError> {
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
+    let mut layouts: BTreeMap<Vec<String>, Vec<types::LayoutType>> = BTreeMap::new();
     for (key, module) in modules {
         let s = specialize::specialize(module)?;
         // plans/M7.md item B: the whole-closure half of the same
         // pre-resolution `@layout` pass `check_typed` runs (see
         // `types::check_layouts`). One module at a time — a `@layout`
         // type is a module-local declaration, so nothing here needs the
-        // closure.
-        types::check_layouts(&s)?;
+        // closure. plans/M7.md item D keeps each module's own table on
+        // its `TypedProgram` (see `check_typed`'s own note).
+        layouts.insert(key.clone(), types::check_layouts(&s)?);
         specialized.insert(key.clone(), s);
     }
 
@@ -423,6 +429,7 @@ pub fn check_program_typed(
         let decl_items = &decl_items_map[key];
         let mctx = &mctxs[key];
         let mut program = bodies::check(module, decl_items, mctx)?;
+        program.layouts = layouts.get(key).cloned().unwrap_or_default();
         access::check(module, decl_items, mctx)?;
         flow::check(module, decl_items, mctx)?;
         matches::check(module, decl_items, mctx)?;

@@ -198,6 +198,32 @@ pub struct ImageLayout {
     /// and the report's own accounting facts — the plan's own "runtime
     /// tables are emitted for any image with actors, tests or not").
     pub runtime: Option<RuntimeTables>,
+    /// plans/M7.md item D: every bound pool's own placed window, in the
+    /// `pooldata` section, name-sorted (`pool_backings`' own `BTreeMap`
+    /// order — `image.report.deterministic`). Empty for an image that
+    /// declares no pool at all, which is why no existing golden without
+    /// one moved when this landed.
+    pub pools: Vec<PoolPlacement>,
+}
+
+/// One bound pool as it was actually placed: everything the checker
+/// resolved about the declaration (`PoolBacking` — 03-hardware.md §3's
+/// size, purpose, device reachability and alignment) plus the one fact
+/// only placement knows, its guest base address.
+///
+/// The `base`/`bytes` pair is what plans/M7.md decision 5 turns into a
+/// security property: the report emits one `BlkPool name= base= size=`
+/// line per *device-reachable* pool, and that list is the whole of what
+/// the VMM maps for its device model (`wrela-vmm`'s own
+/// `devices::GuestMem::window_offset` admits an address only if it lies
+/// wholly inside one of them). Everything else in the image — code,
+/// rodata, the actor runtime tables, another pool's slots — is outside
+/// every window by construction, which `verify_pool_windows` below
+/// re-derives rather than assumes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolPlacement {
+    pub backing: crate::eval::image_checks::PoolBacking,
+    pub base: u64,
 }
 
 // --- scratch registers for stub emission (never x0..x8/x29/x30/sp) -----
@@ -851,6 +877,168 @@ fn verify_section_sizes(
     Ok(())
 }
 
+// --- pool backing: the `pooldata` section (plans/M7.md item D) ------------
+//
+// 05-library.md §9: `img.pool`/`img.dma_pool` "reserve exact backing". The
+// reservation is zeroed image bytes in one section named `pooldata`,
+// exactly like `rtdata`'s own actor tables and for the identical reason
+// (no allocation anywhere in this machine; every byte is sized at build
+// time). It is this image shape's own final section, after `rtdata`.
+//
+// **Why one section rather than one per pool.** A section is a *report*
+// fact the VMM presence-checks; a pool window is a *mapping* fact the VMM
+// enforces, and the two are reported separately and deliberately — the
+// per-pool `Pool`/`BlkPool` lines carry each window's own base and size
+// (`render_layout_section`), so nothing is lost by keeping the section
+// table one entry wider rather than N entries wider. It also keeps
+// `verify_section_sizes`' own "gaps are alignment padding only" rule
+// intact: a pool declared with 1-byte alignment next to one declared with
+// 8 would otherwise produce an inter-section gap that rule would (rightly)
+// refuse.
+
+/// Places every bound pool's backing sequentially from `cursor`, each at
+/// its own declared alignment, in `backings`' own name-sorted order
+/// (`image.report.deterministic`: a `BTreeMap` walk, no other ordering
+/// input exists). Returns the placements, the section's own base/size and
+/// the advanced cursor — `None` when this image binds no pool at all, in
+/// which case no `pooldata` section exists and nothing about the image
+/// changes (which is why every golden without a pool stayed byte-identical
+/// when this landed).
+fn place_pools(
+    cursor: u64,
+    backings: &BTreeMap<String, crate::eval::image_checks::PoolBacking>,
+) -> Option<(Vec<PoolPlacement>, u64, u64, u64)> {
+    if backings.is_empty() {
+        return None;
+    }
+    let base = round_up(cursor, 8);
+    let mut at = base;
+    let mut out = Vec::with_capacity(backings.len());
+    for b in backings.values() {
+        at = round_up(at, b.align.max(1));
+        out.push(PoolPlacement {
+            backing: b.clone(),
+            base: at,
+        });
+        at += b.bytes;
+    }
+    Some((out, base, at - base, at))
+}
+
+/// plans/M7.md decision 5, re-derived rather than asserted: **the windows
+/// this image declares reachable are pool backing and nothing else.**
+///
+/// The VMM maps exactly the `BlkPool name= base= size=` lines
+/// `render_layout_section` emits, and treats every address inside one of
+/// them as device-reachable (`wrela-vmm`'s `devices::GuestMem`). So the
+/// security property on the compiler's side is a placement property, and
+/// this function checks it from the finished section table and the
+/// finished placement list — the same inputs the report is rendered from,
+/// not the intermediate cursors that produced them:
+///
+/// 1. every pool window is non-empty and lies wholly inside the
+///    `pooldata` section;
+/// 2. no two pool windows overlap;
+/// 3. `pooldata` is disjoint from every other section — which
+///    `verify_section_sizes` already proves for the whole table, so (1)
+///    is what extends that proof to each individual window.
+///
+/// Together: an address inside any declared window is inside `pooldata`,
+/// therefore outside `entry`/`code`/`rodata`/`abort`/`checkpoint`/
+/// `rtcode`/`rtdata` — outside this image's own instructions, its abort
+/// strings, its runtime routines and every actor's state and mailbox.
+/// What it does *not* prove is anything about the VMM: that lives in
+/// `wrela-vmm`'s own `GuestMem::window_offset` tests
+/// (`hardware.dma.pool-reachability`), which is the other half of the same
+/// sentence.
+fn verify_pool_windows(sections: &[Section], pools: &[PoolPlacement]) -> Result<(), LayoutError> {
+    if pools.is_empty() {
+        return Ok(());
+    }
+    let Some(sec) = sections.iter().find(|s| s.name == "pooldata") else {
+        return Err(LayoutError::new(
+            "internal error: this image places pool windows but reserves no `pooldata` section",
+        ));
+    };
+    let sec_end = sec.base + sec.size;
+    for (i, p) in pools.iter().enumerate() {
+        if p.backing.bytes == 0 {
+            return Err(LayoutError::new(format!(
+                "internal error: pool `{}` was placed with a zero-byte window",
+                p.backing.name
+            )));
+        }
+        let end = p.base.checked_add(p.backing.bytes).ok_or_else(|| {
+            LayoutError::new(format!(
+                "internal error: pool `{}`'s window overflows a u64",
+                p.backing.name
+            ))
+        })?;
+        if p.base < sec.base || end > sec_end {
+            return Err(LayoutError::new(format!(
+                "internal error: pool `{}`'s window [{:#x}, {end:#x}) is not inside the \
+                 `pooldata` section [{:#x}, {sec_end:#x}) — plans/M7.md decision 5: a declared \
+                 pool window is the whole of what a device can reach",
+                p.backing.name, p.base, sec.base
+            )));
+        }
+        for other in &pools[..i] {
+            let other_end = other.base + other.backing.bytes;
+            if p.base < other_end && other.base < end {
+                return Err(LayoutError::new(format!(
+                    "internal error: pools `{}` and `{}` were placed at overlapping windows",
+                    other.backing.name, p.backing.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every `@layout` type in a build closure, by name — `layout_program`'s
+/// own input to `eval::image_checks::pool_backings`. Built from the raw
+/// `ast::Module` closure the same way `bin/wrela.rs` builds the report's
+/// exact-bytes section, rather than threaded through `BootCtx` from the
+/// typed programs: `types::check_layouts` is a pure function of one
+/// specialized module, so the checker's table (`TypedProgram::layouts`)
+/// and this one are the same table computed twice, never two rules.
+fn closure_layout_types(
+    modules: &BTreeMap<String, Module>,
+) -> Result<BTreeMap<String, crate::sema::types::LayoutType>, LayoutError> {
+    let mut out = BTreeMap::new();
+    for module in modules.values() {
+        let specialized = crate::sema::specialize::specialize(module)
+            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?;
+        for l in crate::sema::types::check_layouts(&specialized)
+            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?
+        {
+            out.insert(l.name.clone(), l);
+        }
+    }
+    Ok(out)
+}
+
+/// This image's own pool backing, resolved from the sealed graph.
+/// `eval::image_checks::check_sealed` already ran `pool_backings` and
+/// already rejected every bad declaration by name, so an `Err` here means
+/// the two disagreed — a producer bug, reported as one rather than
+/// silently placing a window nobody checked.
+fn image_pool_backings(
+    boot: Option<&BootCtx>,
+) -> Result<BTreeMap<String, crate::eval::image_checks::PoolBacking>, LayoutError> {
+    let Some(b) = boot else {
+        return Ok(BTreeMap::new());
+    };
+    let layouts = closure_layout_types(b.modules)?;
+    crate::eval::image_checks::pool_backings(b.graph, &layouts).map_err(|e| {
+        LayoutError::new(format!(
+            "internal error: a pool declaration this image's own graph check accepted cannot be \
+             placed: {}",
+            e.message
+        ))
+    })
+}
+
 // --- top-level entry: CodegenProgram -> ImageLayout -----------------------
 
 /// Places `program` into the machine's fixed layout as one flat blob
@@ -1047,13 +1235,34 @@ pub fn layout_program(
             base,
             size: tables.total_bytes,
         });
-        // `rtdata` is this image shape's own final section — nothing
-        // consumes `cursor` past it, mirroring the identical rodata-base
-        // convention a few lines above this fn's own test-image sibling.
+        // plans/M7.md item D: `rtdata` used to be this image shape's own
+        // final section, so nothing advanced `cursor` past it. `pooldata`
+        // now follows it, so it does.
+        cursor += tables.total_bytes;
         Some(base)
     } else {
         None
     };
+
+    // --- pooldata (plans/M7.md item D): 05-library.md §9's "reserve
+    // exact backing", zeroed image bytes exactly like `rtdata`'s. This
+    // image shape's own final section — nothing consumes `cursor` past
+    // it. Absent entirely for an image that binds no pool.
+    let pool_backings = image_pool_backings(boot.as_ref())?;
+    let placed_pools = place_pools(cursor, &pool_backings);
+    let pools: Vec<PoolPlacement> = match &placed_pools {
+        Some((pools, base, size, end)) => {
+            sections.push(Section {
+                name: "pooldata",
+                base: *base,
+                size: *size,
+            });
+            cursor = *end;
+            pools.clone()
+        }
+        None => Vec::new(),
+    };
+    let _ = cursor;
 
     // --- resolve every Reloc against the now-known section bases --------
     let runtime_live = runtime.filter(|t| t.total_bytes > 0);
@@ -1300,14 +1509,20 @@ pub fn layout_program(
         pad_to(&mut blob, image_base, rb);
         blob.resize(blob.len() + tables.total_bytes as usize, 0);
     }
+    if let Some((_, base, size, _)) = &placed_pools {
+        pad_to(&mut blob, image_base, *base);
+        blob.resize(blob.len() + *size as usize, 0);
+    }
 
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
+    verify_pool_windows(&sections, &pools)?;
 
     Ok(ImageLayout {
         blob,
         entry: entry_base,
         sections,
         runtime: runtime.cloned(),
+        pools,
     })
 }
 
@@ -1920,6 +2135,13 @@ fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
 /// - an **`Actor[T]` parameter with no explicit argument**: 05-library.md
 ///   §9 lets an actor handle be substituted by type rather than wired by
 ///   name, and boot materializes only what the image explicitly wired.
+/// - a **pool handle argument** (05-library.md §9's "create the initial
+///   handles", wired as `blocks=take cache_blocks`): the pool itself is
+///   real at plans/M7.md item D — declared, checked, sized and placed —
+///   but the *runtime* value 02-language.md §4's own worked example
+///   passes is an `[own[P] T; N]` array of handles into that backing, and
+///   nothing constructs an `own[P] T` yet. Fails closed by name rather
+///   than passing the pool's construction index as if it were one.
 /// - an **argument whose value has no register representation**
 ///   (an aggregate, a float, ...).
 /// - **more than eight arguments**, the register budget `x1..x8` leaves
@@ -2004,6 +2226,30 @@ fn build_boot_init_calls(
                     p.name, p.name
                 )));
             };
+            // plans/M7.md item D: a pool handle gets its own diagnostic
+            // rather than the generic "no register representation" one,
+            // because the pool it names *is* real now (declared, checked,
+            // sized and placed) and only the runtime handle value is
+            // missing — a reader deserves to be told which of the two.
+            if matches!(
+                a.value,
+                crate::eval::value::Value::ImageDecl(
+                    crate::eval::image::ImageDeclRef::Pool(_)
+                        | crate::eval::image::ImageDeclRef::DmaPool(_)
+                )
+            ) {
+                return Err(LayoutError::new(format!(
+                    "actor `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}` from a \
+                     declared pool. The pool is real — bound, sized and placed in this image's \
+                     own `pooldata` section (plans/M7.md item D) — but 05-library.md §9's \
+                     \"create the initial handles\" means a runtime `own[P] T` per slot, and \
+                     nothing constructs one yet. Failing closed rather than passing the pool's \
+                     construction index as if it were a handle.",
+                    a.label,
+                    p.name,
+                    render_type(&p.ty),
+                )));
+            }
             let Some(word) = boot_init_arg_word(&a.value) else {
                 return Err(LayoutError::new(format!(
                     "actor `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}`, but the \
@@ -2326,6 +2572,59 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
                 tables.ready_queue_capacity,
                 tables.group_arena_capacity,
                 tables.total_bytes
+            ),
+        );
+    }
+
+    // --- plans/M7.md item D: DMA pool accounting (a milestone exit
+    // criterion), appended after the actor tables for the identical
+    // reason those were appended after `Entry base=...`: facts only,
+    // absent entirely for an image with no pool, so no existing golden
+    // moves that did not gain a pool.
+    //
+    // Two line kinds, and the split is the point:
+    //
+    // - `Pool ...` is the *accounting* line: 03-hardware.md §3's five
+    //   declared facts about every bound pool, device-reachable or not
+    //   (`PoolBacking`'s own doc comment derives each one). It is a
+    //   report fact; nothing consumes it as configuration.
+    // - `BlkPool name= base= size=` is the *mapping* line, and it exists
+    //   for device-reachable pools only. It is the exact format
+    //   `wrela-vmm`'s own `parse_report` already reads (plans/M7.md item
+    //   F), and the list of them is the whole of what that VMM maps for
+    //   its device model — decision 5's security property, in the
+    //   artifact rather than in a comment: a pool with no `device=` never
+    //   produces one, so no device can reach it.
+    //
+    // An image that declares a device-reachable pool but no queue is not
+    // bootable yet, by design: `parse_report` refuses a `BlkPool` line
+    // with no `BlkDevice`/`BlkQueue` to bind it to, and those two lines
+    // are plans/M7.md item E's to emit. Fail-closed and named, rather
+    // than a window mapped for a device model that was never configured.
+    for p in &layout.pools {
+        let b = &p.backing;
+        let kind = if b.is_dma { "dma" } else { "image" };
+        let mut line = format!(
+            "Pool name={} kind={} payload={} slots={} slot_bytes={} base={:#x} size={} align={} \
+             coherency=coherent",
+            b.name, kind, b.payload, b.slots, b.slot_bytes, p.base, b.bytes, b.align
+        );
+        match b.device {
+            Some(i) => line.push_str(&format!(" device=device#{i}")),
+            None => line.push_str(" device=none"),
+        }
+        push_line(out, 1, &line);
+    }
+    for p in &layout.pools {
+        if p.backing.device.is_none() {
+            continue;
+        }
+        push_line(
+            out,
+            1,
+            &format!(
+                "BlkPool name={} base={:#x} size={:#x}",
+                p.backing.name, p.base, p.backing.bytes
             ),
         );
     }
@@ -4985,6 +5284,18 @@ pub fn layout_test_image(
         base
     });
 
+    // plans/M7.md item D: the same `pooldata` reservation `layout_program`
+    // makes, for the same reason — a test image that declares a pool
+    // reserves its backing too, or the two image flavors would emit
+    // different memory maps for the same source (plans/M6.md item F/G's
+    // own rule that the two flavors emit and reject identically).
+    let pool_backings = image_pool_backings(boot.as_ref())?;
+    let placed_pools = place_pools(cursor, &pool_backings);
+    if let Some((_, _, _, end)) = &placed_pools {
+        cursor = *end;
+    }
+    let _ = cursor;
+
     // Now that `rtdata_base` is real, rebuild the address-dependent
     // fragments (glue routines + boot-init) at the identical word offsets
     // the placeholder pass already reserved — replacing their
@@ -5083,6 +5394,17 @@ pub fn layout_test_image(
             size: tables.total_bytes,
         });
     }
+    let pools: Vec<PoolPlacement> = match &placed_pools {
+        Some((pools, base, size, _)) => {
+            sections.push(Section {
+                name: "pooldata",
+                base: *base,
+                size: *size,
+            });
+            pools.clone()
+        }
+        None => Vec::new(),
+    };
 
     // --- resolve relocs ----------------------------------------------------
     // Internal-error audit: every guard in this harness loop is unreachable
@@ -5232,8 +5554,13 @@ pub fn layout_test_image(
         pad_to(&mut blob, image_base, rb);
         blob.resize(blob.len() + tables.total_bytes as usize, 0);
     }
+    if let Some((_, base, size, _)) = &placed_pools {
+        pad_to(&mut blob, image_base, *base);
+        blob.resize(blob.len() + *size as usize, 0);
+    }
 
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
+    verify_pool_windows(&sections, &pools)?;
 
     Ok(ImageLayout {
         blob,
@@ -5243,6 +5570,7 @@ pub fn layout_test_image(
         // (`bin/wrela.rs::test_cmd` now passes a real `BootCtx` — the item-C
         // sub-note's own "staged, named work" is this commit).
         runtime: runtime_tables,
+        pools,
     })
 }
 
@@ -5804,6 +6132,185 @@ fn two():
             rodata: Vec::new(),
         };
         assert!(layout_program(&program, None).is_err());
+    }
+
+    // --- pool placement + the decision-5 window oracle --------------------
+
+    use crate::eval::image_checks::PoolBacking;
+
+    fn backing(name: &str, bytes: u64, align: u64, device: Option<usize>) -> PoolBacking {
+        PoolBacking {
+            name: name.to_string(),
+            is_dma: device.is_some(),
+            payload: "Hdr".to_string(),
+            slots: 1,
+            slot_bytes: bytes,
+            bytes,
+            align,
+            device,
+        }
+    }
+
+    fn backings(list: Vec<PoolBacking>) -> BTreeMap<String, PoolBacking> {
+        list.into_iter().map(|b| (b.name.clone(), b)).collect()
+    }
+
+    #[test]
+    fn pools_are_placed_in_name_order_each_at_its_own_alignment() {
+        // Deterministic ordering is a hard requirement
+        // (`image.report.deterministic`): the only ordering input is the
+        // `BTreeMap` key, so declaration order in the `@image` fn cannot
+        // move a window.
+        let m = backings(vec![
+            backing("Zeta", 3, 1, None),
+            backing("Alpha", 5, 8, Some(0)),
+            backing("Mid", 2, 2, None),
+        ]);
+        let (pools, base, size, end) =
+            place_pools(0x1004, &m).expect("three pools reserve a section");
+        assert_eq!(base, 0x1008, "the section itself is 8-byte aligned");
+        let names: Vec<&str> = pools.iter().map(|p| p.backing.name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Mid", "Zeta"]);
+        assert_eq!(pools[0].base, 0x1008); // align 8
+        assert_eq!(pools[1].base, 0x100e); // 0x100d rounded up to align 2
+        assert_eq!(pools[2].base, 0x1010); // align 1, straight after
+        assert_eq!(end, 0x1013);
+        assert_eq!(size, end - base);
+        // Placing twice cannot disagree with itself.
+        assert_eq!(place_pools(0x1004, &m), Some((pools, base, size, end)));
+    }
+
+    #[test]
+    fn an_image_with_no_pool_reserves_no_pooldata_section() {
+        assert_eq!(place_pools(0x1000, &BTreeMap::new()), None);
+    }
+
+    /// plans/M7.md decision 5, on the compiler's side: every declared
+    /// window is pool backing and nothing else. The three ways that can be
+    /// false are each a real rejection, not a debug assertion.
+    #[test]
+    fn a_pool_window_outside_the_pooldata_section_is_refused() {
+        let sections = vec![
+            Section {
+                name: "rtdata",
+                base: 0x1000,
+                size: 0x100,
+            },
+            Section {
+                name: "pooldata",
+                base: 0x1100,
+                size: 0x40,
+            },
+        ];
+        let inside = vec![PoolPlacement {
+            backing: backing("A", 0x40, 8, Some(0)),
+            base: 0x1100,
+        }];
+        verify_pool_windows(&sections, &inside).expect("wholly inside its own section");
+
+        // One byte before the section — which is the last byte of
+        // `rtdata`, an actor's own state or mailbox.
+        let before = vec![PoolPlacement {
+            backing: backing("A", 0x40, 8, Some(0)),
+            base: 0x10ff,
+        }];
+        let err = verify_pool_windows(&sections, &before).expect_err("reaches into rtdata");
+        assert!(err.message.contains("not inside the `pooldata` section"));
+
+        // Straddling the end.
+        let past = vec![PoolPlacement {
+            backing: backing("A", 0x41, 8, Some(0)),
+            base: 0x1100,
+        }];
+        let err = verify_pool_windows(&sections, &past).expect_err("runs past the section");
+        assert!(err.message.contains("not inside the `pooldata` section"));
+    }
+
+    #[test]
+    fn two_overlapping_pool_windows_are_refused() {
+        let sections = vec![Section {
+            name: "pooldata",
+            base: 0x1000,
+            size: 0x100,
+        }];
+        let overlapping = vec![
+            PoolPlacement {
+                backing: backing("A", 0x20, 8, Some(0)),
+                base: 0x1000,
+            },
+            PoolPlacement {
+                backing: backing("B", 0x20, 8, None),
+                base: 0x1010,
+            },
+        ];
+        let err = verify_pool_windows(&sections, &overlapping).expect_err("A and B overlap");
+        assert!(
+            err.message.contains("overlapping windows"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn placed_windows_with_no_pooldata_section_are_refused() {
+        let sections = vec![Section {
+            name: "code",
+            base: 0x1000,
+            size: 0x100,
+        }];
+        let pools = vec![PoolPlacement {
+            backing: backing("A", 0x10, 8, Some(0)),
+            base: 0x1000,
+        }];
+        let err = verify_pool_windows(&sections, &pools).expect_err("no section to be inside of");
+        assert!(err.message.contains("reserves no `pooldata` section"));
+    }
+
+    /// The report line the VMM actually consumes (plans/M7.md item F's
+    /// `parse_report` learned `BlkPool name= base= size=`): exactly one
+    /// per *device-reachable* pool, and none at all for a pool no device
+    /// can reach. This is the artifact half of decision 5 — the list of
+    /// `BlkPool` lines is the whole of what the VMM maps.
+    #[test]
+    fn only_device_reachable_pools_become_blkpool_windows() {
+        let layout = ImageLayout {
+            blob: Vec::new(),
+            entry: 0x1000,
+            sections: vec![Section {
+                name: "pooldata",
+                base: 0x2000,
+                size: 0x30,
+            }],
+            runtime: None,
+            pools: vec![
+                PoolPlacement {
+                    backing: backing("Control", 0x10, 8, Some(0)),
+                    base: 0x2000,
+                },
+                PoolPlacement {
+                    backing: backing("Scratch", 0x20, 8, None),
+                    base: 0x2010,
+                },
+            ],
+        };
+        let mut out = String::new();
+        render_layout_section(&mut out, &layout);
+        let blk: Vec<&str> = out
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("BlkPool "))
+            .collect();
+        assert_eq!(blk, vec!["BlkPool name=Control base=0x2000 size=0x10"]);
+        // Both pools still get their own accounting line (03 §3's five
+        // declared facts), device-reachable or not.
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.trim_start().starts_with("Pool name="))
+                .count(),
+            2
+        );
+        assert!(out.contains("Pool name=Scratch kind=image"));
+        assert!(out.contains("device=none"));
     }
 
     // --- section-size verification ---------------------------------------

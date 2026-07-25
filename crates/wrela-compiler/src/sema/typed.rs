@@ -642,6 +642,18 @@ pub struct TypedProgram {
     /// below — evaluator-only bookkeeping, same reasoning as
     /// `TypedStruct::fields`/`TypedProgram::enums`.
     pub declared_pools: BTreeSet<String>,
+    /// Every `@layout` type this module declares, already checked and
+    /// laid out by `types::check_layouts` (plans/M7.md item B), in
+    /// declaration order. Carried forward for exactly one reason
+    /// (plans/M7.md item D): `eval::image_checks::check_pool_decls` has
+    /// to answer 03-hardware.md §3's "`T` is `@layout(dma)`" about an
+    /// `img.dma_pool[T]`'s own payload type, and `check_sealed` is handed
+    /// `TypedProgram`s and nothing else. `check_layouts` already ran (and
+    /// its rejections already fired) inside the sema pass that produced
+    /// this program — this field is that same pass's *table*, kept
+    /// instead of discarded, never a second computation. Not rendered by
+    /// `dump` below, same reasoning as `declared_pools` above.
+    pub layouts: Vec<types::LayoutType>,
 }
 
 // --- the `--stage=typed` dump (decision 2) --------------------------------

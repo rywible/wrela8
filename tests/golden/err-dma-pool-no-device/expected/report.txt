@@ -1,0 +1,1 @@
+error[build]: `img.dma_pool(name=Statuses, ...)` declares no `device=` — 03-hardware.md §3: all memory a device can reach originates from its bound pools, so a DMA pool with no device is memory nothing can reach

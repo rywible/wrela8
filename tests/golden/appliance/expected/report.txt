@@ -41,7 +41,9 @@ ImageReport v0
   Section name=checkpoint base=0x4050039c size=104
   Section name=rtcode base=0x40500404 size=1928
   Section name=rtdata base=0x40500b90 size=464
+  Section name=pooldata base=0x40500d60 size=32768
   Entry base=0x40500000
   Actor name=CacheActor mailbox=8 slot=16 frame=56 state=24
   Actor name=StatsActor mailbox=4 slot=24 frame=56 state=24
   Totals actors=2 ready_queue=3 group_arena=0 bytes=464
+  Pool name=CacheBuffers kind=image payload=u32 slots=8 slot_bytes=4096 base=0x40500d60 size=32768 align=8 coherency=coherent device=none
