@@ -1,0 +1,47 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/boot_cross_core_driver_mailbox.wr sha256=fc218a98979ea4a501d789cce0529e3735556e90229fd253ece87ca272d2f4a1
+  Name value=cross-core-driver-mailbox
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=Hw
+    Arg label=transport value=4096
+    Arg label=required_features value=[Feature.Flush]
+  Driver index=0 type=Stub
+    Mailbox value=4
+  Actor index=0 type=Probe
+    Mailbox value=4
+  Edge from=driver#0 to=device#0
+  Edge from=actor#0 to=driver#0
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+    Child value=actor#0
+  Placement id=driver#0 type=Stub core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Placement id=actor#0 type=Probe core=1 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=2128
+  Section name=rodata base=0x405008a0 size=510
+  Section name=abort base=0x40500aa0 size=120
+  Section name=checkpoint base=0x40500b18 size=104
+  Section name=rtcode base=0x40500b80 size=4340
+  Section name=rtdata base=0x40501c78 size=1368
+  Section name=devregs base=0x405021d0 size=8
+  Entry base=0x40500000
+  CoreEntry core=1 base=0x40501b30
+  CoreEntry core=2 base=0x40501b98
+  Actor name=Probe mailbox=4 slot=16 frame=280 state=8
+  Turn fn=cross_core_send_into_driver_mailbox frame=472
+  Driver name=Stub state=8 mailbox=4 slot=16 frame=56
+  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x405020c0
+  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x40502118
+  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40502170
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502198
+  Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=1368
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x405021d0 size=8

@@ -1,0 +1,48 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/boot_handle_index_distinct.wr sha256=ef9f0b3a654c1ab5af81fc96df6151e9c836f5bf1c77592bca8f13a635440c80
+  Name value=handle-index-distinct
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=Hw
+    Arg label=transport value=4096
+    Arg label=required_features value=[Feature.Flush]
+  Driver index=0 type=Stub
+    Arg label=n value=9
+  Actor index=0 type=Marker
+    Mailbox value=4
+    Arg label=n value=7
+  Actor index=1 type=Tags
+    Mailbox value=4
+  Edge from=driver#0 to=device#0
+  Edge from=actor#1 to=actor#0
+  Edge from=actor#1 to=driver#0
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=actor#0
+    Child value=driver#0
+    Child value=actor#1
+  Placement id=driver#0 type=Stub core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
+  Placement id=actor#0 type=Marker core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Placement id=actor#1 type=Tags core=0 source=inferred work=0 work_source=unproved bytes=104 bytes_state=16 bytes_mailbox=88 bytes_pool=0
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=2552
+  Section name=rodata base=0x40500a48 size=472
+  Section name=abort base=0x40500c20 size=120
+  Section name=checkpoint base=0x40500c98 size=104
+  Section name=rtcode base=0x40500d00 size=1944
+  Section name=rtdata base=0x40501498 size=1016
+  Section name=devregs base=0x40501890 size=8
+  Entry base=0x40500000
+  Actor name=Marker mailbox=4 slot=16 frame=56 state=8
+  Actor name=Tags mailbox=4 slot=16 frame=56 state=16
+  Turn fn=handle_words_are_distinct frame=664
+  Driver name=Stub state=8
+  Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=1016
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40501890 size=8
