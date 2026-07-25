@@ -1318,7 +1318,12 @@ pub(crate) fn is_protocol_consuming_type_name(name: &str) -> bool {
     ) || is_protocol_state_type_name(name)
 }
 
-/// Structural form of `is_protocol_consuming_type_name` over a `Type`.
+/// Name-only leaf of the protocol-consumption predicate. Composites and
+/// plain wrapper structs are answered by `sema::flow`'s
+/// `protocol_resource_carried`, which walks Option/array/tuple/`Result`/
+/// named fields the same way `type_contains_capability` does — item I's
+/// sweep found `Option[DeviceCap]` / `CapBundle { cap: DeviceCap }` drops
+/// silently accepted when this leaf was used alone.
 pub(crate) fn is_protocol_consuming_type(ty: &Type) -> bool {
     match ty {
         Type::Named(name, _) => is_protocol_consuming_type_name(name),

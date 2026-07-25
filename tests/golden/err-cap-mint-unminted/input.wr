@@ -1,17 +1,10 @@
 module examples.err_cap_mint_unminted
 
-# plans/M7.md item A: exactly one of 03-hardware.md §1's four capabilities
-# is minted by this item — `DeviceCap[D]`, from the `device=` binding §1
-# names. The other three need machinery that does not exist yet and fail
-# closed naming the item that builds it: `Mmio[L]` needs a claim to
-# partition (item C), `IrqCap[V]` needs a vector bound from the image
-# graph (item G), `DmaPool[P, N]` needs a real pool (item D — and
-# `img.dma_pool` itself still fails the whole build closed, gap
-# `image.graph.dma-pools`).
-#
-# 03 §1's own worked-example driver takes both a `DeviceCap` and a
-# `DmaPool`, so this is the exact shape M7 is walking toward; this golden
-# is the honest floor it walks from.
+# plans/M7.md: an `Mmio[L]` init parameter is not minted at the image
+# binding — the sealed transport hands one out from an already-claimed
+# device (`claimed.map_partition(L)`, 03-hardware.md §2/§9). `DeviceCap`
+# and `DmaPool` *are* minted at the binding; `IrqCap` is minted from a
+# declared `vector=` / `take_irq`. This golden pins the `Mmio` refusal.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

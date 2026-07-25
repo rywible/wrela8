@@ -1,0 +1,36 @@
+module examples.err_cap_drop_wrapped
+
+# plans/M7.md item I: protocol-consumption must reach through a plain
+# struct's fields — same shape as err-dma-shared-lend-wrapped. CapBundle
+# is a resource because it holds DeviceCap, but the drop check used to
+# ask only whether the root type *name* was a protocol type.
+
+struct BlockHw:
+    id: u32
+
+struct CapBundle:
+    cap: DeviceCap[BlockHw]
+
+@driver
+pub struct BlkDriver:
+    sectors: u64
+
+    init(mut self, take cap: DeviceCap[BlockHw], sectors: u64):
+        self.sectors = sectors
+        bundle = CapBundle(cap=take cap)
+        return
+
+    pub fn capacity(read self) -> u64:
+        return self.sectors
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-cap-drop-wrapped", target=Target.wrela_machine_v1)
+    blk_device = img.device[BlockHw](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk_device, sectors=131072)
+    img.supervise(
+        children=[disk],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

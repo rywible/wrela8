@@ -634,11 +634,78 @@ fn check_exit_obligations(
     check_protocol_consumption(state, fctx, wctx, span)
 }
 
+/// The protocol resource `ty` carries at any nesting, rendered — or
+/// `None`. Sibling of `sema::types::type_contains_capability`: Option /
+/// array / tuple / `Result` / `own` / `fn`, and a named type's declared
+/// components (struct fields and enum payloads), with an `Actor[T]` cut
+/// so a handle to a driver is not the driver's own `DeviceCap`.
+///
+/// plans/M7.md item I: `is_protocol_consuming_type` answered only the
+/// root `Named` leaf, so `Option[DeviceCap[D]]`, `[DeviceCap[D]; 1]`, and
+/// a plain `struct CapBundle { cap: DeviceCap[D] }` were droppable without
+/// claim — the same one-wrapper-deep hole `DmaShared`'s lend rejection
+/// had. The diagnostic names the *carried* type so a wrapper's spelling
+/// still says why (`golden/err-cap-drop-option`, `err-cap-drop-wrapped`).
+fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
+    fn walk(ty: &Type, mctx: &ModuleCtx, seen: &mut BTreeSet<String>) -> Option<String> {
+        use crate::sema::types::TypeArg;
+        match ty {
+            Type::Named(name, _)
+                if crate::eval::image_checks::is_protocol_consuming_type_name(name) =>
+            {
+                Some(types::render_type(ty))
+            }
+            Type::Named(name, _) if name == "Actor" => None,
+            Type::Array(elem, _) => walk(elem, mctx, seen),
+            Type::Tuple(elems) => elems.iter().find_map(|e| walk(e, mctx, seen)),
+            Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+                walk(inner, mctx, seen)
+            }
+            Type::Result(ok, err) => walk(ok, mctx, seen).or_else(|| walk(err, mctx, seen)),
+            Type::Fn(params, ret) => params
+                .iter()
+                .find_map(|(_, t)| walk(t, mctx, seen))
+                .or_else(|| walk(ret, mctx, seen)),
+            Type::Named(name, targs) => {
+                if !seen.insert(name.clone()) {
+                    return None;
+                }
+                let via_fields = mctx
+                    .structs
+                    .get(name.as_str())
+                    .and_then(|s| {
+                        s.decl
+                            .component_types
+                            .iter()
+                            .find_map(|(t, _)| walk(t, mctx, seen))
+                    })
+                    .or_else(|| {
+                        mctx.enums.get(name.as_str()).and_then(|e| {
+                            e.component_types
+                                .iter()
+                                .find_map(|(t, _)| walk(t, mctx, seen))
+                        })
+                    });
+                let via_targs = targs.iter().find_map(|a| match a {
+                    TypeArg::Type(t) => walk(t, mctx, seen),
+                    _ => None,
+                });
+                let found = via_fields.or(via_targs);
+                seen.remove(name);
+                found
+            }
+            _ => None,
+        }
+    }
+    walk(ty, mctx, &mut BTreeSet::new())
+}
+
 /// 02-language.md §3.1: "If its only consumers are protocol operations
 /// (capabilities, permits, receipts), every control-flow path must
 /// explicitly consume, return, or transfer it". A still-`Init` owned
-/// root of a protocol-consuming type is a drop — illegal in every state
-/// for a receipt, and the honesty hole E2 left open for a dropped permit.
+/// root that *carries* a protocol-consuming type is a drop — illegal in
+/// every state for a receipt, and the honesty hole E2 left open for a
+/// dropped permit. Wrappers count (item I): see `protocol_resource_carried`.
 fn check_protocol_consumption(
     state: &StateMap,
     fctx: &FnCtx,
@@ -663,14 +730,19 @@ fn check_protocol_consumption(
         let Some(ty) = fctx.lookup_local(name) else {
             continue;
         };
-        if !crate::eval::image_checks::is_protocol_consuming_type(&ty) {
+        let Some(found) = protocol_resource_carried(&ty, wctx.mctx) else {
             continue;
-        }
+        };
+        let rendered = types::render_type(&ty);
+        let subject = if rendered == found {
+            format!("`{name}` is a protocol resource (`{found}`)")
+        } else {
+            format!("`{name}` carries a protocol resource (`{found}`)")
+        };
         return Err(move_error(
             format!(
-                "`{name}` is a protocol resource (`{}`); every path must consume, return, or \
-                 transfer it (02-language.md §3.1 / 03-hardware.md §5) — dropping one is illegal",
-                types::render_type(&ty)
+                "{subject}; every path must consume, return, or \
+                 transfer it (02-language.md §3.1 / 03-hardware.md §5) — dropping one is illegal"
             ),
             span,
         ));
@@ -779,6 +851,17 @@ fn pattern_has_take(p: &Pattern) -> bool {
 /// Applies a pattern's move effect (if any) to `scrutinee`'s own storage
 /// path, if it has one (a fresh scrutinee — a call result — has nothing
 /// to move from).
+///
+/// Two reasons to move the whole place:
+/// 1. `take` appears anywhere in the pattern (existing rule).
+/// 2. plans/M7.md item I: the scrutinee *carries* a protocol resource
+///    but is not itself one by name (`Option[Receipt]`, `CapBundle`, …).
+///    Destructuring is how the inner value becomes reachable to consume;
+///    leaving the wrapper `Init` after the match would launder the drop
+///    check (`golden/boot-blk-roundtrip`'s `match slot` over
+///    `Option[Receipt]`). A bare `DeviceCap` / `Receipt` is *not* moved
+///    by a take-free match — that would invent a consume that skipped
+///    claim/publish.
 fn apply_pattern_move(
     scrutinee: &Expr,
     pattern: &Pattern,
@@ -786,8 +869,11 @@ fn apply_pattern_move(
     fctx: &FnCtx,
     wctx: &WCtx,
     span: Span,
+    scrutinee_ty: &Type,
 ) -> Result<(), SemaError> {
-    if !pattern_has_take(pattern) {
+    let move_protocol_wrapper = protocol_resource_carried(scrutinee_ty, wctx.mctx).is_some()
+        && !crate::eval::image_checks::is_protocol_consuming_type(scrutinee_ty);
+    if !pattern_has_take(pattern) && !move_protocol_wrapper {
         return Ok(());
     }
     let Some(path) = as_path(scrutinee, fctx, wctx.mctx) else {
@@ -904,6 +990,7 @@ fn walk_expr<'a>(
         Expr::Unary(span, UnaryOp::Await, inner) => {
             if let Some(path) = as_path(inner, fctx, wctx.mctx) {
                 if let Some(ty) = place_type(inner, fctx, wctx.mctx) {
+                    // Bare `Receipt[P]` only — wrappers do not await.
                     if crate::eval::image_checks::is_protocol_consuming_type(&ty) {
                         walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
                         check_takeable(&path, state, wctx, *span)?;
@@ -937,7 +1024,15 @@ fn walk_expr<'a>(
         Expr::Is(_, scrutinee, pattern) => {
             walk_expr(scrutinee, state, fctx, wctx, dstack, loop_marker)?;
             let sty = bodies::check_expr(scrutinee, None, fctx, wctx.mctx)?.ty;
-            apply_pattern_move(scrutinee, pattern, state, fctx, wctx, scrutinee.span())?;
+            apply_pattern_move(
+                scrutinee,
+                pattern,
+                state,
+                fctx,
+                wctx,
+                scrutinee.span(),
+                &sty,
+            )?;
             bodies::check_pattern(pattern, &sty, fctx, wctx.mctx)?;
             seed_pattern_bindings(pattern, state);
             Ok(())
@@ -1603,7 +1698,15 @@ fn walk_match<'a>(
         // binding from one arm's pattern never leaks into a sibling arm
         // or past the whole `match`.
         let outcome = bodies::scoped(fctx, |fctx| {
-            apply_pattern_move(&m.scrutinee, &arm.pattern, &mut st, fctx, wctx, arm.span)?;
+            apply_pattern_move(
+                &m.scrutinee,
+                &arm.pattern,
+                &mut st,
+                fctx,
+                wctx,
+                arm.span,
+                &sty,
+            )?;
             bodies::check_pattern(&arm.pattern, &sty, fctx, wctx.mctx)?;
             seed_pattern_bindings(&arm.pattern, &mut st);
             if let Some(g) = &arm.guard {

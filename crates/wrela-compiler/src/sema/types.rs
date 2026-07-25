@@ -378,12 +378,11 @@ pub fn declare(module: &Module) -> Result<Vec<DeclItem>, SemaError> {
 /// exact mismatch `err-dma-pool-own-mismatch` rejects in a fn signature —
 /// compiled clean and rendered a report.
 ///
-/// Refused at the declaration instead of silently unchecked. The real fix
-/// is to carry enum payload types into the typed tree so `check_pool_decls`
-/// can ask about them, which belongs to **plans/M7.md item E**: item E is
-/// what makes an `own[P] T` handle exist at runtime at all, and is the
-/// first item that could want one in an enum. Nothing in the docs'
-/// aspirational driver puts one there today (every `own[P] T` in
+/// Refused at the declaration instead of silently unchecked. `own[P] T`
+/// handles are real (plans/M7.md item E4), but enum payload types still do
+/// not reach `check_pool_decls`' declaration-surface walk — accepting one
+/// here would leave the handle's pool binding unchecked. Nothing in the
+/// docs' aspirational driver puts one in an enum today (every `own[P] T` in
 /// `docs/language/examples/virtio-storage.wr` is a parameter, a return, a
 /// struct field, an `Option` field, or an array element — all walked).
 fn validate_enum_own_handles(items: &[DeclItem]) -> Result<(), SemaError> {
@@ -413,12 +412,10 @@ fn validate_enum_own_handles(items: &[DeclItem]) -> Result<(), SemaError> {
                     "type",
                     format!(
                         "enum `{}` declares `{found}` in a variant payload; a pool handle there \
-                         is not implemented (plans/M7.md item E). The rule that gives `own[P] T` \
-                         its meaning — `T` is the payload type the image bound `P` with \
-                         (02-language.md §4, 03-hardware.md §3) — is checked over fn signatures, \
-                         struct fields and generic instantiations, and an enum payload reaches \
-                         none of them, so accepting this would leave the handle's own pool \
-                         binding unchecked. Hold it in a struct field instead",
+                         does not reach the pool-binding check (02-language.md §4 / 03-hardware.md \
+                         §3: `T` is the payload type the image bound `P` with — checked over fn \
+                         signatures, struct fields and generic instantiations, not enum payloads). \
+                         Hold it in a struct field instead",
                         e.name
                     ),
                     *span,
@@ -2428,10 +2425,10 @@ pub fn dump_layouts(by_module: &[(String, Vec<LayoutType>)]) -> String {
 //   an image-graph question (`img.driver(A, device=d)` twice), and the
 //   graph checks live in `eval::image_checks`, not here. This pass is
 //   per-driver and says so: it cannot see the graph, so it cannot see two
-//   drivers sharing a claim. Owned by whoever makes `Mmio[L]` mintable at
-//   the binding (`check_capability_substitution`'s own `Mmio` arm, still
-//   failing closed by name today — see `check_mmio_access` in
-//   `sema::bodies` for the whole blocked-mint story).
+//   drivers sharing a claim. `Mmio[L]` is minted by the sealed transport
+//   (`claim`/`map_partition`, plans/M7.md item H1), not at the image binding;
+//   the cross-driver half still belongs in `eval::image_checks` when two
+//   drivers can share a device.
 // - **A plain struct holding an `Mmio[L]`, held by no driver.** It mints
 //   nothing, because nothing gives it a claim; provenance already rejects
 //   any fn that touches it without a driver's authority.
