@@ -899,6 +899,18 @@ mod layout_tests {
         assert_eq!(size_of(&Type::Unit, &ctx), Ok(8));
     }
 
+    /// plans/M7.md item H2a: `Untrusted[T]` is a transparent newtype —
+    /// sized exactly as its payload, no extra tag or field.
+    #[test]
+    fn untrusted_is_sized_as_its_payload() {
+        use crate::sema::types::TypeArg;
+        let ctx = LayoutCtx::default();
+        let u = Type::Named("Untrusted".to_string(), vec![TypeArg::Type(Type::Usize)]);
+        assert_eq!(size_of(&u, &ctx), Ok(8));
+        let u32_u = Type::Named("Untrusted".to_string(), vec![TypeArg::Type(Type::U32)]);
+        assert_eq!(size_of(&u32_u, &ctx), size_of(&Type::U32, &ctx));
+    }
+
     #[test]
     fn array_size_is_element_stride_times_len() {
         let ctx = LayoutCtx::default();
