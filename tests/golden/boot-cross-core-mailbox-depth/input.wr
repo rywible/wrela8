@@ -1,0 +1,106 @@
+module examples.boot_cross_core_mailbox_depth
+
+# plans/M8.md item H Target C — mailbox depth under three cores, and the
+# back-pressure decision 29 named: a full mailbox holds the ring message
+# rather than dropping it.
+#
+# `Sink` is declared `mailbox=1` on core 1. Two producers — `Near` on core 0
+# and `Far` on core 2 — each publish one cross-core message into it. Under
+# decision 11's baton both messages sit in their request rings before core 1
+# drains; the drain walks `src=0` then `src=2`, admits Near's into the one
+# mailbox slot, and **holds** Far's in its ring when `__rt_enqueue_Sink`
+# rejects (mailbox full). That hold is back-pressure. Widening `mailbox=`
+# to 2 would admit both in one drain pass and this golden's transcript
+# would still pass — so the depth is not what the asserts measure alone.
+#
+# **What the transcript makes impossible without back-pressure.**
+# 1. `Near`'s await returns `1`, not `11` — Far's earlier-published `+10`
+#    was not admitted first (same order fact as
+#    `boot-cross-core-admission-order`, now under depth 1).
+# 2. After Near returns, `Sink.total` is `11` — Far's held `+10` was
+#    admitted later, not dropped. Invert the drain's rejection test (pop on
+#    reject) and (2) fails: total stays `1`.
+#
+# Far uses a bare `send` (decision 31 refuses an await/checkpoint on a
+# secondary core). Ring capacity equals mailbox capacity (decision 29), so
+# a forged "mailbox shallower than its feeding ring" cannot be built from
+# source — that shape is a report-forgery concern, not a boot golden.
+
+@actor
+pub struct Sink:
+    n: u64
+
+    init(mut self):
+        self.n = 0
+
+    pub fn add(mut self, by: u64) -> u64:
+        self.n = self.n + by
+        return self.n
+
+    pub fn bump(mut self, by: u64) -> unit:
+        self.n = self.n + by
+        return unit
+
+    pub fn total(read self) -> u64:
+        return self.n
+
+@actor
+pub struct Near:
+    sink: Actor[Sink]
+
+    pub async fn go(read self) -> u64:
+        v = await self.sink.add(by=1)
+        match v:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0
+
+@actor
+pub struct Far:
+    sink: Actor[Sink]
+
+    pub async fn kick(read self) -> u64:
+        match send self.sink.bump(by=10):
+            case .Ok(_):
+                return 7
+            case .Err(_):
+                return 0
+
+@test(runtime)
+async fn mailbox_depth_backpressures_under_three_cores(
+    near: Actor[Near], far: Actor[Far], sink: Actor[Sink]
+):
+    k = await far.kick()
+    match k:
+        case .Ok(n):
+            assert n == 7, "Far ran its turn on core 2"
+        case .Err(_):
+            assert false, "Far rejected"
+    x = await near.go()
+    match x:
+        case .Ok(n):
+            assert n == 1, "Near's +1 admitted first into the depth-1 mailbox"
+        case .Err(_):
+            assert false, "Near rejected"
+    # Far's held +10 must have been admitted after the mailbox freed —
+    # otherwise back-pressure silently dropped it and total stays 1.
+    t = await sink.total()
+    match t:
+        case .Ok(n):
+            assert n == 11, "Far's back-pressured +10 was admitted later, not dropped"
+        case .Err(_):
+            assert false, "Sink.total rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cross-core-mailbox-depth", target=Target.wrela_machine_v1)
+    sink = img.actor(Sink, mailbox=1, core=1)
+    near = img.actor(Near, mailbox=4, core=0, sink=sink)
+    far = img.actor(Far, mailbox=4, core=2, sink=sink)
+    img.supervise(
+        children=[sink, near, far],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

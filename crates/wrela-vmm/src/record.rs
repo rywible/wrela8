@@ -364,6 +364,13 @@ pub enum Divergence {
         recorded: String,
         actual: String,
     },
+    /// plans/M8.md item H Target B: the recording and this boot disagree on
+    /// *how many* admissions happened — an `Admission` was deleted from the
+    /// log, a spurious one was inserted, or the guest admitted fewer/more
+    /// than recorded. Distinct from a generic choice-log underrun/overrun
+    /// so a count tamper is caught by name (06 §8: the choice sequence is
+    /// enumerable and replay is exact).
+    AdmissionCountMismatch { index: usize, detail: String },
 }
 
 impl std::fmt::Display for Divergence {
@@ -405,11 +412,45 @@ impl std::fmt::Display for Divergence {
                 index,
                 recorded,
                 actual,
-            } => write!(
-                f,
-                "choice #{index} admission mismatch: recorded `{recorded}`, this boot's guest admitted `{actual}`"
-            ),
+            } => {
+                // Name the field(s) that disagree — a tamper that only
+                // swaps senders must say `sender`, not a generic mismatch.
+                let field = admission_mismatch_fields(recorded, actual);
+                write!(
+                    f,
+                    "choice #{index} admission mismatch ({field}): recorded `{recorded}`, this \
+                     boot's guest admitted `{actual}`"
+                )
+            }
+            Divergence::AdmissionCountMismatch { index, detail } => {
+                write!(f, "choice #{index} admission count mismatch: {detail}")
+            }
         }
+    }
+}
+
+/// Which `Admission` fields disagree between a recorded entry and what this
+/// boot witnessed. Empty only if the two strings are equal (caller should
+/// not reach Display in that case).
+fn admission_mismatch_fields(recorded: &str, actual: &str) -> String {
+    fn pick<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+        s.split_whitespace().find_map(|p| p.strip_prefix(key))
+    }
+    let rm = pick(recorded, "mailbox=");
+    let am = pick(actual, "mailbox=");
+    let rs = pick(recorded, "sender=");
+    let as_ = pick(actual, "sender=");
+    let mut fields = Vec::new();
+    if rm != am {
+        fields.push("mailbox");
+    }
+    if rs != as_ {
+        fields.push("sender");
+    }
+    if fields.is_empty() {
+        "entry".to_string()
+    } else {
+        fields.join("+")
     }
 }
 
@@ -487,10 +528,20 @@ impl Chooser {
             }
             ChooserMode::Replay { log, idx } => {
                 let Some(entry) = log.get(*idx).cloned() else {
-                    self.divergences.push(Divergence::ChoiceLogUnderrun {
-                        index: *idx,
-                        recorded: log.len(),
-                    });
+                    let index = *idx;
+                    let recorded = log.len();
+                    if matches!(request, ChoiceRequest::Admission { .. }) {
+                        self.divergences.push(Divergence::AdmissionCountMismatch {
+                            index,
+                            detail: format!(
+                                "this boot admitted an entry the recording does not have \
+                                 (recorded {recorded} choice(s); guest asked for Admission)"
+                            ),
+                        });
+                    } else {
+                        self.divergences
+                            .push(Divergence::ChoiceLogUnderrun { index, recorded });
+                    }
                     let fallback = request.fallback();
                     self.log.push(fallback.clone());
                     return fallback;
@@ -550,10 +601,26 @@ impl Chooser {
         let mut divergences = self.divergences;
         if let ChooserMode::Replay { log, idx } = &self.mode {
             if *idx < log.len() {
-                divergences.push(Divergence::ChoiceLogOverrun {
-                    consumed: *idx,
-                    recorded: log.len(),
-                });
+                let leftover = &log[*idx..];
+                let admission_leftovers = leftover
+                    .iter()
+                    .filter(|e| matches!(e, ChoiceEntry::Admission { .. }))
+                    .count();
+                if admission_leftovers > 0 {
+                    divergences.push(Divergence::AdmissionCountMismatch {
+                        index: *idx,
+                        detail: format!(
+                            "recording has {admission_leftovers} unconsumed Admission choice(s) \
+                             this boot never performed (consumed {idx} of {} recorded)",
+                            log.len()
+                        ),
+                    });
+                } else {
+                    divergences.push(Divergence::ChoiceLogOverrun {
+                        consumed: *idx,
+                        recorded: log.len(),
+                    });
+                }
             }
         }
         (self.log, divergences)
@@ -985,5 +1052,78 @@ mod tests {
                 recorded: 2
             }]
         );
+    }
+
+    /// plans/M8.md item H Target B: an Admission underrun/overrun is named
+    /// as a count mismatch, not a generic choice-log exhaustion.
+    #[test]
+    fn admission_count_tampers_are_named_not_generic() {
+        let mut c = Chooser::replayer(vec![]);
+        let _ = c.choose_next(
+            ChoiceRequest::Admission {
+                mailbox: "Sink".into(),
+                sender: "core0".into(),
+            },
+            || panic!("replay must never call live"),
+        );
+        let (_, divs) = finish_chooser(c);
+        assert_eq!(divs.len(), 1);
+        let msg = divs[0].to_string();
+        assert!(
+            msg.contains("admission count mismatch") && msg.contains("does not have"),
+            "{msg}"
+        );
+
+        let mut c = Chooser::replayer(vec![
+            ChoiceEntry::Admission {
+                mailbox: "Sink".into(),
+                sender: "core0".into(),
+            },
+            ChoiceEntry::Admission {
+                mailbox: "Sink".into(),
+                sender: "core2".into(),
+            },
+        ]);
+        let _ = c.choose_next(
+            ChoiceRequest::Admission {
+                mailbox: "Sink".into(),
+                sender: "core0".into(),
+            },
+            || panic!("live"),
+        );
+        let (_, divs) = finish_chooser(c);
+        let msg = divs[0].to_string();
+        assert!(
+            msg.contains("admission count mismatch") && msg.contains("unconsumed Admission"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn admission_mismatch_display_names_the_diverging_field() {
+        let sender_only = Divergence::AdmissionMismatch {
+            index: 1,
+            recorded: "Admission mailbox=Sink sender=core0".into(),
+            actual: "Admission mailbox=Sink sender=core2".into(),
+        };
+        let msg = sender_only.to_string();
+        assert!(msg.contains("admission mismatch (sender)"), "{msg}");
+        assert!(!msg.contains("(mailbox)"), "{msg}");
+
+        let mailbox_only = Divergence::AdmissionMismatch {
+            index: 0,
+            recorded: "Admission mailbox=Far sender=core0".into(),
+            actual: "Admission mailbox=Sink sender=core0".into(),
+        };
+        let msg = mailbox_only.to_string();
+        assert!(msg.contains("admission mismatch (mailbox)"), "{msg}");
+
+        let both = Divergence::AdmissionMismatch {
+            index: 0,
+            recorded: "Admission mailbox=Far sender=core0".into(),
+            actual: "Admission mailbox=Sink sender=core2".into(),
+        };
+        let msg = both.to_string();
+        assert!(msg.contains("admission mismatch (mailbox+sender)"), "{msg}");
     }
 }

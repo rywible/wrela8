@@ -4630,7 +4630,94 @@ fn repro() -> Result<(), String> {
     repro_deadline_cancel_replay_is_clock_log_driven(&vmm)?;
     repro_blk_completion_replay(&vmm)?;
     repro_cross_core_admission_replay(&vmm)?;
+    repro_cross_core_mailbox_depth_admissions(&vmm)?;
     repro_replay_exit_code_contract(&vmm)
+}
+
+/// plans/M8.md item H Target C: the depth-1 mailbox under three cores
+/// records both eventual admissions (Near then Far). Back-pressure is
+/// not itself a choice entry — under the baton it is deterministic — but
+/// the choice sequence must still name both messages once they admit, or
+/// a drain that dropped the held message would look identical to one that
+/// held it until the transcript assert (`total == 11`) fired.
+fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
+    const CASE: &str = "boot-cross-core-mailbox-depth";
+    let (img_bytes, report_text) = golden_test_image(CASE)?;
+    let tmp_dir = root().join("target/repro-mailbox-depth-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE}'s recording boot failed (exit {record_exit}):\n{}{}",
+            String::from_utf8_lossy(&record_out.stdout),
+            String::from_utf8_lossy(&record_out.stderr)
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    let admissions: Vec<&str> = record_text
+        .lines()
+        .filter_map(|l| l.split_once("]=").map(|(_, rhs)| rhs))
+        .filter(|rhs| rhs.starts_with("Admission "))
+        .collect();
+    // Far is messaged first (kick), Near second (go); Sink admits Near
+    // (core0) first then Far (core2) — and both must appear, or the held
+    // message was dropped rather than back-pressured.
+    let expected = [
+        "Admission mailbox=Far sender=core0",
+        "Admission mailbox=Sink sender=core0",
+        "Admission mailbox=Sink sender=core2",
+        // root's final `await sink.total()` — also cross-core into Sink.
+        "Admission mailbox=Sink sender=core0",
+    ];
+    if admissions != expected {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE} recorded {:?}, expected {:?} — Sink must admit Near (core0), then \
+             Far's held +10 (core2), then the root's total() read (core0); omitting Sink/core2 \
+             would mean the drain dropped the back-pressured message",
+            admissions, expected
+        ));
+    }
+    let replay_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if replay_exit != record_exit {
+        return Err(format!(
+            "repro: {CASE} replayed with exit {replay_exit}, expected {record_exit}:\n{}",
+            String::from_utf8_lossy(&replay_out.stderr)
+        ));
+    }
+    println!(
+        "repro: tests/golden/{CASE}'s depth-1 mailbox under three cores records both eventual \
+         Sink admissions (core0 then core2) and replays clean — back-pressure holds, it does \
+         not drop, and the choice sequence names both"
+    );
+    Ok(())
 }
 
 /// plans/M8.md item C3, decision 42 (and the milestone's own exit
@@ -4749,74 +4836,201 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
         ));
     }
 
-    // (3) The tamper: **invert the admission order at `Sink`** — swap the
-    // producing cores of its two entries and leave every other byte of the
-    // log exactly as recorded. Both tampered lines are individually
-    // plausible (each names a core that really does produce into `Sink`),
-    // so the only thing wrong with the log is the *order*, which is the
-    // fact this whole item exists to record. A tamper that broke a line's
-    // shape, or named a core that produces nothing, would be caught by
-    // something weaker.
-    let sink_prefix = "Admission mailbox=Sink sender=";
-    let swapped_sender = |line: &str| -> Option<String> {
-        let (head, rhs) = line.split_once("]=")?;
-        let sender = rhs.strip_prefix(sink_prefix)?;
-        let other = match sender {
-            "core0" => "core2",
-            "core2" => "core0",
-            _ => return None,
-        };
-        Some(format!("{head}]={sink_prefix}{other}"))
-    };
-    let mut tampered = String::new();
-    let mut swapped = 0usize;
-    for line in record_text.lines() {
-        match swapped_sender(line) {
-            Some(rewritten) => {
-                swapped += 1;
-                tampered.push_str(&rewritten);
-            }
-            None => tampered.push_str(line),
+    // (3) Tampers — every one must be caught **by name**, naming the field
+    // that diverged (plans/M8.md item H Target B). A tamper that replays
+    // clean is a hole in the recorder's own contract (06 §8).
+    struct Tamper {
+        name: &'static str,
+        /// Substring the stderr must contain (the named divergence).
+        expect: &'static str,
+        apply: fn(&str) -> String,
+    }
+    let tampers: &[Tamper] = &[
+        Tamper {
+            name: "invert Sink admission order (sender)",
+            expect: "admission mismatch (sender)",
+            apply: |text| {
+                let sink_prefix = "Admission mailbox=Sink sender=";
+                let mut out = String::new();
+                for line in text.lines() {
+                    if let Some((head, rhs)) = line.split_once("]=") {
+                        if let Some(sender) = rhs.strip_prefix(sink_prefix) {
+                            let other = match sender {
+                                "core0" => "core2",
+                                "core2" => "core0",
+                                _ => sender,
+                            };
+                            out.push_str(&format!("{head}]={sink_prefix}{other}\n"));
+                            continue;
+                        }
+                    }
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                out
+            },
+        },
+        Tamper {
+            name: "tamper sender core on Far",
+            expect: "admission mismatch (sender)",
+            apply: |text| {
+                text.replace(
+                    "Admission mailbox=Far sender=core0",
+                    "Admission mailbox=Far sender=core2",
+                )
+            },
+        },
+        Tamper {
+            name: "tamper mailbox identity",
+            expect: "admission mismatch (mailbox)",
+            apply: |text| {
+                text.replace(
+                    "Admission mailbox=Far sender=core0",
+                    "Admission mailbox=Ghost sender=core0",
+                )
+            },
+        },
+        Tamper {
+            name: "drop last Admission",
+            expect: "admission count mismatch",
+            apply: |text| {
+                // Delete the last Admission line and renumber + recount so
+                // the file still parses — otherwise parse fails before
+                // replay can name the count mismatch.
+                let mut choice_lines: Vec<String> = Vec::new();
+                let mut trailer: Vec<String> = Vec::new();
+                for line in text.lines() {
+                    if line.starts_with("choice[") {
+                        choice_lines.push(line.to_string());
+                    } else if line.starts_with("ChoiceLog") || line.starts_with("choice_count=") {
+                        // rebuilt below
+                    } else if !line.is_empty() {
+                        trailer.push(line.to_string());
+                    }
+                }
+                let idx = choice_lines
+                    .iter()
+                    .rposition(|l| l.contains("]=Admission "))
+                    .expect("at least one Admission");
+                choice_lines.remove(idx);
+                let mut out = String::from("ChoiceLog v1\n");
+                out.push_str(&format!("choice_count={}\n", choice_lines.len()));
+                for (i, line) in choice_lines.iter().enumerate() {
+                    let rhs = line.split_once("]=").map(|(_, r)| r).unwrap_or(line);
+                    out.push_str(&format!("choice[{i}]={rhs}\n"));
+                }
+                for t in trailer {
+                    out.push_str(&t);
+                    out.push('\n');
+                }
+                out
+            },
+        },
+        Tamper {
+            name: "add spurious Admission",
+            expect: "admission count mismatch",
+            apply: |text| {
+                let mut choice_lines: Vec<String> = Vec::new();
+                let mut trailer: Vec<String> = Vec::new();
+                for line in text.lines() {
+                    if line.starts_with("choice[") {
+                        choice_lines.push(line.to_string());
+                    } else if line.starts_with("ChoiceLog") || line.starts_with("choice_count=") {
+                    } else if !line.is_empty() {
+                        trailer.push(line.to_string());
+                    }
+                }
+                choice_lines.push("choice[N]=Admission mailbox=Spurious sender=core1".to_string());
+                let mut out = String::from("ChoiceLog v1\n");
+                out.push_str(&format!("choice_count={}\n", choice_lines.len()));
+                for (i, line) in choice_lines.iter().enumerate() {
+                    let rhs = line.split_once("]=").map(|(_, r)| r).unwrap_or(line);
+                    out.push_str(&format!("choice[{i}]={rhs}\n"));
+                }
+                for t in trailer {
+                    out.push_str(&t);
+                    out.push('\n');
+                }
+                out
+            },
+        },
+        Tamper {
+            name: "reorder across different mailboxes",
+            expect: "admission mismatch (mailbox)",
+            apply: |text| {
+                // Swap Far/core0 with the first Sink entry — two different
+                // mailboxes change place. Caught as a mailbox field mismatch
+                // at the first swapped position.
+                let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+                let far_i = lines
+                    .iter()
+                    .position(|l| l.contains("]=Admission mailbox=Far "))
+                    .expect("Far admission");
+                let sink_i = lines
+                    .iter()
+                    .position(|l| l.contains("]=Admission mailbox=Sink "))
+                    .expect("Sink admission");
+                // Swap only the RHS (keep choice[N]= indices stable).
+                let rhs = |l: &str| l.split_once("]=").map(|(_, r)| r.to_string());
+                let far_rhs = rhs(&lines[far_i]).unwrap();
+                let sink_rhs = rhs(&lines[sink_i]).unwrap();
+                let far_head = lines[far_i].split_once("]=").unwrap().0.to_string();
+                let sink_head = lines[sink_i].split_once("]=").unwrap().0.to_string();
+                lines[far_i] = format!("{far_head}]={sink_rhs}");
+                lines[sink_i] = format!("{sink_head}]={far_rhs}");
+                let mut out = lines.join("\n");
+                out.push('\n');
+                out
+            },
+        },
+    ];
+
+    let mut reports = Vec::new();
+    for (i, tamper) in tampers.iter().enumerate() {
+        let tampered = (tamper.apply)(&record_text);
+        if tampered == record_text {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Err(format!(
+                "repro: tamper {:?} left the record unchanged",
+                tamper.name
+            ));
         }
-        tampered.push('\n');
+        let tampered_path = tmp_dir.join(format!("boot.tampered-{i}.txt"));
+        std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
+        let tampered_out = Command::new(vmm)
+            .arg(&report_path)
+            .arg(&img_path)
+            .arg("--replay")
+            .arg(&tampered_path)
+            .output()
+            .map_err(|e| format!("run wrela-vmm --replay (tampered {}): {e}", tamper.name))?;
+        let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+        let stderr = String::from_utf8_lossy(&tampered_out.stderr).to_string();
+        if tampered_exit != EXIT_REPLAY_DIVERGENCE {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Err(format!(
+                "repro: tamper {:?} replayed with exit {tampered_exit}, expected \
+                 {EXIT_REPLAY_DIVERGENCE} (a determinism finding must never be mistaken for a \
+                 successful replay):\n{stderr}",
+                tamper.name
+            ));
+        }
+        if !stderr.contains(tamper.expect) {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Err(format!(
+                "repro: tamper {:?} diverged, but not by name — stderr must contain {:?}:\n{stderr}",
+                tamper.name, tamper.expect
+            ));
+        }
+        reports.push(format!("{:?} → {}", tamper.name, tamper.expect));
     }
-    if swapped != 2 {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(format!(
-            "repro: expected 2 `Sink` admission lines to invert, found {swapped}"
-        ));
-    }
-    let tampered_path = tmp_dir.join("boot.tampered.txt");
-    std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
-    let tampered_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&tampered_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
-    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
-    let stderr = String::from_utf8_lossy(&tampered_out.stderr).to_string();
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    if tampered_exit != EXIT_REPLAY_DIVERGENCE {
-        return Err(format!(
-            "repro: a tampered admission choice replayed with exit {tampered_exit}, expected \
-             {EXIT_REPLAY_DIVERGENCE} (a determinism finding must never be mistaken for a \
-             successful replay):\n{stderr}"
-        ));
-    }
-    if !stderr.contains("admission mismatch") {
-        return Err(format!(
-            "repro: the tampered {CASE} replay diverged, but not by name — stderr must say which \
-             admission disagreed:\n{stderr}"
-        ));
-    }
     println!(
-        "repro: tests/golden/{CASE}'s {} cross-core admission(s) — two producing cores into one \
-         mailbox — record and replay byte-stable, and an inverted admission order is caught by \
-         name (witness-only: the guest performs the admission, the recorder witnesses it, replay \
-         checks it)",
-        admissions.len()
+        "repro: tests/golden/{CASE}'s {} cross-core admission(s) — record and replay byte-stable; \
+         {} named tampers each caught by field:\n  {}",
+        admissions.len(),
+        reports.len(),
+        reports.join("\n  ")
     );
     Ok(())
 }
