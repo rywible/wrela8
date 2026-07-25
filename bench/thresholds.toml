@@ -17,7 +17,25 @@
 # threshold is 10x that, rounded up to a clean number — loose on purpose,
 # so it catches an algorithmic blowup (e.g. an accidental O(n^2)) and never
 # a false alarm from ordinary machine noise.
-full_corpus_median_us = 60000
+# Re-measured and re-locked at plans/M8.md item C1 (2026-07-25), for the
+# identical reason (and by the identical methodology) as
+# `check_golden_median_us`' own M6-A re-lock below: the corpus's legitimate
+# growth across every milestone since the original 58-entry lock — 423
+# entries now, of which item C1 itself added two (`boot-cross-core`,
+# `err-placement-cross-core-send`) — had pushed the debug-build median past
+# a threshold that was never re-measured as the corpus grew. Before/after
+# on this machine, several runs of 15 timed iterations each: 421 entries
+# median 52860us; 423 entries median 55954us, and 61360-62122us when the
+# machine is already hot from the full `xtask check` run that precedes this
+# lane (which is how it is always measured in the gate). Nothing in item C1
+# touches the lexer or parser, which is all this lane times.
+#
+# Known, still-open methodology risk (GOAL.md's own "the compiler-lane locks
+# are losing resolution"): a whole-corpus *absolute* lock dilutes every time
+# a golden is added, so a real per-entry regression can hide inside corpus
+# growth. The fix is to lock microseconds *per entry*; that is a methodology
+# change and gets its own commit, deliberately not smuggled into this one.
+full_corpus_median_us = 600000
 
 # `cargo xtask bench compiler`'s check lane (plans/M2.md item I): median
 # wall time (microseconds) for one full pass of lex+parse+`sema::check`
