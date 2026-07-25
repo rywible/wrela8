@@ -461,6 +461,15 @@ pub(crate) struct FnCtx {
     /// site to attach to. Counted rather than flagged so nested matches
     /// (an `Unknown` arm containing another `match`) restore correctly.
     unknown_outcome_arms: usize,
+    /// plans/M8.md item H attack 1: pool brand a `VirtQueue.recover` just
+    /// quarantined on a named queue place, keyed by that place
+    /// (`self.queue`, a local, …). `reclaim`'s `pool=`/`payload=` must
+    /// match — the declaration otherwise mints an `own[P2]` handle whose
+    /// bytes still belong to `P1` (04-compiler.md §1: "DMA ownership
+    /// transitions are valid"). Restored across `match` arms with the
+    /// arm's own scope so a brand cannot leak into a sibling arm or past
+    /// the match.
+    quarantined_by_queue: BTreeMap<String, (String, String)>,
 }
 
 impl FnCtx {
@@ -472,6 +481,7 @@ impl FnCtx {
             group_children: BTreeMap::new(),
             in_async: false,
             unknown_outcome_arms: 0,
+            quarantined_by_queue: BTreeMap::new(),
         }
     }
 
@@ -1380,11 +1390,13 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
         // Pattern bindings, guard, and body all share one pushed scope
         // per arm: a binding from one arm's pattern must not leak into a
         // sibling arm or past the whole `match`, exactly like an
-        // `if`/`elif`/`else` branch.
+        // `if`/`elif`/`else` branch. The reclaim-quarantine map restores
+        // with the same boundary (plans/M8.md item H attack 1).
         let unknown_arm = outcome_match && pattern_can_match_unknown(&arm.pattern);
         if unknown_arm {
             fctx.unknown_outcome_arms += 1;
         }
+        let saved_quarantine = fctx.quarantined_by_queue.clone();
         let checked = scoped(fctx, |fctx| {
             let pattern = check_pattern(&arm.pattern, &sty, fctx, mctx)?;
             let guard = match &arm.guard {
@@ -1394,6 +1406,7 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
             let body = check_stmts(&arm.body, fctx, mctx)?;
             Ok((pattern, guard, body))
         });
+        fctx.quarantined_by_queue = saved_quarantine;
         if unknown_arm {
             fctx.unknown_outcome_arms -= 1;
         }
@@ -6576,6 +6589,14 @@ fn check_virtqueue_recover(
             ));
         }
     }
+    // plans/M8.md item H attack 1: remember the receipt's `own[P] T` brand
+    // on this queue place so a later `reclaim` cannot declare a different
+    // pool and mint a confused handle.
+    if let Some(key) = virtqueue_place_key(&queue) {
+        if let Some(brand) = receipt_own_brand(&receipt.ty) {
+            fctx.quarantined_by_queue.insert(key, brand);
+        }
+    }
     Ok(TypedExpr {
         ty: Type::Named("CompletionOutcome".to_string(), vec![]),
         kind: TypedExprKind::Intrinsic {
@@ -6604,12 +6625,15 @@ fn check_virtqueue_recover(
 /// payload are the same two diagnostics they are in any annotation.
 ///
 /// **What the declaration cannot lie about.** The address handed back is
-/// the quarantined slot's own payload word, so the *bytes* are the
-/// abandoned buffer's whatever is written here; the declaration decides
-/// only which pool the language believes the handle belongs to. Checking
-/// that against the queue's own device is a build-time rule this item
-/// deliberately did not add — see the ledger note's thin list, and item
-/// P's decision 27 for the identical, already-recorded trade.
+/// the quarantined slot's own payload word, so the *bytes* are always the
+/// abandoned buffer's; the declaration decides which pool the language
+/// believes the handle belongs to. plans/M8.md item H attack 1 closes the
+/// pool-brand half at build time: `pool=`/`payload=` must match the
+/// `own[P] T` brand of the `recover` that quarantined this queue's slot in
+/// the same function (same `match` arm). A wrong brand would otherwise
+/// survive any path that never reaches a later `publish`/`Receipt` store.
+/// Checking the handle against the queue's *device* stays the deliberate
+/// trade item P recorded as decision 27 — that is a different sentence.
 fn check_virtqueue_reclaim(
     queue: TypedExpr,
     args: &[Arg],
@@ -6620,6 +6644,8 @@ fn check_virtqueue_reclaim(
 ) -> Result<TypedExpr, SemaError> {
     let _ = fspan;
     let (pool, payload) = reclaim_declaration(args, call_span)?;
+    // Shape first: undeclared pool / non-dma payload keep the diagnostics
+    // they have in any `own[P] T` annotation (`golden/err-reclaim-payload-not-dma`).
     let ast_ty = ast::Type::Own(Box::new(ast::OwnType {
         span: call_span,
         pool: vec![pool.1.clone()],
@@ -6644,6 +6670,50 @@ fn check_virtqueue_reclaim(
             ));
         }
     }
+    // Brand second (plans/M8.md item H attack 1): the declaration must
+    // match the `own[P] T` `recover` quarantined on this queue place.
+    let Some(key) = virtqueue_place_key(&queue) else {
+        return Err(type_error(
+            "`reclaim` needs a named `VirtQueue` place (a local or a field) so its \
+             `pool=` can be checked against the brand `recover` quarantined on that \
+             queue (plans/M8.md item H; 04-compiler.md §1: DMA ownership transitions \
+             are valid)"
+                .to_string(),
+            call_span,
+        ));
+    };
+    let Some((expected_pool, expected_payload)) = fctx.quarantined_by_queue.remove(&key) else {
+        return Err(type_error(
+            "`reclaim` on this queue has no preceding `recover` in this scope whose \
+             receipt brands a pool; write `recover` first, then \
+             `reclaim(pool=<that brand>, payload=...)` (plans/M8.md item H / \
+             03-hardware.md §9)"
+                .to_string(),
+            call_span,
+        ));
+    };
+    if pool.1 != expected_pool {
+        return Err(type_error(
+            format!(
+                "`reclaim`'s `pool={}` does not match the pool brand recovered on this \
+                 queue (`{expected_pool}`); the handle would be `own[{}]` pointing at \
+                 `{expected_pool}`'s bytes (03-hardware.md §9 / 04-compiler.md §1: DMA \
+                 ownership transitions are valid)",
+                pool.1, pool.1
+            ),
+            pool.0,
+        ));
+    }
+    if payload.1 != expected_payload {
+        return Err(type_error(
+            format!(
+                "`reclaim`'s `payload={}` does not match the payload type recovered on \
+                 this queue (`{expected_payload}`) (03-hardware.md §9)",
+                payload.1
+            ),
+            payload.0,
+        ));
+    }
     Ok(TypedExpr {
         ty,
         kind: TypedExprKind::Intrinsic {
@@ -6653,6 +6723,38 @@ fn check_virtqueue_reclaim(
             args: Vec::new(),
         },
     })
+}
+
+/// Place key for a `VirtQueue` receiver — a local name, or `root.field`
+/// for a field of a local (the `self.queue` spelling every flagship uses).
+fn virtqueue_place_key(queue: &TypedExpr) -> Option<String> {
+    match &queue.kind {
+        TypedExprKind::Local(n) => Some(n.clone()),
+        TypedExprKind::Field(base, field) => match &base.kind {
+            TypedExprKind::Local(root) => Some(format!("{root}.{field}")),
+            _ => virtqueue_place_key(base).map(|p| format!("{p}.{field}")),
+        },
+        _ => None,
+    }
+}
+
+/// `Receipt[own[P] T]` → `(P, T)` — the brand `recover` quarantines and
+/// `reclaim` must re-declare. Anything else yields `None` (a receipt that
+/// does not carry an `own` payload cannot justify a reclaim brand).
+fn receipt_own_brand(ty: &Type) -> Option<(String, String)> {
+    let Type::Named(n, args) = ty else {
+        return None;
+    };
+    if n != "Receipt" {
+        return None;
+    }
+    let Some(types::TypeArg::Type(Type::Own(pool, inner))) = args.first() else {
+        return None;
+    };
+    match inner.as_ref() {
+        Type::Named(payload, _) => Some((pool.clone(), payload.clone())),
+        _ => None,
+    }
 }
 
 /// The `pool=P, payload=T` pair `reclaim` declares, as two bare names.

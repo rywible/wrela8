@@ -1,0 +1,230 @@
+module examples.err_reclaim_pool_mismatch
+
+# plans/M8.md item H attack 1: `reclaim`'s `pool=` is a declaration that
+# must match the `own[P] T` brand `recover` just quarantined on this queue.
+# This is `boot-dma-reclaim` with that one name changed to a second,
+# same-typed DMA pool (`OtherPayloads`) that never minted the published
+# buffer — and with no later `publish`/`Receipt` store that would catch
+# the brand mismatch downstream. Refused at the `reclaim` site.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+const BLK_T_OUT: u32 = 1
+const MAGIC: u64 = 0xC0FFEE00BEEF42A1
+const REUSED: u64 = 0x5EC05EC05EC05EC0
+# phase: 1 = first write in flight; 2 = the reclaimed block in flight; 3 = done
+const PHASE_FIRST: u32 = 1
+const PHASE_SECOND: u32 = 2
+const PHASE_DONE: u32 = 3
+
+pool BlockControl
+pool BlockPayloads
+pool OtherPayloads
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+    inflight: Option[Receipt[own[BlockPayloads] DmaBlock]]
+    phase: u32
+    reclaimed_word: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512],
+         take buffer: own[BlockPayloads] DmaBlock)
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        self.phase = 0
+        self.reclaimed_word = 0
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        irq = negotiated.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+        self.device = negotiated.start()
+        b = take buffer
+        b.word = MAGIC
+        permit = self.queue.reserve_proven(descriptors=3)
+        op = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=0),
+            payload=take b,
+            device_writes_payload=false,
+            status=BlkReqStatus(status=0xff),
+            idempotent=true,
+        )
+        receipt = self.queue.publish(operation=take op)
+        self.inflight = Some(take receipt)
+        self.phase = PHASE_FIRST
+        return Ok(unit)
+
+    fn on_queue_irq(self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.irq_regs.interrupt_ack.write(handled)
+            wake(BlkDriver.drain)
+
+    @task
+    fn drain(mut self):
+        status = self.pending.swap_acquire(0)
+        if status == 0:
+            return unit
+        if self.phase == PHASE_FIRST:
+            slot = take self.inflight
+            match slot:
+                case .None:
+                    self.inflight = None
+                    return unit
+                case .Some(r):
+                    self.queue.drain(max=QDEPTH)
+                    first = self.queue.recover(receipt=take r)
+                    match first:
+                        case .Completed:
+                            pass
+                        case .NotCompleted:
+                            assert false, "the device reported status OK for the first write"
+                        case .Unknown:
+                            assert false, "no reset happened before the first recover"
+                    self.inflight = None
+                    # Establish quiescence with the *device*: this traps to
+                    # the VMM, which finishes and stops its model and only
+                    # then increments the count `reclaim` gates on.
+                    self.device = self.device.reset(queue=mut self.queue)
+                    # 03-hardware.md §9: "and only then is memory reclaimed".
+                    b = self.queue.reclaim(pool=OtherPayloads, payload=DmaBlock)
+                    self.reclaimed_word = b.word
+                    b.word = REUSED
+                    permit = self.queue.reserve_proven(descriptors=3)
+                    op = self.queue.prepare_block(
+                        permit=take permit,
+                        header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=1),
+                        payload=take b,
+                        device_writes_payload=false,
+                        status=BlkReqStatus(status=0xff),
+                        idempotent=true,
+                    )
+                    receipt = self.queue.publish(operation=take op)
+                    # Take the empty Option before restoring (a live `None`
+                    # cannot be overwritten — `Option[Receipt]` is a resource).
+                    empty = take self.inflight
+                    match empty:
+                        case .None:
+                            pass
+                        case .Some(_):
+                            assert false, "the receipt slot is empty between phases"
+                    self.inflight = Some(take receipt)
+                    self.phase = PHASE_SECOND
+        else:
+            if self.phase == PHASE_SECOND:
+                slot = take self.inflight
+                match slot:
+                    case .None:
+                        self.inflight = None
+                        return unit
+                    case .Some(r):
+                        self.queue.drain(max=QDEPTH)
+                        done = self.queue.claim(receipt=take r)
+                        back = take done.payload
+                        assert back.word == REUSED, "the reclaimed block carried the second write"
+                        assert self.reclaimed_word == MAGIC, "reclaim handed back the abandoned buffer"
+                        self.inflight = None
+                        self.phase = PHASE_DONE
+            else:
+                # A quiet wake after both phases is expected and must not
+                # abort — the same event `boot-blk-roundtrip` absorbs.
+                return unit
+        return unit
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks * 10 + n
+        return unit
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@test(runtime)
+async fn a_quarantined_block_comes_back_after_quiescence(led: Actor[Ledger]):
+    # Two checkpoints: the phase-1 IRQ+drain (recover, quiesce, reclaim,
+    # republish) and the phase-2 IRQ+drain (claim).
+    a = await led.mark(n=7)
+    match a:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    b = await led.mark(n=3)
+    match b:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    m = await led.read_marks()
+    match m:
+        case .Ok(v):
+            assert v == 73, "two marks after the reclaim and the reuse"
+        case .Err(_):
+            assert false, "read_marks rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-reclaim-pool-mismatch", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=1)
+    _other = img.dma_pool[DmaBlock](name=OtherPayloads, device=blk, count=1)
+    disk = img.driver(BlkDriver, device=blk, buffer=take payloads)
+    led = img.actor(Ledger, mailbox=8)
+    img.supervise(children=[disk, led], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
