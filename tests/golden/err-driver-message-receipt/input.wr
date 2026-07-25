@@ -1,25 +1,27 @@
 module examples.err_driver_message_receipt
 
-# plans/M8.md item D, arm 1's one genuinely new refusal — and deliberately
-# `check-receipt-handoff`'s own source with **one** line changed:
-# `img.driver(BlkDriver, device=blk)` gains `mailbox=4`. That sibling still
-# type-checks and lowers; this one does not build. The whole delta is
-# messageability.
+# **Retargeted by plans/M8.md item E (decision 33).** Item D pinned this
+# name on a build-time refusal of `Receipt[P]` in *either* direction
+# across a driver mailbox, and its diagnostic named this item as the lift.
+# Item E landed: a `Receipt[P]` **reply** from 03-hardware.md §5's handoff
+# signature is the blessed convention and now boots
+# (`golden/boot-receipt-handoff`), so that arm of
+# `layout::check_driver_message_surface` is gone.
 #
-# Why: `sema::types::validate_fn_capability_types` refuses every sealed
-# authority in a `pub` actor/driver signature with one deliberate
-# exception, `Receipt[P]`, because 03-hardware.md §5 blesses it by name
-# ("any public synchronous `@driver` method with exactly one `take p: P`
-# parameter and result `Receipt[P]` receives the handoff calling
-# convention"). That convention is exactly what plans/M8.md item E owns:
-# admission commit installs a **caller-owned** receipt and the caller then
-# has to `await` it. Item D wires the mailbox; it does not make `await
-# receipt` executable (M7 decision 22 left it lowered but unreachable).
+# What this case pins now is the direction that survives — a receipt as a
+# message **parameter** (05-library.md §2) — and, deliberately, *where* it
+# is refused. Item D expected the mailbox check to catch it; working item
+# E found that `sema::types::validate_fn_capability_types` already refuses
+# it one pass earlier, for every `pub` method of every `@actor`/`@driver`,
+# messageable or not. The `Receipt` whitelist there was only ever for the
+# **reply** position. So the layout-tier parameter arm is unreachable for
+# a receipt, and this golden pins the diagnostic that really fires.
 #
-# So a driver that is both messageable and handoff-shaped is refused at
-# the image, by name, pointing at item E — never admitted into a mailbox
-# whose caller cannot resolve what comes back. When item E lands, this is
-# the golden that changes.
+# The two shapes sit in one file, one method apart: `submit_read` is the
+# accepted handoff (one `take p: P`, result `Receipt[P]`) on a driver
+# declared `mailbox=4`, and `abandon` posts a receipt back *into* the
+# driver. 03 §5 gives a receipt one owner and one resolution — the caller
+# holds and `await`s it, the driver's own bottom half resolves it.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -108,6 +110,17 @@ pub struct BlkDriver:
             idempotent=true,
         )
         return self.queue.publish(operation=take operation)
+
+    # The refused direction: a receipt as an admitted message parameter.
+    pub fn abandon(mut self, take receipt: Receipt[own[BlockPayloads] DmaBlock]) -> u64:
+        outcome = self.queue.recover(receipt=take receipt)
+        match outcome:
+            case .Completed:
+                return 1
+            case .NotCompleted:
+                return 2
+            case .Unknown:
+                return 3
 
 @image
 pub fn build() -> Image:

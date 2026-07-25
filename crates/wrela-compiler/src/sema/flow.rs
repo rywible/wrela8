@@ -1536,6 +1536,30 @@ fn walk_stmt<'a>(
         Stmt::Expr(_, e) => {
             let mut st = state.clone();
             walk_expr(e, &mut st, fctx, wctx, dstack, loop_marker)?;
+            // 02-language.md §11: `panic(message)` **abandons** the actor
+            // — "the turn stops, generated cleanup runs ... Abandonment
+            // is not catchable". A statement whose type is `never`
+            // therefore has no fallthrough, exactly like `return`.
+            //
+            // plans/M8.md item E, decision 34 — a defect this item
+            // tripped over rather than went looking for. The normative
+            // worked example (`docs/language/examples/virtio-storage.wr`,
+            // six sites: `panic("cache line has no payload")` and
+            // friends) uses a `panic` arm as the *only* thing that makes
+            // its sibling arm's binding definitely initialized, so the
+            // language has always meant this; nothing had reached
+            // `sema::flow` with one before, because that example is
+            // parse-tier only (`golden/ast-virtio`).
+            if matches!(
+                bodies::check_expr(e, None, fctx, wctx.mctx)?.ty,
+                Type::Never
+            ) {
+                return Ok(Outcome {
+                    fallthrough: None,
+                    breaks: Vec::new(),
+                    continues: Vec::new(),
+                });
+            }
             Ok(fallthrough(st))
         }
     }

@@ -7863,7 +7863,21 @@ fn check_await_actor_call(
             args: typed_args,
         },
     };
-    let composed = compose_call_error(&d.ret);
+    // 03-hardware.md §5, the handoff calling convention (plans/M8.md item
+    // E, decision 32). "Any public synchronous `@driver` method with
+    // exactly one `take p: P` parameter and result `Receipt[P]` receives
+    // the handoff calling convention" — a *different* convention from
+    // 02 §9.4's composed awaitable, and §5 states its result by name:
+    // `Receipt[P]`, not `Result[Receipt[P], CallError[never]]`. The
+    // receipt is the caller's endpoint on work the device has not done
+    // yet; the failure vocabulary that matters to it is the receipt's own
+    // state machine (`Resolved` / `Recovery`), reached by `await`ing it,
+    // not `CallError`.
+    let composed = if s.decl.is_driver && crate::sema::handoff::is_handoff_signature(d) {
+        d.ret.clone()
+    } else {
+        compose_call_error(&d.ret)
+    };
     Ok(TypedExpr {
         ty: composed,
         kind: TypedExprKind::Await(Box::new(call)),

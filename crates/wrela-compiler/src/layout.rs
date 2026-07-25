@@ -3257,6 +3257,15 @@ struct ActorMethodShape {
     /// admitted from a mailbox; a `pub` `@task` on a messageable driver
     /// would give one turn body two entry paths (decision 21).
     is_task: bool,
+    /// 03-hardware.md §5's handoff calling convention, recognized by the
+    /// one predicate `sema::handoff::is_handoff_signature` (never a copy
+    /// of it): a public *synchronous* `@driver` method with exactly one
+    /// `take p: P` parameter and result `Receipt[P]`. plans/M8.md item E,
+    /// decision 33: it is the one shape whose reply may carry a
+    /// `Receipt[P]` across a driver mailbox, because §5 blesses precisely
+    /// this signature and nothing else can produce the pair the caller
+    /// then `await`s.
+    is_handoff: bool,
 }
 
 fn merge_actor_pub_methods(
@@ -3300,6 +3309,7 @@ fn merge_actor_pub_methods(
                     param_types,
                     ret: f.ret.clone(),
                     is_task: f.is_task,
+                    is_handoff: s.is_driver && crate::sema::handoff::is_handoff_signature(f),
                 });
             }
             out.insert(s.name, methods);
@@ -4308,10 +4318,25 @@ fn why_forbidden_across_a_driver_mailbox(found: &str) -> &'static str {
                 crosses it is a second, unordered one. Export the value the cell holds, not the \
                 cell";
     }
+    if found.starts_with("Receipt") {
+        // plans/M8.md item E, decision 33: item D's floor here refused a
+        // receipt in *either* direction, naming this item. The reply
+        // direction is now 03-hardware.md §5's blessed handoff and is
+        // gone; this is the half that survives, and its reason is
+        // narrower than "authority". A receipt names a slot in *this
+        // driver's* queue, and 03 §5 gives it exactly one consumer on
+        // the driver side — the bottom half's `claim`/`recover`. A sender
+        // that could post one back into the mailbox would name a queue
+        // slot it does not own, at a time the driver did not choose.
+        return ". 03-hardware.md §5 gives a receipt one owner and one resolution: the caller \
+                holds it and `await`s it; the driver's own bottom half resolves it. A mailbox \
+                message posting one back into the driver would let an arbitrary sender name a \
+                slot in this driver's queue. The handoff direction — a `Receipt[P]` *reply* \
+                from a public synchronous method with exactly one `take p: P` parameter — is \
+                the convention §5 blesses, and is accepted";
+    }
     ", which 03-hardware.md §1 keeps inside the driver (\"a driver may export safe actor APIs \
-     but never raw capabilities\"). `Receipt[P]` in particular is 03-hardware.md §5's handoff \
-     convention, which needs the caller-side `await receipt` that plans/M8.md item E makes \
-     executable; item D wires the mailbox only, so a messageable driver cannot hand one back yet"
+     but never raw capabilities\")"
 }
 
 fn check_driver_message_surface(
@@ -4337,15 +4362,29 @@ fn check_driver_message_surface(
                 why_forbidden_across_a_driver_mailbox(&found)
             ));
         }
-        if let Some(found) =
-            crate::sema::types::driver_message_forbidden_carried(&m.ret, decl_items)
-        {
-            return Err(format!(
-                "`@driver` `{driver}` is declared with `mailbox=`, so its `pub` method \
-                 `{driver}.{}` is a message shape — and its reply carries `{found}`{}",
-                m.name,
-                why_forbidden_across_a_driver_mailbox(&found)
-            ));
+        // plans/M8.md item E, decision 33: 03-hardware.md §5's handoff
+        // reply is not probed at all, and the reason is structural rather
+        // than an exemption. §5's signature is "exactly one `take p: P`
+        // parameter and result `Receipt[P]`" — the *same* `P` — so the
+        // loop above has already probed the whole payload as parameter
+        // #k, with the same walk and the same leaf set. Probing
+        // `Receipt[P]` here again could only ever refuse the `Receipt`
+        // wrapper, which is the convention itself. Item D's floor
+        // (`golden/err-driver-message-receipt`) was this arm refusing that
+        // wrapper; it is retargeted at the direction that survives — a
+        // receipt as a message *parameter* (05-library.md §2), which the
+        // loop above still refuses by name.
+        if !m.is_handoff {
+            if let Some(found) =
+                crate::sema::types::driver_message_forbidden_carried(&m.ret, decl_items)
+            {
+                return Err(format!(
+                    "`@driver` `{driver}` is declared with `mailbox=`, so its `pub` method \
+                     `{driver}.{}` is a message shape — and its reply carries `{found}`{}",
+                    m.name,
+                    why_forbidden_across_a_driver_mailbox(&found)
+                ));
+            }
         }
         if m.is_task || tasks.iter().any(|t| *t == m.name) {
             return Err(format!(
