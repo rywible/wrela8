@@ -1,0 +1,56 @@
+module examples.err_driver_message_capability
+
+# plans/M8.md item D, arm 1 of the security surface: giving a `@driver` a
+# mailbox must not become a way to launder its authority out.
+#
+# 03-hardware.md §1: "`@actor` structs cannot hold capabilities in fields,
+# parameters, messages, or captures; a driver may export safe actor APIs
+# but **never raw capabilities**." A `pub` method's signature *is* the
+# message shape (02-language.md §9.4), so the rule that already refuses
+# this for every `pub` actor/driver method is the rule that keeps a
+# messageable driver honest — item D adds no second mechanism, it adds
+# this oracle proving the first one still fires once the mailbox exists.
+#
+# The wrapper is deliberate: `Escape` is an ordinary data struct, so the
+# rejection has to reach *through* it (`type_contains_capability`'s
+# component walk), not just match a top-level name.
+#
+# Siblings: `err-driver-message-receipt` (the one shape sema deliberately
+# admits, refused at the image instead), `err-driver-message-task-pub`,
+# `err-driver-message-isr-pub`.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+struct Escape:
+    regs: Mmio[VirtioIrqMmio]
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+
+    pub fn hand_out_registers(read self) -> Escape:
+        return Escape(regs=self.irq_regs)
+
+async fn ask(d: Actor[BlkDriver]) -> u64:
+    v = await d.hand_out_registers()
+    match v:
+        case .Ok(_):
+            return 1
+        case .Err(_):
+            return 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="driver-message-capability", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, capacity_sectors=16)
+    d = img.driver(BlkDriver, device=blk, mailbox=4)
+    img.supervise(children=[d], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

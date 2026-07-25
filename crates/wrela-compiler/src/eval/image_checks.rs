@@ -1223,7 +1223,12 @@ enum DeclKind {
 
 fn reserved_args(kind: DeclKind) -> &'static [&'static str] {
     match kind {
-        DeclKind::Driver => &["device", "core"],
+        // plans/M8.md item D: `mailbox=` is image wiring on *both* forms.
+        // For `img.actor` it is required (M6 decision 3); for `img.driver`
+        // it is what makes the driver messageable at all (05-library.md
+        // §9), and its absence is the floor `err-image-driver-message`
+        // pins.
+        DeclKind::Driver => &["device", "core", "mailbox"],
         DeclKind::Actor => &["mailbox", "core"],
     }
 }

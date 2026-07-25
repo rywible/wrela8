@@ -1,0 +1,57 @@
+module examples.err_driver_message_task_pub
+
+# plans/M8.md item D, arm 2 of the security surface: a driver mailbox must
+# not become a second way to enter a turn body that already has one.
+#
+# 03-hardware.md §6: "All substantive work happens in the driver's **bottom
+# half** — a high-priority `@task` turn that consumes the level signal,
+# drains a bounded number of completions, validates IDs/generations/epochs/
+# lengths, resolves receipts, and re-wakes itself if work remains." That
+# turn is entered by `wake(...)` from an ISR, under §6's own
+# mask–arm–recheck ordering — it is not a message, and nothing about the
+# mailbox path reproduces that ordering.
+#
+# Declaring it `pub` on a messageable driver would give one body two entry
+# paths: an ISR-driven wake and a mailbox admission from an arbitrary
+# sender at an arbitrary time. Both would run device drain work; only one
+# is ordered against the interrupt. Refused by name.
+#
+# The same driver with `mailbox=` removed is legal today and is exactly the
+# shape `boot-blk-roundtrip` boots — the delta is one label.
+#
+# The ISR that would `wake` this bottom half is deliberately not here: the
+# refusal is about the *bottom half's* two entry paths, and adding a bound
+# handler would only move the first diagnostic (`boot-driver-message` boots
+# the full ISR + `@task` + mailbox combination, privately, and passes).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    pending: InterruptCell[u32]
+    drains: u64
+
+    @task
+    pub fn drain(mut self) -> unit:
+        status = self.pending.swap_acquire(0)
+        if status == 0:
+            return unit
+        self.drains = self.drains + 1
+        return unit
+
+@image
+pub fn build() -> Image:
+    img = Image(name="driver-message-task-pub", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, capacity_sectors=16)
+    d = img.driver(BlkDriver, device=blk, mailbox=4)
+    img.supervise(children=[d], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

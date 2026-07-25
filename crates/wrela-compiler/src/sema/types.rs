@@ -906,51 +906,61 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
 // than written and untested. The moment an actor can name a capability,
 // this is where the arm goes.
 
-/// The capability type `ty` contains, at any nesting, rendered — or
-/// `None`. The same walk `type_contains_actor_handle` performs (including
-/// its `seen` cycle guard and its recursion through a named type's own
-/// declared components, so a plain data struct — or an enum variant
-/// payload, `components_by_name` — wrapping a capability is caught
-/// wherever the wrapper appears), asking about a different type set.
-fn type_contains_capability(
+/// The type `ty` carries at any nesting whose *name* satisfies `leaf`,
+/// rendered — or `None`. The same walk `type_contains_actor_handle`
+/// performs (including its `seen` cycle guard and its recursion through a
+/// named type's own declared components, so a plain data struct — or an
+/// enum variant payload, `components_by_name` — wrapping the sought type
+/// is caught wherever the wrapper appears).
+///
+/// **The leaf set is a parameter, and the walk is not** (plans/M8.md item
+/// D, decision 23). Two rules ask this question over two different sets:
+/// containment/unforgeability asks about 03 §1 capabilities plus the other
+/// sealed authorities (`contains_capability`), and the messageable-driver
+/// message shape asks about those *plus* `InterruptCell[T]`
+/// (`driver_message_forbidden_carried`). Sharing the traversal is the
+/// whole point — a second copy would be the one that forgets
+/// `Option[...]`, or a plain wrapper struct's fields, which is exactly the
+/// class of miss item I's sweep already found once
+/// (`golden/err-dma-shared-lend-wrapped`).
+fn type_carries_named(
     ty: &Type,
     components: &BTreeMap<String, &[(Type, Span)]>,
     seen: &mut BTreeSet<String>,
+    leaf: &dyn Fn(&str) -> bool,
 ) -> Option<String> {
     match ty {
-        Type::Named(name, _) if crate::eval::image_checks::is_sealed_authority_type_name(name) => {
-            Some(render_type(ty))
-        }
+        Type::Named(name, _) if leaf(name) => Some(render_type(ty)),
         // An `Actor[T]` handle is not `T`'s authority (02-language.md §9.1 /
         // 03-hardware.md §1). Recursing into `T` would refuse every
         // `@actor` that holds `Actor[SomeDriver]` — the flagship shape —
         // because the driver's own `Mmio`/`IrqCap` fields would surface
         // here. Same cut as `eval::legal::capability_in_type`.
         Type::Named(name, _) if name == "Actor" => None,
-        Type::Array(elem, _) => type_contains_capability(elem, components, seen),
+        Type::Array(elem, _) => type_carries_named(elem, components, seen, leaf),
         Type::Tuple(elems) => elems
             .iter()
-            .find_map(|e| type_contains_capability(e, components, seen)),
+            .find_map(|e| type_carries_named(e, components, seen, leaf)),
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-            type_contains_capability(inner, components, seen)
+            type_carries_named(inner, components, seen, leaf)
         }
-        Type::Result(ok, err) => type_contains_capability(ok, components, seen)
-            .or_else(|| type_contains_capability(err, components, seen)),
+        Type::Result(ok, err) => type_carries_named(ok, components, seen, leaf)
+            .or_else(|| type_carries_named(err, components, seen, leaf)),
         Type::Fn(params, ret) => params
             .iter()
-            .find_map(|(_, t)| type_contains_capability(t, components, seen))
-            .or_else(|| type_contains_capability(ret, components, seen)),
+            .find_map(|(_, t)| type_carries_named(t, components, seen, leaf))
+            .or_else(|| type_carries_named(ret, components, seen, leaf)),
         Type::Named(name, targs) => {
             if !seen.insert(name.clone()) {
                 return None; // already visited on this path: cycle guard.
             }
             let via_fields = components.get(name.as_str()).and_then(|c| {
                 c.iter()
-                    .find_map(|(t, _)| type_contains_capability(t, components, seen))
+                    .find_map(|(t, _)| type_carries_named(t, components, seen, leaf))
             });
             let found = via_fields.or_else(|| {
                 targs.iter().find_map(|a| match a {
-                    TypeArg::Type(t) => type_contains_capability(t, components, seen),
+                    TypeArg::Type(t) => type_carries_named(t, components, seen, leaf),
                     _ => None,
                 })
             });
@@ -961,11 +971,60 @@ fn type_contains_capability(
     }
 }
 
+/// The capability type `ty` contains, at any nesting, rendered — or
+/// `None`. The containment/unforgeability leaf set: 03 §1's capabilities,
+/// §9's protocol states, §4's sealed queue values, §5's receipt.
+fn type_contains_capability(
+    ty: &Type,
+    components: &BTreeMap<String, &[(Type, Span)]>,
+    seen: &mut BTreeSet<String>,
+) -> Option<String> {
+    type_carries_named(ty, components, seen, &|n| {
+        crate::eval::image_checks::is_sealed_authority_type_name(n)
+    })
+}
+
 fn contains_capability(
     ty: &Type,
     components: &BTreeMap<String, &[(Type, Span)]>,
 ) -> Option<String> {
     type_contains_capability(ty, components, &mut BTreeSet::new())
+}
+
+/// plans/M8.md item D: the sealed authority `ty` carries at any nesting
+/// (03 §1 capability, §4 sealed queue value, §9 protocol state, §5
+/// receipt), rendered — or `None`. Exactly `contains_capability` above,
+/// exported so the image-level messageable-`@driver` check
+/// (`layout::check_driver_message_surface`) asks the *identical* question
+/// with the identical wrapper/cycle-guarded reach, rather than growing a
+/// second walk that could disagree about `Option[DeviceCap]` or a plain
+/// struct with a capability field. `items` is the build closure's own
+/// `declare` output, which is where the component table comes from.
+pub fn sealed_authority_carried(ty: &Type, items: &[DeclItem]) -> Option<String> {
+    contains_capability(ty, &components_by_name(items))
+}
+
+/// plans/M8.md item D, decision 23: what may not cross a **messageable
+/// `@driver`'s mailbox** in either direction — every `sealed_authority_carried`
+/// name, plus `InterruptCell[T]`.
+///
+/// `InterruptCell` is deliberately *not* on the sealed-authority list
+/// itself. M7 decision 17 settled that it is a builtin like `Actor[T]`, not
+/// a capability: its constructor `InterruptCell(v)` is source-visible, an
+/// `@actor` may hold one, and every structural rule that list drives
+/// (unforgeability, `@layout` exclusion, protocol consumption, actor
+/// containment) would give the wrong answer for it. What is true of it is
+/// narrower and belongs exactly here: 03-hardware.md §6 calls it "the
+/// **sole** ISR/ordinary-code channel", interrupt-atomic with respect to
+/// every vector that may touch the cell — a channel between one driver's
+/// ISR and that same driver's ordinary code. A mailbox is a different
+/// channel between different principals, and a cell that crosses it is a
+/// second, unordered one, carrying the interrupt-status word's value to a
+/// sender that owns none of §6's ordering.
+pub fn driver_message_forbidden_carried(ty: &Type, items: &[DeclItem]) -> Option<String> {
+    type_carries_named(ty, &components_by_name(items), &mut BTreeSet::new(), &|n| {
+        crate::eval::image_checks::is_sealed_authority_type_name(n) || n == "InterruptCell"
+    })
 }
 
 /// 03-hardware.md §1/§2: "`Mmio[L]` — a typed register layout derived from
@@ -1268,20 +1327,32 @@ fn validate_fn_capability_types(
     let Some(found) = contains_capability(ret, components) else {
         return Ok(());
     };
-    // plans/M7.md item E2: `QueuePermit` / `QueueOp` are minted by
-    // `reserve_proven` / `prepare_block` — sealed queue values, not
-    // image-bound capabilities. A function may return one; that is how
-    // the permit reaches `prepare_block` and the operation reaches
-    // `publish` (E3).
-    // plans/M7.md item E3: `Receipt[P]` is likewise minted only by
-    // `publish` / `reject` / the handoff admission commit — returning
-    // one is how a handoff method transfers the caller endpoint. Must
-    // run before the pub-method rejection below, or every handoff
-    // signature is illegally rejected as "raw capabilities".
-    if found.starts_with("QueuePermit")
-        || found.starts_with("QueueOp")
-        || found.starts_with("Receipt[")
-        || found == "Receipt"
+    // plans/M7.md item E3: `Receipt[P]` is minted only by `publish` /
+    // `reject` / the handoff admission commit — returning one is how a
+    // handoff method transfers the caller endpoint, and 03-hardware.md §5
+    // blesses that shape *by name* on a public driver method ("any public
+    // synchronous `@driver` method with exactly one `take p: P` parameter
+    // and result `Receipt[P]`"). So this arm must run before the
+    // pub-method rejection below, or every handoff signature is illegally
+    // rejected as "raw capabilities".
+    //
+    // plans/M8.md item D narrowed this list. `QueuePermit` / `QueueOp`
+    // (M7 item E2) are minted by `reserve_proven` / `prepare_block` and
+    // must reach `prepare_block` / `publish` — which is a *private*
+    // driver-internal handoff, and `is_pub_method` is exactly the gate
+    // that distinguishes the two. Whitelisting them ahead of the
+    // pub-method arm let a `pub` driver method declare a sealed queue
+    // value as its reply; harmless while no driver could be messaged, and
+    // a laundering channel the moment one can be (item D). 03 §5 names no
+    // public convention for either name, so neither gets one here: they
+    // fall through to the ordinary rules below, which permit them on a
+    // private method (`CapOwner::Plain`/`Driver`, `is_pub_method` false)
+    // and on a free helper, and refuse them as an exported reply.
+    if found.starts_with("Receipt[") || found == "Receipt" {
+        return Ok(());
+    }
+    if (found.starts_with("QueuePermit") || found.starts_with("QueueOp"))
+        && !(is_pub_method && owner != CapOwner::Plain)
     {
         return Ok(());
     }

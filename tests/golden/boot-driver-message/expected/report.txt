@@ -1,0 +1,71 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/boot_driver_message.wr sha256=b1681719da556e199dd10c5e67e51acf4b09836afc204e1fad79305ac7dce556
+  Name value=boot-driver-message
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=VirtioBlock
+    Arg label=transport value=8192
+    Arg label=capacity_sectors value=16
+    Arg label=required_features value=[Feature.Flush]
+    Arg label=vector value=1
+  Driver index=0 type=BlkDriver
+    Mailbox value=4
+  Actor index=0 type=Scale
+    Mailbox value=4
+    Arg label=factor value=10
+  Actor index=1 type=Storage
+    Mailbox value=4
+  Edge from=driver#0 to=device#0
+  Edge from=driver#0 to=actor#0
+  Edge from=actor#1 to=driver#0
+  DmaPool name=BlockControl type=BlkReqHeader
+    Arg label=device value=device#0
+    Arg label=count value=32
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+    Child value=actor#0
+    Child value=actor#1
+  Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=968 bytes_state=80 bytes_mailbox=120 bytes_pool=768
+  Placement id=actor#0 type=Scale core=0 source=inferred work=0 work_source=unproved bytes=128 bytes_state=8 bytes_mailbox=120 bytes_pool=0
+  Placement id=actor#1 type=Storage core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
+    Padding offset=0x0 size=96
+    Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
+    Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4
+  Layout name=BlkReqHeader kind=dma endian=little size=16 padding=0
+    Field name=kind type=u32 offset=0x0 size=4
+    Field name=reserved type=u32 offset=0x4 size=4
+    Field name=sector type=u64 offset=0x8 size=8
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=6736
+  Section name=rodata base=0x40501aa0 size=885
+  Section name=abort base=0x40501e18 size=120
+  Section name=checkpoint base=0x40501e90 size=336
+  Section name=rtcode base=0x40501fe0 size=3052
+  Section name=rtdata base=0x40502bd0 size=2392
+  Section name=devregs base=0x40503528 size=104
+  Section name=pooldata base=0x40503590 size=512
+  Entry base=0x40500000
+  Actor name=Scale mailbox=4 slot=24 frame=56 state=8
+  Actor name=Storage mailbox=4 slot=16 frame=296 state=8
+  Turn fn=a_driver_turn_parks_and_resumes frame=296
+  Turn fn=actor_relays_a_driver_reply frame=296
+  Turn fn=root_messages_the_driver_directly frame=312
+  Turn fn=root_never_reenters_bring_up frame=296
+  Driver name=BlkDriver state=80 mailbox=4 slot=24 frame=376
+  Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=2392
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503528 size=104
+  IrqHostInject base=0x40503528 offset=0x60 status=0xa501 vector=1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503590 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl base=0x40503590 size=0x200
+  BlkDevice capacity_sectors=16 features=0x100000200 vector=1
+  BlkQueue index=0 size=8 desc=0x40503590 avail=0x40503610 used=0x40503628 doorbell=0x40503670
+  BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

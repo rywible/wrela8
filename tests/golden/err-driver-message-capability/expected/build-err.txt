@@ -1,0 +1,1 @@
+error[type]: `BlkDriver.hand_out_registers` is a `pub` method of an `@actor`/`@driver` struct and returns `Mmio[VirtioIrqMmio]` — 03-hardware.md §1: a driver may export safe actor APIs but never raw capabilities at 38:5

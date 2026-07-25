@@ -1,0 +1,225 @@
+module examples.err_driver_message_interrupt_cell
+
+# plans/M8.md item D, decision 23 — the gap the orchestrator's own
+# capability-escape sweep found after the first item-D commit, in the
+# reply direction.
+#
+# `InterruptCell[T]` is **not** sealed authority and deliberately so (M7
+# decision 17: `InterruptCell(v)` is source-constructible, an `@actor` may
+# hold one, it has no `@layout` byte encoding question and no protocol
+# consumption obligation). Every containment rule that the sealed-authority
+# list drives would give the wrong answer for it — so it is invisible to
+# `sema::types::validate_fn_capability_types`, which refuses the other six
+# things a driver could try to export.
+#
+# What *is* true of it is narrower and lives exactly at this boundary.
+# 03-hardware.md §6: "`InterruptCell[T]` is the **sole** ISR/ordinary-code
+# channel: `load_acquire`, `store_release`, `swap_acquire`,
+# `fetch_or_release`, and friends, interrupt-atomic with respect to every
+# vector that may touch the cell. A plain field is not a communication
+# channel." That is a channel between *this* driver's ISR and *this*
+# driver's own ordinary code. A mailbox is a different channel between
+# different principals; a cell crossing it is a second, unordered one,
+# handing the interrupt-status word's value to a sender that owns none of
+# §6's ordering.
+#
+# **Honest about severity.** This was latent, not live, when it was found:
+# `InterruptCell`'s four operations lower against `self.<field>` with a
+# `field_off`, so calling one on a received value stops at
+# `error[unimplemented]: mirroring a method call through this base
+# expression is not checked yet`, and the value is copied so the receiver's
+# cell does not alias the driver's. It is pinned because it becomes live
+# the day method calls through arbitrary base expressions land, and because
+# the value itself already crosses.
+#
+# This is `boot-driver-message`'s own source with one method added. That
+# boot passes; this does not build.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+const SECTOR: u64 = 512
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    capacity_sectors: u64
+    pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+    drains: u64
+    bringup_done: u64
+    scale: Actor[Scale]
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512],
+         scale: Actor[Scale])
+        -> Result[unit, BootError]:
+        self.scale = scale
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        self.drains = 0
+        self.bringup_done = 0
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = negotiated.read_capacity_sectors()?
+        irq = negotiated.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+        self.device = negotiated.start()
+        # Last statement of 03 §9's `Reset -> ... -> Running` chain. A
+        # message that could be *selected* before bring-up finished would
+        # observe 0 here (`root_never_reenters_bring_up`).
+        self.bringup_done = 1
+        return Ok(unit)
+
+    # 03 §6's ISR: private, restricted effect set, never admissible.
+    fn on_queue_irq(self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.irq_regs.interrupt_ack.write(handled)
+            wake(BlkDriver.drain)
+
+    # 03 §6's bottom half: private, woken not admitted.
+    @task
+    fn drain(mut self):
+        status = self.pending.swap_acquire(0)
+        if status == 0:
+            return unit
+        self.drains = self.drains + 1
+        return unit
+
+    # The exported surface: plain data in, plain data out. No capability,
+    # no sealed queue value, no receipt crosses this boundary.
+    pub fn capacity(read self) -> u64:
+        return self.capacity_sectors
+
+    pub fn sector_bytes(read self, count: u64) -> u64:
+        return count * SECTOR
+
+    pub fn ready(read self) -> u64:
+        return self.bringup_done
+
+    pub fn leak_pending(read self) -> InterruptCell[u32]:
+        return self.pending
+
+    # A driver turn that parks: `await` inside a `@driver`'s own `pub async
+    # fn`, resolved into the driver's own turn area (not a free turn).
+    pub async fn scaled_capacity(read self) -> u64:
+        v = await self.scale.times(n=self.capacity_sectors)
+        match v:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0
+
+@actor
+pub struct Scale:
+    factor: u64
+
+    init(mut self, factor: u64):
+        self.factor = factor
+
+    pub fn times(read self, n: u64) -> u64:
+        return n * self.factor
+
+@actor
+pub struct Storage:
+    disk: Actor[BlkDriver]
+
+    pub async fn blocks(read self) -> u64:
+        c = await self.disk.capacity()
+        match c:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0
+
+@test(runtime)
+async fn actor_relays_a_driver_reply(st: Actor[Storage]):
+    v = await st.blocks()
+    match v:
+        case .Ok(n):
+            assert n == 16, "the driver's own capacity, relayed through an actor turn"
+        case .Err(_):
+            assert false, "relay rejected"
+
+@test(runtime)
+async fn root_messages_the_driver_directly(disk: Actor[BlkDriver]):
+    v = await disk.sector_bytes(count=3)
+    match v:
+        case .Ok(n):
+            assert n == 1536, "3 * 512 computed inside a driver turn"
+        case .Err(_):
+            assert false, "driver call rejected"
+
+@test(runtime)
+async fn a_driver_turn_parks_and_resumes(disk: Actor[BlkDriver]):
+    v = await disk.scaled_capacity()
+    match v:
+        case .Ok(n):
+            assert n == 160, "16 sectors * factor 10, computed across a parked driver turn"
+        case .Err(_):
+            assert false, "driver call rejected"
+
+@test(runtime)
+async fn root_never_reenters_bring_up(disk: Actor[BlkDriver]):
+    # 03-hardware.md §9: publication requires `Running`, and every state
+    # transition consumes its input. A driver mailbox must not become a way
+    # to re-enter a driver mid-chain — boot calls every `init` to completion
+    # before the scheduler runs a single turn, so the first admissible
+    # message already sees `Running`. Asserted, not assumed.
+    v = await disk.ready()
+    match v:
+        case .Ok(n):
+            assert n == 1, "no turn is admitted before the driver finished bring-up"
+        case .Err(_):
+            assert false, "driver call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-driver-message-interrupt-cell", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    scale = img.actor(Scale, mailbox=4, factor=10)
+    disk = img.driver(BlkDriver, device=blk, mailbox=4, scale=scale)
+    st = img.actor(Storage, mailbox=4, disk=disk)
+    img.supervise(children=[disk, scale, st], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

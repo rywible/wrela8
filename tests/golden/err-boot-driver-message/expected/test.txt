@@ -1,0 +1,5 @@
+test actor_relays_a_driver_reply: FAILED assertion failed: vacuity twin: the real capacity is 16, so this must fail
+test root_messages_the_driver_directly: ok
+test a_driver_turn_parks_and_resumes: ok
+test root_never_reenters_bring_up: ok
+3 passed, 1 failed
