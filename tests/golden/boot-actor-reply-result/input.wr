@@ -160,6 +160,23 @@ pub struct Probe:
     trip: Triple
     wide_err: u64
 
+    # plans/M7.md item D closes item W's residual: a handle wired to a
+    # *field* of a struct with no `init` is never materialized — boot
+    # zero-fills the state slot and has nothing to call — so `store` used
+    # to arrive as 0 while this image declared `actor#1`. That is now a
+    # build error, and this `init` is the fix: `store=store` is matched
+    # against a real parameter and materialized by `build_boot_init_calls`
+    # like every other argument. `Store` itself still carries none (see
+    # the header's last note — its `good`/`bad` fields cannot be built in
+    # an `init`), and does not need one: its own `clerk=ck` names
+    # `actor#0`, whose index *is* the zero the state-fill leaves.
+    init(mut self, store: Actor[Store]):
+        self.store = store
+        self.narrow_ok = 0
+        self.narrow_err = 0
+        self.trip = Triple(a=0, b=0, c=0)
+        self.wide_err = 0
+
     pub async fn run(mut self) -> unit:
         p = await self.store.prime()
         match p:

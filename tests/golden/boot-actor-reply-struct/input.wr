@@ -107,6 +107,20 @@ pub struct Probe:
     from_sync: Pair
     from_async: Pair
 
+    # plans/M7.md item D closes item W's residual: a handle wired to a
+    # *field* of a struct with no `init` is never materialized — boot
+    # zero-fills the state slot and has nothing to call — so `store` used
+    # to arrive as 0 while this image declared `actor#1`. That is now a
+    # build error, and this `init` is the fix: `store=store` is matched
+    # against a real parameter and materialized by `build_boot_init_calls`
+    # like every other argument. `Store` itself needs none — its own
+    # `led=led` names `actor#0`, whose index *is* the zero the state-fill
+    # leaves, so the two paths already agreed there.
+    init(mut self, store: Actor[Store]):
+        self.store = store
+        self.from_sync = Pair(lo=0, hi=0)
+        self.from_async = Pair(lo=0, hi=0)
+
     pub async fn fetch(mut self) -> unit:
         a = await self.store.snapshot(key=41)
         match a:

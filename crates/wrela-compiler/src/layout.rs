@@ -2102,6 +2102,76 @@ fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
     }
 }
 
+/// **plans/M7.md item W's residual, closed here** (item W named item D as
+/// its owner; this is that).
+///
+/// The residual, in item W's own words: "A handle wired through an `init`
+/// *parameter* now carries its real construction index; a handle wired
+/// straight to a *field* (05-library.md §9's literal-constructor path,
+/// which has no `init` to call) still arrives as the zero the state-fill
+/// leaves. The two paths genuinely disagree. ... the fix is either
+/// materializing into the field's own offset with W's marshalling or
+/// failing closed on a nonzero index."
+///
+/// **Failing closed is the option taken**, for three reasons stated once
+/// so the choice is reviewable rather than inferred:
+///
+/// 1. It is *exact*, not conservative. A field-wired argument whose boot
+///    word is `0` agrees with the state-fill byte for byte — there is no
+///    disagreement to close, which is why `golden/image-field-wired-accept`
+///    (`led=<actor#0>`) stays green untouched. Every word that is not `0`
+///    is a wrong answer today, and every one of them is now rejected. The
+///    two paths therefore never disagree again, which is the whole
+///    property the residual asked for.
+/// 2. Materializing would build a mechanism with no consumer.
+///    `codegen` routes every `await`/`send` statically, by actor *type*
+///    (`codegen::rt_enqueue_symbol`), so nothing reads a handle word at
+///    runtime; storing one into a field offset would be an unobservable
+///    write, and the house rule is that a feature waits for the thing that
+///    needs it. When an `Actor[T]` becomes comparable, storable or
+///    sendable, this rejection is what fails and points at the work.
+/// 3. It generalizes correctly rather than only to handles. Item W found
+///    the defect through a handle, but a *scalar* wired to a field of a
+///    no-`init` struct is silently zero for exactly the same reason
+///    (`img.actor(Store, seed=8)` against `Store.seed: u32`, no `init` —
+///    accepted by `eval::image_checks`' literal-constructor arm, never
+///    materialized by anything). "Nonzero index" and "nonzero value" are
+///    one rule: *a field-wired argument must equal the zero the state-fill
+///    leaves*. A value with no register representation at all is rejected
+///    too, since this compiler cannot show it is zero either.
+fn check_field_wired_args(
+    name: &str,
+    decl: &crate::eval::image::ActorDecl,
+) -> Result<(), LayoutError> {
+    for a in &decl.args {
+        if crate::eval::image_checks::is_reserved_actor_arg(&a.label) {
+            continue;
+        }
+        let word = boot_init_arg_word(&a.value);
+        if word == Some(0) {
+            continue;
+        }
+        let what = match word {
+            Some(w) => format!("materializes as {w}"),
+            None => format!(
+                "is {} and has no register representation at all",
+                value_shape_name(&a.value)
+            ),
+        };
+        return Err(LayoutError::new(format!(
+            "actor `{name}` declares no `init`, so this image wires `{}=...` to its field of that \
+             name — and boot has nothing to call: it zero-fills the whole state slot and stops \
+             (05-library.md §9's literal-constructor path). The wired value {what}, which is not \
+             the zero the state-fill leaves, so the actor would boot with a value this image did \
+             not declare. Failing closed (plans/M7.md item W's residual, owned by item D) rather \
+             than reporting success over a wrong answer. Give `{name}` an `init` that takes it, \
+             or drop the argument.",
+            a.label
+        )));
+    }
+    Ok(())
+}
+
 /// plans/M7.md item W: every declared actor instance's own boot `init`
 /// call, in `graph.actors` order — which is `RuntimeTables::actors` order
 /// too (`compute_runtime_tables` builds one entry per `graph.actors`
@@ -2156,6 +2226,7 @@ fn build_boot_init_calls(
     for decl in &graph.actors {
         let name = render_type(&decl.actor_type);
         let Some(init) = inits.get(&name) else {
+            check_field_wired_args(&name, decl)?;
             out.push(None);
             continue;
         };
@@ -5858,6 +5929,69 @@ pub struct Store:
             calls[0].is_none(),
             "no `init` means the zero-fill is the whole construction"
         );
+    }
+
+    /// plans/M7.md item W's residual, the half no golden reaches: item W
+    /// found it through a *handle* (`golden/err-image-field-handle-unmaterialized`
+    /// is that one), but a plain scalar wired to a field of a no-`init`
+    /// struct is silently zero at boot for exactly the same reason —
+    /// `eval::image_checks`' literal-constructor arm accepts it and
+    /// nothing materializes it. "Nonzero index" and "nonzero value" are
+    /// one rule, and this is the second half of it.
+    #[test]
+    fn a_field_wired_scalar_must_also_equal_the_state_fills_zero() {
+        use crate::eval::image::DeclArg;
+        use crate::eval::value::Value;
+        use crate::sema::types::Type;
+
+        let src = "\
+module m
+
+@actor
+pub struct Store:
+    seed: u32
+";
+        let modules = one_module("m", src);
+        let inits = actor_inits(&modules).unwrap();
+
+        let wired = |v: Value| {
+            let mut d = actor_decl("Store", Some(4));
+            d.args.push(DeclArg {
+                label: "seed".to_string(),
+                ty: Type::I64,
+                value: v,
+            });
+            let mut graph = ImageGraph::default();
+            graph.actors.push(d);
+            build_boot_init_calls(&graph, &inits)
+        };
+
+        // Exact, not conservative: a wired zero *is* what the state-fill
+        // leaves, so there is no disagreement to close.
+        assert!(wired(Value::I64(0)).is_ok());
+
+        let err = wired(Value::I64(8)).expect_err("8 is not the state-fill's zero");
+        assert!(err.message.contains("materializes as 8"), "{}", err.message);
+        assert!(
+            err.message.contains("declares no `init`"),
+            "{}",
+            err.message
+        );
+
+        // A value this compiler cannot even show is zero fails too.
+        let err = wired(Value::Str(b"x".to_vec())).expect_err("no register representation");
+        assert!(
+            err.message.contains("no register representation at all"),
+            "{}",
+            err.message
+        );
+
+        // The reserved wiring labels are image metadata, never fields —
+        // shared with `eval::image_checks` through one predicate so the
+        // two can never disagree about which is which.
+        let mut graph = ImageGraph::default();
+        graph.actors.push(actor_decl("Store", Some(4)));
+        assert!(build_boot_init_calls(&graph, &inits).is_ok());
     }
 
     #[test]

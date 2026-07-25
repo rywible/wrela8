@@ -1,0 +1,58 @@
+module examples.err_image_field_handle_unmaterialized
+
+# plans/M7.md **item W's residual, closed by item D** — the floor item W
+# named and left: "A handle wired through an `init` *parameter* now
+# carries its real construction index; a handle wired straight to a
+# *field* (05-library.md §9's literal-constructor path, which has no
+# `init` to call) still arrives as the zero the state-fill leaves. The
+# two paths genuinely disagree."
+#
+# `Worker` declares no `init`, so boot zero-fills its whole state slot and
+# has nothing to call. `led=b` names `actor#1`, and `1` is not `0`, so the
+# actor would boot holding a handle this image did not declare — a wrong
+# answer, unobservable only because routing is static by actor *type*
+# today. Failing closed is exact rather than conservative: a field wired
+# to `actor#0` *does* equal the state-fill's zero, which is why
+# `golden/image-field-wired-accept` stays green untouched.
+#
+# The same rule covers a scalar: `img.actor(W, seed=8)` against a
+# no-`init` `W.seed: u32` is silently 0 at boot for exactly the same
+# reason, and "nonzero index" and "nonzero value" are one rule — a
+# field-wired argument must equal the zero the state-fill leaves.
+# `layout::tests::a_field_wired_scalar_must_also_equal_the_state_fills_zero`
+# is that half.
+#
+# The fix is in the message, and `golden/boot-actor-reply-result` /
+# `golden/boot-actor-reply-struct` are what it looks like applied: give
+# the struct an `init` that takes the handle, and item W's own
+# marshalling materializes the real index.
+
+@actor
+pub struct Tally:
+    hits: u64
+
+    pub fn hit(mut self, n: u64) -> unit:
+        self.hits = self.hits + n
+        return unit
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks + n
+        return unit
+
+@actor
+pub struct Worker:
+    led: Actor[Ledger]
+
+@image
+pub fn build() -> Image:
+    img = Image(name="field-handle", target=Target.wrela_machine_v1)
+    t = img.actor(Tally, mailbox=8)
+    led = img.actor(Ledger, mailbox=8)
+    w = img.actor(Worker, mailbox=8, led=led)
+    img.supervise(children=[t, led, w], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
