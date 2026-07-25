@@ -156,6 +156,10 @@ pub struct DeclReceiver {
 pub struct DeclFn {
     pub name: String,
     pub is_async: bool,
+    /// plans/M7.md item G: `@task(...)` on a `@driver` method — 03 §6's
+    /// bottom half. Not a top-level marker (`@test`/`@image`); only
+    /// meaningful on a driver member.
+    pub is_task: bool,
     pub generics: Vec<DeclGenericParam>,
     pub receiver: Option<DeclReceiver>,
     pub params: Vec<DeclParam>,
@@ -2822,9 +2826,11 @@ fn declare_fn(
         });
     }
     let ret = resolve_ret(&f.ret, shapes, module_pools, local_pools, &scope)?;
+    let is_task = f.attrs.iter().any(|a| a.name == "task");
     Ok(DeclFn {
         name: f.name.clone(),
         is_async: f.is_async,
+        is_task,
         generics: decl_generics,
         receiver,
         params,
@@ -2862,6 +2868,7 @@ fn declare_init(
     Ok(DeclFn {
         name: "init".to_string(),
         is_async: false,
+        is_task: false,
         generics: Vec::new(),
         receiver: Some(DeclReceiver {
             mode: i.receiver.mode,
@@ -3060,6 +3067,85 @@ fn declare_struct(
         layout_kind: declared_layout_kind(&s.attrs),
         component_types,
         span: s.span,
+    })
+}
+
+// ===========================================================================
+// plans/M7.md item G, decision 18: re-declare a struct's members after
+// per-instantiation `comptime if` expansion (`specialize::expand_deferred_members`).
+// Generics on the result are cleared — the instantiation is concrete.
+// ===========================================================================
+pub(crate) fn declare_struct_members_for_instantiation(
+    name: &str,
+    expanded_members: &[Member],
+    template: &DeclStruct,
+    mctx: &crate::sema::bodies::ModuleCtx,
+    call_span: Span,
+) -> Result<DeclStruct, SemaError> {
+    let shapes = &mctx.shapes;
+    let module_pools = &mctx.module_pools;
+    let local_pools: BTreeSet<String> = expanded_members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Pool(p) => Some(p.name.clone()),
+            _ => None,
+        })
+        .collect();
+    // Instantiation is concrete: no generic scope (const args already
+    // expanded out of the AST; type args are substituted by the caller).
+    let scope = BTreeMap::new();
+    let mut members = Vec::new();
+    let mut component_types = Vec::new();
+    for m in expanded_members {
+        match m {
+            Member::Field(f) => {
+                let ty = resolve_type(&f.ty, shapes, module_pools, &local_pools, &scope, false)?;
+                component_types.push((ty.clone(), f.span));
+                members.push(DeclMember::Field(DeclField {
+                    name: f.name.clone(),
+                    ty,
+                }));
+            }
+            Member::Fn(f) => members.push(DeclMember::Fn(declare_fn(
+                f,
+                shapes,
+                module_pools,
+                &local_pools,
+                &scope,
+            )?)),
+            Member::Init(i) => members.push(DeclMember::Init(declare_init(
+                i,
+                shapes,
+                module_pools,
+                &local_pools,
+                &scope,
+            )?)),
+            Member::Pool(p) => members.push(DeclMember::Pool(p.name.clone())),
+            Member::ComptimeIf(c) => {
+                return Err(SemaError::at(
+                    "comptime",
+                    format!(
+                        "internal error: deferred `comptime if` on `{name}` survived \
+                         instantiation expansion"
+                    ),
+                    c.span,
+                ));
+            }
+        }
+    }
+    let _ = call_span;
+    Ok(DeclStruct {
+        name: name.to_string(),
+        generics: Vec::new(),
+        deriving: template.deriving.clone(),
+        classification: template.classification,
+        members,
+        is_resource_fiat: template.is_resource_fiat,
+        is_actor: template.is_actor,
+        is_driver: template.is_driver,
+        layout_kind: template.layout_kind,
+        component_types,
+        span: template.span,
     })
 }
 
@@ -3337,6 +3423,12 @@ fn resolve_named(
         // plans/M7.md item E3: `IoError` — prelude enum for `reject`'s
         // `error=` and (later, E4) `IoCompletion.status`.
         "IoError" => Some(Type::Named("IoError".to_string(), vec![])),
+        // =================================================================
+        // plans/M7.md item G, decision 18: prelude enums as annotation
+        // types (`const MODE: DriverMode`). Same zero-arg Named shape as
+        // `Image`; variants live in `builtin_enum_variants`.
+        // =================================================================
+        "DriverMode" | "Target" | "Restart" => Some(Type::Named(n.name.clone(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {
@@ -3503,6 +3595,18 @@ fn resolve_named(
                  mechanism itself is H2a and does not invent a second producer"
                     .to_string(),
                 n.span,
+            ));
+        }
+        // plans/M7.md item G, decision 17: `InterruptCell[T]` — 03 §6's
+        // sole ISR/ordinary-code channel. `T` is structurally resolved
+        // here; which `T` is legal (`u32` today) is asked at the
+        // constructor / method site in `bodies`, not here.
+        "InterruptCell" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named(
+                "InterruptCell".to_string(),
+                vec![TypeArg::Type(inner)],
             ));
         }
         _ => {}

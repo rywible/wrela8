@@ -227,6 +227,14 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
         &program,
         &types::capability_authority(&specialized, &decl_items),
     )?;
+    // plans/M7.md item G, decision 3: 03-hardware.md §6's ISR effect
+    // restriction — same whole-graph reachability, a third color. Seeds
+    // are every `IrqCap.bind` handler in this module.
+    crate::eval::legal::check_isr_effects(&program)?;
+    // plans/M7.md item G: `wake` only from an ISR or a `@task`; `@task`
+    // bodies forbid await/receipt-shaped work (item E owns receipts).
+    crate::eval::legal::check_wake_sites(&program)?;
+    crate::eval::legal::check_bottom_half(&program)?;
     // plans/M6.md item G, decision 5: the bare `send` statement is the
     // language's one proof-conditioned form, and the proof is a
     // *whole-image* fact (a mailbox's declared capacity lives in the
@@ -477,6 +485,7 @@ pub fn check_program_typed(
             &program,
             &types::capability_authority(module, decl_items),
         )?;
+        crate::eval::legal::check_isr_effects(&program)?;
         programs.insert(key.clone(), program);
     }
 

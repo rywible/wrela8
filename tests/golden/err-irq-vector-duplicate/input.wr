@@ -1,0 +1,37 @@
+module examples.err_irq_vector_duplicate
+
+# plans/M7.md item G self-audit: two devices may not share a pending-word
+# bit (03-hardware.md §6 — exactly one handler per vector, one owner).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        self.irq = take irq
+
+    fn on_queue_irq(self):
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-irq-vector-duplicate", target=Target.wrela_machine_v1)
+    a = img.device[VirtioBlock](transport=0x2000, vector=1)
+    b = img.device[VirtioBlock](transport=0x3000, vector=1)
+    da = img.driver(BlkDriver, device=a)
+    db = img.driver(BlkDriver, device=b)
+    img.supervise(children=[da, db], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

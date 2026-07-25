@@ -1,0 +1,12 @@
+Module path=examples.check_irq_bind
+  Struct VirtioIrqMmio data
+    field interrupt_status: ReadOnly[u32]
+    field interrupt_ack: WriteOnly[u32]
+  Struct VirtioBlock data
+    field id: u32
+  Struct BlkDriver resource
+    field regs: Mmio[VirtioIrqMmio]
+    field irq: IrqCap[u32]
+    init(mut self, cap: take DeviceCap[VirtioBlock]) -> unit
+    fn on_queue_irq(read self) -> unit
+  Fn build() -> Image

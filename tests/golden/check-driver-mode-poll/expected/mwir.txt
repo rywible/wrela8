@@ -1,0 +1,39 @@
+Program
+  Fn key=struct:BlkDriver[DriverMode.Poll].drain ret=unit temps=7 receiver=t0:mut
+    Temp t0 ty=BlkDriver[DriverMode.Poll]
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=bool
+    Temp t6 ty=unit
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=0
+      0001: InterruptCellSwapAcquire dst=t2 field_off=8 width=4 value=t1
+      0002: Copy dst=t3 src=t2
+      0003: ConstInt dst=t4 ty=u32 value=0
+      0004: Compare op=!= ty=u32 dst=t5 lhs=t3 rhs=t4
+      0005: JumpIfFalse cond=t5 target=0009
+      0006: Wake driver=BlkDriver
+      0007: ConstUnit dst=t6
+      0008: Jump target=0009
+      0009: Return
+  Fn key=struct:BlkDriver[DriverMode.Poll].init ret=unit temps=7 receiver=t0:mut params=[t1]
+    Temp t0 ty=BlkDriver[DriverMode.Poll]
+    Temp t1 ty=DeviceCap[VirtioBlock]
+    Temp t2 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t3 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t4 ty=Mmio[VirtioIrqMmio]
+    Temp t5 ty=u32
+    Temp t6 ty=InterruptCell[u32]
+    Body
+      0000: Copy dst=t2 src=t1
+      0001: Copy dst=t3 src=t2
+      0002: Copy dst=t4 src=t3
+      0003: SetField base=t0 index=0 value=t4
+      0004: ConstInt dst=t5 ty=u32 value=0
+      0005: Copy dst=t6 src=t5
+      0006: InterruptCellStoreRelease field_off=8 width=4 value=t6
+      0007: SetField base=t0 index=1 value=t6
+      0008: SetField base=t0 index=2 value=t3
+      0009: Return

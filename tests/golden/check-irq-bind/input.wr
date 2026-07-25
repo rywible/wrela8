@@ -1,0 +1,41 @@
+module examples.check_irq_bind
+
+# plans/M7.md item G: a well-formed IRQ bind — device declares `vector=1`,
+# `take_irq` mints the `IrqCap`, `bind` registers the one handler. Dump
+# oracle for the surface; the HVF boot transcript is a later commit of
+# this item.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+
+    fn on_queue_irq(self):
+        status = self.regs.interrupt_status.read()
+        if status != 0:
+            self.regs.interrupt_ack.write(status)
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-irq-bind", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

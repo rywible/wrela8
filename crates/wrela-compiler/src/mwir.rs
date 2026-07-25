@@ -536,6 +536,61 @@ pub enum Inst {
         ty: Type,
         value: Temp,
     },
+    /// plans/M7.md item G, decision 12: materialize an `IrqCap[V]`'s
+    /// runtime word — the vector bit index the image bound to this
+    /// `@driver`. `driver` is the owning struct's name; `layout` resolves
+    /// it against the sealed graph's `vector=` and patches the codegen
+    /// reloc. Zero is never a valid result (bit 0 is M6's deadline
+    /// vector); a driver whose device declared no vector never reaches
+    /// here (`eval::image_checks::check_vector_bindings` rejects first).
+    LoadIrqVector {
+        dst: Temp,
+        driver: String,
+    },
+    // --- plans/M7.md item G, decision 17: InterruptCell[T] (03 §6) --------
+    //
+    // Every op addresses the **live** driver-state word at
+    // `self_ptr + field_off` (prologue's saved receiver pointer), never
+    // the frame copy of `self`. A checkpoint can fire mid-turn; an ISR
+    // that RMW'd only the frame would be stomped by a `mut self`
+    // epilogue write-back. `field_off` is the byte offset of the cell
+    // field inside the receiver aggregate (same layout `field_offset_size`
+    // uses). `width` is 4 for `InterruptCell[u32]` (W forms).
+    /// `load_acquire()` — LDAR from the live cell.
+    InterruptCellLoadAcquire {
+        dst: Temp,
+        field_off: usize,
+        width: u8,
+    },
+    /// `store_release(v)` / construction assign — STLR to the live cell.
+    InterruptCellStoreRelease {
+        field_off: usize,
+        width: u8,
+        value: Temp,
+    },
+    /// `swap_acquire(v)` — LDAXR/STLXR retry; returns the previous value.
+    InterruptCellSwapAcquire {
+        dst: Temp,
+        field_off: usize,
+        width: u8,
+        value: Temp,
+    },
+    /// `fetch_or_release(v)` — LDAXR/ORR/STLXR retry; returns the previous value.
+    InterruptCellFetchOrRelease {
+        dst: Temp,
+        field_off: usize,
+        width: u8,
+        value: Temp,
+    },
+    /// plans/M7.md item G: `wake(Driver.task)` — sticky store of 1 into
+    /// that driver's wake-pending word in `rtdata`. Layout patches the
+    /// address. Mask–arm–recheck: the bit is level-triggered; a wake
+    /// before/during/after the bottom half's own cell observation is
+    /// never lost (the scheduler rechecks the word before deciding the
+    /// driver is idle — HVF commit of this item).
+    Wake {
+        driver: String,
+    },
 
     /// `VirtQueue.publish` (plans/M7.md item E3, 03-hardware.md §3/§5,
     /// decision 15/16): the sealed ring-write sequence in normative order.
@@ -844,7 +899,17 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         Type::Named(name, _targs)
             if matches!(
                 name.as_str(),
-                "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
+                "Actor"
+                    | "Group"
+                    | "Instant"
+                    | "Duration"
+                    | "Admission"
+                    | "Peer"
+                    | "Rejected"
+                    // plans/M7.md item G, decision 17: one 64-bit word in
+                    // driver state (the cell's value; ops address the live
+                    // word at `self_ptr + field_off`, never a side table).
+                    | "InterruptCell"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             // `Actor[T]`/`Rejected[T]` (if ever instantiated) carry their
@@ -882,17 +947,27 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             Ok(SLOT)
         }
         Type::Named(name, targs) => {
-            if !targs.is_empty() {
-                return Err(
-                    "sizing an instantiated generic struct/enum is not implemented yet".to_string(),
-                );
-            }
-            if let Some(fields) = ctx.structs.get(name) {
+            // plans/M7.md item G, decision 18: an instantiated generic
+            // (`BlkDriver[DriverMode.Irq]`) is keyed in `LayoutCtx` by its
+            // rendered type spelling — populated from
+            // `TypedProgram::instantiations` before codegen/layout.
+            let key = if targs.is_empty() {
+                name.clone()
+            } else {
+                crate::sema::types::render_type(&Type::Named(name.clone(), targs.clone()))
+            };
+            if let Some(fields) = ctx.structs.get(&key) {
                 let mut total = 0;
                 for f in fields {
                     total += size_of(f, ctx)?;
                 }
                 return Ok(total);
+            }
+            if !targs.is_empty() {
+                return Err(format!(
+                    "sizing an instantiated generic struct/enum `{key}` is not in this layout \
+                     context (no matching TypedProgram instantiation)"
+                ));
             }
             if let Some(variants) = ctx.enums.get(name) {
                 let mut widest = 0usize;
@@ -1124,6 +1199,36 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             "QueuePublish dst={dst} queue={queue} operation={operation} order=[{}]",
             steps.join(", ")
         ),
+        Inst::LoadIrqVector { dst, driver } => {
+            format!("LoadIrqVector dst={dst} driver={driver}")
+        }
+        Inst::InterruptCellLoadAcquire {
+            dst,
+            field_off,
+            width,
+        } => format!("InterruptCellLoadAcquire dst={dst} field_off={field_off} width={width}"),
+        Inst::InterruptCellStoreRelease {
+            field_off,
+            width,
+            value,
+        } => format!("InterruptCellStoreRelease field_off={field_off} width={width} value={value}"),
+        Inst::InterruptCellSwapAcquire {
+            dst,
+            field_off,
+            width,
+            value,
+        } => format!(
+            "InterruptCellSwapAcquire dst={dst} field_off={field_off} width={width} value={value}"
+        ),
+        Inst::InterruptCellFetchOrRelease {
+            dst,
+            field_off,
+            width,
+            value,
+        } => format!(
+            "InterruptCellFetchOrRelease dst={dst} field_off={field_off} width={width} value={value}"
+        ),
+        Inst::Wake { driver } => format!("Wake driver={driver}"),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
         }

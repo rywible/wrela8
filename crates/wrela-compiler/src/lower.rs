@@ -246,6 +246,10 @@ struct FnBuilder<'p, 'l> {
     /// The fn's declared return type — needed by sync `?` (plans/M7.md
     /// item E1) to build the early `Err` return.
     ret: Type,
+    /// plans/M7.md item G: when this fn is a struct member, the struct's
+    /// own name — `LoadIrqVector` needs the `@driver` that owns the
+    /// vector. `None` for free fns.
+    owner_struct: Option<String>,
 }
 
 impl<'p, 'l> FnBuilder<'p, 'l> {
@@ -463,7 +467,7 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
         if f.is_async {
             continue;
         }
-        let mf = lower_fn(f, &mut lw)?;
+        let mf = lower_fn(f, None, &mut lw)?;
         fns.insert(name.clone(), mf);
     }
     for (sname, s) in &program.structs {
@@ -475,7 +479,7 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
                 if f.is_async {
                     continue;
                 }
-                let mf = lower_fn(f, &mut lw)?;
+                let mf = lower_fn(f, None, &mut lw)?;
                 fns.insert(ikey.clone(), mf);
             }
             TypedInstantiation::Struct(s) => {
@@ -503,32 +507,44 @@ fn lower_struct_members(
     lw: &mut Lowerer,
     fns: &mut BTreeMap<String, MwirFn>,
 ) -> Result<(), LowerError> {
+    let owner = Some(key_prefix.to_string());
     for (member, f) in &s.methods {
         if f.is_async {
             continue;
         }
-        fns.insert(format!("{key_prefix}.{member}"), lower_fn(f, lw)?);
+        fns.insert(
+            format!("{key_prefix}.{member}"),
+            lower_fn(f, owner.clone(), lw)?,
+        );
     }
     for (member, f) in &s.assoc_fns {
         if f.is_async {
             continue;
         }
-        fns.insert(format!("{key_prefix}.{member}"), lower_fn(f, lw)?);
+        fns.insert(
+            format!("{key_prefix}.{member}"),
+            lower_fn(f, owner.clone(), lw)?,
+        );
     }
     if let Some(f) = &s.init {
         if !f.is_async {
-            fns.insert(format!("{key_prefix}.init"), lower_fn(f, lw)?);
+            fns.insert(format!("{key_prefix}.init"), lower_fn(f, owner, lw)?);
         }
     }
     Ok(())
 }
 
-fn lower_fn(f: &TypedFn, lw: &mut Lowerer) -> Result<MwirFn, LowerError> {
+fn lower_fn(
+    f: &TypedFn,
+    owner_struct: Option<String>,
+    lw: &mut Lowerer,
+) -> Result<MwirFn, LowerError> {
     let mut b = FnBuilder {
         lw,
         temp_types: Vec::new(),
         body: Vec::new(),
         ret: f.ret.clone(),
+        owner_struct,
     };
     let mut env: LEnv = vec![BTreeMap::new()];
     let receiver = match &f.receiver {
@@ -1254,6 +1270,27 @@ fn lower_place_write(
                 .ok_or_else(|| LowerError::internal(format!("unbound local `{base_name}`")))?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
             let idx = field_index(b.prog(), &base_ty, fname)?;
+            // plans/M7.md item G, decision 17: assigning an `InterruptCell`
+            // field of `self` must STLR the live driver-state word. The
+            // frame copy alone is not enough — a later `mut self` epilogue
+            // would otherwise be the only writer, and an ISR mid-turn
+            // would race it.
+            if base_name == "self" && bodies::is_interrupt_cell_type(&target.ty) {
+                let field_off = interrupt_cell_field_off(b, &base_ty, idx)?;
+                b.emit(Inst::InterruptCellStoreRelease {
+                    field_off,
+                    width: 4,
+                    value,
+                });
+                // Keep the frame slot in sync for any non-atomic Project
+                // of the same field before the next load_acquire.
+                b.emit(Inst::SetField {
+                    base: base_temp,
+                    index: idx,
+                    value,
+                });
+                return Ok(());
+            }
             b.emit(Inst::SetField {
                 base: base_temp,
                 index: idx,
@@ -1990,6 +2027,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             ..
         } if crate::sema::bodies::is_device_transport_intrinsic(key) => {
             // plans/M7.md item E1: negotiate/start/configure are pure
+            // plans/M7.md item E1: negotiate/start/configure are pure
             // authority transitions on this machine (decision 14: the
             // accepted feature set is a build-time fact; capacity is a
             // build constant). Each lowers to a Copy of the receiver's
@@ -1998,6 +2036,21 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             // VirtQueue.configure yields the pool base (decision 11's one
             // word for the queue).
             match key.as_str() {
+                "Device.take_irq" => {
+                    // plans/M7.md item G, decision 12: the word is the vector
+                    // bit index. Layout patches the reloc against this
+                    // driver's `vector=` once the image graph is in hand.
+                    let Some(driver) = b.owner_struct.clone() else {
+                        return Err(LowerError::internal(
+                            "`Device.take_irq` reached lowering outside a `@driver` member"
+                                .to_string(),
+                        ));
+                    };
+                    let _ = receiver; // authority already checked; the word does not need the base
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::LoadIrqVector { dst, driver });
+                    Ok(dst)
+                }
                 "Device.read_capacity_sectors" => {
                     let capacity = b.blk_capacity_sectors().ok_or_else(|| {
                         LowerError::unimplemented(
@@ -2079,6 +2132,61 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     "unknown sealed-transport intrinsic `{other}`"
                 ))),
             }
+        }
+        // plans/M7.md item G: bind/unmask are build-time facts for the
+        // vector table (collected from the typed tree by
+        // `eval::image_checks::check_vector_bindings`). At runtime they
+        // are no-ops — the table is already wired, and this machine has
+        // no per-vector mask bit in the pending word (06 §4; the
+        // InterruptCell level signal is the ISR/ordinary channel).
+        TypedExprKind::Intrinsic { key, .. } if crate::sema::bodies::is_irq_cap_intrinsic(key) => {
+            let dst = b.fresh(expr.ty.clone());
+            b.emit(Inst::ConstUnit { dst });
+            Ok(dst)
+        }
+        // plans/M7.md item G, decision 17: `InterruptCell[T]` ops. Every
+        // method addresses the live cell at `self_ptr + field_off`.
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            args,
+            ..
+        } if crate::sema::bodies::is_interrupt_cell_intrinsic(key) => {
+            lower_interrupt_cell_intrinsic(key, receiver.as_deref(), args, &expr.ty, b, env)
+        }
+        // plans/M7.md item G: `wake(Driver.task)` — sticky wake-pending bit.
+        TypedExprKind::Intrinsic { key, args, .. }
+            if crate::sema::bodies::is_wake_intrinsic(key) =>
+        {
+            let Some((_, task)) = args.iter().find(|(l, _)| l == "task") else {
+                return Err(LowerError::internal(
+                    "`wake` with no task argument".to_string(),
+                ));
+            };
+            let TypedExprKind::FnRef(callee) = &task.kind else {
+                return Err(LowerError::internal(
+                    "`wake` task is not a FnRef".to_string(),
+                ));
+            };
+            let driver = match callee {
+                crate::sema::typed::CalleeKey::Method(s, _) => s.clone(),
+                crate::sema::typed::CalleeKey::MethodInstance(ikey, _) => ikey
+                    .strip_prefix("struct:")
+                    .unwrap_or(ikey.as_str())
+                    .split('[')
+                    .next()
+                    .unwrap_or(ikey.as_str())
+                    .to_string(),
+                _ => {
+                    return Err(LowerError::internal(
+                        "`wake` task is not a driver method".to_string(),
+                    ));
+                }
+            };
+            b.emit(Inst::Wake { driver });
+            let dst = b.fresh(Type::Unit);
+            b.emit(Inst::ConstUnit { dst });
+            Ok(dst)
         }
         // plans/M7.md item H1: a typed MMIO access, emitted at last. The
         // base is the `Mmio[L]` receiver's own word; the offset and the
@@ -2530,6 +2638,155 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
         .ok_or_else(|| LowerError::internal(format!("unknown field `{field_name}`")))
 }
 
+/// Byte offset of field `index` inside `base_ty` — same walk codegen's
+/// `field_offset_size` uses, so the live-cell address and the frame
+/// layout can never disagree.
+fn interrupt_cell_field_off(
+    b: &FnBuilder,
+    base_ty: &Type,
+    index: usize,
+) -> Result<usize, LowerError> {
+    let Type::Named(sname, targs) = base_ty else {
+        return Err(LowerError::internal(
+            "InterruptCell field base is not a `Named` type",
+        ));
+    };
+    let s = resolve_struct(b.prog(), sname, targs)
+        .ok_or_else(|| LowerError::internal(format!("struct `{sname}` not found")))?;
+    // Builtin-pseudo-type fields (capabilities, `InterruptCell`, scalars,
+    // `Option[...]`) size without a populated `LayoutCtx`. A nested user
+    // struct field would need one; fail closed rather than guess.
+    let layout = mwir::LayoutCtx::default();
+    let mut off = 0usize;
+    for (i, fname) in s.fields.iter().enumerate() {
+        if i == index {
+            return Ok(off);
+        }
+        let fty = s
+            .field_types
+            .get(fname)
+            .cloned()
+            .ok_or_else(|| LowerError::internal(format!("no type for field `{fname}`")))?;
+        off += mwir::size_of(&fty, &layout).map_err(|e| {
+            LowerError::unimplemented(&format!(
+                "sizing field `{fname}` of `{sname}` for an `InterruptCell` live offset ({e}) is"
+            ))
+        })?;
+    }
+    Err(LowerError::internal(format!(
+        "InterruptCell field index {index} out of range for `{sname}`"
+    )))
+}
+
+/// plans/M7.md item G, decision 17: lower one `InterruptCell` intrinsic.
+fn lower_interrupt_cell_intrinsic(
+    key: &str,
+    receiver: Option<&TypedExpr>,
+    args: &[(String, TypedExpr)],
+    ret_ty: &Type,
+    b: &mut FnBuilder,
+    env: &mut LEnv,
+) -> Result<Temp, LowerError> {
+    if key == "InterruptCell.new" {
+        let Some((_, v)) = args.iter().find(|(l, _)| l == "value") else {
+            return Err(LowerError::internal(
+                "`InterruptCell.new` with no value argument".to_string(),
+            ));
+        };
+        let src = lower_expr(v, b, env)?;
+        let dst = b.fresh(ret_ty.clone());
+        b.emit(Inst::Copy { dst, src });
+        return Ok(dst);
+    }
+    let Some(recv) = receiver else {
+        return Err(LowerError::internal(format!(
+            "`{key}` reached lowering with no receiver"
+        )));
+    };
+    // Receiver must be `self.<field>` — the live cell lives in driver state.
+    let TypedExprKind::Field(base, fname) = &recv.kind else {
+        return Err(LowerError::unimplemented(
+            "an `InterruptCell` op on a non-field place (only `self.<cell>` is supported) is",
+        ));
+    };
+    let TypedExprKind::Local(base_name) = &base.kind else {
+        return Err(LowerError::unimplemented(
+            "an `InterruptCell` op through a nested field chain is",
+        ));
+    };
+    if base_name != "self" {
+        return Err(LowerError::unimplemented(
+            "an `InterruptCell` op on a local cell (only a `@driver` field of `self` is live) is",
+        ));
+    }
+    let base_ty = bodies::unwrap_own(base.ty.clone());
+    let idx = field_index(b.prog(), &base_ty, fname)?;
+    let field_off = interrupt_cell_field_off(b, &base_ty, idx)?;
+    let width = 4u8; // `InterruptCell[u32]` only, today
+    match key {
+        "InterruptCell.load_acquire" => {
+            let dst = b.fresh(ret_ty.clone());
+            b.emit(Inst::InterruptCellLoadAcquire {
+                dst,
+                field_off,
+                width,
+            });
+            Ok(dst)
+        }
+        "InterruptCell.store_release" => {
+            let Some((_, v)) = args.iter().find(|(l, _)| l == "value") else {
+                return Err(LowerError::internal(
+                    "`InterruptCell.store_release` with no value".to_string(),
+                ));
+            };
+            let value = lower_expr(v, b, env)?;
+            b.emit(Inst::InterruptCellStoreRelease {
+                field_off,
+                width,
+                value,
+            });
+            let dst = b.fresh(Type::Unit);
+            b.emit(Inst::ConstUnit { dst });
+            Ok(dst)
+        }
+        "InterruptCell.swap_acquire" => {
+            let Some((_, v)) = args.iter().find(|(l, _)| l == "value") else {
+                return Err(LowerError::internal(
+                    "`InterruptCell.swap_acquire` with no value".to_string(),
+                ));
+            };
+            let value = lower_expr(v, b, env)?;
+            let dst = b.fresh(ret_ty.clone());
+            b.emit(Inst::InterruptCellSwapAcquire {
+                dst,
+                field_off,
+                width,
+                value,
+            });
+            Ok(dst)
+        }
+        "InterruptCell.fetch_or_release" => {
+            let Some((_, v)) = args.iter().find(|(l, _)| l == "value") else {
+                return Err(LowerError::internal(
+                    "`InterruptCell.fetch_or_release` with no value".to_string(),
+                ));
+            };
+            let value = lower_expr(v, b, env)?;
+            let dst = b.fresh(ret_ty.clone());
+            b.emit(Inst::InterruptCellFetchOrRelease {
+                dst,
+                field_off,
+                width,
+                value,
+            });
+            Ok(dst)
+        }
+        other => Err(LowerError::internal(format!(
+            "unknown InterruptCell intrinsic `{other}`"
+        ))),
+    }
+}
+
 fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<usize, LowerError> {
     match enum_name {
         "Option" => match variant {
@@ -2621,6 +2878,7 @@ mod builder_tests {
             temp_types: Vec::new(),
             body: Vec::new(),
             ret: Type::Unit,
+            owner_struct: None,
         };
         let cond = b.fresh(Type::Bool);
         b.emit(Inst::ConstBool {
@@ -2651,6 +2909,7 @@ mod builder_tests {
             temp_types: Vec::new(),
             body: Vec::new(),
             ret: Type::Unit,
+            owner_struct: None,
         };
         let a = b.intern(b"hello".to_vec());
         let c = b.intern(b"world".to_vec());

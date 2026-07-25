@@ -1,0 +1,33 @@
+module examples.err_task_async
+
+# plans/M7.md item G / 03 §7: the bottom half "never stays active while
+# waiting" — an `async` `@task` is refused at the declaration.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+
+    @task
+    async fn drain(mut self):
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-task-async", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

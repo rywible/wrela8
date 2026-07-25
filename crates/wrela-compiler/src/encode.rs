@@ -197,6 +197,66 @@ pub fn enc_ldrh_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b01, 0b01, scaled_offset(byte_offset, 2), rn, rt)
 }
 
+// --- plans/M7.md item G: load-acquire / store-release / exclusive RMW -----
+//
+// ARM ARM "Load-Acquire/Store-Release" and "Load-Acquire Exclusive /
+// Store-Release Exclusive" (no offset — the address is `[Xn]` only).
+// Ground truth is `as -arch arm64` on macOS (same method the module doc
+// names for every other encoder): every constant below is the assembled
+// word, not re-derived by hand a second time.
+//
+// `InterruptCell[T]` (03-hardware.md §6) emits LDAR/STLR for every op —
+// pure load/store and RMW (`swap_acquire`, `fetch_or_release`). The
+// exclusive pair encoders below are hand-checked and kept for the day
+// multicore or nested delivery lands; revision 0.1 does not emit them.
+// See `hardware.interrupt-cell` for why acquire/release alone suffice
+// under checkpoint-only, single-core, no-nesting delivery.
+
+/// `LDAR Wt, [Xn]` — 32-bit load-acquire. `as`: `ldar w0, [x1]` = `0x88dffc20`.
+pub fn enc_ldar_w(rt: u8, rn: u8) -> u32 {
+    0x88dffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLR Wt, [Xn]` — 32-bit store-release. `as`: `stlr w0, [x1]` = `0x889ffc20`.
+pub fn enc_stlr_w(rt: u8, rn: u8) -> u32 {
+    0x889ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `LDAXR Wt, [Xn]` — 32-bit load-acquire exclusive.
+/// `as`: `ldaxr w0, [x1]` = `0x885ffc20`.
+pub fn enc_ldaxr_w(rt: u8, rn: u8) -> u32 {
+    0x885ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLXR Ws, Wt, [Xn]` — 32-bit store-release exclusive; `rs` receives 0
+/// on success and 1 on failure (ARM ARM). `as`: `stlxr w2, w0, [x1]` =
+/// `0x8802fc20`.
+pub fn enc_stlxr_w(rs: u8, rt: u8, rn: u8) -> u32 {
+    0x8800fc00 | (reg(rs) << 16) | (reg(rn) << 5) | reg(rt)
+}
+
+/// `LDAR Xt, [Xn]` — 64-bit load-acquire. `as`: `ldar x0, [x1]` = `0xc8dffc20`.
+pub fn enc_ldar_x(rt: u8, rn: u8) -> u32 {
+    0xc8dffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLR Xt, [Xn]` — 64-bit store-release. `as`: `stlr x0, [x1]` = `0xc89ffc20`.
+pub fn enc_stlr_x(rt: u8, rn: u8) -> u32 {
+    0xc89ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `LDAXR Xt, [Xn]` — 64-bit load-acquire exclusive.
+/// `as`: `ldaxr x0, [x1]` = `0xc85ffc20`.
+pub fn enc_ldaxr_x(rt: u8, rn: u8) -> u32 {
+    0xc85ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLXR Ws, Xt, [Xn]` — 64-bit data, 32-bit status in `rs`.
+/// `as`: `stlxr w2, x0, [x1]` = `0xc802fc20`.
+pub fn enc_stlxr_x(rs: u8, rt: u8, rn: u8) -> u32 {
+    0xc800fc00 | (reg(rs) << 16) | (reg(rn) << 5) | reg(rt)
+}
+
 // --- Loads/stores: register pair, signed offset (LDP/STP) -----------------
 //
 // ARM ARM "LDP/STP (signed offset)": `opc[31:30] 101 0 010 L[22]
@@ -561,28 +621,40 @@ pub fn enc_umulh(rd: u8, rn: u8, rm: u8) -> u32 {
 //
 // `MOV Rd, Rm` is the standard alias `ORR Rd, XZR/WZR, Rm`.
 
-fn logical_shifted_reg(sf: bool, opc: u32, rm: u8, rn: u8, rd: u8) -> u32 {
-    (sf_bit(sf) << 31) | (opc << 29) | (0b01010 << 24) | (reg(rm) << 16) | (reg(rn) << 5) | reg(rd)
+fn logical_shifted_reg(sf: bool, opc: u32, n: bool, rm: u8, rn: u8, rd: u8) -> u32 {
+    (sf_bit(sf) << 31)
+        | (opc << 29)
+        | (0b01010 << 24)
+        | ((n as u32) << 21)
+        | (reg(rm) << 16)
+        | (reg(rn) << 5)
+        | reg(rd)
 }
 
 /// `AND Rd, Rn, Rm`.
 pub fn enc_and_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b00, rm, rn, rd)
+    logical_shifted_reg(sf, 0b00, false, rm, rn, rd)
+}
+
+/// `BIC Rd, Rn, Rm` — `Rd = Rn & ~Rm`. plans/M7.md item G: multi-vector
+/// checkpoint clear (AND-clear only the bit(s) just serviced).
+pub fn enc_bic_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
+    logical_shifted_reg(sf, 0b00, true, rm, rn, rd)
 }
 
 /// `ORR Rd, Rn, Rm`.
 pub fn enc_orr_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b01, rm, rn, rd)
+    logical_shifted_reg(sf, 0b01, false, rm, rn, rd)
 }
 
 /// `EOR Rd, Rn, Rm`.
 pub fn enc_eor_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b10, rm, rn, rd)
+    logical_shifted_reg(sf, 0b10, false, rm, rn, rd)
 }
 
 /// `MOV Rd, Rm` — alias of `ORR Rd, XZR/WZR, Rm`.
 pub fn enc_mov_reg(rd: u8, rm: u8, sf: bool) -> u32 {
-    logical_shifted_reg(sf, 0b01, rm, 31, rd)
+    logical_shifted_reg(sf, 0b01, false, rm, 31, rd)
 }
 
 // --- LSL/LSR/ASR (immediate) -----------------------------------------------
@@ -868,6 +940,27 @@ mod tests {
         assert_eq!(enc_ldrb_imm(0, 1, 0), 0x39400020);
     }
 
+    /// plans/M7.md item G: every InterruptCell encoder word, pinned against
+    /// `as -arch arm64` on macOS (see the module-level block above the
+    /// encoders). A second register triple confirms the Rn/Rt/Rs fields.
+    #[test]
+    fn interrupt_cell_acquire_release_and_exclusive_forms() {
+        // W forms — `InterruptCell[u32]`'s path.
+        assert_eq!(enc_ldar_w(0, 1), 0x88dffc20);
+        assert_eq!(enc_stlr_w(0, 1), 0x889ffc20);
+        assert_eq!(enc_ldaxr_w(0, 1), 0x885ffc20);
+        assert_eq!(enc_stlxr_w(2, 0, 1), 0x8802fc20);
+        assert_eq!(enc_ldar_w(3, 4), 0x88dffc83);
+        assert_eq!(enc_stlr_w(3, 4), 0x889ffc83);
+        assert_eq!(enc_ldaxr_w(3, 4), 0x885ffc83);
+        assert_eq!(enc_stlxr_w(5, 3, 4), 0x8805fc83);
+        // X forms — kept for the 64-bit cell path; same assembler oracle.
+        assert_eq!(enc_ldar_x(0, 1), 0xc8dffc20);
+        assert_eq!(enc_stlr_x(0, 1), 0xc89ffc20);
+        assert_eq!(enc_ldaxr_x(0, 1), 0xc85ffc20);
+        assert_eq!(enc_stlxr_x(2, 0, 1), 0xc802fc20);
+    }
+
     /// plans/M7.md item H1: the halfword forms a `ReadOnly[u16]`/
     /// `WriteOnly[u16]` register needs. Same `size`/`opc` table as every
     /// form above, `size = 0b01`, scaled by 2 — hand-checked against the
@@ -938,6 +1031,9 @@ mod tests {
         assert_eq!(enc_and_reg(0, 1, 2, true), 0x8a020020);
         assert_eq!(enc_orr_reg(0, 1, 2, true), 0xaa020020);
         assert_eq!(enc_eor_reg(0, 1, 2, true), 0xca020020);
+        // Hand-checked against `as -arch arm64`: `bic x0, x1, x2` →
+        // `0x8a220020` (AND's encoding with N=1).
+        assert_eq!(enc_bic_reg(0, 1, 2, true), 0x8a220020);
     }
 
     #[test]

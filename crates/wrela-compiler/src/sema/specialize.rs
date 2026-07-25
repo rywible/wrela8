@@ -38,17 +38,18 @@
 //!
 //! - A `comptime if` condition (module scope, member scope, or statement
 //!   scope — identical rule everywhere, one shared vocabulary) may
-//!   reference **only literals and plain top-level `const` items
-//!   declared directly in the module** (i.e. `Item::Const` appearing in
+//!   reference **only literals, prelude fieldless-enum variants
+//!   (`DriverMode.Irq`), and plain top-level `const` items declared
+//!   directly in the module** (i.e. `Item::Const` appearing in
 //!   `module.items` itself, never nested inside *any* `comptime if`
 //!   branch, selected or not) — combined with unary/binary/logical
-//!   operators. No fn calls, no locals, no `self`, no generic
-//!   type/const parameters (a struct's own generic const parameter,
-//!   e.g. the worked example's `BlkDriver[const MODE: DriverMode]`'s
-//!   `comptime if MODE == DriverMode.Irq:`, needs *per-instantiation*
-//!   specialization — a materially harder feature this pass does not
-//!   attempt, the same documented boundary decision 10 already draws
-//!   around "generic methods' own type parameters").
+//!   operators. No fn calls, no locals, no `self`.
+//! - **plans/M7.md item G, decision 18:** a member/statement `comptime if`
+//!   whose condition also names the enclosing struct's own const generic
+//!   parameters (e.g. `MODE == DriverMode.Irq` on
+//!   `BlkDriver[const MODE: DriverMode]`) is **deferred** — left in the
+//!   AST for `generics::instantiate_struct` to expand per instantiation.
+//!   Module-scope `comptime if` still cannot name a generic parameter.
 //! - This is checked and evaluated by building one small, self-contained
 //!   "const skeleton": a throwaway `Module` containing only the specific
 //!   top-level consts transitively reachable from *some* `comptime if`
@@ -91,16 +92,18 @@
 //! initializers and `comptime assert`, both of which do support calls —
 //! see `eval/mod.rs`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::{interp, to_sema_error, value::Value};
 use crate::sema::bodies::{self, FnCtx, ModuleCtx};
+use crate::sema::prelude;
 use crate::sema::typed::TypedProgram;
 use crate::sema::types::{self, Type};
 use crate::sema::{SemaError, symbols, unimplemented_at};
 use crate::syntax::ast::{
-    ClosureBody, ConstItem, DeferBody, DeferStmt, ElifClause, Expr, FnItem, ForStmt, IfStmt,
-    InitItem, Item, MatchArm, MatchStmt, Member, Module, Stmt, StructItem, WhileStmt, WithStmt,
+    ClosureBody, ComptimeIfMember, ComptimeIfStmt, ConstItem, DeferBody, DeferStmt, ElifClause,
+    Expr, FnItem, ForStmt, GenericParam, IfStmt, InitItem, Item, MatchArm, MatchStmt, Member,
+    Module, Stmt, StructItem, WhileStmt, WithStmt,
 };
 
 /// The one small typed context every `comptime if` condition in the
@@ -380,11 +383,15 @@ fn build_const_skeleton(
 /// — `err-comptime-if-not-comptime`'s own case); anything else not in
 /// the small supported-operator set fails closed by construction/name
 /// instead of a wrong answer.
-fn check_comptime_vocabulary(e: &Expr, known_consts: &BTreeSet<String>) -> Result<(), SemaError> {
+fn check_comptime_vocabulary(
+    e: &Expr,
+    known_consts: &BTreeSet<String>,
+    enclosing_const_generics: &BTreeSet<String>,
+) -> Result<(), SemaError> {
     match e {
         Expr::Int(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Unit(..) => Ok(()),
         Expr::Name(span, name) => {
-            if known_consts.contains(name) {
+            if known_consts.contains(name) || enclosing_const_generics.contains(name) {
                 Ok(())
             } else {
                 Err(SemaError::at(
@@ -399,17 +406,54 @@ fn check_comptime_vocabulary(e: &Expr, known_consts: &BTreeSet<String>) -> Resul
                 ))
             }
         }
+        // plans/M7.md item G, decision 18: `DriverMode.Irq` / `Target.*` /
+        // `Restart.*` in a condition (fieldless prelude enum variants).
+        Expr::Field(base, span, variant) => match base.as_ref() {
+            Expr::Name(_, ename) => {
+                if prelude::builtin_enum_variants(ename)
+                    .is_some_and(|vs| vs.contains(&variant.as_str()))
+                {
+                    Ok(())
+                } else {
+                    Err(unimplemented_at(
+                        "this expression form in a `comptime if` condition is",
+                        *span,
+                    ))
+                }
+            }
+            _ => Err(unimplemented_at(
+                "this expression form in a `comptime if` condition is",
+                *span,
+            )),
+        },
         Expr::Unary(_, _, inner) | Expr::Not(_, inner) => {
-            check_comptime_vocabulary(inner, known_consts)
+            check_comptime_vocabulary(inner, known_consts, enclosing_const_generics)
         }
         Expr::Binary(_, _, l, r) | Expr::And(_, l, r) | Expr::Or(_, l, r) => {
-            check_comptime_vocabulary(l, known_consts)?;
-            check_comptime_vocabulary(r, known_consts)
+            check_comptime_vocabulary(l, known_consts, enclosing_const_generics)?;
+            check_comptime_vocabulary(r, known_consts, enclosing_const_generics)
         }
         other => Err(unimplemented_at(
             "this expression form in a `comptime if` condition is",
             other.span(),
         )),
+    }
+}
+
+fn condition_uses_enclosing_const_generic(
+    e: &Expr,
+    enclosing_const_generics: &BTreeSet<String>,
+) -> bool {
+    match e {
+        Expr::Name(_, name) => enclosing_const_generics.contains(name),
+        Expr::Field(base, _, _) | Expr::Unary(_, _, base) | Expr::Not(_, base) => {
+            condition_uses_enclosing_const_generic(base, enclosing_const_generics)
+        }
+        Expr::Binary(_, _, l, r) | Expr::And(_, l, r) | Expr::Or(_, l, r) => {
+            condition_uses_enclosing_const_generic(l, enclosing_const_generics)
+                || condition_uses_enclosing_const_generic(r, enclosing_const_generics)
+        }
+        _ => false,
     }
 }
 
@@ -421,9 +465,10 @@ fn check_comptime_vocabulary(e: &Expr, known_consts: &BTreeSet<String>) -> Resul
 fn eval_condition(
     cond: &Expr,
     known_consts: &BTreeSet<String>,
+    enclosing_const_generics: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
 ) -> Result<bool, SemaError> {
-    check_comptime_vocabulary(cond, known_consts)?;
+    check_comptime_vocabulary(cond, known_consts, enclosing_const_generics)?;
     let mut fctx = FnCtx::new(Type::Unit, skeleton.mctx.module_pools.clone());
     let typed_cond = bodies::check_expr(cond, Some(&Type::Bool), &mut fctx, &skeleton.mctx)?;
     let value = interp::eval_standalone(&skeleton.program, &typed_cond, "comptime if".to_string())
@@ -447,9 +492,10 @@ fn specialize_items(
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
 ) -> Result<Vec<Item>, SemaError> {
+    let empty = BTreeSet::new();
     let mut out = Vec::new();
     for item in items {
-        specialize_item(item, known_consts, skeleton, &mut out)?;
+        specialize_item(item, known_consts, skeleton, &empty, &mut out)?;
     }
     Ok(out)
 }
@@ -458,18 +504,21 @@ fn specialize_item(
     item: &Item,
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
+    enclosing_const_generics: &BTreeSet<String>,
     out: &mut Vec<Item>,
 ) -> Result<(), SemaError> {
     match item {
         Item::ComptimeIf(c) => {
-            let selected: &[Item] = if eval_condition(&c.cond, known_consts, skeleton)? {
-                &c.then_branch
-            } else {
-                match &c.else_branch {
-                    Some(b) => b,
-                    None => return Ok(()),
-                }
-            };
+            // Module-scope: never defer on a generic parameter.
+            let selected: &[Item] =
+                if eval_condition(&c.cond, known_consts, enclosing_const_generics, skeleton)? {
+                    &c.then_branch
+                } else {
+                    match &c.else_branch {
+                        Some(b) => b,
+                        None => return Ok(()),
+                    }
+                };
             out.extend(specialize_items(selected, known_consts, skeleton)?);
             Ok(())
         }
@@ -478,11 +527,24 @@ fn specialize_item(
             Ok(())
         }
         Item::Fn(f) => {
-            out.push(Item::Fn(specialize_fn(f, known_consts, skeleton)?));
+            out.push(Item::Fn(specialize_fn(
+                f,
+                known_consts,
+                skeleton,
+                enclosing_const_generics,
+            )?));
             Ok(())
         }
         Item::Struct(s) => {
-            let members = specialize_members(&s.members, known_consts, skeleton)?;
+            let enclosing: BTreeSet<String> = s
+                .generics
+                .iter()
+                .filter_map(|g| match g {
+                    GenericParam::Const { name, .. } => Some(name.clone()),
+                    GenericParam::Type { .. } => None,
+                })
+                .collect();
+            let members = specialize_members(&s.members, known_consts, skeleton, &enclosing)?;
             out.push(Item::Struct(StructItem {
                 members,
                 ..s.clone()
@@ -496,9 +558,15 @@ fn specialize_fn(
     f: &FnItem,
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
+    enclosing_const_generics: &BTreeSet<String>,
 ) -> Result<FnItem, SemaError> {
     let body = match &f.body {
-        Some(b) => Some(specialize_stmts(b, known_consts, skeleton)?),
+        Some(b) => Some(specialize_stmts(
+            b,
+            known_consts,
+            skeleton,
+            enclosing_const_generics,
+        )?),
         None => None,
     };
     Ok(FnItem { body, ..f.clone() })
@@ -508,9 +576,10 @@ fn specialize_init(
     i: &InitItem,
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
+    enclosing_const_generics: &BTreeSet<String>,
 ) -> Result<InitItem, SemaError> {
     Ok(InitItem {
-        body: specialize_stmts(&i.body, known_consts, skeleton)?,
+        body: specialize_stmts(&i.body, known_consts, skeleton, enclosing_const_generics)?,
         ..i.clone()
     })
 }
@@ -519,10 +588,17 @@ fn specialize_members(
     members: &[Member],
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
+    enclosing_const_generics: &BTreeSet<String>,
 ) -> Result<Vec<Member>, SemaError> {
     let mut out = Vec::new();
     for m in members {
-        specialize_member(m, known_consts, skeleton, &mut out)?;
+        specialize_member(
+            m,
+            known_consts,
+            skeleton,
+            enclosing_const_generics,
+            &mut out,
+        )?;
     }
     Ok(out)
 }
@@ -531,19 +607,49 @@ fn specialize_member(
     member: &Member,
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
+    enclosing_const_generics: &BTreeSet<String>,
     out: &mut Vec<Member>,
 ) -> Result<(), SemaError> {
     match member {
         Member::ComptimeIf(c) => {
-            let selected: &[Member] = if eval_condition(&c.cond, known_consts, skeleton)? {
-                &c.then_branch
-            } else {
-                match &c.else_branch {
-                    Some(b) => b,
-                    None => return Ok(()),
-                }
-            };
-            out.extend(specialize_members(selected, known_consts, skeleton)?);
+            check_comptime_vocabulary(&c.cond, known_consts, enclosing_const_generics)?;
+            if condition_uses_enclosing_const_generic(&c.cond, enclosing_const_generics) {
+                // Decision 18: defer for per-instantiation expansion.
+                out.push(Member::ComptimeIf(ComptimeIfMember {
+                    then_branch: specialize_members(
+                        &c.then_branch,
+                        known_consts,
+                        skeleton,
+                        enclosing_const_generics,
+                    )?,
+                    else_branch: match &c.else_branch {
+                        Some(b) => Some(specialize_members(
+                            b,
+                            known_consts,
+                            skeleton,
+                            enclosing_const_generics,
+                        )?),
+                        None => None,
+                    },
+                    ..c.clone()
+                }));
+                return Ok(());
+            }
+            let selected: &[Member] =
+                if eval_condition(&c.cond, known_consts, enclosing_const_generics, skeleton)? {
+                    &c.then_branch
+                } else {
+                    match &c.else_branch {
+                        Some(b) => b,
+                        None => return Ok(()),
+                    }
+                };
+            out.extend(specialize_members(
+                selected,
+                known_consts,
+                skeleton,
+                enclosing_const_generics,
+            )?);
             Ok(())
         }
         Member::Field(_) | Member::Pool(_) => {
@@ -551,11 +657,21 @@ fn specialize_member(
             Ok(())
         }
         Member::Fn(f) => {
-            out.push(Member::Fn(specialize_fn(f, known_consts, skeleton)?));
+            out.push(Member::Fn(specialize_fn(
+                f,
+                known_consts,
+                skeleton,
+                enclosing_const_generics,
+            )?));
             Ok(())
         }
         Member::Init(i) => {
-            out.push(Member::Init(specialize_init(i, known_consts, skeleton)?));
+            out.push(Member::Init(specialize_init(
+                i,
+                known_consts,
+                skeleton,
+                enclosing_const_generics,
+            )?));
             Ok(())
         }
     }
@@ -565,10 +681,17 @@ fn specialize_stmts(
     stmts: &[Stmt],
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
+    enclosing_const_generics: &BTreeSet<String>,
 ) -> Result<Vec<Stmt>, SemaError> {
     let mut out = Vec::new();
     for s in stmts {
-        specialize_stmt(s, known_consts, skeleton, &mut out)?;
+        specialize_stmt(
+            s,
+            known_consts,
+            skeleton,
+            enclosing_const_generics,
+            &mut out,
+        )?;
     }
     Ok(out)
 }
@@ -577,32 +700,76 @@ fn specialize_stmt(
     stmt: &Stmt,
     known_consts: &BTreeSet<String>,
     skeleton: &ConstSkeleton,
+    enclosing_const_generics: &BTreeSet<String>,
     out: &mut Vec<Stmt>,
 ) -> Result<(), SemaError> {
     match stmt {
         Stmt::ComptimeIf(c) => {
-            let selected: &[Stmt] = if eval_condition(&c.cond, known_consts, skeleton)? {
-                &c.then_branch
-            } else {
-                match &c.else_branch {
-                    Some(b) => b,
-                    None => return Ok(()),
-                }
-            };
-            out.extend(specialize_stmts(selected, known_consts, skeleton)?);
+            check_comptime_vocabulary(&c.cond, known_consts, enclosing_const_generics)?;
+            if condition_uses_enclosing_const_generic(&c.cond, enclosing_const_generics) {
+                out.push(Stmt::ComptimeIf(ComptimeIfStmt {
+                    then_branch: specialize_stmts(
+                        &c.then_branch,
+                        known_consts,
+                        skeleton,
+                        enclosing_const_generics,
+                    )?,
+                    else_branch: match &c.else_branch {
+                        Some(b) => Some(specialize_stmts(
+                            b,
+                            known_consts,
+                            skeleton,
+                            enclosing_const_generics,
+                        )?),
+                        None => None,
+                    },
+                    ..c.clone()
+                }));
+                return Ok(());
+            }
+            let selected: &[Stmt] =
+                if eval_condition(&c.cond, known_consts, enclosing_const_generics, skeleton)? {
+                    &c.then_branch
+                } else {
+                    match &c.else_branch {
+                        Some(b) => b,
+                        None => return Ok(()),
+                    }
+                };
+            out.extend(specialize_stmts(
+                selected,
+                known_consts,
+                skeleton,
+                enclosing_const_generics,
+            )?);
             Ok(())
         }
         Stmt::If(i) => {
-            let then_branch = specialize_stmts(&i.then_branch, known_consts, skeleton)?;
+            let then_branch = specialize_stmts(
+                &i.then_branch,
+                known_consts,
+                skeleton,
+                enclosing_const_generics,
+            )?;
             let mut elifs = Vec::with_capacity(i.elifs.len());
             for elif in &i.elifs {
                 elifs.push(ElifClause {
-                    body: specialize_stmts(&elif.body, known_consts, skeleton)?,
+                    body: specialize_stmts(
+                        &elif.body,
+                        known_consts,
+                        skeleton,
+                        enclosing_const_generics,
+                    )?,
                     ..elif.clone()
                 });
             }
             let else_branch = match &i.else_branch {
-                Some(b) => Some(specialize_stmts(b, known_consts, skeleton)?),
+                Some(b) => Some(specialize_stmts(
+                    b,
+                    known_consts,
+                    skeleton,
+                    enclosing_const_generics,
+                )?),
                 None => None,
             };
             out.push(Stmt::If(IfStmt {
@@ -617,7 +784,12 @@ fn specialize_stmt(
             let mut arms = Vec::with_capacity(m.arms.len());
             for arm in &m.arms {
                 arms.push(MatchArm {
-                    body: specialize_stmts(&arm.body, known_consts, skeleton)?,
+                    body: specialize_stmts(
+                        &arm.body,
+                        known_consts,
+                        skeleton,
+                        enclosing_const_generics,
+                    )?,
                     ..arm.clone()
                 });
             }
@@ -626,14 +798,14 @@ fn specialize_stmt(
         }
         Stmt::For(f) => {
             out.push(Stmt::For(ForStmt {
-                body: specialize_stmts(&f.body, known_consts, skeleton)?,
+                body: specialize_stmts(&f.body, known_consts, skeleton, enclosing_const_generics)?,
                 ..f.clone()
             }));
             Ok(())
         }
         Stmt::While(w) => {
             out.push(Stmt::While(WhileStmt {
-                body: specialize_stmts(&w.body, known_consts, skeleton)?,
+                body: specialize_stmts(&w.body, known_consts, skeleton, enclosing_const_generics)?,
                 ..w.clone()
             }));
             Ok(())
@@ -641,16 +813,19 @@ fn specialize_stmt(
         Stmt::Defer(d) => {
             let body = match &d.body {
                 DeferBody::Expr(e) => DeferBody::Expr(e.clone()),
-                DeferBody::Suite(s) => {
-                    DeferBody::Suite(specialize_stmts(s, known_consts, skeleton)?)
-                }
+                DeferBody::Suite(s) => DeferBody::Suite(specialize_stmts(
+                    s,
+                    known_consts,
+                    skeleton,
+                    enclosing_const_generics,
+                )?),
             };
             out.push(Stmt::Defer(DeferStmt { body, ..d.clone() }));
             Ok(())
         }
         Stmt::With(w) => {
             out.push(Stmt::With(WithStmt {
-                body: specialize_stmts(&w.body, known_consts, skeleton)?,
+                body: specialize_stmts(&w.body, known_consts, skeleton, enclosing_const_generics)?,
                 ..w.clone()
             }));
             Ok(())
@@ -665,6 +840,252 @@ fn specialize_stmt(
         | Stmt::Expr(..)
         | Stmt::ComptimeAssert(..) => {
             out.push(stmt.clone());
+            Ok(())
+        }
+    }
+}
+
+// ===========================================================================
+// plans/M7.md item G, decision 18: per-instantiation expansion of deferred
+// `comptime if` nodes that named the enclosing struct's const generics.
+// ===========================================================================
+
+/// Rewrite bare const-generic names to their concrete argument expressions.
+fn bind_const_names(e: &Expr, consts: &BTreeMap<String, Expr>) -> Expr {
+    match e {
+        Expr::Name(_, name) => consts.get(name).cloned().unwrap_or_else(|| e.clone()),
+        Expr::Field(base, span, variant) => Expr::Field(
+            Box::new(bind_const_names(base, consts)),
+            *span,
+            variant.clone(),
+        ),
+        Expr::Unary(span, op, inner) => {
+            Expr::Unary(*span, *op, Box::new(bind_const_names(inner, consts)))
+        }
+        Expr::Not(span, inner) => Expr::Not(*span, Box::new(bind_const_names(inner, consts))),
+        Expr::Binary(span, op, l, r) => Expr::Binary(
+            *span,
+            *op,
+            Box::new(bind_const_names(l, consts)),
+            Box::new(bind_const_names(r, consts)),
+        ),
+        Expr::And(span, l, r) => Expr::And(
+            *span,
+            Box::new(bind_const_names(l, consts)),
+            Box::new(bind_const_names(r, consts)),
+        ),
+        Expr::Or(span, l, r) => Expr::Or(
+            *span,
+            Box::new(bind_const_names(l, consts)),
+            Box::new(bind_const_names(r, consts)),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn eval_bound_condition(cond: &Expr, mctx: &ModuleCtx) -> Result<bool, SemaError> {
+    let known: BTreeSet<String> = mctx.consts.keys().cloned().collect();
+    let empty = BTreeSet::new();
+    check_comptime_vocabulary(cond, &known, &empty)?;
+    let mut fctx = FnCtx::new(Type::Unit, mctx.module_pools.clone());
+    let typed_cond = bodies::check_expr(cond, Some(&Type::Bool), &mut fctx, mctx)?;
+    let mut program = TypedProgram::default();
+    for name in ["Target", "Restart", "DriverMode"] {
+        if let Some(vs) = prelude::builtin_enum_variants(name) {
+            program
+                .enums
+                .insert(name.to_string(), vs.iter().map(|v| v.to_string()).collect());
+        }
+    }
+    for (name, ty) in &mctx.consts {
+        if let Some(raw) = mctx.const_values.get(name) {
+            let mut fctx = FnCtx::new(Type::Unit, mctx.module_pools.clone());
+            if let Ok(value) = bodies::check_expr(raw, Some(ty), &mut fctx, mctx) {
+                program.consts.insert(
+                    name.clone(),
+                    crate::sema::typed::TypedConst {
+                        ty: ty.clone(),
+                        value,
+                    },
+                );
+            }
+        }
+    }
+    let value = interp::eval_standalone(&program, &typed_cond, "comptime if".to_string())
+        .map_err(to_sema_error)?;
+    match value {
+        Value::Bool(b) => Ok(b),
+        other => Err(SemaError::at(
+            "comptime",
+            format!(
+                "internal error: comptime if condition evaluated to a non-bool value ({other:?})"
+            ),
+            cond.span(),
+        )),
+    }
+}
+
+/// Expand deferred member `comptime if`s under a concrete const-generic
+/// substitution (`MODE` → `DriverMode.Irq`), returning only concrete members.
+pub(crate) fn expand_deferred_members(
+    concrete: &[Member],
+    deferred: &[Member],
+    const_subst: &BTreeMap<String, Expr>,
+    mctx: &ModuleCtx,
+) -> Result<Vec<Member>, SemaError> {
+    let mut out = Vec::new();
+    for m in concrete {
+        expand_one_member(m, const_subst, mctx, &mut out)?;
+    }
+    for m in deferred {
+        expand_one_member(m, const_subst, mctx, &mut out)?;
+    }
+    Ok(out)
+}
+
+fn expand_one_member(
+    member: &Member,
+    const_subst: &BTreeMap<String, Expr>,
+    mctx: &ModuleCtx,
+    out: &mut Vec<Member>,
+) -> Result<(), SemaError> {
+    match member {
+        Member::ComptimeIf(c) => {
+            let bound = bind_const_names(&c.cond, const_subst);
+            let selected: &[Member] = if eval_bound_condition(&bound, mctx)? {
+                &c.then_branch
+            } else {
+                match &c.else_branch {
+                    Some(b) => b,
+                    None => return Ok(()),
+                }
+            };
+            for m in selected {
+                expand_one_member(m, const_subst, mctx, out)?;
+            }
+            Ok(())
+        }
+        Member::Fn(f) => {
+            let body = match &f.body {
+                Some(b) => Some(expand_deferred_stmts(b, const_subst, mctx)?),
+                None => None,
+            };
+            out.push(Member::Fn(FnItem { body, ..f.clone() }));
+            Ok(())
+        }
+        Member::Init(i) => {
+            out.push(Member::Init(InitItem {
+                body: expand_deferred_stmts(&i.body, const_subst, mctx)?,
+                ..i.clone()
+            }));
+            Ok(())
+        }
+        Member::Field(_) | Member::Pool(_) => {
+            out.push(member.clone());
+            Ok(())
+        }
+    }
+}
+
+fn expand_deferred_stmts(
+    stmts: &[Stmt],
+    const_subst: &BTreeMap<String, Expr>,
+    mctx: &ModuleCtx,
+) -> Result<Vec<Stmt>, SemaError> {
+    let mut out = Vec::new();
+    for s in stmts {
+        expand_one_stmt(s, const_subst, mctx, &mut out)?;
+    }
+    Ok(out)
+}
+
+fn expand_one_stmt(
+    stmt: &Stmt,
+    const_subst: &BTreeMap<String, Expr>,
+    mctx: &ModuleCtx,
+    out: &mut Vec<Stmt>,
+) -> Result<(), SemaError> {
+    match stmt {
+        Stmt::ComptimeIf(c) => {
+            let bound = bind_const_names(&c.cond, const_subst);
+            let selected: &[Stmt] = if eval_bound_condition(&bound, mctx)? {
+                &c.then_branch
+            } else {
+                match &c.else_branch {
+                    Some(b) => b,
+                    None => return Ok(()),
+                }
+            };
+            for s in selected {
+                expand_one_stmt(s, const_subst, mctx, out)?;
+            }
+            Ok(())
+        }
+        Stmt::If(i) => {
+            out.push(Stmt::If(IfStmt {
+                then_branch: expand_deferred_stmts(&i.then_branch, const_subst, mctx)?,
+                elifs: i
+                    .elifs
+                    .iter()
+                    .map(|e| {
+                        Ok(ElifClause {
+                            body: expand_deferred_stmts(&e.body, const_subst, mctx)?,
+                            ..e.clone()
+                        })
+                    })
+                    .collect::<Result<Vec<_>, SemaError>>()?,
+                else_branch: match &i.else_branch {
+                    Some(b) => Some(expand_deferred_stmts(b, const_subst, mctx)?),
+                    None => None,
+                },
+                ..i.clone()
+            }));
+            Ok(())
+        }
+        Stmt::Match(m) => {
+            let mut arms = Vec::with_capacity(m.arms.len());
+            for arm in &m.arms {
+                arms.push(MatchArm {
+                    body: expand_deferred_stmts(&arm.body, const_subst, mctx)?,
+                    ..arm.clone()
+                });
+            }
+            out.push(Stmt::Match(MatchStmt { arms, ..m.clone() }));
+            Ok(())
+        }
+        Stmt::For(f) => {
+            out.push(Stmt::For(ForStmt {
+                body: expand_deferred_stmts(&f.body, const_subst, mctx)?,
+                ..f.clone()
+            }));
+            Ok(())
+        }
+        Stmt::While(w) => {
+            out.push(Stmt::While(WhileStmt {
+                body: expand_deferred_stmts(&w.body, const_subst, mctx)?,
+                ..w.clone()
+            }));
+            Ok(())
+        }
+        Stmt::Defer(d) => {
+            let body = match &d.body {
+                DeferBody::Expr(e) => DeferBody::Expr(e.clone()),
+                DeferBody::Suite(s) => {
+                    DeferBody::Suite(expand_deferred_stmts(s, const_subst, mctx)?)
+                }
+            };
+            out.push(Stmt::Defer(DeferStmt { body, ..d.clone() }));
+            Ok(())
+        }
+        Stmt::With(w) => {
+            out.push(Stmt::With(WithStmt {
+                body: expand_deferred_stmts(&w.body, const_subst, mctx)?,
+                ..w.clone()
+            }));
+            Ok(())
+        }
+        other => {
+            out.push(other.clone());
             Ok(())
         }
     }

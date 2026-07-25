@@ -1,0 +1,34 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/check_driver_mode_poll.wr sha256=74bdeab1c31d878244d64b8aaba7300ccbf90e076147af21cb8c492d4f856424
+  Name value=check-driver-mode-poll
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=VirtioBlock
+    Arg label=transport value=8192
+  Driver index=0 type=BlkDriver[DriverMode.Poll]
+  Edge from=driver#0 to=device#0
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+  Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
+    Padding offset=0x0 size=96
+    Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
+    Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=400
+  Section name=abort base=0x405001e0 size=120
+  Section name=checkpoint base=0x40500258 size=256
+  Section name=rtcode base=0x40500358 size=124
+  Section name=rtdata base=0x405003d8 size=48
+  Section name=devregs base=0x40500408 size=8
+  Entry base=0x40500000
+  Driver name=BlkDriver[DriverMode.Poll] state=32
+  Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver[DriverMode.Poll] base=0x40500408 size=8

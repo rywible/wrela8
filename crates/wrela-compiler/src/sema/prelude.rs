@@ -37,7 +37,15 @@ const LITERAL_SURFACE: &[&str] = &["Static", "Str", "Bytes"];
 /// `actor`, `pool`, `dma_pool`, `supervise`, `check_layout`, `seal`,
 /// `handle`) are never bare identifiers — they only ever appear after a
 /// `.` — so they need no entry here.
-const IMAGE_BUILDER: &[&str] = &["Image", "RestartIntensity", "seconds", "Target", "Restart"];
+const IMAGE_BUILDER: &[&str] = &[
+    "Image",
+    "RestartIntensity",
+    "seconds",
+    "Target",
+    "Restart",
+    // plans/M7.md item G, decision 18: 03 §7's driver-mode const generic.
+    "DriverMode",
+];
 
 /// The actor/async surface's own bare prelude names (plans/M6.md item A,
 /// 02-language.md §9): `Actor` (a type name, `Actor[T]` — `sema::types::resolve_named`'s
@@ -95,6 +103,17 @@ const HARDWARE_SURFACE: &[&str] = &[
     "IoError",
 ];
 
+/// plans/M7.md item G: 03-hardware.md §6's ISR/ordinary channel. Prelude
+/// so an annotation resolves with no import (the worked example's
+/// `from runtime.interrupt import InterruptCell` is aspirational — this
+/// machine has no stdlib module for it yet, and the type is a builtin
+/// like `Actor[T]`, not a capability).
+const INTERRUPT_CELL: &[&str] = &["InterruptCell"];
+
+/// plans/M7.md item G: `wake(...)` — 03 §6's bottom-half wake. Bare
+/// call name, always in scope (no import).
+const WAKE: &[&str] = &["wake"];
+
 /// Is `name` one of the fixed prelude names above?
 ///
 /// The one entry with no array of its own here: 03-hardware.md §1's four
@@ -117,6 +136,8 @@ pub fn is_builtin(name: &str) -> bool {
         || MARKED_VALUES.contains(&name)
         || FAIL_CLOSED_TYPES.contains(&name)
         || HARDWARE_SURFACE.contains(&name)
+        || INTERRUPT_CELL.contains(&name)
+        || WAKE.contains(&name)
         || crate::eval::image_checks::is_sealed_authority_type_name(name)
 }
 
@@ -151,6 +172,11 @@ pub fn builtin_enum_variants(name: &str) -> Option<&'static [&'static str]> {
         // for E3's dump oracles; richer taxonomy is not load-bearing
         // until E4's completion status is inspected.
         "IoError" => Some(&["OutOfRange"]),
+        // =================================================================
+        // plans/M7.md item G, decision 18: 03-hardware.md §7's driver mode
+        // const-generic vocabulary (`BlkDriver[DriverMode.Irq]`).
+        // =================================================================
+        "DriverMode" => Some(&["Irq", "Poll"]),
         _ => None,
     }
 }

@@ -117,6 +117,58 @@ pub fn check_sealed(
     // is a *build* error; capacity_sectors is the build constant
     // `read_capacity_sectors` lowers to.
     check_blk_device_decls(graph, programs)?;
+    // DriverMode before vector-binding: an Irq build without `vector=`
+    // would also trip `take_irq` unowned (§6); name the §7 mode
+    // contradiction first when MODE is present.
+    check_driver_mode(graph)?;
+    check_vector_bindings(graph, programs)?;
+    Ok(())
+}
+
+// ===========================================================================
+// plans/M7.md item G, decision 18: 03-hardware.md §7 — DriverMode is a
+// const generic that changes the ISR/vector graph. Poll + vector, or Irq
+// without a vector, is a sealed-graph contradiction.
+// ===========================================================================
+fn check_driver_mode(graph: &ImageGraph) -> Result<(), SemaError> {
+    for (di, decl) in graph.drivers.iter().enumerate() {
+        let Type::Named(_, targs) = &decl.actor_type else {
+            continue;
+        };
+        let mode = targs.iter().find_map(|a| match a {
+            crate::sema::types::TypeArg::Const(e) => match e {
+                crate::syntax::ast::Expr::Field(base, _, variant)
+                    if matches!(base.as_ref(), crate::syntax::ast::Expr::Name(_, n) if n == "DriverMode") =>
+                {
+                    Some(variant.as_str())
+                }
+                _ => None,
+            },
+            _ => None,
+        });
+        let Some(mode) = mode else {
+            continue;
+        };
+        let vector = device_index_of_driver(decl)
+            .and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)));
+        match (mode, vector) {
+            ("Poll", Some(v)) => {
+                return Err(build_error(format!(
+                    "`driver#{di}` is `{}` but its device declares `vector={v}` — \
+                     03-hardware.md §7: a poll build eliminates the ISR and vector entirely",
+                    crate::sema::types::render_type(&decl.actor_type)
+                )));
+            }
+            ("Irq", None) => {
+                return Err(build_error(format!(
+                    "`driver#{di}` is `{}` but its device declared no `vector=` — \
+                     03-hardware.md §7: an IRQ build needs a vector to bind",
+                    crate::sema::types::render_type(&decl.actor_type)
+                )));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -1364,7 +1416,38 @@ impl Constructor {
 /// lives in `TypedProgram::instantiations` rather than `structs`, and
 /// whose `init` is therefore invisible to this pass. Fail closed, and
 /// leave it exactly as loud as it already was.
-fn find_constructor(programs: &BTreeMap<String, TypedProgram>, struct_name: &str) -> Constructor {
+fn find_constructor(programs: &BTreeMap<String, TypedProgram>, actor_type: &Type) -> Constructor {
+    let Type::Named(struct_name, targs) = actor_type else {
+        return Constructor::Init(Vec::new());
+    };
+    // plans/M7.md item G, decision 18: mode-generic drivers' `init` lives
+    // on the instantiation, not the unsubstituted template.
+    if !targs.is_empty() {
+        let key = format!("struct:{}", crate::sema::types::render_type(actor_type));
+        for p in programs.values() {
+            if let Some(crate::sema::typed::TypedInstantiation::Struct(s)) =
+                p.instantiations.get(&key)
+            {
+                if let Some(f) = &s.init {
+                    return Constructor::Init(
+                        f.params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.ty.clone()))
+                            .collect(),
+                    );
+                }
+                return Constructor::Fields(
+                    s.fields
+                        .iter()
+                        .filter_map(|name| {
+                            s.field_types.get(name).map(|ty| (name.clone(), ty.clone()))
+                        })
+                        .collect(),
+                );
+            }
+        }
+        return Constructor::Init(Vec::new());
+    }
     if let Some(f) = programs
         .values()
         .find_map(|p| p.structs.get(struct_name).and_then(|s| s.init.as_ref()))
@@ -1467,8 +1550,20 @@ fn check_capability_substitution(
                  constructor puts it"
             }
             "IrqCap" => {
-                "nothing mints an `IrqCap[V]` yet — that is plans/M7.md item G (a vector is \
-                 bound from the image graph)"
+                // plans/M7.md item G: an `IrqCap[V]` at the image binding
+                // is minted from the device's own `vector=` — decision
+                // 12's word is that bit index. Prefer
+                // `claimed.take_irq()` inside `init` (03 §6's own
+                // spelling); an `init` parameter is accepted when the
+                // device declared a vector, rejected when it did not.
+                return check_irq_cap_mint(
+                    decl_ref,
+                    struct_name,
+                    param_name,
+                    param_ty,
+                    args,
+                    graph,
+                );
             }
             // 03-hardware.md §3's shared control memory. Not "no queue
             // exists" — `VirtQueue.configure` (plans/M7.md item E1) mints
@@ -1696,7 +1791,7 @@ fn check_one_decl(
     let Type::Named(struct_name, _) = actor_type else {
         return Ok(()); // defensive: only ever a bare struct name reaches here
     };
-    let ctor = find_constructor(programs, struct_name);
+    let ctor = find_constructor(programs, actor_type);
     let reserved = reserved_args(kind);
     let mut satisfied: BTreeSet<String> = BTreeSet::new();
     for a in args {
@@ -1839,6 +1934,516 @@ pub fn check_init_args(
         )?;
     }
     Ok(())
+}
+
+// --- plans/M7.md item G: vector binding (03-hardware.md §6) ----------------
+//
+// "The ownership unit is a **vector**: exactly one handler per vector,
+// possibly several vectors per driver ... The vector table is generated
+// from the image graph; source cannot bind an unowned vector."
+//
+// Decision 12: an `IrqCap[V]`'s runtime word is the vector bit index
+// (1..=63; bit 0 is M6's deadline/cancel vector). A device declares its
+// vector with optional `vector=N` on `img.device`; `take_irq` /
+// `IrqCap.bind` are rejected when that declaration is absent (unowned).
+//
+// Three named rejections, each a golden:
+//   - a vector bound twice (`golden/err-irq-vector-bound-twice`)
+//   - two vectors bound to one handler (`golden/err-irq-two-vectors-one-handler`)
+//   - binding / taking an unowned vector (`golden/err-irq-unowned-vector`)
+
+/// Bit 0 is reserved for M6's deadline/cancel vector
+/// (`__wrela_vector0_service`). A device-owned vector is any other bit.
+pub const DEADLINE_VECTOR: u64 = 0;
+
+/// The `vector=N` an `img.device[...](..., vector=N)` declaration names,
+/// if any. `None` is 03 §7's poll build: no vector exists for this device.
+pub(crate) fn device_vector(args: &[DeclArg]) -> Option<u64> {
+    let a = args.iter().find(|a| a.label == "vector")?;
+    match &a.value {
+        Value::U8(n) => Some(*n as u64),
+        Value::U16(n) => Some(*n as u64),
+        Value::U32(n) => Some(*n as u64),
+        Value::U64(n) => Some(*n),
+        Value::Usize(n) => Some(*n),
+        Value::I8(n) if *n >= 0 => Some(*n as u64),
+        Value::I16(n) if *n >= 0 => Some(*n as u64),
+        Value::I32(n) if *n >= 0 => Some(*n as u64),
+        Value::I64(n) if *n >= 0 => Some(*n as u64),
+        Value::Isize(n) if *n >= 0 => Some(*n as u64),
+        _ => None,
+    }
+}
+
+/// An `IrqCap[V]` `init` parameter: minted from the bound device's
+/// `vector=` (decision 12). Prefer `claimed.take_irq()` inside `init`.
+fn check_irq_cap_mint(
+    decl_ref: &ImageDeclRef,
+    struct_name: &str,
+    param_name: &str,
+    param_ty: &Type,
+    args: &[DeclArg],
+    graph: &ImageGraph,
+) -> Result<(), SemaError> {
+    let rendered = types::render_type(param_ty);
+    let Some(device_arg) = args.iter().find(|a| a.label == "device") else {
+        return Err(build_error(format!(
+            "`{}` declares no `device=`, but `{struct_name}.init` takes `{param_name}: {rendered}` \
+             — an `IrqCap[V]` is minted from a device's declared `vector=` (03-hardware.md §6)",
+            decl_ref.render()
+        )));
+    };
+    let Value::ImageDecl(ImageDeclRef::Device(idx)) = &device_arg.value else {
+        return Err(build_error(format!(
+            "`{}` passes a `device=` that is not a declared device, so `{struct_name}.init`'s own \
+             `{param_name}: {rendered}` has no vector to mint from",
+            decl_ref.render()
+        )));
+    };
+    let Some(dev) = graph.devices.get(*idx) else {
+        return Err(build_error(format!(
+            "`{}` binds device#{idx}, which this image does not declare",
+            decl_ref.render()
+        )));
+    };
+    match device_vector(&dev.args) {
+        Some(v) if v != DEADLINE_VECTOR && v <= 63 => Ok(()),
+        Some(DEADLINE_VECTOR) => Err(build_error(format!(
+            "`{}` binds device#{idx} with `vector=0`, but bit 0 is reserved for the deadline/\
+             cancel vector (06-machine.md §4 / plans/M6.md item E); a device-owned vector is \
+             `vector=1..=63`",
+            decl_ref.render()
+        ))),
+        Some(v) => Err(build_error(format!(
+            "`{}` binds device#{idx} with `vector={v}`, which does not fit the per-core pending \
+             word (bits 0..=63; bit 0 is the deadline vector)",
+            decl_ref.render()
+        ))),
+        None => Err(build_error(format!(
+            "`{}` binds a device to `{struct_name}`, but `{struct_name}.init` takes `{param_name}: \
+             {rendered}` and the device declared no `vector=` — 03-hardware.md §6: source cannot \
+             bind an unowned vector. Add `vector=N` (1..=63) to the `img.device` call, or drop \
+             the `IrqCap` parameter and use a poll build (03-hardware.md §7)",
+            decl_ref.render()
+        ))),
+    }
+}
+
+/// One static `IrqCap.bind(handler)` site found in a `@driver`'s body.
+struct IrqBindSite {
+    driver: String,
+    vector: u64,
+    handler: String,
+    site: String,
+}
+
+/// 03-hardware.md §6's vector-table rule, checked over the sealed graph.
+pub fn check_vector_bindings(
+    graph: &ImageGraph,
+    programs: &BTreeMap<String, TypedProgram>,
+) -> Result<(), SemaError> {
+    // First: every device's `vector=` is well-formed and unique across
+    // the image (two devices may not share a pending-word bit).
+    let mut claimed: BTreeMap<u64, usize> = BTreeMap::new();
+    for (i, d) in graph.devices.iter().enumerate() {
+        let Some(v) = device_vector(&d.args) else {
+            continue;
+        };
+        if v == DEADLINE_VECTOR {
+            return Err(build_error(format!(
+                "`device#{i}` declares `vector=0`, but bit 0 is reserved for the deadline/cancel \
+                 vector (06-machine.md §4); a device-owned vector is `vector=1..=63`"
+            )));
+        }
+        if v > 63 {
+            return Err(build_error(format!(
+                "`device#{i}` declares `vector={v}`, which does not fit the per-core pending word \
+                 (bits 0..=63)"
+            )));
+        }
+        if let Some(prev) = claimed.insert(v, i) {
+            return Err(build_error(format!(
+                "`device#{i}` and `device#{prev}` both declare `vector={v}` — 03-hardware.md §6: \
+                 exactly one handler per vector, and a vector is owned by exactly one device"
+            )));
+        }
+    }
+
+    // Collect every bind / take_irq site from every declared driver's
+    // typed bodies. A free fn cannot hold an `IrqCap` (containment), so
+    // only driver members are walked.
+    let mut binds: Vec<IrqBindSite> = Vec::new();
+    let mut take_irq_sites: Vec<(String, Option<u64>, String)> = Vec::new();
+    for (di, decl) in graph.drivers.iter().enumerate() {
+        let Type::Named(driver, targs) = &decl.actor_type else {
+            continue;
+        };
+        let vector = device_index_of_driver(decl)
+            .and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)));
+        let Some(program) = programs.values().find(|p| {
+            p.structs.contains_key(driver)
+                || p.instantiations.keys().any(|k| {
+                    k.strip_prefix("struct:").unwrap_or(k).split('[').next()
+                        == Some(driver.as_str())
+                })
+        }) else {
+            continue;
+        };
+        let mut walk = |site_key: String, f: &crate::sema::typed::TypedFn| {
+            collect_irq_ops(
+                &f.body,
+                driver,
+                vector,
+                &site_key,
+                &mut binds,
+                &mut take_irq_sites,
+            );
+        };
+        // Plain (non-generic) driver: bodies live on `program.structs`.
+        if targs.is_empty() {
+            if let Some(s) = program.structs.get(driver) {
+                if let Some(f) = &s.init {
+                    walk(format!("{driver}.init"), f);
+                }
+                for (m, f) in &s.methods {
+                    walk(format!("{driver}.{m}"), f);
+                }
+                for (m, f) in &s.assoc_fns {
+                    walk(format!("{driver}.{m}"), f);
+                }
+            }
+        } else {
+            // plans/M7.md item G, decision 18: mode-generic driver bodies
+            // live on the instantiation (`struct:BlkDriver[DriverMode.Irq]`).
+            let key = format!(
+                "struct:{}",
+                crate::sema::types::render_type(&decl.actor_type)
+            );
+            if let Some(crate::sema::typed::TypedInstantiation::Struct(s)) =
+                program.instantiations.get(&key)
+            {
+                if let Some(f) = &s.init {
+                    walk(format!("{key}.init"), f);
+                }
+                for (m, f) in &s.methods {
+                    walk(format!("{key}.{m}"), f);
+                }
+                for (m, f) in &s.assoc_fns {
+                    walk(format!("{key}.{m}"), f);
+                }
+            }
+        }
+        let _ = di;
+    }
+
+    // Unowned: take_irq or bind against a device with no vector=.
+    for (driver, vector, site) in &take_irq_sites {
+        if vector.is_none() {
+            return Err(build_error(format!(
+                "`{site}` calls `take_irq()`, but `@driver` `{driver}`'s device declared no \
+                 `vector=` — 03-hardware.md §6: source cannot bind an unowned vector. Add \
+                 `vector=N` (1..=63) to the `img.device` call, or drop the call for a poll build \
+                 (03-hardware.md §7)"
+            )));
+        }
+    }
+    for b in &binds {
+        if device_vector_for_driver(graph, &b.driver).is_none() {
+            return Err(build_error(format!(
+                "`{}` binds handler `{}`, but `@driver` `{}`'s device declared no `vector=` — \
+                 03-hardware.md §6: source cannot bind an unowned vector",
+                b.site, b.handler, b.driver
+            )));
+        }
+    }
+
+    // A vector bound twice: two bind sites naming the same vector bit.
+    let mut by_vector: BTreeMap<u64, &IrqBindSite> = BTreeMap::new();
+    for b in &binds {
+        if let Some(prev) = by_vector.insert(b.vector, b) {
+            return Err(build_error(format!(
+                "vector {} is bound twice — first in `{}` to `{}`, then in `{}` to `{}` \
+                 (03-hardware.md §6: exactly one handler per vector)",
+                b.vector, prev.site, prev.handler, b.site, b.handler
+            )));
+        }
+    }
+
+    // Two vectors bound to one handler.
+    let mut by_handler: BTreeMap<&str, &IrqBindSite> = BTreeMap::new();
+    for b in &binds {
+        if let Some(prev) = by_handler.insert(b.handler.as_str(), b) {
+            if prev.vector != b.vector {
+                return Err(build_error(format!(
+                    "handler `{}` is bound to two vectors ({} via `{}`, {} via `{}`) — \
+                     03-hardware.md §6: exactly one handler per vector, and this compiler \
+                     rejects one handler serving two",
+                    b.handler, prev.vector, prev.site, b.vector, b.site
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn device_index_of_driver(decl: &crate::eval::image::DriverDecl) -> Option<usize> {
+    decl.args
+        .iter()
+        .find(|a| a.label == "device")
+        .and_then(|a| match &a.value {
+            Value::ImageDecl(ImageDeclRef::Device(i)) => Some(*i),
+            _ => None,
+        })
+}
+
+fn device_vector_for_driver(graph: &ImageGraph, driver: &str) -> Option<u64> {
+    for decl in &graph.drivers {
+        let Type::Named(name, _) = &decl.actor_type else {
+            continue;
+        };
+        if name != driver {
+            continue;
+        }
+        return device_index_of_driver(decl)
+            .and_then(|i| graph.devices.get(i))
+            .and_then(|d| device_vector(&d.args));
+    }
+    None
+}
+
+fn collect_irq_ops(
+    stmts: &[crate::sema::typed::TypedStmt],
+    driver: &str,
+    vector: Option<u64>,
+    site: &str,
+    binds: &mut Vec<IrqBindSite>,
+    take_irq: &mut Vec<(String, Option<u64>, String)>,
+) {
+    for s in stmts {
+        collect_irq_ops_stmt(s, driver, vector, site, binds, take_irq);
+    }
+}
+
+fn collect_irq_ops_stmt(
+    stmt: &crate::sema::typed::TypedStmt,
+    driver: &str,
+    vector: Option<u64>,
+    site: &str,
+    binds: &mut Vec<IrqBindSite>,
+    take_irq: &mut Vec<(String, Option<u64>, String)>,
+) {
+    use crate::sema::typed::{TypedDeferBody, TypedForIter, TypedStmtKind};
+    match &stmt.kind {
+        TypedStmtKind::ExprStmt(e) | TypedStmtKind::Let { value: e, .. } => {
+            collect_irq_ops_expr(e, driver, vector, site, binds, take_irq);
+        }
+        TypedStmtKind::Assign { target, value } => {
+            collect_irq_ops_expr(target, driver, vector, site, binds, take_irq);
+            collect_irq_ops_expr(value, driver, vector, site, binds, take_irq);
+        }
+        TypedStmtKind::Return(Some(e)) => {
+            collect_irq_ops_expr(e, driver, vector, site, binds, take_irq);
+        }
+        TypedStmtKind::Assert { cond, message }
+        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            collect_irq_ops_expr(cond, driver, vector, site, binds, take_irq);
+            if let Some(m) = message {
+                collect_irq_ops_expr(m, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedStmtKind::Return(None)
+        | TypedStmtKind::Break
+        | TypedStmtKind::Continue
+        | TypedStmtKind::Pass => {}
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            collect_irq_ops_expr(cond, driver, vector, site, binds, take_irq);
+            collect_irq_ops(then_branch, driver, vector, site, binds, take_irq);
+            for elif in elifs {
+                collect_irq_ops_expr(&elif.cond, driver, vector, site, binds, take_irq);
+                collect_irq_ops(&elif.body, driver, vector, site, binds, take_irq);
+            }
+            if let Some(b) = else_branch {
+                collect_irq_ops(b, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            collect_irq_ops_expr(scrutinee, driver, vector, site, binds, take_irq);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_irq_ops_expr(g, driver, vector, site, binds, take_irq);
+                }
+                collect_irq_ops(&arm.body, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedStmtKind::While { cond, body } => {
+            collect_irq_ops_expr(cond, driver, vector, site, binds, take_irq);
+            collect_irq_ops(body, driver, vector, site, binds, take_irq);
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(start, end, _) => {
+                    collect_irq_ops_expr(start, driver, vector, site, binds, take_irq);
+                    collect_irq_ops_expr(end, driver, vector, site, binds, take_irq);
+                }
+                TypedForIter::Expr(e) => {
+                    collect_irq_ops_expr(e, driver, vector, site, binds, take_irq);
+                }
+            }
+            collect_irq_ops(body, driver, vector, site, binds, take_irq);
+        }
+        TypedStmtKind::Defer(body) => match body {
+            TypedDeferBody::Expr(e) => {
+                collect_irq_ops_expr(e, driver, vector, site, binds, take_irq);
+            }
+            TypedDeferBody::Suite(stmts) => {
+                collect_irq_ops(stmts, driver, vector, site, binds, take_irq);
+            }
+        },
+        TypedStmtKind::BareSend { expr, .. } => {
+            collect_irq_ops_expr(expr, driver, vector, site, binds, take_irq);
+        }
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                collect_irq_ops_expr(c, driver, vector, site, binds, take_irq);
+            }
+            if let Some(d) = deadline {
+                collect_irq_ops_expr(d, driver, vector, site, binds, take_irq);
+            }
+            collect_irq_ops(body, driver, vector, site, binds, take_irq);
+        }
+    }
+}
+
+fn collect_irq_ops_expr(
+    e: &crate::sema::typed::TypedExpr,
+    driver: &str,
+    vector: Option<u64>,
+    site: &str,
+    binds: &mut Vec<IrqBindSite>,
+    take_irq: &mut Vec<(String, Option<u64>, String)>,
+) {
+    use crate::sema::typed::{TypedClosureBody, TypedExprKind};
+    match &e.kind {
+        TypedExprKind::Intrinsic {
+            key,
+            args,
+            receiver,
+            ..
+        } if key == "Device.take_irq" => {
+            take_irq.push((driver.to_string(), vector, site.to_string()));
+            if let Some(r) = receiver {
+                collect_irq_ops_expr(r, driver, vector, site, binds, take_irq);
+            }
+            for (_, a) in args {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::Intrinsic {
+            key,
+            args,
+            receiver,
+            ..
+        } if key == "IrqCap.bind" => {
+            let handler = args
+                .iter()
+                .find(|(l, _)| l == "handler")
+                .and_then(|(_, h)| match &h.kind {
+                    TypedExprKind::FnRef(k) => Some(k.spelling()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "<unknown>".to_string());
+            binds.push(IrqBindSite {
+                driver: driver.to_string(),
+                vector: vector.unwrap_or(0),
+                handler,
+                site: site.to_string(),
+            });
+            if let Some(r) = receiver {
+                collect_irq_ops_expr(r, driver, vector, site, binds, take_irq);
+            }
+            for (_, a) in args {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                collect_irq_ops_expr(r, driver, vector, site, binds, take_irq);
+            }
+            for (_, a) in args {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::Field(b, _)
+        | TypedExprKind::Take(b)
+        | TypedExprKind::Neg(b)
+        | TypedExprKind::BitNot(b)
+        | TypedExprKind::Not(b)
+        | TypedExprKind::ToScalar(b)
+        | TypedExprKind::Await(b)
+        | TypedExprKind::Send(b)
+        | TypedExprKind::Panic(b) => {
+            collect_irq_ops_expr(b, driver, vector, site, binds, take_irq);
+        }
+        TypedExprKind::Index(a, b)
+        | TypedExprKind::Binary(_, a, b)
+        | TypedExprKind::OpCall(_, a, b)
+        | TypedExprKind::And(a, b)
+        | TypedExprKind::Or(a, b) => {
+            collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            collect_irq_ops_expr(b, driver, vector, site, binds, take_irq);
+        }
+        TypedExprKind::Is(a, _) => {
+            collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+        }
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                collect_irq_ops_expr(r, driver, vector, site, binds, take_irq);
+            }
+            for a in args.iter().flatten() {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::CallValue(f, args) => {
+            collect_irq_ops_expr(f, driver, vector, site, binds, take_irq);
+            for a in args {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::Try(inner, _) => {
+            collect_irq_ops_expr(inner, driver, vector, site, binds, take_irq);
+        }
+        TypedExprKind::EnumConstruct { args, .. }
+        | TypedExprKind::Tuple(args)
+        | TypedExprKind::List(args) => {
+            for a in args {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, a) in fields {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => match body {
+            TypedClosureBody::Expr(e) => {
+                collect_irq_ops_expr(e, driver, vector, site, binds, take_irq);
+            }
+            TypedClosureBody::Suite(stmts) => {
+                collect_irq_ops(stmts, driver, vector, site, binds, take_irq);
+            }
+        },
+        _ => {}
+    }
 }
 
 // --- check 5: exactly one supervising parent
@@ -2429,6 +3034,7 @@ mod tests {
                     ret: Type::Unit,
                     body: vec![],
                     is_async: false,
+                    is_task: false,
                 }),
                 ..TypedStruct::default()
             },
@@ -2665,16 +3271,39 @@ mod tests {
         // it would be wrong forever rather than merely out of date.
         for (cap, owner) in [
             ("Mmio", "map_partition"),
-            ("IrqCap", "item G"),
             ("DmaShared", "VirtQueue.configure"),
         ] {
             let programs =
                 programs_map(program_with_init("Blk", vec![cap_param("c", cap, "Thing")]));
             let g = driver_graph(Some("BlockHw"), true, vec![]);
             let err = check_init_args(&g, &programs)
-                .expect_err("nothing mints an Mmio/IrqCap/DmaShared at the image binding");
+                .expect_err("nothing mints an Mmio/DmaShared at the image binding");
             assert!(err.message.contains(owner), "{cap}: {}", err.message);
         }
+        // IrqCap is item G: mintable from vector=, refused without one.
+        let programs = programs_map(program_with_init(
+            "Blk",
+            vec![cap_param("c", "IrqCap", "Thing")],
+        ));
+        let g = driver_graph(Some("BlockHw"), true, vec![]);
+        let err = check_init_args(&g, &programs).expect_err("IrqCap needs vector=");
+        assert!(
+            err.message.contains("vector=") || err.message.contains("unowned"),
+            "IrqCap: {}",
+            err.message
+        );
+        // plans/M7.md item G self-audit: an `IrqCap` init param with no
+        // `device=` on the driver binding — source-unreachable for a
+        // `@driver` that takes DeviceCap (sema demands the wiring), so
+        // named here rather than as a golden.
+        let g_no_dev = driver_graph(Some("BlockHw"), false, vec![]);
+        let err =
+            check_init_args(&g_no_dev, &programs).expect_err("IrqCap init param needs device=");
+        assert!(
+            err.message.contains("declares no `device=`"),
+            "IrqCap no-device: {}",
+            err.message
+        );
     }
 
     /// The `DmaPool[P, N]` mint's own arms (plans/M7.md item D). The three

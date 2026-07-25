@@ -217,6 +217,12 @@ pub struct ImageLayout {
     /// test-image hand-built report only learns these lines when this is
     /// `Some` (so a pool-only image stays bootable without a device model).
     pub blk: Option<BlkReport>,
+    /// plans/M7.md item G: host-side `interrupt_status` writes the VMM
+    /// must perform before the guest runs, one per bound ISR. Empty when
+    /// the image binds no vector. Carried into `wrela test`'s runtime
+    /// report so the HVF path can raise a value the guest could not have
+    /// produced (`IRQ_HOST_STATUS_MAGIC`).
+    pub irq_host_injects: Vec<IrqHostInject>,
 }
 
 /// One virtio-blk queue as the report and the VMM both see it
@@ -249,6 +255,29 @@ pub struct BlkReport {
     pub descriptors_per_op: u16,
     pub occupancy_bound: u16,
 }
+
+/// One host-side interrupt injection the VMM performs before the vCPU
+/// runs (plans/M7.md item G, 03 §6's `interrupt_status` writer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrqHostInject {
+    /// Guest base of the device's `devregs` window.
+    pub base: u64,
+    /// Byte offset of `interrupt_status` within that window (`0x60`).
+    pub offset: u64,
+    /// Value written (little-endian `u32`). Always `IRQ_HOST_STATUS_MAGIC`.
+    pub status: u32,
+    /// Pending-word bit to raise after the write (`1..=63`).
+    pub vector: u64,
+}
+
+/// Hand-picked host status word for item G's HVF oracle: nonzero in
+/// bits the ISR's handled mask does not claim (`0xA500`) plus bit 0
+/// (`INT_VRING`-shaped). An ISR that asserts `status ==` this value
+/// proves the read saw the host write, not a guest-produced zero; an
+/// ISR that masks with `1` still publishes a 1-bit level signal.
+pub const IRQ_HOST_STATUS_MAGIC: u32 = 0x0000_A501;
+/// Virtio ISR status register offset (03 §6 / the worked `VirtioIrqMmio`).
+pub const IRQ_STATUS_OFFSET: u64 = 0x60;
 
 /// One bound pool as it was actually placed: everything the checker
 /// resolved about the declaration (`PoolBacking` — 03-hardware.md §3's
@@ -345,76 +374,46 @@ fn build_abort_stub(exit_code: u64) -> Vec<u32> {
 /// sequence: this fn is only ever reached once that test already found
 /// the word nonzero).
 ///
-/// **The vector table, honestly collapsed**: 06 §4/the plan's own item-E
-/// task text calls for "a static vector table in rtdata" so a set bit
-/// dispatches to its own registered service routine. At M6 there is
-/// exactly one vector (index 0, the deadline/cancel vector) — a real
-/// runtime-loaded table with one entry is pure ceremony over what a
-/// single, directly-relocated `BL` to `__wrela_vector0_service` (emitted
-/// immediately below, at a *compile-time-known* word offset — no
-/// relocation across sections needed at all, since both routines are
-/// built together, here, in one pass) already gives byte-for-byte:
-/// exactly one link-time-resolved call target. CLAUDE.md's "no layers for
-/// their own sake" governs over the plan's own literal wording here — a
-/// table an M6 image can never populate with a second entry is not a
-/// table, it is one `BL`, and building the indirection anyway before a
-/// second vector exists would be exactly the "cleverness bought without
-/// a profile" rule bars. **What multi-vector growth actually needs**
-/// (disclosed, not built ahead of need): a real address table in rtdata
-/// (or a fixed global data region, whichever a later milestone's own
-/// static-sizing pass finds cleaner) plus a per-bit test-and-dispatch
-/// loop in place of this fn's own single unconditional dispatch below —
-/// the surrounding mask-arm-recheck loop shape does not change.
+/// **The vector table**: 06 §4 calls for a static vector table so a set
+/// bit dispatches to its registered service. Bit 0 is always
+/// `__wrela_vector0_service` (deadline/cancel). Device-owned bits
+/// (`1..=63`, decision 12) dispatch by a compile-time-unrolled per-bit
+/// test-and-`BL` against each `IrqCap.bind` site the sealed graph
+/// recorded — still not an rtdata-loaded table (CLAUDE.md: no layers for
+/// their own sake); the targets are `Reloc::Call` into the `code`
+/// section, patched once bases are known. An image with no device
+/// vectors keeps the M6 byte-identical single-`BL` / whole-word-clear
+/// loop (pinned by every pre-G checkpoint golden).
 ///
-/// **Mask-arm-recheck, the M6-simple (single-core) form**: loop { read
-/// the word; if zero, done; dispatch (the one vector); clear; reread
-/// (recheck) }. Clearing is a plain whole-word zero-store, not a
-/// bit-clear — honest only because bit 0 is the *only* bit any writer
-/// ever sets at M6 (the VMM's own raise path, below, never sets another
-/// bit); a real multi-vector version must AND-clear only the bit(s) just
-/// serviced (this crate's `encode.rs` has no bitwise-not/BIC encoder yet,
-/// deliberately not added for a floor nothing here needs). Rereading
-/// after the clear-store is the actual "recheck": a raise landing
-/// anywhere between our own read and our own clear-store (the VMM writes
-/// from a different host thread, entirely unsynchronized with this loop)
-/// is never lost — it is simply serviced on the loop's next iteration
-/// rather than this one, so "arm" (there is nothing to separately
-/// re-enable here — the pending word has no mask bit of its own, unlike
-/// `InterruptCell`'s per-vector mask) collapses into "the loop always
-/// rereads before deciding it is done." **What multi-core would
-/// additionally need** (disclosed): this whole read-test-clear sequence
-/// must become a single atomic RMW (`LDXR`/`STXR` or an atomic AND),
-/// since a *different* vCPU's own checkpoint could race this one's clear
-/// against the VMM's raise from yet another host thread — single-core
-/// M6 has no such second reader/writer to race against, which is exactly
-/// why a plain load/store loop is honestly sufficient here and would not
-/// be once core 1+ start (a later milestone's own job, per the plan's own
-/// "M6 is core-0-only").
+/// **Mask-arm-recheck**: loop { read pending; if work, dispatch set bits
+/// and AND-clear only those bits (`BIC`); drain every driver's sticky
+/// wake-pending bit into its `@task` (fixed-point until quiet); reread }.
+/// A raise landing between read and clear is serviced on the next
+/// iteration. Single-core / no nesting (03 §6 rev 0.1) keeps a plain
+/// load/store sufficient; multi-core would need an atomic RMW clear.
 ///
-/// Returns `(words, checkpoint_service_word_offset)` — the second value
-/// is `__wrela_checkpoint_service`'s own entry point, *relative to the
-/// start of `words`* (not `0`, since `__wrela_vector0_service` is placed
-/// first so its own address needs no forward reference at all). Every
-/// caller must resolve `Reloc::CheckpointService`/its own local `BL`s
-/// against `section_base + checkpoint_service_word_offset * 4`, never
-/// `section_base` alone.
+/// Returns words plus `__wrela_checkpoint_service`'s word offset within
+/// them (not `0` — vector0 is placed first). Callers resolve
+/// `Reloc::CheckpointService` against
+/// `section_base + checkpoint_service_word * 4`. `relocs` carries every
+/// ISR/`@task` `BL` (word offsets relative to the block start).
 ///
-/// **The vector-0 service routine's own contract** (item F's plug-in
-/// point, named precisely so F never has to reshape this fn): called via
-/// `BL` from the loop below, with the caller's own `x30` already saved —
-/// a service routine may clobber `x0..x14` freely (checkpoints fire
-/// between arbitrary instructions of interrupted code, so nothing about
-/// a live register survives one anyway, by construction) but must
-/// preserve `x28` (`codegen::X_FRAME`, the persistent turn-frame base
-/// register live across suspension) and `sp`, and returns via its own
-/// ordinary `ret` (its own `x30`, set fresh by the `BL`, never the
-/// caller's). Clearing the pending bit is `__wrela_checkpoint_service`'s
-/// own job, unconditionally, after every dispatch — never the routine's:
-/// a vector routine's whole contract is "do the vector's work
-/// synchronously, then return," exactly the shape item F's group-
-/// cancellation delivery already needs (deliver cancellation to every
-/// target the expired group names, then return).
+/// **Vector-0 / ISR / `@task` contract**: called via `BL` with the
+/// caller's `x30` already saved — may clobber `x0..x14`, must preserve
+/// `x28`/`sp`, returns via ordinary `ret`. ISR and `@task` bodies take
+/// `x0 = driver_state` (the ordinary method receiver). Pending-bit
+/// clear is this service's job after dispatch, never the routine's.
 pub fn build_checkpoint_and_vector_stub(group: Option<&GroupServiceCtx>) -> CheckpointBlock {
+    build_checkpoint_and_vector_stub_ex(group, &[], &[])
+}
+
+/// plans/M7.md item G: full checkpoint builder. `irq_vectors` / `wake_drains`
+/// empty ⇒ byte-identical to the M6 single-vector loop.
+pub fn build_checkpoint_and_vector_stub_ex(
+    group: Option<&GroupServiceCtx>,
+    irq_vectors: &[IrqVectorEntry],
+    wake_drains: &[WakeDrainEntry],
+) -> CheckpointBlock {
     let mut a = Asm::new(0);
 
     // --- __wrela_vector0_service --- placed first: word offset 0, so the
@@ -434,21 +433,120 @@ pub fn build_checkpoint_and_vector_stub(group: Option<&GroupServiceCtx>) -> Chec
     // --- __wrela_checkpoint_service ---
     let checkpoint_service_word = a.abs();
     a.push(encode::enc_sub_imm(X_SP, X_SP, 16, true)); // sub sp, sp, #16
-    a.push(encode::enc_str_x_imm(30, X_SP, 0)); // str x30, [sp]  (BLR below clobbers it)
-    let loop_top = a.abs();
+    a.push(encode::enc_str_x_imm(30, X_SP, 0)); // str x30, [sp]  (BL below clobbers it)
     let pending_addr = wrela_machine::pending::core_word_addr(0);
-    a.load_imm(SCRATCH_A, pending_addr);
-    a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
-    let skip_done = a.skip_placeholder(); // cbz X_B, .done
-    a.bl_to(vector0_start);
-    // Reload the address fresh — the callee's own contract (above) may
-    // clobber any of x9..x14, so nothing from before the `BL` survives it.
-    a.load_imm(SCRATCH_A, pending_addr);
-    a.push(encode::enc_str_x_imm(X_ZR, SCRATCH_A, 0)); // clear (M6: whole-word == bit-0-only, module doc above)
-    a.b_to(loop_top); // recheck
-    let done = a.abs();
-    a.patch_cbz(skip_done, SCRATCH_B);
-    debug_assert_eq!(done, a.abs());
+    let multi = !irq_vectors.is_empty() || !wake_drains.is_empty();
+    if !multi {
+        // M6 byte-identical path: one vector, whole-word clear.
+        let loop_top = a.abs();
+        a.load_imm(SCRATCH_A, pending_addr);
+        a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
+        let skip_done = a.skip_placeholder(); // cbz X_B, .done
+        a.bl_to(vector0_start);
+        a.load_imm(SCRATCH_A, pending_addr);
+        a.push(encode::enc_str_x_imm(X_ZR, SCRATCH_A, 0));
+        a.b_to(loop_top);
+        let done = a.abs();
+        a.patch_cbz(skip_done, SCRATCH_B);
+        debug_assert_eq!(done, a.abs());
+    } else {
+        // plans/M7.md item G: multi-vector + wake-pending drain.
+        // Registers inside the loop (reloaded after every BL):
+        //   x9  = pending word address / scratch
+        //   x10 = pending bits (live snapshot)
+        //   x11 = clear-mask accumulator / did_work flag
+        //   x12 = per-bit test
+        //   x0  = driver state (ISR / @task receiver)
+        let loop_top = a.abs();
+        a.push(encode::enc_movz(SCRATCH_C, 0, 0, true)); // did_work = 0
+        a.load_imm(SCRATCH_A, pending_addr);
+        a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
+        let skip_pending = a.skip_placeholder(); // cbz pending, .after_pending
+
+        // clear_mask accumulator in x11 for the pending half; did_work
+        // is rebuilt as 1 once any bit is serviced.
+        a.push(encode::enc_movz(SCRATCH_C, 0, 0, true)); // clear_mask = 0
+
+        // bit 0 → vector0
+        a.push(encode::enc_movz(9, 1, 0, true));
+        a.push(encode::enc_and_reg(12, SCRATCH_B, 9, true));
+        let skip_v0 = a.skip_placeholder(); // cbz x12, .skip_v0
+        // Preserve pending + clear_mask across the BL (callee clobbers x9..).
+        a.push(encode::enc_sub_imm(X_SP, X_SP, 16, true));
+        a.push(encode::enc_str_x_imm(SCRATCH_B, X_SP, 0));
+        a.push(encode::enc_str_x_imm(SCRATCH_C, X_SP, 8));
+        a.bl_to(vector0_start);
+        a.push(encode::enc_ldr_x_imm(SCRATCH_B, X_SP, 0));
+        a.push(encode::enc_ldr_x_imm(SCRATCH_C, X_SP, 8));
+        a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
+        a.push(encode::enc_movz(9, 1, 0, true));
+        a.push(encode::enc_orr_reg(SCRATCH_C, SCRATCH_C, 9, true)); // clear_mask |= 1
+        a.patch_cbz(skip_v0, 12);
+
+        // Device-owned vectors.
+        for entry in irq_vectors {
+            let mask = 1u64 << (entry.vector & 63);
+            a.load_imm(9, mask);
+            a.push(encode::enc_and_reg(12, SCRATCH_B, 9, true));
+            let skip = a.skip_placeholder();
+            a.push(encode::enc_sub_imm(X_SP, X_SP, 32, true));
+            a.push(encode::enc_str_x_imm(SCRATCH_B, X_SP, 0));
+            a.push(encode::enc_str_x_imm(SCRATCH_C, X_SP, 8));
+            a.push(encode::enc_str_x_imm(9, X_SP, 16)); // mask
+            a.load_imm(0, entry.driver_state); // x0 = self
+            a.bl_call_key(&entry.handler_key);
+            a.push(encode::enc_ldr_x_imm(SCRATCH_B, X_SP, 0));
+            a.push(encode::enc_ldr_x_imm(SCRATCH_C, X_SP, 8));
+            a.push(encode::enc_ldr_x_imm(9, X_SP, 16));
+            a.push(encode::enc_add_imm(X_SP, X_SP, 32, true));
+            a.push(encode::enc_orr_reg(SCRATCH_C, SCRATCH_C, 9, true));
+            a.patch_cbz(skip, 12);
+        }
+
+        // BIC-clear serviced bits, keep any raise that landed mid-dispatch.
+        a.load_imm(SCRATCH_A, pending_addr);
+        a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
+        a.push(encode::enc_bic_reg(SCRATCH_B, SCRATCH_B, SCRATCH_C, true));
+        a.push(encode::enc_str_x_imm(SCRATCH_B, SCRATCH_A, 0));
+        a.push(encode::enc_movz(SCRATCH_C, 1, 0, true)); // did_work = 1
+        a.patch_cbz(skip_pending, SCRATCH_B);
+
+        // Sticky wake-pending drain (03 §6 mask–arm–recheck for the
+        // ISR→bottom-half edge). Fixed-point: a `@task` that re-wakes
+        // itself is consumed before this service returns.
+        let wake_top = a.abs();
+        a.push(encode::enc_movz(12, 0, 0, true)); // any_wake = 0
+        for w in wake_drains {
+            let pending_word = w.driver_state + w.wake_pending_off;
+            a.load_imm(SCRATCH_A, pending_word);
+            a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
+            let skip_w = a.skip_placeholder();
+            a.push(encode::enc_str_x_imm(X_ZR, SCRATCH_A, 0)); // clear first
+            a.push(encode::enc_sub_imm(X_SP, X_SP, 16, true));
+            a.push(encode::enc_str_x_imm(12, X_SP, 0)); // save any_wake
+            a.push(encode::enc_str_x_imm(SCRATCH_C, X_SP, 8)); // save did_work
+            a.load_imm(0, w.driver_state);
+            a.bl_call_key(&w.task_key);
+            a.push(encode::enc_ldr_x_imm(12, X_SP, 0));
+            a.push(encode::enc_ldr_x_imm(SCRATCH_C, X_SP, 8));
+            a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
+            a.push(encode::enc_movz(12, 1, 0, true)); // any_wake = 1
+            a.push(encode::enc_movz(SCRATCH_C, 1, 0, true)); // did_work = 1
+            a.patch_cbz(skip_w, SCRATCH_B);
+        }
+        a.push(encode::enc_cbnz(
+            12,
+            ((wake_top as i64 - a.abs() as i64) * 4) as i32,
+            true,
+        ));
+
+        // Recheck: pending raise or wake during the drains above.
+        a.push(encode::enc_cbnz(
+            SCRATCH_C,
+            ((loop_top as i64 - a.abs() as i64) * 4) as i32,
+            true,
+        ));
+    }
     a.push(encode::enc_ldr_x_imm(30, X_SP, 0));
     a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
     a.push(encode::enc_ret(30));
@@ -467,7 +565,26 @@ pub fn build_checkpoint_and_vector_stub(group: Option<&GroupServiceCtx>) -> Chec
         words: a.words,
         checkpoint_service_word,
         deadline_poll_word,
+        relocs: a.relocs,
     }
+}
+
+/// One sealed `IrqCap.bind` site, ready for the checkpoint dispatch loop.
+/// `driver_state` is 0 on the sizing pass and the absolute state address
+/// on the real-address pass (word count never depends on the value).
+#[derive(Debug, Clone)]
+pub struct IrqVectorEntry {
+    pub vector: u64,
+    pub handler_key: String,
+    pub driver_state: u64,
+}
+
+/// One `@driver`'s sticky wake-pending → `@task` drain site.
+#[derive(Debug, Clone)]
+pub struct WakeDrainEntry {
+    pub driver_state: u64,
+    pub wake_pending_off: u64,
+    pub task_key: String,
 }
 
 /// The whole-image facts the vector-0 deadline service and the scheduler's
@@ -496,6 +613,9 @@ pub struct CheckpointBlock {
     /// `__wrela_deadline_poll`'s own word offset, present only for a build
     /// that actually has a group arena.
     pub deadline_poll_word: Option<usize>,
+    /// `Reloc::Call` sites for ISR / `@task` bodies (word offsets relative
+    /// to the block start when built with `Asm::new(0)`).
+    pub relocs: Vec<Reloc>,
 }
 
 /// The shape-only (`base = 0`) service context a sizing pass needs: the
@@ -837,6 +957,378 @@ fn patch_load_imm_words(words: &mut [u32], word: usize, value: u64) {
     words[word + 1] = encode::enc_movk(rd, ((value >> 16) & 0xFFFF) as u16, 16, true);
     words[word + 2] = encode::enc_movk(rd, ((value >> 32) & 0xFFFF) as u16, 32, true);
     words[word + 3] = encode::enc_movk(rd, ((value >> 48) & 0xFFFF) as u16, 48, true);
+}
+
+/// Does `@driver` `name` declare any `@task` method? Walks the raw
+/// modules (attrs live on the AST; `LayoutCtx` has types only).
+fn driver_declares_task(modules: &BTreeMap<String, Module>, name: &str) -> bool {
+    !driver_task_method_names(modules, name).is_empty()
+}
+
+/// Every `@task` method name on `@driver` `name` (AST walk).
+fn driver_task_method_names(modules: &BTreeMap<String, Module>, name: &str) -> Vec<String> {
+    // Decision 18: runtime tables pass `BlkDriver[DriverMode.Irq]`; the
+    // AST struct is the bare name.
+    let bare = name.split('[').next().unwrap_or(name);
+    let mut out = Vec::new();
+    for m in modules.values() {
+        for item in &m.items {
+            let crate::syntax::ast::Item::Struct(s) = item else {
+                continue;
+            };
+            if s.name != bare {
+                continue;
+            }
+            if !s.attrs.iter().any(|a| a.name == "driver") {
+                continue;
+            }
+            for mem in &s.members {
+                if let crate::syntax::ast::Member::Fn(f) = mem {
+                    if f.attrs.iter().any(|a| a.name == "task") {
+                        out.push(f.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// plans/M7.md item G: ISR bind sites + wake drains for the checkpoint
+/// service. Addresses are 0 on the sizing pass; the real-address pass
+/// fills them from `placement.drivers`.
+fn checkpoint_irq_shape(
+    boot: Option<&BootCtx>,
+    placement: Option<&RuntimePlacement>,
+    tables: Option<&RuntimeTables>,
+) -> (Vec<IrqVectorEntry>, Vec<WakeDrainEntry>) {
+    let Some(boot) = boot else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut irq_vectors = Vec::new();
+    let mut wake_drains = Vec::new();
+    for (di, decl) in boot.graph.drivers.iter().enumerate() {
+        let crate::sema::types::Type::Named(driver, targs) = &decl.actor_type else {
+            continue;
+        };
+        let state = placement
+            .and_then(|p| p.drivers.get(di).copied())
+            .unwrap_or(0);
+        // Decision 18: codegen keys for a mode-generic driver are
+        // `struct:BlkDriver[DriverMode.Irq].method` (MethodInstance).
+        let key_prefix = if targs.is_empty() {
+            driver.clone()
+        } else {
+            format!(
+                "struct:{}",
+                crate::sema::types::render_type(&decl.actor_type)
+            )
+        };
+        let vector = device_index_of(&decl.args)
+            .and_then(|i| boot.graph.devices.get(i))
+            .and_then(|d| crate::eval::image_checks::device_vector(&d.args));
+        if let Some(v) = vector {
+            for handler in irq_bind_handlers_in_driver(boot.modules, driver) {
+                irq_vectors.push(IrqVectorEntry {
+                    vector: v,
+                    handler_key: format!("{key_prefix}.{handler}"),
+                    driver_state: state,
+                });
+            }
+        }
+        if let Some(tables) = tables {
+            if let Some(off) = tables.drivers.get(di).and_then(|d| d.wake_pending_off) {
+                for task in driver_task_method_names(boot.modules, driver) {
+                    wake_drains.push(WakeDrainEntry {
+                        driver_state: state,
+                        wake_pending_off: off,
+                        task_key: format!("{key_prefix}.{task}"),
+                    });
+                }
+            }
+        }
+    }
+    (irq_vectors, wake_drains)
+}
+
+/// AST walk: every `*.bind(self.<handler>)` site inside `@driver` `driver`.
+/// `check_vector_bindings` already validated these; layout only needs the
+/// handler names for the dispatch table.
+fn irq_bind_handlers_in_driver(modules: &BTreeMap<String, Module>, driver: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in modules.values() {
+        for item in &m.items {
+            let crate::syntax::ast::Item::Struct(s) = item else {
+                continue;
+            };
+            if s.name != driver {
+                continue;
+            }
+            for mem in &s.members {
+                let body: &[crate::syntax::ast::Stmt] = match mem {
+                    crate::syntax::ast::Member::Fn(f) => f.body.as_deref().unwrap_or(&[]),
+                    crate::syntax::ast::Member::Init(i) => &i.body,
+                    _ => continue,
+                };
+                collect_bind_handlers_stmts(body, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn collect_bind_handlers_stmts(stmts: &[crate::syntax::ast::Stmt], out: &mut Vec<String>) {
+    use crate::syntax::ast::Stmt;
+    for s in stmts {
+        match s {
+            Stmt::Expr(_, e) | Stmt::Send(_, e) => collect_bind_handlers_expr(e, out),
+            Stmt::Assign(a) => {
+                collect_bind_handlers_expr(&a.target, out);
+                collect_bind_handlers_expr(&a.value, out);
+            }
+            Stmt::Return(_, Some(e)) => collect_bind_handlers_expr(e, out),
+            Stmt::If(i) => {
+                collect_bind_handlers_expr(&i.cond, out);
+                collect_bind_handlers_stmts(&i.then_branch, out);
+                for elif in &i.elifs {
+                    collect_bind_handlers_expr(&elif.cond, out);
+                    collect_bind_handlers_stmts(&elif.body, out);
+                }
+                if let Some(b) = &i.else_branch {
+                    collect_bind_handlers_stmts(b, out);
+                }
+            }
+            Stmt::Match(m) => {
+                collect_bind_handlers_expr(&m.scrutinee, out);
+                for arm in &m.arms {
+                    collect_bind_handlers_stmts(&arm.body, out);
+                }
+            }
+            Stmt::While(w) => {
+                collect_bind_handlers_expr(&w.cond, out);
+                collect_bind_handlers_stmts(&w.body, out);
+            }
+            Stmt::For(f) => {
+                collect_bind_handlers_expr(&f.iterable, out);
+                collect_bind_handlers_stmts(&f.body, out);
+            }
+            Stmt::ComptimeIf(c) => {
+                collect_bind_handlers_stmts(&c.then_branch, out);
+                if let Some(b) = &c.else_branch {
+                    collect_bind_handlers_stmts(b, out);
+                }
+            }
+            Stmt::With(w) => {
+                collect_bind_handlers_expr(&w.expr, out);
+                collect_bind_handlers_stmts(&w.body, out);
+            }
+            Stmt::Defer(d) => match &d.body {
+                crate::syntax::ast::DeferBody::Suite(body) => {
+                    collect_bind_handlers_stmts(body, out);
+                }
+                crate::syntax::ast::DeferBody::Expr(e) => collect_bind_handlers_expr(e, out),
+            },
+            Stmt::Assert(a) => {
+                collect_bind_handlers_expr(&a.cond, out);
+                if let Some(m) = &a.message {
+                    collect_bind_handlers_expr(m, out);
+                }
+            }
+            Stmt::ComptimeAssert(_, cond, msg) => {
+                collect_bind_handlers_expr(cond, out);
+                if let Some(m) = msg {
+                    collect_bind_handlers_expr(m, out);
+                }
+            }
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Return(_, None) | Stmt::Pass(_) => {}
+        }
+    }
+}
+
+fn collect_bind_handlers_expr(e: &crate::syntax::ast::Expr, out: &mut Vec<String>) {
+    use crate::syntax::ast::Expr;
+    match e {
+        Expr::Call(callee, _, args) => {
+            if let Expr::Field(_, _, method) = callee.as_ref() {
+                if method == "bind" {
+                    for a in args {
+                        if let Expr::Field(base, _, handler) = &a.value {
+                            if matches!(base.as_ref(), Expr::Name(_, n) if n == "self") {
+                                out.push(handler.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            collect_bind_handlers_expr(callee, out);
+            for a in args {
+                collect_bind_handlers_expr(&a.value, out);
+            }
+        }
+        Expr::Field(base, _, _)
+        | Expr::Unary(_, _, base)
+        | Expr::Not(_, base)
+        | Expr::Try(_, base)
+        | Expr::Send(_, base) => collect_bind_handlers_expr(base, out),
+        Expr::Index(base, _, args) => {
+            collect_bind_handlers_expr(base, out);
+            for a in args {
+                collect_bind_handlers_expr(a, out);
+            }
+        }
+        Expr::Binary(_, _, l, r) | Expr::And(_, l, r) | Expr::Or(_, l, r) => {
+            collect_bind_handlers_expr(l, out);
+            collect_bind_handlers_expr(r, out);
+        }
+        Expr::Tuple(_, items) | Expr::List(_, items) => {
+            for i in items {
+                collect_bind_handlers_expr(i, out);
+            }
+        }
+        Expr::DotVariant(_, _, args) => {
+            for a in args {
+                collect_bind_handlers_expr(&a.value, out);
+            }
+        }
+        Expr::Range(_, a, b, _) => {
+            collect_bind_handlers_expr(a, out);
+            collect_bind_handlers_expr(b, out);
+        }
+        Expr::Is(_, scrutinee, _) => collect_bind_handlers_expr(scrutinee, out),
+        Expr::Closure(c) => {
+            if let crate::syntax::ast::ClosureBody::Expr(e) = &c.body {
+                collect_bind_handlers_expr(e, out);
+            }
+        }
+        Expr::Name(..)
+        | Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Str(..)
+        | Expr::BStr(..)
+        | Expr::Char(..)
+        | Expr::Bool(..)
+        | Expr::Unit(..)
+        | Expr::FStr(_) => {}
+    }
+}
+
+/// Host injects for every device that owns a vector **and** has a bound
+/// ISR. The status value is always `IRQ_HOST_STATUS_MAGIC` at
+/// `IRQ_STATUS_OFFSET` — the HVF oracle's hand-computed host write.
+fn build_irq_host_injects(
+    boot: Option<&BootCtx>,
+    device_regs: &[DeviceRegs],
+) -> Vec<IrqHostInject> {
+    let Some(boot) = boot else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for r in device_regs {
+        let Some(dev) = boot.graph.devices.get(r.device) else {
+            continue;
+        };
+        let Some(vector) = crate::eval::image_checks::device_vector(&dev.args) else {
+            continue;
+        };
+        // Decision 18: DeviceRegs.driver is the rendered instantiation
+        // name; the AST struct is the bare name.
+        let bare = r.driver.split('[').next().unwrap_or(r.driver.as_str());
+        if irq_bind_handlers_in_driver(boot.modules, bare).is_empty() {
+            continue;
+        }
+        out.push(IrqHostInject {
+            base: r.base,
+            offset: IRQ_STATUS_OFFSET,
+            status: IRQ_HOST_STATUS_MAGIC,
+            vector,
+        });
+    }
+    out
+}
+
+/// plans/M7.md item G: absolute address of `@driver` `driver`'s sticky
+/// wake-pending word (trailing word of its state). `placement.drivers`
+/// already holds absolute addresses (`place_runtime_tables` starts its
+/// cursor at `rtdata_base`).
+fn driver_wake_pending_addr(
+    placement: &RuntimePlacement,
+    tables: &RuntimeTables,
+    driver: &str,
+) -> Result<u64, LayoutError> {
+    for (i, d) in tables.drivers.iter().enumerate() {
+        // Decision 18: runtime table names are rendered
+        // (`BlkDriver[DriverMode.Irq]`); `Inst::Wake` carries the bare
+        // struct name from the FnRef.
+        let bare = d.name.split('[').next().unwrap_or(d.name.as_str());
+        if d.name != driver && bare != driver {
+            continue;
+        }
+        let Some(off) = d.wake_pending_off else {
+            return Err(LayoutError::new(format!(
+                "internal error: `Wake` for `{driver}` but that driver has no `@task` \
+                 (no wake-pending word was reserved)"
+            )));
+        };
+        let Some(&state_base) = placement.drivers.get(i) else {
+            return Err(LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` has no placed state"
+            )));
+        };
+        return Ok(state_base + off);
+    }
+    Err(LayoutError::new(format!(
+        "internal error: `Wake` names `{driver}`, which this image never declared as a `@driver`"
+    )))
+}
+
+/// plans/M7.md item G, decision 12: the vector bit index an `IrqCap` for
+/// `@driver` `driver` materializes. Read from the sealed graph's
+/// `vector=` on that driver's bound device — the same fact
+/// `eval::image_checks::check_vector_bindings` already validated.
+fn driver_irq_vector(graph: Option<&ImageGraph>, driver: &str) -> Result<u64, LayoutError> {
+    let Some(graph) = graph else {
+        return Err(LayoutError::new(format!(
+            "internal error: `LoadIrqVector` for `{driver}` needs the sealed image graph, but \
+             this layout has none"
+        )));
+    };
+    // Decision 18: `LoadIrqVector` may carry `struct:BlkDriver[DriverMode.Irq]`
+    // (instantiation owner) or the bare `BlkDriver`.
+    let bare_want = driver
+        .strip_prefix("struct:")
+        .unwrap_or(driver)
+        .split('[')
+        .next()
+        .unwrap_or(driver);
+    for decl in &graph.drivers {
+        let crate::sema::types::Type::Named(name, _) = &decl.actor_type else {
+            continue;
+        };
+        if name != driver && name != bare_want {
+            continue;
+        }
+        let Some(i) = device_index_of(&decl.args) else {
+            return Err(LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` has a `LoadIrqVector` but no `device=` \
+                 binding"
+            )));
+        };
+        let Some(dev) = graph.devices.get(i) else {
+            return Err(LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` binds device#{i}, which does not exist"
+            )));
+        };
+        return crate::eval::image_checks::device_vector(&dev.args).ok_or_else(|| {
+            LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` has a `LoadIrqVector` but its device \
+                 declared no `vector=` — `check_vector_bindings` should have rejected first"
+            ))
+        });
+    }
+    Err(LayoutError::new(format!(
+        "internal error: `LoadIrqVector` names `{driver}`, which this image never declared as a \
+         `@driver`"
+    )))
 }
 
 fn patch_adrp_add(
@@ -1614,9 +2106,12 @@ pub fn layout_program(
     // context purely to learn the word count (never address-dependent), then
     // again with the real addresses once `rtdata_base` exists.
     let checkpoint_shape = group_service_shape(runtime);
-    let checkpoint_block = build_checkpoint_and_vector_stub(checkpoint_shape.as_ref());
+    let (irq_shape, wake_shape) = checkpoint_irq_shape(boot.as_ref(), None, runtime);
+    let checkpoint_block =
+        build_checkpoint_and_vector_stub_ex(checkpoint_shape.as_ref(), &irq_shape, &wake_shape);
     let checkpoint_words = checkpoint_block.words;
     let checkpoint_service_word = checkpoint_block.checkpoint_service_word;
+    let checkpoint_relocs_shape = checkpoint_block.relocs;
 
     // This image's own runtime routines (`build_runtime_block`), built
     // twice for the identical reason the checkpoint block above is: their
@@ -1827,19 +2322,44 @@ pub fn layout_program(
     // has no way to change one pass's length without changing the other's.
     // They are kept as real `Err`s rather than `debug_assert`s because a
     // length disagreement would silently corrupt every later section base.
-    let checkpoint_words = match (&placement, runtime_live) {
+    let (mut checkpoint_words, checkpoint_relocs) = match (&placement, runtime_live) {
         (Some(pl), Some(tables)) => {
-            let real = build_checkpoint_and_vector_stub(group_service_ctx(pl, tables).as_ref());
+            let (irq_real, wake_real) = checkpoint_irq_shape(boot.as_ref(), Some(pl), Some(tables));
+            let real = build_checkpoint_and_vector_stub_ex(
+                group_service_ctx(pl, tables).as_ref(),
+                &irq_real,
+                &wake_real,
+            );
             if real.words.len() != checkpoint_words.len() {
                 return Err(LayoutError::new(
                     "internal error: the checkpoint block's own word count changed between its \
                      sizing pass and its real-address pass",
                 ));
             }
-            real.words
+            (real.words, real.relocs)
         }
-        _ => checkpoint_words,
+        _ => (checkpoint_words, checkpoint_relocs_shape),
     };
+    // plans/M7.md item G: ISR / `@task` `BL`s inside the checkpoint section.
+    for reloc in &checkpoint_relocs {
+        match reloc {
+            Reloc::Call { word, key } => {
+                let target_base = *fn_word_base.get(key).ok_or_else(|| {
+                    LayoutError::new(format!(
+                        "internal error: checkpoint dispatch target `{key}` was never codegen'd"
+                    ))
+                })?;
+                let this_addr = checkpoint_base + (*word as u64) * 4;
+                let target_addr = code_base + (target_base as u64) * 4;
+                patch_bl(&mut checkpoint_words, *word, this_addr, target_addr)?;
+            }
+            other => {
+                return Err(LayoutError::new(format!(
+                    "internal error: checkpoint block emitted unexpected reloc {other:?}"
+                )));
+            }
+        }
+    }
     // Second pass over the runtime block, now that `rtdata` is placed —
     // the identical shape the checkpoint block above uses.
     let runtime_block = match (&wiring, &placement) {
@@ -1971,6 +2491,22 @@ pub fn layout_program(
                     })?;
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                Reloc::IrqVector { word, driver } => {
+                    let vector = driver_irq_vector(boot.as_ref().map(|b| b.graph), driver)?;
+                    patch_load_imm_words(&mut all_code_words, base + word, vector);
+                }
+                Reloc::WakePending { word, driver } => {
+                    let (p, t) = match (placement.as_ref(), runtime_live) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(format!(
+                                "internal error: `Wake` for `{driver}` needs rtdata placement"
+                            )));
+                        }
+                    };
+                    let addr = driver_wake_pending_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -2030,10 +2566,13 @@ pub fn layout_program(
                 Reloc::AbortVal { .. }
                 | Reloc::CheckpointService { .. }
                 | Reloc::TurnFrameAddr { .. }
-                | Reloc::GroupArenaBase { .. } => {
+                | Reloc::GroupArenaBase { .. }
+                | Reloc::IrqVector { .. }
+                | Reloc::WakePending { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
-                         AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase reloc",
+                         AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase/\
+                         IrqVector/WakePending reloc",
                     ));
                 }
             }
@@ -2092,6 +2631,7 @@ pub fn layout_program(
     verify_device_windows(&sections, &device_regs)?;
     // blk filled later — ring verify runs in attach_blk_report
 
+    let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
     Ok(ImageLayout {
         blob,
         entry: entry_base,
@@ -2100,6 +2640,7 @@ pub fn layout_program(
         pools,
         device_regs,
         blk: None, // filled by attach_blk_report after layout
+        irq_host_injects,
     })
 }
 
@@ -2123,6 +2664,33 @@ pub fn merge_layout_ctx(modules: &BTreeMap<String, Module>) -> Result<LayoutCtx,
         merged.struct_field_names.extend(ctx.struct_field_names);
     }
     Ok(merged)
+}
+
+/// plans/M7.md item G, decision 18: fold every checked struct
+/// instantiation into `LayoutCtx` under its rendered type spelling
+/// (`BlkDriver[DriverMode.Irq]`), so `mwir::size_of` can size a mode-
+/// specialized driver's state the same way it sizes a plain one.
+pub fn enrich_layout_ctx_with_instantiations(
+    ctx: &mut LayoutCtx,
+    programs: &BTreeMap<String, TypedProgram>,
+) {
+    use crate::sema::typed::TypedInstantiation;
+    for typed in programs.values() {
+        for (key, inst) in &typed.instantiations {
+            let TypedInstantiation::Struct(s) = inst else {
+                continue;
+            };
+            let display = key.strip_prefix("struct:").unwrap_or(key.as_str());
+            let fields: Vec<crate::sema::types::Type> = s
+                .fields
+                .iter()
+                .filter_map(|n| s.field_types.get(n).cloned())
+                .collect();
+            ctx.struct_field_names
+                .insert(display.to_string(), s.fields.clone());
+            ctx.structs.insert(display.to_string(), fields);
+        }
+    }
 }
 
 /// Merges every module's own `lower::lower_program` output into one
@@ -2224,6 +2792,10 @@ pub fn try_layout_program(
     // Stamp it onto every TypedProgram before lower so
     // `read_capacity_sectors` can emit it as a ConstInt.
     let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
+    // Decision 18: instantiations must be sizeable before codegen.
+    let mut layout_ctx = layout_ctx.clone();
+    enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+    let layout_ctx = &layout_ctx;
     let mut mwir_programs = Vec::with_capacity(programs.len());
     for typed in programs.values() {
         let mut stamped = typed.clone();
@@ -2368,8 +2940,14 @@ pub struct ActorRuntimeLayout {
 pub struct DriverRuntimeLayout {
     pub name: String,
     /// This driver struct's own field storage (`mwir::size_of`) — where
-    /// the instance lives, exactly like an actor's `state_size`.
+    /// the instance lives, exactly like an actor's `state_size`. When the
+    /// driver declares a `@task`, this also includes one trailing word for
+    /// the sticky wake-pending bit (plans/M7.md item G).
     pub state_size: u64,
+    /// Byte offset of the wake-pending word within `state_size`, when the
+    /// driver has a `@task`. Layout patches `Reloc::WakePending` against
+    /// `driver_state_base + wake_pending_off`.
+    pub wake_pending_off: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -2919,6 +3497,7 @@ fn build_boot_init_calls(
             &decl.actor_type,
             &decl.args,
             None,
+            graph,
             inits,
         )?);
     }
@@ -2930,6 +3509,7 @@ fn build_boot_init_calls(
             &decl.actor_type,
             &decl.args,
             device,
+            graph,
             inits,
         )?);
     }
@@ -2960,6 +3540,7 @@ fn one_boot_init_call(
     decl_type: &crate::sema::types::Type,
     decl_args: &[crate::eval::image::DeclArg],
     device: Option<usize>,
+    graph: &ImageGraph,
     inits: &BTreeMap<String, ActorInit>,
 ) -> Result<Option<BootInitCall>, LayoutError> {
     use crate::sema::types::{Type, render_type};
@@ -3060,13 +3641,42 @@ fn one_boot_init_call(
                     args.push(BootInitArg::PoolBase(pool.clone()));
                     continue;
                 }
+                // plans/M7.md item G, decision 12: an `IrqCap[V]` parameter
+                // is the vector bit index. `check_irq_cap_mint` already
+                // required `vector=`; the word is known here, so it is a
+                // plain `Word` rather than a reloc against placement.
+                if tn == "IrqCap" {
+                    let Some(i) = device else {
+                        return Err(LayoutError::new(format!(
+                            "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, but this \
+                             declaration binds no device — an `IrqCap[V]` is minted from a \
+                             device's declared `vector=` (03-hardware.md §6).",
+                            p.name
+                        )));
+                    };
+                    let Some(dev) = graph.devices.get(i) else {
+                        return Err(LayoutError::new(format!(
+                            "internal error: `{name}.init` takes an `IrqCap` for device#{i}, \
+                             which does not exist"
+                        )));
+                    };
+                    let Some(v) = crate::eval::image_checks::device_vector(&dev.args) else {
+                        return Err(LayoutError::new(format!(
+                            "internal error: `{name}.init` takes an `IrqCap` for device#{i}, \
+                             which declared no `vector=` — `check_vector_bindings` should have \
+                             rejected first"
+                        )));
+                    };
+                    args.push(BootInitArg::Word(v));
+                    continue;
+                }
                 if crate::eval::image_checks::is_capability_type_name(tn) {
                     return Err(LayoutError::new(format!(
                         "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, a capability this \
-                         image never wires explicitly — the image binding mints a `DeviceCap[D]` \
-                         and a `DmaPool[P, N]` and nothing else (plans/M7.md item H1); an \
-                         `Mmio[L]` comes from the sealed transport's own `map_partition` \
-                         (03-hardware.md §2/§9), and the rest are named by \
+                         image never wires explicitly — the image binding mints a `DeviceCap[D]`, \
+                         a `DmaPool[P, N]` and an `IrqCap[V]` (from `vector=`) and nothing else \
+                         (plans/M7.md items H1/G); an `Mmio[L]` comes from the sealed transport's \
+                         own `map_partition` (03-hardware.md §2/§9), and the rest are named by \
                          `eval::image_checks::check_capability_substitution`. Failing closed \
                          rather than passing a zero.",
                         p.name
@@ -3374,13 +3984,26 @@ pub fn compute_runtime_tables(
     // bytes, sized by the identical `mwir::size_of` an actor's are — which
     // is only answerable at all since this item taught it that a
     // capability is one word.
+    // plans/M7.md item G: a `@task` adds one trailing wake-pending word
+    // (sticky bit; mask–arm–recheck for the ISR→bottom-half edge).
     let mut drivers = Vec::with_capacity(graph.drivers.len());
     for decl in &graph.drivers {
         let name = crate::sema::types::render_type(&decl.actor_type);
-        let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
+        let mut state_size = mwir::size_of(&decl.actor_type, layout_ctx)
             .map_err(|e| format!("driver `{name}`'s own state: {e}"))?
             as u64;
-        drivers.push(DriverRuntimeLayout { name, state_size });
+        let wake_pending_off = if driver_declares_task(modules, &name) {
+            let off = state_size;
+            state_size += 8;
+            Some(off)
+        } else {
+            None
+        };
+        drivers.push(DriverRuntimeLayout {
+            name,
+            state_size,
+            wake_pending_off,
+        });
     }
 
     let free_turns: Vec<(String, u64)> = async_frames
@@ -3537,6 +4160,19 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             &format!(
                 "DeviceRegs device=device#{} type={} driver={} base={:#x} size={}",
                 r.device, r.device_type, r.driver, r.base, r.size
+            ),
+        );
+    }
+    // plans/M7.md item G: the mapping half of DeviceRegs — a host write
+    // into `interrupt_status` plus the vector to raise. Parsed by the
+    // VMM (`IrqHostInject`); absent when no ISR is bound.
+    for inj in &layout.irq_host_injects {
+        push_line(
+            out,
+            1,
+            &format!(
+                "IrqHostInject base={:#x} offset={:#x} status={:#x} vector={}",
+                inj.base, inj.offset, inj.status, inj.vector
             ),
         );
     }
@@ -6331,14 +6967,30 @@ pub fn layout_test_image(
     // arena. `layout_program`'s own copy of this two-pass shape has the
     // full reasoning.
     let checkpoint_shape = group_service_shape(runtime_tables.as_ref());
-    let checkpoint_block = build_checkpoint_and_vector_stub(checkpoint_shape.as_ref());
+    let (irq_shape, wake_shape) =
+        checkpoint_irq_shape(boot.as_ref(), None, runtime_tables.as_ref());
+    let checkpoint_block =
+        build_checkpoint_and_vector_stub_ex(checkpoint_shape.as_ref(), &irq_shape, &wake_shape);
     let checkpoint_service_offset = checkpoint_block.checkpoint_service_word;
     let deadline_poll_offset = checkpoint_block.deadline_poll_word;
     let checkpoint_words_len = checkpoint_block.words.len();
+    // `bl_call_key` records block-relative words when built at start=0;
+    // shift them to harness-absolute for the shared reloc resolver.
+    let checkpoint_relocs: Vec<Reloc> = checkpoint_block
+        .relocs
+        .into_iter()
+        .map(|r| match r {
+            Reloc::Call { word, key } => Reloc::Call {
+                word: word + checkpoint_start,
+                key,
+            },
+            other => other,
+        })
+        .collect();
     let checkpoint_asm = Asm {
         start: checkpoint_start,
         words: checkpoint_block.words,
-        relocs: Vec::new(),
+        relocs: checkpoint_relocs,
     };
     // `__wrela_checkpoint_service`'s own harness-absolute word index (see
     // `build_checkpoint_and_vector_stub`'s doc: `__wrela_vector0_service`
@@ -6504,11 +7156,21 @@ pub fn layout_test_image(
                 rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
             let placement = place_runtime_tables(real_base, tables);
             // The checkpoint block's own second pass (module doc on
-            // `build_checkpoint_and_vector_stub`): its vector-0 body and
-            // deadline poll now address the real, placed group arena and
-            // turn areas. Same word count by construction, asserted.
-            if let Some(ctx) = group_service_ctx(&placement, tables) {
-                let real_cp = build_checkpoint_and_vector_stub(Some(&ctx));
+            // `build_checkpoint_and_vector_stub`): vector-0 / deadline /
+            // ISR / wake-drain now address the real, placed rtdata.
+            // Same word count by construction, asserted. Call relocs were
+            // already recorded on the sizing pass (identical sites).
+            let (irq_real, wake_real) =
+                checkpoint_irq_shape(boot.as_ref(), Some(&placement), Some(tables));
+            if group_service_ctx(&placement, tables).is_some()
+                || !irq_real.is_empty()
+                || !wake_real.is_empty()
+            {
+                let real_cp = build_checkpoint_and_vector_stub_ex(
+                    group_service_ctx(&placement, tables).as_ref(),
+                    &irq_real,
+                    &wake_real,
+                );
                 if real_cp.words.len() != checkpoint_words_len {
                     return Err(LayoutError::new(
                         "internal error: the checkpoint block's own word count changed between \
@@ -6662,9 +7324,13 @@ pub fn layout_test_image(
             Reloc::AbortFixed { .. }
             | Reloc::AbortVal { .. }
             | Reloc::CheckpointService { .. }
-            | Reloc::GroupArenaBase { .. } => {
+            | Reloc::GroupArenaBase { .. }
+            | Reloc::IrqVector { .. }
+            | Reloc::WakePending { .. } => {
                 return Err(LayoutError::new(
-                    "internal error: the harness section itself must never emit an AbortFixed/AbortVal/CheckpointService/GroupArenaBase reloc",
+                    "internal error: the harness section itself must never emit an \
+                     AbortFixed/AbortVal/CheckpointService/GroupArenaBase/IrqVector/\
+                     WakePending reloc",
                 ));
             }
         }
@@ -6745,6 +7411,22 @@ pub fn layout_test_image(
                         })?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
+                Reloc::IrqVector { word, driver } => {
+                    let vector = driver_irq_vector(boot.as_ref().map(|b| b.graph), driver)?;
+                    patch_load_imm_words(&mut code_words, base + word, vector);
+                }
+                Reloc::WakePending { word, driver } => {
+                    let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(format!(
+                                "internal error: `Wake` for `{driver}` needs rtdata placement"
+                            )));
+                        }
+                    };
+                    let addr = driver_wake_pending_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
             }
         }
     }
@@ -6780,6 +7462,7 @@ pub fn layout_test_image(
     verify_device_windows(&sections, &device_regs)?;
     // blk filled later — ring verify runs in attach_blk_report
 
+    let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
     Ok(ImageLayout {
         blob,
         entry: harness_base + (entry_start as u64) * 4,
@@ -6791,6 +7474,7 @@ pub fn layout_test_image(
         pools,
         device_regs,
         blk: None, // filled by attach_blk_report after layout
+        irq_host_injects,
     })
 }
 
@@ -6805,6 +7489,45 @@ mod tests {
             code: words.iter().map(|w| (*w, String::new())).collect(),
             relocs: Vec::new(),
         }
+    }
+
+    /// plans/M7.md item G self-audit: empty irq/wake lists keep the M6
+    /// single-vector / whole-word-clear loop byte-identical; a non-empty
+    /// list takes the multi-vector path (BIC + per-bit BL) and is longer.
+    #[test]
+    fn checkpoint_empty_irq_wake_is_byte_identical_to_m6_path() {
+        let m6 = build_checkpoint_and_vector_stub(None);
+        let empty = build_checkpoint_and_vector_stub_ex(None, &[], &[]);
+        assert_eq!(
+            m6.words, empty.words,
+            "empty irq/wake must stay byte-identical to the M6 builder"
+        );
+        assert_eq!(m6.relocs, empty.relocs);
+        let multi = build_checkpoint_and_vector_stub_ex(
+            None,
+            &[IrqVectorEntry {
+                vector: 1,
+                handler_key: "struct:BlkDriver.on_queue_irq".into(),
+                driver_state: 0x4050_0000,
+            }],
+            &[WakeDrainEntry {
+                driver_state: 0x4050_0000,
+                wake_pending_off: 24,
+                task_key: "struct:BlkDriver.drain".into(),
+            }],
+        );
+        assert!(
+            multi.words.len() > m6.words.len(),
+            "multi-vector path must emit more words than the M6 loop"
+        );
+        assert!(
+            multi
+                .words
+                .iter()
+                .any(|w| *w == encode::enc_bic_reg(10, 10, 11, true)),
+            "multi-vector path must emit BIC to clear only serviced bits"
+        );
+        assert_eq!(multi.relocs.len(), 2, "one ISR BL + one @task BL");
     }
 
     // --- plans/M6.md item C: RuntimeTables sizing -------------------------
@@ -7247,7 +7970,7 @@ pub struct Store:
     fn every_other_capability_and_every_state_still_fails_closed() {
         for (ty, needle) in [
             (named1("Mmio", "VirtioIrqMmio"), "map_partition"),
-            (named1("IrqCap", "V"), "check_capability_substitution"),
+            (named1("IrqCap", "V"), "vector="),
             (
                 named1("DriverClaimedDevice", "VirtioBlock"),
                 "produced by a transition inside the driver",
@@ -7689,6 +8412,7 @@ fn two():
             }],
             runtime: None,
             device_regs: Vec::new(),
+            irq_host_injects: Vec::new(),
             pools: vec![
                 PoolPlacement {
                     backing: backing("Control", 0x10, 8, Some(0)),

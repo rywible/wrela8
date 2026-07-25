@@ -1,0 +1,40 @@
+module examples.err_irq_two_vectors_one_handler
+
+# plans/M7.md item G: two instances of the same `@driver`, each with its
+# own vector, both binding `BlkDriver.on_irq` — one handler key, two
+# vectors. 03-hardware.md §6's "exactly one handler per vector" read in
+# the plan's own stricter direction: one handler may not serve two.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_irq)
+        self.irq = take irq
+
+    fn on_irq(self):
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-irq-two-one", target=Target.wrela_machine_v1)
+    blk0 = img.device[VirtioBlock](transport=0x2000, vector=1)
+    blk1 = img.device[VirtioBlock](transport=0x3000, vector=2)
+    disk0 = img.driver(BlkDriver, device=blk0)
+    disk1 = img.driver(BlkDriver, device=blk1)
+    img.supervise(children=[disk0, disk1], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

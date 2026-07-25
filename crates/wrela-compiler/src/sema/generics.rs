@@ -42,7 +42,7 @@ use crate::sema::types::{
     DeclMember, DeclParam, DeclStruct, DeclVariant, DeclVariantPayload, Type, TypeArg,
 };
 use crate::sema::{SemaError, access, flow, matches, unimplemented_at};
-use crate::syntax::ast::{Arg, BinOp, ClosureBody, Expr, Module, Span, Stmt};
+use crate::syntax::ast::{Arg, BinOp, ClosureBody, Expr, Member, Module, Span, Stmt};
 use crate::syntax::printer;
 
 // --- canonical keys ---------------------------------------------------
@@ -240,6 +240,16 @@ fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
             );
         }
     }
+    // plans/M7.md item G, decision 18: prelude enums for const-generic
+    // arguments (`DriverMode.Irq`).
+    for name in ["Target", "Restart", "DriverMode"] {
+        if let Some(vs) = crate::sema::prelude::builtin_enum_variants(name) {
+            program
+                .enums
+                .entry(name.to_string())
+                .or_insert_with(|| vs.iter().map(|v| v.to_string()).collect());
+        }
+    }
     program
 }
 
@@ -343,13 +353,21 @@ fn value_to_const_arg_expr(
                     _ => return Err(unimplemented_at("this const generic argument is", span)),
                 },
                 _ => {
-                    let Some(en) = mctx.enums.get(enum_name) else {
-                        return Err(unimplemented_at("this const generic argument is", span));
-                    };
-                    let Some(dv) = en.variants.get(*idx) else {
-                        return Err(unimplemented_at("this const generic argument is", span));
-                    };
-                    dv.name.clone()
+                    // plans/M7.md item G, decision 18: prelude enums
+                    // (`DriverMode`) are not in `mctx.enums`.
+                    if let Some(vs) = crate::sema::prelude::builtin_enum_variants(enum_name) {
+                        vs.get(*idx).map(|v| v.to_string()).ok_or_else(|| {
+                            unimplemented_at("this const generic argument is", span)
+                        })?
+                    } else {
+                        let Some(en) = mctx.enums.get(enum_name) else {
+                            return Err(unimplemented_at("this const generic argument is", span));
+                        };
+                        let Some(dv) = en.variants.get(*idx) else {
+                            return Err(unimplemented_at("this const generic argument is", span));
+                        };
+                        dv.name.clone()
+                    }
                 }
             };
             Ok(Expr::Field(
@@ -510,6 +528,7 @@ fn subst_decl_fn_member(f: &DeclFn, subst: &Subst) -> DeclFn {
     DeclFn {
         name: f.name.clone(),
         is_async: f.is_async,
+        is_task: f.is_task,
         generics: f.generics.clone(),
         receiver: f.receiver.clone(),
         params: f
@@ -531,6 +550,7 @@ fn subst_decl_fn_direct(f: &DeclFn, subst: &Subst) -> DeclFn {
     DeclFn {
         name: f.name.clone(),
         is_async: f.is_async,
+        is_task: f.is_task,
         generics: Vec::new(),
         receiver: f.receiver.clone(),
         params: f
@@ -665,11 +685,76 @@ pub(crate) fn instantiate_struct(
     };
     check_arity(&orig.decl.generics, args, name, call_span)?;
     let subst = build_subst(&orig.decl.generics, args, mctx, call_span)?;
-    let decl = subst_decl_struct(&orig.decl, &subst, mctx);
+    // =====================================================================
+    // plans/M7.md item G, decision 18: expand deferred `comptime if`
+    // members/stmts under this instantiation's const arguments, then
+    // re-declare so Irq-only methods (ISR) exist only on Irq builds.
+    // =====================================================================
+    let const_subst: BTreeMap<String, Expr> = subst.consts.clone();
+    let expanded = crate::sema::specialize::expand_deferred_members(
+        &orig.ast_members,
+        &orig.deferred_comptime_members,
+        &const_subst,
+        mctx,
+    )?;
+    let decl = if orig.deferred_comptime_members.is_empty()
+        && !orig
+            .ast_members
+            .iter()
+            .any(|m| member_has_deferred_comptime_stmt(m))
+    {
+        subst_decl_struct(&orig.decl, &subst, mctx)
+    } else {
+        let mut decl = types::declare_struct_members_for_instantiation(
+            name, &expanded, &orig.decl, mctx, call_span,
+        )?;
+        // Still run type substitution on field/param types (a type
+        // generic on the same struct, if any).
+        decl = subst_decl_struct(&decl, &subst, mctx);
+        decl
+    };
     bodies::enqueue_instantiation(mctx, InstKind::Struct, name, args, call_span)?;
     Ok(StructInfo {
         decl,
-        ast_members: orig.ast_members.clone(),
+        ast_members: expanded,
+        deferred_comptime_members: Vec::new(),
+    })
+}
+
+fn member_has_deferred_comptime_stmt(m: &Member) -> bool {
+    match m {
+        Member::Fn(f) => f
+            .body
+            .as_ref()
+            .is_some_and(|b| stmts_have_deferred_comptime(b)),
+        Member::Init(i) => stmts_have_deferred_comptime(&i.body),
+        Member::ComptimeIf(_) => true,
+        Member::Field(_) | Member::Pool(_) => false,
+    }
+}
+
+fn stmts_have_deferred_comptime(stmts: &[crate::syntax::ast::Stmt]) -> bool {
+    use crate::syntax::ast::Stmt;
+    stmts.iter().any(|s| match s {
+        Stmt::ComptimeIf(_) => true,
+        Stmt::If(i) => {
+            stmts_have_deferred_comptime(&i.then_branch)
+                || i.elifs
+                    .iter()
+                    .any(|e| stmts_have_deferred_comptime(&e.body))
+                || i.else_branch
+                    .as_ref()
+                    .is_some_and(|b| stmts_have_deferred_comptime(b))
+        }
+        Stmt::Match(m) => m.arms.iter().any(|a| stmts_have_deferred_comptime(&a.body)),
+        Stmt::For(f) => stmts_have_deferred_comptime(&f.body),
+        Stmt::While(w) => stmts_have_deferred_comptime(&w.body),
+        Stmt::Defer(d) => match &d.body {
+            crate::syntax::ast::DeferBody::Suite(s) => stmts_have_deferred_comptime(s),
+            crate::syntax::ast::DeferBody::Expr(_) => false,
+        },
+        Stmt::With(w) => stmts_have_deferred_comptime(&w.body),
+        _ => false,
     })
 }
 

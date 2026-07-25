@@ -135,6 +135,13 @@ pub(crate) const MAX_GENERIC_DEPTH: usize = 64;
 pub(crate) struct StructInfo {
     pub(crate) decl: types::DeclStruct,
     pub(crate) ast_members: Vec<Member>,
+    // =====================================================================
+    // plans/M7.md item G, decision 18: `comptime if` members deferred by
+    // `specialize` because they name this struct's own const generics
+    // (e.g. `MODE == DriverMode.Irq`). Concrete `ast_members` stay 1:1 with
+    // `decl.members` for the zip; instantiation expands these first.
+    // =====================================================================
+    pub(crate) deferred_comptime_members: Vec<Member>,
 }
 
 impl StructInfo {
@@ -286,17 +293,22 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
         match (ai, di) {
             (Item::Struct(s), types::DeclItem::Struct(d)) => {
                 shapes.insert(s.name.clone(), s.generics.len());
-                let ast_members: Vec<Member> = s
-                    .members
-                    .iter()
-                    .filter(|m| !matches!(m, Member::ComptimeIf(_)))
-                    .cloned()
-                    .collect();
+                // plans/M7.md item G, decision 18: keep deferred `comptime if`
+                // members aside so `ast_members` stays 1:1 with `decl.members`.
+                let mut ast_members = Vec::new();
+                let mut deferred_comptime_members = Vec::new();
+                for m in &s.members {
+                    match m {
+                        Member::ComptimeIf(_) => deferred_comptime_members.push(m.clone()),
+                        other => ast_members.push(other.clone()),
+                    }
+                }
                 structs.insert(
                     s.name.clone(),
                     StructInfo {
                         decl: d.clone(),
                         ast_members,
+                        deferred_comptime_members,
                     },
                 );
             }
@@ -608,9 +620,9 @@ pub(crate) fn check(
     // index `Target`/`Restart` constructions with no evaluator-side
     // special case at all. Harmless for a module that never mentions
     // either name (this field is not part of the `--stage=typed` dump).
-    for name in ["Target", "Restart", "BootError", "IoError"] {
+    for name in ["Target", "Restart", "BootError", "IoError", "DriverMode"] {
         let variants = crate::sema::prelude::builtin_enum_variants(name)
-            .expect("all four names are in the fixed builtin_enum_variants table")
+            .expect("prelude enum names are in the fixed builtin_enum_variants table")
             .iter()
             .map(|v| v.to_string())
             .collect();
@@ -993,12 +1005,23 @@ pub(crate) fn check_top_fn(
     if f.is_async {
         check_cross_await(&body)?;
     }
+    if d.is_task {
+        return Err(type_error(
+            format!(
+                "`@task` is only valid on a `@driver` method (03-hardware.md §6's bottom half); \
+                 top-level fn `{}` cannot carry it",
+                f.name
+            ),
+            f.span,
+        ));
+    }
     Ok(Some(TypedFn {
         receiver: None,
         params,
         ret: d.ret.clone(),
         body,
         is_async: f.is_async,
+        is_task: false,
     }))
 }
 
@@ -1114,6 +1137,37 @@ pub(crate) fn check_struct_members(
                 if f.is_async {
                     check_cross_await(&body)?;
                 }
+                if fd.is_task {
+                    if !info.decl.is_driver {
+                        return Err(type_error(
+                            format!(
+                                "`@task` is only valid on a `@driver` method (03-hardware.md §6); \
+                                 `{struct_name}` is not a `@driver`"
+                            ),
+                            f.span,
+                        ));
+                    }
+                    if f.is_async {
+                        return Err(type_error(
+                            format!(
+                                "`@task` `{struct_name}.{}` must be a plain `fn`, not `async fn` \
+                                 (03-hardware.md §6: the bottom half never stays active while \
+                                 waiting)",
+                                f.name
+                            ),
+                            f.span,
+                        ));
+                    }
+                    if f.receiver.is_none() {
+                        return Err(type_error(
+                            format!(
+                                "`@task` `{struct_name}.{}` must be a method with a `self` receiver",
+                                f.name
+                            ),
+                            f.span,
+                        ));
+                    }
+                }
                 let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
                 let tf = TypedFn {
                     receiver,
@@ -1121,6 +1175,7 @@ pub(crate) fn check_struct_members(
                     ret: fd.ret.clone(),
                     body,
                     is_async: f.is_async,
+                    is_task: fd.is_task,
                 };
                 if f.receiver.is_some() {
                     methods.insert(f.name.clone(), tf);
@@ -1139,6 +1194,7 @@ pub(crate) fn check_struct_members(
                     ret: fd.ret.clone(),
                     body,
                     is_async: false,
+                    is_task: false,
                 });
             }
             _ => {}
@@ -3593,19 +3649,40 @@ fn resolve_intrinsic_type_arg(e: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Resul
 /// is module-local only — so an imported actor/driver struct resolves
 /// here, in call/callee position, exactly like constructing it would,
 /// even though it could not yet resolve as an explicit type annotation.
-/// Only a bare, non-generic struct name is supported (the same scope
-/// boundary as every other builder type argument).
+///
+/// plans/M7.md item G, decision 18: also accepts `BlkDriver[DriverMode.Irq]`
+/// (an `Expr::Index` whose base is the struct name) and enqueues the
+/// instantiation so the mode-specialized members exist.
 fn resolve_intrinsic_struct_type_arg(e: &Expr, mctx: &ModuleCtx) -> Result<Type, SemaError> {
-    let Expr::Name(span, name) = e else {
-        return Err(unimplemented_at("generic instantiation is", e.span()));
-    };
-    let Some(s) = mctx.structs.get(name) else {
-        return Err(type_error(format!("unknown type `{name}`"), *span));
-    };
-    if !s.decl.generics.is_empty() {
-        return Err(unimplemented_at("generic instantiation is", *span));
+    match e {
+        Expr::Name(span, name) => {
+            let Some(s) = mctx.structs.get(name) else {
+                return Err(type_error(format!("unknown type `{name}`"), *span));
+            };
+            if !s.decl.generics.is_empty() {
+                return Err(unimplemented_at("generic instantiation is", *span));
+            }
+            Ok(Type::Named(name.clone(), vec![]))
+        }
+        Expr::Index(base, span, args) => {
+            let Expr::Name(nspan, name) = base.as_ref() else {
+                return Err(unimplemented_at("generic instantiation is", *span));
+            };
+            let Some(s) = mctx.structs.get(name) else {
+                return Err(type_error(format!("unknown type `{name}`"), *nspan));
+            };
+            if s.decl.generics.is_empty() {
+                return Err(type_error(format!("`{name}` is not generic"), *span));
+            }
+            let targs = generics::resolve_call_targs(args, mctx)?;
+            // Force the instantiation (and its deferred comptime-if
+            // expansion) to exist before image checks / layout run.
+            // `instantiate_struct` arity-checks and expands MODE branches.
+            let _ = generics::instantiate_struct(mctx, name, &targs, *span)?;
+            Ok(Type::Named(name.clone(), targs))
+        }
+        _ => Err(unimplemented_at("generic instantiation is", e.span())),
     }
-    Ok(Type::Named(name.clone(), vec![]))
 }
 
 /// `img.device[D](...)`, `img.pool[T](...)`, `img.dma_pool[T](...)` —
@@ -3957,6 +4034,14 @@ fn check_call_by_name(
                 },
             })
         }
+        // plans/M7.md item G, decision 17: `InterruptCell(0)` — the one
+        // source-visible constructor 03 §6's worked example spells
+        // (`self.pending = InterruptCell(0)`). Not a capability: the
+        // forgery arm below must not catch it.
+        "InterruptCell" => check_interrupt_cell_new(args, expected, call_span, fctx, mctx),
+        // plans/M7.md item G: `wake(Driver.method)` — 03 §6's statically
+        // bound bottom-half wake. Prelude-style bare name (no import).
+        "wake" => check_wake_call(args, call_span, fctx, mctx),
         _ => {
             // 03-hardware.md §1 (plans/M7.md item A): a bare
             // `DeviceCap(...)` reaches here (the name resolves — it is a
@@ -4179,6 +4264,24 @@ fn check_call_by_field(
                 ),
                 fspan,
             ));
+        }
+    }
+    // plans/M7.md item G (03-hardware.md §6): `IrqCap[V]`'s two
+    // operations — `bind(handler)` and `unmask()`. Binding (not a keyword)
+    // is what makes the handler an ISR; the sealed graph pass
+    // (`eval::image_checks::check_vector_bindings`) is what enforces
+    // "exactly one handler per vector" and "source cannot bind an unowned
+    // vector".
+    if let Type::Named(cap, _) = &base_ty {
+        if cap == "IrqCap" {
+            return check_irq_cap_call(base_t, name, args, fspan, call_span, fctx, mctx);
+        }
+    }
+    // plans/M7.md item G, decision 17: `InterruptCell[T]`'s acquire/release
+    // ops (03-hardware.md §6).
+    if let Type::Named(cell, _) = &base_ty {
+        if cell == "InterruptCell" {
+            return check_interrupt_cell_call(base_t, name, args, fspan, call_span, fctx, mctx);
         }
     }
     // Plans/M6.md item A (02-language.md §9.4/§9.5): a bare (non-`await`/
@@ -4960,13 +5063,27 @@ fn check_device_state_call(
         "read_capacity_sectors" => check_device_read_capacity(
             state_expr, state, &device, &rendered, args, fspan, call_span,
         ),
-        "take_irq" => Err(unimplemented_at(
-            &format!(
-                "`{rendered}.take_irq()` — an `IrqCap[V]` out of the claim (03-hardware.md §6). \
-                 Vector binding is plans/M7.md item G; that"
-            ),
-            call_span,
-        )),
+        "take_irq" => {
+            if !args.is_empty() {
+                return Err(type_error(
+                    format!(
+                        "`{rendered}.take_irq()` takes no arguments; found {}",
+                        args.len()
+                    ),
+                    call_span,
+                ));
+            }
+            let _ = fspan;
+            Ok(TypedExpr {
+                ty: Type::Named("IrqCap".to_string(), vec![types::TypeArg::Type(Type::U32)]),
+                kind: TypedExprKind::Intrinsic {
+                    key: "Device.take_irq".to_string(),
+                    receiver: Some(Box::new(state_expr)),
+                    type_arg: None,
+                    args: Vec::new(),
+                },
+            })
+        }
         other => Err(type_error(
             format!(
                 "`{rendered}` has no operation `{other}`; 03-hardware.md §9's bring-up chain \
@@ -5352,8 +5469,9 @@ fn check_map_partition(
     })
 }
 
-/// Is `key` one of item H1's two sealed-transport intrinsics? Same
-/// three-consumer discipline as `is_mmio_access_intrinsic` above.
+/// Is `key` one of item H1's sealed-transport intrinsics, including item
+/// G's `take_irq`? Same three-consumer discipline as
+/// `is_mmio_access_intrinsic` above.
 pub fn is_device_transport_intrinsic(key: &str) -> bool {
     matches!(
         key,
@@ -5362,6 +5480,7 @@ pub fn is_device_transport_intrinsic(key: &str) -> bool {
             | "Device.negotiate"
             | "Device.start"
             | "Device.read_capacity_sectors"
+            | "Device.take_irq"
             | "VirtQueue.configure"
     )
 }
@@ -6223,6 +6342,593 @@ fn virtqueue_depth_value(expr: &TypedExpr, mctx: &ModuleCtx) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+/// plans/M7.md item G: `IrqCap.bind` / `IrqCap.unmask` — the two
+/// operations 03-hardware.md §6's worked example names on an `IrqCap`.
+pub fn is_irq_cap_intrinsic(key: &str) -> bool {
+    matches!(key, "IrqCap.bind" | "IrqCap.unmask")
+}
+
+/// plans/M7.md item G, decision 17: `InterruptCell[T]` ops + constructor.
+pub fn is_interrupt_cell_intrinsic(key: &str) -> bool {
+    matches!(
+        key,
+        "InterruptCell.new"
+            | "InterruptCell.load_acquire"
+            | "InterruptCell.store_release"
+            | "InterruptCell.swap_acquire"
+            | "InterruptCell.fetch_or_release"
+    )
+}
+
+/// plans/M7.md item G: `wake(Driver.method)`.
+pub fn is_wake_intrinsic(key: &str) -> bool {
+    key == "wake"
+}
+
+/// Is `ty` an `InterruptCell[_]`?
+pub fn is_interrupt_cell_type(ty: &Type) -> bool {
+    matches!(unwrap_own(ty.clone()), Type::Named(n, _) if n == "InterruptCell")
+}
+
+// --- plans/M7.md item G: IrqCap.bind / IrqCap.unmask (03-hardware.md §6) ---
+//
+// "An interrupt handler is a plain `fn` bound to a vector at image/driver
+// wiring (`irq.bind(self.on_queue_irq)`). The binding — not a keyword —
+// makes the compiler restrict the function's transitive effects to the
+// ISR set". The *effect* half is a later commit of this item; this is
+// the binding surface itself.
+//
+// `self.on_queue_irq` is deliberately *not* an ordinary method value —
+// `check_field_expr` rejects "cannot reference method without calling
+// it" — so `bind`'s argument is intercepted as a Field of `self` (or a
+// bare `Type.method` assoc spelling) and recorded as a `FnRef`. The
+// sealed-graph pass then sees every bind site as an `IrqCap.bind`
+// intrinsic whose handler arg is that `FnRef`.
+
+/// One `irq.bind(handler)` / `irq.unmask()` (03-hardware.md §6).
+fn check_irq_cap_call(
+    irq: TypedExpr,
+    method: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let rendered = types::render_type(&irq.ty);
+    match method {
+        "bind" => check_irq_bind(irq, &rendered, args, fspan, call_span, fctx, mctx),
+        "unmask" => {
+            if !args.is_empty() {
+                return Err(type_error(
+                    format!(
+                        "`{rendered}.unmask()` takes no arguments; found {}",
+                        args.len()
+                    ),
+                    call_span,
+                ));
+            }
+            let _ = fspan;
+            Ok(TypedExpr {
+                ty: Type::Unit,
+                kind: TypedExprKind::Intrinsic {
+                    key: "IrqCap.unmask".to_string(),
+                    receiver: Some(Box::new(irq)),
+                    type_arg: None,
+                    args: Vec::new(),
+                },
+            })
+        }
+        other => Err(type_error(
+            format!(
+                "`{rendered}` has no method `{other}`; 03-hardware.md §6 gives an `IrqCap` \
+                 `bind(handler)` and `unmask()`"
+            ),
+            fspan,
+        )),
+    }
+}
+
+fn check_irq_bind(
+    irq: TypedExpr,
+    rendered: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`{rendered}.bind(handler)` takes exactly one argument, the ISR to bind \
+                 (03-hardware.md §6: `irq.bind(self.on_queue_irq)`); found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if let Some(label) = &arg.label {
+        return Err(type_error(
+            format!("`bind(handler)`'s handler is positional; `{label}=` names no parameter"),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`bind(handler)`'s argument is a method reference, not a moved value: drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let handler = resolve_irq_bind_handler(&arg.value, arg.span, fctx, mctx)?;
+    let _ = fspan;
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "IrqCap.bind".to_string(),
+            receiver: Some(Box::new(irq)),
+            type_arg: None,
+            args: vec![("handler".to_string(), handler)],
+        },
+    })
+}
+
+/// 03 §6's `self.on_queue_irq` / `BlkDriver.on_queue_irq` spelling: a
+/// Field naming a method of the enclosing `@driver` (or of the named
+/// type), recorded as a `FnRef` so the sealed-graph pass can see the
+/// handler key without ever making method references values in general.
+fn resolve_irq_bind_handler(
+    expr: &Expr,
+    span: Span,
+    fctx: &FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let Expr::Field(base, _, method) = expr else {
+        return Err(type_error(
+            "`IrqCap.bind`'s handler is a method reference \
+             (`self.on_queue_irq` or `Driver.on_queue_irq` — 03-hardware.md §6)"
+                .to_string(),
+            span,
+        ));
+    };
+    // `self.on_queue_irq`
+    if let Expr::Name(_, name) = base.as_ref() {
+        if name == "self" {
+            let Some(self_ty) = fctx.lookup_local("self") else {
+                return Err(type_error(
+                    "`self.on_queue_irq` is only meaningful inside a method with a `self` receiver"
+                        .to_string(),
+                    span,
+                ));
+            };
+            let Type::Named(sname, targs) = unwrap_own(self_ty.clone()) else {
+                return Err(type_error(
+                    format!(
+                        "`IrqCap.bind`'s handler must name a method of a `@driver`; `self` has type \
+                         `{}`",
+                        types::render_type(&self_ty)
+                    ),
+                    span,
+                ));
+            };
+            return irq_handler_fnref(&sname, &targs, method, span, mctx);
+        }
+        // `BlkDriver.on_queue_irq` — only works for associated fns today;
+        // an instance method under a type name is the same rejection
+        // `check_field_expr` already gives, restated for this site.
+        if let Some(s) = mctx.structs.get(name.as_str()) {
+            if s.method(method).is_some() {
+                return irq_handler_fnref(name, &[], method, span, mctx);
+            }
+            if s.assoc_fn(method).is_some() {
+                return irq_handler_fnref(name, &[], method, span, mctx);
+            }
+            return Err(type_error(
+                format!("type `{name}` has no method `{method}` to bind as an ISR"),
+                span,
+            ));
+        }
+    }
+    Err(type_error(
+        "`IrqCap.bind`'s handler is a method reference \
+         (`self.on_queue_irq` or `Driver.on_queue_irq` — 03-hardware.md §6)"
+            .to_string(),
+        span,
+    ))
+}
+
+fn irq_handler_fnref(
+    struct_name: &str,
+    targs: &[types::TypeArg],
+    method: &str,
+    span: Span,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    // plans/M7.md item G, decision 18: a mode-generic `@driver`'s ISR
+    // lives only on the expanded instantiation (`BlkDriver[DriverMode.Irq]`),
+    // never on the unsubstituted template in `mctx.structs`.
+    let owned;
+    let s: &StructInfo = if targs.is_empty() {
+        let Some(s) = mctx.structs.get(struct_name) else {
+            return Err(type_error(
+                format!("type `{struct_name}` is not a declared struct"),
+                span,
+            ));
+        };
+        s
+    } else {
+        owned = generics::instantiate_struct(mctx, struct_name, targs, span)?;
+        &owned
+    };
+    if !s.decl.is_driver {
+        return Err(type_error(
+            format!(
+                "`IrqCap.bind` binds an ISR of a `@driver`; `{struct_name}` is not a `@driver` \
+                 (03-hardware.md §6)"
+            ),
+            span,
+        ));
+    }
+    let Some((_, d)) = s.method(method).or_else(|| s.assoc_fn(method)) else {
+        return Err(type_error(
+            format!("`@driver` `{struct_name}` has no method `{method}` to bind as an ISR"),
+            span,
+        ));
+    };
+    // An ISR is a plain `fn` returning unit with only `self` (03 §6's
+    // worked example). Anything else would need a calling convention the
+    // checkpoint dispatch does not have.
+    if !d.params.is_empty() {
+        return Err(type_error(
+            format!(
+                "ISR `{struct_name}.{method}` must take no parameters beyond `self` \
+                 (03-hardware.md §6's worked `on_queue_irq(self)`); found {} parameter(s)",
+                d.params.len()
+            ),
+            span,
+        ));
+    }
+    if d.ret != Type::Unit {
+        return Err(type_error(
+            format!(
+                "ISR `{struct_name}.{method}` must return `unit` (03-hardware.md §6); found `{}`",
+                types::render_type(&d.ret)
+            ),
+            span,
+        ));
+    }
+    if d.is_async {
+        return Err(type_error(
+            format!(
+                "ISR `{struct_name}.{method}` must be a plain `fn`, not `async fn` \
+                 (03-hardware.md §6: an interrupt handler is a plain `fn`)"
+            ),
+            span,
+        ));
+    }
+    let key = if targs.is_empty() {
+        CalleeKey::Method(struct_name.to_string(), method.to_string())
+    } else {
+        CalleeKey::MethodInstance(
+            generics::canonical_key(InstKind::Struct, struct_name, targs),
+            method.to_string(),
+        )
+    };
+    Ok(TypedExpr {
+        ty: fn_value_type(d),
+        kind: TypedExprKind::FnRef(key),
+    })
+}
+
+// --- plans/M7.md item G, decision 17: InterruptCell[T] (03-hardware.md §6) ---
+//
+// Sole ISR/ordinary-code channel. Constructor `InterruptCell(v)`; methods
+// `load_acquire` / `store_release` / `swap_acquire` / `fetch_or_release`.
+// Revision 0.1 admits only `T = u32` (the worked example's cell); every
+// other `T` fails closed by name rather than inventing a width.
+
+fn interrupt_cell_elem_ty(cell_ty: &Type, span: Span) -> Result<&Type, SemaError> {
+    match cell_ty {
+        Type::Named(n, targs) if n == "InterruptCell" => match targs.first() {
+            Some(types::TypeArg::Type(inner)) => Ok(inner),
+            _ => Err(type_error(
+                "`InterruptCell` is missing its element type".to_string(),
+                span,
+            )),
+        },
+        _ => Err(type_error(
+            format!(
+                "expected an `InterruptCell[T]`, found `{}`",
+                types::render_type(cell_ty)
+            ),
+            span,
+        )),
+    }
+}
+
+fn require_interrupt_cell_u32(elem: &Type, span: Span) -> Result<(), SemaError> {
+    if matches!(elem, Type::U32) {
+        return Ok(());
+    }
+    Err(type_error(
+        format!(
+            "`InterruptCell[{}]` is not supported yet — revision 0.1 admits only \
+             `InterruptCell[u32]` (03-hardware.md §6's worked example; plans/M7.md item G)",
+            types::render_type(elem)
+        ),
+        span,
+    ))
+}
+
+fn check_interrupt_cell_new(
+    args: &[Arg],
+    expected: Option<&Type>,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`InterruptCell(value)` takes exactly one argument; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if let Some(label) = &arg.label {
+        return Err(type_error(
+            format!(
+                "`InterruptCell(value)`'s argument is positional; `{label}=` names no parameter"
+            ),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`InterruptCell(value)` takes a plain value; drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let elem_expected = match expected {
+        Some(Type::Named(n, targs)) if n == "InterruptCell" => match targs.first() {
+            Some(types::TypeArg::Type(inner)) => Some(inner.clone()),
+            _ => None,
+        },
+        _ => Some(Type::U32),
+    };
+    let value = check_expr(&arg.value, elem_expected.as_ref(), fctx, mctx)?;
+    require_interrupt_cell_u32(&value.ty, arg.span)?;
+    let ty = Type::Named(
+        "InterruptCell".to_string(),
+        vec![types::TypeArg::Type(value.ty.clone())],
+    );
+    Ok(TypedExpr {
+        ty,
+        kind: TypedExprKind::Intrinsic {
+            key: "InterruptCell.new".to_string(),
+            receiver: None,
+            type_arg: None,
+            args: vec![("value".to_string(), value)],
+        },
+    })
+}
+
+fn check_interrupt_cell_call(
+    cell: TypedExpr,
+    method: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let rendered = types::render_type(&cell.ty);
+    let elem = interrupt_cell_elem_ty(&cell.ty, fspan)?;
+    require_interrupt_cell_u32(elem, fspan)?;
+    let elem_ty = elem.clone();
+    match method {
+        "load_acquire" => {
+            if !args.is_empty() {
+                return Err(type_error(
+                    format!(
+                        "`{rendered}.load_acquire()` takes no arguments; found {}",
+                        args.len()
+                    ),
+                    call_span,
+                ));
+            }
+            Ok(TypedExpr {
+                ty: elem_ty,
+                kind: TypedExprKind::Intrinsic {
+                    key: "InterruptCell.load_acquire".to_string(),
+                    receiver: Some(Box::new(cell)),
+                    type_arg: None,
+                    args: Vec::new(),
+                },
+            })
+        }
+        "store_release" | "swap_acquire" | "fetch_or_release" => {
+            let [arg] = args else {
+                return Err(type_error(
+                    format!(
+                        "`{rendered}.{method}(value)` takes exactly one argument; found {}",
+                        args.len()
+                    ),
+                    call_span,
+                ));
+            };
+            if let Some(label) = &arg.label {
+                return Err(type_error(
+                    format!(
+                        "`{method}(value)`'s argument is positional; `{label}=` names no parameter"
+                    ),
+                    arg.span,
+                ));
+            }
+            if arg.mode != AccessMode::Read {
+                return Err(type_error(
+                    format!(
+                        "`{method}(value)` takes a plain value; drop the `{}`",
+                        arg.mode.as_str()
+                    ),
+                    arg.span,
+                ));
+            }
+            let value = check_expr(&arg.value, Some(&elem_ty), fctx, mctx)?;
+            let ret_ty = if method == "store_release" {
+                Type::Unit
+            } else {
+                elem_ty
+            };
+            Ok(TypedExpr {
+                ty: ret_ty,
+                kind: TypedExprKind::Intrinsic {
+                    key: format!("InterruptCell.{method}"),
+                    receiver: Some(Box::new(cell)),
+                    type_arg: None,
+                    args: vec![("value".to_string(), value)],
+                },
+            })
+        }
+        other => Err(type_error(
+            format!(
+                "`{rendered}` has no method `{other}`; 03-hardware.md §6 gives an `InterruptCell` \
+                 `load_acquire()`, `store_release(v)`, `swap_acquire(v)`, and `fetch_or_release(v)`"
+            ),
+            fspan,
+        )),
+    }
+}
+
+// --- plans/M7.md item G: wake(Driver.method) (03-hardware.md §6) ------------
+//
+// "wake(...) a statically bound task." The argument is the same method-
+// reference shape `IrqCap.bind` already accepts; the target must carry
+// `@task`. Site legality (ISR or bottom half only) is
+// `eval::legal::check_wake_sites`.
+
+fn check_wake_call(
+    args: &[Arg],
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`wake(task)` takes exactly one argument, a statically bound `@task` method \
+                 (03-hardware.md §6: `wake(BlkDriver.drain_used)`); found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if let Some(label) = &arg.label {
+        return Err(type_error(
+            format!("`wake(task)`'s argument is positional; `{label}=` names no parameter"),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`wake(task)`'s argument is a method reference, not a moved value: drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let target = resolve_wake_target(&arg.value, arg.span, fctx, mctx)?;
+    Ok(TypedExpr {
+        ty: Type::Unit,
+        kind: TypedExprKind::Intrinsic {
+            key: "wake".to_string(),
+            receiver: None,
+            type_arg: None,
+            args: vec![("task".to_string(), target)],
+        },
+    })
+}
+
+fn resolve_wake_target(
+    expr: &Expr,
+    span: Span,
+    fctx: &FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    // Reuse bind's method-reference resolution, then require `@task`.
+    let handler = resolve_irq_bind_handler(expr, span, fctx, mctx).map_err(|e| {
+        // Retarget the diagnostic wording from bind to wake.
+        if e.message.contains("IrqCap.bind") {
+            SemaError {
+                message: e
+                    .message
+                    .replace("`IrqCap.bind`'s handler", "`wake`'s task")
+                    .replace("to bind as an ISR", "to wake as a bottom half"),
+                ..e
+            }
+        } else {
+            e
+        }
+    })?;
+    let TypedExprKind::FnRef(key) = &handler.kind else {
+        return Err(type_error(
+            "`wake`'s task must be a method reference (`Driver.drain_used`)".to_string(),
+            span,
+        ));
+    };
+    let (sname, method): (String, String) = match key {
+        CalleeKey::Method(s, m) => (s.clone(), m.clone()),
+        CalleeKey::MethodInstance(ikey, m) => {
+            // `struct:Name[Args]` — wake needs the bare struct name for
+            // the `@task` lookup on the unspecialized DeclFn (attrs live
+            // on the declaration, not the instantiation).
+            let bare = ikey
+                .strip_prefix("struct:")
+                .unwrap_or(ikey.as_str())
+                .split('[')
+                .next()
+                .unwrap_or(ikey.as_str());
+            (bare.to_string(), m.clone())
+        }
+        _ => {
+            return Err(type_error(
+                "`wake`'s task must name a `@driver` method".to_string(),
+                span,
+            ));
+        }
+    };
+    let Some(s) = mctx.structs.get(sname.as_str()) else {
+        return Err(type_error(
+            format!("type `{sname}` is not a declared struct"),
+            span,
+        ));
+    };
+    let Some((_, d)) = s.method(&method) else {
+        return Err(type_error(
+            format!("`@driver` `{sname}` has no method `{method}` to wake"),
+            span,
+        ));
+    };
+    if !d.is_task {
+        return Err(type_error(
+            format!(
+                "`wake` requires a statically bound `@task` (03-hardware.md §6); \
+                 `{sname}.{method}` is not marked `@task`"
+            ),
+            span,
+        ));
+    }
+    Ok(handler)
 }
 
 // --- plans/M6.md item A: the actor/async surface --------------------------

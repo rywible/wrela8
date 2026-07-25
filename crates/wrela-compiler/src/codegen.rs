@@ -475,6 +475,16 @@ pub enum Reloc {
     /// Emitted by `GroupCreate`'s own arena scan and by the group-child
     /// poll routines `layout.rs` hand-assembles.
     GroupArenaBase { word: usize },
+    /// plans/M7.md item G, decision 12: the four-word `load_imm` starting
+    /// at `word` materializes the vector bit index the image bound to
+    /// `@driver` `driver` — an `IrqCap[V]`'s one runtime word. Layout
+    /// resolves it from the sealed graph's `vector=` on that driver's
+    /// device.
+    IrqVector { word: usize, driver: String },
+    /// plans/M7.md item G: the four-word `load_imm` starting at `word`
+    /// materializes the absolute address of `@driver` `driver`'s sticky
+    /// wake-pending word (trailing word of its state).
+    WakePending { word: usize, driver: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -570,7 +580,16 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         Type::Named(name, _)
             if matches!(
                 name.as_str(),
-                "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
+                "Actor"
+                    | "Group"
+                    | "Instant"
+                    | "Duration"
+                    | "Admission"
+                    | "Peer"
+                    | "Rejected"
+                    // plans/M7.md item G, decision 17: one word, passed by
+                    // value like every other builtin pseudo-type.
+                    | "InterruptCell"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             false
@@ -746,15 +765,16 @@ fn field_offset_size(
             Ok((sz * index, sz))
         }
         Type::Named(name, targs) => {
-            if !targs.is_empty() {
-                return Err(CodegenError::unimplemented(
-                    "field access on an instantiated generic struct",
-                ));
-            }
+            // plans/M7.md item G, decision 18: look up by rendered type.
+            let key = if targs.is_empty() {
+                name.clone()
+            } else {
+                crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
+            };
             let fields = layout
                 .structs
-                .get(name)
-                .ok_or_else(|| CodegenError::internal(format!("unknown struct `{name}`")))?;
+                .get(&key)
+                .ok_or_else(|| CodegenError::internal(format!("unknown struct `{key}`")))?;
             let mut off = 0usize;
             for f in &fields[..index] {
                 off += mwir::size_of(f, layout).map_err(|e| CodegenError::unimplemented(&e))?;
@@ -1693,6 +1713,126 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
             ctx.store_slot(X_B, ctx.frame.off(*dst));
         }
+        // plans/M7.md item G, decision 12: load the driver's vector bit
+        // index into an `IrqCap` word. The immediate is patched by layout
+        // once the sealed graph's `vector=` is known — identical shape to
+        // `Reloc::TurnFrameAddr`/`GroupArenaBase`.
+        Inst::LoadIrqVector { dst, driver } => {
+            let word = ctx.words.len();
+            ctx.load_imm(X_A, 0);
+            if let Some((_, text)) = ctx.words.get_mut(word) {
+                *text = format!("irq-vector[{}] {}", driver, reg_name(X_A));
+            }
+            ctx.relocs.push(Reloc::IrqVector {
+                word,
+                driver: driver.clone(),
+            });
+            ctx.store_slot(X_A, ctx.frame.off(*dst));
+        }
+        // plans/M7.md item G, decision 17: live-cell ops through self_ptr.
+        Inst::InterruptCellLoadAcquire {
+            dst,
+            field_off,
+            width,
+        } => {
+            emit_interrupt_cell_addr(ctx, *field_off)?;
+            match *width {
+                4 => {
+                    ctx.push(
+                        encode::enc_ldar_w(X_B, X_A),
+                        format!("ldar w{}, [{}]", X_B, reg_name(X_A)),
+                    );
+                }
+                8 => {
+                    ctx.push(
+                        encode::enc_ldar_x(X_B, X_A),
+                        format!("ldar {}, [{}]", reg_name(X_B), reg_name(X_A)),
+                    );
+                }
+                w => {
+                    return Err(CodegenError::internal(format!(
+                        "InterruptCellLoadAcquire width {w}"
+                    )));
+                }
+            }
+            ctx.store_slot(X_B, ctx.frame.off(*dst));
+        }
+        Inst::InterruptCellStoreRelease {
+            field_off,
+            width,
+            value,
+        } => {
+            emit_interrupt_cell_addr(ctx, *field_off)?;
+            ctx.load_slot(X_B, ctx.frame.off(*value));
+            match *width {
+                4 => {
+                    ctx.push(
+                        encode::enc_stlr_w(X_B, X_A),
+                        format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
+                    );
+                }
+                8 => {
+                    ctx.push(
+                        encode::enc_stlr_x(X_B, X_A),
+                        format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
+                    );
+                }
+                w => {
+                    return Err(CodegenError::internal(format!(
+                        "InterruptCellStoreRelease width {w}"
+                    )));
+                }
+            }
+        }
+        Inst::InterruptCellSwapAcquire {
+            dst,
+            field_off,
+            width,
+            value,
+        } => {
+            let value_off = ctx.frame.off(*value);
+            let dst_off = ctx.frame.off(*dst);
+            emit_interrupt_cell_rmw(ctx, *field_off, *width, value_off, InterruptCellRmw::Swap)?;
+            ctx.store_slot(X_C, dst_off); // old value left in X_C
+        }
+        Inst::InterruptCellFetchOrRelease {
+            dst,
+            field_off,
+            width,
+            value,
+        } => {
+            let value_off = ctx.frame.off(*value);
+            let dst_off = ctx.frame.off(*dst);
+            emit_interrupt_cell_rmw(
+                ctx,
+                *field_off,
+                *width,
+                value_off,
+                InterruptCellRmw::FetchOr,
+            )?;
+            ctx.store_slot(X_C, dst_off);
+        }
+        // plans/M7.md item G: sticky store of 1 into the driver's
+        // wake-pending word. Level-triggered: a wake before/during/after
+        // the bottom half's cell observation remains set until the
+        // scheduler clears it after a run that finds the bit still clear
+        // on recheck (HVF commit wires that loop).
+        Inst::Wake { driver } => {
+            let word = ctx.words.len();
+            ctx.load_imm(X_A, 0);
+            if let Some((_, text)) = ctx.words.get_mut(word) {
+                *text = format!("wake-pending[{}] {}", driver, reg_name(X_A));
+            }
+            ctx.relocs.push(Reloc::WakePending {
+                word,
+                driver: driver.clone(),
+            });
+            ctx.load_imm(X_B, 1);
+            ctx.push(
+                encode::enc_str_x_imm(X_B, X_A, 0),
+                format!("str {}, [{}]", reg_name(X_B), reg_name(X_A)),
+            );
+        }
         Inst::MmioWrite {
             base,
             offset,
@@ -2288,18 +2428,7 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
 fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
-            let self_ptr_off = frame
-                .self_ptr_off
-                .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
-            ctx.load_slot(X_A, self_ptr_off);
-            let size = frame.size_of_temp(self_temp);
-            let src_off = frame.off(self_temp);
-            let mut w = 0;
-            while w < size {
-                ctx.load_slot(X_B, src_off + w);
-                ctx.store_ptr(X_B, X_A, w);
-                w += 8;
-            }
+            write_back_self_skipping_interrupt_cells(f, frame, self_temp, ctx)?;
         }
     }
     ctx.load_slot(X_LR, frame.lr_off);
@@ -2308,6 +2437,177 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
         format!("add sp, sp, #{}", frame.size),
     );
     ctx.push(encode::enc_ret(X_LR), "ret".to_string());
+    Ok(())
+}
+
+// --- plans/M7.md item G, decision 17: InterruptCell live-cell addressing ---
+
+enum InterruptCellRmw {
+    Swap,
+    FetchOr,
+}
+
+/// `X_A = self_ptr + field_off`. Requires a receiver (self_ptr_save).
+fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), CodegenError> {
+    let self_ptr_off = ctx.frame.self_ptr_off.ok_or_else(|| {
+        CodegenError::internal("InterruptCell op needs a receiver (self_ptr slot)")
+    })?;
+    ctx.load_slot(X_A, self_ptr_off);
+    if field_off != 0 {
+        if field_off > 4095 {
+            return Err(CodegenError::unimplemented(
+                "InterruptCell field_off above add-immediate range",
+            ));
+        }
+        ctx.push(
+            encode::enc_add_imm(X_A, X_A, field_off as u16, true),
+            format!("add {}, {}, #{field_off}", reg_name(X_A), reg_name(X_A)),
+        );
+    }
+    Ok(())
+}
+
+/// Interrupt-atomic RMW. Leaves the previous cell value in `X_C`.
+///
+/// Emits `LDAR` / compute / `STLR`, **not** `LDAXR`/`STLXR`. 06 §4
+/// delivers vectors only at compiler-emitted checkpoints; revision 0.1
+/// is single-core with no nesting (03 §6). No checkpoint is emitted
+/// inside this sequence, so no same-core observer can interleave with
+/// the RMW — acquire/release alone give the interrupt-atomicity the
+/// cell promises. An exclusive pair would be needed if a second core or
+/// a nested ISR could clear a monitor mid-RMW; neither exists here.
+///
+/// (HVF probe, plans/M7.md item G: `LDAXR` against guest DRAM took a
+/// data abort on the flagship host; the non-exclusive form is also the
+/// one the machine's own delivery rule makes sufficient.)
+fn emit_interrupt_cell_rmw(
+    ctx: &mut FnCtx,
+    field_off: usize,
+    width: u8,
+    value_off: usize,
+    kind: InterruptCellRmw,
+) -> Result<(), CodegenError> {
+    emit_interrupt_cell_addr(ctx, field_off)?;
+    ctx.load_slot(X_B, value_off);
+    match width {
+        4 => {
+            ctx.push(
+                encode::enc_ldar_w(X_C, X_A),
+                format!("ldar w{}, [{}]", X_C, reg_name(X_A)),
+            );
+            match kind {
+                InterruptCellRmw::Swap => {
+                    ctx.push(
+                        encode::enc_stlr_w(X_B, X_A),
+                        format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
+                    );
+                }
+                InterruptCellRmw::FetchOr => {
+                    ctx.push(
+                        encode::enc_orr_reg(X_D, X_C, X_B, false),
+                        format!("orr w{}, w{}, w{}", X_D, X_C, X_B),
+                    );
+                    ctx.push(
+                        encode::enc_stlr_w(X_D, X_A),
+                        format!("stlr w{}, [{}]", X_D, reg_name(X_A)),
+                    );
+                }
+            }
+        }
+        8 => {
+            ctx.push(
+                encode::enc_ldar_x(X_C, X_A),
+                format!("ldar {}, [{}]", reg_name(X_C), reg_name(X_A)),
+            );
+            match kind {
+                InterruptCellRmw::Swap => {
+                    ctx.push(
+                        encode::enc_stlr_x(X_B, X_A),
+                        format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
+                    );
+                }
+                InterruptCellRmw::FetchOr => {
+                    ctx.push(
+                        encode::enc_orr_reg(X_D, X_C, X_B, true),
+                        format!(
+                            "orr {}, {}, {}",
+                            reg_name(X_D),
+                            reg_name(X_C),
+                            reg_name(X_B)
+                        ),
+                    );
+                    ctx.push(
+                        encode::enc_stlr_x(X_D, X_A),
+                        format!("stlr {}, [{}]", reg_name(X_D), reg_name(X_A)),
+                    );
+                }
+            }
+        }
+        w => {
+            return Err(CodegenError::internal(format!(
+                "InterruptCell RMW width {w}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `mut self` write-back that leaves `InterruptCell` fields alone — the
+/// live word is authoritative (ISR/ordinary ops already STLR'd it).
+/// Writing the frame copy back would stomp an ISR update that landed at a
+/// checkpoint during this turn.
+fn write_back_self_skipping_interrupt_cells(
+    f: &MwirFn,
+    frame: &Frame,
+    self_temp: Temp,
+    ctx: &mut FnCtx,
+) -> Result<(), CodegenError> {
+    let self_ptr_off = frame
+        .self_ptr_off
+        .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
+    ctx.load_slot(X_A, self_ptr_off);
+    let self_ty = &f.temp_types[self_temp.0];
+    let Type::Named(name, targs) = strip_wrappers(self_ty) else {
+        // Non-named receiver: fall back to whole-aggregate write-back.
+        let size = frame.size_of_temp(self_temp);
+        let src_off = frame.off(self_temp);
+        let mut w = 0;
+        while w < size {
+            ctx.load_slot(X_B, src_off + w);
+            ctx.store_ptr(X_B, X_A, w);
+            w += 8;
+        }
+        return Ok(());
+    };
+    // plans/M7.md item G, decision 18: instantiated drivers
+    // (`BlkDriver[DriverMode.Irq]`) are keyed in LayoutCtx by rendered
+    // type spelling — same lookup `mwir::size_of` uses.
+    let layout_key = if targs.is_empty() {
+        name.clone()
+    } else {
+        crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
+    };
+    let fields = ctx.layout.structs.get(&layout_key).ok_or_else(|| {
+        CodegenError::internal(format!("unknown struct `{layout_key}` in layout ctx"))
+    })?;
+    let src_base = frame.off(self_temp);
+    let mut off = 0usize;
+    for field_ty in fields {
+        let sz =
+            mwir::size_of(field_ty, ctx.layout).map_err(|e| CodegenError::unimplemented(&e))?;
+        if !matches!(
+            strip_wrappers(field_ty),
+            Type::Named(n, _) if n == "InterruptCell"
+        ) {
+            let mut w = 0;
+            while w < sz {
+                ctx.load_slot(X_B, src_base + off + w);
+                ctx.store_ptr(X_B, X_A, off + w);
+                w += 8;
+            }
+        }
+        off += sz;
+    }
     Ok(())
 }
 
@@ -3129,19 +3429,9 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     }
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
-            let self_ptr_off = ctx
-                .frame
-                .self_ptr_off
-                .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
-            ctx.load_slot(X_A, self_ptr_off);
-            let size = ctx.frame.size_of_temp(self_temp);
-            let src_off = ctx.frame.off(self_temp);
-            let mut w = 0;
-            while w < size {
-                ctx.load_slot(X_B, src_off + w);
-                ctx.store_ptr(X_B, X_A, w);
-                w += 8;
-            }
+            // plans/M7.md item G, decision 17: same InterruptCell skip as
+            // the sync epilogue — live cells are not frame-owned.
+            write_back_self_skipping_interrupt_cells(f, ctx.frame, self_temp, ctx)?;
         }
     }
     ctx.load_imm(0, TURN_STATUS_COMPLETED as i64);
@@ -3291,19 +3581,25 @@ fn emit_self_path(
                 "SelfPath: an intermediate step is not a struct type",
             ));
         };
-        if !targs.is_empty() {
-            return Err(CodegenError::unimplemented(
-                "a SelfPath through an instantiated generic struct",
-            ));
-        }
-        let names = ctx.layout.struct_field_names.get(sname).ok_or_else(|| {
-            CodegenError::internal(format!("unknown struct `{sname}` (no field-name table)"))
-        })?;
+        let layout_key = if targs.is_empty() {
+            sname.clone()
+        } else {
+            crate::sema::types::render_type(&Type::Named(sname.clone(), targs.clone()))
+        };
+        let names = ctx
+            .layout
+            .struct_field_names
+            .get(&layout_key)
+            .ok_or_else(|| {
+                CodegenError::internal(format!(
+                    "unknown struct `{layout_key}` (no field-name table)"
+                ))
+            })?;
         let idx = names.iter().position(|n| n == name).ok_or_else(|| {
-            CodegenError::internal(format!("unknown field `{name}` on struct `{sname}`"))
+            CodegenError::internal(format!("unknown field `{name}` on struct `{layout_key}`"))
         })?;
         let (off, _size) = field_offset_size(&base_ty, idx, ctx.layout)?;
-        let field_ty = ctx.layout.structs[sname][idx].clone();
+        let field_ty = ctx.layout.structs[&layout_key][idx].clone();
         cur_off += off;
         cur_ty = field_ty;
     }
@@ -5610,6 +5906,24 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::GroupArenaBase word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::IrqVector { word, .. } => {
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::IrqVector word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::WakePending { word, .. } => {
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::WakePending word {word} (a 4-word load_imm) is \
                              out of range (code has {} word(s))",
                             f.code.len()
                         ));

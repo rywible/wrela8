@@ -1,0 +1,1 @@
+error[build]: `device#0` declares `vector=0`, but bit 0 is reserved for the deadline/cancel vector (06-machine.md §4); a device-owned vector is `vector=1..=63`

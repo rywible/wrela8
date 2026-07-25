@@ -1,0 +1,40 @@
+module examples.err_irq_vector_bound_twice
+
+# plans/M7.md item G: 03-hardware.md §6 — "exactly one handler per vector".
+# Two `bind` calls on the same owned vector are a named rejection.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.bind(self.on_config_irq)
+        self.irq = take irq
+
+    fn on_queue_irq(self):
+        pass
+
+    fn on_config_irq(self):
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-irq-bound-twice", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
