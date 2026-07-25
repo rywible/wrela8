@@ -60,13 +60,13 @@ pub fn collect(module: &Module) -> Result<SymbolTable, SemaError> {
         // four are the names an *unforgeable* rule is about. Rejected
         // here, at the one pass that already owns "what names does this
         // module declare".
-        if crate::eval::image_checks::is_capability_type_name(name) {
+        if crate::eval::image_checks::is_sealed_authority_type_name(name) {
+            let kind = crate::eval::image_checks::sealed_authority_kind(name);
             return Err(SemaError::at(
                 "name",
                 format!(
-                    "`{name}` is a capability type (03-hardware.md §1) and cannot be declared: \
-                     its constructor is not source-visible, and a declaration under its name \
-                     would be one"
+                    "`{name}` is {kind} and cannot be declared: its constructor is not \
+                     source-visible, and a declaration under its name would be one"
                 ),
                 span,
             ));

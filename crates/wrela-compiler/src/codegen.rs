@@ -561,11 +561,17 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         // until item D's first real boot of an `Actor[T]`-typed
         // `@test(runtime)` parameter, which faulted dereferencing the
         // handle's own small integer value as if it were an address.
+        // plans/M7.md item H1, decision 11: a capability and a bring-up
+        // state are each one opaque word (a guest base address), so they
+        // are passed by *value* in a register everywhere a scalar is —
+        // `mwir::size_of`'s own arm is the other half of this fact, and
+        // the two must agree or `init` would receive an address it then
+        // dereferenced as a pointer (M6-D's own `Actor[T]` incident).
         Type::Named(name, _)
             if matches!(
                 name.as_str(),
                 "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
-            ) =>
+            ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             false
         }

@@ -3861,14 +3861,19 @@ fn check_call_by_name(
 /// the generic shape it happens to share with something else. A no-op for
 /// every non-capability name, so a call site can ask unconditionally.
 fn capability_forgery_check(name: &str, attempt: &str, span: Span) -> Result<(), SemaError> {
-    if !crate::eval::image_checks::is_capability_type_name(name) {
+    if !crate::eval::image_checks::is_sealed_authority_type_name(name) {
         return Ok(());
     }
+    let kind = crate::eval::image_checks::sealed_authority_kind(name);
+    let origin = if crate::eval::image_checks::is_protocol_state_type_name(name) {
+        "a bring-up state is produced only by the sealed transport's own transitions"
+    } else {
+        "a capability is minted only where the image binds a declared device to a `@driver`"
+    };
     Err(type_error(
         format!(
-            "`{name}` is a capability type (03-hardware.md §1) and cannot be {attempt}: its \
-             constructor is not source-visible, and a capability is minted only where the image \
-             binds a declared device to a `@driver`"
+            "`{name}` is {kind} and cannot be {attempt}: its constructor is not source-visible, \
+             and {origin}"
         ),
         span,
     ))
@@ -3888,7 +3893,7 @@ fn capability_name_in_type_expr(e: &Expr) -> Option<&str> {
         },
         _ => return None,
     };
-    crate::eval::image_checks::is_capability_type_name(name).then_some(name)
+    crate::eval::image_checks::is_sealed_authority_type_name(name).then_some(name)
 }
 
 fn check_call_by_field(

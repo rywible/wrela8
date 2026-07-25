@@ -26,3 +26,13 @@ ImageReport v0
   Layout name=RingControl kind=dma endian=little size=4 padding=0
     Field name=flags type=u16 offset=0x0 size=2
     Field name=idx type=u16 offset=0x2 size=2
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=196
+  Section name=abort base=0x40500114 size=120
+  Section name=checkpoint base=0x4050018c size=104
+  Section name=pooldata base=0x405001f8 size=256
+  Entry base=0x40500000
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=16 slot_bytes=16 base=0x405001f8 size=256 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl base=0x405001f8 size=0x100

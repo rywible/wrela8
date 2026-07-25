@@ -927,6 +927,66 @@ pub(crate) fn capability_generic_arity(name: &str) -> Option<usize> {
         .map(|(_, arity)| *arity)
 }
 
+/// 03-hardware.md §9's own bring-up chain, as types: "Device bring-up is
+/// a typed state chain (for virtio: `Reset -> Acknowledged ->
+/// DriverClaimed -> FeaturesNegotiated -> FeaturesAccepted ->
+/// QueuesConfigured -> Running`)". One name per state, in chain order,
+/// each taking the device type as its single argument — the spelling
+/// `docs/language/examples/virtio-storage.wr` already fixes for the last
+/// of them (`device: RunningDevice[VirtioBlock]`), applied uniformly to
+/// the other six rather than invented per state (plans/M7.md item H1).
+///
+/// These are **not** 03 §1 capabilities and the list is deliberately
+/// separate: a capability is authority over a device, a queue or a pool,
+/// minted at the image binding; a protocol state is the sealed transport's
+/// own position in the bring-up chain, produced only by a transition. The
+/// two lists are asked the same *structural* questions
+/// (`is_sealed_authority_type_name` below — unforgeable, a resource,
+/// no byte encoding, an `@actor` may not hold one) and different
+/// *diagnostic* ones, which is exactly why they are two lists read through
+/// one predicate rather than one list with a footnote.
+const PROTOCOL_STATE_TYPES: &[&str] = &[
+    "ResetDevice",
+    "AcknowledgedDevice",
+    "DriverClaimedDevice",
+    "FeaturesNegotiatedDevice",
+    "FeaturesAcceptedDevice",
+    "QueuesConfiguredDevice",
+    "RunningDevice",
+];
+
+/// Is `name` one of 03 §9's seven bring-up states? Every one takes
+/// exactly one type argument (the device type), so there is no arity
+/// table here — the arity is the constant 1.
+pub(crate) fn is_protocol_state_type_name(name: &str) -> bool {
+    PROTOCOL_STATE_TYPES.contains(&name)
+}
+
+/// The union of 03 §1's capabilities and 03 §9's protocol states — every
+/// type this language mints only inside the sealed transport, and never
+/// from source. This is the predicate every *structural* rule asks:
+/// the name cannot be declared, imported, constructed, called or cast to;
+/// the type is a resource by fiat; it has no byte encoding, so no
+/// `@layout` may hold one; an `@actor` may not hold one and a `@driver`
+/// may; and `mwir::size_of`/`codegen::is_aggregate` carry it as one
+/// opaque 8-byte word.
+pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
+    is_capability_type_name(name) || is_protocol_state_type_name(name)
+}
+
+/// The noun phrase (with its normative citation) a diagnostic uses for one
+/// of those names, so a rule shared by both lists still says which of the
+/// two the author actually wrote. Answers for a non-sealed name too — the
+/// callers all guard with `is_sealed_authority_type_name` first, and a
+/// default of "capability" would be a quiet lie if one ever did not.
+pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
+    if is_protocol_state_type_name(name) {
+        "a sealed protocol state (03-hardware.md §9)"
+    } else {
+        "a capability type (03-hardware.md §1)"
+    }
+}
+
 pub(crate) fn is_handle_type_name(name: &str) -> bool {
     name == "Actor"
 }

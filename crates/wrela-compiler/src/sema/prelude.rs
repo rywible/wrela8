@@ -82,7 +82,7 @@ pub fn is_builtin(name: &str) -> bool {
         || IMAGE_BUILDER.contains(&name)
         || ACTOR_SURFACE.contains(&name)
         || MMIO_WRAPPERS.contains(&name)
-        || crate::eval::image_checks::is_capability_type_name(name)
+        || crate::eval::image_checks::is_sealed_authority_type_name(name)
 }
 
 /// The `@image` builder surface's own fixed prelude enums (plans/M4.md

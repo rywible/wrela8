@@ -785,11 +785,22 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         // own opaque-handle-or-nothing payload (at most one `SLOT`), so
         // `SLOT + size_of(E).max(SLOT)` is exact for the whole real
         // variant set without re-deriving it here a second time.
+        // plans/M7.md item H1, decision 11: 03-hardware.md §1's
+        // capabilities and §9's seven bring-up states join the same
+        // vehicle, for the same reason and with the same width — every one
+        // of them is **one 64-bit word holding a guest base address**
+        // (`DeviceCap[D]`/every state: the device's own declared register
+        // window; `Mmio[L]`: the same base, with the register's declared
+        // `@offset` supplied by the layout; `DmaPool[P, N]`: its pool's
+        // backing base). This is the one-line addition plans/M7.md
+        // decision 10 named as H1's third prerequisite: without it a
+        // `DeviceCap[D]`-taking driver could not reach codegen at all,
+        // because the general `Named` path below refuses any type argument.
         Type::Named(name, _targs)
             if matches!(
                 name.as_str(),
                 "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
-            ) =>
+            ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             // `Actor[T]`/`Rejected[T]` (if ever instantiated) carry their
             // own type argument purely for the type-checker's sake — the

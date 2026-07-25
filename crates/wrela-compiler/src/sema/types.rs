@@ -739,7 +739,7 @@ fn type_contains_capability(
     seen: &mut BTreeSet<String>,
 ) -> Option<String> {
     match ty {
-        Type::Named(name, _) if crate::eval::image_checks::is_capability_type_name(name) => {
+        Type::Named(name, _) if crate::eval::image_checks::is_sealed_authority_type_name(name) => {
             Some(render_type(ty))
         }
         Type::Array(elem, _) => type_contains_capability(elem, structs, seen),
@@ -1674,21 +1674,21 @@ fn layout_field_size(
             span,
         ));
     }
-    if crate::eval::image_checks::is_capability_type_name(&n.name) {
+    if crate::eval::image_checks::is_sealed_authority_type_name(&n.name) {
+        let kind_text = crate::eval::image_checks::sealed_authority_kind(&n.name);
         return Err(match kind {
             LayoutKind::Wire => layout_error(
                 format!(
-                    "field `{struct_name}.{field_name}: {rendered}` is a capability type \
-                     (03-hardware.md §1); a `wire` layout is exact bytes independent of any \
-                     target and can hold no capability (03-hardware.md §3)"
+                    "field `{struct_name}.{field_name}: {rendered}` is {kind_text}; a `wire` \
+                     layout is exact bytes independent of any target and can hold no \
+                     capability (03-hardware.md §3)"
                 ),
                 span,
             ),
             LayoutKind::Dma | LayoutKind::Mmio => layout_error(
                 format!(
-                    "field `{struct_name}.{field_name}: {rendered}` is a capability type \
-                     (03-hardware.md §1); no capability has a byte encoding, so a `@layout` \
-                     type cannot hold one (03-hardware.md §3)"
+                    "field `{struct_name}.{field_name}: {rendered}` is {kind_text}; it has no \
+                     byte encoding, so a `@layout` type cannot hold one (03-hardware.md §3)"
                 ),
                 span,
             ),
@@ -3110,6 +3110,19 @@ fn resolve_named(
         }
         return Ok(Type::Named(n.name.clone(), targs));
     }
+    // 03-hardware.md §9's bring-up chain, as types (plans/M7.md item H1):
+    // `ResetDevice[D]` .. `RunningDevice[D]`, one name per state, each
+    // taking the device type. Resolved exactly like a capability above
+    // (structurally, arity-checked, nothing invented about what `D`
+    // means); *which* of them a transition produces is
+    // `sema::bodies::check_device_transition`'s question, not this
+    // resolver's, and none of them is constructible from source.
+    if crate::eval::image_checks::is_protocol_state_type_name(&n.name) {
+        expect_arity(n, 1)?;
+        let args = expect_type_args(n, 1)?;
+        let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+        return Ok(Type::Named(n.name.clone(), vec![TypeArg::Type(inner)]));
+    }
     if let Some(kind) = generics.get(&n.name) {
         if !n.args.is_empty() {
             return Err(SemaError::at(
@@ -3341,7 +3354,7 @@ fn classify_named(
                 resource = true;
             }
         }
-    } else if crate::eval::image_checks::is_capability_type_name(name) {
+    } else if crate::eval::image_checks::is_sealed_authority_type_name(name) {
         // 03-hardware.md §1, its own first words: hardware operations
         // require "unforgeable **resource** values". A capability is a
         // resource by fiat, exactly like `@actor`/`@driver`/`resource
@@ -3350,7 +3363,14 @@ fn classify_named(
         // and the provenance walk both see through a plain wrapper
         // struct). Recorded here rather than left to the builtin
         // fall-through below, whose whole premise ("every one of these is
-        // plain data") is exactly what stops being true for these four.
+        // plain data") is exactly what stops being true for these names.
+        //
+        // plans/M7.md item H1: 03 §9's seven bring-up states join the same
+        // arm. A protocol state *is* the device's authority in a
+        // particular position of the chain — 03 §9's "each fallible
+        // transition **consumes** its input state" is precisely the
+        // resource rule, and the only reason a transition can consume one
+        // is that it is never implicitly copied.
         in_progress.remove(name);
         memo.insert(name.to_string(), Classification::Resource);
         return Ok(Classification::Resource);
@@ -4080,7 +4100,7 @@ mod tests {
             ),
             (
                 "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    cap: DeviceCap[Blk]\n",
-                "no capability has a byte encoding",
+                "it has no byte encoding",
             ),
             (
                 "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    r: ReadOnly[bool]\n",
