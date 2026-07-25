@@ -136,6 +136,10 @@ pub struct Scale:
 pub struct Storage:
     disk: Actor[BlkDriver]
 
+    # plans/M8.md item H attack 6: see boot-driver-message.
+    init(mut self, disk: Actor[BlkDriver]):
+        self.disk = disk
+
     pub async fn blocks(read self) -> u64:
         c = await self.disk.capacity()
         match c:

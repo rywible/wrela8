@@ -152,6 +152,13 @@ pub struct Scale:
 pub struct Storage:
     disk: Actor[BlkDriver]
 
+    # plans/M8.md item H attack 6: a field-wired `disk=disk` without `init`
+    # only agreed with zero-fill while `driver#0`'s handle word was 0 (the
+    # kind-local collision). The shared actor/driver index space makes that
+    # word `n_actors`, so the handle must be materialised through `init`.
+    init(mut self, disk: Actor[BlkDriver]):
+        self.disk = disk
+
     pub async fn blocks(read self) -> u64:
         c = await self.disk.capacity()
         match c:
