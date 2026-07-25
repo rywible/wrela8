@@ -1,2 +1,3 @@
 test t_alias_from: ok
-1 passed, 0 failed
+test guest_alias_from: ok
+2 passed, 0 failed

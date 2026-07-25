@@ -43,6 +43,16 @@ pub fn t_take():
 pub fn t_settled():
     assert SETTLED == 1222, "all four under one settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped aliased enum methods
+# from asm; `@test(runtime)` seeds all four shapes.
+@test(runtime)
+pub fn guest_alias_enum_method():
+    assert Hue.red().code() == 1, "assoc at guest"
+    assert Hue.Blue.code() == 2, "read at guest"
+    assert mut_path() == 2, "mut at guest"
+    assert take_path() == 2, "take at guest"
+
 @actor
 pub struct Store:
     settled: u32

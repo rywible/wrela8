@@ -49,6 +49,15 @@ pub fn test_ok_path_unchanged():
 pub fn test_generated_from_callable():
     assert DIRECT == 2505, "generated struct from must be callable directly"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped struct from helpers
+# from mwir; `@test(runtime)` seeds generated from + `?`.
+@test(runtime)
+pub fn guest_from():
+    assert settle(convert_wrapped(0)) == 1000, "`?` struct from at guest"
+    assert settle(convert_wrapped(7)) == 7, "Ok path at guest"
+    assert direct_call() == 2505, "generated struct from at guest"
+
 @actor
 pub struct Store:
     converted: u32

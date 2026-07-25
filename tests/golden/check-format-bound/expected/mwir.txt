@@ -1,4 +1,132 @@
 Program
+  Fn key=Hue.format ret=String[..5] temps=21 receiver=t0:read
+    Temp t0 ty=Hue
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=bool
+    Temp t4 ty=usize
+    Temp t5 ty=u8
+    Temp t6 ty=u8
+    Temp t7 ty=u8
+    Temp t8 ty=u8
+    Temp t9 ty=u8
+    Temp t10 ty=String[..5]
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Temp t13 ty=bool
+    Temp t14 ty=usize
+    Temp t15 ty=u8
+    Temp t16 ty=u8
+    Temp t17 ty=u8
+    Temp t18 ty=u8
+    Temp t19 ty=u8
+    Temp t20 ty=String[..5]
+    Body
+      0000: EnumTag dst=t1 src=t0
+      0001: ConstInt dst=t2 ty=u64 value=0
+      0002: Compare op=== ty=u64 dst=t3 lhs=t1 rhs=t2
+      0003: JumpIfFalse cond=t3 target=0013
+      0004: ConstInt dst=t4 ty=usize value=3
+      0005: ConstInt dst=t5 ty=u8 value=82
+      0006: ConstInt dst=t6 ty=u8 value=101
+      0007: ConstInt dst=t7 ty=u8 value=100
+      0008: ConstInt dst=t8 ty=u8 value=0
+      0009: ConstInt dst=t9 ty=u8 value=0
+      0010: MakeAggregate dst=t10 elems=[t4,t5,t6,t7,t8,t9]
+      0011: Return value=t10
+      0012: Jump target=0027
+      0013: EnumTag dst=t11 src=t0
+      0014: ConstInt dst=t12 ty=u64 value=1
+      0015: Compare op=== ty=u64 dst=t13 lhs=t11 rhs=t12
+      0016: JumpIfFalse cond=t13 target=0026
+      0017: ConstInt dst=t14 ty=usize value=5
+      0018: ConstInt dst=t15 ty=u8 value=71
+      0019: ConstInt dst=t16 ty=u8 value=114
+      0020: ConstInt dst=t17 ty=u8 value=101
+      0021: ConstInt dst=t18 ty=u8 value=101
+      0022: ConstInt dst=t19 ty=u8 value=110
+      0023: MakeAggregate dst=t20 elems=[t14,t15,t16,t17,t18,t19]
+      0024: Return value=t20
+      0025: Jump target=0027
+      0026: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0027: Return
+  Fn key=Point.format ret=String[..33] temps=34 receiver=t0:read
+    Temp t0 ty=Point
+    Temp t1 ty=usize
+    Temp t2 ty=u8
+    Temp t3 ty=u8
+    Temp t4 ty=u8
+    Temp t5 ty=u8
+    Temp t6 ty=u8
+    Temp t7 ty=u8
+    Temp t8 ty=String[..6]
+    Temp t9 ty=usize
+    Temp t10 ty=u8
+    Temp t11 ty=u8
+    Temp t12 ty=String[..2]
+    Temp t13 ty=String[..8]
+    Temp t14 ty=u32
+    Temp t15 ty=String[..10]
+    Temp t16 ty=String[..18]
+    Temp t17 ty=usize
+    Temp t18 ty=u8
+    Temp t19 ty=u8
+    Temp t20 ty=String[..2]
+    Temp t21 ty=String[..20]
+    Temp t22 ty=usize
+    Temp t23 ty=u8
+    Temp t24 ty=u8
+    Temp t25 ty=String[..2]
+    Temp t26 ty=String[..22]
+    Temp t27 ty=u32
+    Temp t28 ty=String[..10]
+    Temp t29 ty=String[..32]
+    Temp t30 ty=usize
+    Temp t31 ty=u8
+    Temp t32 ty=String[..1]
+    Temp t33 ty=String[..33]
+    Body
+      0000: ConstInt dst=t1 ty=usize value=6
+      0001: ConstInt dst=t2 ty=u8 value=80
+      0002: ConstInt dst=t3 ty=u8 value=111
+      0003: ConstInt dst=t4 ty=u8 value=105
+      0004: ConstInt dst=t5 ty=u8 value=110
+      0005: ConstInt dst=t6 ty=u8 value=116
+      0006: ConstInt dst=t7 ty=u8 value=40
+      0007: MakeAggregate dst=t8 elems=[t1,t2,t3,t4,t5,t6,t7]
+      0008: ConstInt dst=t9 ty=usize value=2
+      0009: ConstInt dst=t10 ty=u8 value=120
+      0010: ConstInt dst=t11 ty=u8 value=61
+      0011: MakeAggregate dst=t12 elems=[t9,t10,t11]
+      0012: StringConcat dst=t13 lhs=t8 rhs=t12 lhs_cap=6 rhs_cap=2
+      0013: Project dst=t14 base=t0 index=0
+      0014: FormatScalar dst=t15 src=t14 src_ty=u32 capacity=10
+      0015: StringConcat dst=t16 lhs=t13 rhs=t15 lhs_cap=8 rhs_cap=10
+      0016: ConstInt dst=t17 ty=usize value=2
+      0017: ConstInt dst=t18 ty=u8 value=44
+      0018: ConstInt dst=t19 ty=u8 value=32
+      0019: MakeAggregate dst=t20 elems=[t17,t18,t19]
+      0020: StringConcat dst=t21 lhs=t16 rhs=t20 lhs_cap=18 rhs_cap=2
+      0021: ConstInt dst=t22 ty=usize value=2
+      0022: ConstInt dst=t23 ty=u8 value=121
+      0023: ConstInt dst=t24 ty=u8 value=61
+      0024: MakeAggregate dst=t25 elems=[t22,t23,t24]
+      0025: StringConcat dst=t26 lhs=t21 rhs=t25 lhs_cap=20 rhs_cap=2
+      0026: Project dst=t27 base=t0 index=1
+      0027: FormatScalar dst=t28 src=t27 src_ty=u32 capacity=10
+      0028: StringConcat dst=t29 lhs=t26 rhs=t28 lhs_cap=22 rhs_cap=10
+      0029: ConstInt dst=t30 ty=usize value=1
+      0030: ConstInt dst=t31 ty=u8 value=41
+      0031: MakeAggregate dst=t32 elems=[t30,t31]
+      0032: StringConcat dst=t33 lhs=t29 rhs=t32 lhs_cap=32 rhs_cap=1
+      0033: Return value=t33
+      0034: Return
+  Fn key=Point.max_formatted_len ret=usize temps=1
+    Temp t0 ty=usize
+    Body
+      0000: ConstInt dst=t0 ty=usize value=33
+      0001: Return value=t0
+      0002: Return
   Fn key=Store.init ret=unit temps=9 receiver=t0:mut params=[t1,t2,t3,t4,t5,t6,t7,t8]
     Temp t0 ty=Store
     Temp t1 ty=u64
@@ -19,3 +147,313 @@ Program
       0006: SetField base=t0 index=6 value=t7
       0007: SetField base=t0 index=7 value=t8
       0008: Return
+  Fn key=as_u64 ret=u64 temps=2 params=[t0]
+    Temp t0 ty=usize
+    Temp t1 ty=u64
+    Body
+      0000: Convert ty=u64 dst=t1 src=t0 abort="`.to[u64]()` conversion out of range"
+      0001: Return value=t1
+      0002: Return
+  Fn key=bool_digest ret=u64 temps=13 params=[t0]
+    Temp t0 ty=String[..5]
+    Temp t1 ty=usize
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u8
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u8
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
+      0002: ConstInt dst=t3 ty=u64 value=1000000
+      0003: ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0004: Project dst=t5 base=t0 index=1
+      0005: Convert ty=u64 dst=t6 src=t5 abort="`.to[u64]()` conversion out of range"
+      0006: ConstInt dst=t7 ty=u64 value=1000
+      0007: ArithChecked op=* ty=u64 dst=t8 lhs=t6 rhs=t7 abort="arithmetic overflow in `*`"
+      0008: ArithChecked op=+ ty=u64 dst=t9 lhs=t4 rhs=t8 abort="arithmetic overflow in `+`"
+      0009: Project dst=t10 base=t0 index=2
+      0010: Convert ty=u64 dst=t11 src=t10 abort="`.to[u64]()` conversion out of range"
+      0011: ArithChecked op=+ ty=u64 dst=t12 lhs=t9 rhs=t11 abort="arithmetic overflow in `+`"
+      0012: Return value=t12
+      0013: Return
+  Fn key=digest ret=u64 temps=13 params=[t0]
+    Temp t0 ty=String[..33]
+    Temp t1 ty=usize
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u8
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u8
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
+      0002: ConstInt dst=t3 ty=u64 value=1000000
+      0003: ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0004: Project dst=t5 base=t0 index=1
+      0005: Convert ty=u64 dst=t6 src=t5 abort="`.to[u64]()` conversion out of range"
+      0006: ConstInt dst=t7 ty=u64 value=1000
+      0007: ArithChecked op=* ty=u64 dst=t8 lhs=t6 rhs=t7 abort="arithmetic overflow in `*`"
+      0008: ArithChecked op=+ ty=u64 dst=t9 lhs=t4 rhs=t8 abort="arithmetic overflow in `+`"
+      0009: Project dst=t10 base=t0 index=2
+      0010: Convert ty=u64 dst=t11 src=t10 abort="`.to[u64]()` conversion out of range"
+      0011: ArithChecked op=+ ty=u64 dst=t12 lhs=t9 rhs=t11 abort="arithmetic overflow in `+`"
+      0012: Return value=t12
+      0013: Return
+  Fn key=digest_concat ret=u64 temps=13 params=[t0]
+    Temp t0 ty=String[..3]
+    Temp t1 ty=usize
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u8
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u8
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
+      0002: ConstInt dst=t3 ty=u64 value=1000000
+      0003: ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0004: Project dst=t5 base=t0 index=1
+      0005: Convert ty=u64 dst=t6 src=t5 abort="`.to[u64]()` conversion out of range"
+      0006: ConstInt dst=t7 ty=u64 value=1000
+      0007: ArithChecked op=* ty=u64 dst=t8 lhs=t6 rhs=t7 abort="arithmetic overflow in `*`"
+      0008: ArithChecked op=+ ty=u64 dst=t9 lhs=t4 rhs=t8 abort="arithmetic overflow in `+`"
+      0009: Project dst=t10 base=t0 index=2
+      0010: Convert ty=u64 dst=t11 src=t10 abort="`.to[u64]()` conversion out of range"
+      0011: ArithChecked op=+ ty=u64 dst=t12 lhs=t9 rhs=t11 abort="arithmetic overflow in `+`"
+      0012: Return value=t12
+      0013: Return
+  Fn key=digest_hue ret=u64 temps=13 params=[t0]
+    Temp t0 ty=String[..5]
+    Temp t1 ty=usize
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u8
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u8
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
+      0002: ConstInt dst=t3 ty=u64 value=1000000
+      0003: ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0004: Project dst=t5 base=t0 index=1
+      0005: Convert ty=u64 dst=t6 src=t5 abort="`.to[u64]()` conversion out of range"
+      0006: ConstInt dst=t7 ty=u64 value=1000
+      0007: ArithChecked op=* ty=u64 dst=t8 lhs=t6 rhs=t7 abort="arithmetic overflow in `*`"
+      0008: ArithChecked op=+ ty=u64 dst=t9 lhs=t4 rhs=t8 abort="arithmetic overflow in `+`"
+      0009: Project dst=t10 base=t0 index=2
+      0010: Convert ty=u64 dst=t11 src=t10 abort="`.to[u64]()` conversion out of range"
+      0011: ArithChecked op=+ ty=u64 dst=t12 lhs=t9 rhs=t11 abort="arithmetic overflow in `+`"
+      0012: Return value=t12
+      0013: Return
+  Fn key=digest_i64 ret=u64 temps=13 params=[t0]
+    Temp t0 ty=String[..20]
+    Temp t1 ty=usize
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u8
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u8
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
+      0002: ConstInt dst=t3 ty=u64 value=1000000
+      0003: ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0004: Project dst=t5 base=t0 index=1
+      0005: Convert ty=u64 dst=t6 src=t5 abort="`.to[u64]()` conversion out of range"
+      0006: ConstInt dst=t7 ty=u64 value=1000
+      0007: ArithChecked op=* ty=u64 dst=t8 lhs=t6 rhs=t7 abort="arithmetic overflow in `*`"
+      0008: ArithChecked op=+ ty=u64 dst=t9 lhs=t4 rhs=t8 abort="arithmetic overflow in `+`"
+      0009: Project dst=t10 base=t0 index=2
+      0010: Convert ty=u64 dst=t11 src=t10 abort="`.to[u64]()` conversion out of range"
+      0011: ArithChecked op=+ ty=u64 dst=t12 lhs=t9 rhs=t11 abort="arithmetic overflow in `+`"
+      0012: Return value=t12
+      0013: Return
+  Fn key=digest_small ret=u64 temps=13 params=[t0]
+    Temp t0 ty=String[..10]
+    Temp t1 ty=usize
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u8
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=u8
+    Temp t11 ty=u64
+    Temp t12 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
+      0002: ConstInt dst=t3 ty=u64 value=1000000
+      0003: ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0004: Project dst=t5 base=t0 index=1
+      0005: Convert ty=u64 dst=t6 src=t5 abort="`.to[u64]()` conversion out of range"
+      0006: ConstInt dst=t7 ty=u64 value=1000
+      0007: ArithChecked op=* ty=u64 dst=t8 lhs=t6 rhs=t7 abort="arithmetic overflow in `*`"
+      0008: ArithChecked op=+ ty=u64 dst=t9 lhs=t4 rhs=t8 abort="arithmetic overflow in `+`"
+      0009: Project dst=t10 base=t0 index=2
+      0010: Convert ty=u64 dst=t11 src=t10 abort="`.to[u64]()` conversion out of range"
+      0011: ArithChecked op=+ ty=u64 dst=t12 lhs=t9 rhs=t11 abort="arithmetic overflow in `+`"
+      0012: Return value=t12
+      0013: Return
+  Fn key=guest_format ret=unit temps=45
+    Temp t0 ty=u32
+    Temp t1 ty=String[..10]
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=bool
+    Temp t5 ty=i64
+    Temp t6 ty=String[..20]
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=bool
+    Temp t10 ty=u64
+    Temp t11 ty=u64
+    Temp t12 ty=bool
+    Temp t13 ty=bool
+    Temp t14 ty=String[..5]
+    Temp t15 ty=u64
+    Temp t16 ty=u64
+    Temp t17 ty=bool
+    Temp t18 ty=usize
+    Temp t19 ty=u8
+    Temp t20 ty=u8
+    Temp t21 ty=String[..2]
+    Temp t22 ty=usize
+    Temp t23 ty=u8
+    Temp t24 ty=String[..1]
+    Temp t25 ty=String[..3]
+    Temp t26 ty=u64
+    Temp t27 ty=u64
+    Temp t28 ty=bool
+    Temp t29 ty=u32
+    Temp t30 ty=u32
+    Temp t31 ty=Point
+    Temp t32 ty=String[..33]
+    Temp t33 ty=u64
+    Temp t34 ty=u64
+    Temp t35 ty=bool
+    Temp t36 ty=usize
+    Temp t37 ty=u64
+    Temp t38 ty=u64
+    Temp t39 ty=bool
+    Temp t40 ty=Hue
+    Temp t41 ty=String[..5]
+    Temp t42 ty=u64
+    Temp t43 ty=u64
+    Temp t44 ty=bool
+    Body
+      0000: ConstInt dst=t0 ty=u32 value=42
+      0001: FormatScalar dst=t1 src=t0 src_ty=u32 capacity=10
+      0002: Call key=digest_small dst=t2 args=[t1]
+      0003: ConstInt dst=t3 ty=u64 value=2052050
+      0004: Compare op=== ty=u64 dst=t4 lhs=t2 rhs=t3
+      0005: JumpIfFalse cond=t4 target=0007
+      0006: Jump target=0008
+      0007: AssertFail message="scalar at guest"
+      0008: ConstInt dst=t5 ty=i64 value=42
+      0009: FormatScalar dst=t6 src=t5 src_ty=i64 capacity=20
+      0010: Call key=digest_i64 dst=t7 args=[t6]
+      0011: ConstInt dst=t8 ty=u64 value=2052050
+      0012: Compare op=== ty=u64 dst=t9 lhs=t7 rhs=t8
+      0013: JumpIfFalse cond=t9 target=0015
+      0014: Jump target=0016
+      0015: AssertFail message="literal format at guest"
+      0016: Call key=inferred_format dst=t10 args=[]
+      0017: ConstInt dst=t11 ty=u64 value=2052050
+      0018: Compare op=== ty=u64 dst=t12 lhs=t10 rhs=t11
+      0019: JumpIfFalse cond=t12 target=0021
+      0020: Jump target=0022
+      0021: AssertFail message="inferred format at guest"
+      0022: ConstBool dst=t13 value=true
+      0023: FormatScalar dst=t14 src=t13 src_ty=bool capacity=5
+      0024: Call key=bool_digest dst=t15 args=[t14]
+      0025: ConstInt dst=t16 ty=u64 value=4116114
+      0026: Compare op=== ty=u64 dst=t17 lhs=t15 rhs=t16
+      0027: JumpIfFalse cond=t17 target=0029
+      0028: Jump target=0030
+      0029: AssertFail message="bool at guest"
+      0030: ConstInt dst=t18 ty=usize value=2
+      0031: ConstInt dst=t19 ty=u8 value=104
+      0032: ConstInt dst=t20 ty=u8 value=105
+      0033: MakeAggregate dst=t21 elems=[t18,t19,t20]
+      0034: ConstInt dst=t22 ty=usize value=1
+      0035: ConstInt dst=t23 ty=u8 value=33
+      0036: MakeAggregate dst=t24 elems=[t22,t23]
+      0037: StringConcat dst=t25 lhs=t21 rhs=t24 lhs_cap=2 rhs_cap=1
+      0038: Call key=digest_concat dst=t26 args=[t25]
+      0039: ConstInt dst=t27 ty=u64 value=3104105
+      0040: Compare op=== ty=u64 dst=t28 lhs=t26 rhs=t27
+      0041: JumpIfFalse cond=t28 target=0043
+      0042: Jump target=0044
+      0043: AssertFail message="concat at guest"
+      0044: ConstInt dst=t29 ty=u32 value=3
+      0045: ConstInt dst=t30 ty=u32 value=7
+      0046: MakeAggregate dst=t31 elems=[t29,t30]
+      0047: Call key=Point.format dst=t32 args=[t31]
+      0048: Call key=digest dst=t33 args=[t32]
+      0049: ConstInt dst=t34 ty=u64 value=15080111
+      0050: Compare op=== ty=u64 dst=t35 lhs=t33 rhs=t34
+      0051: JumpIfFalse cond=t35 target=0053
+      0052: Jump target=0054
+      0053: AssertFail message="Point.format at guest"
+      0054: Call key=Point.max_formatted_len dst=t36 args=[]
+      0055: Call key=as_u64 dst=t37 args=[t36]
+      0056: ConstInt dst=t38 ty=u64 value=33
+      0057: Compare op=== ty=u64 dst=t39 lhs=t37 rhs=t38
+      0058: JumpIfFalse cond=t39 target=0060
+      0059: Jump target=0061
+      0060: AssertFail message="bound at guest"
+      0061: MakeEnum dst=t40 tag=0 payload=[]
+      0062: Call key=Hue.format dst=t41 args=[t40]
+      0063: Call key=digest_hue dst=t42 args=[t41]
+      0064: ConstInt dst=t43 ty=u64 value=3082101
+      0065: Compare op=== ty=u64 dst=t44 lhs=t42 rhs=t43
+      0066: JumpIfFalse cond=t44 target=0068
+      0067: Jump target=0069
+      0068: AssertFail message="Hue.format at guest"
+      0069: Return
+  Fn key=inferred_format ret=u64 temps=4
+    Temp t0 ty=i64
+    Temp t1 ty=i64
+    Temp t2 ty=String[..20]
+    Temp t3 ty=u64
+    Body
+      0000: ConstInt dst=t0 ty=i64 value=42
+      0001: Copy dst=t1 src=t0
+      0002: FormatScalar dst=t2 src=t1 src_ty=i64 capacity=20
+      0003: Call key=digest_i64 dst=t3 args=[t2]
+      0004: Return value=t3
+      0005: Return

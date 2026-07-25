@@ -33,6 +33,7 @@ pub mod encode;
 pub mod eval;
 pub mod flowwir;
 pub mod flowwir_lower;
+pub mod guest_fn_key_census;
 pub mod internal_error_census;
 pub mod layout;
 pub mod loader;

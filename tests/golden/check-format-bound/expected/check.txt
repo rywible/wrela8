@@ -35,6 +35,7 @@ Module path=examples.check_format_bound
   Fn t_point() -> unit
   Fn t_bound() -> unit
   Fn t_hue() -> unit
+  Fn guest_format() -> unit
   Struct Store resource
     field scalar: u64
     field literal: u64

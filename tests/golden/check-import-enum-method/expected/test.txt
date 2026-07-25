@@ -1,4 +1,5 @@
 test t_read: ok
 test t_assoc: ok
 test t_settled: ok
-3 passed, 0 failed
+test guest_enum_method: ok
+4 passed, 0 failed

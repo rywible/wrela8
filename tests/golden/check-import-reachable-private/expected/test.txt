@@ -1,2 +1,3 @@
 test t: ok
-1 passed, 0 failed
+test guest_reachable: ok
+2 passed, 0 failed

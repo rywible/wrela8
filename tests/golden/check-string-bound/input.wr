@@ -33,6 +33,16 @@ pub fn t_value():
     assert B1 == 105, "byte1 is 'i'"
     assert SETTLED == 2104105, "length and bytes under one settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped String[..N] helpers
+# from mwir; `@test(runtime)` seeds occupied/byte/probe.
+@test(runtime)
+pub fn guest_string():
+    assert occupied(S) == 2, "len at guest"
+    assert byte0(S) == 104, "byte0 at guest"
+    assert byte1(S) == 105, "byte1 at guest"
+    assert probe(S) == 2, "probe at guest"
+
 @actor
 pub struct Store:
     settled: u64

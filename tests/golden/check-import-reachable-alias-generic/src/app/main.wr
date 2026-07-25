@@ -20,12 +20,20 @@ const D: u32 = drive()
 pub fn t():
     assert D == 406, "aliased peer + reachable generic Box"
 
+
+# Guest-reachable path (plans/M9.md item KK): `@test(runtime)` cannot
+# boot here — layout refuses sizing the reachable generic instantiation
+# (`Box[...]`) in the test-image context. An actor `pub` method seeds
+# the same call graph for mwir/asm without the runtime-test layout path.
 @actor
 pub struct Store:
     settled: u32
 
     init(mut self, settled: u32):
         self.settled = settled
+
+    pub fn guest_reachable(read self) -> u32:
+        return drive()
 
 @image
 pub fn build() -> Image:

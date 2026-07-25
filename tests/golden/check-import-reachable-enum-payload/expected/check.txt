@@ -2,6 +2,7 @@ Module path=app.main
   Fn drive() -> u32
   Const D: u32
   Fn t() -> unit
+  Fn guest_reachable() -> unit
   Struct Store resource
     field settled: u32
     init(mut self, settled: read u32) -> unit

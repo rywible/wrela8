@@ -18,6 +18,13 @@ const PARAM: u32 = drive()
 pub fn t_param():
     assert PARAM == 305, "peer-aliased param on hand-written assoc fn"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped Grip.make from asm;
+# `@test(runtime)` seeds the peer-aliased param path.
+@test(runtime)
+pub fn guest_sig_param():
+    assert drive() == 305, "sig-param at guest"
+
 @actor
 pub struct Store:
     param: u32

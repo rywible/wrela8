@@ -2,6 +2,7 @@ Module path=app.main
   Fn digest(s: read String[..17]) -> u64
   Const OUT: u64
   Fn t_import_format() -> unit
+  Fn guest_import_format() -> unit
   Struct Store resource
     field out: u64
     init(mut self, out: read u64) -> unit

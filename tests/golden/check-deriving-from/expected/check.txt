@@ -15,6 +15,7 @@ Module path=examples.check_deriving_from
   Fn test_deriving_from_converts() -> unit
   Fn test_ok_path_unchanged() -> unit
   Fn test_generated_from_callable() -> unit
+  Fn guest_from() -> unit
   Struct Store resource
     field converted: u32
     field ok: u32

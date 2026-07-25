@@ -96,6 +96,20 @@ pub fn t_bound():
 pub fn t_hue():
     assert HUE == 3082101, "Hue.Red formats as \"Red\""
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped Format helpers from
+# mwir; `@test(runtime)` seeds scalar/deriving Format + concat.
+@test(runtime)
+pub fn guest_format():
+    assert digest_small(FORTY_TWO.format()) == 2052050, "scalar at guest"
+    assert digest_i64(42.format()) == 2052050, "literal format at guest"
+    assert inferred_format() == 2052050, "inferred format at guest"
+    assert bool_digest(FLAG.format()) == 4116114, "bool at guest"
+    assert digest_concat("hi" + "!") == 3104105, "concat at guest"
+    assert digest(Point(x=3, y=7).format()) == 15080111, "Point.format at guest"
+    assert as_u64(Point.max_formatted_len()) == 33, "bound at guest"
+    assert digest_hue(Hue.Red.format()) == 3082101, "Hue.format at guest"
+
 @actor
 pub struct Store:
     scalar: u64

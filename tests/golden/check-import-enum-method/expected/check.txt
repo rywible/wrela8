@@ -5,6 +5,7 @@ Module path=app.main
   Fn t_read() -> unit
   Fn t_assoc() -> unit
   Fn t_settled() -> unit
+  Fn guest_enum_method() -> unit
   Struct Store resource
     field settled: u32
     init(mut self, settled: read u32) -> unit

@@ -15,6 +15,13 @@ const D: u32 = drive()
 pub fn t():
     assert D == 215, "chain A->B->C with only A imported"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped drive() from asm;
+# `@test(runtime)` seeds the import-reachability claim.
+@test(runtime)
+pub fn guest_reachable():
+    assert drive() == 215, "reachable chain at guest"
+
 @actor
 pub struct Store:
     settled: u32

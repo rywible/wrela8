@@ -50,6 +50,16 @@ pub fn t_take():
 pub fn t_settled():
     assert SETTLED == 217, "all four under one settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped aliased methods from
+# asm; `@test(runtime)` seeds all four receiver shapes.
+@test(runtime)
+pub fn guest_alias_method():
+    assert Cnt.zero().get() == 0, "assoc at guest"
+    assert Cnt(n=1).get() == 1, "read at guest"
+    assert mut_path() == 11, "mut at guest"
+    assert take_path() == 7, "take at guest"
+
 @actor
 pub struct Store:
     settled: u32

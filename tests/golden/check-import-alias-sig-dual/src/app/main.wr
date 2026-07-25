@@ -36,6 +36,14 @@ pub fn t_return():
 pub fn t_settled():
     assert SETTLED == 403711, "asymmetric settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped dual-alias helpers
+# from asm; `@test(runtime)` seeds param + return paths.
+@test(runtime)
+pub fn guest_sig_dual():
+    assert param_path() == 403, "param path at guest"
+    assert return_path() == 711, "return path at guest"
+
 @actor
 pub struct Store:
     settled: u32

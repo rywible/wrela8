@@ -7,6 +7,7 @@ Module path=app.main
   Fn t_param() -> unit
   Fn t_return() -> unit
   Fn t_settled() -> unit
+  Fn guest_sig_dual() -> unit
   Struct Store resource
     field settled: u32
     init(mut self, settled: read u32) -> unit

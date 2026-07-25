@@ -20,6 +20,14 @@ pub fn t_assoc():
 pub fn t_settled():
     assert SETTLED == 12, "import settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped Color methods from
+# asm; `@test(runtime)` seeds imported enum methods.
+@test(runtime)
+pub fn guest_enum_method():
+    assert Color.red().code() == 1, "assoc at guest"
+    assert Color.Blue.code() == 2, "read at guest"
+
 @actor
 pub struct Store:
     settled: u32

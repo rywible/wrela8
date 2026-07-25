@@ -2,6 +2,7 @@ Module path=app.main
   Fn drive() -> u32
   Const PARAM: u32
   Fn t_param() -> unit
+  Fn guest_sig_param() -> unit
   Struct Store resource
     field param: u32
     init(mut self, param: read u32) -> unit

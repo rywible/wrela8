@@ -262,14 +262,18 @@ fn is_host_only_comptime_test(program: &TypedProgram, name: &str, opts: &LowerOp
         .any(|t| t.name == name && t.kind == TestKind::Comptime)
 }
 
-fn is_host_only_fn(program: &TypedProgram, name: &str, f: &TypedFn, opts: &LowerOpts) -> bool {
-    if program.image_fn.as_deref() == Some(name) {
+/// `key` is a CalleeKey spelling (`drive`, `Maker.build`). Image-builder
+/// and comptime-`@test` names are always free fns; comparing only the
+/// bare member (`build` from `Maker.build`) against `@image fn build`
+/// falsely marks imported methods host-only (plans/M9.md item KK).
+fn is_host_only_fn(program: &TypedProgram, key: &str, f: &TypedFn, opts: &LowerOpts) -> bool {
+    if program.image_fn.as_deref() == Some(key) {
         return true;
     }
     if f.is_layout_assert {
         return true;
     }
-    is_host_only_comptime_test(program, name, opts)
+    is_host_only_comptime_test(program, key, opts)
 }
 
 /// Guest-reachable CalleeKey spellings for one typed program (plans/M9.md
@@ -314,7 +318,7 @@ fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BT
         }
         for p in programs {
             if let Some(f) = lookup_typed_fn(p, &key) {
-                if is_host_only_fn(p, bare_fn_name(&key), f, opts) {
+                if is_host_only_fn(p, &key, f, opts) {
                     // Should not be seeded; defensive: do not walk into
                     // host-only bodies.
                     continue;
@@ -328,15 +332,11 @@ fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BT
     // non-emission rather than emitting host code).
     reachable.retain(|key| {
         programs.iter().all(|p| match lookup_typed_fn(p, key) {
-            Some(f) => !is_host_only_fn(p, bare_fn_name(key), f, opts),
+            Some(f) => !is_host_only_fn(p, key, f, opts),
             None => true,
         })
     });
     reachable
-}
-
-fn bare_fn_name(key: &str) -> &str {
-    key.rsplit_once('.').map(|(_, m)| m).unwrap_or(key)
 }
 
 fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSet<String>) {

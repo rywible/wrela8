@@ -19,6 +19,13 @@ const DIRECT: u32 = direct()
 pub fn t_alias_from():
     assert DIRECT == 504, "aliased generated from must be callable"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped Box.from from asm;
+# `@test(runtime)` seeds the aliased generated from.
+@test(runtime)
+pub fn guest_alias_from():
+    assert direct() == 504, "aliased from at guest"
+
 @actor
 pub struct Store:
     direct: u32

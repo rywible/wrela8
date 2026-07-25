@@ -6,4 +6,5 @@ test t_concat: ok
 test t_point: ok
 test t_bound: ok
 test t_hue: ok
-8 passed, 0 failed
+test guest_format: ok
+9 passed, 0 failed

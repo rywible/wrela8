@@ -9,6 +9,7 @@ Module path=examples.check_string_bound
   Const B1: u64
   Const SETTLED: u64
   Fn t_value() -> unit
+  Fn guest_string() -> unit
   Struct Store resource
     field settled: u64
     init(mut self, settled: read u64) -> unit

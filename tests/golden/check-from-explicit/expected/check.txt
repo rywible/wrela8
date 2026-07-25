@@ -10,6 +10,7 @@ Module path=examples.check_from_explicit
   Fn settle(r: read Result[u32, WrapError]) -> u32
   Const CONVERTED: u32
   Fn test_explicit_from() -> unit
+  Fn guest_from() -> unit
   Struct Store resource
     field converted: u32
     init(mut self, converted: read u32) -> unit

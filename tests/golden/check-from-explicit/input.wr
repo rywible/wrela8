@@ -38,6 +38,13 @@ const CONVERTED: u32 = settle(convert_wrapped(0))
 pub fn test_explicit_from():
     assert CONVERTED == 107, "explicit from must transform Bad(7) into code=107"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped explicit from helpers
+# from mwir; `@test(runtime)` seeds hand-written from + `?`.
+@test(runtime)
+pub fn guest_from():
+    assert settle(convert_wrapped(0)) == 107, "explicit from at guest"
+
 @actor
 pub struct Store:
     converted: u32

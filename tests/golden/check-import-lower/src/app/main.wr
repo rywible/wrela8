@@ -43,6 +43,13 @@ pub fn t_fn():
 pub fn t_settled():
     assert SETTLED == 71142, "all three under one settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped import-lower helpers
+# from mwir/asm; `@test(runtime)` seeds fields/method/fn.
+@test(runtime)
+pub fn guest_import_lower():
+    assert drive() == 71142, "import-lower settle at guest"
+
 @actor
 pub struct Store:
     count: u32

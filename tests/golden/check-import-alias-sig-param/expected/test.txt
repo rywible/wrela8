@@ -1,2 +1,3 @@
 test t_param: ok
-1 passed, 0 failed
+test guest_sig_param: ok
+2 passed, 0 failed

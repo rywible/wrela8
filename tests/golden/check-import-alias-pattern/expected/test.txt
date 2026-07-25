@@ -1,4 +1,5 @@
 test t_annotated: ok
 test t_constructed: ok
 test t_settled: ok
-3 passed, 0 failed
+test guest_alias_pattern: ok
+4 passed, 0 failed

@@ -65,6 +65,16 @@ pub fn t_take():
 pub fn t_settled():
     assert SETTLED == 217, "all four under one settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped comptime-only enum
+# methods from mwir/asm; `@test(runtime)` seeds the call graph.
+@test(runtime)
+pub fn guest_methods():
+    assert Cell.empty().value() == 0, "assoc+read at guest"
+    assert Cell.Hold(1).value() == 1, "read at guest"
+    assert mut_path() == 11, "mut at guest"
+    assert take_path() == 7, "take at guest"
+
 @actor
 pub struct Store:
     settled: u32

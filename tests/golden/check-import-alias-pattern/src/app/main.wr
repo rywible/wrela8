@@ -46,6 +46,14 @@ pub fn t_constructed():
 pub fn t_settled():
     assert SETTLED == 210, "both pattern shapes under one settle"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped pattern helpers from
+# asm; `@test(runtime)` seeds both match shapes.
+@test(runtime)
+pub fn guest_alias_pattern():
+    assert pick_annotated(Hue.Blue) == 2, "annotated at guest"
+    assert pick_constructed() == 10, "constructed at guest"
+
 @actor
 pub struct Store:
     settled: u32

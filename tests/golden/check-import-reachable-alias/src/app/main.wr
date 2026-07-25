@@ -16,6 +16,13 @@ const D: u32 = drive()
 pub fn t():
     assert D == 305, "reachable Box under aliased Maker"
 
+
+# Guest-reachable path (plans/M9.md item KK): H3 dropped drive() from asm;
+# `@test(runtime)` seeds the import-reachability claim.
+@test(runtime)
+pub fn guest_reachable():
+    assert drive() == 305, "reachable alias at guest"
+
 @actor
 pub struct Store:
     settled: u32
