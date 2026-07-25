@@ -559,53 +559,69 @@ fn assert_message_text(e: &TypedExpr) -> Result<String, FlowError> {
 /// `mwir::MwirProgram::fns` (`sema::typed::CalleeKey::spelling()`). A
 /// generic instantiation is never walked at all (module doc's own
 /// disclosed boundary — no async generic exists in the M6 surface).
+/// plans/M9.md item H3: only guest-reachable keys (same set as sync lower).
 pub fn lower_program(program: &TypedProgram) -> Result<FlowWirProgram, FlowError> {
+    lower_program_with(program, &crate::lower::LowerOpts::default())
+}
+
+/// Like `lower_program`, sharing `LowerOpts` with sync lower (H2/H3).
+pub fn lower_program_with(
+    program: &TypedProgram,
+    opts: &crate::lower::LowerOpts,
+) -> Result<FlowWirProgram, FlowError> {
+    let reachable = match &opts.only {
+        Some(set) => set.clone(),
+        None => crate::lower::guest_reachable_keys(program, opts),
+    };
     let mut fns = BTreeMap::new();
     for (name, f) in &program.fns {
-        if f.is_async {
+        if f.is_async && reachable.contains(name) {
             fns.insert(name.clone(), lower_fn(f, program)?);
         }
     }
     for (sname, s) in &program.structs {
         for (member, f) in &s.methods {
-            if f.is_async {
-                fns.insert(format!("{sname}.{member}"), lower_fn(f, program)?);
+            let key = format!("{sname}.{member}");
+            if f.is_async && reachable.contains(&key) {
+                fns.insert(key, lower_fn(f, program)?);
             }
         }
         for (member, f) in &s.assoc_fns {
-            if f.is_async {
-                fns.insert(format!("{sname}.{member}"), lower_fn(f, program)?);
+            let key = format!("{sname}.{member}");
+            if f.is_async && reachable.contains(&key) {
+                fns.insert(key, lower_fn(f, program)?);
             }
         }
         if let Some(f) = &s.init {
-            if f.is_async {
-                fns.insert(format!("{sname}.init"), lower_fn(f, program)?);
+            let key = format!("{sname}.init");
+            if f.is_async && reachable.contains(&key) {
+                fns.insert(key, lower_fn(f, program)?);
             }
         }
     }
     // plans/M9.md item EE / decision 90: same imported emission
     // `lower::lower_program` does, for async members only.
     for (name, f) in &program.imported.fns {
-        if f.is_async && !fns.contains_key(name) {
+        if f.is_async && !fns.contains_key(name) && reachable.contains(name) {
             fns.insert(name.clone(), lower_fn(f, program)?);
         }
     }
     for (sname, s) in &program.imported.structs {
         for (member, f) in &s.methods {
             let key = format!("{sname}.{member}");
-            if f.is_async && !fns.contains_key(&key) {
+            if f.is_async && !fns.contains_key(&key) && reachable.contains(&key) {
                 fns.insert(key, lower_fn(f, program)?);
             }
         }
         for (member, f) in &s.assoc_fns {
             let key = format!("{sname}.{member}");
-            if f.is_async && !fns.contains_key(&key) {
+            if f.is_async && !fns.contains_key(&key) && reachable.contains(&key) {
                 fns.insert(key, lower_fn(f, program)?);
             }
         }
         if let Some(f) = &s.init {
             let key = format!("{sname}.init");
-            if f.is_async && !fns.contains_key(&key) {
+            if f.is_async && !fns.contains_key(&key) && reachable.contains(&key) {
                 fns.insert(key, lower_fn(f, program)?);
             }
         }

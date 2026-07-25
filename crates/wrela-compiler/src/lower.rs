@@ -24,7 +24,9 @@
 //! `@layout_assert` and comptime-legal bare `@test` are likewise
 //! host-only (02 §12.1 / §12.2) and skipped by default;
 //! `LowerOpts::emit_comptime_tests` opts the latter back in for
-//! `diff-eval`'s evaluator-vs-backend comparison only.
+//! `diff-eval`'s evaluator-vs-backend comparison only. plans/M9.md
+//! item H3: only call-graph-reachable guest keys are lowered (see
+//! `guest_reachable_keys` / `guest_reachable_keys_closure`).
 //!
 //! A `FnBuilder` (below) owns one fn's own growing `temp_types`/`body`;
 //! `Lowerer` owns the one whole-program fact that outlives any single
@@ -170,16 +172,16 @@
 //! one — recorded in the session report as the honest finding it is,
 //! not papered over with an invented case.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::value::{self, Value};
 use crate::mwir::{self, Inst, MwirFn, MwirProgram, Temp};
 use crate::sema::bodies::{self, InstKind};
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TestKind, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
-    TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
-    TypedStruct,
+    CalleeKey, TestKind, TypedDeferBody, TypedEnum, TypedExpr, TypedExprKind, TypedFn,
+    TypedForIter, TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
+    TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{self, AccessMode, BinOp};
@@ -220,9 +222,10 @@ impl LowerError {
 
 type LEnv = Vec<BTreeMap<String, Temp>>;
 
-/// Options for `lower_program_with` (plans/M9.md item H2). Default is
-/// production: host-only fns stay out of MWIR.
-#[derive(Debug, Clone, Copy, Default)]
+/// Options for `lower_program_with` (plans/M9.md items H2 / H3). Default is
+/// production: host-only fns stay out of MWIR; only guest-reachable keys
+/// lower.
+#[derive(Debug, Clone, Default)]
 pub struct LowerOpts {
     /// When true, emit `TestKind::Comptime` fns as guest code. Only
     /// `diff-eval` sets this — 02 §12.2 says a comptime-legal bare
@@ -231,6 +234,11 @@ pub struct LowerOpts {
     /// Production `wrela build` / `wrela test` / dump stages leave this
     /// false.
     pub emit_comptime_tests: bool,
+    /// When `Some`, only these keys may lower (plans/M9.md item H3
+    /// whole-closure set from `guest_reachable_keys_closure`). When
+    /// `None`, compute `guest_reachable_keys` for this program alone
+    /// (dump `--stage=mwir`/`asm` path).
+    pub only: Option<BTreeSet<String>>,
 }
 
 fn is_host_only_comptime_test(program: &TypedProgram, name: &str, opts: &LowerOpts) -> bool {
@@ -241,6 +249,495 @@ fn is_host_only_comptime_test(program: &TypedProgram, name: &str, opts: &LowerOp
         .tests
         .iter()
         .any(|t| t.name == name && t.kind == TestKind::Comptime)
+}
+
+fn is_host_only_fn(program: &TypedProgram, name: &str, f: &TypedFn, opts: &LowerOpts) -> bool {
+    if program.image_fn.as_deref() == Some(name) {
+        return true;
+    }
+    if f.is_layout_assert {
+        return true;
+    }
+    is_host_only_comptime_test(program, name, opts)
+}
+
+/// Guest-reachable CalleeKey spellings for one typed program (plans/M9.md
+/// item H3). Used by dump-stage lower and as the per-program walk inside
+/// `guest_reachable_keys_closure`.
+pub fn guest_reachable_keys(program: &TypedProgram, opts: &LowerOpts) -> BTreeSet<String> {
+    guest_reachable_keys_over(&[program], opts)
+}
+
+/// Whole-build-closure reachable set (plans/M9.md item H3): seeds from
+/// every module, callees looked up in every module's local+imported
+/// tables. `try_layout_program` passes this via `LowerOpts::only` so a
+/// library module with no actors does not emit its entire surface into
+/// the merged image.
+pub fn guest_reachable_keys_closure(
+    programs: &BTreeMap<String, TypedProgram>,
+    opts: &LowerOpts,
+) -> BTreeSet<String> {
+    let progs: Vec<&TypedProgram> = programs.values().collect();
+    guest_reachable_keys_over(&progs, opts)
+}
+
+fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
+    let mut work: BTreeSet<String> = BTreeSet::new();
+    for p in programs {
+        seed_entry_points(p, opts, &mut work);
+    }
+    if work.is_empty() {
+        // Dump-stage / no-guest-surface fallback: cannot prove free fns
+        // unreachable from a guest that does not exist.
+        for p in programs {
+            for key in all_candidate_keys(p, opts) {
+                work.insert(key);
+            }
+        }
+        return work;
+    }
+    let mut reachable = BTreeSet::new();
+    while let Some(key) = work.pop_first() {
+        if !reachable.insert(key.clone()) {
+            continue;
+        }
+        for p in programs {
+            if let Some(f) = lookup_typed_fn(p, &key) {
+                if is_host_only_fn(p, bare_fn_name(&key), f, opts) {
+                    // Should not be seeded; defensive: do not walk into
+                    // host-only bodies.
+                    continue;
+                }
+                collect_callees_from_fn(p, f, &mut work);
+            }
+        }
+    }
+    // Drop any host-only keys that slipped into the set (e.g. a Call
+    // naming a layout_assert — should not happen, but fail closed to
+    // non-emission rather than emitting host code).
+    reachable.retain(|key| {
+        programs.iter().all(|p| match lookup_typed_fn(p, key) {
+            Some(f) => !is_host_only_fn(p, bare_fn_name(key), f, opts),
+            None => true,
+        })
+    });
+    reachable
+}
+
+fn bare_fn_name(key: &str) -> &str {
+    key.rsplit_once('.').map(|(_, m)| m).unwrap_or(key)
+}
+
+fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSet<String>) {
+    for t in &program.tests {
+        match t.kind {
+            TestKind::Runtime | TestKind::Exhaustive => {
+                out.insert(t.name.clone());
+            }
+            TestKind::Comptime if opts.emit_comptime_tests => {
+                out.insert(t.name.clone());
+            }
+            TestKind::Comptime => {}
+        }
+    }
+    // Free top-level async fns are the group-child surface (02 §9.5) and
+    // may be started by name from any reachable `with group`. They are
+    // also the dump oracle for async lowering. Sync free fns stay
+    // call-graph-only (H3's helper-budget / unused-import fixes).
+    for (name, f) in program.fns.iter().chain(program.imported.fns.iter()) {
+        if f.is_async && !is_host_only_fn(program, name, f, opts) {
+            out.insert(name.clone());
+        }
+    }
+    seed_struct_entries(&program.structs, out);
+    seed_struct_entries(&program.imported.structs, out);
+    // Instantiated actor/driver structs (rare; same rules).
+    for (ikey, inst) in program
+        .instantiations
+        .iter()
+        .chain(program.imported.instantiations.iter())
+    {
+        if let TypedInstantiation::Struct(s) = inst {
+            seed_one_struct(ikey, s, out);
+        }
+    }
+}
+
+fn seed_struct_entries(structs: &BTreeMap<String, TypedStruct>, out: &mut BTreeSet<String>) {
+    for (sname, s) in structs {
+        seed_one_struct(sname, s, out);
+    }
+}
+
+fn seed_one_struct(key_prefix: &str, s: &TypedStruct, out: &mut BTreeSet<String>) {
+    if !(s.is_actor || s.is_driver) {
+        return;
+    }
+    if s.init.is_some() {
+        out.insert(format!("{key_prefix}.init"));
+    }
+    for (member, f) in &s.methods {
+        // Driver: every method (ISR conservatism). Actor: pub methods
+        // (message shapes) and @task (drivers only, but keep the bit).
+        if s.is_driver || f.is_pub || f.is_task {
+            out.insert(format!("{key_prefix}.{member}"));
+        }
+    }
+}
+
+fn all_candidate_keys(program: &TypedProgram, opts: &LowerOpts) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (name, f) in &program.fns {
+        if !is_host_only_fn(program, name, f, opts) {
+            out.insert(name.clone());
+        }
+    }
+    for (name, f) in &program.imported.fns {
+        if !is_host_only_fn(program, name, f, opts) {
+            out.insert(name.clone());
+        }
+    }
+    add_struct_member_keys(&program.structs, &mut out);
+    add_struct_member_keys(&program.imported.structs, &mut out);
+    add_enum_member_keys(&program.enums, &mut out);
+    add_enum_member_keys(&program.imported.enums, &mut out);
+    for (ikey, inst) in program
+        .instantiations
+        .iter()
+        .chain(program.imported.instantiations.iter())
+    {
+        match inst {
+            TypedInstantiation::Fn(f) => {
+                if !f.is_layout_assert {
+                    out.insert(ikey.clone());
+                }
+            }
+            TypedInstantiation::Struct(s) => add_one_struct_member_keys(ikey, s, &mut out),
+            TypedInstantiation::Enum => {}
+        }
+    }
+    out
+}
+
+fn add_struct_member_keys(structs: &BTreeMap<String, TypedStruct>, out: &mut BTreeSet<String>) {
+    for (sname, s) in structs {
+        add_one_struct_member_keys(sname, s, out);
+    }
+}
+
+fn add_one_struct_member_keys(key_prefix: &str, s: &TypedStruct, out: &mut BTreeSet<String>) {
+    for member in s.methods.keys().chain(s.assoc_fns.keys()) {
+        out.insert(format!("{key_prefix}.{member}"));
+    }
+    if s.init.is_some() {
+        out.insert(format!("{key_prefix}.init"));
+    }
+}
+
+fn add_enum_member_keys(enums: &BTreeMap<String, TypedEnum>, out: &mut BTreeSet<String>) {
+    for (ename, e) in enums {
+        for member in e.methods.keys().chain(e.assoc_fns.keys()) {
+            out.insert(format!("{ename}.{member}"));
+        }
+    }
+}
+
+fn lookup_typed_fn<'a>(program: &'a TypedProgram, key: &str) -> Option<&'a TypedFn> {
+    if let Some(f) = program
+        .fns
+        .get(key)
+        .or_else(|| program.imported.fns.get(key))
+    {
+        return Some(f);
+    }
+    if let Some((owner, member)) = key.split_once('.') {
+        if let Some(s) = program
+            .structs
+            .get(owner)
+            .or_else(|| program.imported.structs.get(owner))
+        {
+            if member == "init" {
+                return s.init.as_ref();
+            }
+            if let Some(f) = s.methods.get(member).or_else(|| s.assoc_fns.get(member)) {
+                return Some(f);
+            }
+        }
+        if let Some(e) = program
+            .enums
+            .get(owner)
+            .or_else(|| program.imported.enums.get(owner))
+        {
+            if let Some(f) = e.methods.get(member).or_else(|| e.assoc_fns.get(member)) {
+                return Some(f);
+            }
+        }
+    }
+    // Instantiation keys: `fn:name[...]` or `struct:name[...].member`.
+    if let Some(inst) = program
+        .instantiations
+        .get(key)
+        .or_else(|| program.imported.instantiations.get(key))
+    {
+        if let TypedInstantiation::Fn(f) = inst {
+            return Some(f);
+        }
+    }
+    if let Some((ikey, member)) = key.rsplit_once('.') {
+        if let Some(TypedInstantiation::Struct(s)) = program
+            .instantiations
+            .get(ikey)
+            .or_else(|| program.imported.instantiations.get(ikey))
+        {
+            if member == "init" {
+                return s.init.as_ref();
+            }
+            return s.methods.get(member).or_else(|| s.assoc_fns.get(member));
+        }
+    }
+    None
+}
+
+fn collect_callees_from_fn(program: &TypedProgram, f: &TypedFn, out: &mut BTreeSet<String>) {
+    for p in &f.params {
+        if let Some(d) = &p.default {
+            collect_callees_from_expr(program, d, out);
+        }
+    }
+    collect_callees_from_stmts(program, &f.body, out);
+}
+
+fn collect_callees_from_stmts(
+    program: &TypedProgram,
+    stmts: &[TypedStmt],
+    out: &mut BTreeSet<String>,
+) {
+    for s in stmts {
+        collect_callees_from_stmt(program, s, out);
+    }
+}
+
+fn collect_callees_from_stmt(program: &TypedProgram, stmt: &TypedStmt, out: &mut BTreeSet<String>) {
+    match &stmt.kind {
+        TypedStmtKind::Let { value, .. } => collect_callees_from_expr(program, value, out),
+        TypedStmtKind::Assign { target, value } => {
+            collect_callees_from_expr(program, target, out);
+            collect_callees_from_expr(program, value, out);
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            collect_callees_from_expr(program, cond, out);
+            collect_callees_from_stmts(program, then_branch, out);
+            for e in elifs {
+                collect_callees_from_expr(program, &e.cond, out);
+                collect_callees_from_stmts(program, &e.body, out);
+            }
+            if let Some(b) = else_branch {
+                collect_callees_from_stmts(program, b, out);
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            collect_callees_from_expr(program, scrutinee, out);
+            for arm in arms {
+                collect_callees_from_pattern(program, &arm.pattern, out);
+                if let Some(g) = &arm.guard {
+                    collect_callees_from_expr(program, g, out);
+                }
+                collect_callees_from_stmts(program, &arm.body, out);
+            }
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(a, b, _) => {
+                    collect_callees_from_expr(program, a, out);
+                    collect_callees_from_expr(program, b, out);
+                }
+                TypedForIter::Expr(e) => collect_callees_from_expr(program, e, out),
+            }
+            collect_callees_from_stmts(program, body, out);
+        }
+        TypedStmtKind::While { cond, body } => {
+            collect_callees_from_expr(program, cond, out);
+            collect_callees_from_stmts(program, body, out);
+        }
+        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
+        TypedStmtKind::Return(Some(e)) => collect_callees_from_expr(program, e, out),
+        TypedStmtKind::Return(None) => {}
+        TypedStmtKind::Assert { cond, message }
+        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            collect_callees_from_expr(program, cond, out);
+            if let Some(m) = message {
+                collect_callees_from_expr(program, m, out);
+            }
+        }
+        TypedStmtKind::Defer(TypedDeferBody::Expr(e)) => collect_callees_from_expr(program, e, out),
+        TypedStmtKind::Defer(TypedDeferBody::Suite(body)) => {
+            collect_callees_from_stmts(program, body, out)
+        }
+        TypedStmtKind::ExprStmt(e) | TypedStmtKind::BareSend { expr: e, .. } => {
+            collect_callees_from_expr(program, e, out)
+        }
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                collect_callees_from_expr(program, c, out);
+            }
+            if let Some(d) = deadline {
+                collect_callees_from_expr(program, d, out);
+            }
+            collect_callees_from_stmts(program, body, out);
+        }
+    }
+}
+
+fn collect_callees_from_pattern(
+    program: &TypedProgram,
+    pat: &TypedPattern,
+    out: &mut BTreeSet<String>,
+) {
+    match &pat.kind {
+        TypedPatternKind::Wildcard | TypedPatternKind::Binding(_) => {}
+        TypedPatternKind::Literal(e) => collect_callees_from_expr(program, e, out),
+        TypedPatternKind::Take(inner) => collect_callees_from_pattern(program, inner, out),
+        TypedPatternKind::Variant { payload, .. } => {
+            for p in payload {
+                collect_callees_from_pattern(program, p, out);
+            }
+        }
+        TypedPatternKind::Tuple(ps) | TypedPatternKind::Array(ps) | TypedPatternKind::Or(ps) => {
+            for p in ps {
+                collect_callees_from_pattern(program, p, out);
+            }
+        }
+    }
+}
+
+fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut BTreeSet<String>) {
+    match &expr.kind {
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::Local(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::PoolName(_) => {}
+        TypedExprKind::FnRef(key) | TypedExprKind::GroupChild(key) => {
+            out.insert(key.spelling());
+        }
+        TypedExprKind::Field(base, _)
+        | TypedExprKind::ToScalar(base)
+        | TypedExprKind::Neg(base)
+        | TypedExprKind::BitNot(base)
+        | TypedExprKind::Take(base)
+        | TypedExprKind::Not(base)
+        | TypedExprKind::Await(base)
+        | TypedExprKind::Send(base)
+        | TypedExprKind::Panic(base) => collect_callees_from_expr(program, base, out),
+        TypedExprKind::Index(a, b)
+        | TypedExprKind::Binary(_, a, b)
+        | TypedExprKind::And(a, b)
+        | TypedExprKind::Or(a, b) => {
+            collect_callees_from_expr(program, a, out);
+            collect_callees_from_expr(program, b, out);
+        }
+        TypedExprKind::Is(e, p) => {
+            collect_callees_from_expr(program, e, out);
+            collect_callees_from_pattern(program, p, out);
+        }
+        TypedExprKind::Call {
+            callee,
+            receiver,
+            args,
+        } => {
+            out.insert(callee.spelling());
+            if let Some(r) = receiver {
+                collect_callees_from_expr(program, r, out);
+            }
+            for (i, a) in args.iter().enumerate() {
+                match a {
+                    Some(e) => collect_callees_from_expr(program, e, out),
+                    None => {
+                        // Defaulted arg: walk the callee's stored default.
+                        if let Some(f) = lookup_typed_fn(program, &callee.spelling()) {
+                            if let Some(d) = f.params.get(i).and_then(|p| p.default.as_ref()) {
+                                collect_callees_from_expr(program, d, out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        TypedExprKind::CallValue(f, args) => {
+            collect_callees_from_expr(program, f, out);
+            for a in args {
+                collect_callees_from_expr(program, a, out);
+            }
+        }
+        TypedExprKind::Try(inner, conv) => {
+            collect_callees_from_expr(program, inner, out);
+            if let Some(k) = conv {
+                out.insert(k.spelling());
+            }
+        }
+        TypedExprKind::OpCall(key, a, b) => {
+            out.insert(key.spelling());
+            collect_callees_from_expr(program, a, out);
+            collect_callees_from_expr(program, b, out);
+        }
+        TypedExprKind::EnumConstruct { args, .. }
+        | TypedExprKind::Tuple(args)
+        | TypedExprKind::List(args) => {
+            for a in args {
+                collect_callees_from_expr(program, a, out);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => match body {
+            crate::sema::typed::TypedClosureBody::Expr(e) => {
+                collect_callees_from_expr(program, e, out)
+            }
+            crate::sema::typed::TypedClosureBody::Suite(stmts) => {
+                collect_callees_from_stmts(program, stmts, out)
+            }
+        },
+        TypedExprKind::StructLiteral { name, fields } => {
+            for (_, e) in fields {
+                collect_callees_from_expr(program, e, out);
+            }
+            // Omitted field defaults live on the struct; walk them when
+            // this construction site is reachable.
+            if let Some(s) = program
+                .structs
+                .get(name)
+                .or_else(|| program.imported.structs.get(name))
+            {
+                let supplied: BTreeSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                for (fname, def) in &s.field_defaults {
+                    if !supplied.contains(fname.as_str()) {
+                        collect_callees_from_expr(program, def, out);
+                    }
+                }
+            }
+        }
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                collect_callees_from_expr(program, r, out);
+            }
+            for (_, e) in args {
+                collect_callees_from_expr(program, e, out);
+            }
+        }
+    }
 }
 
 fn env_lookup(env: &LEnv, name: &str) -> Option<Temp> {
@@ -492,13 +989,16 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     lower_program_with(program, &LowerOpts::default())
 }
 
-/// Like `lower_program`, with an explicit opt-in for emitting
-/// comptime-legal bare `@test` bodies (plans/M9.md item H2 /
-/// `LowerOpts::emit_comptime_tests`).
+/// Like `lower_program`, with host-only / reachability opts (plans/M9.md
+/// items H2 / H3).
 pub fn lower_program_with(
     program: &TypedProgram,
     opts: &LowerOpts,
 ) -> Result<MwirProgram, LowerError> {
+    let reachable = match &opts.only {
+        Some(set) => set.clone(),
+        None => guest_reachable_keys(program, opts),
+    };
     let mut lw = Lowerer {
         prog: program,
         rodata: Vec::new(),
@@ -533,26 +1033,30 @@ pub fn lower_program_with(
         if is_host_only_comptime_test(program, name, opts) {
             continue;
         }
+        // plans/M9.md item H3: call-graph reachability.
+        if !reachable.contains(name) {
+            continue;
+        }
         let mf = lower_fn(f, None, &mut lw)?;
         fns.insert(name.clone(), mf);
     }
     for (sname, s) in &program.structs {
-        lower_struct_members(sname, s, &mut lw, &mut fns)?;
+        lower_struct_members(sname, s, &mut lw, &mut fns, &reachable)?;
     }
     for (ename, e) in &program.enums {
-        lower_enum_members(ename, e, &mut lw, &mut fns)?;
+        lower_enum_members(ename, e, &mut lw, &mut fns, &reachable)?;
     }
     for (ikey, inst) in &program.instantiations {
         match inst {
             TypedInstantiation::Fn(f) => {
-                if f.is_async || f.is_layout_assert {
+                if f.is_async || f.is_layout_assert || !reachable.contains(ikey) {
                     continue;
                 }
                 let mf = lower_fn(f, None, &mut lw)?;
                 fns.insert(ikey.clone(), mf);
             }
             TypedInstantiation::Struct(s) => {
-                lower_struct_members(ikey, s, &mut lw, &mut fns)?;
+                lower_struct_members(ikey, s, &mut lw, &mut fns, &reachable)?;
             }
             TypedInstantiation::Enum => {}
         }
@@ -567,12 +1071,13 @@ pub fn lower_program_with(
     // still emits each *Call key* once in this program. An unaliased name
     // that also exists in the exporter's own lower may collide at
     // `merge_mwir_programs` last-wins — that collision is already
-    // disclosed there.
+    // disclosed there. plans/M9.md item H3: only reachable imports.
     for (name, f) in &program.imported.fns {
         if f.is_async
             || f.is_layout_assert
             || is_host_only_comptime_test(program, name, opts)
             || fns.contains_key(name)
+            || !reachable.contains(name)
         {
             continue;
         }
@@ -580,10 +1085,10 @@ pub fn lower_program_with(
         fns.insert(name.clone(), mf);
     }
     for (sname, s) in &program.imported.structs {
-        lower_struct_members(sname, s, &mut lw, &mut fns)?;
+        lower_struct_members(sname, s, &mut lw, &mut fns, &reachable)?;
     }
     for (ename, e) in &program.imported.enums {
-        lower_enum_members(ename, e, &mut lw, &mut fns)?;
+        lower_enum_members(ename, e, &mut lw, &mut fns, &reachable)?;
     }
     for (ikey, inst) in &program.imported.instantiations {
         if fns.contains_key(ikey) {
@@ -591,14 +1096,14 @@ pub fn lower_program_with(
         }
         match inst {
             TypedInstantiation::Fn(f) => {
-                if f.is_async || f.is_layout_assert {
+                if f.is_async || f.is_layout_assert || !reachable.contains(ikey) {
                     continue;
                 }
                 let mf = lower_fn(f, None, &mut lw)?;
                 fns.insert(ikey.clone(), mf);
             }
             TypedInstantiation::Struct(s) => {
-                lower_struct_members(ikey, s, &mut lw, &mut fns)?;
+                lower_struct_members(ikey, s, &mut lw, &mut fns, &reachable)?;
             }
             TypedInstantiation::Enum => {}
         }
@@ -621,29 +1126,27 @@ fn lower_struct_members(
     s: &TypedStruct,
     lw: &mut Lowerer,
     fns: &mut BTreeMap<String, MwirFn>,
+    reachable: &BTreeSet<String>,
 ) -> Result<(), LowerError> {
     let owner = Some(key_prefix.to_string());
     for (member, f) in &s.methods {
-        if f.is_async {
+        let key = format!("{key_prefix}.{member}");
+        if f.is_async || !reachable.contains(&key) {
             continue;
         }
-        fns.insert(
-            format!("{key_prefix}.{member}"),
-            lower_fn(f, owner.clone(), lw)?,
-        );
+        fns.insert(key, lower_fn(f, owner.clone(), lw)?);
     }
     for (member, f) in &s.assoc_fns {
-        if f.is_async {
+        let key = format!("{key_prefix}.{member}");
+        if f.is_async || !reachable.contains(&key) {
             continue;
         }
-        fns.insert(
-            format!("{key_prefix}.{member}"),
-            lower_fn(f, owner.clone(), lw)?,
-        );
+        fns.insert(key, lower_fn(f, owner.clone(), lw)?);
     }
     if let Some(f) = &s.init {
-        if !f.is_async {
-            fns.insert(format!("{key_prefix}.init"), lower_fn(f, owner, lw)?);
+        let key = format!("{key_prefix}.init");
+        if !f.is_async && reachable.contains(&key) {
+            fns.insert(key, lower_fn(f, owner, lw)?);
         }
     }
     Ok(())
@@ -656,25 +1159,22 @@ fn lower_enum_members(
     e: &crate::sema::typed::TypedEnum,
     lw: &mut Lowerer,
     fns: &mut BTreeMap<String, MwirFn>,
+    reachable: &BTreeSet<String>,
 ) -> Result<(), LowerError> {
     let owner = Some(key_prefix.to_string());
     for (member, f) in &e.methods {
-        if f.is_async {
+        let key = format!("{key_prefix}.{member}");
+        if f.is_async || !reachable.contains(&key) {
             continue;
         }
-        fns.insert(
-            format!("{key_prefix}.{member}"),
-            lower_fn(f, owner.clone(), lw)?,
-        );
+        fns.insert(key, lower_fn(f, owner.clone(), lw)?);
     }
     for (member, f) in &e.assoc_fns {
-        if f.is_async {
+        let key = format!("{key_prefix}.{member}");
+        if f.is_async || !reachable.contains(&key) {
             continue;
         }
-        fns.insert(
-            format!("{key_prefix}.{member}"),
-            lower_fn(f, owner.clone(), lw)?,
-        );
+        fns.insert(key, lower_fn(f, owner.clone(), lw)?);
     }
     Ok(())
 }

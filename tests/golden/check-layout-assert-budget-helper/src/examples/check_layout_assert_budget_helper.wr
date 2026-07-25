@@ -1,0 +1,33 @@
+module examples.check_layout_assert_budget_helper
+
+# plans/M9.md item H3: H2 kept @layout_assert bodies out of the image,
+# but a helper only reachable from the assert still emitted and grew
+# code (measured 128 -> 188) so a true budget failed. After H3 the
+# helper is unreachable from guest roots and stays out; code stays 128.
+from core.image_report import ImageReport
+
+@actor
+pub struct Store:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+fn under_budget(size: u64, cap: u64) -> bool:
+    return size < cap
+
+@layout_assert
+fn budget(report: ImageReport):
+    assert under_budget(size=report.code_size, cap=150), "code budget is 150 bytes"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="layout-assert-budget-helper", target=Target.wrela_machine_v1)
+    a = img.actor(Store, mailbox=8)
+    img.check_layout(budget)
+    img.supervise(children=[a], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

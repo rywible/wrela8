@@ -509,6 +509,11 @@ pub struct TypedFn {
     /// skips `@image` / `async`. Not rendered by `dump` below —
     /// bookkeeping, same reasoning as `is_async`/`is_task`.
     pub is_layout_assert: bool,
+    /// plans/M9.md item H3: source `pub` (02 §9.2 message shapes). On a
+    /// method with a receiver of an `@actor`/`@driver`, a `pub` method
+    /// is a guest entry point even with no textual caller. Bookkeeping
+    /// only — not rendered by `dump`.
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -556,6 +561,12 @@ pub struct TypedStruct {
     pub methods: BTreeMap<String, TypedFn>,
     pub assoc_fns: BTreeMap<String, TypedFn>,
     pub init: Option<TypedFn>,
+    /// plans/M9.md item H3: `@actor` or `@driver` (DeclStruct::is_actor).
+    /// Bookkeeping for guest entry-point seeds; not rendered by `dump`.
+    pub is_actor: bool,
+    /// plans/M9.md item H3: `@driver` specifically. Drivers seed every
+    /// method (ISR conservatism); not rendered by `dump`.
+    pub is_driver: bool,
 }
 
 /// One non-generic enum's checked body (plans/M9.md item B2): variant

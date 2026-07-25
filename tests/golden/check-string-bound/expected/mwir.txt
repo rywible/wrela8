@@ -5,37 +5,3 @@ Program
     Body
       0000: SetField base=t0 index=0 value=t1
       0001: Return
-  Fn key=byte0 ret=u64 temps=3 params=[t0]
-    Temp t0 ty=String[..8]
-    Temp t1 ty=u8
-    Temp t2 ty=u64
-    Body
-      0000: Project dst=t1 base=t0 index=1
-      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
-      0002: Return value=t2
-      0003: Return
-  Fn key=byte1 ret=u64 temps=3 params=[t0]
-    Temp t0 ty=String[..8]
-    Temp t1 ty=u8
-    Temp t2 ty=u64
-    Body
-      0000: Project dst=t1 base=t0 index=2
-      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
-      0002: Return value=t2
-      0003: Return
-  Fn key=occupied ret=u64 temps=3 params=[t0]
-    Temp t0 ty=String[..8]
-    Temp t1 ty=usize
-    Temp t2 ty=u64
-    Body
-      0000: Project dst=t1 base=t0 index=0
-      0001: Convert ty=u64 dst=t2 src=t1 abort="`.to[u64]()` conversion out of range"
-      0002: Return value=t2
-      0003: Return
-  Fn key=probe ret=u64 temps=2 params=[t0]
-    Temp t0 ty=String[..8]
-    Temp t1 ty=u64
-    Body
-      0000: Call key=occupied dst=t1 args=[t0]
-      0001: Return value=t1
-      0002: Return

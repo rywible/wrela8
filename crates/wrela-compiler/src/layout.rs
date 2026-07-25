@@ -3432,11 +3432,20 @@ pub fn try_layout_program(
     let mut layout_ctx = layout_ctx.clone();
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
     let layout_ctx = &layout_ctx;
+    // plans/M9.md item H3: one reachable set over the whole build
+    // closure, so a library module with no actors does not emit its
+    // entire surface into the merged image.
+    let reachable =
+        crate::lower::guest_reachable_keys_closure(programs, &crate::lower::LowerOpts::default());
+    let lower_opts = crate::lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(reachable),
+    };
     let mut mwir_programs = Vec::with_capacity(programs.len());
     for typed in programs.values() {
         let mut stamped = typed.clone();
         stamped.blk_capacity_sectors = capacity;
-        match crate::lower::lower_program(&stamped) {
+        match crate::lower::lower_program_with(&stamped, &lower_opts) {
             Ok(p) => mwir_programs.push(p),
             Err(_) => return Ok(None),
         }
@@ -3450,7 +3459,7 @@ pub fn try_layout_program(
     for typed in programs.values() {
         let mut stamped = typed.clone();
         stamped.blk_capacity_sectors = capacity;
-        match crate::flowwir_lower::lower_program(&stamped) {
+        match crate::flowwir_lower::lower_program_with(&stamped, &lower_opts) {
             Ok(p) => flow_fns.extend(p.fns),
             Err(_) => return Ok(None),
         }

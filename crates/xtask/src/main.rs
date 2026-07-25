@@ -5987,16 +5987,14 @@ fn build_runtime_test_image(
     // plans/M9.md item II: fold imported instantiations under the
     // importer's alias spelling — same call `--stage=asm` already makes.
     layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
-    let mwir_program = lower::lower_program_with(
-        program,
-        &lower::LowerOpts {
-            // plans/M9.md item H2: production lower keeps comptime `@test`
-            // out of the image (02 §12.2); this oracle boots those same
-            // bodies as guest code to compare tiers, so it opts back in.
-            emit_comptime_tests: true,
-        },
-    )
-    .map_err(|e| e.message)?;
+    let lower_opts = lower::LowerOpts {
+        // plans/M9.md item H2: production lower keeps comptime `@test`
+        // out of the image (02 §12.2); this oracle boots those same
+        // bodies as guest code to compare tiers, so it opts back in.
+        emit_comptime_tests: true,
+        only: None,
+    };
+    let mwir_program = lower::lower_program_with(program, &lower_opts).map_err(|e| e.message)?;
     // plans/M6.md item F: the same full pipeline `bin/wrela.rs::test_cmd`
     // runs, not the sync-only shortcut this fn used through item E — the
     // determinism/replay lanes now build a real actor+group image
@@ -6005,8 +6003,8 @@ fn build_runtime_test_image(
     // async test flows through it byte-identically (empty graph, empty
     // flow program), which is what keeps `boot-hello`'s own recorded
     // choice log and `bench guest`'s exact counts unmoved.
-    let flow_program =
-        wrela_compiler::flowwir_lower::lower_program(program).map_err(|e| e.message)?;
+    let flow_program = wrela_compiler::flowwir_lower::lower_program_with(program, &lower_opts)
+        .map_err(|e| e.message)?;
     let graph = match &program.image_fn {
         Some(fn_name) => {
             wrela_compiler::eval::interp::eval_image(program, fn_name).map_err(|e| {

@@ -1,0 +1,25 @@
+module app.main
+
+# plans/M9.md item H3: imports used / never_called_a / never_called_b;
+# only `used` is called from a guest root. asm pins `used` present and
+# the two uncalled names absent.
+from lib.helpers import used, never_called_a, never_called_b
+
+@actor
+pub struct Store:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn bump(mut self) -> u32:
+        self.n = used(self.n)
+        return self.n
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-reachable-only", target=Target.wrela_machine_v1)
+    a = img.actor(Store, mailbox=8)
+    img.supervise(children=[a], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

@@ -3229,7 +3229,9 @@ mod tests {
                     is_async: false,
                     is_task: false,
                     is_layout_assert: false,
+                    is_pub: false,
                 }),
+                is_actor: true,
                 ..TypedStruct::default()
             },
         );

@@ -1,0 +1,10 @@
+Module path=app.main
+  Struct Store resource
+    field n: u32
+    init(mut self) -> unit
+    fn bump(mut self) -> u32
+  Fn build() -> Image
+Module path=lib.helpers
+  Fn used(x: read u32) -> u32
+  Fn never_called_a(x: read u32) -> u32
+  Fn never_called_b(x: read u32) -> u32

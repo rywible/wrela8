@@ -1331,6 +1331,7 @@ pub(crate) fn check_top_fn(
         is_async: f.is_async,
         is_task: false,
         is_layout_assert: is_layout_assert_fn(f),
+        is_pub: f.is_pub,
     }))
 }
 
@@ -1423,6 +1424,7 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
             is_async: f.is_async,
             is_task: fd.is_task,
             is_layout_assert: false,
+            is_pub: f.is_pub,
         };
         if f.receiver.is_some() {
             methods.insert(f.name.clone(), tf);
@@ -1568,6 +1570,7 @@ pub(crate) fn check_struct_members(
                     is_async: f.is_async,
                     is_task: fd.is_task,
                     is_layout_assert: false,
+                    is_pub: f.is_pub,
                 };
                 if f.receiver.is_some() {
                     methods.insert(f.name.clone(), tf);
@@ -1588,6 +1591,7 @@ pub(crate) fn check_struct_members(
                     is_async: false,
                     is_task: false,
                     is_layout_assert: false,
+                    is_pub: false,
                 });
             }
             _ => {}
@@ -1602,6 +1606,8 @@ pub(crate) fn check_struct_members(
         methods,
         assoc_fns,
         init,
+        is_actor: info.decl.is_actor,
+        is_driver: info.decl.is_driver,
     })
 }
 

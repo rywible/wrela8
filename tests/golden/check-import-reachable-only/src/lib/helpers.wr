@@ -1,0 +1,11 @@
+module lib.helpers
+
+# plans/M9.md item H3: only call-graph-reachable imports emit.
+pub fn used(x: u32) -> u32:
+    return x + 1
+
+pub fn never_called_a(x: u32) -> u32:
+    return x + 2
+
+pub fn never_called_b(x: u32) -> u32:
+    return x + 3

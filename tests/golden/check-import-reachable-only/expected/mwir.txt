@@ -1,0 +1,29 @@
+Program
+  Fn key=Store.bump ret=u32 temps=4 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Call key=used dst=t2 args=[t1]
+      0002: SetField base=t0 index=0 value=t2
+      0003: Project dst=t3 base=t0 index=0
+      0004: Return value=t3
+      0005: Return
+  Fn key=Store.init ret=unit temps=2 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=u32
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=0
+      0001: SetField base=t0 index=0 value=t1
+      0002: Return
+  Fn key=used ret=u32 temps=3 params=[t0]
+    Temp t0 ty=u32
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=1
+      0001: ArithChecked op=+ ty=u32 dst=t2 lhs=t0 rhs=t1 abort="arithmetic overflow in `+`"
+      0002: Return value=t2
+      0003: Return
