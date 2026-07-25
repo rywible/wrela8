@@ -4630,7 +4630,94 @@ fn repro() -> Result<(), String> {
     repro_deadline_cancel_replay_is_clock_log_driven(&vmm)?;
     repro_blk_completion_replay(&vmm)?;
     repro_cross_core_admission_replay(&vmm)?;
+    repro_cross_core_mailbox_depth_admissions(&vmm)?;
     repro_replay_exit_code_contract(&vmm)
+}
+
+/// plans/M8.md item H Target C: the depth-1 mailbox under three cores
+/// records both eventual admissions (Near then Far). Back-pressure is
+/// not itself a choice entry — under the baton it is deterministic — but
+/// the choice sequence must still name both messages once they admit, or
+/// a drain that dropped the held message would look identical to one that
+/// held it until the transcript assert (`total == 11`) fired.
+fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
+    const CASE: &str = "boot-cross-core-mailbox-depth";
+    let (img_bytes, report_text) = golden_test_image(CASE)?;
+    let tmp_dir = root().join("target/repro-mailbox-depth-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE}'s recording boot failed (exit {record_exit}):\n{}{}",
+            String::from_utf8_lossy(&record_out.stdout),
+            String::from_utf8_lossy(&record_out.stderr)
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    let admissions: Vec<&str> = record_text
+        .lines()
+        .filter_map(|l| l.split_once("]=").map(|(_, rhs)| rhs))
+        .filter(|rhs| rhs.starts_with("Admission "))
+        .collect();
+    // Far is messaged first (kick), Near second (go); Sink admits Near
+    // (core0) first then Far (core2) — and both must appear, or the held
+    // message was dropped rather than back-pressured.
+    let expected = [
+        "Admission mailbox=Far sender=core0",
+        "Admission mailbox=Sink sender=core0",
+        "Admission mailbox=Sink sender=core2",
+        // root's final `await sink.total()` — also cross-core into Sink.
+        "Admission mailbox=Sink sender=core0",
+    ];
+    if admissions != expected {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE} recorded {:?}, expected {:?} — Sink must admit Near (core0), then \
+             Far's held +10 (core2), then the root's total() read (core0); omitting Sink/core2 \
+             would mean the drain dropped the back-pressured message",
+            admissions, expected
+        ));
+    }
+    let replay_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if replay_exit != record_exit {
+        return Err(format!(
+            "repro: {CASE} replayed with exit {replay_exit}, expected {record_exit}:\n{}",
+            String::from_utf8_lossy(&replay_out.stderr)
+        ));
+    }
+    println!(
+        "repro: tests/golden/{CASE}'s depth-1 mailbox under three cores records both eventual \
+         Sink admissions (core0 then core2) and replays clean — back-pressure holds, it does \
+         not drop, and the choice sequence names both"
+    );
+    Ok(())
 }
 
 /// plans/M8.md item C3, decision 42 (and the milestone's own exit
