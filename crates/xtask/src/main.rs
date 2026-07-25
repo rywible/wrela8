@@ -5987,7 +5987,16 @@ fn build_runtime_test_image(
     // plans/M9.md item II: fold imported instantiations under the
     // importer's alias spelling — same call `--stage=asm` already makes.
     layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
-    let mwir_program = lower::lower_program(program).map_err(|e| e.message)?;
+    let mwir_program = lower::lower_program_with(
+        program,
+        &lower::LowerOpts {
+            // plans/M9.md item H2: production lower keeps comptime `@test`
+            // out of the image (02 §12.2); this oracle boots those same
+            // bodies as guest code to compare tiers, so it opts back in.
+            emit_comptime_tests: true,
+        },
+    )
+    .map_err(|e| e.message)?;
     // plans/M6.md item F: the same full pipeline `bin/wrela.rs::test_cmd`
     // runs, not the sync-only shortcut this fn used through item E — the
     // determinism/replay lanes now build a real actor+group image

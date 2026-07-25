@@ -198,39 +198,3 @@ Program
       0041: Jump target=0043
       0042: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
       0043: Return
-  Fn key=test_deriving_from_converts ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=1000
-      0001: ConstInt dst=t1 ty=u32 value=1000
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="`?` must apply WrapError.from to LoadError.Bad(0)"
-      0006: Return
-  Fn key=test_generated_from_callable ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=2505
-      0001: ConstInt dst=t1 ty=u32 value=2505
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="generated enum from must be callable directly"
-      0006: Return
-  Fn key=test_ok_path_unchanged ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=7
-      0001: ConstInt dst=t1 ty=u32 value=7
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="Ok path must not convert"
-      0006: Return

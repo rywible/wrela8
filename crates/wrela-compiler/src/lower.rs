@@ -20,7 +20,11 @@
 //! existing `CalleeKey` at a call site, never re-derive one for a
 //! declaration). The program's own `@image` fn (`program.image_fn`, if
 //! any) is skipped entirely — plans/M5.md decision 2: "an `@image` fn is
-//! never lowered, it already ran at comptime".
+//! never lowered, it already ran at comptime". plans/M9.md item H2:
+//! `@layout_assert` and comptime-legal bare `@test` are likewise
+//! host-only (02 §12.1 / §12.2) and skipped by default;
+//! `LowerOpts::emit_comptime_tests` opts the latter back in for
+//! `diff-eval`'s evaluator-vs-backend comparison only.
 //!
 //! A `FnBuilder` (below) owns one fn's own growing `temp_types`/`body`;
 //! `Lowerer` owns the one whole-program fact that outlives any single
@@ -173,8 +177,9 @@ use crate::mwir::{self, Inst, MwirFn, MwirProgram, Temp};
 use crate::sema::bodies::{self, InstKind};
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedInstantiation,
-    TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind, TypedStruct,
+    CalleeKey, TestKind, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
+    TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
+    TypedStruct,
 };
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{self, AccessMode, BinOp};
@@ -214,6 +219,29 @@ impl LowerError {
 }
 
 type LEnv = Vec<BTreeMap<String, Temp>>;
+
+/// Options for `lower_program_with` (plans/M9.md item H2). Default is
+/// production: host-only fns stay out of MWIR.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LowerOpts {
+    /// When true, emit `TestKind::Comptime` fns as guest code. Only
+    /// `diff-eval` sets this — 02 §12.2 says a comptime-legal bare
+    /// `@test` runs in the build evaluator, but the evaluator-vs-backend
+    /// oracle boots those same bodies as guest code to compare tiers.
+    /// Production `wrela build` / `wrela test` / dump stages leave this
+    /// false.
+    pub emit_comptime_tests: bool,
+}
+
+fn is_host_only_comptime_test(program: &TypedProgram, name: &str, opts: &LowerOpts) -> bool {
+    if opts.emit_comptime_tests {
+        return false;
+    }
+    program
+        .tests
+        .iter()
+        .any(|t| t.name == name && t.kind == TestKind::Comptime)
+}
 
 fn env_lookup(env: &LEnv, name: &str) -> Option<Temp> {
     for scope in env.iter().rev() {
@@ -461,6 +489,16 @@ fn lower_untrusted_checked_le(
 }
 
 pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> {
+    lower_program_with(program, &LowerOpts::default())
+}
+
+/// Like `lower_program`, with an explicit opt-in for emitting
+/// comptime-legal bare `@test` bodies (plans/M9.md item H2 /
+/// `LowerOpts::emit_comptime_tests`).
+pub fn lower_program_with(
+    program: &TypedProgram,
+    opts: &LowerOpts,
+) -> Result<MwirProgram, LowerError> {
     let mut lw = Lowerer {
         prog: program,
         rodata: Vec::new(),
@@ -488,6 +526,11 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
         // plans/M9.md item H2: `@layout_assert` is host-only (02 §12.1) —
         // runs after layout in `eval::layout_assert`, never guest code.
         if f.is_layout_assert {
+            continue;
+        }
+        // plans/M9.md item H2: comptime-legal bare `@test` is host-only
+        // (02 §12.2) unless `diff-eval` opts back in.
+        if is_host_only_comptime_test(program, name, opts) {
             continue;
         }
         let mf = lower_fn(f, None, &mut lw)?;
@@ -526,7 +569,11 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     // `merge_mwir_programs` last-wins — that collision is already
     // disclosed there.
     for (name, f) in &program.imported.fns {
-        if f.is_async || f.is_layout_assert || fns.contains_key(name) {
+        if f.is_async
+            || f.is_layout_assert
+            || is_host_only_comptime_test(program, name, opts)
+            || fns.contains_key(name)
+        {
             continue;
         }
         let mf = lower_fn(f, None, &mut lw)?;

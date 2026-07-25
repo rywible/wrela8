@@ -99,66 +99,6 @@ Program
       0004: Call key=Cell.value dst=t4 args=[t1]
       0005: Return value=t4
       0006: Return
-  Fn key=t_assoc ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=0
-      0001: ConstInt dst=t1 ty=u32 value=0
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="associated fn resolves"
-      0006: Return
-  Fn key=t_mut ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=11
-      0001: ConstInt dst=t1 ty=u32 value=11
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="mut-self method resolves"
-      0006: Return
-  Fn key=t_read ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=1
-      0001: ConstInt dst=t1 ty=u32 value=1
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="read-self method resolves"
-      0006: Return
-  Fn key=t_settled ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=217
-      0001: ConstInt dst=t1 ty=u32 value=217
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="all four under one settle"
-      0006: Return
-  Fn key=t_take ret=unit temps=3
-    Temp t0 ty=u32
-    Temp t1 ty=u32
-    Temp t2 ty=bool
-    Body
-      0000: ConstInt dst=t0 ty=u32 value=7
-      0001: ConstInt dst=t1 ty=u32 value=7
-      0002: Compare op=== ty=u32 dst=t2 lhs=t0 rhs=t1
-      0003: JumpIfFalse cond=t2 target=0005
-      0004: Jump target=0006
-      0005: AssertFail message="take-self method resolves"
-      0006: Return
   Fn key=take_path ret=u32 temps=4
     Temp t0 ty=u32
     Temp t1 ty=Cell
