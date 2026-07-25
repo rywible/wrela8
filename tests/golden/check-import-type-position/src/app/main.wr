@@ -1,0 +1,35 @@
+module app.main
+
+from app.shapes import Pair
+from app.shapes import Color
+from app.shapes import Box
+from app.shapes import Token as Ticket
+
+pub const NO_PAIR: Option[Pair] = None
+
+pub struct Holder:
+    p: Pair
+    c: Color
+    boxed: Box[u32]
+    maybe: Option[Pair]
+    pairs: [Pair; 2]
+
+pub struct HoldsTicket:
+    t: Ticket
+
+pub fn take_pair(p: Pair) -> Pair:
+    q: Pair = p
+    return q
+
+pub fn colored() -> Color:
+    c: Color = Color.Red
+    return c
+
+pub fn wrapped(o: Option[Pair]) -> Result[Pair, Color]:
+    b: Box[u32] = Box[u32](v = 1)
+    _v: u32 = b.v
+    match o:
+        case .Some(p):
+            return Ok(p)
+        case .None:
+            return Err(Color.Green)

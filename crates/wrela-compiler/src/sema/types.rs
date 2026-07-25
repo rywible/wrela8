@@ -287,8 +287,14 @@ pub(crate) enum GenericKind {
 /// raw AST so forward references (a field naming a struct declared later
 /// in the file) resolve exactly like backward ones — `collect` (item A)
 /// already guarantees every module-scope name is unique.
-fn build_shapes(module: &Module) -> BTreeMap<String, usize> {
-    let mut shapes = BTreeMap::new();
+fn build_shapes(module: &Module, imported: &ImportedTypes) -> BTreeMap<String, usize> {
+    // plans/M9.md item A1, decision 8: the imported names go in *first*,
+    // so a local declaration always wins a spelling contest. It can never
+    // actually come to that — `imports::resolve_imports` already rejects
+    // an import that "collides with a local declaration" — but the table
+    // is the type namespace, and the type namespace does not get to have
+    // two answers for one name.
+    let mut shapes: BTreeMap<String, usize> = imported.clone();
     for item in &module.items {
         match item {
             Item::Struct(s) => {
@@ -324,7 +330,38 @@ fn module_pool_names(module: &Module) -> BTreeSet<String> {
 /// classification (which needs every item's fields already resolved,
 /// forward references included) even runs.
 pub fn declare(module: &Module) -> Result<Vec<DeclItem>, SemaError> {
-    let shapes = build_shapes(module);
+    declare_with_imports(module, &ImportedTypes::new())
+}
+
+/// Local (possibly aliased) type name -> that declaration's own
+/// generic-parameter count, for every `struct`/`enum` a module imports
+/// (plans/M9.md item A1, decision 8). Built by
+/// `imports::imported_type_shapes` off raw AST, so it is available before
+/// any module's `declare` has run and import cycles stay free.
+pub type ImportedTypes = BTreeMap<String, usize>;
+
+/// `declare` for a module that is part of a build closure: identical in
+/// every respect except that `imported`'s names join the module's own
+/// type-name table, which is the whole of "an imported `struct`/`enum`
+/// name is legal wherever a type is legal" (plans/M9.md item A1) — fn
+/// parameter, fn return, struct field, `const` type, `let` annotation
+/// (through `bodies::ModuleCtx::resolve_type`, whose own table is built
+/// from this same input) and generic argument all resolve through the one
+/// `resolve_named` below, so there is exactly one place to teach.
+///
+/// What this deliberately does *not* do is give the imported name a
+/// classification: `classify_all` below is module-local and answers
+/// `Data` for any name it cannot see, so a local struct holding a field
+/// of an imported `resource`/`@actor` type would be misclassified here.
+/// `classify_closure` (decision 10) recomputes every module's
+/// classification over the whole closure afterwards, and
+/// `sema::check_program_typed` runs it before any consumer of a
+/// `DeclStruct`/`DeclEnum` exists.
+pub fn declare_with_imports(
+    module: &Module,
+    imported: &ImportedTypes,
+) -> Result<Vec<DeclItem>, SemaError> {
+    let shapes = build_shapes(module, imported);
     let module_pools = module_pool_names(module);
     let mut items = Vec::new();
     for item in &module.items {
@@ -3942,82 +3979,184 @@ fn resolve_type_arg(
 // caught here (that needs item H's monomorphization; its own depth cap
 // is where that class of cycle is meant to be rejected).
 
+/// One classifiable declaration, borrowed out of a `DeclItem` — the only
+/// three facts classification reads. Extracting them means the one
+/// classification algorithm below runs over a single module and over a
+/// whole build closure without being written twice (plans/M9.md item A1,
+/// decision 10).
+struct ClassifyNode<'a> {
+    is_resource_fiat: bool,
+    component_types: &'a [(Type, Span)],
+    span: Span,
+}
+
+/// Module address -> that module's classifiable declarations, in source
+/// order. The single-module caller uses one entry under the empty key.
+type ClassifyTables<'a> = BTreeMap<Vec<String>, Vec<(String, ClassifyNode<'a>)>>;
+
+/// Module address -> local type name -> `(exporting module, exported
+/// name)`, for every `struct`/`enum` that module imports
+/// (`imports::imported_type_targets`). Empty for a single-module build.
+pub type ImportedTypeTargets = BTreeMap<Vec<String>, BTreeMap<String, (Vec<String>, String)>>;
+
+fn classify_nodes(items: &[DeclItem]) -> Vec<(String, ClassifyNode<'_>)> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            DeclItem::Struct(s) => out.push((
+                s.name.clone(),
+                ClassifyNode {
+                    is_resource_fiat: s.is_resource_fiat,
+                    component_types: &s.component_types,
+                    span: s.span,
+                },
+            )),
+            DeclItem::Enum(e) => out.push((
+                e.name.clone(),
+                ClassifyNode {
+                    // An enum is never a resource by fiat (02-language.md
+                    // §3): only its payloads can make it one.
+                    is_resource_fiat: false,
+                    component_types: &e.component_types,
+                    span: e.span,
+                },
+            )),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The whole answer, keyed `(module address, type name)`.
+type ClassifyMemo = BTreeMap<(Vec<String>, String), Classification>;
+
+/// Runs the classification over `tables`, visiting modules in BTree order
+/// and declarations in source order within each — the same fail-fast,
+/// deterministic discipline every other whole-program pass uses.
+fn classify_core(
+    tables: &ClassifyTables<'_>,
+    imports: &ImportedTypeTargets,
+) -> Result<ClassifyMemo, SemaError> {
+    let mut memo = ClassifyMemo::new();
+    let mut in_progress = BTreeSet::new();
+    for (mkey, nodes) in tables {
+        for (name, node) in nodes {
+            classify_named(
+                mkey,
+                name,
+                node.span,
+                tables,
+                imports,
+                &mut memo,
+                &mut in_progress,
+            )?;
+        }
+    }
+    Ok(memo)
+}
+
+fn write_back(items: &mut [DeclItem], mkey: &[String], memo: &ClassifyMemo) {
+    for item in items.iter_mut() {
+        match item {
+            DeclItem::Struct(s) => {
+                s.classification = memo[&(mkey.to_vec(), s.name.clone())];
+            }
+            DeclItem::Enum(e) => {
+                e.classification = memo[&(mkey.to_vec(), e.name.clone())];
+            }
+            _ => {}
+        }
+    }
+}
+
 fn classify_all(items: &mut [DeclItem]) -> Result<(), SemaError> {
-    let mut order = Vec::new();
-    {
-        let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
-        let mut enums: BTreeMap<String, &DeclEnum> = BTreeMap::new();
-        for item in items.iter() {
-            match item {
-                DeclItem::Struct(s) => {
-                    order.push(s.name.clone());
-                    structs.insert(s.name.clone(), s);
-                }
-                DeclItem::Enum(e) => {
-                    order.push(e.name.clone());
-                    enums.insert(e.name.clone(), e);
-                }
-                _ => {}
-            }
-        }
-        let mut memo = BTreeMap::new();
-        let mut in_progress = BTreeSet::new();
-        for name in &order {
-            let span = structs
-                .get(name)
-                .map(|s| s.span)
-                .or_else(|| enums.get(name).map(|e| e.span))
-                .expect("name came from struct/enum scan above");
-            classify_named(name, span, &structs, &enums, &mut memo, &mut in_progress)?;
-        }
-        for item in items.iter_mut() {
-            match item {
-                DeclItem::Struct(s) => s.classification = memo[&s.name],
-                DeclItem::Enum(e) => e.classification = memo[&e.name],
-                _ => {}
-            }
-        }
+    let key: Vec<String> = Vec::new();
+    let memo = {
+        let tables: ClassifyTables<'_> = BTreeMap::from([(key.clone(), classify_nodes(items))]);
+        classify_core(&tables, &ImportedTypeTargets::new())?
+    };
+    write_back(items, &key, &memo);
+    Ok(())
+}
+
+/// Whole-closure data-vs-resource classification (plans/M9.md item A1,
+/// decision 10). `declare_with_imports` already classified each module on
+/// its own, where a field of an *imported* type is invisible and falls
+/// through to `Data`; this recomputes every module's answer with the whole
+/// closure in view, so a local struct holding a field of an imported
+/// `resource`/`@actor` type is the resource it actually is.
+///
+/// It does not weaken the cycle property `sema::check_program_typed`
+/// documents: every module's own `declare` still completes with nothing
+/// from any other module, and this pass — like the splice — runs
+/// afterwards, over output that already exists regardless of which module
+/// imports which. A value cycle that closes *across* modules gets the same
+/// `is infinitely sized (recursive by value)` diagnostic it already gets
+/// within one, because `in_progress` is keyed by `(module, name)` and the
+/// recursion follows imports.
+pub fn classify_closure(
+    items: &mut BTreeMap<Vec<String>, Vec<DeclItem>>,
+    imports: &ImportedTypeTargets,
+) -> Result<(), SemaError> {
+    let memo = {
+        let tables: ClassifyTables<'_> = items
+            .iter()
+            .map(|(k, v)| (k.clone(), classify_nodes(v)))
+            .collect();
+        classify_core(&tables, imports)?
+    };
+    for (mkey, decls) in items.iter_mut() {
+        write_back(decls, mkey, &memo);
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn classify_named(
+    mkey: &[String],
     name: &str,
     call_span: Span,
-    structs: &BTreeMap<String, &DeclStruct>,
-    enums: &BTreeMap<String, &DeclEnum>,
-    memo: &mut BTreeMap<String, Classification>,
-    in_progress: &mut BTreeSet<String>,
+    tables: &ClassifyTables<'_>,
+    imports: &ImportedTypeTargets,
+    memo: &mut ClassifyMemo,
+    in_progress: &mut BTreeSet<(Vec<String>, String)>,
 ) -> Result<Classification, SemaError> {
-    if let Some(c) = memo.get(name) {
+    let key = (mkey.to_vec(), name.to_string());
+    if let Some(c) = memo.get(&key) {
         return Ok(*c);
     }
-    if in_progress.contains(name) {
+    if in_progress.contains(&key) {
         return Err(SemaError::at(
             "type",
             format!("`{name}` is infinitely sized (recursive by value)"),
             call_span,
         ));
     }
-    in_progress.insert(name.to_string());
-    let mut resource = false;
-    if let Some(s) = structs.get(name) {
-        resource = s.is_resource_fiat;
-        for (ty, span) in &s.component_types {
-            if classify_type(ty, *span, structs, enums, memo, in_progress)?
+    let local = tables
+        .get(mkey)
+        .and_then(|nodes| nodes.iter().find(|(n, _)| n == name).map(|(_, d)| d));
+    in_progress.insert(key.clone());
+    let resource;
+    if let Some(d) = local {
+        let mut r = d.is_resource_fiat;
+        for (ty, span) in d.component_types {
+            if classify_type(ty, mkey, *span, tables, imports, memo, in_progress)?
                 == Classification::Resource
             {
-                resource = true;
+                r = true;
             }
         }
-    } else if let Some(e) = enums.get(name) {
-        for (ty, span) in &e.component_types {
-            if classify_type(ty, *span, structs, enums, memo, in_progress)?
-                == Classification::Resource
-            {
-                resource = true;
-            }
-        }
+        resource = r;
+    } else if let Some((tmod, tname)) = imports.get(mkey).and_then(|m| m.get(name)) {
+        // plans/M9.md item A1: the name is not declared here, it is
+        // imported. Follow it into the exporting module's own already-built
+        // declarations — the same read-only reuse of another module's
+        // finished output the splice performs, and the reason this pass
+        // cannot live inside `declare`.
+        let c = classify_named(tmod, tname, call_span, tables, imports, memo, in_progress)?;
+        in_progress.remove(&key);
+        memo.insert(key, c);
+        return Ok(c);
     } else if crate::eval::image_checks::is_sealed_authority_type_name(name) {
         // 03-hardware.md §1, its own first words: hardware operations
         // require "unforgeable **resource** values". A capability is a
@@ -4035,8 +4174,8 @@ fn classify_named(
         // transition **consumes** its input state" is precisely the
         // resource rule, and the only reason a transition can consume one
         // is that it is never implicitly copied.
-        in_progress.remove(name);
-        memo.insert(name.to_string(), Classification::Resource);
+        in_progress.remove(&key);
+        memo.insert(key, Classification::Resource);
         return Ok(Classification::Resource);
     } else {
         // Neither a declared struct nor enum: a builtin `Type::Named`
@@ -4049,17 +4188,17 @@ fn classify_named(
         // same `Classification::Data` a genuinely field-less struct
         // would get — not `unreachable!()`, since `resolve_named` (this
         // file) now legitimately produces such a name.
-        in_progress.remove(name);
-        memo.insert(name.to_string(), Classification::Data);
+        in_progress.remove(&key);
+        memo.insert(key, Classification::Data);
         return Ok(Classification::Data);
     }
-    in_progress.remove(name);
+    in_progress.remove(&key);
     let result = if resource {
         Classification::Resource
     } else {
         Classification::Data
     };
-    memo.insert(name.to_string(), result);
+    memo.insert(key, result);
     Ok(result)
 }
 
@@ -4128,20 +4267,22 @@ pub(crate) fn resource_propagates(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn classify_type(
     ty: &Type,
+    mkey: &[String],
     span: Span,
-    structs: &BTreeMap<String, &DeclStruct>,
-    enums: &BTreeMap<String, &DeclEnum>,
-    memo: &mut BTreeMap<String, Classification>,
-    in_progress: &mut BTreeSet<String>,
+    tables: &ClassifyTables<'_>,
+    imports: &ImportedTypeTargets,
+    memo: &mut ClassifyMemo,
+    in_progress: &mut BTreeSet<(Vec<String>, String)>,
 ) -> Result<Classification, SemaError> {
     let mut error: Option<SemaError> = None;
     let is_resource = resource_propagates(ty, &mut |name, _args| {
         if error.is_some() {
             return false;
         }
-        match classify_named(name, span, structs, enums, memo, in_progress) {
+        match classify_named(mkey, name, span, tables, imports, memo, in_progress) {
             Ok(c) => c == Classification::Resource,
             Err(e) => {
                 error = Some(e);

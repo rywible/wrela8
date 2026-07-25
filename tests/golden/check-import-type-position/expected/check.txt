@@ -1,0 +1,24 @@
+Module path=app.main
+  Const NO_PAIR: Option[Pair]
+  Struct Holder data
+    field p: Pair
+    field c: Color
+    field boxed: Box[u32]
+    field maybe: Option[Pair]
+    field pairs: [Pair; 2]
+  Struct HoldsTicket resource
+    field t: Ticket
+  Fn take_pair(p: read Pair) -> Pair
+  Fn colored() -> Color
+  Fn wrapped(o: read Option[Pair]) -> Result[Pair, Color]
+Module path=app.shapes
+  Struct Pair data
+    field a: u32
+    field b: u32
+  Enum Color data
+    variant Red
+    variant Green
+  Struct Box[T] data
+    field v: T
+  Struct Token resource
+    field id: u32

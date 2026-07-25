@@ -7603,7 +7603,8 @@ mod tests {
         let module = parser::parse(tokens).expect("test source must parse");
         let typed = sema::check_typed(&module, "<test>").expect("test source must check");
         let mwir_program = crate::lower::lower_program(&typed).expect("test source must lower");
-        let layout = mwir::build_layout_ctx(&module).expect("test source must build a layout ctx");
+        let layout = mwir::build_layout_ctx(&module, &Default::default())
+            .expect("test source must build a layout ctx");
         (mwir_program, layout)
     }
 

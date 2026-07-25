@@ -844,11 +844,12 @@ pub struct LayoutCtx {
 /// generic-instantiation gap above).
 pub fn build_layout_ctx(
     module: &crate::syntax::ast::Module,
+    imported: &types::ImportedTypes,
 ) -> Result<LayoutCtx, crate::sema::SemaError> {
     use crate::sema::types::{DeclEnum, DeclItem, DeclMember, DeclStruct, DeclVariantPayload};
 
     let specialized = crate::sema::specialize::specialize(module)?;
-    let items = types::declare(&specialized)?;
+    let items = types::declare_with_imports(&specialized, imported)?;
     let mut ctx = LayoutCtx::default();
     for item in items {
         match item {

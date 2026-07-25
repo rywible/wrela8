@@ -1,0 +1,8 @@
+Module path=a
+  Struct Ay data
+    field n: u32
+  Fn use_bee(x: read Bee) -> u32
+Module path=b
+  Struct Bee data
+    field m: u32
+  Fn use_ay(x: read Ay) -> u32

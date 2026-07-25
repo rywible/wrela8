@@ -2539,7 +2539,7 @@ fn run_lower_pipeline_once(input: &str) -> LowerFuzzOutcome {
         Ok(p) => p,
     };
     let mwir_dump = mwir::dump(&mwir_program);
-    let layout_ctx = match mwir::build_layout_ctx(&module) {
+    let layout_ctx = match mwir::build_layout_ctx(&module, &Default::default()) {
         Err(e) => {
             return LowerFuzzOutcome::Bug(format!(
                 "mwir::build_layout_ctx failed after check_typed already accepted this program: \

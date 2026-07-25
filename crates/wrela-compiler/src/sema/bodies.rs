@@ -274,8 +274,19 @@ impl ModuleCtx {
 /// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
 /// rebuilds its own `ModuleCtx` the same dumb, no-state-threaded way
 /// every other pass does (mirrors `mod.rs::dump` re-running `declare`).
-pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) -> ModuleCtx {
-    let mut shapes = BTreeMap::new();
+///
+/// `imported` (plans/M9.md item A1) is the same imported-type arity table
+/// `types::declare_with_imports` was given — `shapes` below *is* the
+/// type-annotation arity table `ModuleCtx::resolve_type` reads, so
+/// without it a `let x: ImportedType = ...` annotation inside a body
+/// would still fail with `unknown type` after the signature positions had
+/// been fixed. One table, one answer, both passes.
+pub(crate) fn build_module_ctx(
+    module: &Module,
+    decl_items: &[types::DeclItem],
+    imported: &types::ImportedTypes,
+) -> ModuleCtx {
+    let mut shapes: BTreeMap<String, usize> = imported.clone();
     let mut module_pools = BTreeSet::new();
     let mut structs = BTreeMap::new();
     let mut enums = BTreeMap::new();

@@ -1,0 +1,15 @@
+module app.shapes
+
+pub struct Pair:
+    a: u32
+    b: u32
+
+pub enum Color:
+    Red
+    Green
+
+pub struct Box[T]:
+    v: T
+
+pub resource struct Token:
+    id: u32

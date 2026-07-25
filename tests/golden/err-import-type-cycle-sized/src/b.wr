@@ -1,0 +1,6 @@
+module b
+
+from a import Ay
+
+pub struct Bee:
+    a: Ay

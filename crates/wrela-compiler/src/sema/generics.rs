@@ -1211,7 +1211,7 @@ mod tests {
         let tokens = lexer::lex(src).expect("test source must lex");
         let module = parser::parse(tokens).expect("test source must parse");
         let decl_items = types::declare(&module).expect("test source must declare");
-        bodies::build_module_ctx(&module, &decl_items)
+        bodies::build_module_ctx(&module, &decl_items, &types::ImportedTypes::new())
     }
 
     const SRC: &str = "module examples.const_eval

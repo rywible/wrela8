@@ -728,7 +728,10 @@ fn dump(args: &[String]) -> ExitCode {
                             Ok(mwir_program) => {
                                 match wrela_compiler::flowwir_lower::lower_program(&program) {
                                     Ok(flow_program) => {
-                                        match wrela_compiler::mwir::build_layout_ctx(&module) {
+                                        match wrela_compiler::mwir::build_layout_ctx(
+                                            &module,
+                                            &Default::default(),
+                                        ) {
                                             Ok(layout) => {
                                                 let modules: BTreeMap<String, Module> =
                                                     BTreeMap::from([(

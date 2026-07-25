@@ -1,0 +1,1 @@
+error[name]: `Hidden` in module `app.shapes` is not `pub` at 3:24

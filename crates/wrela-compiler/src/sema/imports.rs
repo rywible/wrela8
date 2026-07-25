@@ -85,6 +85,110 @@ pub fn public_names(module: &Module) -> BTreeSet<String> {
     out
 }
 
+/// Every `struct`/`enum` a module declares, name -> its own
+/// generic-parameter *count* — read straight off raw AST, so it needs
+/// nothing from any module's `types::declare` (plans/M9.md item A1,
+/// decision 8). That is exactly what keeps import cycles free: a
+/// module's arity table is available to every other module before any
+/// module's `declare` has run, so no module's declaration pass ever
+/// waits on another's (`sema::check_program_typed`'s splice note is the
+/// property being preserved).
+///
+/// Call it on an **already-specialized** module (decision 11). A
+/// `struct`/`enum` declared inside a module-level `comptime if` exists
+/// only after `specialize`, and every caller — `sema::check_program_typed`,
+/// `sema::dump_program`, `layout::closure_imported_types` — specializes
+/// first, so no two passes can disagree about which type names exist.
+pub fn declared_type_shapes(module: &Module) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for item in &module.items {
+        match item {
+            Item::Struct(s) => {
+                out.insert(s.name.clone(), s.generics.len());
+            }
+            Item::Enum(e) => {
+                out.insert(e.name.clone(), e.generics.len());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `declared_type_shapes` for every module in a build closure, keyed by
+/// **module address** exactly like `Exports` above — the loader's own key,
+/// not the module's declared `path`. The two differ for a toolchain
+/// module: `stdlib/tiny.wr` says `module tiny` and is addressed
+/// `["core", "tiny"]`, which is the spelling `import.path` carries.
+pub fn closure_type_shapes(
+    modules: &[(Vec<String>, &Module)],
+) -> BTreeMap<Vec<String>, BTreeMap<String, usize>> {
+    modules
+        .iter()
+        .map(|(key, m)| (key.clone(), declared_type_shapes(m)))
+        .collect()
+}
+
+/// The type-name half of `module`'s own import list: local (possibly
+/// aliased) name -> the exporting declaration's generic-parameter count
+/// (plans/M9.md item A1). `types::declare` merges this straight into its
+/// own module-local arity table, which is the whole of "an imported
+/// `struct`/`enum` name is legal wherever a type is legal".
+///
+/// Read off raw AST on both sides — this module's `import` statements and
+/// the exporting module's `struct`/`enum` headers — for the cycle reason
+/// in `declared_type_shapes` above. An imported name that is not a type
+/// (a `const`, a `fn`) simply does not appear here, so writing it in type
+/// position keeps `error[type]: unknown type`, identical to the local
+/// case. Every *validity* question about the import itself — the name
+/// exists, it is `pub`, it does not collide, it does not alias a sealed
+/// authority type — is `resolve_imports` below, which has already run and
+/// failed fast by the time any caller of this reads the table.
+pub fn imported_type_shapes(
+    module: &Module,
+    closure: &BTreeMap<Vec<String>, BTreeMap<String, usize>>,
+) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for import in &module.imports {
+        let Some(shapes) = closure.get(&import.path) else {
+            continue;
+        };
+        for name in &import.names {
+            let Some(arity) = shapes.get(&name.name) else {
+                continue;
+            };
+            let local = name.alias.clone().unwrap_or_else(|| name.name.clone());
+            out.insert(local, *arity);
+        }
+    }
+    out
+}
+
+/// The same table as `imported_type_shapes`, but carrying *where* each
+/// imported type is declared instead of its arity — the input
+/// `types::classify_closure` needs to follow a local struct's field of
+/// imported type into the exporting module's own declarations
+/// (plans/M9.md item A1, decision 10).
+pub fn imported_type_targets(
+    module: &Module,
+    closure: &BTreeMap<Vec<String>, BTreeMap<String, usize>>,
+) -> BTreeMap<String, (Vec<String>, String)> {
+    let mut out = BTreeMap::new();
+    for import in &module.imports {
+        let Some(shapes) = closure.get(&import.path) else {
+            continue;
+        };
+        for name in &import.names {
+            if !shapes.contains_key(&name.name) {
+                continue;
+            }
+            let local = name.alias.clone().unwrap_or_else(|| name.name.clone());
+            out.insert(local, (import.path.clone(), name.name.clone()));
+        }
+    }
+    out
+}
+
 /// Builds `module`'s own import bindings against the whole-program
 /// `exports` table (`local` is this same module's own `symbols::collect`
 /// table, needed only for the local-collision check below) — source

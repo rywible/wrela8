@@ -2475,12 +2475,14 @@ fn verify_device_windows(sections: &[Section], regs: &[DeviceRegs]) -> Result<()
 fn closure_decl_items(
     modules: &BTreeMap<String, Module>,
 ) -> Result<Vec<crate::sema::types::DeclItem>, LayoutError> {
+    let imported = closure_imported_types(modules)
+        .map_err(|e| LayoutError::new(format!("device register windows: {}", e.message)))?;
     let mut out = Vec::new();
-    for module in modules.values() {
+    for (addr, module) in modules {
         let specialized = crate::sema::specialize::specialize(module)
             .map_err(|e| LayoutError::new(format!("device register windows: {}", e.message)))?;
         out.extend(
-            crate::sema::types::declare(&specialized)
+            crate::sema::types::declare_with_imports(&specialized, &imported[addr])
                 .map_err(|e| LayoutError::new(format!("device register windows: {}", e.message)))?,
         );
     }
@@ -3166,6 +3168,45 @@ pub fn layout_program(
 
 // --- whole-program orchestration (lower -> codegen -> layout) ------------
 
+/// plans/M9.md item A1: the build closure's imported-type arity table,
+/// per module, keyed the dotted-address way this file's closures are.
+/// Every re-derivation of `sema::types::declare` below needs it for the
+/// same reason `sema::check_program_typed` does — a signature naming an
+/// imported `struct`/`enum` no longer fails to resolve, so re-running
+/// `declare` without the table would reintroduce exactly the
+/// `unknown type` this item removed, one layer down and as a
+/// `LayoutError` instead of a diagnostic.
+///
+/// Built over **specialized** modules, exactly as `sema::check_program_typed`
+/// builds it (decision 11): a `struct`/`enum` declared inside a module-level
+/// `comptime if` only exists once `specialize` has run, so a raw-AST table
+/// here would list fewer type names than sema's did and this file would
+/// reject a program the checker accepted. `specialize` is pure, and every
+/// loop below already re-runs it per module — this file's own established
+/// "recompute rather than thread extra state" convention.
+fn closure_imported_types(
+    modules: &BTreeMap<String, Module>,
+) -> Result<BTreeMap<String, crate::sema::types::ImportedTypes>, SemaError> {
+    let mut specialized: BTreeMap<String, Module> = BTreeMap::new();
+    for (addr, m) in modules {
+        specialized.insert(addr.clone(), crate::sema::specialize::specialize(m)?);
+    }
+    let by_addr: Vec<(Vec<String>, &Module)> = specialized
+        .iter()
+        .map(|(addr, m)| (addr.split('.').map(str::to_string).collect(), m))
+        .collect();
+    let shapes = crate::sema::imports::closure_type_shapes(&by_addr);
+    Ok(specialized
+        .iter()
+        .map(|(addr, m)| {
+            (
+                addr.clone(),
+                crate::sema::imports::imported_type_shapes(m, &shapes),
+            )
+        })
+        .collect())
+}
+
 /// Merges one `mwir::LayoutCtx` per module in the build closure (project
 /// cases place a spliced-in struct's own field-type declaration in a
 /// *different* file than the one holding `@image` — `mwir::build_layout_ctx`
@@ -3176,9 +3217,10 @@ pub fn layout_program(
 /// goldens exercise — every real case here has module-unique struct/enum
 /// names).
 pub fn merge_layout_ctx(modules: &BTreeMap<String, Module>) -> Result<LayoutCtx, SemaError> {
+    let imported = closure_imported_types(modules)?;
     let mut merged = LayoutCtx::default();
-    for module in modules.values() {
-        let ctx = crate::mwir::build_layout_ctx(module)?;
+    for (addr, module) in modules {
+        let ctx = crate::mwir::build_layout_ctx(module, &imported[addr])?;
         merged.structs.extend(ctx.structs);
         merged.enums.extend(ctx.enums);
         merged.struct_field_names.extend(ctx.struct_field_names);
@@ -3762,11 +3804,13 @@ fn merge_actor_pub_methods(
 ) -> Result<BTreeMap<String, Vec<ActorMethodShape>>, LayoutError> {
     use crate::sema::types::{DeclItem, DeclMember};
 
+    let imported = closure_imported_types(modules)
+        .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
     let mut out: BTreeMap<String, Vec<ActorMethodShape>> = BTreeMap::new();
-    for module in modules.values() {
+    for (addr, module) in modules {
         let specialized = crate::sema::specialize::specialize(module)
             .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
-        let items = crate::sema::types::declare(&specialized)
+        let items = crate::sema::types::declare_with_imports(&specialized, &imported[addr])
             .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
         for item in items {
             let DeclItem::Struct(s) = item else { continue };
@@ -3840,11 +3884,13 @@ fn actor_inits(
 ) -> Result<BTreeMap<String, ActorInit>, LayoutError> {
     use crate::sema::types::{DeclItem, DeclMember};
 
+    let imported = closure_imported_types(modules)
+        .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
     let mut out: BTreeMap<String, ActorInit> = BTreeMap::new();
-    for module in modules.values() {
+    for (addr, module) in modules {
         let specialized = crate::sema::specialize::specialize(module)
             .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
-        let items = crate::sema::types::declare(&specialized)
+        let items = crate::sema::types::declare_with_imports(&specialized, &imported[addr])
             .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
         for item in items {
             let DeclItem::Struct(s) = item else { continue };

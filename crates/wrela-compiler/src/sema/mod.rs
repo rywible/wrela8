@@ -203,7 +203,7 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     // is rejected at the declaration that created it rather than at
     // whichever access happened to be checked first.
     types::check_mmio_claims(&specialized, &decl_items, &layouts)?;
-    let mctx = bodies::build_module_ctx(&specialized, &decl_items);
+    let mctx = bodies::build_module_ctx(&specialized, &decl_items, &types::ImportedTypes::new());
     let mut program = bodies::check(&specialized, &decl_items, &mctx)?;
     program.layouts = layouts;
     access::check(&specialized, &decl_items, &mctx)?;
@@ -273,11 +273,31 @@ pub fn dump_typed(program: &typed::TypedProgram) -> String {
 /// means this dump shows only the selected branch of any `comptime if`
 /// — the golden-visible surface the M3-D task names explicitly.
 pub fn dump(module: &Module) -> String {
+    dump_with_imports(module, &types::ImportedTypes::new(), None)
+}
+
+/// `dump` for one module of a build closure (plans/M9.md item A1):
+/// `imported` is the same imported-type arity table `declare_with_imports`
+/// was given — without it, re-running `declare` here would fail on a
+/// signature naming an imported type, in a function whose contract is
+/// "only called after check returns Ok". `classification` carries
+/// `classify_closure`'s whole-closure answer for this module's own
+/// declarations, so the dump prints the same `data`/`resource` word sema
+/// used rather than the module-local approximation a fresh `declare`
+/// would recompute.
+fn dump_with_imports(
+    module: &Module,
+    imported: &types::ImportedTypes,
+    classification: Option<&[types::DeclItem]>,
+) -> String {
     let specialized =
         specialize::specialize(module).expect("dump is only called after check returns Ok");
-    let decl_items =
-        types::declare(&specialized).expect("dump is only called after check returns Ok");
-    let effects = access::infer_effects(&specialized, &decl_items);
+    let decl_items = match classification {
+        Some(items) => items.to_vec(),
+        None => types::declare_with_imports(&specialized, imported)
+            .expect("dump is only called after check returns Ok"),
+    };
+    let effects = access::infer_effects(&specialized, &decl_items, imported);
     let mut out = format!("Module path={}\n", specialized.path.join("."));
     types::render_items(&decl_items, &effects, &mut out);
     out
@@ -324,16 +344,31 @@ pub fn dump(module: &Module) -> String {
 /// every module's own output already exists regardless of which one
 /// imports which.
 ///
-/// This item's own scope line: an imported `const`/`fn` is fully usable
-/// as a *value* (called, referenced) via the splice above, and an
-/// imported `struct`/`enum` is fully usable as a value too (constructed,
-/// field-accessed) via the same mechanism — but `types::declare`'s own
-/// type-name table stays module-local, so writing an imported
-/// `struct`/`enum` name as an explicit *type annotation* (a fn
-/// param/return, a struct field, a `const`'s own declared type) still
-/// fails with the ordinary `error[type]: unknown type` (a real, narrow,
-/// reported gap: see this module's own report for the full reasoning,
-/// not a silent wrong answer either way).
+/// An imported `const`/`fn` is fully usable as a *value* (called,
+/// referenced) via the splice above, and an imported `struct`/`enum` is
+/// fully usable as a value too (constructed, field-accessed) via the same
+/// mechanism.
+///
+/// plans/M9.md item A1 closes what used to be the matching *type*-position
+/// gap: an imported `struct`/`enum` name is now legal wherever a type is
+/// legal — fn parameter, fn return, struct field, `const` type, `let`
+/// annotation, generic argument — because `imports::imported_type_shapes`
+/// merges the closure's type names into `types::declare`'s own arity table
+/// (and into `bodies::ModuleCtx::shapes`, which is the same table for
+/// bodies). Both halves are read off raw AST, so neither waits on any
+/// module's `declare`, and the cycle property above is untouched.
+/// Data-vs-resource classification, which *does* need another module's
+/// resolved declarations, is therefore not done inside `declare` at all:
+/// `types::classify_closure` recomputes it for the whole closure between
+/// the declare loop and the splice (decision 10).
+///
+/// One shape stays module-local and fails closed rather than approximate:
+/// `Actor[T]`/capability-argument validation still requires `T` to name a
+/// struct declared in the *same* module (`types::validate_actor_handles`,
+/// `validate_capability_types`), so an imported `@actor` struct there is
+/// rejected by the existing named diagnostic — cross-module actor handles
+/// are a milestone question (02-language.md §9.1), not a side effect of a
+/// type-name table.
 ///
 /// Finally, the rest of the existing per-module pipeline —
 /// `bodies::check`/`access::check`/`flow::check`/`matches::check`/
@@ -397,11 +432,34 @@ pub fn check_program_typed(
         bindings.insert(key.clone(), b);
     }
 
+    // plans/M9.md item A1: the closure's type-name arity table, read off
+    // raw AST on both sides (`imports::closure_type_shapes`) so it is
+    // complete before any module's `declare` runs — that is what keeps
+    // this item from needing module A's type table finished before module
+    // B's can be built, i.e. what keeps import cycles free.
+    let closure_shapes = imports::closure_type_shapes(
+        &specialized
+            .iter()
+            .map(|(k, m)| (k.clone(), m))
+            .collect::<Vec<_>>(),
+    );
+    let mut imported_types: BTreeMap<Vec<String>, types::ImportedTypes> = BTreeMap::new();
+    let mut imported_targets = types::ImportedTypeTargets::new();
+    for (key, module) in &specialized {
+        imported_types.insert(
+            key.clone(),
+            imports::imported_type_shapes(module, &closure_shapes),
+        );
+        imported_targets.insert(
+            key.clone(),
+            imports::imported_type_targets(module, &closure_shapes),
+        );
+    }
+
     let mut decl_items_map: BTreeMap<Vec<String>, Vec<types::DeclItem>> = BTreeMap::new();
-    let mut mctxs: BTreeMap<Vec<String>, bodies::ModuleCtx> = BTreeMap::new();
     for (key, module) in &specialized {
         symbols::resolve(module, &symtabs[key], &bindings[key])?;
-        let decl_items = types::declare(module)?;
+        let decl_items = types::declare_with_imports(module, &imported_types[key])?;
         // plans/M7.md item C: the whole-closure half of the claim
         // partitioning check, per module for the same reason
         // `check_layouts` above is — an `Mmio[L]`'s own `L` must be a
@@ -410,8 +468,21 @@ pub fn check_program_typed(
         // `declare`'s own module-local table), so a driver's partition
         // never spans the closure.
         types::check_mmio_claims(module, &decl_items, &layouts[key])?;
-        let mctx = bodies::build_module_ctx(module, &decl_items);
         decl_items_map.insert(key.clone(), decl_items);
+    }
+
+    // plans/M9.md item A1, decision 10: data-vs-resource classification,
+    // recomputed over the whole closure now that every module's own
+    // `declare` has finished. It runs *here* — after the loop above, before
+    // any `ModuleCtx` clones a `DeclStruct`/`DeclEnum` — for exactly the
+    // reason the splice below runs where it does: it is a read of
+    // already-finished output, so which module imports which does not
+    // matter, and no module's `declare` ever waits on another's.
+    types::classify_closure(&mut decl_items_map, &imported_targets)?;
+
+    let mut mctxs: BTreeMap<Vec<String>, bodies::ModuleCtx> = BTreeMap::new();
+    for (key, module) in &specialized {
+        let mctx = bodies::build_module_ctx(module, &decl_items_map[key], &imported_types[key]);
         mctxs.insert(key.clone(), mctx);
     }
 
@@ -509,9 +580,54 @@ pub fn check_program_typed(
 /// like the single-module dump already never mentions an import
 /// statement at all.
 pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> String {
+    // plans/M9.md item A1: the dump re-derives `specialize`/`declare` the
+    // same dumb way `dump` above always has, so it needs the same two
+    // whole-closure inputs `check_program_typed` computed — the imported
+    // type-name arity table (or a signature naming an imported type would
+    // not resolve here at all) and `classify_closure`'s answer (or a
+    // struct with an imported resource field would print `data` here and
+    // be a resource everywhere else).
+    let specialized: BTreeMap<Vec<String>, Module> = modules
+        .iter()
+        .map(|(k, m)| {
+            (
+                k.clone(),
+                specialize::specialize(m).expect("dump is only called after check returns Ok"),
+            )
+        })
+        .collect();
+    let closure_shapes = imports::closure_type_shapes(
+        &specialized
+            .iter()
+            .map(|(k, m)| (k.clone(), m))
+            .collect::<Vec<_>>(),
+    );
+    let mut imported_targets = types::ImportedTypeTargets::new();
+    let mut decl_items_map: BTreeMap<Vec<String>, Vec<types::DeclItem>> = BTreeMap::new();
+    let mut imported_types: BTreeMap<Vec<String>, types::ImportedTypes> = BTreeMap::new();
+    for (key, module) in &specialized {
+        let imported = imports::imported_type_shapes(module, &closure_shapes);
+        decl_items_map.insert(
+            key.clone(),
+            types::declare_with_imports(module, &imported)
+                .expect("dump is only called after check returns Ok"),
+        );
+        imported_targets.insert(
+            key.clone(),
+            imports::imported_type_targets(module, &closure_shapes),
+        );
+        imported_types.insert(key.clone(), imported);
+    }
+    types::classify_closure(&mut decl_items_map, &imported_targets)
+        .expect("dump is only called after check returns Ok");
+
     let mut out = String::new();
-    for module in modules.values() {
-        out.push_str(&dump(module));
+    for (key, module) in modules {
+        out.push_str(&dump_with_imports(
+            module,
+            &imported_types[key],
+            Some(&decl_items_map[key]),
+        ));
     }
     out
 }

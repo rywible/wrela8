@@ -75,8 +75,12 @@ pub type EffectMap = BTreeMap<(String, String), AccessMode>;
 /// Computes the receiver-effect map alone, with no error checking — used
 /// by `check` below and, independently, by `mod.rs`'s `dump` (decision 8:
 /// private methods print their inferred effect once this pass lands).
-pub fn infer_effects(module: &Module, decl_items: &[DeclItem]) -> EffectMap {
-    let mctx = bodies::build_module_ctx(module, decl_items);
+pub fn infer_effects(
+    module: &Module,
+    decl_items: &[DeclItem],
+    imported: &crate::sema::types::ImportedTypes,
+) -> EffectMap {
+    let mctx = bodies::build_module_ctx(module, decl_items, imported);
     infer_private_effects(&mctx)
 }
 

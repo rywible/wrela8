@@ -1,0 +1,6 @@
+module app.main
+
+from app.shapes import Hidden
+
+pub fn f(h: Hidden) -> u32:
+    return h.n

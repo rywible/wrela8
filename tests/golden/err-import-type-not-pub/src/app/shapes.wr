@@ -1,0 +1,4 @@
+module app.shapes
+
+struct Hidden:
+    n: u32
