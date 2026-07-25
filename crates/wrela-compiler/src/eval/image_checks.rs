@@ -1209,6 +1209,11 @@ pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
         // bring-up state, but every structural rule asks the same
         // question of it.
         || name == "VirtQueue"
+        // plans/M7.md item E2: the permit `reserve_proven` yields and the
+        // operation `prepare_block` yields (03-hardware.md §4) — sealed
+        // resources, one opaque word each, never constructible from source.
+        || name == "QueuePermit"
+        || name == "QueueOp"
 }
 
 /// The noun phrase (with its normative citation) a diagnostic uses for one
@@ -1221,6 +1226,8 @@ pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
         "a sealed protocol state (03-hardware.md §9)"
     } else if name == "VirtQueue" {
         "a sealed queue (03-hardware.md §4)"
+    } else if name == "QueuePermit" || name == "QueueOp" {
+        "a sealed queue value (03-hardware.md §4)"
     } else {
         "a capability type (03-hardware.md §1)"
     }

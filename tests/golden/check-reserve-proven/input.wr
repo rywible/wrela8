@@ -1,0 +1,97 @@
+module examples.check_reserve_proven
+
+# plans/M7.md item E2, 03-hardware.md §4: `reserve_proven` + `prepare_block`.
+#
+# Dump oracle (H2a's shape): the operations type-check and lower, and the
+# whole-image proof admits one at-most-once site against a depth-8 queue
+# (occupancy_bound = floor(8/3) = 2). Nothing here publishes (E3) and no
+# boot transcript claims a descriptor hit the ring (decision 15: prepare
+# packages; publish writes).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    kind: u64
+    pad: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+
+pool BlockControl
+pool BlockPayloads
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    capacity_sectors: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = negotiated.read_capacity_sectors()?
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    # Synchronous prepare path — dump-covered. Payload arrives as a
+    # parameter (nothing constructs an `own[P] T` yet; same honest state
+    # as H2a's `Untrusted[T]` parameter).
+    fn prepare_read(mut self, take buffer: own[BlockPayloads] DmaBlock,
+                    lba: u64) -> QueueOp:
+        permit = self.queue.reserve_proven(descriptors=3)
+        operation = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=0, reserved=0, sector=lba),
+            payload=take buffer,
+            device_writes_payload=true,
+            status=BlkReqStatus(status=0xff),
+        )
+        return take operation
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-reserve-proven", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    _payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=4)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

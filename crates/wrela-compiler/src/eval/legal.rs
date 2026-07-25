@@ -555,6 +555,15 @@ fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> 
                 "an MMIO claim partitioning".to_string()
             })
         }
+        // plans/M7.md item E2: reserving / preparing a queue operation is
+        // a hardware touch (descriptor capacity / DMA payload handoff).
+        TypedExprKind::Intrinsic { key, .. } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
+            Some(if key == "VirtQueue.reserve_proven" {
+                "a proven queue reservation (03-hardware.md §4)".to_string()
+            } else {
+                "a prepared block operation (03-hardware.md §4)".to_string()
+            })
+        }
         TypedExprKind::Int(_)
         | TypedExprKind::Float(_)
         | TypedExprKind::Str(_)
@@ -945,6 +954,10 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
                 // bring-up transition is a hardware effect, so it is
                 // comptime-illegal wherever an MMIO access is.
                 Some("a device bring-up transition (03-hardware.md §9)")
+            } else if crate::sema::bodies::is_queue_op_intrinsic(key) {
+                // plans/M7.md item E2: queue reservation / prepare are
+                // hardware effects (03-hardware.md §4).
+                Some("a queue operation (03-hardware.md §4)")
             } else if crate::sema::typed::is_restricted_intrinsic(key) {
                 Some("an `@image` builder intrinsic")
             } else if key == "now" {

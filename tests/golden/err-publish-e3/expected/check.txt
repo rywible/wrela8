@@ -1,0 +1,1 @@
+error[unimplemented]: `VirtQueue.publish(...)` — plans/M7.md item E3 (`publish` / `reject` / `Receipt[P]`) is not checked yet at 67:31

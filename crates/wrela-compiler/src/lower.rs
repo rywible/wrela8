@@ -2143,6 +2143,63 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         } if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) => {
             lower_untrusted_checked_le(expr, receiver, type_arg, args, b, env)
         }
+        // plans/M7.md item E2, 03-hardware.md §4 / decision 15: a proven
+        // permit is one opaque word (the descriptor count); a prepared
+        // operation is one opaque word carrying the pieces for E3's
+        // publish. Neither mutates the ring here — descriptor-table
+        // writes belong to `publish`'s normative order (decision 15).
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            args,
+            ..
+        } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
+            match key.as_str() {
+                "VirtQueue.reserve_proven" => {
+                    let desc = args
+                        .iter()
+                        .find(|(l, _)| l == "descriptors")
+                        .ok_or_else(|| {
+                            LowerError::internal(
+                                "`reserve_proven` reached lowering without `descriptors=`"
+                                    .to_string(),
+                            )
+                        })?;
+                    let src = lower_expr(&desc.1, b, env)?;
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::Copy { dst, src });
+                    let _ = receiver;
+                    Ok(dst)
+                }
+                "VirtQueue.prepare_block" => {
+                    // Consume operands so their side effects / moves land,
+                    // then mint the opaque QueueOp word from the permit.
+                    let permit = args.iter().find(|(l, _)| l == "permit").ok_or_else(|| {
+                        LowerError::internal(
+                            "`prepare_block` reached lowering without `permit=`".to_string(),
+                        )
+                    })?;
+                    for (label, a) in args {
+                        if label != "permit" {
+                            let _ = lower_expr(a, b, env)?;
+                        }
+                    }
+                    let src = lower_expr(&permit.1, b, env)?;
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::Copy { dst, src });
+                    let _ = receiver;
+                    Ok(dst)
+                }
+                other => Err(LowerError::internal(format!(
+                    "unknown queue-op intrinsic `{other}`"
+                ))),
+            }
+        }
+        TypedExprKind::Intrinsic { key, .. }
+            if let Some(owner) = crate::sema::bodies::is_queue_op_deferred(key) =>
+        {
+            Err(LowerError::unimplemented(&format!("`{key}` ({owner}) is")))
+        }
         TypedExprKind::Intrinsic { .. } => Err(LowerError::unimplemented(
             "an `@image` builder intrinsic (reachable only inside the one `@image` fn, which is never lowered) is",
         )),

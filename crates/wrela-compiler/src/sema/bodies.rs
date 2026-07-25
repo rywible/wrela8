@@ -2976,6 +2976,9 @@ fn build_binop_expr(
 /// them.
 pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
     types::resource_propagates(ty, &mut |name, _args| {
+        if crate::eval::image_checks::is_sealed_authority_type_name(name) {
+            return true;
+        }
         mctx.structs
             .get(name)
             .map(|s| s.decl.classification == Classification::Resource)
@@ -4143,6 +4146,14 @@ fn check_call_by_field(
             return check_untrusted_narrowing(
                 base_t, targs, name, args, fspan, call_span, fctx, mctx,
             );
+        }
+    }
+    // plans/M7.md item E2, 03-hardware.md §4: queue operations on a
+    // `VirtQueue[..N]` value. Intercepted before the generic "no method"
+    // path (VirtQueue is a sealed builtin, never a DeclStruct).
+    if let Type::Named(q, _) = &base_ty {
+        if q == "VirtQueue" {
+            return check_virtqueue_method(base_t, name, args, fspan, call_span, fctx, mctx);
         }
     }
     // plans/M7.md item C: an `Mmio[L]` itself has no methods — the only
@@ -5355,14 +5366,398 @@ pub fn is_device_transport_intrinsic(key: &str) -> bool {
 /// falling into a generic "intrinsic" rejection.
 pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
     match key {
-        "VirtQueue.reserve_proven" | "VirtQueue.prepare_block" => {
-            Some("plans/M7.md item E2 (`reserve_proven` / `prepare_block`)")
-        }
         "VirtQueue.publish" | "VirtQueue.reject" => {
             Some("plans/M7.md item E3 (`publish` / `reject` / `Receipt[P]`)")
         }
         "VirtQueue.drain" | "VirtQueue.suppress_interrupts" => {
             Some("plans/M7.md item E4 / G (`drain` / `suppress_interrupts`)")
+        }
+        _ => None,
+    }
+}
+
+/// Is `key` one of item E2's live queue operations?
+pub fn is_queue_op_intrinsic(key: &str) -> bool {
+    matches!(key, "VirtQueue.reserve_proven" | "VirtQueue.prepare_block")
+}
+
+/// A method call on a `VirtQueue[..N]` value (03-hardware.md §4).
+fn check_virtqueue_method(
+    queue: TypedExpr,
+    name: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    match name {
+        "reserve_proven" => {
+            check_virtqueue_reserve_proven(queue, args, fspan, call_span, fctx, mctx)
+        }
+        "prepare_block" => check_virtqueue_prepare_block(queue, args, fspan, call_span, fctx, mctx),
+        "publish" | "reject" => Err(unimplemented_at(
+            &format!(
+                "`VirtQueue.{name}(...)` — {} is",
+                is_queue_op_deferred(&format!("VirtQueue.{name}")).unwrap_or("plans/M7.md item E3")
+            ),
+            call_span,
+        )),
+        "drain" | "suppress_interrupts" | "poll_sources" | "completions_pending" => {
+            Err(unimplemented_at(
+                &format!("`VirtQueue.{name}(...)` — plans/M7.md item E4 / G (`{name}`) is"),
+                call_span,
+            ))
+        }
+        other => Err(type_error(
+            format!(
+                "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4 gives \
+                 `reserve_proven`, `prepare_block`, `publish`, `reject` and `drain`"
+            ),
+            fspan,
+        )),
+    }
+}
+
+/// `queue.reserve_proven(descriptors=3)` — yields a `QueuePermit` when
+/// the whole-image proof (`sema::reserve_proof`) admits the site.
+fn check_virtqueue_reserve_proven(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let depth = virtqueue_type_depth(&queue.ty, mctx).ok_or_else(|| {
+        type_error(
+            "`reserve_proven` needs a `VirtQueue[..N]` whose depth is a comptime-known \
+             nonzero power of two (03-hardware.md §4)"
+                .to_string(),
+            call_span,
+        )
+    })?;
+    if depth == 0 || !depth.is_power_of_two() {
+        return Err(type_error(
+            format!(
+                "`reserve_proven` on `VirtQueue[..{depth}]`: depth must be a nonzero power of two"
+            ),
+            call_span,
+        ));
+    }
+    if args.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.reserve_proven(descriptors=N)` takes exactly one labelled argument; \
+                 found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let arg = &args[0];
+    if arg.label.as_deref() != Some("descriptors") {
+        return Err(type_error(
+            "`VirtQueue.reserve_proven`'s own argument is labelled `descriptors=` \
+             (03-hardware.md §4)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`reserve_proven`'s `descriptors=` is a count, not a moved value: drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let desc_expr = check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?;
+    let desc_val = virtqueue_depth_value(&desc_expr, mctx).ok_or_else(|| {
+        type_error(
+            "`reserve_proven`'s `descriptors=` must be a comptime-known integer \
+             (03-hardware.md §4)"
+                .to_string(),
+            arg.span,
+        )
+    })?;
+    if desc_val == 0 || desc_val > u64::from(u16::MAX) {
+        return Err(type_error(
+            format!("`reserve_proven(descriptors={desc_val})` is not a usable descriptor count"),
+            arg.span,
+        ));
+    }
+    if desc_val != u64::from(crate::virtqueue::DESCRIPTORS_PER_BLK_OP) {
+        return Err(type_error(
+            format!(
+                "`reserve_proven(descriptors={desc_val})`: machine v1's virtio-blk operation \
+                 uses exactly {} descriptors (header + data + status)",
+                crate::virtqueue::DESCRIPTORS_PER_BLK_OP
+            ),
+            arg.span,
+        ));
+    }
+    let _ = fspan;
+    // Encode the resolved depth as a literal Bound on `type_arg` so
+    // `sema::reserve_proof` never has to re-resolve a const name.
+    Ok(TypedExpr {
+        ty: Type::Named("QueuePermit".to_string(), vec![]),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.reserve_proven".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: Some(Type::Named(
+                "VirtQueue".to_string(),
+                vec![types::TypeArg::Bound(Expr::Int(
+                    call_span,
+                    depth.to_string(),
+                ))],
+            )),
+            args: vec![("descriptors".to_string(), desc_expr)],
+        },
+    })
+}
+
+/// `queue.prepare_block(permit=take ..., header=..., payload=take ...,
+/// device_writes_payload=..., status=...)` — yields a `QueueOp`.
+fn check_virtqueue_prepare_block(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if args.len() != 5 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.prepare_block(permit=take ..., header=..., payload=take ..., \
+                 device_writes_payload=..., status=...)` takes exactly five labelled \
+                 arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let mut permit = None;
+    let mut header = None;
+    let mut payload = None;
+    let mut device_writes = None;
+    let mut status = None;
+    for arg in args {
+        match arg.label.as_deref() {
+            Some("permit") => {
+                if permit.is_some() {
+                    return Err(type_error(
+                        "`prepare_block`'s `permit=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Take {
+                    return Err(type_error(
+                        "`prepare_block` consumes the permit: write `permit=take ...` \
+                         (03-hardware.md §4)"
+                            .to_string(),
+                        arg.span,
+                    ));
+                }
+                let expected = Type::Named("QueuePermit".to_string(), vec![]);
+                permit = Some(check_expr(&arg.value, Some(&expected), fctx, mctx)?);
+            }
+            Some("header") => {
+                if header.is_some() {
+                    return Err(type_error(
+                        "`prepare_block`'s `header=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`prepare_block`'s `header=` is a `@layout(dma)` value, not a moved \
+                             handle: drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                let h = check_expr(&arg.value, None, fctx, mctx)?;
+                require_layout_dma(&h.ty, "header", arg.span, mctx)?;
+                header = Some(h);
+            }
+            Some("payload") => {
+                if payload.is_some() {
+                    return Err(type_error(
+                        "`prepare_block`'s `payload=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Take {
+                    return Err(type_error(
+                        "`prepare_block` consumes the transfer payload: write `payload=take ...` \
+                         (03-hardware.md §3/§4)"
+                            .to_string(),
+                        arg.span,
+                    ));
+                }
+                let p = check_expr(&arg.value, None, fctx, mctx)?;
+                match &p.ty {
+                    Type::Own(_, inner) => {
+                        require_layout_dma(inner, "payload", arg.span, mctx)?;
+                    }
+                    other => {
+                        return Err(type_error(
+                            format!(
+                                "`prepare_block`'s `payload=` is an `own[P] T` transfer handle \
+                                 (03-hardware.md §3); found `{}`",
+                                types::render_type(other)
+                            ),
+                            arg.span,
+                        ));
+                    }
+                }
+                payload = Some(p);
+            }
+            Some("device_writes_payload") => {
+                if device_writes.is_some() {
+                    return Err(type_error(
+                        "`prepare_block`'s `device_writes_payload=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`prepare_block`'s `device_writes_payload=` is a bool, not a moved \
+                             value: drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                device_writes = Some(check_expr(&arg.value, Some(&Type::Bool), fctx, mctx)?);
+            }
+            Some("status") => {
+                if status.is_some() {
+                    return Err(type_error(
+                        "`prepare_block`'s `status=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`prepare_block`'s `status=` is a `@layout(dma)` value, not a moved \
+                             handle: drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                let s = check_expr(&arg.value, None, fctx, mctx)?;
+                require_layout_dma(&s.ty, "status", arg.span, mctx)?;
+                status = Some(s);
+            }
+            Some(other) => {
+                return Err(type_error(
+                    format!(
+                        "`prepare_block`'s own arguments are labelled `permit=`, `header=`, \
+                         `payload=`, `device_writes_payload=`, `status=`; `{other}=` names no \
+                         parameter"
+                    ),
+                    arg.span,
+                ));
+            }
+            None => {
+                return Err(type_error(
+                    "`prepare_block(...)` requires labelled arguments".to_string(),
+                    arg.span,
+                ));
+            }
+        }
+    }
+    let (Some(permit), Some(header), Some(payload), Some(device_writes), Some(status)) =
+        (permit, header, payload, device_writes, status)
+    else {
+        return Err(type_error(
+            "`prepare_block` needs `permit=`, `header=`, `payload=`, `device_writes_payload=` \
+             and `status=`"
+                .to_string(),
+            call_span,
+        ));
+    };
+    let _ = (fspan, &queue);
+    Ok(TypedExpr {
+        ty: Type::Named("QueueOp".to_string(), vec![]),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.prepare_block".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: vec![
+                ("permit".to_string(), permit),
+                ("header".to_string(), header),
+                ("payload".to_string(), payload),
+                ("device_writes_payload".to_string(), device_writes),
+                ("status".to_string(), status),
+            ],
+        },
+    })
+}
+
+fn require_layout_dma(
+    ty: &Type,
+    role: &str,
+    span: Span,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    let Type::Named(name, targs) = ty else {
+        return Err(type_error(
+            format!(
+                "`prepare_block`'s `{role}=` must be a `@layout(dma)` struct; found `{}`",
+                types::render_type(ty)
+            ),
+            span,
+        ));
+    };
+    if !targs.is_empty() {
+        return Err(type_error(
+            format!(
+                "`prepare_block`'s `{role}=` must be a `@layout(dma)` struct; found `{}`",
+                types::render_type(ty)
+            ),
+            span,
+        ));
+    }
+    match mctx.layouts.get(name.as_str()) {
+        Some(l) if l.kind == types::LayoutKind::Dma => Ok(()),
+        _ => Err(type_error(
+            format!("`prepare_block`'s `{role}=` must be a `@layout(dma)` struct; `{name}` is not"),
+            span,
+        )),
+    }
+}
+
+/// Depth bound on a `VirtQueue[..N]` type, resolving a const name through
+/// `mctx.const_values` the same way `virtqueue_depth_value` does for a
+/// typed expression.
+fn virtqueue_type_depth(ty: &Type, mctx: &ModuleCtx) -> Option<u64> {
+    let Type::Named(name, targs) = ty else {
+        return None;
+    };
+    if name != "VirtQueue" {
+        return None;
+    }
+    let types::TypeArg::Bound(expr) = targs.first()? else {
+        return None;
+    };
+    match expr {
+        Expr::Int(_, text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
+        Expr::Name(_, n) => {
+            let init = mctx.const_values.get(n)?;
+            match init {
+                Expr::Int(_, text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
+                _ => None,
+            }
         }
         _ => None,
     }

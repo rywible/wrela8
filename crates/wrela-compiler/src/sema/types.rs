@@ -1272,6 +1272,14 @@ fn validate_fn_capability_types(
             span,
         ));
     }
+    // plans/M7.md item E2: `QueuePermit` / `QueueOp` are minted by
+    // `reserve_proven` / `prepare_block` — sealed queue values, not
+    // image-bound capabilities. A function may return one; that is how
+    // the permit reaches `prepare_block` and the operation reaches
+    // `publish` (E3).
+    if found.starts_with("QueuePermit") || found.starts_with("QueueOp") {
+        return Ok(());
+    }
     // The general unforgeability arm. Nothing in the source language can
     // *produce* a capability (03-hardware.md §1: "their constructors are
     // not source-visible"), so a signature claiming to return one is
@@ -3313,6 +3321,10 @@ fn resolve_named(
         // plans/M7.md item E1: 03-hardware.md §1/§9's `BootError` — a
         // zero-argument prelude enum (variants in `builtin_enum_variants`).
         "BootError" => Some(Type::Named("BootError".to_string(), vec![])),
+        // plans/M7.md item E2: sealed permit / operation values
+        // (03-hardware.md §4). Zero type arguments; minted only by
+        // `reserve_proven` / `prepare_block`.
+        "QueuePermit" | "QueueOp" => Some(Type::Named(n.name.clone(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {

@@ -1,0 +1,3 @@
+error[type]: `reserve_proven` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4) at 53:42
+  a `reserve_proven` site in `BlkDriver.many` sits inside a loop or a closure body, so it can execute more than once per root turn
+  plans/M7.md decision 6: same analysis shape as `sema::send_proof`; runtime backpressure is item G

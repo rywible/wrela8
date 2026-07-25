@@ -1,0 +1,20 @@
+Module path=examples.check_queue_occupancy
+  Struct VirtioIrqMmio data
+    field interrupt_status: ReadOnly[u32]
+  Struct BlkReqHeader data
+    field kind: u32
+    field reserved: u32
+    field sector: u64
+  Struct VirtioBlock data
+    field id: u32
+  Enum Feature data
+    variant Flush
+  Const QDEPTH: usize
+  Pool BlockControl
+  Struct BlkDriver resource
+    field irq_regs: Mmio[VirtioIrqMmio]
+    field device: RunningDevice[VirtioBlock]
+    field queue: VirtQueue[..128]
+    field capacity_sectors: u64
+    init(mut self, cap: take DeviceCap[VirtioBlock], control_pool: take DmaPool[BlockControl, 4096]) -> Result[unit, BootError]
+  Fn build() -> Image

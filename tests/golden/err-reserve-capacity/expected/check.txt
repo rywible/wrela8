@@ -1,0 +1,3 @@
+error[type]: `reserve_proven` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4) at 51:41
+  queue depth 8 admits at most 2 concurrent 3-descriptor operations (floor(8/3)), but this image has 3 static `reserve_proven` site(s)
+  plans/M7.md decision 6: same analysis shape as `sema::send_proof`; runtime backpressure is item G
