@@ -1,0 +1,14 @@
+ImageGraph v0
+  Name value=placement-pinned-blk
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=VirtioBlock
+    Arg label=transport value=8192
+  Driver index=0 type=BlkDriver
+    Arg label=device value=device#0
+  Actor index=0 type=Probe
+    Arg label=mailbox value=4
+  Supervise index=0
+    Arg label=children value=[driver#0, actor#0]
+    Arg label=strategy value=Restart.OneForOne
+    Arg label=intensity value=(3, 10000000000)
+  Sealed value=true

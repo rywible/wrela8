@@ -1,0 +1,40 @@
+module examples.check_placement
+
+# plans/M8.md item B: every actor/driver gets a core; with no explicit
+# `core=` ≥ 1 the live domain is {0} (single-core floor), so inference
+# places both on core 0. Report lines carry work/bytes causality
+# (04-compiler.md §3 / §7). Vacuity: flip either `core=0` below to `1`
+# and this stops being a single-core graph — packing would move the
+# unfixed actor (see `check-placement-cross`).
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+    pub fn get(read self) -> u32:
+        return self.count
+
+@actor
+pub struct Probe:
+    flag: u32
+
+    init(mut self):
+        self.flag = 1
+
+    pub fn ready(read self) -> u32:
+        return self.flag
+
+@image
+pub fn build() -> Image:
+    img = Image(name="placement-basic", target=Target.wrela_machine_v1)
+    store = img.actor(Store, mailbox=8)
+    probe = img.actor(Probe, mailbox=4, core=0)
+    img.supervise(
+        children=[store, probe],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

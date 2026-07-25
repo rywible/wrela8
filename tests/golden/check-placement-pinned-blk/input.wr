@@ -1,0 +1,35 @@
+module examples.check_placement_pinned_blk
+
+# plans/M8.md item B: a VirtioBlock-bound driver with no `core=` is
+# pinned to core 0 (`source=pinned-virtio-blk`). Vacuity: add `core=1`
+# and the build fails (`err-placement-virtio-blk-core`).
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    held: DeviceCap[VirtioBlock]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        self.held = take cap
+
+@actor
+pub struct Probe:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="placement-pinned-blk", target=Target.wrela_machine_v1)
+    blk_device = img.device[VirtioBlock](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk_device)
+    probe = img.actor(Probe, mailbox=4)
+    img.supervise(
+        children=[disk, probe],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

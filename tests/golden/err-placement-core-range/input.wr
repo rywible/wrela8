@@ -1,0 +1,21 @@
+module examples.err_placement_core_range
+
+# plans/M8.md item B: `core=N` outside 0..VCPUS fails closed by name.
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="bad-core", target=Target.wrela_machine_v1)
+    store = img.actor(Store, mailbox=4, core=3)
+    img.supervise(
+        children=[store],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

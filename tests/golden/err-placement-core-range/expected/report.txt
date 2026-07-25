@@ -1,0 +1,1 @@
+error[build]: `actor#0` sets `core=3`, which is outside 0..3 (06-machine.md §1: the machine has 3 vCPUs)
