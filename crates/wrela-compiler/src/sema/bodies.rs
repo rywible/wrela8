@@ -4493,9 +4493,25 @@ pub(crate) fn compose_call_error(raw: &Type) -> Type {
 /// same "one shared definition" reason `sema::types::validate_message_shape`
 /// calls `codegen::is_aggregate` directly rather than copying it: the day
 /// the table above changes, both halves are on the same screen and cannot
-/// silently disagree. The pair is total in the direction that matters —
+/// silently disagree.
+///
+/// **The pair is NOT total, and the exception is load-bearing** (found by
+/// plans/M7.md item I's sweep; this comment used to claim
 /// `decompose_call_error(&compose_call_error(t)) == Some(t)` for every
-/// `t` (both arms), which is the only property either caller relies on.
+/// `t`, which is false). `compose_call_error` is not injective: `t = T`
+/// and `t = Result[T, never]` both compose to `Result[T, CallError[never]]`,
+/// because §9.4's two rows genuinely collide when `E` is `never`. This
+/// answers `T` for that composed type, so a `Result[T, never]` reply
+/// round-tripped to the *wrong* declared type — and item Z1's transport
+/// then read the two ends of one `await` through two different
+/// predicates (this one caller-side, `codegen::is_aggregate(&f.ret)`
+/// callee-side), which turned the ambiguity into a shifted payload for an
+/// aggregate `T` and a write through a null `x8` for a scalar one. The
+/// collision is refused at the declaration now
+/// (`sema::types::validate_message_shape`, `golden/err-actor-reply-never-error`),
+/// which is what restores totality over every reply shape that can reach
+/// here — a `never` nested any deeper (`Result[T, Option[never]]`)
+/// composes and decomposes correctly and is untouched.
 pub(crate) fn decompose_call_error(composed: &Type) -> Option<Type> {
     let Type::Result(t, e) = composed else {
         return None;

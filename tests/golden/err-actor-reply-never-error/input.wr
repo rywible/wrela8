@@ -1,0 +1,63 @@
+module examples.err_actor_reply_never_error
+
+# plans/M7.md item I (the adversarial sweep) — the worst class this repo
+# recognizes, found by running rather than reading.
+#
+# 02-language.md §9.4's composition table has two rows:
+#
+#     declared R            -> Result[R, CallError[never]]
+#     declared Result[T, E] -> Result[T, CallError[E]]
+#
+# With `E = never` they produce **the identical composed type**, so a
+# composed `Result[T, CallError[never]]` carries no evidence of which row
+# made it. `sema::bodies::compose_call_error` is not injective, and its
+# inverse `decompose_call_error` — whose own doc comment claimed the pair
+# was total "for every `t`, both arms" — answers the bare `T` row.
+#
+# WHAT THAT COST, both verified on a real HVF boot before this rejection
+# existed. Item Z1's reply transport reads the two ends of one `await`
+# through two *different* predicates: the caller sizes its staging slot
+# from the decomposed declared reply (`codegen::flow_reply_stage_size`),
+# and the callee's own dispatch arm decides whether to hand over a
+# staging pointer from `codegen::is_aggregate(&f.ret)` on the real
+# declared return (`layout.rs`'s `reply_is_aggregate`). They disagree here
+# and nowhere else.
+#
+#   - **Aggregate `T` (this file).** The caller reserves `sizeof(Triple)`
+#     = 24 bytes; the callee writes `sizeof(Result[Triple, never])` = 32,
+#     one tag word more. A declared `Ok(Triple(a=1001, b=2002, c=3003))`
+#     was read back by the caller as `a=0` (the `Result` tag), `b=1001`,
+#     `c=2002` — every field shifted one word — and the trailing 3003
+#     landed past the staging slot on the frame's own `lr` save, masked
+#     only because the resume path re-saves `lr` on entry. A silent wrong
+#     answer, which is exactly the shape M6-H1 found and item Z2 fixed
+#     for `Result[T, E]` generally.
+#   - **Scalar `T`.** The caller decides the reply is scalar and therefore
+#     never publishes a staging address at all, while the callee's
+#     dispatch arm still loads `[waker + OFF_TURN_REPLY_SLOT]` — never
+#     written, so zero — into `x8` and writes 24 bytes through it.
+#     Observed as `guest fault: unhandled exception ... ipa=0x0`.
+#
+# WHY A REJECTION AND NOT A FIX. Which row `Result[T, never]` belongs to
+# is a *language* question, and 02 §9.4 does not answer it — both readings
+# are defensible and the docs are normative (CLAUDE.md's ground-truth
+# order). Picking one in the compiler would be a silent language decision.
+# It is refused at the declaration instead, alongside every other
+# message/reply shape rule, and the diagnostic names the one-line rewrite
+# that makes the intent explicit.
+#
+# A `never` nested any deeper is untouched and correct:
+# `Result[T, Option[never]]` composes to `Result[T, CallError[Option[never]]]`,
+# which decomposes back exactly. Only the error type *itself* collides.
+
+pub struct Triple:
+    a: u64
+    b: u64
+    c: u64
+
+@actor
+pub struct Store:
+    good: Result[Triple, never]
+
+    pub fn wide(read self) -> Result[Triple, never]:
+        return self.good

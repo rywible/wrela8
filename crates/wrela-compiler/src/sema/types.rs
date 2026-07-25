@@ -626,9 +626,71 @@ fn validate_message_shape(
             span,
         ));
     }
-    // No reply-shape rule beyond the `Actor[T]` one above survives here,
-    // and the history is worth keeping because it was a *wrong answer*,
-    // not a missing feature.
+    // plans/M7.md item I's sweep: `Result[T, never]` is the one declared
+    // reply 02-language.md §9.4's composition table cannot round-trip,
+    // and it produced a **wrong answer** at M7.
+    //
+    // The table's two rows collide there. `declared Result[T, E] ->
+    // Result[T, CallError[E]]` with `E = never` is character-for-character
+    // `declared R -> Result[R, CallError[never]]` with `R = T`, so the
+    // composed type carries no evidence of which row made it —
+    // `sema::bodies::compose_call_error` is not injective, and
+    // `decompose_call_error` (whose own doc claimed the pair was total
+    // "for every `t`, both arms") answers `T`.
+    //
+    // Item Z1's transport then reads the two ends of one `await` through
+    // two different predicates, which is exactly where the ambiguity
+    // becomes bytes: the *caller* sizes its staging slot from the
+    // decomposed declared reply (`codegen::flow_reply_stage_size`), while
+    // the *callee*'s dispatch arm decides whether to hand over a staging
+    // pointer at all from `codegen::is_aggregate(&f.ret)` on the real
+    // declared return (`layout.rs`'s own `reply_is_aggregate`). Verified
+    // by running, both ways:
+    //
+    //   - aggregate `T` — the caller reserves `sizeof(T)` and the callee
+    //     writes `sizeof(Result[T, never])`, one tag word more. Every
+    //     payload field arrives shifted by a word (a declared
+    //     `Ok(Triple(1001, 2002, 3003))` read back as `a=0` (the tag),
+    //     `b=1001`, `c=2002`) and the extra word lands past the slot, on
+    //     the frame's own `lr` save — masked today only because the
+    //     resume path re-saves `lr` on entry. A silent wrong answer.
+    //   - scalar `T` — the caller decides the reply is scalar and never
+    //     publishes a staging address at all, while the callee's dispatch
+    //     arm still loads `[waker + OFF_TURN_REPLY_SLOT]` (never written,
+    //     so zero) into `x8` and writes through it. Observed as a real
+    //     guest fault at `ipa=0x0`.
+    //
+    // The docs do not disambiguate the two rows, so this compiler does not
+    // get to pick one: 03/02 are normative and a guess here would be a
+    // silent language decision. Refused by name at the declaration
+    // instead, which is also where every other message/reply shape rule in
+    // this fn is enforced (`golden/err-actor-reply-never-error`). A
+    // `never` nested any deeper (`Result[T, Option[never]]`) is untouched
+    // and correct — only the error type *itself* collides.
+    if let Type::Result(_, e) = ret {
+        if matches!(**e, Type::Never) {
+            return Err(SemaError::at(
+                "actor",
+                format!(
+                    "`{struct_name}.{method_name}` declares the reply `{}`, and \
+                     02-language.md §9.4's composition table cannot round-trip it: `declared \
+                     Result[T, E] -> Result[T, CallError[E]]` with `E = never` is the same \
+                     composed type as `declared T -> Result[T, CallError[never]]`, so a caller \
+                     cannot tell which reply it is awaiting. Declare the reply as `{}` if it \
+                     never fails, or give the error an inhabited type",
+                    render_type(ret),
+                    render_type(match ret {
+                        Type::Result(t, _) => t,
+                        _ => unreachable!(),
+                    })
+                ),
+                span,
+            ));
+        }
+    }
+    // No further reply-shape rule beyond the `Actor[T]` one above
+    // survives here, and the history is worth keeping because it was a
+    // *wrong answer*, not a missing feature.
     //
     // plans/M6.md item H1 rejected EVERY aggregate reply at this point:
     // the turn record carried one scalar word, an aggregate return travels
