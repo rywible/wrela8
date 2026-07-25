@@ -202,6 +202,7 @@ pub struct BlkDriver[const MODE: DriverMode]:
             payload=take buffer,
             device_writes_payload=true,
             status=BlkReqStatus(status=0xff),
+            idempotent=true,
         )
 
         # publish performs descriptor/payload release, available-ring and
@@ -225,6 +226,7 @@ pub struct BlkDriver[const MODE: DriverMode]:
             payload=take buffer,
             device_writes_payload=false,
             status=BlkReqStatus(status=0xff),
+            idempotent=false,
         )
         return self.queue.publish(operation=take operation)
 

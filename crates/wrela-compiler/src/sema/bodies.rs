@@ -453,6 +453,14 @@ pub(crate) struct FnCtx {
     /// §9.2, not about whether `await` may textually appear there at all
     /// — out of scope to refine further at M6).
     pub(crate) in_async: bool,
+    /// plans/M8.md item G, decision 13: is the statement being checked
+    /// inside a `match` arm that can match 03-hardware.md §9's
+    /// `CompletionOutcome.Unknown`? Set by `check_match` for the duration
+    /// of one arm's body and restored after — the one place §9's "Source
+    /// must not auto-retry a non-idempotent operation on `Unknown`" has a
+    /// site to attach to. Counted rather than flagged so nested matches
+    /// (an `Unknown` arm containing another `match`) restore correctly.
+    unknown_outcome_arms: usize,
 }
 
 impl FnCtx {
@@ -463,7 +471,13 @@ impl FnCtx {
             local_pools,
             group_children: BTreeMap::new(),
             in_async: false,
+            unknown_outcome_arms: 0,
         }
+    }
+
+    /// Is the current position inside a `CompletionOutcome.Unknown` arm?
+    pub(crate) fn in_unknown_outcome_arm(&self) -> bool {
+        self.unknown_outcome_arms > 0
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -620,7 +634,18 @@ pub(crate) fn check(
     // index `Target`/`Restart` constructions with no evaluator-side
     // special case at all. Harmless for a module that never mentions
     // either name (this field is not part of the `--stage=typed` dump).
-    for name in ["Target", "Restart", "BootError", "IoError", "DriverMode"] {
+    for name in [
+        "Target",
+        "Restart",
+        "BootError",
+        "IoError",
+        "DriverMode",
+        // plans/M8.md item G: 03-hardware.md §9's `CompletionOutcome`.
+        // Injected for the same reason as the five above — it is what
+        // `lower::variant_index` reads to turn `case .Unknown:` into a
+        // tag compare, with no lowering-side special case.
+        "CompletionOutcome",
+    ] {
         let variants = crate::sema::prelude::builtin_enum_variants(name)
             .expect("prelude enum names are in the fixed builtin_enum_variants table")
             .iter()
@@ -1344,13 +1369,23 @@ fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
 fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let scrutinee = check_expr(&m.scrutinee, None, fctx, mctx)?;
     let sty = scrutinee.ty.clone();
+    // plans/M8.md item G, decision 13: matching 03-hardware.md §9's
+    // `CompletionOutcome` is the only place the no-auto-retry rule has a
+    // site. Anything *other* than a `CompletionOutcome` scrutinee leaves
+    // the flag alone entirely.
+    let outcome_match = matches!(&sty, Type::Named(n, targs)
+        if n == "CompletionOutcome" && targs.is_empty());
     let mut arms = Vec::with_capacity(m.arms.len());
     for arm in &m.arms {
         // Pattern bindings, guard, and body all share one pushed scope
         // per arm: a binding from one arm's pattern must not leak into a
         // sibling arm or past the whole `match`, exactly like an
         // `if`/`elif`/`else` branch.
-        let (pattern, guard, body) = scoped(fctx, |fctx| {
+        let unknown_arm = outcome_match && pattern_can_match_unknown(&arm.pattern);
+        if unknown_arm {
+            fctx.unknown_outcome_arms += 1;
+        }
+        let checked = scoped(fctx, |fctx| {
             let pattern = check_pattern(&arm.pattern, &sty, fctx, mctx)?;
             let guard = match &arm.guard {
                 Some(g) => Some(check_expr(g, Some(&Type::Bool), fctx, mctx)?),
@@ -1358,7 +1393,11 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
             };
             let body = check_stmts(&arm.body, fctx, mctx)?;
             Ok((pattern, guard, body))
-        })?;
+        });
+        if unknown_arm {
+            fctx.unknown_outcome_arms -= 1;
+        }
+        let (pattern, guard, body) = checked?;
         arms.push(TypedMatchArm {
             pattern,
             guard,
@@ -1368,6 +1407,24 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
     Ok(TypedStmt {
         kind: TypedStmtKind::Match { scrutinee, arms },
     })
+}
+
+/// plans/M8.md item G, decision 13: can this arm's pattern match
+/// `CompletionOutcome.Unknown`? Deliberately **over**-approximate — a
+/// wildcard or a plain binding covers `Unknown` just as surely as
+/// `case .Unknown:` does, and 03-hardware.md §9's rule is about the value
+/// the arm may be looking at, not about how the author spelled it. Only a
+/// variant pattern that names one of the other two arms is excluded.
+fn pattern_can_match_unknown(p: &Pattern) -> bool {
+    match p {
+        Pattern::Wildcard(_) | Pattern::Binding(_, _) => true,
+        Pattern::Take(_, inner) => pattern_can_match_unknown(inner),
+        Pattern::Or(_, alts) => alts.iter().any(pattern_can_match_unknown),
+        Pattern::Variant { variant, .. } => variant == "Unknown",
+        // A literal / tuple / array pattern against a fieldless enum is
+        // already a type error; answering `false` here changes nothing.
+        Pattern::Literal(_, _) | Pattern::Tuple(_, _) | Pattern::Array(_, _) => false,
+    }
 }
 
 fn check_return(
@@ -1902,6 +1959,35 @@ fn variant_payload_types_for(
                     format!("`CallError` has no variant `{other}`"),
                     span,
                 )),
+            }
+        }
+        // plans/M8.md item G: a *prelude* enum (`CompletionOutcome`,
+        // `IoError`, `BootError`, `DriverMode`, `Target`, `Restart`) has no
+        // `DeclEnum` in `mctx.enums` at all — its variants live in the one
+        // fixed `prelude::builtin_enum_variants` table. Every one of them
+        // is fieldless, so the payload answer is always the empty vector;
+        // this arm exists so `match o: case .Unknown:` type-checks the same
+        // way a module-declared enum's does, with no per-enum special case.
+        Type::Named(name, targs)
+            if targs.is_empty() && crate::sema::prelude::builtin_enum_variants(name).is_some() =>
+        {
+            if let Some(n) = enum_name {
+                if n != name {
+                    return Err(type_error(
+                        format!("expected a `{name}` pattern, found `{n}`"),
+                        span,
+                    ));
+                }
+            }
+            let variants = crate::sema::prelude::builtin_enum_variants(name)
+                .expect("guarded by the arm's own condition");
+            if variants.contains(&variant) {
+                Ok(vec![])
+            } else {
+                Err(type_error(
+                    format!("enum `{name}` has no variant `{variant}`"),
+                    span,
+                ))
             }
         }
         Type::Named(name, targs) => {
@@ -2718,6 +2804,12 @@ fn same_len_expr(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Int(_, t1), Expr::Int(_, t2)) => parse_int_literal(t1) == parse_int_literal(t2),
         (Expr::Name(_, n1), Expr::Name(_, n2)) => n1 == n2,
+        // plans/M8.md item G: `QueueOp[P, <idempotent>]`'s own const
+        // argument is a bool literal — the first non-integer one this
+        // comparator has seen. Without this arm two identically-declared
+        // operations compare unequal and render identically, which is the
+        // exact shape of the `TypeArg::Pool` bug noted just above.
+        (Expr::Bool(_, b1), Expr::Bool(_, b2)) => b1 == b2,
         _ => false,
     }
 }
@@ -5633,6 +5725,7 @@ pub fn is_queue_op_intrinsic(key: &str) -> bool {
             | "VirtQueue.drain"
             | "VirtQueue.suppress_interrupts"
             | "VirtQueue.claim"
+            | "VirtQueue.recover"
     )
 }
 
@@ -5666,15 +5759,16 @@ fn check_virtqueue_method(
             check_virtqueue_suppress_interrupts(queue, args, fspan, call_span, fctx, mctx)
         }
         "claim" => check_virtqueue_claim(queue, args, fspan, call_span, fctx, mctx),
+        "recover" => check_virtqueue_recover(queue, args, fspan, call_span, fctx, mctx),
         "poll_sources" | "completions_pending" => Err(unimplemented_at(
             &format!("`VirtQueue.{name}(...)` — plans/M7.md item G (`{name}`) is"),
             call_span,
         )),
         other => Err(type_error(
             format!(
-                "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4 gives \
+                "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4/§5/§9 give \
                  `reserve_proven`, `prepare_block`, `publish`, `reject`, `drain`, \
-                 `suppress_interrupts`, and `claim`"
+                 `suppress_interrupts`, `claim`, and `recover`"
             ),
             fspan,
         )),
@@ -5780,8 +5874,26 @@ fn check_virtqueue_reserve_proven(
     })
 }
 
+/// plans/M8.md item G, decision 13: the one wording for 03-hardware.md §9's
+/// no-auto-retry rule, shared by the two sites that can commit the
+/// violation (`prepare_block` builds the operation; `publish` issues it).
+/// One message, two sites — a hoisted `prepare_block` and an inlined one
+/// are the same mistake and read the same way.
+fn no_auto_retry_message(site: &str) -> String {
+    format!(
+        "`{site}` re-issues an operation declared `idempotent=false` inside a \
+         `CompletionOutcome.Unknown` arm — 03-hardware.md §9: \"Source must not auto-retry a \
+         non-idempotent operation on `Unknown`\". The first attempt may already have taken \
+         effect, so retrying it can apply the operation twice. Either establish quiescence \
+         first (quarantine the device and pool, or go target-fatal — 03 §9), or, if re-running \
+         this exact operation is provably harmless, declare it `idempotent=true` at its \
+         `prepare_block`"
+    )
+}
+
 /// `queue.prepare_block(permit=take ..., header=..., payload=take ...,
-/// device_writes_payload=..., status=...)` — yields a `QueueOp`.
+/// device_writes_payload=..., status=..., idempotent=...)` — yields a
+/// `QueueOp[P, <idempotent>]`.
 fn check_virtqueue_prepare_block(
     queue: TypedExpr,
     args: &[Arg],
@@ -5790,12 +5902,12 @@ fn check_virtqueue_prepare_block(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    if args.len() != 5 {
+    if args.len() != 6 {
         return Err(type_error(
             format!(
                 "`VirtQueue.prepare_block(permit=take ..., header=..., payload=take ..., \
-                 device_writes_payload=..., status=...)` takes exactly five labelled \
-                 arguments; found {}",
+                 device_writes_payload=..., status=..., idempotent=...)` takes exactly six \
+                 labelled arguments; found {}",
                 args.len()
             ),
             call_span,
@@ -5806,6 +5918,7 @@ fn check_virtqueue_prepare_block(
     let mut payload = None;
     let mut device_writes = None;
     let mut status = None;
+    let mut idempotent: Option<bool> = None;
     for arg in args {
         match arg.label.as_deref() {
             Some("permit") => {
@@ -5920,12 +6033,48 @@ fn check_virtqueue_prepare_block(
                 require_layout_dma(&s.ty, "status", arg.span, mctx)?;
                 status = Some(s);
             }
+            // plans/M8.md item G, decision 13: 03-hardware.md §9's
+            // no-auto-retry rule needs to know whether re-running this
+            // operation is harmless, and **nothing in the compiler can
+            // work that out** — a write of fixed bytes to a fixed sector
+            // is idempotent, an append is not, and both spell the same
+            // `prepare_block`. So the author declares it, here, at the one
+            // place the operation is constructed. Required, not defaulted:
+            // a default in either direction is the compiler guessing.
+            Some("idempotent") => {
+                if idempotent.is_some() {
+                    return Err(type_error(
+                        "`prepare_block`'s `idempotent=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`prepare_block`'s `idempotent=` is a declaration, not a moved \
+                             value: drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                let Expr::Bool(_, v) = &arg.value else {
+                    return Err(type_error(
+                        "`prepare_block`'s `idempotent=` is a declaration the operation's type \
+                         carries, so it must be the literal `true` or `false` \
+                         (03-hardware.md §9)"
+                            .to_string(),
+                        arg.span,
+                    ));
+                };
+                idempotent = Some(*v);
+            }
             Some(other) => {
                 return Err(type_error(
                     format!(
                         "`prepare_block`'s own arguments are labelled `permit=`, `header=`, \
-                         `payload=`, `device_writes_payload=`, `status=`; `{other}=` names no \
-                         parameter"
+                         `payload=`, `device_writes_payload=`, `status=`, `idempotent=`; \
+                         `{other}=` names no parameter"
                     ),
                     arg.span,
                 ));
@@ -5938,22 +6087,42 @@ fn check_virtqueue_prepare_block(
             }
         }
     }
-    let (Some(permit), Some(header), Some(payload), Some(device_writes), Some(status)) =
-        (permit, header, payload, device_writes, status)
+    let (
+        Some(permit),
+        Some(header),
+        Some(payload),
+        Some(device_writes),
+        Some(status),
+        Some(idempotent),
+    ) = (permit, header, payload, device_writes, status, idempotent)
     else {
         return Err(type_error(
-            "`prepare_block` needs `permit=`, `header=`, `payload=`, `device_writes_payload=` \
-             and `status=`"
+            "`prepare_block` needs `permit=`, `header=`, `payload=`, `device_writes_payload=`, \
+             `status=` and `idempotent=`"
                 .to_string(),
             call_span,
         ));
     };
+    if !idempotent && fctx.in_unknown_outcome_arm() {
+        return Err(type_error(
+            no_auto_retry_message("prepare_block"),
+            call_span,
+        ));
+    }
     let payload_ty = payload.ty.clone();
     let _ = (fspan, &queue);
     Ok(TypedExpr {
         ty: Type::Named(
             "QueueOp".to_string(),
-            vec![types::TypeArg::Type(payload_ty)],
+            vec![
+                types::TypeArg::Type(payload_ty),
+                // The declaration rides on the operation's *type*, so a
+                // `publish` that never sees the `prepare_block` site (one
+                // hoisted out of the arm, say) still knows the answer.
+                // `Span::default()` keeps two identically-declared
+                // operations structurally equal.
+                types::TypeArg::Const(Expr::Bool(Span::default(), idempotent)),
+            ],
         ),
         kind: TypedExprKind::Intrinsic {
             key: "VirtQueue.prepare_block".to_string(),
@@ -6041,6 +6210,20 @@ fn check_virtqueue_publish(
         ));
     }
     let op = check_expr(&arg.value, None, fctx, mctx)?;
+    // plans/M8.md item G, decision 13: the operation's own type carries the
+    // author's idempotence declaration, so this catches a `prepare_block`
+    // hoisted out of the arm just as surely as one written inside it.
+    if let Type::Named(n, targs) = &op.ty {
+        if n == "QueueOp"
+            && matches!(
+                targs.get(1),
+                Some(types::TypeArg::Const(Expr::Bool(_, false)))
+            )
+            && fctx.in_unknown_outcome_arm()
+        {
+            return Err(type_error(no_auto_retry_message("publish"), call_span));
+        }
+    }
     let payload_ty = match &op.ty {
         Type::Named(n, targs) if n == "QueueOp" => match targs.first() {
             Some(types::TypeArg::Type(p)) => p.clone(),
@@ -6321,6 +6504,80 @@ fn check_virtqueue_claim(
         ),
         kind: TypedExprKind::Intrinsic {
             key: "VirtQueue.claim".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: vec![("receipt".to_string(), receipt)],
+        },
+    })
+}
+
+/// `queue.recover(receipt=take r) -> CompletionOutcome` — plans/M8.md item
+/// G / decision 12: 03-hardware.md §5's `Recovery` transition, and the one
+/// producer of §9's `CompletionOutcome`.
+///
+/// **Why this is not a second `claim`.** `claim` is the *resolved* path: it
+/// consumes the receipt and returns the payload with the completion, which
+/// is only sound because the device provably returned the descriptor in the
+/// current epoch. `recover` is the *abandon* path §9 describes ("cancelling
+/// in-flight work is a driver protocol, not a dropped future"): it consumes
+/// the receipt — receipts resolve exactly once and dropping one is illegal
+/// in every state (§5) — reports what is known about the operation's effect,
+/// and deliberately returns **no payload**, because after a reset the buffer
+/// is possibly device-owned and §9 forbids reclaiming it. Reclaim is
+/// quarantine's job (plans/M8.md item F); until it lands the pool slot is
+/// simply retired, which is the fail-closed half of the same sentence.
+fn check_virtqueue_recover(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    if args.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.recover(receipt=take ...)` takes exactly one labelled argument; \
+                 found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let arg = &args[0];
+    if arg.label.as_deref() != Some("receipt") {
+        return Err(type_error(
+            "`VirtQueue.recover`'s own argument is labelled `receipt=` (03-hardware.md §5)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Take {
+        return Err(type_error(
+            "`recover` consumes the receipt: write `receipt=take ...` (03-hardware.md §5: \
+             a receipt resolves exactly once)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    let receipt = check_expr(&arg.value, None, fctx, mctx)?;
+    match &receipt.ty {
+        Type::Named(n, _) if n == "Receipt" => {}
+        other => {
+            return Err(type_error(
+                format!(
+                    "`recover`'s `receipt=` must be a `Receipt[P]`; found `{}`",
+                    types::render_type(other)
+                ),
+                arg.span,
+            ));
+        }
+    }
+    Ok(TypedExpr {
+        ty: Type::Named("CompletionOutcome".to_string(), vec![]),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.recover".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
             args: vec![("receipt".to_string(), receipt)],

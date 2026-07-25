@@ -1,0 +1,136 @@
+module examples.check_completion_outcome
+
+# plans/M8.md item G (decision 12/13), 03-hardware.md §5/§9: `recover`
+# resolves a receipt through the `Recovery` state and reports a
+# `CompletionOutcome`, which source matches like any other enum.
+#
+# Dump oracle: the operation type-checks (`check`), the outcome's type is
+# the prelude enum and not a stringly-typed anything (`typed`), and it
+# lowers to one `QueueRecover` feeding an ordinary `EnumTag` compare chain
+# (`mwir`) — the same lowering a module-declared enum's `match` gets.
+#
+# It also pins the **permitted** half of the no-auto-retry rule: the
+# `Unknown` arm here re-issues an operation declared `idempotent=true`,
+# which is legal. `err-retry-after-unknown` is the same shape with
+# `idempotent=false` and is rejected by name; that pair is the rule's
+# positive/negative twin.
+#
+# Exhaustiveness is not opt-in: `err-completion-outcome-partial` drops the
+# `Unknown` arm and is rejected by the ordinary match-exhaustiveness pass.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+const BLK_T_IN: u32 = 0
+
+pool BlockControl
+pool BlockPayloads
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    capacity_sectors: u64
+    outcomes: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.outcomes = 0
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = 16
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    # Abandon a published operation and classify what is known about it.
+    # Re-reading the same sector is idempotent by inspection, so the
+    # `Unknown` arm may re-issue it — declared, not inferred.
+    fn abandon(mut self,
+               take receipt: Receipt[own[BlockPayloads] DmaBlock],
+               take spare: own[BlockPayloads] DmaBlock,
+               lba: u64) -> u64:
+        outcome = self.queue.recover(receipt=take receipt)
+        match outcome:
+            case .Completed:
+                self.outcomes = self.outcomes + 1
+                s = take spare
+                self.outcomes = self.outcomes + s.word
+            case .NotCompleted:
+                self.outcomes = self.outcomes + 2
+                s = take spare
+                self.outcomes = self.outcomes + s.word
+            case .Unknown:
+                permit = self.queue.reserve_proven(descriptors=3)
+                operation = self.queue.prepare_block(
+                    permit=take permit,
+                    header=BlkReqHeader(kind=BLK_T_IN, reserved=0, sector=lba),
+                    payload=take spare,
+                    device_writes_payload=true,
+                    status=BlkReqStatus(status=0xff),
+                    idempotent=true,
+                )
+                retry = self.queue.publish(operation=take operation)
+                # A receipt resolves exactly once, so the retry's own
+                # receipt is resolved here too (03-hardware.md §5).
+                again = self.queue.recover(receipt=take retry)
+                match again:
+                    case .Completed:
+                        self.outcomes = self.outcomes + 10
+                    case .NotCompleted:
+                        self.outcomes = self.outcomes + 20
+                    case .Unknown:
+                        self.outcomes = self.outcomes + 30
+        return self.outcomes
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-completion-outcome", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    _payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=4)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

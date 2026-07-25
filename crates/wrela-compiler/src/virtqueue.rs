@@ -333,6 +333,89 @@ pub fn validate_completion_length(
     Ok(u64::from(buffer_facing))
 }
 
+/// 03-hardware.md §9's `CompletionOutcome`, as the tag a recovered receipt
+/// yields. The numbers are **positions in
+/// `sema::prelude::builtin_enum_variants("CompletionOutcome")`** — the same
+/// order `lower::variant_index` compares a `case .Unknown:` arm against —
+/// and `outcome_tags_match_the_prelude_enum_order` below is the oracle that
+/// keeps the two from drifting apart. There is no second enum here on
+/// purpose: this is the *encoding* of the source enum, not a copy of it.
+pub const OUTCOME_COMPLETED: u64 = 0;
+pub const OUTCOME_NOT_COMPLETED: u64 = 1;
+pub const OUTCOME_UNKNOWN: u64 = 2;
+
+/// What `VirtQueue.recover` reports for one slot, or that the slot is in no
+/// recoverable state at all (a driver fault, like every other §4/§5
+/// bookkeeping violation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoverOutcome {
+    Completed,
+    NotCompleted,
+    Unknown,
+    /// Neither published nor resolved: nothing to recover. Aborts by name.
+    NotRecoverable,
+}
+
+impl RecoverOutcome {
+    /// The tag `recover` stores, or `None` for the fault case.
+    pub fn tag(self) -> Option<u64> {
+        match self {
+            RecoverOutcome::Completed => Some(OUTCOME_COMPLETED),
+            RecoverOutcome::NotCompleted => Some(OUTCOME_NOT_COMPLETED),
+            RecoverOutcome::Unknown => Some(OUTCOME_UNKNOWN),
+            RecoverOutcome::NotRecoverable => None,
+        }
+    }
+
+    /// Guest abort message for the fault case (03-hardware.md §5: a receipt
+    /// resolves exactly once, and dropping one is illegal in every state —
+    /// so a receipt that is neither in flight nor resolved cannot exist).
+    pub fn not_recoverable_abort_message() -> &'static str {
+        "driver fault: recover of a receipt that is neither in flight nor resolved \
+         (03-hardware.md §5)"
+    }
+}
+
+/// The whole of `VirtQueue.recover`'s decision, as one pure function
+/// (plans/M8.md item G / decision 12). `codegen::emit_queue_recover` emits
+/// exactly this ladder; the unit tests below are its oracle.
+///
+/// - **`Unknown`** — the stamped epoch is not the queue's live epoch
+///   (03-hardware.md §9: "After a reset, a write may have happened"), or the
+///   slot is still `INFLIGHT` (the device has not returned the descriptor
+///   and never will now that the driver is abandoning it). Both are the
+///   same fact: the operation was published and its effect is not
+///   attributable.
+/// - **`Completed` / `NotCompleted`** — the device *did* return the
+///   descriptor under the live epoch (`RESOLVED`), so the outcome is known
+///   and the virtio-blk status byte says which: `0` (`VIRTIO_BLK_S_OK`) is
+///   `Completed`, anything else (`S_IOERR` / `S_UNSUPP`) is `NotCompleted`.
+///
+/// The epoch test comes **first**, so a receipt that a reset invalidated
+/// reports `Unknown` even when the pre-reset drain had already resolved it —
+/// the same ordering `validate_completion_id` uses to make a stale
+/// completion `StaleId` rather than `DuplicateId`.
+pub fn recover_outcome(
+    slot_epoch: u64,
+    current_epoch: u64,
+    flags: u64,
+    device_status: u8,
+) -> RecoverOutcome {
+    if slot_epoch != current_epoch {
+        return RecoverOutcome::Unknown;
+    }
+    if flags & SLOT_FLAG_INFLIGHT != 0 {
+        return RecoverOutcome::Unknown;
+    }
+    if flags & SLOT_FLAG_RESOLVED != 0 {
+        if device_status == 0 {
+            return RecoverOutcome::Completed;
+        }
+        return RecoverOutcome::NotCompleted;
+    }
+    RecoverOutcome::NotRecoverable
+}
+
 /// Control-pool bytes a `depth`-deep queue needs: ring + packaging.
 pub fn control_bytes_needed(depth: u16) -> Option<u64> {
     let placed = place_ring(0, depth)?;
@@ -435,6 +518,55 @@ mod tests {
             }
             .abort_message()
         );
+    }
+
+    #[test]
+    fn outcome_tags_match_the_prelude_enum_order() {
+        // The one place the encoding and the source enum meet: a tag is a
+        // position in `builtin_enum_variants`, never an independent number.
+        let variants = crate::sema::prelude::builtin_enum_variants("CompletionOutcome")
+            .expect("`CompletionOutcome` is a prelude enum");
+        assert_eq!(variants, &["Completed", "NotCompleted", "Unknown"]);
+        assert_eq!(variants[OUTCOME_COMPLETED as usize], "Completed");
+        assert_eq!(variants[OUTCOME_NOT_COMPLETED as usize], "NotCompleted");
+        assert_eq!(variants[OUTCOME_UNKNOWN as usize], "Unknown");
+    }
+
+    #[test]
+    fn recover_reports_unknown_across_a_reset_and_while_in_flight() {
+        // 03-hardware.md §9: after a reset a write may have happened.
+        assert_eq!(
+            recover_outcome(0, 1, SLOT_FLAG_RESOLVED, 0),
+            RecoverOutcome::Unknown,
+            "a stale epoch outranks a resolved slot"
+        );
+        assert_eq!(
+            recover_outcome(0, 1, SLOT_FLAG_INFLIGHT, 0),
+            RecoverOutcome::Unknown
+        );
+        // Live epoch, still in flight: equally unattributable.
+        assert_eq!(
+            recover_outcome(3, 3, SLOT_FLAG_INFLIGHT, 0),
+            RecoverOutcome::Unknown
+        );
+    }
+
+    #[test]
+    fn recover_reports_the_device_status_when_the_epoch_still_holds() {
+        assert_eq!(
+            recover_outcome(3, 3, SLOT_FLAG_RESOLVED, 0),
+            RecoverOutcome::Completed
+        );
+        assert_eq!(
+            recover_outcome(3, 3, SLOT_FLAG_RESOLVED, 1),
+            RecoverOutcome::NotCompleted
+        );
+        // Neither in flight nor resolved: nothing to recover.
+        assert_eq!(
+            recover_outcome(3, 3, SLOT_FLAG_DEVICE_WRITES, 0),
+            RecoverOutcome::NotRecoverable
+        );
+        assert_eq!(RecoverOutcome::NotRecoverable.tag(), None);
     }
 
     #[test]

@@ -1,0 +1,255 @@
+Program
+  Const name=BLK_T_IN ty=u32
+    Int text=0 ty=u32
+  Const name=QDEPTH ty=usize
+    Int text=8 ty=usize
+  Fn name=build ret=Image
+    Body
+      Let name=img ty=Image
+        Intrinsic key=Image ty=Image
+          Arg label=name
+            Str text="check-completion-outcome" ty=Static[Str]
+          Arg label=target
+            EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
+      Let name=blk ty=ImageDecl
+        Intrinsic key=Image.device type_arg=VirtioBlock ty=ImageDecl
+          Arg label=transport
+            Int text=0x2000 ty=i64
+          Arg label=capacity_sectors
+            Int text=16 ty=i64
+          Arg label=required_features
+            List ty=[Feature; 1]
+              EnumConstruct enum=Feature variant=Flush ty=Feature
+          Arg label=vector
+            Int text=1 ty=i64
+      Let name=control ty=ImageDecl
+        Intrinsic key=Image.dma_pool type_arg=BlkReqHeader ty=ImageDecl
+          Arg label=name
+            PoolName name=BlockControl ty=PoolName
+          Arg label=device
+            Local name=blk ty=ImageDecl
+          Arg label=count
+            Int text=32 ty=i64
+      Let name=_payloads ty=ImageDecl
+        Intrinsic key=Image.dma_pool type_arg=DmaBlock ty=ImageDecl
+          Arg label=name
+            PoolName name=BlockPayloads ty=PoolName
+          Arg label=device
+            Local name=blk ty=ImageDecl
+          Arg label=count
+            Int text=4 ty=i64
+      Let name=disk ty=ImageDecl
+        Intrinsic key=Image.driver type_arg=BlkDriver ty=ImageDecl
+          Arg label=device
+            Local name=blk ty=ImageDecl
+      Intrinsic key=Image.supervise ty=unit
+        Arg label=children
+          List ty=[ImageDecl; 1]
+            Local name=disk ty=ImageDecl
+        Arg label=strategy
+          EnumConstruct enum=Restart variant=OneForOne ty=Restart
+        Arg label=intensity
+          Intrinsic key=RestartIntensity ty=RestartIntensity
+            Arg label=max
+              Int text=3 ty=i64
+            Arg label=within
+              Intrinsic key=seconds ty=Duration
+                Arg label=n
+                  Int text=10 ty=u64
+      Return
+        Intrinsic key=Image.seal ty=Image
+  Struct name=BlkDriver
+    Method name=abandon ret=u64
+      Receiver mode=mut ty=BlkDriver
+      Param name=receipt mode=take ty=Receipt[own[BlockPayloads] DmaBlock]
+      Param name=spare mode=take ty=own[BlockPayloads] DmaBlock
+      Param name=lba mode=read ty=u64
+      Body
+        Let name=outcome ty=CompletionOutcome
+          Intrinsic key=VirtQueue.recover ty=CompletionOutcome
+            Receiver
+              Field name=queue ty=VirtQueue[..8]
+                Local name=self ty=BlkDriver
+            Arg label=receipt
+              Local name=receipt ty=Receipt[own[BlockPayloads] DmaBlock]
+        Match
+          Local name=outcome ty=CompletionOutcome
+          Case
+            VariantPattern enum=CompletionOutcome variant=Completed ty=CompletionOutcome
+            Assign
+              Field name=outcomes ty=u64
+                Local name=self ty=BlkDriver
+              Binary op=+ ty=u64
+                Field name=outcomes ty=u64
+                  Local name=self ty=BlkDriver
+                Int text=1 ty=u64
+            Let name=s ty=own[BlockPayloads] DmaBlock
+              Take ty=own[BlockPayloads] DmaBlock
+                Local name=spare ty=own[BlockPayloads] DmaBlock
+            Assign
+              Field name=outcomes ty=u64
+                Local name=self ty=BlkDriver
+              Binary op=+ ty=u64
+                Field name=outcomes ty=u64
+                  Local name=self ty=BlkDriver
+                Field name=word ty=u64
+                  Local name=s ty=own[BlockPayloads] DmaBlock
+          Case
+            VariantPattern enum=CompletionOutcome variant=NotCompleted ty=CompletionOutcome
+            Assign
+              Field name=outcomes ty=u64
+                Local name=self ty=BlkDriver
+              Binary op=+ ty=u64
+                Field name=outcomes ty=u64
+                  Local name=self ty=BlkDriver
+                Int text=2 ty=u64
+            Let name=s ty=own[BlockPayloads] DmaBlock
+              Take ty=own[BlockPayloads] DmaBlock
+                Local name=spare ty=own[BlockPayloads] DmaBlock
+            Assign
+              Field name=outcomes ty=u64
+                Local name=self ty=BlkDriver
+              Binary op=+ ty=u64
+                Field name=outcomes ty=u64
+                  Local name=self ty=BlkDriver
+                Field name=word ty=u64
+                  Local name=s ty=own[BlockPayloads] DmaBlock
+          Case
+            VariantPattern enum=CompletionOutcome variant=Unknown ty=CompletionOutcome
+            Let name=permit ty=QueuePermit
+              Intrinsic key=VirtQueue.reserve_proven type_arg=VirtQueue[..8] ty=QueuePermit
+                Receiver
+                  Field name=queue ty=VirtQueue[..8]
+                    Local name=self ty=BlkDriver
+                Arg label=descriptors
+                  Int text=3 ty=usize
+            Let name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+              Intrinsic key=VirtQueue.prepare_block ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+                Receiver
+                  Field name=queue ty=VirtQueue[..8]
+                    Local name=self ty=BlkDriver
+                Arg label=permit
+                  Local name=permit ty=QueuePermit
+                Arg label=header
+                  StructLiteral name=BlkReqHeader ty=BlkReqHeader
+                    Field name=kind
+                      Const name=BLK_T_IN ty=u32
+                    Field name=reserved
+                      Int text=0 ty=u32
+                    Field name=sector
+                      Local name=lba ty=u64
+                Arg label=payload
+                  Local name=spare ty=own[BlockPayloads] DmaBlock
+                Arg label=device_writes_payload
+                  Bool value=true ty=bool
+                Arg label=status
+                  StructLiteral name=BlkReqStatus ty=BlkReqStatus
+                    Field name=status
+                      Int text=0xff ty=u8
+            Let name=retry ty=Receipt[own[BlockPayloads] DmaBlock]
+              Intrinsic key=VirtQueue.publish ty=Receipt[own[BlockPayloads] DmaBlock]
+                Receiver
+                  Field name=queue ty=VirtQueue[..8]
+                    Local name=self ty=BlkDriver
+                Arg label=operation
+                  Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+            Let name=again ty=CompletionOutcome
+              Intrinsic key=VirtQueue.recover ty=CompletionOutcome
+                Receiver
+                  Field name=queue ty=VirtQueue[..8]
+                    Local name=self ty=BlkDriver
+                Arg label=receipt
+                  Local name=retry ty=Receipt[own[BlockPayloads] DmaBlock]
+            Match
+              Local name=again ty=CompletionOutcome
+              Case
+                VariantPattern enum=CompletionOutcome variant=Completed ty=CompletionOutcome
+                Assign
+                  Field name=outcomes ty=u64
+                    Local name=self ty=BlkDriver
+                  Binary op=+ ty=u64
+                    Field name=outcomes ty=u64
+                      Local name=self ty=BlkDriver
+                    Int text=10 ty=u64
+              Case
+                VariantPattern enum=CompletionOutcome variant=NotCompleted ty=CompletionOutcome
+                Assign
+                  Field name=outcomes ty=u64
+                    Local name=self ty=BlkDriver
+                  Binary op=+ ty=u64
+                    Field name=outcomes ty=u64
+                      Local name=self ty=BlkDriver
+                    Int text=20 ty=u64
+              Case
+                VariantPattern enum=CompletionOutcome variant=Unknown ty=CompletionOutcome
+                Assign
+                  Field name=outcomes ty=u64
+                    Local name=self ty=BlkDriver
+                  Binary op=+ ty=u64
+                    Field name=outcomes ty=u64
+                      Local name=self ty=BlkDriver
+                    Int text=30 ty=u64
+        Return
+          Field name=outcomes ty=u64
+            Local name=self ty=BlkDriver
+    Init ret=Result[unit, BootError]
+      Receiver mode=mut ty=BlkDriver
+      Param name=cap mode=take ty=DeviceCap[VirtioBlock]
+      Param name=control_pool mode=take ty=DmaPool[BlockControl, 512]
+      Body
+        Let name=claimed ty=DriverClaimedDevice[VirtioBlock]
+          Intrinsic key=Device.claim type_arg=VirtioBlock ty=DriverClaimedDevice[VirtioBlock]
+            Arg label=cap
+              Local name=cap ty=DeviceCap[VirtioBlock]
+        Assign
+          Field name=irq_regs ty=Mmio[VirtioIrqMmio]
+            Local name=self ty=BlkDriver
+          Intrinsic key=Device.map_partition type_arg=VirtioIrqMmio ty=Mmio[VirtioIrqMmio]
+            Receiver
+              Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
+        Assign
+          Field name=outcomes ty=u64
+            Local name=self ty=BlkDriver
+          Int text=0 ty=u64
+        Let name=negotiated ty=FeaturesAcceptedDevice[VirtioBlock]
+          Try ty=FeaturesAcceptedDevice[VirtioBlock]
+            Intrinsic key=Device.negotiate type_arg=VirtioBlock ty=Result[FeaturesAcceptedDevice[VirtioBlock], BootError]
+              Receiver
+                Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
+              Arg label=required
+                List ty=[Feature; 1]
+                  EnumConstruct enum=Feature variant=Flush ty=Feature
+              Arg label=optional
+                List ty=[Feature; 1]
+                  EnumConstruct enum=Feature variant=Flush ty=Feature
+        Assign
+          Field name=queue ty=VirtQueue[..8]
+            Local name=self ty=BlkDriver
+          Try ty=VirtQueue[..8]
+            Intrinsic key=VirtQueue.configure type_arg=VirtioBlock ty=Result[VirtQueue[..8], BootError]
+              Arg label=pool
+                Local name=control_pool ty=DmaPool[BlockControl, 512]
+              Arg label=device
+                Local name=negotiated ty=FeaturesAcceptedDevice[VirtioBlock]
+              Arg label=index
+                Int text=0 ty=usize
+              Arg label=depth
+                Const name=QDEPTH ty=usize
+        Assign
+          Field name=capacity_sectors ty=u64
+            Local name=self ty=BlkDriver
+          Int text=16 ty=u64
+        Assign
+          Field name=device ty=RunningDevice[VirtioBlock]
+            Local name=self ty=BlkDriver
+          Intrinsic key=Device.start type_arg=VirtioBlock ty=RunningDevice[VirtioBlock]
+            Receiver
+              Local name=negotiated ty=QueuesConfiguredDevice[VirtioBlock]
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[unit, BootError]
+            Unit ty=unit
+  Struct name=BlkReqHeader
+  Struct name=BlkReqStatus
+  Struct name=DmaBlock
+  Struct name=VirtioBlock
+  Struct name=VirtioIrqMmio

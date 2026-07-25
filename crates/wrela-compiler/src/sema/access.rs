@@ -1961,6 +1961,20 @@ fn check_call_by_field(
                         vec![types::TypeArg::Type(Type::Unit)],
                     )));
                 }
+                // plans/M8.md item G: `recover` consumes the receipt and
+                // yields 03-hardware.md §9's `CompletionOutcome` — no
+                // brand to placeholder, the type is already exact.
+                "recover" => {
+                    if !allows_mut_receiver(root_mode) {
+                        return Err(receiver_mutability_error(
+                            AccessMode::Mut,
+                            root_mode,
+                            root_name.as_deref(),
+                            fspan,
+                        ));
+                    }
+                    return Ok(Some(Type::Named("CompletionOutcome".to_string(), vec![])));
+                }
                 _ => return Ok(None),
             }
         }

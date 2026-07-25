@@ -456,192 +456,184 @@ Module @12:1 path=examples.virtio_storage
                 Name @204:20 name=BlkReqStatus
                 Arg @204:33 label=status
                   Int @204:40 text=0xff
-        Return @210:9
-          Call @210:34
-            Field @210:27 name=publish
-              Field @210:21 name=queue
-                Name @210:16 name=self
-            Arg @210:35 label=operation mode=take
-              Name @210:50 name=operation
-    Fn @212:5 name=submit_write pub=true
-      Receiver @212:25 mode=mut
-      Param @212:35 name=lba mode=read
-        TypeName @212:40 name=u64
-      Param @213:25 name=buffer mode=take
-        OwnType @213:38 pool=BlockPayloads
-          TypeName @213:57 name=DmaBlock
-      TypeName @214:12 name=Receipt
-        OwnType @214:20 pool=BlockPayloads
-          TypeName @214:39 name=DmaBlock
+            Arg @205:13 label=idempotent
+              Bool @205:24 value=true
+        Return @211:9
+          Call @211:34
+            Field @211:27 name=publish
+              Field @211:21 name=queue
+                Name @211:16 name=self
+            Arg @211:35 label=operation mode=take
+              Name @211:50 name=operation
+    Fn @213:5 name=submit_write pub=true
+      Receiver @213:25 mode=mut
+      Param @213:35 name=lba mode=read
+        TypeName @213:40 name=u64
+      Param @214:25 name=buffer mode=take
+        OwnType @214:38 pool=BlockPayloads
+          TypeName @214:57 name=DmaBlock
+      TypeName @215:12 name=Receipt
+        OwnType @215:20 pool=BlockPayloads
+          TypeName @215:39 name=DmaBlock
       Body
-        If @215:9
-          Binary @215:16 op=>=
-            Name @215:12 name=lba
-            Field @215:24 name=capacity_sectors
-              Name @215:19 name=self
+        If @216:9
+          Binary @216:16 op=>=
+            Name @216:12 name=lba
+            Field @216:24 name=capacity_sectors
+              Name @216:19 name=self
           Then
-            Return @216:13
-              Call @216:37
-                Field @216:31 name=reject
-                  Field @216:25 name=queue
-                    Name @216:20 name=self
-                Arg @217:17 label=payload mode=take
-                  Name @217:30 name=buffer
-                Arg @218:17 label=error
-                  Field @218:31 name=OutOfRange
-                    Name @218:23 name=IoError
-        Assign @221:9 op==
-          Name @221:9 name=permit
-          Call @221:43
-            Field @221:29 name=reserve_proven
-              Field @221:23 name=queue
-                Name @221:18 name=self
-            Arg @221:44 label=descriptors
-              Int @221:56 text=3
+            Return @217:13
+              Call @217:37
+                Field @217:31 name=reject
+                  Field @217:25 name=queue
+                    Name @217:20 name=self
+                Arg @218:17 label=payload mode=take
+                  Name @218:30 name=buffer
+                Arg @219:17 label=error
+                  Field @219:31 name=OutOfRange
+                    Name @219:23 name=IoError
         Assign @222:9 op==
-          Name @222:9 name=operation
-          Call @222:45
-            Field @222:32 name=prepare_block
-              Field @222:26 name=queue
-                Name @222:21 name=self
-            Arg @223:13 label=permit mode=take
-              Name @223:25 name=permit
-            Arg @224:13 label=header
-              Call @224:32
-                Name @224:20 name=BlkReqHeader
-                Arg @224:33 label=kind
-                  Name @224:38 name=BLK_T_OUT
-                Arg @224:49 label=reserved
-                  Int @224:58 text=0
-                Arg @224:61 label=sector
-                  Name @224:68 name=lba
-            Arg @225:13 label=payload mode=take
-              Name @225:26 name=buffer
-            Arg @226:13 label=device_writes_payload
-              Bool @226:35 value=false
-            Arg @227:13 label=status
-              Call @227:32
-                Name @227:20 name=BlkReqStatus
-                Arg @227:33 label=status
-                  Int @227:40 text=0xff
-        Return @229:9
-          Call @229:34
-            Field @229:27 name=publish
-              Field @229:21 name=queue
-                Name @229:16 name=self
-            Arg @229:35 label=operation mode=take
-              Name @229:50 name=operation
-  Enum @236:1 name=CacheState
-    Variant @237:5 name=Invalid
-    Variant @238:5 name=Clean
-      VariantField @238:11 name=lba
-        TypeName @238:16 name=u64
-    Variant @239:5 name=Dirty
-      VariantField @239:11 name=lba
-        TypeName @239:16 name=u64
-    Variant @240:5 name=Replacing
-  Struct @243:1 name=CacheLine
-    Field @244:5 name=state
-      TypeName @244:12 name=CacheState
-    Field @245:5 name=data
-      TypeName @245:11 name=Option
-        OwnType @245:18 pool=BlockPayloads
-          TypeName @245:37 name=DmaBlock
-    Fn @247:5 name=invalid
-      Param @247:16 name=block mode=take
-        OwnType @247:28 pool=BlockPayloads
-          TypeName @247:47 name=DmaBlock
-      TypeName @247:60 name=CacheLine
+          Name @222:9 name=permit
+          Call @222:43
+            Field @222:29 name=reserve_proven
+              Field @222:23 name=queue
+                Name @222:18 name=self
+            Arg @222:44 label=descriptors
+              Int @222:56 text=3
+        Assign @223:9 op==
+          Name @223:9 name=operation
+          Call @223:45
+            Field @223:32 name=prepare_block
+              Field @223:26 name=queue
+                Name @223:21 name=self
+            Arg @224:13 label=permit mode=take
+              Name @224:25 name=permit
+            Arg @225:13 label=header
+              Call @225:32
+                Name @225:20 name=BlkReqHeader
+                Arg @225:33 label=kind
+                  Name @225:38 name=BLK_T_OUT
+                Arg @225:49 label=reserved
+                  Int @225:58 text=0
+                Arg @225:61 label=sector
+                  Name @225:68 name=lba
+            Arg @226:13 label=payload mode=take
+              Name @226:26 name=buffer
+            Arg @227:13 label=device_writes_payload
+              Bool @227:35 value=false
+            Arg @228:13 label=status
+              Call @228:32
+                Name @228:20 name=BlkReqStatus
+                Arg @228:33 label=status
+                  Int @228:40 text=0xff
+            Arg @229:13 label=idempotent
+              Bool @229:24 value=false
+        Return @231:9
+          Call @231:34
+            Field @231:27 name=publish
+              Field @231:21 name=queue
+                Name @231:16 name=self
+            Arg @231:35 label=operation mode=take
+              Name @231:50 name=operation
+  Enum @238:1 name=CacheState
+    Variant @239:5 name=Invalid
+    Variant @240:5 name=Clean
+      VariantField @240:11 name=lba
+        TypeName @240:16 name=u64
+    Variant @241:5 name=Dirty
+      VariantField @241:11 name=lba
+        TypeName @241:16 name=u64
+    Variant @242:5 name=Replacing
+  Struct @245:1 name=CacheLine
+    Field @246:5 name=state
+      TypeName @246:12 name=CacheState
+    Field @247:5 name=data
+      TypeName @247:11 name=Option
+        OwnType @247:18 pool=BlockPayloads
+          TypeName @247:37 name=DmaBlock
+    Fn @249:5 name=invalid
+      Param @249:16 name=block mode=take
+        OwnType @249:28 pool=BlockPayloads
+          TypeName @249:47 name=DmaBlock
+      TypeName @249:60 name=CacheLine
       Body
-        Return @248:9
-          Call @248:25
-            Name @248:16 name=CacheLine
-            Arg @248:26 label=state
-              Field @248:43 name=Invalid
-                Name @248:32 name=CacheState
-            Arg @248:52 label=data
-              Call @248:61
-                Name @248:57 name=Some
-                Arg @248:62 mode=take
-                  Name @248:67 name=block
-  Struct @256:1 name=CacheFill
-    Field @257:5 name=index
-      TypeName @257:12 name=usize
-    Field @258:5 name=fallback
-      TypeName @258:15 name=CacheState
-    Field @259:5 name=data
-      OwnType @259:11 pool=BlockPayloads
-        TypeName @259:30 name=DmaBlock
-    Fn @261:5 name=invalidate_fallback
-      Receiver @261:28 mode=mut
+        Return @250:9
+          Call @250:25
+            Name @250:16 name=CacheLine
+            Arg @250:26 label=state
+              Field @250:43 name=Invalid
+                Name @250:32 name=CacheState
+            Arg @250:52 label=data
+              Call @250:61
+                Name @250:57 name=Some
+                Arg @250:62 mode=take
+                  Name @250:67 name=block
+  Struct @258:1 name=CacheFill
+    Field @259:5 name=index
+      TypeName @259:12 name=usize
+    Field @260:5 name=fallback
+      TypeName @260:15 name=CacheState
+    Field @261:5 name=data
+      OwnType @261:11 pool=BlockPayloads
+        TypeName @261:30 name=DmaBlock
+    Fn @263:5 name=invalidate_fallback
+      Receiver @263:28 mode=mut
       Body
-        Assign @262:9 op==
-          Field @262:14 name=fallback
-            Name @262:9 name=self
-          Field @262:36 name=Invalid
-            Name @262:25 name=CacheState
-  Struct @265:1 name=BlockCache
-    Field @266:5 name=lines
-      ArrayType @266:12
-        TypeName @266:13 name=CacheLine
-        Name @266:24 name=CACHE_BLOCKS
-    Init @268:5
-      Receiver @268:10 mode=mut
-      Param @268:20 name=blocks mode=take
-        ArrayType @268:33
-          OwnType @268:34 pool=BlockPayloads
-            TypeName @268:53 name=DmaBlock
-          Name @268:63 name=CACHE_BLOCKS
+        Assign @264:9 op==
+          Field @264:14 name=fallback
+            Name @264:9 name=self
+          Field @264:36 name=Invalid
+            Name @264:25 name=CacheState
+  Struct @267:1 name=BlockCache
+    Field @268:5 name=lines
+      ArrayType @268:12
+        TypeName @268:13 name=CacheLine
+        Name @268:24 name=CACHE_BLOCKS
+    Init @270:5
+      Receiver @270:10 mode=mut
+      Param @270:20 name=blocks mode=take
+        ArrayType @270:33
+          OwnType @270:34 pool=BlockPayloads
+            TypeName @270:53 name=DmaBlock
+          Name @270:63 name=CACHE_BLOCKS
       Body
-        Assign @269:9 op==
-          Field @269:14 name=lines
-            Name @269:9 name=self
-          Call @269:37
-            Field @269:29 name=map_take
-              Name @269:22 name=blocks
-            Arg @269:38
-              Field @269:48 name=invalid
-                Name @269:38 name=CacheLine
-    Fn @271:5 name=lookup
-      Receiver @271:15 mode=read
-      Param @271:26 name=lba mode=read
-        TypeName @271:31 name=u64
-      TypeName @271:39 name=Option
-        TypeName @271:46 name=usize
+        Assign @271:9 op==
+          Field @271:14 name=lines
+            Name @271:9 name=self
+          Call @271:37
+            Field @271:29 name=map_take
+              Name @271:22 name=blocks
+            Arg @271:38
+              Field @271:48 name=invalid
+                Name @271:38 name=CacheLine
+    Fn @273:5 name=lookup
+      Receiver @273:15 mode=read
+      Param @273:26 name=lba mode=read
+        TypeName @273:31 name=u64
+      TypeName @273:39 name=Option
+        TypeName @273:46 name=usize
       Body
-        Assign @272:9 op==
-          Name @272:9 name=index
-          Call @272:57
-            Index @272:50
-              Field @272:48 name=to
-                Binary @272:22 op=%
-                  Name @272:18 name=lba
-                  Call @272:44
-                    Index @272:39
-                      Field @272:37 name=to
-                        Name @272:24 name=CACHE_BLOCKS
-                      Name @272:40 name=u64
-              Name @272:51 name=usize
-        Match @273:9
-          Field @273:33 name=state
-            Index @273:25
-              Field @273:20 name=lines
-                Name @273:15 name=self
-              Name @273:26 name=index
-          Case @274:13
-            VariantPattern @274:18 variant=Clean
-              Binding @274:25 name=found
-            Guard
-              Binary @274:41 op===
-                Name @274:35 name=found
-                Name @274:44 name=lba
-            Return @275:17
-              Call @275:28
-                Name @275:24 name=Some
-                Arg @275:29
-                  Name @275:29 name=index
+        Assign @274:9 op==
+          Name @274:9 name=index
+          Call @274:57
+            Index @274:50
+              Field @274:48 name=to
+                Binary @274:22 op=%
+                  Name @274:18 name=lba
+                  Call @274:44
+                    Index @274:39
+                      Field @274:37 name=to
+                        Name @274:24 name=CACHE_BLOCKS
+                      Name @274:40 name=u64
+              Name @274:51 name=usize
+        Match @275:9
+          Field @275:33 name=state
+            Index @275:25
+              Field @275:20 name=lines
+                Name @275:15 name=self
+              Name @275:26 name=index
           Case @276:13
-            VariantPattern @276:18 variant=Dirty
+            VariantPattern @276:18 variant=Clean
               Binding @276:25 name=found
             Guard
               Binary @276:41 op===
@@ -653,1459 +645,1471 @@ Module @12:1 path=examples.virtio_storage
                 Arg @277:29
                   Name @277:29 name=index
           Case @278:13
-            Wildcard @278:18
+            VariantPattern @278:18 variant=Dirty
+              Binding @278:25 name=found
+            Guard
+              Binary @278:41 op===
+                Name @278:35 name=found
+                Name @278:44 name=lba
             Return @279:17
-              Name @279:24 name=None
-    Fn @283:5 name=begin_replace
-      Receiver @283:22 mode=mut
-      Param @283:32 name=index mode=read
-        TypeName @283:39 name=usize
-      TypeName @283:49 name=CacheFill
+              Call @279:28
+                Name @279:24 name=Some
+                Arg @279:29
+                  Name @279:29 name=index
+          Case @280:13
+            Wildcard @280:18
+            Return @281:17
+              Name @281:24 name=None
+    Fn @285:5 name=begin_replace
+      Receiver @285:22 mode=mut
+      Param @285:32 name=index mode=read
+        TypeName @285:39 name=usize
+      TypeName @285:49 name=CacheFill
       Body
-        Assign @284:9 op==
-          Name @284:9 name=prior
-          Field @284:35 name=state
-            Index @284:27
-              Field @284:22 name=lines
-                Name @284:17 name=self
-              Name @284:28 name=index
-        Match @285:9
-          Call @285:42
-            Field @285:38 name=take
-              Field @285:33 name=data
-                Index @285:25
-                  Field @285:20 name=lines
-                    Name @285:15 name=self
-                  Name @285:26 name=index
-          Case @286:13
-            VariantPattern @286:18 variant=Some
-              TakePattern @286:24
-                Binding @286:29 name=block
-            Assign @287:17 op==
-              Name @287:17 name=data
-              Unary @287:24 op=take
-                Name @287:29 name=block
+        Assign @286:9 op==
+          Name @286:9 name=prior
+          Field @286:35 name=state
+            Index @286:27
+              Field @286:22 name=lines
+                Name @286:17 name=self
+              Name @286:28 name=index
+        Match @287:9
+          Call @287:42
+            Field @287:38 name=take
+              Field @287:33 name=data
+                Index @287:25
+                  Field @287:20 name=lines
+                    Name @287:15 name=self
+                  Name @287:26 name=index
           Case @288:13
-            VariantPattern @288:18 variant=None
-            ExprStmt @289:17
-              Call @289:22
-                Name @289:17 name=panic
-                Arg @289:23
-                  Str @289:23 text="cache line has no payload"
-        Assign @290:9 op==
-          Field @290:27 name=state
-            Index @290:19
-              Field @290:14 name=lines
-                Name @290:9 name=self
-              Name @290:20 name=index
-          Field @290:46 name=Replacing
-            Name @290:35 name=CacheState
-        Return @291:9
-          Call @291:25
-            Name @291:16 name=CacheFill
-            Arg @291:26 label=index
-              Name @291:32 name=index
-            Arg @291:39 label=fallback
-              Name @291:48 name=prior
-            Arg @291:55 label=data mode=take
-              Name @291:65 name=data
-    Fn @295:5 name=resolve_replace
-      Receiver @295:24 mode=mut
-      Param @295:34 name=fill mode=take
-        TypeName @295:45 name=CacheFill
-      Param @295:56 name=next mode=read
-        TypeName @295:62 name=Option
-          TypeName @295:69 name=CacheState
+            VariantPattern @288:18 variant=Some
+              TakePattern @288:24
+                Binding @288:29 name=block
+            Assign @289:17 op==
+              Name @289:17 name=data
+              Unary @289:24 op=take
+                Name @289:29 name=block
+          Case @290:13
+            VariantPattern @290:18 variant=None
+            ExprStmt @291:17
+              Call @291:22
+                Name @291:17 name=panic
+                Arg @291:23
+                  Str @291:23 text="cache line has no payload"
+        Assign @292:9 op==
+          Field @292:27 name=state
+            Index @292:19
+              Field @292:14 name=lines
+                Name @292:9 name=self
+              Name @292:20 name=index
+          Field @292:46 name=Replacing
+            Name @292:35 name=CacheState
+        Return @293:9
+          Call @293:25
+            Name @293:16 name=CacheFill
+            Arg @293:26 label=index
+              Name @293:32 name=index
+            Arg @293:39 label=fallback
+              Name @293:48 name=prior
+            Arg @293:55 label=data mode=take
+              Name @293:65 name=data
+    Fn @297:5 name=resolve_replace
+      Receiver @297:24 mode=mut
+      Param @297:34 name=fill mode=take
+        TypeName @297:45 name=CacheFill
+      Param @297:56 name=next mode=read
+        TypeName @297:62 name=Option
+          TypeName @297:69 name=CacheState
       Body
-        Assign @296:9 op==
-          Field @296:32 name=data
-            Index @296:19
-              Field @296:14 name=lines
-                Name @296:9 name=self
-              Field @296:25 name=index
-                Name @296:20 name=fill
-          Call @296:43
-            Name @296:39 name=Some
-            Arg @296:44 mode=take
-              Field @296:54 name=data
-                Name @296:49 name=fill
-        Assign @297:9 op==
-          Field @297:32 name=state
-            Index @297:19
-              Field @297:14 name=lines
-                Name @297:9 name=self
-              Field @297:25 name=index
-                Name @297:20 name=fill
-          Call @297:54
-            Field @297:45 name=unwrap_or
-              Name @297:40 name=next
-            Arg @297:55
-              Field @297:60 name=fallback
-                Name @297:55 name=fill
-    Fn @302:5 name=peek
-      GenericType @302:13 name=R
-      Receiver @302:16 mode=read
-      Param @302:27 name=index mode=read
-        TypeName @302:34 name=usize
-      Param @302:41 name=body mode=read
-        FnType @302:47
-          FnTypeParam @302:50 mode=read
-            TypeName @302:55 name=DmaBlock
-          TypeName @302:68 name=R
-      TypeName @302:74 name=R
+        Assign @298:9 op==
+          Field @298:32 name=data
+            Index @298:19
+              Field @298:14 name=lines
+                Name @298:9 name=self
+              Field @298:25 name=index
+                Name @298:20 name=fill
+          Call @298:43
+            Name @298:39 name=Some
+            Arg @298:44 mode=take
+              Field @298:54 name=data
+                Name @298:49 name=fill
+        Assign @299:9 op==
+          Field @299:32 name=state
+            Index @299:19
+              Field @299:14 name=lines
+                Name @299:9 name=self
+              Field @299:25 name=index
+                Name @299:20 name=fill
+          Call @299:54
+            Field @299:45 name=unwrap_or
+              Name @299:40 name=next
+            Arg @299:55
+              Field @299:60 name=fallback
+                Name @299:55 name=fill
+    Fn @304:5 name=peek
+      GenericType @304:13 name=R
+      Receiver @304:16 mode=read
+      Param @304:27 name=index mode=read
+        TypeName @304:34 name=usize
+      Param @304:41 name=body mode=read
+        FnType @304:47
+          FnTypeParam @304:50 mode=read
+            TypeName @304:55 name=DmaBlock
+          TypeName @304:68 name=R
+      TypeName @304:74 name=R
       Body
-        Match @303:9
-          Field @303:33 name=data
-            Index @303:25
-              Field @303:20 name=lines
-                Name @303:15 name=self
-              Name @303:26 name=index
-          Case @304:13
-            VariantPattern @304:18 variant=Some
-              Binding @304:24 name=data
-            Return @305:17
-              Call @305:28
-                Name @305:24 name=body
-                Arg @305:29
-                  Name @305:29 name=data
+        Match @305:9
+          Field @305:33 name=data
+            Index @305:25
+              Field @305:20 name=lines
+                Name @305:15 name=self
+              Name @305:26 name=index
           Case @306:13
-            VariantPattern @306:18 variant=None
-            ExprStmt @307:17
-              Call @307:22
-                Name @307:17 name=panic
-                Arg @307:23
-                  Str @307:23 text="cache read of unavailable line"
-    Fn @309:5 name=edit
-      GenericType @309:13 name=R
-      Receiver @309:16 mode=mut
-      Param @309:26 name=index mode=read
-        TypeName @309:33 name=usize
-      Param @309:40 name=body mode=read
-        FnType @309:46
-          FnTypeParam @309:49 mode=mut
-            TypeName @309:53 name=DmaBlock
-          TypeName @309:66 name=R
-      TypeName @309:72 name=R
+            VariantPattern @306:18 variant=Some
+              Binding @306:24 name=data
+            Return @307:17
+              Call @307:28
+                Name @307:24 name=body
+                Arg @307:29
+                  Name @307:29 name=data
+          Case @308:13
+            VariantPattern @308:18 variant=None
+            ExprStmt @309:17
+              Call @309:22
+                Name @309:17 name=panic
+                Arg @309:23
+                  Str @309:23 text="cache read of unavailable line"
+    Fn @311:5 name=edit
+      GenericType @311:13 name=R
+      Receiver @311:16 mode=mut
+      Param @311:26 name=index mode=read
+        TypeName @311:33 name=usize
+      Param @311:40 name=body mode=read
+        FnType @311:46
+          FnTypeParam @311:49 mode=mut
+            TypeName @311:53 name=DmaBlock
+          TypeName @311:66 name=R
+      TypeName @311:72 name=R
       Body
-        Match @310:9
-          Field @310:33 name=state
-            Index @310:25
-              Field @310:20 name=lines
-                Name @310:15 name=self
-              Name @310:26 name=index
-          Case @311:13
-            OrPattern @311:18
-              VariantPattern @311:18 variant=Clean
-                Wildcard @311:25
-              VariantPattern @311:30 variant=Dirty
-                Wildcard @311:37
-            Pass @312:17
+        Match @312:9
+          Field @312:33 name=state
+            Index @312:25
+              Field @312:20 name=lines
+                Name @312:15 name=self
+              Name @312:26 name=index
           Case @313:13
             OrPattern @313:18
-              VariantPattern @313:18 variant=Invalid
-              VariantPattern @313:29 variant=Replacing
-            ExprStmt @314:17
-              Call @314:22
-                Name @314:17 name=panic
-                Arg @314:23
-                  Str @314:23 text="cache edit of unavailable line"
-        Match @315:9
-          Field @315:33 name=data
-            Index @315:25
-              Field @315:20 name=lines
-                Name @315:15 name=self
-              Name @315:26 name=index
-          Case @316:13
-            VariantPattern @316:18 variant=Some
-              Binding @316:24 name=data
-            Return @317:17
-              Call @317:28
-                Name @317:24 name=body
-                Arg @317:29 mode=mut
-                  Name @317:33 name=data
+              VariantPattern @313:18 variant=Clean
+                Wildcard @313:25
+              VariantPattern @313:30 variant=Dirty
+                Wildcard @313:37
+            Pass @314:17
+          Case @315:13
+            OrPattern @315:18
+              VariantPattern @315:18 variant=Invalid
+              VariantPattern @315:29 variant=Replacing
+            ExprStmt @316:17
+              Call @316:22
+                Name @316:17 name=panic
+                Arg @316:23
+                  Str @316:23 text="cache edit of unavailable line"
+        Match @317:9
+          Field @317:33 name=data
+            Index @317:25
+              Field @317:20 name=lines
+                Name @317:15 name=self
+              Name @317:26 name=index
           Case @318:13
-            VariantPattern @318:18 variant=None
-            ExprStmt @319:17
-              Call @319:22
-                Name @319:17 name=panic
-                Arg @319:23
-                  Str @319:23 text="cache line has no payload"
-    Fn @321:5 name=mark_dirty
-      Receiver @321:19 mode=mut
-      Param @321:29 name=index mode=read
-        TypeName @321:36 name=usize
-      Param @321:43 name=lba mode=read
-        TypeName @321:48 name=u64
+            VariantPattern @318:18 variant=Some
+              Binding @318:24 name=data
+            Return @319:17
+              Call @319:28
+                Name @319:24 name=body
+                Arg @319:29 mode=mut
+                  Name @319:33 name=data
+          Case @320:13
+            VariantPattern @320:18 variant=None
+            ExprStmt @321:17
+              Call @321:22
+                Name @321:17 name=panic
+                Arg @321:23
+                  Str @321:23 text="cache line has no payload"
+    Fn @323:5 name=mark_dirty
+      Receiver @323:19 mode=mut
+      Param @323:29 name=index mode=read
+        TypeName @323:36 name=usize
+      Param @323:43 name=lba mode=read
+        TypeName @323:48 name=u64
       Body
-        Assign @322:9 op==
-          Field @322:27 name=state
-            Index @322:19
-              Field @322:14 name=lines
-                Name @322:9 name=self
-              Name @322:20 name=index
-          Call @322:51
-            Field @322:46 name=Dirty
-              Name @322:35 name=CacheState
-            Arg @322:52
-              Name @322:52 name=lba
-    Fn @324:5 name=ensure async=true
-      Receiver @324:21 mode=read
-      Param @324:27 name=disk mode=read
-        TypeName @324:33 name=Actor
-          TypeName @324:39 name=BlkDriver
-            TypeName @324:49 name=BLOCK_MODE
-      Param @325:21 name=lba mode=read
-        TypeName @325:26 name=u64
-      TypeName @325:34 name=Result
-        TypeName @325:41 name=usize
-        TypeName @325:48 name=FsError
+        Assign @324:9 op==
+          Field @324:27 name=state
+            Index @324:19
+              Field @324:14 name=lines
+                Name @324:9 name=self
+              Name @324:20 name=index
+          Call @324:51
+            Field @324:46 name=Dirty
+              Name @324:35 name=CacheState
+            Arg @324:52
+              Name @324:52 name=lba
+    Fn @326:5 name=ensure async=true
+      Receiver @326:21 mode=read
+      Param @326:27 name=disk mode=read
+        TypeName @326:33 name=Actor
+          TypeName @326:39 name=BlkDriver
+            TypeName @326:49 name=BLOCK_MODE
+      Param @327:21 name=lba mode=read
+        TypeName @327:26 name=u64
+      TypeName @327:34 name=Result
+        TypeName @327:41 name=usize
+        TypeName @327:48 name=FsError
       Body
-        If @326:9
-          Is @326:29
-            Call @326:23
-              Field @326:17 name=lookup
-                Name @326:12 name=self
-              Arg @326:24
-                Name @326:24 name=lba
-            VariantPattern @326:32 variant=Some
-              Binding @326:38 name=index
+        If @328:9
+          Is @328:29
+            Call @328:23
+              Field @328:17 name=lookup
+                Name @328:12 name=self
+              Arg @328:24
+                Name @328:24 name=lba
+            VariantPattern @328:32 variant=Some
+              Binding @328:38 name=index
           Then
-            Return @327:13
-              Call @327:22
-                Name @327:20 name=Ok
-                Arg @327:23
-                  Name @327:23 name=index
-        Assign @329:9 op==
-          Name @329:9 name=index
-          Try @329:67
-            Call @329:65
-              Index @329:58
-                Field @329:48 name=checked_to
-                  Binary @329:22 op=%
-                    Name @329:18 name=lba
-                    Call @329:44
-                      Index @329:39
-                        Field @329:37 name=to
-                          Name @329:24 name=CACHE_BLOCKS
-                        Name @329:40 name=u64
-                Name @329:59 name=usize
-        Assign @330:9 op==
-          Name @330:9 name=fill
-          Call @330:34
-            Field @330:21 name=begin_replace
-              Name @330:16 name=self
-            Arg @330:35
-              Name @330:35 name=index
-        Match @332:9
-          Field @332:20 name=fallback
-            Name @332:15 name=fill
-          Case @333:13
-            VariantPattern @333:18 variant=Dirty
-              Binding @333:25 name=old_lba
-            Match @334:17
-              Unary @334:23 op=await
-                Call @334:46
-                  Field @334:34 name=submit_write
-                    Name @334:29 name=disk
-                  Arg @335:21 label=lba
-                    Name @335:25 name=old_lba
-                  Arg @336:21 label=buffer mode=take
-                    Field @336:38 name=data
-                      Name @336:33 name=fill
-              Case @338:21
-                VariantPattern @338:26 variant=Ok
-                  Binding @338:30 name=receipt
-                Assign @339:25 op==
-                  Name @339:25 name=write_receipt
-                  Unary @339:41 op=take
-                    Name @339:46 name=receipt
+            Return @329:13
+              Call @329:22
+                Name @329:20 name=Ok
+                Arg @329:23
+                  Name @329:23 name=index
+        Assign @331:9 op==
+          Name @331:9 name=index
+          Try @331:67
+            Call @331:65
+              Index @331:58
+                Field @331:48 name=checked_to
+                  Binary @331:22 op=%
+                    Name @331:18 name=lba
+                    Call @331:44
+                      Index @331:39
+                        Field @331:37 name=to
+                          Name @331:24 name=CACHE_BLOCKS
+                        Name @331:40 name=u64
+                Name @331:59 name=usize
+        Assign @332:9 op==
+          Name @332:9 name=fill
+          Call @332:34
+            Field @332:21 name=begin_replace
+              Name @332:16 name=self
+            Arg @332:35
+              Name @332:35 name=index
+        Match @334:9
+          Field @334:20 name=fallback
+            Name @334:15 name=fill
+          Case @335:13
+            VariantPattern @335:18 variant=Dirty
+              Binding @335:25 name=old_lba
+            Match @336:17
+              Unary @336:23 op=await
+                Call @336:46
+                  Field @336:34 name=submit_write
+                    Name @336:29 name=disk
+                  Arg @337:21 label=lba
+                    Name @337:25 name=old_lba
+                  Arg @338:21 label=buffer mode=take
+                    Field @338:38 name=data
+                      Name @338:33 name=fill
               Case @340:21
-                VariantPattern @340:26 variant=Err
-                  Binding @340:31 name=error
-                ExprStmt @343:25
-                  Call @343:45
-                    Field @343:30 name=resolve_replace
-                      Name @343:25 name=self
-                    Arg @343:46 mode=take
-                      Name @343:51 name=fill
-                    Arg @343:57 label=next
-                      Name @343:62 name=None
-                Return @344:25
-                  Call @344:35
-                    Name @344:32 name=Err
-                    Arg @344:36
-                      Call @344:48
-                        Field @344:44 name=from
-                          Name @344:36 name=FsError
-                        Arg @344:49
-                          Name @344:49 name=error
-            Assign @345:17 op==
-              Name @345:17 name=write_done
-              Unary @345:30 op=await
-                Name @345:36 name=write_receipt
-            Assign @346:17 op==
-              Field @346:22 name=data
-                Name @346:17 name=fill
-              Unary @346:29 op=take
-                Field @346:45 name=payload
-                  Name @346:34 name=write_done
-            Match @347:17
-              Field @347:34 name=status
-                Name @347:23 name=write_done
-              Case @348:21
-                VariantPattern @348:26 variant=Ok
-                  Wildcard @348:30
-                Pass @349:25
+                VariantPattern @340:26 variant=Ok
+                  Binding @340:30 name=receipt
+                Assign @341:25 op==
+                  Name @341:25 name=write_receipt
+                  Unary @341:41 op=take
+                    Name @341:46 name=receipt
+              Case @342:21
+                VariantPattern @342:26 variant=Err
+                  Binding @342:31 name=error
+                ExprStmt @345:25
+                  Call @345:45
+                    Field @345:30 name=resolve_replace
+                      Name @345:25 name=self
+                    Arg @345:46 mode=take
+                      Name @345:51 name=fill
+                    Arg @345:57 label=next
+                      Name @345:62 name=None
+                Return @346:25
+                  Call @346:35
+                    Name @346:32 name=Err
+                    Arg @346:36
+                      Call @346:48
+                        Field @346:44 name=from
+                          Name @346:36 name=FsError
+                        Arg @346:49
+                          Name @346:49 name=error
+            Assign @347:17 op==
+              Name @347:17 name=write_done
+              Unary @347:30 op=await
+                Name @347:36 name=write_receipt
+            Assign @348:17 op==
+              Field @348:22 name=data
+                Name @348:17 name=fill
+              Unary @348:29 op=take
+                Field @348:45 name=payload
+                  Name @348:34 name=write_done
+            Match @349:17
+              Field @349:34 name=status
+                Name @349:23 name=write_done
               Case @350:21
-                VariantPattern @350:26 variant=Err
-                  Binding @350:31 name=error
-                ExprStmt @351:25
-                  Call @351:45
-                    Field @351:30 name=resolve_replace
-                      Name @351:25 name=self
-                    Arg @351:46 mode=take
-                      Name @351:51 name=fill
-                    Arg @351:57 label=next
-                      Name @351:62 name=None
-                Return @352:25
-                  Call @352:35
-                    Name @352:32 name=Err
-                    Arg @352:36
-                      Call @352:48
-                        Field @352:44 name=from
-                          Name @352:36 name=FsError
-                        Arg @352:49
-                          Name @352:49 name=error
-          Case @353:13
-            OrPattern @353:18
-              VariantPattern @353:18 variant=Clean
-                Wildcard @353:25
-              VariantPattern @353:30 variant=Invalid
-            Pass @354:17
+                VariantPattern @350:26 variant=Ok
+                  Wildcard @350:30
+                Pass @351:25
+              Case @352:21
+                VariantPattern @352:26 variant=Err
+                  Binding @352:31 name=error
+                ExprStmt @353:25
+                  Call @353:45
+                    Field @353:30 name=resolve_replace
+                      Name @353:25 name=self
+                    Arg @353:46 mode=take
+                      Name @353:51 name=fill
+                    Arg @353:57 label=next
+                      Name @353:62 name=None
+                Return @354:25
+                  Call @354:35
+                    Name @354:32 name=Err
+                    Arg @354:36
+                      Call @354:48
+                        Field @354:44 name=from
+                          Name @354:36 name=FsError
+                        Arg @354:49
+                          Name @354:49 name=error
           Case @355:13
-            VariantPattern @355:18 variant=Replacing
-            ExprStmt @356:17
-              Call @356:22
-                Name @356:17 name=panic
-                Arg @356:23
-                  Str @356:23 text="non-reentrant cache entered replacing state"
-        ExprStmt @361:9
-          Call @361:33
-            Field @361:14 name=invalidate_fallback
-              Name @361:9 name=fill
-        Match @362:9
-          Unary @362:15 op=await
-            Call @362:37
-              Field @362:26 name=submit_read
-                Name @362:21 name=disk
-              Arg @362:38 label=lba
-                Name @362:42 name=lba
-              Arg @362:47 label=buffer mode=take
-                Field @362:64 name=data
-                  Name @362:59 name=fill
-          Case @363:13
-            VariantPattern @363:18 variant=Ok
-              Binding @363:22 name=receipt
-            Assign @364:17 op==
-              Name @364:17 name=read_receipt
-              Unary @364:32 op=take
-                Name @364:37 name=receipt
+            OrPattern @355:18
+              VariantPattern @355:18 variant=Clean
+                Wildcard @355:25
+              VariantPattern @355:30 variant=Invalid
+            Pass @356:17
+          Case @357:13
+            VariantPattern @357:18 variant=Replacing
+            ExprStmt @358:17
+              Call @358:22
+                Name @358:17 name=panic
+                Arg @358:23
+                  Str @358:23 text="non-reentrant cache entered replacing state"
+        ExprStmt @363:9
+          Call @363:33
+            Field @363:14 name=invalidate_fallback
+              Name @363:9 name=fill
+        Match @364:9
+          Unary @364:15 op=await
+            Call @364:37
+              Field @364:26 name=submit_read
+                Name @364:21 name=disk
+              Arg @364:38 label=lba
+                Name @364:42 name=lba
+              Arg @364:47 label=buffer mode=take
+                Field @364:64 name=data
+                  Name @364:59 name=fill
           Case @365:13
-            VariantPattern @365:18 variant=Err
-              Binding @365:23 name=error
-            ExprStmt @366:17
-              Call @366:37
-                Field @366:22 name=resolve_replace
-                  Name @366:17 name=self
-                Arg @366:38 mode=take
-                  Name @366:43 name=fill
-                Arg @366:49 label=next
-                  Name @366:54 name=None
-            Return @367:17
-              Call @367:27
-                Name @367:24 name=Err
-                Arg @367:28
-                  Call @367:40
-                    Field @367:36 name=from
-                      Name @367:28 name=FsError
-                    Arg @367:41
-                      Name @367:41 name=error
-        Assign @368:9 op==
-          Name @368:9 name=read_done
-          Unary @368:21 op=await
-            Name @368:27 name=read_receipt
-        Assign @369:9 op==
-          Field @369:14 name=data
-            Name @369:9 name=fill
-          Unary @369:21 op=take
-            Field @369:36 name=payload
-              Name @369:26 name=read_done
-        Match @370:9
-          Field @370:25 name=status
-            Name @370:15 name=read_done
-          Case @371:13
-            VariantPattern @371:18 variant=Ok
-              Wildcard @371:22
-            Pass @372:17
+            VariantPattern @365:18 variant=Ok
+              Binding @365:22 name=receipt
+            Assign @366:17 op==
+              Name @366:17 name=read_receipt
+              Unary @366:32 op=take
+                Name @366:37 name=receipt
+          Case @367:13
+            VariantPattern @367:18 variant=Err
+              Binding @367:23 name=error
+            ExprStmt @368:17
+              Call @368:37
+                Field @368:22 name=resolve_replace
+                  Name @368:17 name=self
+                Arg @368:38 mode=take
+                  Name @368:43 name=fill
+                Arg @368:49 label=next
+                  Name @368:54 name=None
+            Return @369:17
+              Call @369:27
+                Name @369:24 name=Err
+                Arg @369:28
+                  Call @369:40
+                    Field @369:36 name=from
+                      Name @369:28 name=FsError
+                    Arg @369:41
+                      Name @369:41 name=error
+        Assign @370:9 op==
+          Name @370:9 name=read_done
+          Unary @370:21 op=await
+            Name @370:27 name=read_receipt
+        Assign @371:9 op==
+          Field @371:14 name=data
+            Name @371:9 name=fill
+          Unary @371:21 op=take
+            Field @371:36 name=payload
+              Name @371:26 name=read_done
+        Match @372:9
+          Field @372:25 name=status
+            Name @372:15 name=read_done
           Case @373:13
-            VariantPattern @373:18 variant=Err
-              Binding @373:23 name=error
-            ExprStmt @374:17
-              Call @374:37
-                Field @374:22 name=resolve_replace
-                  Name @374:17 name=self
-                Arg @374:38 mode=take
-                  Name @374:43 name=fill
-                Arg @374:49 label=next
-                  Name @374:54 name=None
-            Return @375:17
-              Call @375:27
-                Name @375:24 name=Err
-                Arg @375:28
-                  Call @375:40
-                    Field @375:36 name=from
-                      Name @375:28 name=FsError
-                    Arg @375:41
-                      Name @375:41 name=error
-        ExprStmt @377:9
-          Call @377:29
-            Field @377:14 name=resolve_replace
-              Name @377:9 name=self
-            Arg @377:30 mode=take
-              Name @377:35 name=fill
-            Arg @377:41 label=next
-              Call @377:50
-                Name @377:46 name=Some
-                Arg @377:51
-                  Call @377:67
-                    Field @377:62 name=Clean
-                      Name @377:51 name=CacheState
-                    Arg @377:68
-                      Name @377:68 name=lba
-        Return @378:9
-          Call @378:18
-            Name @378:16 name=Ok
-            Arg @378:19
-              Name @378:19 name=index
-  Const @381:1 name=INODE_LBA
-    TypeName @381:18 name=u64
-    Int @381:24 text=1
-  Const @382:1 name=MAGIC_FS
-    TypeName @382:17 name=u32
-    Int @382:23 text=0x5752_4c41
-  Struct @386:1 name=Inode
-    Attr @385:1 name=layout
-      Arg @385:9
-        Name @385:9 name=wire
-      Arg @385:15 label=endian
-        Name @385:22 name=little
-      Arg @385:30 label=version
-        Int @385:38 text=1
-      Arg @385:41 label=packed
-        Bool @385:48 value=true
-    Field @387:5 name=magic
-      TypeName @387:12 name=u32
-    Field @388:5 name=size_bytes
-      TypeName @388:17 name=u32
-    Field @389:5 name=start_lba
-      TypeName @389:16 name=u64
-    Field @390:5 name=blocks
-      TypeName @390:13 name=u32
-    Field @391:5 name=reserved
-      TypeName @391:15 name=u32
-  Struct @394:1 name=ExtentFs
-    Field @395:5 name=disk
-      TypeName @395:11 name=Actor
-        TypeName @395:17 name=BlkDriver
-          TypeName @395:27 name=BLOCK_MODE
-    Field @396:5 name=cache
-      TypeName @396:12 name=BlockCache
-    Field @397:5 name=next_free_lba
-      TypeName @397:20 name=u64
-    Init @399:5
-      Receiver @399:10 mode=mut
-      Param @399:20 name=disk mode=read
-        TypeName @399:26 name=Actor
-          TypeName @399:32 name=BlkDriver
-            TypeName @399:42 name=BLOCK_MODE
-      Param @400:10 name=blocks mode=take
-        ArrayType @400:23
-          OwnType @400:24 pool=BlockPayloads
-            TypeName @400:43 name=DmaBlock
-          Name @400:53 name=CACHE_BLOCKS
+            VariantPattern @373:18 variant=Ok
+              Wildcard @373:22
+            Pass @374:17
+          Case @375:13
+            VariantPattern @375:18 variant=Err
+              Binding @375:23 name=error
+            ExprStmt @376:17
+              Call @376:37
+                Field @376:22 name=resolve_replace
+                  Name @376:17 name=self
+                Arg @376:38 mode=take
+                  Name @376:43 name=fill
+                Arg @376:49 label=next
+                  Name @376:54 name=None
+            Return @377:17
+              Call @377:27
+                Name @377:24 name=Err
+                Arg @377:28
+                  Call @377:40
+                    Field @377:36 name=from
+                      Name @377:28 name=FsError
+                    Arg @377:41
+                      Name @377:41 name=error
+        ExprStmt @379:9
+          Call @379:29
+            Field @379:14 name=resolve_replace
+              Name @379:9 name=self
+            Arg @379:30 mode=take
+              Name @379:35 name=fill
+            Arg @379:41 label=next
+              Call @379:50
+                Name @379:46 name=Some
+                Arg @379:51
+                  Call @379:67
+                    Field @379:62 name=Clean
+                      Name @379:51 name=CacheState
+                    Arg @379:68
+                      Name @379:68 name=lba
+        Return @380:9
+          Call @380:18
+            Name @380:16 name=Ok
+            Arg @380:19
+              Name @380:19 name=index
+  Const @383:1 name=INODE_LBA
+    TypeName @383:18 name=u64
+    Int @383:24 text=1
+  Const @384:1 name=MAGIC_FS
+    TypeName @384:17 name=u32
+    Int @384:23 text=0x5752_4c41
+  Struct @388:1 name=Inode
+    Attr @387:1 name=layout
+      Arg @387:9
+        Name @387:9 name=wire
+      Arg @387:15 label=endian
+        Name @387:22 name=little
+      Arg @387:30 label=version
+        Int @387:38 text=1
+      Arg @387:41 label=packed
+        Bool @387:48 value=true
+    Field @389:5 name=magic
+      TypeName @389:12 name=u32
+    Field @390:5 name=size_bytes
+      TypeName @390:17 name=u32
+    Field @391:5 name=start_lba
+      TypeName @391:16 name=u64
+    Field @392:5 name=blocks
+      TypeName @392:13 name=u32
+    Field @393:5 name=reserved
+      TypeName @393:15 name=u32
+  Struct @396:1 name=ExtentFs
+    Field @397:5 name=disk
+      TypeName @397:11 name=Actor
+        TypeName @397:17 name=BlkDriver
+          TypeName @397:27 name=BLOCK_MODE
+    Field @398:5 name=cache
+      TypeName @398:12 name=BlockCache
+    Field @399:5 name=next_free_lba
+      TypeName @399:20 name=u64
+    Init @401:5
+      Receiver @401:10 mode=mut
+      Param @401:20 name=disk mode=read
+        TypeName @401:26 name=Actor
+          TypeName @401:32 name=BlkDriver
+            TypeName @401:42 name=BLOCK_MODE
+      Param @402:10 name=blocks mode=take
+        ArrayType @402:23
+          OwnType @402:24 pool=BlockPayloads
+            TypeName @402:43 name=DmaBlock
+          Name @402:53 name=CACHE_BLOCKS
       Body
-        Assign @401:9 op==
-          Field @401:14 name=disk
-            Name @401:9 name=self
-          Name @401:21 name=disk
-        Assign @402:9 op==
-          Field @402:14 name=cache
-            Name @402:9 name=self
-          Call @402:32
-            Name @402:22 name=BlockCache
-            Arg @402:33 label=blocks mode=take
-              Name @402:45 name=blocks
         Assign @403:9 op==
-          Field @403:14 name=next_free_lba
+          Field @403:14 name=disk
             Name @403:9 name=self
-          Int @403:30 text=64
-    Fn @405:5 name=read_file async=true
-      Receiver @405:24 mode=read
-      Param @405:30 name=ino mode=read
-        TypeName @405:35 name=u32
-      Param @406:24 name=out mode=take
-        OwnType @406:34 pool=AppBuffers
-          TypeName @406:50 name=Bytes
-      TypeName @407:12 name=Result
-        OwnType @407:19 pool=AppBuffers
-          TypeName @407:35 name=Bytes
-        TypeName @407:42 name=FsError
+          Name @403:21 name=disk
+        Assign @404:9 op==
+          Field @404:14 name=cache
+            Name @404:9 name=self
+          Call @404:32
+            Name @404:22 name=BlockCache
+            Arg @404:33 label=blocks mode=take
+              Name @404:45 name=blocks
+        Assign @405:9 op==
+          Field @405:14 name=next_free_lba
+            Name @405:9 name=self
+          Int @405:30 text=64
+    Fn @407:5 name=read_file async=true
+      Receiver @407:24 mode=read
+      Param @407:30 name=ino mode=read
+        TypeName @407:35 name=u32
+      Param @408:24 name=out mode=take
+        OwnType @408:34 pool=AppBuffers
+          TypeName @408:50 name=Bytes
+      TypeName @409:12 name=Result
+        OwnType @409:19 pool=AppBuffers
+          TypeName @409:35 name=Bytes
+        TypeName @409:42 name=FsError
       Body
-        Assign @408:9 op==
-          Name @408:9 name=inode_lba
-          Binary @408:31 op=+
-            Name @408:21 name=INODE_LBA
-            Call @408:51
-              Index @408:46
-                Field @408:44 name=to
-                  Binary @408:38 op=/
-                    Name @408:34 name=ino
-                    Int @408:40 text=16
-                Name @408:47 name=u64
-        Assign @409:9 op==
-          Name @409:9 name=inode_index
-          Try @409:68
-            Unary @409:23 op=await
-              Call @409:46
-                Field @409:40 name=ensure
-                  Field @409:34 name=cache
-                    Name @409:29 name=self
-                Arg @409:47
-                  Field @409:52 name=disk
-                    Name @409:47 name=self
-                Arg @409:58
-                  Name @409:58 name=inode_lba
-        Assign @413:9 op==
-          Name @413:9 name=node
-          Try @414:80
-            Call @413:31
-              Field @413:27 name=peek
-                Field @413:21 name=cache
-                  Name @413:16 name=self
-              Arg @413:32
-                Name @413:32 name=inode_index
-              Arg @413:45
-                Closure @413:45
-                  ClosureParam @413:46 name=block mode=read
-                    TypeName @413:53 name=DmaBlock
-                  Call @414:41
-                    Index @414:34
-                      Field @414:25 name=read_wire
-                        Field @414:19 name=bytes
-                          Name @414:13 name=block
-                      Name @414:35 name=Inode
-                    Arg @414:42 label=offset
-                      Call @414:76
-                        Index @414:69
-                          Field @414:67 name=to
-                            Binary @414:61 op=*
-                              Binary @414:55 op=%
-                                Name @414:51 name=ino
-                                Int @414:57 text=16
-                              Int @414:63 text=32
-                          Name @414:70 name=usize
-        If @415:9
-          Binary @415:23 op=!=
-            Field @415:17 name=magic
-              Name @415:12 name=node
-            Name @415:26 name=MAGIC_FS
+        Assign @410:9 op==
+          Name @410:9 name=inode_lba
+          Binary @410:31 op=+
+            Name @410:21 name=INODE_LBA
+            Call @410:51
+              Index @410:46
+                Field @410:44 name=to
+                  Binary @410:38 op=/
+                    Name @410:34 name=ino
+                    Int @410:40 text=16
+                Name @410:47 name=u64
+        Assign @411:9 op==
+          Name @411:9 name=inode_index
+          Try @411:68
+            Unary @411:23 op=await
+              Call @411:46
+                Field @411:40 name=ensure
+                  Field @411:34 name=cache
+                    Name @411:29 name=self
+                Arg @411:47
+                  Field @411:52 name=disk
+                    Name @411:47 name=self
+                Arg @411:58
+                  Name @411:58 name=inode_lba
+        Assign @415:9 op==
+          Name @415:9 name=node
+          Try @416:80
+            Call @415:31
+              Field @415:27 name=peek
+                Field @415:21 name=cache
+                  Name @415:16 name=self
+              Arg @415:32
+                Name @415:32 name=inode_index
+              Arg @415:45
+                Closure @415:45
+                  ClosureParam @415:46 name=block mode=read
+                    TypeName @415:53 name=DmaBlock
+                  Call @416:41
+                    Index @416:34
+                      Field @416:25 name=read_wire
+                        Field @416:19 name=bytes
+                          Name @416:13 name=block
+                      Name @416:35 name=Inode
+                    Arg @416:42 label=offset
+                      Call @416:76
+                        Index @416:69
+                          Field @416:67 name=to
+                            Binary @416:61 op=*
+                              Binary @416:55 op=%
+                                Name @416:51 name=ino
+                                Int @416:57 text=16
+                              Int @416:63 text=32
+                          Name @416:70 name=usize
+        If @417:9
+          Binary @417:23 op=!=
+            Field @417:17 name=magic
+              Name @417:12 name=node
+            Name @417:26 name=MAGIC_FS
           Then
-            Return @416:13
-              Call @416:23
-                Name @416:20 name=Err
-                Arg @416:24
-                  Field @416:32 name=BadInode
-                    Name @416:24 name=FsError
-        Assign @418:9 op==
-          Name @418:9 name=size
-          Try @418:51
-            Call @418:49
-              Index @418:42
-                Field @418:32 name=checked_to
-                  Field @418:21 name=size_bytes
-                    Name @418:16 name=node
-                Name @418:43 name=usize
-        If @419:9
-          Binary @419:17 op=>
-            Name @419:12 name=size
-            Call @419:31
-              Field @419:23 name=capacity
-                Name @419:19 name=out
-          Then
-            Return @420:13
-              Call @420:23
-                Name @420:20 name=Err
-                Arg @420:24
-                  Field @420:32 name=OutputTooSmall
-                    Name @420:24 name=FsError
+            Return @418:13
+              Call @418:23
+                Name @418:20 name=Err
+                Arg @418:24
+                  Field @418:32 name=BadInode
+                    Name @418:24 name=FsError
+        Assign @420:9 op==
+          Name @420:9 name=size
+          Try @420:51
+            Call @420:49
+              Index @420:42
+                Field @420:32 name=checked_to
+                  Field @420:21 name=size_bytes
+                    Name @420:16 name=node
+                Name @420:43 name=usize
         If @421:9
-          Binary @421:45 op=!=
-            Try @421:43
-              Call @421:41
-                Index @421:34
-                  Field @421:24 name=checked_to
-                    Field @421:17 name=blocks
-                      Name @421:12 name=node
-                  Name @421:35 name=usize
-            Call @421:56
-              Name @421:48 name=div_ceil
-              Arg @421:57
-                Name @421:57 name=size
-              Arg @421:63
-                Name @421:63 name=SECTOR
+          Binary @421:17 op=>
+            Name @421:12 name=size
+            Call @421:31
+              Field @421:23 name=capacity
+                Name @421:19 name=out
           Then
             Return @422:13
               Call @422:23
                 Name @422:20 name=Err
                 Arg @422:24
-                  Field @422:32 name=BadInode
+                  Field @422:32 name=OutputTooSmall
                     Name @422:24 name=FsError
-        Assign @423:9 op==
-          Name @423:9 name=_end_lba
-          Try @425:34
-            Call @425:16
-              Field @425:11 name=ok_or
-                Call @423:46
-                  Field @423:35 name=checked_add
-                    Field @423:25 name=start_lba
-                      Name @423:20 name=node
-                  Arg @424:13
-                    Call @424:32
-                      Index @424:27
-                        Field @424:25 name=to
-                          Field @424:18 name=blocks
-                            Name @424:13 name=node
-                        Name @424:28 name=u64
-              Arg @425:17
-                Field @425:25 name=BadInode
-                  Name @425:17 name=FsError
-        Assign @427:9 op==
-          Name @427:9 name=written
-          TypeName @427:18 name=usize
-          Int @427:26 text=0
-        For @428:9 name=block_index
-          Range @428:30 inclusive=false
-            Int @428:28 text=0
-            Field @428:38 name=blocks
-              Name @428:33 name=node
+        If @423:9
+          Binary @423:45 op=!=
+            Try @423:43
+              Call @423:41
+                Index @423:34
+                  Field @423:24 name=checked_to
+                    Field @423:17 name=blocks
+                      Name @423:12 name=node
+                  Name @423:35 name=usize
+            Call @423:56
+              Name @423:48 name=div_ceil
+              Arg @423:57
+                Name @423:57 name=size
+              Arg @423:63
+                Name @423:63 name=SECTOR
+          Then
+            Return @424:13
+              Call @424:23
+                Name @424:20 name=Err
+                Arg @424:24
+                  Field @424:32 name=BadInode
+                    Name @424:24 name=FsError
+        Assign @425:9 op==
+          Name @425:9 name=_end_lba
+          Try @427:34
+            Call @427:16
+              Field @427:11 name=ok_or
+                Call @425:46
+                  Field @425:35 name=checked_add
+                    Field @425:25 name=start_lba
+                      Name @425:20 name=node
+                  Arg @426:13
+                    Call @426:32
+                      Index @426:27
+                        Field @426:25 name=to
+                          Field @426:18 name=blocks
+                            Name @426:13 name=node
+                        Name @426:28 name=u64
+              Arg @427:17
+                Field @427:25 name=BadInode
+                  Name @427:17 name=FsError
+        Assign @429:9 op==
+          Name @429:9 name=written
+          TypeName @429:18 name=usize
+          Int @429:26 text=0
+        For @430:9 name=block_index
+          Range @430:30 inclusive=false
+            Int @430:28 text=0
+            Field @430:38 name=blocks
+              Name @430:33 name=node
           Body
-            Assign @429:13 op==
-              Name @429:13 name=index
-              Try @432:14
-                Unary @429:21 op=await
-                  Call @429:44
-                    Field @429:38 name=ensure
-                      Field @429:32 name=cache
-                        Name @429:27 name=self
-                    Arg @430:17
-                      Field @430:22 name=disk
-                        Name @430:17 name=self
-                    Arg @431:17
-                      Binary @431:32 op=+
-                        Field @431:22 name=start_lba
-                          Name @431:17 name=node
-                        Call @431:53
-                          Index @431:48
-                            Field @431:46 name=to
-                              Name @431:34 name=block_index
-                            Name @431:49 name=u64
-            Assign @433:13 op==
-              Name @433:13 name=count
-              Call @433:24
-                Name @433:21 name=min
-                Arg @433:25
-                  Name @433:25 name=SECTOR
-                Arg @433:33
-                  Binary @433:38 op=-
-                    Name @433:33 name=size
-                    Name @433:40 name=written
-            ExprStmt @436:13
-              Call @436:28
-                Field @436:24 name=peek
-                  Field @436:18 name=cache
-                    Name @436:13 name=self
-                Arg @436:29
-                  Name @436:29 name=index
-                Arg @436:36
-                  Closure @436:36
-                    ClosureParam @436:37 name=block mode=read
-                      TypeName @436:44 name=DmaBlock
+            Assign @431:13 op==
+              Name @431:13 name=index
+              Try @434:14
+                Unary @431:21 op=await
+                  Call @431:44
+                    Field @431:38 name=ensure
+                      Field @431:32 name=cache
+                        Name @431:27 name=self
+                    Arg @432:17
+                      Field @432:22 name=disk
+                        Name @432:17 name=self
+                    Arg @433:17
+                      Binary @433:32 op=+
+                        Field @433:22 name=start_lba
+                          Name @433:17 name=node
+                        Call @433:53
+                          Index @433:48
+                            Field @433:46 name=to
+                              Name @433:34 name=block_index
+                            Name @433:49 name=u64
+            Assign @435:13 op==
+              Name @435:13 name=count
+              Call @435:24
+                Name @435:21 name=min
+                Arg @435:25
+                  Name @435:25 name=SECTOR
+                Arg @435:33
+                  Binary @435:38 op=-
+                    Name @435:33 name=size
+                    Name @435:40 name=written
+            ExprStmt @438:13
+              Call @438:28
+                Field @438:24 name=peek
+                  Field @438:18 name=cache
+                    Name @438:13 name=self
+                Arg @438:29
+                  Name @438:29 name=index
+                Arg @438:36
+                  Closure @438:36
+                    ClosureParam @438:37 name=block mode=read
+                      TypeName @438:44 name=DmaBlock
                     Body
-                      ExprStmt @437:17
-                        Call @437:33
-                          Field @437:21 name=copy_from_at
-                            Name @437:17 name=out
-                          Arg @438:21 label=offset
-                            Name @438:28 name=written
-                          Arg @439:21 label=source
-                            Field @439:34 name=bytes
-                              Name @439:28 name=block
-                          Arg @440:21 label=length
-                            Name @440:28 name=count
-            Assign @442:13 op=+=
-              Name @442:13 name=written
-              Name @442:24 name=count
-        ExprStmt @444:9
-          Call @444:20
-            Field @444:13 name=set_len
-              Name @444:9 name=out
-            Arg @444:21
-              Name @444:21 name=written
-        Return @445:9
-          Call @445:18
-            Name @445:16 name=Ok
-            Arg @445:19 mode=take
-              Name @445:24 name=out
-    Fn @447:5 name=write_file async=true
-      Receiver @447:25 mode=read
-      Param @447:31 name=ino mode=read
-        TypeName @447:36 name=u32
-      Param @448:25 name=data mode=take
-        OwnType @448:36 pool=AppBuffers
-          TypeName @448:52 name=Bytes
-      TypeName @449:12 name=Result
-        TypeName @449:19 name=unit
-        TypeName @449:25 name=FsError
+                      ExprStmt @439:17
+                        Call @439:33
+                          Field @439:21 name=copy_from_at
+                            Name @439:17 name=out
+                          Arg @440:21 label=offset
+                            Name @440:28 name=written
+                          Arg @441:21 label=source
+                            Field @441:34 name=bytes
+                              Name @441:28 name=block
+                          Arg @442:21 label=length
+                            Name @442:28 name=count
+            Assign @444:13 op=+=
+              Name @444:13 name=written
+              Name @444:24 name=count
+        ExprStmt @446:9
+          Call @446:20
+            Field @446:13 name=set_len
+              Name @446:9 name=out
+            Arg @446:21
+              Name @446:21 name=written
+        Return @447:9
+          Call @447:18
+            Name @447:16 name=Ok
+            Arg @447:19 mode=take
+              Name @447:24 name=out
+    Fn @449:5 name=write_file async=true
+      Receiver @449:25 mode=read
+      Param @449:31 name=ino mode=read
+        TypeName @449:36 name=u32
+      Param @450:25 name=data mode=take
+        OwnType @450:36 pool=AppBuffers
+          TypeName @450:52 name=Bytes
+      TypeName @451:12 name=Result
+        TypeName @451:19 name=unit
+        TypeName @451:25 name=FsError
       Body
-        Assign @450:9 op==
-          Name @450:9 name=block_count
-          Call @450:31
-            Name @450:23 name=div_ceil
-            Arg @450:32
-              Call @450:40
-                Field @450:37 name=len
-                  Name @450:32 name=data
-            Arg @450:44
-              Name @450:44 name=SECTOR
-        Assign @451:9 op==
-          Name @451:9 name=start
-          Field @451:22 name=next_free_lba
-            Name @451:17 name=self
-        For @453:9 name=block_index
-          Range @453:30 inclusive=false
-            Int @453:28 text=0
-            Name @453:33 name=block_count
+        Assign @452:9 op==
+          Name @452:9 name=block_count
+          Call @452:31
+            Name @452:23 name=div_ceil
+            Arg @452:32
+              Call @452:40
+                Field @452:37 name=len
+                  Name @452:32 name=data
+            Arg @452:44
+              Name @452:44 name=SECTOR
+        Assign @453:9 op==
+          Name @453:9 name=start
+          Field @453:22 name=next_free_lba
+            Name @453:17 name=self
+        For @455:9 name=block_index
+          Range @455:30 inclusive=false
+            Int @455:28 text=0
+            Name @455:33 name=block_count
           Body
-            Assign @454:13 op==
-              Name @454:13 name=lba
-              Binary @454:25 op=+
-                Name @454:19 name=start
-                Call @454:46
-                  Index @454:41
-                    Field @454:39 name=to
-                      Name @454:27 name=block_index
-                    Name @454:42 name=u64
-            Assign @455:13 op==
-              Name @455:13 name=index
-              Try @455:60
-                Unary @455:21 op=await
-                  Call @455:44
-                    Field @455:38 name=ensure
-                      Field @455:32 name=cache
-                        Name @455:27 name=self
-                    Arg @455:45
-                      Field @455:50 name=disk
-                        Name @455:45 name=self
-                    Arg @455:56
-                      Name @455:56 name=lba
-            ExprStmt @457:13
-              Call @457:28
-                Field @457:24 name=edit
-                  Field @457:18 name=cache
-                    Name @457:13 name=self
-                Arg @457:29
-                  Name @457:29 name=index
-                Arg @457:36
-                  Closure @457:36
-                    ClosureParam @457:37 name=block mode=mut
-                      TypeName @457:48 name=DmaBlock
+            Assign @456:13 op==
+              Name @456:13 name=lba
+              Binary @456:25 op=+
+                Name @456:19 name=start
+                Call @456:46
+                  Index @456:41
+                    Field @456:39 name=to
+                      Name @456:27 name=block_index
+                    Name @456:42 name=u64
+            Assign @457:13 op==
+              Name @457:13 name=index
+              Try @457:60
+                Unary @457:21 op=await
+                  Call @457:44
+                    Field @457:38 name=ensure
+                      Field @457:32 name=cache
+                        Name @457:27 name=self
+                    Arg @457:45
+                      Field @457:50 name=disk
+                        Name @457:45 name=self
+                    Arg @457:56
+                      Name @457:56 name=lba
+            ExprStmt @459:13
+              Call @459:28
+                Field @459:24 name=edit
+                  Field @459:18 name=cache
+                    Name @459:13 name=self
+                Arg @459:29
+                  Name @459:29 name=index
+                Arg @459:36
+                  Closure @459:36
+                    ClosureParam @459:37 name=block mode=mut
+                      TypeName @459:48 name=DmaBlock
                     Body
-                      ExprStmt @458:17
-                        Call @458:34
-                          Field @458:29 name=clear
-                            Field @458:23 name=bytes
-                              Name @458:17 name=block
-                      ExprStmt @459:17
-                        Call @459:44
-                          Field @459:29 name=copy_from_range
-                            Field @459:23 name=bytes
-                              Name @459:17 name=block
-                          Arg @460:21 label=source
-                            Name @460:28 name=data
-                          Arg @461:21 label=source_offset
-                            Binary @461:47 op=*
-                              Name @461:35 name=block_index
-                              Name @461:49 name=SECTOR
-                          Arg @462:21 label=length
-                            Call @462:31
-                              Name @462:28 name=min
-                              Arg @462:32
-                                Name @462:32 name=SECTOR
-                              Arg @462:40
-                                Binary @462:51 op=-
-                                  Call @462:48
-                                    Field @462:45 name=len
-                                      Name @462:40 name=data
-                                  Binary @462:65 op=*
-                                    Name @462:53 name=block_index
-                                    Name @462:67 name=SECTOR
-            ExprStmt @464:13
-              Call @464:34
-                Field @464:24 name=mark_dirty
-                  Field @464:18 name=cache
-                    Name @464:13 name=self
-                Arg @464:35
-                  Name @464:35 name=index
-                Arg @464:42
-                  Name @464:42 name=lba
-        Assign @466:9 op==
-          Name @466:9 name=inode_lba
-          Binary @466:31 op=+
-            Name @466:21 name=INODE_LBA
-            Call @466:51
-              Index @466:46
-                Field @466:44 name=to
-                  Binary @466:38 op=/
-                    Name @466:34 name=ino
-                    Int @466:40 text=16
-                Name @466:47 name=u64
-        Assign @467:9 op==
-          Name @467:9 name=inode_index
-          Try @467:68
-            Unary @467:23 op=await
-              Call @467:46
-                Field @467:40 name=ensure
-                  Field @467:34 name=cache
-                    Name @467:29 name=self
-                Arg @467:47
-                  Field @467:52 name=disk
-                    Name @467:47 name=self
-                Arg @467:58
-                  Name @467:58 name=inode_lba
-        Assign @472:9 op==
-          Name @472:9 name=size_u32
-          Try @472:48
-            Call @472:46
-              Index @472:41
-                Field @472:31 name=checked_to
-                  Call @472:28
-                    Field @472:25 name=len
-                      Name @472:20 name=data
-                Name @472:42 name=u32
-        Assign @473:9 op==
-          Name @473:9 name=blocks_u32
-          Try @473:51
-            Call @473:49
-              Index @473:44
-                Field @473:34 name=checked_to
-                  Name @473:22 name=block_count
-                Name @473:45 name=u32
-        ExprStmt @474:9
-          Try @484:15
-            Call @474:24
-              Field @474:20 name=edit
-                Field @474:14 name=cache
-                  Name @474:9 name=self
-              Arg @474:25
-                Name @474:25 name=inode_index
-              Arg @474:38
-                Closure @474:38
-                  ClosureParam @474:39 name=block mode=mut
-                    TypeName @474:50 name=DmaBlock
-                  Call @475:35
-                    Field @475:25 name=write_wire
-                      Field @475:19 name=bytes
-                        Name @475:13 name=block
-                    Arg @476:17 label=offset
-                      Call @476:51
-                        Index @476:44
-                          Field @476:42 name=to
-                            Binary @476:36 op=*
-                              Binary @476:30 op=%
-                                Name @476:26 name=ino
-                                Int @476:32 text=16
-                              Int @476:38 text=32
-                          Name @476:45 name=usize
-                    Arg @477:17 label=value
-                      Call @477:28
-                        Name @477:23 name=Inode
-                        Arg @478:21 label=magic
-                          Name @478:27 name=MAGIC_FS
-                        Arg @479:21 label=size_bytes
-                          Name @479:32 name=size_u32
-                        Arg @480:21 label=start_lba
-                          Name @480:31 name=start
-                        Arg @481:21 label=blocks
-                          Name @481:28 name=blocks_u32
-                        Arg @482:21 label=reserved
-                          Int @482:30 text=0
-        ExprStmt @485:9
-          Call @485:30
-            Field @485:20 name=mark_dirty
-              Field @485:14 name=cache
-                Name @485:9 name=self
-            Arg @485:31
-              Name @485:31 name=inode_index
-            Arg @485:44
-              Name @485:44 name=inode_lba
-        Assign @486:9 op=+=
-          Field @486:14 name=next_free_lba
-            Name @486:9 name=self
-          Call @486:50
-            Index @486:45
-              Field @486:43 name=to
-                Name @486:31 name=block_count
-              Name @486:46 name=u64
+                      ExprStmt @460:17
+                        Call @460:34
+                          Field @460:29 name=clear
+                            Field @460:23 name=bytes
+                              Name @460:17 name=block
+                      ExprStmt @461:17
+                        Call @461:44
+                          Field @461:29 name=copy_from_range
+                            Field @461:23 name=bytes
+                              Name @461:17 name=block
+                          Arg @462:21 label=source
+                            Name @462:28 name=data
+                          Arg @463:21 label=source_offset
+                            Binary @463:47 op=*
+                              Name @463:35 name=block_index
+                              Name @463:49 name=SECTOR
+                          Arg @464:21 label=length
+                            Call @464:31
+                              Name @464:28 name=min
+                              Arg @464:32
+                                Name @464:32 name=SECTOR
+                              Arg @464:40
+                                Binary @464:51 op=-
+                                  Call @464:48
+                                    Field @464:45 name=len
+                                      Name @464:40 name=data
+                                  Binary @464:65 op=*
+                                    Name @464:53 name=block_index
+                                    Name @464:67 name=SECTOR
+            ExprStmt @466:13
+              Call @466:34
+                Field @466:24 name=mark_dirty
+                  Field @466:18 name=cache
+                    Name @466:13 name=self
+                Arg @466:35
+                  Name @466:35 name=index
+                Arg @466:42
+                  Name @466:42 name=lba
+        Assign @468:9 op==
+          Name @468:9 name=inode_lba
+          Binary @468:31 op=+
+            Name @468:21 name=INODE_LBA
+            Call @468:51
+              Index @468:46
+                Field @468:44 name=to
+                  Binary @468:38 op=/
+                    Name @468:34 name=ino
+                    Int @468:40 text=16
+                Name @468:47 name=u64
+        Assign @469:9 op==
+          Name @469:9 name=inode_index
+          Try @469:68
+            Unary @469:23 op=await
+              Call @469:46
+                Field @469:40 name=ensure
+                  Field @469:34 name=cache
+                    Name @469:29 name=self
+                Arg @469:47
+                  Field @469:52 name=disk
+                    Name @469:47 name=self
+                Arg @469:58
+                  Name @469:58 name=inode_lba
+        Assign @474:9 op==
+          Name @474:9 name=size_u32
+          Try @474:48
+            Call @474:46
+              Index @474:41
+                Field @474:31 name=checked_to
+                  Call @474:28
+                    Field @474:25 name=len
+                      Name @474:20 name=data
+                Name @474:42 name=u32
+        Assign @475:9 op==
+          Name @475:9 name=blocks_u32
+          Try @475:51
+            Call @475:49
+              Index @475:44
+                Field @475:34 name=checked_to
+                  Name @475:22 name=block_count
+                Name @475:45 name=u32
+        ExprStmt @476:9
+          Try @486:15
+            Call @476:24
+              Field @476:20 name=edit
+                Field @476:14 name=cache
+                  Name @476:9 name=self
+              Arg @476:25
+                Name @476:25 name=inode_index
+              Arg @476:38
+                Closure @476:38
+                  ClosureParam @476:39 name=block mode=mut
+                    TypeName @476:50 name=DmaBlock
+                  Call @477:35
+                    Field @477:25 name=write_wire
+                      Field @477:19 name=bytes
+                        Name @477:13 name=block
+                    Arg @478:17 label=offset
+                      Call @478:51
+                        Index @478:44
+                          Field @478:42 name=to
+                            Binary @478:36 op=*
+                              Binary @478:30 op=%
+                                Name @478:26 name=ino
+                                Int @478:32 text=16
+                              Int @478:38 text=32
+                          Name @478:45 name=usize
+                    Arg @479:17 label=value
+                      Call @479:28
+                        Name @479:23 name=Inode
+                        Arg @480:21 label=magic
+                          Name @480:27 name=MAGIC_FS
+                        Arg @481:21 label=size_bytes
+                          Name @481:32 name=size_u32
+                        Arg @482:21 label=start_lba
+                          Name @482:31 name=start
+                        Arg @483:21 label=blocks
+                          Name @483:28 name=blocks_u32
+                        Arg @484:21 label=reserved
+                          Int @484:30 text=0
         ExprStmt @487:9
-          Try @487:27
-            Unary @487:9 op=await
-              Call @487:25
-                Field @487:20 name=flush
-                  Name @487:15 name=self
-        Return @488:9
-          Call @488:18
-            Name @488:16 name=Ok
-            Arg @488:19
-              Unit @488:19
-    Fn @490:5 name=flush async=true
-      Receiver @490:20 mode=read
-      TypeName @490:29 name=Result
-        TypeName @490:36 name=unit
-        TypeName @490:42 name=FsError
+          Call @487:30
+            Field @487:20 name=mark_dirty
+              Field @487:14 name=cache
+                Name @487:9 name=self
+            Arg @487:31
+              Name @487:31 name=inode_index
+            Arg @487:44
+              Name @487:44 name=inode_lba
+        Assign @488:9 op=+=
+          Field @488:14 name=next_free_lba
+            Name @488:9 name=self
+          Call @488:50
+            Index @488:45
+              Field @488:43 name=to
+                Name @488:31 name=block_count
+              Name @488:46 name=u64
+        ExprStmt @489:9
+          Try @489:27
+            Unary @489:9 op=await
+              Call @489:25
+                Field @489:20 name=flush
+                  Name @489:15 name=self
+        Return @490:9
+          Call @490:18
+            Name @490:16 name=Ok
+            Arg @490:19
+              Unit @490:19
+    Fn @492:5 name=flush async=true
+      Receiver @492:20 mode=read
+      TypeName @492:29 name=Result
+        TypeName @492:36 name=unit
+        TypeName @492:42 name=FsError
       Body
-        For @491:9 name=index
-          Range @491:24 inclusive=false
-            Int @491:22 text=0
-            Name @491:27 name=CACHE_BLOCKS
+        For @493:9 name=index
+          Range @493:24 inclusive=false
+            Int @493:22 text=0
+            Name @493:27 name=CACHE_BLOCKS
           Body
-            Match @492:13
-              Field @492:43 name=state
-                Index @492:35
-                  Field @492:30 name=lines
-                    Field @492:24 name=cache
-                      Name @492:19 name=self
-                  Name @492:36 name=index
-              Case @493:17
-                VariantPattern @493:22 variant=Dirty
-                  Binding @493:29 name=lba
-                Assign @494:21 op==
-                  Name @494:21 name=fill
-                  Call @494:52
-                    Field @494:39 name=begin_replace
-                      Field @494:33 name=cache
-                        Name @494:28 name=self
-                    Arg @494:53
-                      Name @494:53 name=index
-                Match @495:21
-                  Unary @495:27 op=await
-                    Call @495:55
-                      Field @495:43 name=submit_write
-                        Field @495:38 name=disk
-                          Name @495:33 name=self
-                      Arg @496:25 label=lba
-                        Name @496:29 name=lba
-                      Arg @497:25 label=buffer mode=take
-                        Field @497:42 name=data
-                          Name @497:37 name=fill
-                  Case @499:25
-                    VariantPattern @499:30 variant=Ok
-                      Binding @499:34 name=receipt
-                    Assign @500:29 op==
-                      Name @500:29 name=write_receipt
-                      Unary @500:45 op=take
-                        Name @500:50 name=receipt
+            Match @494:13
+              Field @494:43 name=state
+                Index @494:35
+                  Field @494:30 name=lines
+                    Field @494:24 name=cache
+                      Name @494:19 name=self
+                  Name @494:36 name=index
+              Case @495:17
+                VariantPattern @495:22 variant=Dirty
+                  Binding @495:29 name=lba
+                Assign @496:21 op==
+                  Name @496:21 name=fill
+                  Call @496:52
+                    Field @496:39 name=begin_replace
+                      Field @496:33 name=cache
+                        Name @496:28 name=self
+                    Arg @496:53
+                      Name @496:53 name=index
+                Match @497:21
+                  Unary @497:27 op=await
+                    Call @497:55
+                      Field @497:43 name=submit_write
+                        Field @497:38 name=disk
+                          Name @497:33 name=self
+                      Arg @498:25 label=lba
+                        Name @498:29 name=lba
+                      Arg @499:25 label=buffer mode=take
+                        Field @499:42 name=data
+                          Name @499:37 name=fill
                   Case @501:25
-                    VariantPattern @501:30 variant=Err
-                      Binding @501:35 name=error
-                    ExprStmt @502:29
-                      Call @502:55
-                        Field @502:40 name=resolve_replace
-                          Field @502:34 name=cache
-                            Name @502:29 name=self
-                        Arg @502:56 mode=take
-                          Name @502:61 name=fill
-                        Arg @502:67 label=next
-                          Name @502:72 name=None
-                    Return @503:29
-                      Call @503:39
-                        Name @503:36 name=Err
-                        Arg @503:40
-                          Call @503:52
-                            Field @503:48 name=from
-                              Name @503:40 name=FsError
-                            Arg @503:53
-                              Name @503:53 name=error
-                Assign @504:21 op==
-                  Name @504:21 name=done
-                  Unary @504:28 op=await
-                    Name @504:34 name=write_receipt
-                Assign @505:21 op==
-                  Field @505:26 name=data
-                    Name @505:21 name=fill
-                  Unary @505:33 op=take
-                    Field @505:43 name=payload
-                      Name @505:38 name=done
-                Match @506:21
-                  Field @506:32 name=status
-                    Name @506:27 name=done
-                  Case @507:25
-                    VariantPattern @507:30 variant=Ok
-                      Wildcard @507:34
-                    Pass @508:29
+                    VariantPattern @501:30 variant=Ok
+                      Binding @501:34 name=receipt
+                    Assign @502:29 op==
+                      Name @502:29 name=write_receipt
+                      Unary @502:45 op=take
+                        Name @502:50 name=receipt
+                  Case @503:25
+                    VariantPattern @503:30 variant=Err
+                      Binding @503:35 name=error
+                    ExprStmt @504:29
+                      Call @504:55
+                        Field @504:40 name=resolve_replace
+                          Field @504:34 name=cache
+                            Name @504:29 name=self
+                        Arg @504:56 mode=take
+                          Name @504:61 name=fill
+                        Arg @504:67 label=next
+                          Name @504:72 name=None
+                    Return @505:29
+                      Call @505:39
+                        Name @505:36 name=Err
+                        Arg @505:40
+                          Call @505:52
+                            Field @505:48 name=from
+                              Name @505:40 name=FsError
+                            Arg @505:53
+                              Name @505:53 name=error
+                Assign @506:21 op==
+                  Name @506:21 name=done
+                  Unary @506:28 op=await
+                    Name @506:34 name=write_receipt
+                Assign @507:21 op==
+                  Field @507:26 name=data
+                    Name @507:21 name=fill
+                  Unary @507:33 op=take
+                    Field @507:43 name=payload
+                      Name @507:38 name=done
+                Match @508:21
+                  Field @508:32 name=status
+                    Name @508:27 name=done
                   Case @509:25
-                    VariantPattern @509:30 variant=Err
-                      Binding @509:35 name=error
-                    ExprStmt @510:29
-                      Call @510:55
-                        Field @510:40 name=resolve_replace
-                          Field @510:34 name=cache
-                            Name @510:29 name=self
-                        Arg @510:56 mode=take
-                          Name @510:61 name=fill
-                        Arg @510:67 label=next
-                          Name @510:72 name=None
-                    Return @511:29
-                      Call @511:39
-                        Name @511:36 name=Err
-                        Arg @511:40
-                          Call @511:52
-                            Field @511:48 name=from
-                              Name @511:40 name=FsError
-                            Arg @511:53
-                              Name @511:53 name=error
-                ExprStmt @512:21
-                  Call @512:47
-                    Field @512:32 name=resolve_replace
-                      Field @512:26 name=cache
-                        Name @512:21 name=self
-                    Arg @513:25 mode=take
-                      Name @513:30 name=fill
-                    Arg @514:25 label=next
-                      Call @514:34
-                        Name @514:30 name=Some
-                        Arg @514:35
-                          Call @514:51
-                            Field @514:46 name=Clean
-                              Name @514:35 name=CacheState
-                            Arg @514:52
-                              Name @514:52 name=lba
-              Case @516:17
-                OrPattern @516:22
-                  VariantPattern @516:22 variant=Clean
-                    Wildcard @516:29
-                  VariantPattern @516:34 variant=Invalid
-                Pass @517:21
+                    VariantPattern @509:30 variant=Ok
+                      Wildcard @509:34
+                    Pass @510:29
+                  Case @511:25
+                    VariantPattern @511:30 variant=Err
+                      Binding @511:35 name=error
+                    ExprStmt @512:29
+                      Call @512:55
+                        Field @512:40 name=resolve_replace
+                          Field @512:34 name=cache
+                            Name @512:29 name=self
+                        Arg @512:56 mode=take
+                          Name @512:61 name=fill
+                        Arg @512:67 label=next
+                          Name @512:72 name=None
+                    Return @513:29
+                      Call @513:39
+                        Name @513:36 name=Err
+                        Arg @513:40
+                          Call @513:52
+                            Field @513:48 name=from
+                              Name @513:40 name=FsError
+                            Arg @513:53
+                              Name @513:53 name=error
+                ExprStmt @514:21
+                  Call @514:47
+                    Field @514:32 name=resolve_replace
+                      Field @514:26 name=cache
+                        Name @514:21 name=self
+                    Arg @515:25 mode=take
+                      Name @515:30 name=fill
+                    Arg @516:25 label=next
+                      Call @516:34
+                        Name @516:30 name=Some
+                        Arg @516:35
+                          Call @516:51
+                            Field @516:46 name=Clean
+                              Name @516:35 name=CacheState
+                            Arg @516:52
+                              Name @516:52 name=lba
               Case @518:17
-                VariantPattern @518:22 variant=Replacing
-                ExprStmt @519:21
-                  Call @519:26
-                    Name @519:21 name=panic
-                    Arg @519:27
-                      Str @519:27 text="non-reentrant flush observed replacing line"
-        Return @520:9
-          Call @520:18
-            Name @520:16 name=Ok
-            Arg @520:19
-              Unit @520:19
-  Struct @524:1 name=Storage pub=true
-    Attr @523:1 name=actor
-    Field @525:5 name=fs
-      TypeName @525:9 name=ExtentFs
-    Init @527:5
-      Receiver @527:10 mode=mut
-      Param @527:20 name=disk mode=read
-        TypeName @527:26 name=Actor
-          TypeName @527:32 name=BlkDriver
-            TypeName @527:42 name=BLOCK_MODE
-      Param @528:10 name=blocks mode=take
-        ArrayType @528:23
-          OwnType @528:24 pool=BlockPayloads
-            TypeName @528:43 name=DmaBlock
-          Name @528:53 name=CACHE_BLOCKS
+                OrPattern @518:22
+                  VariantPattern @518:22 variant=Clean
+                    Wildcard @518:29
+                  VariantPattern @518:34 variant=Invalid
+                Pass @519:21
+              Case @520:17
+                VariantPattern @520:22 variant=Replacing
+                ExprStmt @521:21
+                  Call @521:26
+                    Name @521:21 name=panic
+                    Arg @521:27
+                      Str @521:27 text="non-reentrant flush observed replacing line"
+        Return @522:9
+          Call @522:18
+            Name @522:16 name=Ok
+            Arg @522:19
+              Unit @522:19
+  Struct @526:1 name=Storage pub=true
+    Attr @525:1 name=actor
+    Field @527:5 name=fs
+      TypeName @527:9 name=ExtentFs
+    Init @529:5
+      Receiver @529:10 mode=mut
+      Param @529:20 name=disk mode=read
+        TypeName @529:26 name=Actor
+          TypeName @529:32 name=BlkDriver
+            TypeName @529:42 name=BLOCK_MODE
+      Param @530:10 name=blocks mode=take
+        ArrayType @530:23
+          OwnType @530:24 pool=BlockPayloads
+            TypeName @530:43 name=DmaBlock
+          Name @530:53 name=CACHE_BLOCKS
       Body
-        Assign @529:9 op==
-          Field @529:14 name=fs
-            Name @529:9 name=self
-          Call @529:27
-            Name @529:19 name=ExtentFs
-            Arg @529:28 label=disk
-              Name @529:33 name=disk
-            Arg @529:39 label=blocks mode=take
-              Name @529:51 name=blocks
-    Fn @531:5 name=read_file pub=true async=true
-      Receiver @531:28 mode=mut
-      Param @531:38 name=ino mode=read
-        TypeName @531:43 name=u32
-      Param @532:28 name=out mode=take
-        OwnType @532:38 pool=AppBuffers
-          TypeName @532:54 name=Bytes
-      TypeName @533:12 name=Result
-        OwnType @533:19 pool=AppBuffers
-          TypeName @533:35 name=Bytes
-        TypeName @533:42 name=FsError
+        Assign @531:9 op==
+          Field @531:14 name=fs
+            Name @531:9 name=self
+          Call @531:27
+            Name @531:19 name=ExtentFs
+            Arg @531:28 label=disk
+              Name @531:33 name=disk
+            Arg @531:39 label=blocks mode=take
+              Name @531:51 name=blocks
+    Fn @533:5 name=read_file pub=true async=true
+      Receiver @533:28 mode=mut
+      Param @533:38 name=ino mode=read
+        TypeName @533:43 name=u32
+      Param @534:28 name=out mode=take
+        OwnType @534:38 pool=AppBuffers
+          TypeName @534:54 name=Bytes
+      TypeName @535:12 name=Result
+        OwnType @535:19 pool=AppBuffers
+          TypeName @535:35 name=Bytes
+        TypeName @535:42 name=FsError
       Body
-        Return @534:9
-          Unary @534:16 op=await
-            Call @534:39
-              Field @534:30 name=read_file
-                Field @534:27 name=fs
-                  Name @534:22 name=self
-              Arg @534:40
-                Name @534:40 name=ino
-              Arg @534:45 mode=take
-                Name @534:50 name=out
-    Fn @536:5 name=write_file pub=true async=true
-      Receiver @536:29 mode=mut
-      Param @536:39 name=ino mode=read
-        TypeName @536:44 name=u32
-      Param @537:29 name=data mode=take
-        OwnType @537:40 pool=AppBuffers
-          TypeName @537:56 name=Bytes
-      TypeName @538:12 name=Result
-        TypeName @538:19 name=unit
-        TypeName @538:25 name=FsError
+        Return @536:9
+          Unary @536:16 op=await
+            Call @536:39
+              Field @536:30 name=read_file
+                Field @536:27 name=fs
+                  Name @536:22 name=self
+              Arg @536:40
+                Name @536:40 name=ino
+              Arg @536:45 mode=take
+                Name @536:50 name=out
+    Fn @538:5 name=write_file pub=true async=true
+      Receiver @538:29 mode=mut
+      Param @538:39 name=ino mode=read
+        TypeName @538:44 name=u32
+      Param @539:29 name=data mode=take
+        OwnType @539:40 pool=AppBuffers
+          TypeName @539:56 name=Bytes
+      TypeName @540:12 name=Result
+        TypeName @540:19 name=unit
+        TypeName @540:25 name=FsError
       Body
-        Return @539:9
-          Unary @539:16 op=await
-            Call @539:40
-              Field @539:30 name=write_file
-                Field @539:27 name=fs
-                  Name @539:22 name=self
-              Arg @539:41
-                Name @539:41 name=ino
-              Arg @539:46 mode=take
-                Name @539:51 name=data
-  Struct @547:1 name=Notes pub=true
-    Attr @546:1 name=actor
-    Field @548:5 name=storage
-      TypeName @548:14 name=Actor
-        TypeName @548:20 name=Storage
-    Field @549:5 name=console
-      TypeName @549:14 name=Actor
-        TypeName @549:20 name=Console
-    Field @550:5 name=buffers
-      TypeName @550:14 name=Pool
-        TypeName @550:19 name=AppBuffers
-        TypeName @550:31 name=Bytes
-        Bound @550:40
-          Int @550:40 text=2
-    Init @552:5
-      Receiver @552:10 mode=mut
-      Param @552:20 name=storage mode=read
-        TypeName @552:29 name=Actor
-          TypeName @552:35 name=Storage
-      Param @552:45 name=console mode=read
-        TypeName @552:54 name=Actor
-          TypeName @552:60 name=Console
-      Param @553:10 name=buffers mode=take
-        TypeName @553:24 name=Pool
-          TypeName @553:29 name=AppBuffers
-          TypeName @553:41 name=Bytes
-          Bound @553:50
-            Int @553:50 text=2
+        Return @541:9
+          Unary @541:16 op=await
+            Call @541:40
+              Field @541:30 name=write_file
+                Field @541:27 name=fs
+                  Name @541:22 name=self
+              Arg @541:41
+                Name @541:41 name=ino
+              Arg @541:46 mode=take
+                Name @541:51 name=data
+  Struct @549:1 name=Notes pub=true
+    Attr @548:1 name=actor
+    Field @550:5 name=storage
+      TypeName @550:14 name=Actor
+        TypeName @550:20 name=Storage
+    Field @551:5 name=console
+      TypeName @551:14 name=Actor
+        TypeName @551:20 name=Console
+    Field @552:5 name=buffers
+      TypeName @552:14 name=Pool
+        TypeName @552:19 name=AppBuffers
+        TypeName @552:31 name=Bytes
+        Bound @552:40
+          Int @552:40 text=2
+    Init @554:5
+      Receiver @554:10 mode=mut
+      Param @554:20 name=storage mode=read
+        TypeName @554:29 name=Actor
+          TypeName @554:35 name=Storage
+      Param @554:45 name=console mode=read
+        TypeName @554:54 name=Actor
+          TypeName @554:60 name=Console
+      Param @555:10 name=buffers mode=take
+        TypeName @555:24 name=Pool
+          TypeName @555:29 name=AppBuffers
+          TypeName @555:41 name=Bytes
+          Bound @555:50
+            Int @555:50 text=2
       Body
-        Assign @554:9 op==
-          Field @554:14 name=storage
-            Name @554:9 name=self
-          Name @554:24 name=storage
-        Assign @555:9 op==
-          Field @555:14 name=console
-            Name @555:9 name=self
-          Name @555:24 name=console
         Assign @556:9 op==
-          Field @556:14 name=buffers
+          Field @556:14 name=storage
             Name @556:9 name=self
-          Unary @556:24 op=take
-            Name @556:29 name=buffers
-    Fn @559:5 name=run pub=true async=true
-      Attr @558:5 name=task
-        Arg @558:11 label=priority
-          Name @558:20 name=normal
-        Arg @558:28 label=budget
-          Call @558:37
-            Name @558:35 name=ms
-            Arg @558:38
-              Int @558:38 text=5
-        Arg @558:42 label=failure
-          Field @558:62 name=Escalate
-            Name @558:50 name=TaskFailure
-      Receiver @559:22 mode=mut
-      TypeName @559:35 name=Result
-        TypeName @559:42 name=unit
-        TypeName @559:48 name=AppError
+          Name @556:24 name=storage
+        Assign @557:9 op==
+          Field @557:14 name=console
+            Name @557:9 name=self
+          Name @557:24 name=console
+        Assign @558:9 op==
+          Field @558:14 name=buffers
+            Name @558:9 name=self
+          Unary @558:24 op=take
+            Name @558:29 name=buffers
+    Fn @561:5 name=run pub=true async=true
+      Attr @560:5 name=task
+        Arg @560:11 label=priority
+          Name @560:20 name=normal
+        Arg @560:28 label=budget
+          Call @560:37
+            Name @560:35 name=ms
+            Arg @560:38
+              Int @560:38 text=5
+        Arg @560:42 label=failure
+          Field @560:62 name=Escalate
+            Name @560:50 name=TaskFailure
+      Receiver @561:22 mode=mut
+      TypeName @561:35 name=Result
+        TypeName @561:42 name=unit
+        TypeName @561:48 name=AppError
       Body
-        With @560:9
-          Call @560:19
-            Name @560:14 name=group
-            Arg @560:20 label=deadline
-              Binary @560:35 op=+
-                Call @560:32
-                  Name @560:29 name=now
-                Call @560:44
-                  Name @560:37 name=seconds
-                  Arg @560:45
-                    Int @560:45 text=1
+        With @562:9
+          Call @562:19
+            Name @562:14 name=group
+            Arg @562:20 label=deadline
+              Binary @562:35 op=+
+                Call @562:32
+                  Name @562:29 name=now
+                Call @562:44
+                  Name @562:37 name=seconds
+                  Arg @562:45
+                    Int @562:45 text=1
           Body
-            Assign @561:13 op==
-              Name @561:13 name=body
-              Call @561:48
-                Field @561:33 name=from_str_proven
-                  Field @561:25 name=buffers
-                    Name @561:20 name=self
-                Arg @562:17
-                  Str @562:17 text="wrela boots to an appliance, not a prompt.\n"
-            ExprStmt @564:13
-              Try @564:65
-                Unary @564:13 op=await
-                  Call @564:42
-                    Field @564:32 name=write_file
-                      Field @564:24 name=storage
-                        Name @564:19 name=self
-                    Arg @564:43 label=ino
-                      Int @564:47 text=7
-                    Arg @564:50 label=data mode=take
-                      Name @564:60 name=body
-            Assign @566:13 op==
-              Name @566:13 name=output
-              Call @566:45
-                Field @566:35 name=get_proven
-                  Field @566:27 name=buffers
-                    Name @566:22 name=self
-                Arg @566:46 label=capacity
-                  Int @566:55 text=4096
-            Assign @567:13 op==
-              Name @567:13 name=output
-              Try @567:74
-                Unary @567:22 op=await
-                  Call @567:50
-                    Field @567:41 name=read_file
-                      Field @567:33 name=storage
-                        Name @567:28 name=self
-                    Arg @567:51 label=ino
-                      Int @567:55 text=7
-                    Arg @567:58 label=out mode=take
-                      Name @567:67 name=output
-            ExprStmt @571:13
-              Try @571:55
-                Unary @571:13 op=await
-                  Call @571:37
-                    Field @571:32 name=write
-                      Field @571:24 name=console
-                        Name @571:19 name=self
-                    Arg @571:38 label=data mode=take
-                      Name @571:48 name=output
-        Return @572:9
-          Call @572:18
-            Name @572:16 name=Ok
-            Arg @572:19
-              Unit @572:19
-  Fn @580:1 name=build pub=true
-    Attr @579:1 name=image
-    TypeName @580:19 name=Image
+            Assign @563:13 op==
+              Name @563:13 name=body
+              Call @563:48
+                Field @563:33 name=from_str_proven
+                  Field @563:25 name=buffers
+                    Name @563:20 name=self
+                Arg @564:17
+                  Str @564:17 text="wrela boots to an appliance, not a prompt.\n"
+            ExprStmt @566:13
+              Try @566:65
+                Unary @566:13 op=await
+                  Call @566:42
+                    Field @566:32 name=write_file
+                      Field @566:24 name=storage
+                        Name @566:19 name=self
+                    Arg @566:43 label=ino
+                      Int @566:47 text=7
+                    Arg @566:50 label=data mode=take
+                      Name @566:60 name=body
+            Assign @568:13 op==
+              Name @568:13 name=output
+              Call @568:45
+                Field @568:35 name=get_proven
+                  Field @568:27 name=buffers
+                    Name @568:22 name=self
+                Arg @568:46 label=capacity
+                  Int @568:55 text=4096
+            Assign @569:13 op==
+              Name @569:13 name=output
+              Try @569:74
+                Unary @569:22 op=await
+                  Call @569:50
+                    Field @569:41 name=read_file
+                      Field @569:33 name=storage
+                        Name @569:28 name=self
+                    Arg @569:51 label=ino
+                      Int @569:55 text=7
+                    Arg @569:58 label=out mode=take
+                      Name @569:67 name=output
+            ExprStmt @573:13
+              Try @573:55
+                Unary @573:13 op=await
+                  Call @573:37
+                    Field @573:32 name=write
+                      Field @573:24 name=console
+                        Name @573:19 name=self
+                    Arg @573:38 label=data mode=take
+                      Name @573:48 name=output
+        Return @574:9
+          Call @574:18
+            Name @574:16 name=Ok
+            Arg @574:19
+              Unit @574:19
+  Fn @582:1 name=build pub=true
+    Attr @581:1 name=image
+    TypeName @582:19 name=Image
     Body
-      Assign @581:5 op==
-        Name @581:5 name=img
-        Call @581:16
-          Name @581:11 name=Image
-          Arg @582:9 label=name
-            Str @582:14 text="virtio-storage-example"
-          Arg @583:9 label=target
-            Field @583:23 name=wrela_machine_v1
-              Name @583:16 name=Target
-      Assign @586:5 op==
-        Name @586:5 name=block_device
-        Call @586:30
-          Field @586:24 name=device
-            Name @586:20 name=img
-          Arg @587:9
-            Name @587:9 name=VirtioBlock
-          Arg @588:9 label=transport
-            Call @588:38
-              Name @588:19 name=VirtioMmioTransport
-              Arg @588:39 label=base
-                Int @588:44 text=0x0a00_0000
-              Arg @588:57 label=irq
-                Int @588:61 text=0x30
-          Arg @589:9 label=required_features
-            List @589:27
-              Field @589:42 name=Flush
-                Name @589:28 name=VirtioFeature
-          Arg @590:9 label=optional_features
-            List @590:27
-              Field @590:42 name=RingReset
-                Name @590:28 name=VirtioFeature
-      Assign @593:5 op==
-        Name @593:5 name=disk
-        Call @593:22
-          Field @593:16 name=driver
-            Name @593:12 name=img
-          Arg @594:9
-            Index @594:18
-              Name @594:9 name=BlkDriver
-              Name @594:19 name=BLOCK_MODE
-          Arg @595:9 label=device
-            Name @595:16 name=block_device
-          Arg @596:9 label=queue_depth
-            Name @596:21 name=QDEPTH
-          Arg @597:9 label=control_dma
-            Call @597:46
-              Index @597:32
-                Name @597:21 name=DmaPoolSpec
-                Name @597:33 name=BlockControl
-              Arg @597:47 label=capacity
-                Field @597:60 name=KiB
-                  Int @597:56 text=256
-      Assign @602:5 op==
-        Name @602:5 name=cache_blocks
-        Call @602:42
-          Index @602:32
-            Field @602:24 name=dma_pool
-              Name @602:20 name=img
-            Name @602:33 name=DmaBlock
-          Arg @603:9 label=name
-            Name @603:14 name=BlockPayloads
-          Arg @604:9 label=device
-            Name @604:16 name=disk
-          Arg @605:9 label=count
-            Name @605:15 name=CACHE_BLOCKS
-      Assign @607:5 op==
-        Name @607:5 name=app_buffers
-        Call @607:34
-          Index @607:27
-            Field @607:23 name=pool
-              Name @607:19 name=img
-            Name @607:28 name=Bytes
-          Arg @608:9 label=name
-            Name @608:14 name=AppBuffers
-          Arg @609:9 label=slots
-            Int @609:15 text=2
-          Arg @610:9 label=max_payload
-            Int @610:21 text=4096
-      Assign @613:5 op==
-        Name @613:5 name=storage
-        Call @613:24
-          Field @613:19 name=actor
-            Name @613:15 name=img
-          Arg @614:9
-            Name @614:9 name=Storage
-          Arg @615:9 label=disk
-            Call @615:25
-              Field @615:19 name=handle
-                Name @615:14 name=disk
-          Arg @616:9 label=blocks mode=take
-            Name @616:21 name=cache_blocks
-          Arg @617:9 label=mailbox
-            Int @617:17 text=8
-      Assign @619:5 op==
-        Name @619:5 name=console
-        Call @619:24
-          Field @619:19 name=actor
-            Name @619:15 name=img
-          Arg @619:25
-            Name @619:25 name=Console
-          Arg @619:34 label=mailbox
-            Int @619:42 text=8
-      Assign @620:5 op==
-        Name @620:5 name=notes
-        Call @620:22
-          Field @620:17 name=actor
-            Name @620:13 name=img
-          Arg @621:9
-            Name @621:9 name=Notes
-          Arg @622:9 label=storage
-            Call @622:31
-              Field @622:25 name=handle
-                Name @622:17 name=storage
-          Arg @623:9 label=console
-            Call @623:31
-              Field @623:25 name=handle
-                Name @623:17 name=console
-          Arg @624:9 label=buffers mode=take
-            Name @624:22 name=app_buffers
-          Arg @625:9 label=mailbox
-            Int @625:17 text=2
-      ExprStmt @628:5
-        Call @628:18
-          Field @628:9 name=supervise
-            Name @628:5 name=img
-          Arg @629:9 label=children
-            List @629:18
-              Name @629:19 name=disk
-              Name @629:25 name=storage
-              Name @629:34 name=console
-              Name @629:43 name=notes
-          Arg @630:9 label=strategy
-            Field @630:26 name=OneForAll
-              Name @630:18 name=Restart
-          Arg @631:9 label=intensity
-            Call @631:35
-              Name @631:19 name=RestartIntensity
-              Arg @631:36 label=max
-                Int @631:40 text=3
-              Arg @631:43 label=within
-                Call @631:57
-                  Name @631:50 name=seconds
-                  Arg @631:58
-                    Int @631:58 text=10
-      ExprStmt @635:5
-        Call @635:18
-          Field @635:9 name=seed_disk
-            Name @635:5 name=img
-          Arg @635:19
-            Call @635:32
-              Name @635:19 name=extentfs_mkfs
-              Arg @636:9 label=files
-                List @636:15
-                  Call @636:24
-                    Name @636:16 name=SeedFile
-                    Arg @636:25 label=ino
-                      Int @636:29 text=7
-                    Arg @636:32 label=data
-                      BStr @636:37 text=b"hello from comptime\n"
-      ExprStmt @638:5
-        Call @638:21
-          Field @638:9 name=check_layout
-            Name @638:5 name=img
-          Arg @638:22
-            Name @638:22 name=example_limits
-      Return @639:5
-        Call @639:20
-          Field @639:16 name=seal
-            Name @639:12 name=img
-  Fn @643:1 name=example_limits
-    Attr @642:1 name=layout_assert
-    Param @643:19 name=report mode=read
-      TypeName @643:27 name=ImageReport
+      Assign @583:5 op==
+        Name @583:5 name=img
+        Call @583:16
+          Name @583:11 name=Image
+          Arg @584:9 label=name
+            Str @584:14 text="virtio-storage-example"
+          Arg @585:9 label=target
+            Field @585:23 name=wrela_machine_v1
+              Name @585:16 name=Target
+      Assign @588:5 op==
+        Name @588:5 name=block_device
+        Call @588:30
+          Field @588:24 name=device
+            Name @588:20 name=img
+          Arg @589:9
+            Name @589:9 name=VirtioBlock
+          Arg @590:9 label=transport
+            Call @590:38
+              Name @590:19 name=VirtioMmioTransport
+              Arg @590:39 label=base
+                Int @590:44 text=0x0a00_0000
+              Arg @590:57 label=irq
+                Int @590:61 text=0x30
+          Arg @591:9 label=required_features
+            List @591:27
+              Field @591:42 name=Flush
+                Name @591:28 name=VirtioFeature
+          Arg @592:9 label=optional_features
+            List @592:27
+              Field @592:42 name=RingReset
+                Name @592:28 name=VirtioFeature
+      Assign @595:5 op==
+        Name @595:5 name=disk
+        Call @595:22
+          Field @595:16 name=driver
+            Name @595:12 name=img
+          Arg @596:9
+            Index @596:18
+              Name @596:9 name=BlkDriver
+              Name @596:19 name=BLOCK_MODE
+          Arg @597:9 label=device
+            Name @597:16 name=block_device
+          Arg @598:9 label=queue_depth
+            Name @598:21 name=QDEPTH
+          Arg @599:9 label=control_dma
+            Call @599:46
+              Index @599:32
+                Name @599:21 name=DmaPoolSpec
+                Name @599:33 name=BlockControl
+              Arg @599:47 label=capacity
+                Field @599:60 name=KiB
+                  Int @599:56 text=256
+      Assign @604:5 op==
+        Name @604:5 name=cache_blocks
+        Call @604:42
+          Index @604:32
+            Field @604:24 name=dma_pool
+              Name @604:20 name=img
+            Name @604:33 name=DmaBlock
+          Arg @605:9 label=name
+            Name @605:14 name=BlockPayloads
+          Arg @606:9 label=device
+            Name @606:16 name=disk
+          Arg @607:9 label=count
+            Name @607:15 name=CACHE_BLOCKS
+      Assign @609:5 op==
+        Name @609:5 name=app_buffers
+        Call @609:34
+          Index @609:27
+            Field @609:23 name=pool
+              Name @609:19 name=img
+            Name @609:28 name=Bytes
+          Arg @610:9 label=name
+            Name @610:14 name=AppBuffers
+          Arg @611:9 label=slots
+            Int @611:15 text=2
+          Arg @612:9 label=max_payload
+            Int @612:21 text=4096
+      Assign @615:5 op==
+        Name @615:5 name=storage
+        Call @615:24
+          Field @615:19 name=actor
+            Name @615:15 name=img
+          Arg @616:9
+            Name @616:9 name=Storage
+          Arg @617:9 label=disk
+            Call @617:25
+              Field @617:19 name=handle
+                Name @617:14 name=disk
+          Arg @618:9 label=blocks mode=take
+            Name @618:21 name=cache_blocks
+          Arg @619:9 label=mailbox
+            Int @619:17 text=8
+      Assign @621:5 op==
+        Name @621:5 name=console
+        Call @621:24
+          Field @621:19 name=actor
+            Name @621:15 name=img
+          Arg @621:25
+            Name @621:25 name=Console
+          Arg @621:34 label=mailbox
+            Int @621:42 text=8
+      Assign @622:5 op==
+        Name @622:5 name=notes
+        Call @622:22
+          Field @622:17 name=actor
+            Name @622:13 name=img
+          Arg @623:9
+            Name @623:9 name=Notes
+          Arg @624:9 label=storage
+            Call @624:31
+              Field @624:25 name=handle
+                Name @624:17 name=storage
+          Arg @625:9 label=console
+            Call @625:31
+              Field @625:25 name=handle
+                Name @625:17 name=console
+          Arg @626:9 label=buffers mode=take
+            Name @626:22 name=app_buffers
+          Arg @627:9 label=mailbox
+            Int @627:17 text=2
+      ExprStmt @630:5
+        Call @630:18
+          Field @630:9 name=supervise
+            Name @630:5 name=img
+          Arg @631:9 label=children
+            List @631:18
+              Name @631:19 name=disk
+              Name @631:25 name=storage
+              Name @631:34 name=console
+              Name @631:43 name=notes
+          Arg @632:9 label=strategy
+            Field @632:26 name=OneForAll
+              Name @632:18 name=Restart
+          Arg @633:9 label=intensity
+            Call @633:35
+              Name @633:19 name=RestartIntensity
+              Arg @633:36 label=max
+                Int @633:40 text=3
+              Arg @633:43 label=within
+                Call @633:57
+                  Name @633:50 name=seconds
+                  Arg @633:58
+                    Int @633:58 text=10
+      ExprStmt @637:5
+        Call @637:18
+          Field @637:9 name=seed_disk
+            Name @637:5 name=img
+          Arg @637:19
+            Call @637:32
+              Name @637:19 name=extentfs_mkfs
+              Arg @638:9 label=files
+                List @638:15
+                  Call @638:24
+                    Name @638:16 name=SeedFile
+                    Arg @638:25 label=ino
+                      Int @638:29 text=7
+                    Arg @638:32 label=data
+                      BStr @638:37 text=b"hello from comptime\n"
+      ExprStmt @640:5
+        Call @640:21
+          Field @640:9 name=check_layout
+            Name @640:5 name=img
+          Arg @640:22
+            Name @640:22 name=example_limits
+      Return @641:5
+        Call @641:20
+          Field @641:16 name=seal
+            Name @641:12 name=img
+  Fn @645:1 name=example_limits
+    Attr @644:1 name=layout_assert
+    Param @645:19 name=report mode=read
+      TypeName @645:27 name=ImageReport
     Body
-      Assert @644:5
-        Binary @644:31 op=<
-          Field @644:19 name=peak_memory
-            Name @644:12 name=report
-          Field @644:36 name=MiB
-            Int @644:33 text=64
-      Assert @645:5
-        Binary @645:61 op===
-          Field @645:41 name=max_direct_requests
-            Call @645:24
-              Field @645:19 name=queue
-                Name @645:12 name=report
-              Arg @645:25
-                Str @645:25 text="virtio-blk.0"
-          Int @645:64 text=42
       Assert @646:5
-        Binary @646:43 op===
-          Call @646:40
-            Field @646:37 name=len
-              Field @646:19 name=region_promotions
-                Name @646:12 name=report
-          Int @646:46 text=0
+        Binary @646:31 op=<
+          Field @646:19 name=peak_memory
+            Name @646:12 name=report
+          Field @646:36 name=MiB
+            Int @646:33 text=64
+      Assert @647:5
+        Binary @647:61 op===
+          Field @647:41 name=max_direct_requests
+            Call @647:24
+              Field @647:19 name=queue
+                Name @647:12 name=report
+              Arg @647:25
+                Str @647:25 text="virtio-blk.0"
+          Int @647:64 text=42
+      Assert @648:5
+        Binary @648:43 op===
+          Call @648:40
+            Field @648:37 name=len
+              Field @648:19 name=region_promotions
+                Name @648:12 name=report
+          Int @648:46 text=0

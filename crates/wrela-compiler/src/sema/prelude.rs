@@ -96,6 +96,12 @@ const FAIL_CLOSED_TYPES: &[&str] = &[];
 // in `builtin_enum_variants`.
 // plans/M7.md item E4: `IoCompletion[P]` — 03 §3/§8's completion value
 // (`payload`, `status`, `written_len: Untrusted[usize]`).
+// plans/M8.md item G, decision 12: `CompletionOutcome` (03-hardware.md §9)
+// — the outcome `VirtQueue.recover` reports for a receipt resolved through
+// 03 §5's `Recovery` state. A prelude enum like `BootError`/`IoError`, and
+// in scope as a name so an annotation (`-> CompletionOutcome`, a field, a
+// `match` arm's explicit `CompletionOutcome.Unknown`) resolves with no
+// import.
 const HARDWARE_SURFACE: &[&str] = &[
     "BootError",
     "VirtQueue",
@@ -104,6 +110,7 @@ const HARDWARE_SURFACE: &[&str] = &[
     "Receipt",
     "IoError",
     "IoCompletion",
+    "CompletionOutcome",
 ];
 
 /// plans/M7.md item G: 03-hardware.md §6's ISR/ordinary channel. Prelude
@@ -180,6 +187,20 @@ pub fn builtin_enum_variants(name: &str) -> Option<&'static [&'static str]> {
         // const-generic vocabulary (`BlkDriver[DriverMode.Irq]`).
         // =================================================================
         "DriverMode" => Some(&["Irq", "Poll"]),
+        // =================================================================
+        // plans/M8.md item G, decision 12: 03-hardware.md §9's own enum,
+        // verbatim and in its declaration order —
+        //
+        //     enum CompletionOutcome:
+        //         Completed
+        //         NotCompleted
+        //         Unknown
+        //
+        // Declaration order is load-bearing twice over: it is the tag
+        // `lower::variant_index` compares (via `TypedProgram::enums`), and
+        // it is the order `matches::shape_of` reports missing arms in.
+        // =================================================================
+        "CompletionOutcome" => Some(&["Completed", "NotCompleted", "Unknown"]),
         _ => None,
     }
 }

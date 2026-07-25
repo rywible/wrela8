@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_reserve_proven.wr sha256=2da8d2c4ae1b3fd06816b2233e83f78485cf7ef06412fcc01cfee4f04fa0ef51
+  Input path=examples/check_reserve_proven.wr sha256=50e99c4b4413008f15e3b8fb2a47e211bcdaccd0ee20569f1324dab033392d50
   Name value=check-reserve-proven
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

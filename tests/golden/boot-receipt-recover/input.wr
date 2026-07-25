@@ -1,0 +1,278 @@
+module examples.boot_receipt_recover
+
+# plans/M8.md item G flagship (decision 12): 03-hardware.md §9's
+# `CompletionOutcome`, produced on a real path and matched by source.
+#
+# Two published operations on one queue, one outcome each, both observed
+# by a `match` whose three arms are exhaustively checked like any other
+# enum in this language:
+#
+#   phase 1  publish a write; the device completes it; the IRQ wakes the
+#            bottom half; `drain` resolves the receipt under the live
+#            epoch; `recover` reports **Completed**.
+#   phase 2  publish a second write; the device completes it; the bottom
+#            half calls `RunningDevice.reset` first (epoch 1 -> 2), so the
+#            in-flight receipt can no longer be attributed and `recover`
+#            reports **Unknown**.
+#
+# Phase 2 is the honest producer §9 describes: "After a reset, a write may
+# have happened." Nothing here retries — the `Unknown` arm quarantines and
+# stops, which is the rule this golden's `err-retry-after-unknown` sibling
+# proves the compiler now enforces.
+#
+# `recover` deliberately returns **no payload**: after a reset the buffer
+# is possibly device-owned and §9 forbids reclaiming it, so each phase
+# spends its own DMA block and the retired one is simply not reused.
+# Reclaim is quarantine's job (plans/M8.md item F) and stays a named gap.
+#
+# Vacuity twin: `err-boot-receipt-recover` swaps the two expected outcomes
+# and must abort instead of surviving.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+const BLK_T_OUT: u32 = 1
+const MAGIC: u64 = 0xC0FFEE00BEEF42A1
+const SPARE_MAGIC: u64 = 0x0102030405060708
+# phase: 1 = first write in flight; 2 = second write in flight; 3 = done
+const PHASE_FIRST: u32 = 1
+const PHASE_SECOND: u32 = 2
+const PHASE_DONE: u32 = 3
+
+pool BlockControl
+pool BlockPayloads
+pool BlockSpares
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    capacity_sectors: u64
+    pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+    spare: Option[own[BlockSpares] DmaBlock]
+    inflight: Option[Receipt[own[BlockPayloads] DmaBlock]]
+    second: Option[Receipt[own[BlockSpares] DmaBlock]]
+    phase: u32
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512],
+         take buffer: own[BlockPayloads] DmaBlock,
+         take spare: own[BlockSpares] DmaBlock)
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        self.phase = 0
+        self.second = None
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = 16
+        irq = negotiated.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+        self.device = negotiated.start()
+        s = take spare
+        s.word = SPARE_MAGIC
+        self.spare = Some(take s)
+        b = take buffer
+        b.word = MAGIC
+        permit = self.queue.reserve_proven(descriptors=3)
+        op = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=0),
+            payload=take b,
+            device_writes_payload=false,
+            status=BlkReqStatus(status=0xff),
+            idempotent=false,
+        )
+        receipt = self.queue.publish(operation=take op)
+        self.inflight = Some(take receipt)
+        self.phase = PHASE_FIRST
+        return Ok(unit)
+
+    fn on_queue_irq(self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.irq_regs.interrupt_ack.write(handled)
+            wake(BlkDriver.drain)
+
+    @task
+    fn drain(mut self):
+        status = self.pending.swap_acquire(0)
+        if status == 0:
+            return unit
+        if self.phase == PHASE_FIRST:
+            slot = take self.inflight
+            match slot:
+                case .None:
+                    self.inflight = None
+                    return unit
+                case .Some(r):
+                    # Live epoch, device returned the descriptor: the
+                    # outcome is known.
+                    self.queue.drain(max=QDEPTH)
+                    first = self.queue.recover(receipt=take r)
+                    match first:
+                        case .Completed:
+                            pass
+                        case .NotCompleted:
+                            assert false, "the device reported status OK for the first write"
+                        case .Unknown:
+                            assert false, "no reset happened before the first recover"
+                    self.inflight = None
+                    # Publish the second operation on its own DMA block —
+                    # the first is retired unreclaimed by design.
+                    held = take self.spare
+                    match held:
+                        case .None:
+                            assert false, "the spare block is held until phase 2"
+                        case .Some(s):
+                            permit = self.queue.reserve_proven(descriptors=3)
+                            op = self.queue.prepare_block(
+                                permit=take permit,
+                                header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=1),
+                                payload=take s,
+                                device_writes_payload=false,
+                                status=BlkReqStatus(status=0xff),
+                                idempotent=false,
+                            )
+                            receipt = self.queue.publish(operation=take op)
+                            # Take the empty Option before restoring
+                            # (Option[Receipt] is a resource — a live
+                            # `None` cannot be overwritten).
+                            empty = take self.second
+                            match empty:
+                                case .None:
+                                    pass
+                                case .Some(_):
+                                    assert false, "the second slot is empty until phase 2"
+                            self.second = Some(take receipt)
+                    self.spare = None
+                    self.phase = PHASE_SECOND
+        else:
+            if self.phase == PHASE_SECOND:
+                slot = take self.second
+                match slot:
+                    case .None:
+                        self.second = None
+                        return unit
+                    case .Some(r):
+                        # Drain **first**: the device returned this
+                        # descriptor and the bookkeeping records a resolved
+                        # slot with status OK, so without the reset below
+                        # this receipt would report `Completed` exactly like
+                        # phase 1's. 03-hardware.md §9: reset produces a new
+                        # epoch that invalidates all prior receipts, and the
+                        # epoch test outranks the resolved slot — after a
+                        # reset a write may have happened, and the driver can
+                        # no longer say which.
+                        self.queue.drain(max=QDEPTH)
+                        self.device = self.device.reset(queue=mut self.queue)
+                        second = self.queue.recover(receipt=take r)
+                        match second:
+                            case .Completed:
+                                assert false, "the reset invalidated this receipt's epoch"
+                            case .NotCompleted:
+                                assert false, "the reset invalidated this receipt's epoch"
+                            case .Unknown:
+                                # No retry here: that is the whole rule.
+                                pass
+                        self.second = None
+                        self.phase = PHASE_DONE
+            else:
+                # A quiet wake after both phases (an extra completion or an
+                # inject bit) is expected and must not abort — the same
+                # event `boot-blk-roundtrip` absorbs through its empty
+                # `Option` guard.
+                return unit
+        return unit
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks * 10 + n
+        return unit
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@test(runtime)
+async fn recover_reports_completed_then_unknown(led: Actor[Ledger]):
+    # Two checkpoints: the phase-1 IRQ+drain, then the phase-2 IRQ+drain.
+    # Surviving with marks 51 means every assert in both phases held.
+    a = await led.mark(n=5)
+    match a:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    b = await led.mark(n=1)
+    match b:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    m = await led.read_marks()
+    match m:
+        case .Ok(v):
+            assert v == 51, "two marks after the Completed and Unknown recoveries"
+        case .Err(_):
+            assert false, "read_marks rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-receipt-recover", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=1)
+    spares = img.dma_pool[DmaBlock](name=BlockSpares, device=blk, count=1)
+    disk = img.driver(BlkDriver, device=blk, buffer=take payloads, spare=take spares)
+    led = img.actor(Ledger, mailbox=8)
+    img.supervise(children=[disk, led], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

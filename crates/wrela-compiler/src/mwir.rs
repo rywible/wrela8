@@ -649,6 +649,18 @@ pub enum Inst {
         receipt: Temp,
     },
 
+    /// `VirtQueue.recover(receipt=take r)` (plans/M8.md item G / decision 12,
+    /// 03-hardware.md §5's `Recovery` state / §9's `CompletionOutcome`):
+    /// resolve a receipt through the recovery path and produce the outcome
+    /// tag. Reads the slot's stamped epoch against the queue's live epoch
+    /// and the slot's flags; returns **no payload** (§9: never reclaim
+    /// possibly device-owned memory).
+    QueueRecover {
+        dst: Temp,
+        queue: Temp,
+        receipt: Temp,
+    },
+
     /// `RunningDevice.reset(queue=mut q)` (plans/M7.md item H2b / decision 23,
     /// 03-hardware.md §9): full device reset on machine v1. Consumes
     /// `Running`, bumps the queue's live epoch (invalidating every prior
@@ -1021,7 +1033,10 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             if targs.is_empty()
                 && matches!(
                     name.as_str(),
-                    "BootError" | "Target" | "Restart" | "IoError"
+                    // plans/M8.md item G: 03-hardware.md §9's
+                    // `CompletionOutcome` — three fieldless variants, so
+                    // the tag word is the whole value.
+                    "BootError" | "Target" | "Restart" | "IoError" | "CompletionOutcome"
                 ) =>
         {
             Ok(SLOT)
@@ -1305,6 +1320,13 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             receipt,
         } => {
             format!("QueueClaim dst={dst} queue={queue} receipt={receipt}")
+        }
+        Inst::QueueRecover {
+            dst,
+            queue,
+            receipt,
+        } => {
+            format!("QueueRecover dst={dst} queue={queue} receipt={receipt}")
         }
         Inst::DeviceReset { dst, device, queue } => {
             format!("DeviceReset dst={dst} device={device} queue={queue}")

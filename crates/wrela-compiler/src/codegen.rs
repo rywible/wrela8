@@ -1981,6 +1981,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         } => {
             emit_queue_claim(ctx, f, *dst, *queue, *receipt)?;
         }
+        Inst::QueueRecover {
+            dst,
+            queue,
+            receipt,
+        } => {
+            emit_queue_recover(ctx, f, *dst, *queue, *receipt)?;
+        }
         Inst::DeviceReset { dst, device, queue } => {
             emit_device_reset(ctx, f, *dst, *device, *queue)?;
         }
@@ -2932,6 +2939,137 @@ fn emit_queue_claim(
         ),
     );
     ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    Ok(())
+}
+
+/// `VirtQueue.recover(receipt=take r)` (plans/M8.md item G / decision 12):
+/// the emitted form of `virtqueue::recover_outcome`, ladder for ladder.
+/// `receipt` holds the meta absolute address (the word publish minted);
+/// `queue` holds the control-pool base, which is where the queue's live
+/// epoch lives.
+///
+/// No payload is produced — 03-hardware.md §9 forbids reclaiming possibly
+/// device-owned memory, so the meta's payload word is left where it is and
+/// the pool slot is retired (quarantine/reclaim is plans/M8.md item F).
+/// Both `INFLIGHT` and `RESOLVED` are cleared afterwards, so a second
+/// resolution of the same slot meets the fail-closed abort rather than a
+/// stale answer — the runtime half of §5's "resolves exactly once".
+fn emit_queue_recover(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+    receipt: Temp,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let epoch_off = placed.bytes + crate::virtqueue::SLOT_BOOK_EPOCH;
+
+    // X_D = meta (receipt word); X_C = pool.
+    ctx.load_slot(X_D, ctx.frame.off(receipt));
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    // X_E = live epoch.
+    ctx.load_imm(X_E, epoch_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_E, X_C, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_C),
+            reg_name(X_E)
+        ),
+    );
+    ctx.load_ptr(X_E, X_E, 0);
+    // X_A = stamped slot epoch; X_B = flags.
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_EPOCH as usize);
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+
+    // Result accumulates in X_F.
+    // 1. stale epoch -> Unknown.
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_E, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_E)),
+    );
+    let epoch_live = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+    ctx.load_imm(X_F, crate::virtqueue::OUTCOME_UNKNOWN as i64);
+    let done_stale = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(epoch_live, SkipKind::Cond(Cond::Eq));
+
+    // 2. still INFLIGHT -> Unknown.
+    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
+    ctx.push(
+        encode::enc_and_reg(X_A, X_B, X_A, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    let not_inflight = ctx.emit_skip(SkipKind::Cbz(X_A));
+    ctx.load_imm(X_F, crate::virtqueue::OUTCOME_UNKNOWN as i64);
+    let done_inflight = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(not_inflight, SkipKind::Cbz(X_A));
+
+    // 3. RESOLVED -> read the device status byte; anything else is a fault.
+    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
+    ctx.push(
+        encode::enc_and_reg(X_A, X_B, X_A, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    let resolved = ctx.emit_skip(SkipKind::Cbnz(X_A));
+    ctx.abort_fixed(crate::virtqueue::RecoverOutcome::not_recoverable_abort_message());
+    ctx.patch_skip(resolved, SkipKind::Cbnz(X_A));
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
+    ctx.push(
+        encode::enc_ldrb_imm(X_A, X_A, 0),
+        format!("ldrb w{}, [{}, #0]", X_A, reg_name(X_A)),
+    );
+    ctx.push(
+        encode::enc_cmp_imm(X_A, 0, true),
+        format!("cmp {}, #0", reg_name(X_A)),
+    );
+    ctx.load_imm(X_F, crate::virtqueue::OUTCOME_COMPLETED as i64);
+    ctx.load_imm(X_A, crate::virtqueue::OUTCOME_NOT_COMPLETED as i64);
+    ctx.push(
+        encode::enc_csel(X_F, X_F, X_A, Cond::Eq, true),
+        format!(
+            "csel {}, {}, {}, eq",
+            reg_name(X_F),
+            reg_name(X_F),
+            reg_name(X_A)
+        ),
+    );
+
+    ctx.patch_skip(done_stale, SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(done_inflight, SkipKind::Cond(Cond::Al));
+
+    // Retire the slot: clear INFLIGHT and RESOLVED so a second resolution
+    // of this receipt meets the fail-closed abort above.
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(
+        X_A,
+        (crate::virtqueue::SLOT_FLAG_INFLIGHT | crate::virtqueue::SLOT_FLAG_RESOLVED) as i64,
+    );
+    ctx.push(
+        encode::enc_bic_reg(X_B, X_B, X_A, true),
+        format!(
+            "bic {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+
+    ctx.store_slot(X_F, ctx.frame.off(dst));
     Ok(())
 }
 

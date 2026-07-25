@@ -90,6 +90,7 @@ pub struct BlkDriver:
             payload=take b,
             device_writes_payload=false,
             status=BlkReqStatus(status=0xff),
+            idempotent=false,
         )
         receipt = self.queue.publish(operation=take op)
         self.inflight = Some(take receipt)

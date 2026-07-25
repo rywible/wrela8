@@ -1,1 +1,1 @@
-error[move]: `r` is a protocol resource (`Receipt[own[BlockPayloads] DmaBlock]`); every path must consume, return, or transfer it (02-language.md §3.1 / 03-hardware.md §5) — dropping one is illegal at 69:9
+error[move]: `r` is a protocol resource (`Receipt[own[BlockPayloads] DmaBlock]`); every path must consume, return, or transfer it (02-language.md §3.1 / 03-hardware.md §5) — dropping one is illegal at 70:9
