@@ -21,8 +21,11 @@ struct BlkReqStatus:
 
 @layout(dma, endian=little)
 struct DmaBlock:
-    kind: u64
-    pad: u64
+    # 512-byte sector payload (virtio-blk SECTOR_SIZE). Frame ABI stays
+    # two u64 slots; the @layout size is what prepare publishes as the
+    # descriptor length (plans/M7.md item E4).
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
 
 struct VirtioBlock:
     id: u32

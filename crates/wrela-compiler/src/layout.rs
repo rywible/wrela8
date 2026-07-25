@@ -242,18 +242,25 @@ pub struct BlkQueueReport {
 }
 
 /// The closed virtio-blk device configuration emitted into the report
-/// (`BlkDevice capacity_sectors= features=`). `vector` is omitted at E1
-/// (poll mode; item G owns IRQ vectors).
+/// (`BlkDevice capacity_sectors= features=` / optional `vector=`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlkReport {
     pub capacity_sectors: u64,
     pub features: u64,
+    /// Device-owned pending-word bit (`1..=63`). `None` is 03 §7's poll
+    /// build — no vector, and the used ring alone is the completion signal.
+    pub vector: Option<u64>,
     pub queue: BlkQueueReport,
     /// Decision 2c: descriptors a single blk op needs, and the occupancy
     /// bound `floor(queue_depth / descriptors_per_op)` (plans/M7.md item
-    /// E2 / 03-hardware.md §4). Exits-per-op needs E4's publish workload.
+    /// E2 / 03-hardware.md §4). Exits-per-op (06 §5): one doorbell per
+    /// `publish` — plans/M7.md item E4.
     pub descriptors_per_op: u16,
     pub occupancy_bound: u16,
+    /// Expected guest→host exits per published operation (decision 2c /
+    /// 06-machine.md §5). Revision 0.1 does not batch doorbells, so this
+    /// is always 1.
+    pub exits_per_op: u16,
 }
 
 /// One host-side interrupt injection the VMM performs before the vCPU
@@ -1701,12 +1708,20 @@ pub fn derive_blk_report(
             "`VirtQueue.configure`'s depth={depth} is not a nonzero power of two"
         )));
     };
-    if placed.bytes > pool.backing.bytes {
+    // plans/M7.md item E4 / decision 20: ring + single-flight packaging
+    // (meta/header/status) must both fit; the VMM reaches only declared
+    // pool bytes, so a prepare that wrote past the window would be a
+    // guest fault rather than a build error.
+    let Some(needed) = crate::virtqueue::control_bytes_needed(depth) else {
         return Err(LayoutError::new(format!(
-            "`VirtQueue.configure` needs a {depth}-deep ring ({placed_bytes} bytes) but pool \
-             `{pool_name}` only reserves {pool_bytes} bytes — enlarge the `img.dma_pool` or \
+            "`VirtQueue.configure`'s depth={depth} is not a nonzero power of two"
+        )));
+    };
+    if needed > pool.backing.bytes {
+        return Err(LayoutError::new(format!(
+            "`VirtQueue.configure` needs a {depth}-deep ring plus packaging ({needed} bytes) but \
+             pool `{pool_name}` only reserves {pool_bytes} bytes — enlarge the `img.dma_pool` or \
              shrink the depth",
-            placed_bytes = placed.bytes,
             pool_bytes = pool.backing.bytes,
         )));
     }
@@ -1719,9 +1734,14 @@ pub fn derive_blk_report(
     })?;
     let features = crate::eval::image_checks::blk_accepted_features(graph, programs)
         .map_err(|e| LayoutError::new(e.message))?;
+    let vector = graph
+        .devices
+        .iter()
+        .find_map(|d| crate::eval::image_checks::device_vector(&d.args));
     Ok(Some(BlkReport {
         capacity_sectors: capacity,
         features,
+        vector,
         queue: BlkQueueReport {
             index: 0,
             size: depth,
@@ -1736,6 +1756,7 @@ pub fn derive_blk_report(
             depth,
             crate::virtqueue::DESCRIPTORS_PER_BLK_OP,
         ),
+        exits_per_op: 1,
     }))
 }
 
@@ -1747,8 +1768,13 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
         return;
     };
     out.push_str(&format!(
-        "BlkDevice capacity_sectors={} features={:#x}\n",
-        blk.capacity_sectors, blk.features
+        "BlkDevice capacity_sectors={} features={:#x}{}\n",
+        blk.capacity_sectors,
+        blk.features,
+        match blk.vector {
+            Some(v) => format!(" vector={v}"),
+            None => String::new(),
+        }
     ));
     let q = &blk.queue;
     out.push_str(&format!(
@@ -1763,8 +1789,8 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
         ));
     }
     out.push_str(&format!(
-        "BlkAccounting descriptors_per_op={} occupancy_bound={}\n",
-        blk.descriptors_per_op, blk.occupancy_bound
+        "BlkAccounting descriptors_per_op={} occupancy_bound={} exits_per_op={}\n",
+        blk.descriptors_per_op, blk.occupancy_bound, blk.exits_per_op
     ));
 }
 
@@ -4336,8 +4362,13 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             out,
             1,
             &format!(
-                "BlkDevice capacity_sectors={} features={:#x}",
-                blk.capacity_sectors, blk.features
+                "BlkDevice capacity_sectors={} features={:#x}{}",
+                blk.capacity_sectors,
+                blk.features,
+                match blk.vector {
+                    Some(v) => format!(" vector={v}"),
+                    None => String::new(),
+                }
             ),
         );
         let q = &blk.queue;
@@ -4349,14 +4380,15 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
                 q.index, q.size, q.desc, q.avail, q.used, q.doorbell
             ),
         );
-        // Decision 2c / plans/M7.md item E2: occupancy bound is
-        // floor(queue_depth / descriptors_per_op). Exits-per-op needs E4.
+        // Decision 2c / plans/M7.md item E2+E4: occupancy bound is
+        // floor(queue_depth / descriptors_per_op); exits_per_op is 1
+        // (one doorbell per publish; no batching in revision 0.1).
         push_line(
             out,
             1,
             &format!(
-                "BlkAccounting descriptors_per_op={} queue_depth={} occupancy_bound={}",
-                blk.descriptors_per_op, q.size, blk.occupancy_bound
+                "BlkAccounting descriptors_per_op={} queue_depth={} occupancy_bound={} exits_per_op={}",
+                blk.descriptors_per_op, q.size, blk.occupancy_bound, blk.exits_per_op
             ),
         );
     }

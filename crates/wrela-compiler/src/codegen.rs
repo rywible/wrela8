@@ -1901,24 +1901,538 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
         }
-        // plans/M7.md item E3 / decision 16: the sealed write *order* is an
-        // mwir fact (`QueuePublish order=[...]`). Real DRAM stores against
-        // pool-backed addresses wait for E4's image-bound `own[P] T`
-        // wiring — inventing stack addresses as descriptor targets would
-        // pretend a transfer payload lived in a declared pool. Mint the
-        // Receipt word; keep the operands live.
+        // plans/M7.md item E4 / decision 20: package into the control-pool
+        // area after the ring, then mint QueueOp = desc head 0.
+        Inst::QueuePrepare {
+            dst,
+            queue,
+            permit: _,
+            header,
+            payload,
+            status,
+            device_writes,
+            payload_len,
+        } => {
+            emit_queue_prepare(
+                ctx,
+                f,
+                *dst,
+                *queue,
+                *header,
+                *payload,
+                *status,
+                *device_writes,
+                *payload_len,
+            )?;
+        }
+        // plans/M7.md item E3/E4 / decision 16/20: sealed write order with
+        // real DRAM stores against pool-backed addresses.
         Inst::QueuePublish {
             dst,
             queue,
             operation,
             steps: _,
         } => {
-            ctx.load_slot(X_A, ctx.frame.off(*queue));
-            ctx.load_slot(X_B, ctx.frame.off(*operation));
-            ctx.load_imm(0, 0);
-            ctx.store_slot(0, ctx.frame.off(*dst));
+            emit_queue_publish(ctx, f, *dst, *queue, *operation)?;
+        }
+        Inst::QueueDrain { queue, max } => {
+            let _ = (queue, max);
+            return Err(CodegenError::unimplemented(
+                "`VirtQueue.drain` codegen (plans/M7.md item E4: completion validation + \
+                 receipt resolve — the Inst is lowered; the DRAM walk lands next)",
+            ));
         }
     }
+    Ok(())
+}
+
+/// Descriptor-table depth of a `VirtQueue[..N]` temp, or a named error.
+fn virtqueue_depth_of(ty: &Type) -> Result<u16, CodegenError> {
+    let Type::Named(name, targs) = ty else {
+        return Err(CodegenError::internal(format!(
+            "queue temp is `{}`, not `VirtQueue[..N]`",
+            crate::sema::types::render_type(ty)
+        )));
+    };
+    if name != "VirtQueue" {
+        return Err(CodegenError::internal(format!(
+            "queue temp is `{name}`, not `VirtQueue[..N]`"
+        )));
+    }
+    let Some(crate::sema::types::TypeArg::Bound(expr)) = targs.first() else {
+        return Err(CodegenError::internal(
+            "`VirtQueue` with no bound depth".to_string(),
+        ));
+    };
+    let text = match expr {
+        crate::syntax::ast::Expr::Int(_, t) => t.as_str(),
+        _ => {
+            return Err(CodegenError::unimplemented(
+                "`VirtQueue[..N]` whose depth is not an integer literal (const-name depths need \
+                 folding before codegen)",
+            ));
+        }
+    };
+    let n: u64 = text.parse().map_err(|_| {
+        CodegenError::internal(format!("`VirtQueue[..{text}]` depth is not a u64 literal"))
+    })?;
+    u16::try_from(n)
+        .map_err(|_| CodegenError::internal(format!("`VirtQueue[..{n}]` depth does not fit u16")))
+}
+
+/// `prepare_block`: write header/status into packaging, record meta, mint
+/// QueueOp = 0 (single-flight desc head). Decision 20.
+#[allow(clippy::too_many_arguments)]
+fn emit_queue_prepare(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+    header: Temp,
+    payload: Temp,
+    status: Temp,
+    device_writes: bool,
+    payload_len: u32,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let meta = placed.bytes;
+    let header_off = meta + crate::virtqueue::SLOT_META_BYTES;
+    let status_off = header_off + crate::virtqueue::REQ_HEADER_SIZE;
+
+    // X_C = pool base (queue word).
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    // X_D = header destination = pool + header_off.
+    ctx.load_imm(X_D, header_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // Pack BlkReqHeader: frame ABI is three 8-byte slots (kind, reserved,
+    // sector); device layout is u32/u32/u64 at +0/+4/+8.
+    let hdr_base = ctx.frame.off(header);
+    ctx.load_slot(X_A, hdr_base); // kind
+    ctx.push(
+        encode::enc_str_w_imm(X_A, X_D, 0),
+        format!("str w{}, [{}, #0]", X_A, reg_name(X_D)),
+    );
+    ctx.load_slot(X_A, hdr_base + 8); // reserved
+    ctx.push(
+        encode::enc_str_w_imm(X_A, X_D, 4),
+        format!("str w{}, [{}, #4]", X_A, reg_name(X_D)),
+    );
+    ctx.load_slot(X_A, hdr_base + 16); // sector
+    ctx.push(
+        encode::enc_str_x_imm(X_A, X_D, 8),
+        format!("str {}, [{}, #8]", reg_name(X_A), reg_name(X_D)),
+    );
+
+    // Status byte at pool + status_off.
+    ctx.load_imm(X_D, status_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_slot(X_A, ctx.frame.off(status));
+    ctx.push(
+        encode::enc_strb_imm(X_A, X_D, 0),
+        format!("strb w{}, [{}, #0]", X_A, reg_name(X_D)),
+    );
+
+    // Meta base = pool + meta.
+    ctx.load_imm(X_D, meta as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // payload addr
+    ctx.load_slot(X_A, ctx.frame.off(payload));
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    // header addr
+    ctx.load_imm(X_A, header_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_HEADER as usize);
+    // status addr
+    ctx.load_imm(X_A, status_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
+    // payload_len
+    ctx.load_imm(X_A, payload_len as i64);
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    // flags
+    let flags = if device_writes {
+        crate::virtqueue::SLOT_FLAG_DEVICE_WRITES
+    } else {
+        0
+    };
+    ctx.load_imm(X_A, flags as i64);
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    // generation: bump (load, add 1, store); start from 1 on first use.
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_GENERATION as usize);
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_GENERATION as usize);
+    // inflight = 1
+    ctx.load_imm(X_A, 1);
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_INFLIGHT as usize);
+    // QueueOp = desc head 0
+    ctx.load_imm(X_A, 0);
+    ctx.store_slot(X_A, ctx.frame.off(dst));
+    Ok(())
+}
+
+/// `publish`: write_descriptors → publish_available → notify_queue.
+fn emit_queue_publish(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+    operation: Temp,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let meta = placed.bytes;
+    let _ = operation; // single-flight: head is always 0; keep operand live via load below
+    ctx.load_slot(X_B, ctx.frame.off(operation)); // keep live / future multi-flight
+
+    // X_C = pool base
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    // X_D = meta base
+    ctx.load_imm(X_D, meta as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+
+    // Load packaging.
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_HEADER as usize); // header addr → will reuse
+    // Spill header/payload/status/len/flags into frame-adjacent? Use
+    // registers carefully: after each desc write we reload from meta.
+    // Desc 0 (header): NEXT, device-readable, len=16, next=1
+    // X_A already header addr. Write desc[0].
+    emit_desc_entry(
+        ctx,
+        /*pool*/ X_C,
+        /*desc_index*/ 0,
+        /*addr_reg*/ X_A,
+        /*len*/ crate::virtqueue::REQ_HEADER_SIZE as u32,
+        /*flags*/ crate::virtqueue::DESC_F_NEXT,
+        /*next*/ 1,
+        placed.desc,
+    )?;
+
+    // Desc 1 (payload)
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    ctx.load_ptr(0, X_D, crate::virtqueue::SLOT_META_FLAGS as usize); // flags → x0 temporarily
+    // data flags: NEXT | (WRITE if device_writes)
+    // Build flags in X_SCRATCH: start NEXT, OR WRITE if bit0 of meta flags.
+    // Reload meta base — X_D still holds it if nothing clobbered it.
+    // emit_desc_entry clobbers X_A/X_B/X_C? It uses pool reg — keep X_C as pool.
+    // After first emit_desc, X_C should still be pool if emit_desc doesn't clobber.
+    // Re-load pool and meta to be safe.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, meta as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
+    let data_flags_base = crate::virtqueue::DESC_F_NEXT;
+    // If device_writes, OR WRITE. Compare meta flags to 0.
+    ctx.load_ptr(0, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    // We'll compute flags into a temp slot via conditional — simpler: always
+    // emit two paths. For dump-simplicity use: flags = NEXT | (meta_flags & 1) * WRITE
+    // Since WRITE=2 and FLAG_DEVICE_WRITES=1: flags = NEXT | (meta_flags << 1) when
+    // only bit0 is used: NEXT | (meta_flags * WRITE).
+    // lsl meta_flags by 1 → WRITE bit when meta was 1.
+    ctx.push(
+        encode::enc_lsl_imm(0, 0, 1, true),
+        format!("lsl {}, {}, #1", reg_name(0), reg_name(0)),
+    );
+    ctx.load_imm(1, data_flags_base as i64);
+    ctx.push(
+        encode::enc_orr_reg(0, 0, 1, true),
+        format!("orr {}, {}, {}", reg_name(0), reg_name(0), reg_name(1)),
+    );
+    // x0 = data flags, x1 = len (from X_B), xA = addr. emit_desc with len in reg?
+    // Refactor emit_desc to take len as u32 immediate — payload_len is known
+    // at prepare but publish reads it from meta. Use the register len.
+    emit_desc_entry_len_reg(
+        ctx,
+        X_C,
+        1,
+        X_A,
+        X_B, // len reg
+        0,   // flags reg
+        2,   // next
+        placed.desc,
+    )?;
+
+    // Desc 2 (status): WRITE only, len=1, next=0
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, meta as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
+    emit_desc_entry(
+        ctx,
+        X_C,
+        2,
+        X_A,
+        crate::virtqueue::REQ_STATUS_SIZE as u32,
+        crate::virtqueue::DESC_F_WRITE,
+        0,
+        placed.desc,
+    )?;
+
+    // publish_available: avail.ring[avail.idx % depth] = head (0); then
+    // avail.idx++.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, placed.avail as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    // Load avail.idx (u16 at +2)
+    ctx.push(
+        encode::enc_ldrh_imm(X_A, X_D, 2),
+        format!("ldrh w{}, [{}, #2]", X_A, reg_name(X_D)),
+    );
+    // slot = idx & (depth-1)
+    ctx.load_imm(X_B, (depth as u64 - 1) as i64);
+    ctx.push(
+        encode::enc_and_reg(X_B, X_A, X_B, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    // ring entry addr = avail + 4 + 2*slot
+    ctx.push(
+        encode::enc_lsl_imm(X_B, X_B, 1, true),
+        format!("lsl {}, {}, #1", reg_name(X_B), reg_name(X_B)),
+    );
+    ctx.load_imm(0, 4);
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, 0, true),
+        format!("add {}, {}, {}", reg_name(X_B), reg_name(X_B), reg_name(0)),
+    );
+    ctx.push(
+        encode::enc_add_reg(X_B, X_D, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_D),
+            reg_name(X_B)
+        ),
+    );
+    // store head 0 as u16
+    ctx.load_imm(0, 0);
+    ctx.push(
+        encode::enc_strh_imm(0, X_B, 0),
+        format!("strh w{}, [{}, #0]", 0, reg_name(X_B)),
+    );
+    // avail.idx++
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.push(
+        encode::enc_strh_imm(X_A, X_D, 2),
+        format!("strh w{}, [{}, #2]", X_A, reg_name(X_D)),
+    );
+
+    // notify_queue: store 1 to doorbell
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, placed.doorbell as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_imm(X_A, 1);
+    ctx.store_ptr(X_A, X_D, 0);
+
+    // Receipt word = operation (desc head 0)
+    ctx.load_slot(X_A, ctx.frame.off(operation));
+    ctx.store_slot(X_A, ctx.frame.off(dst));
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_desc_entry(
+    ctx: &mut FnCtx,
+    pool_reg: u8,
+    desc_index: u16,
+    addr_reg: u8,
+    len: u32,
+    flags: u16,
+    next: u16,
+    desc_base_off: u64,
+) -> Result<(), CodegenError> {
+    // desc_addr = pool + desc_base_off + index*16. Use X_TMP = 1 as scratch
+    // for the descriptor entry pointer — but addr_reg might be X_A; pool X_C.
+    // Scratch: use register 1 (X_B) only if addr_reg isn't X_B.
+    let entry = if addr_reg == X_B { 0u8 } else { X_B };
+    ctx.load_imm(entry, (desc_base_off + desc_index as u64 * 16) as i64);
+    ctx.push(
+        encode::enc_add_reg(entry, pool_reg, entry, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(entry),
+            reg_name(pool_reg),
+            reg_name(entry)
+        ),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(addr_reg, entry, 0),
+        format!("str {}, [{}, #0]", reg_name(addr_reg), reg_name(entry)),
+    );
+    // len as u32 — materialize into a free reg
+    let len_reg = if addr_reg == 0 { X_A } else { 0 };
+    ctx.load_imm(len_reg, len as i64);
+    ctx.push(
+        encode::enc_str_w_imm(len_reg, entry, 8),
+        format!("str w{}, [{}, #8]", len_reg, reg_name(entry)),
+    );
+    ctx.load_imm(len_reg, flags as i64);
+    ctx.push(
+        encode::enc_strh_imm(len_reg, entry, 12),
+        format!("strh w{}, [{}, #12]", len_reg, reg_name(entry)),
+    );
+    ctx.load_imm(len_reg, next as i64);
+    ctx.push(
+        encode::enc_strh_imm(len_reg, entry, 14),
+        format!("strh w{}, [{}, #14]", len_reg, reg_name(entry)),
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_desc_entry_len_reg(
+    ctx: &mut FnCtx,
+    pool_reg: u8,
+    desc_index: u16,
+    addr_reg: u8,
+    len_reg: u8,
+    flags_reg: u8,
+    next: u16,
+    desc_base_off: u64,
+) -> Result<(), CodegenError> {
+    // Find a scratch that isn't pool/addr/len/flags.
+    let used = [pool_reg, addr_reg, len_reg, flags_reg];
+    let entry = (0u8..8).find(|r| !used.contains(r)).ok_or_else(|| {
+        CodegenError::internal("no scratch register for descriptor entry pointer".to_string())
+    })?;
+    ctx.load_imm(entry, (desc_base_off + desc_index as u64 * 16) as i64);
+    ctx.push(
+        encode::enc_add_reg(entry, pool_reg, entry, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(entry),
+            reg_name(pool_reg),
+            reg_name(entry)
+        ),
+    );
+    ctx.push(
+        encode::enc_str_x_imm(addr_reg, entry, 0),
+        format!("str {}, [{}, #0]", reg_name(addr_reg), reg_name(entry)),
+    );
+    ctx.push(
+        encode::enc_str_w_imm(len_reg, entry, 8),
+        format!("str w{}, [{}, #8]", len_reg, reg_name(entry)),
+    );
+    ctx.push(
+        encode::enc_strh_imm(flags_reg, entry, 12),
+        format!("strh w{}, [{}, #12]", flags_reg, reg_name(entry)),
+    );
+    let next_reg = (0u8..8)
+        .find(|r| !used.contains(r) && *r != entry)
+        .ok_or_else(|| CodegenError::internal("no scratch for desc next".to_string()))?;
+    ctx.load_imm(next_reg, next as i64);
+    ctx.push(
+        encode::enc_strh_imm(next_reg, entry, 14),
+        format!("strh w{}, [{}, #14]", next_reg, reg_name(entry)),
+    );
     Ok(())
 }
 

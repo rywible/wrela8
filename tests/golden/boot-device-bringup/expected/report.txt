@@ -52,4 +52,4 @@ ImageReport v0
   BlkPool name=BlockControl base=0x40501738 size=0x200
   BlkDevice capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=8 desc=0x40501738 avail=0x405017b8 used=0x405017d0 doorbell=0x40501818
-  BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
+  BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2 exits_per_op=1

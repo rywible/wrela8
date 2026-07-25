@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_reserve_proven.wr sha256=fc54f5368983b77e63359b56b44397c0fa34779d99bc104e29bedb4564217019
+  Input path=examples/check_reserve_proven.wr sha256=2da8d2c4ae1b3fd06816b2233e83f78485cf7ef06412fcc01cfee4f04fa0ef51
   Name value=check-reserve-proven
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -33,28 +33,29 @@ ImageReport v0
     Field name=sector type=u64 offset=0x8 size=8
   Layout name=BlkReqStatus kind=dma endian=little size=1 padding=0
     Field name=status type=u8 offset=0x0 size=1
-  Layout name=DmaBlock kind=dma endian=little size=16 padding=0
-    Field name=kind type=u64 offset=0x0 size=8
-    Field name=pad type=u64 offset=0x8 size=8
+  Layout name=DmaBlock kind=dma endian=little size=512 padding=496
+    Field name=word type=u64 offset=0x0 size=8
+    Padding offset=0x8 size=496
+    Field name=pad_end type=u64 offset=0x1f8 size=8
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=4194304
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=1032
-  Section name=rodata base=0x40500458 size=27
-  Section name=abort base=0x40500474 size=120
-  Section name=checkpoint base=0x405004ec size=104
-  Section name=rtcode base=0x40500554 size=224
-  Section name=rtdata base=0x40500638 size=48
-  Section name=devregs base=0x40500668 size=104
-  Section name=pooldata base=0x405006d0 size=576
+  Section name=code base=0x40500050 size=1264
+  Section name=rodata base=0x40500540 size=27
+  Section name=abort base=0x4050055c size=120
+  Section name=checkpoint base=0x405005d4 size=104
+  Section name=rtcode base=0x4050063c size=224
+  Section name=rtdata base=0x40500720 size=48
+  Section name=devregs base=0x40500750 size=104
+  Section name=pooldata base=0x405007b8 size=2560
   Entry base=0x40500000
   Driver name=BlkDriver state=32
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500668 size=104
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405006d0 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=4 slot_bytes=16 base=0x405008d0 size=64 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl base=0x405006d0 size=0x200
-  BlkPool name=BlockPayloads base=0x405008d0 size=0x40
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500750 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405007b8 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=4 slot_bytes=512 base=0x405009b8 size=2048 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl base=0x405007b8 size=0x200
+  BlkPool name=BlockPayloads base=0x405009b8 size=0x800
   BlkDevice capacity_sectors=16 features=0x100000200
-  BlkQueue index=0 size=8 desc=0x405006d0 avail=0x40500750 used=0x40500768 doorbell=0x405007b0
-  BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
+  BlkQueue index=0 size=8 desc=0x405007b8 avail=0x40500838 used=0x40500850 doorbell=0x40500898
+  BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2 exits_per_op=1

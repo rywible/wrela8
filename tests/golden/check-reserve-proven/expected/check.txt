@@ -9,8 +9,8 @@ Module path=examples.check_reserve_proven
   Struct BlkReqStatus data
     field status: u8
   Struct DmaBlock data
-    field kind: u64
-    field pad: u64
+    field word: u64
+    field pad_end: u64
   Struct VirtioBlock data
     field id: u32
   Enum Feature data

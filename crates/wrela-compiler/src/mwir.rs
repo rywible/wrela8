@@ -592,18 +592,43 @@ pub enum Inst {
         driver: String,
     },
 
-    /// `VirtQueue.publish` (plans/M7.md item E3, 03-hardware.md §3/§5,
-    /// decision 15/16): the sealed ring-write sequence in normative order.
-    /// `steps` is exactly `virtqueue::PUBLISH_WRITE_ORDER` — pinned in the
-    /// mwir dump and by unit test. Real DRAM stores against pool-backed
-    /// addresses wait for E4's image-bound `own[P] T` wiring (decision 16);
-    /// this node is the oracle that the order lives in `publish`, not in
-    /// `prepare_block`. `dst` is the minted `Receipt[P]` word.
+    /// `VirtQueue.prepare_block` (plans/M7.md item E4 / decision 20):
+    /// copy the header and status into the control-pool packaging area,
+    /// record the payload address / length / direction in the meta slot,
+    /// and mint a `QueueOp` word (descriptor head 0 for single-flight).
+    /// `payload_len` is the `@layout(dma)` size of the own'd type — the
+    /// descriptor length the device model validates against `SECTOR_SIZE`.
+    QueuePrepare {
+        dst: Temp,
+        queue: Temp,
+        permit: Temp,
+        header: Temp,
+        payload: Temp,
+        status: Temp,
+        device_writes: bool,
+        payload_len: u32,
+    },
+
+    /// `VirtQueue.publish` (plans/M7.md item E3/E4, 03-hardware.md §3/§5,
+    /// decision 15/16/20): the sealed ring-write sequence in normative
+    /// order. `steps` is exactly `virtqueue::PUBLISH_WRITE_ORDER`. Real
+    /// DRAM stores against pool-backed addresses (decision 20). `dst` is
+    /// the minted `Receipt[P]` word (same identity as the operation).
     QueuePublish {
         dst: Temp,
         queue: Temp,
         operation: Temp,
         steps: &'static [&'static str],
+    },
+
+    /// `VirtQueue.drain` (plans/M7.md item E4, 03-hardware.md §4/§6):
+    /// acquire used-ring visibility, validate the device-reported id
+    /// against generation/epoch, check the reported length, resolve the
+    /// matching receipt (wake its waiter with an `IoCompletion[P]`).
+    /// `max` is the bounded drain count from source.
+    QueueDrain {
+        queue: Temp,
+        max: u16,
     },
 
     /// Unconditional abandonment: `assert`'s own failure path, an
@@ -1196,6 +1221,20 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             "MmioWrite base={base} offset={offset:#x} ty={} value={value}",
             types::render_type(ty)
         ),
+        Inst::QueuePrepare {
+            dst,
+            queue,
+            permit,
+            header,
+            payload,
+            status,
+            device_writes,
+            payload_len,
+        } => format!(
+            "QueuePrepare dst={dst} queue={queue} permit={permit} header={header} \
+             payload={payload} status={status} device_writes={device_writes} \
+             payload_len={payload_len}"
+        ),
         Inst::QueuePublish {
             dst,
             queue,
@@ -1205,6 +1244,9 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             "QueuePublish dst={dst} queue={queue} operation={operation} order=[{}]",
             steps.join(", ")
         ),
+        Inst::QueueDrain { queue, max } => {
+            format!("QueueDrain queue={queue} max={max}")
+        }
         Inst::LoadIrqVector { dst, driver } => {
             format!("LoadIrqVector dst={dst} driver={driver}")
         }

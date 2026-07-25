@@ -156,6 +156,46 @@ pub const DESCRIPTORS_PER_BLK_OP: u16 = 3;
 pub const PUBLISH_WRITE_ORDER: &[&str] =
     &["write_descriptors", "publish_available", "notify_queue"];
 
+/// Descriptor flags (VIRTIO 1.2 §2.6) — same numbers as
+/// `wrela_vmm::devices::{DESC_F_NEXT, DESC_F_WRITE}`.
+pub const DESC_F_NEXT: u16 = 1;
+pub const DESC_F_WRITE: u16 = 2;
+
+/// Virtio-blk request header size (`type`/`reserved`/`sector`).
+pub const REQ_HEADER_SIZE: u64 = 16;
+/// Status descriptor length (one device-writable byte).
+pub const REQ_STATUS_SIZE: u64 = 1;
+
+/// Bytes of per-queue bookkeeping that sit in the control pool immediately
+/// after the ring (plans/M7.md item E4 / decision 20). Single-flight for
+/// revision 0.1: one meta record, one header slot, one status byte.
+///
+/// ```text
+///   [ring … | meta 64 | header 16 | status 8-pad]
+/// ```
+pub const SLOT_META_BYTES: u64 = 64;
+pub const SLOT_META_PAYLOAD: u64 = 0;
+pub const SLOT_META_HEADER: u64 = 8;
+pub const SLOT_META_STATUS: u64 = 16;
+pub const SLOT_META_PAYLOAD_LEN: u64 = 24;
+pub const SLOT_META_FLAGS: u64 = 32;
+pub const SLOT_META_GENERATION: u64 = 40;
+pub const SLOT_META_WAITER: u64 = 48;
+pub const SLOT_META_INFLIGHT: u64 = 56;
+/// `flags` bit 0: device writes the payload (`T_IN` / `device_writes_payload=true`).
+pub const SLOT_FLAG_DEVICE_WRITES: u64 = 1;
+
+/// Total bytes after the ring this queue's packaging consumes.
+pub fn packaging_bytes() -> u64 {
+    SLOT_META_BYTES + REQ_HEADER_SIZE + 8 // status padded to 8
+}
+
+/// Control-pool bytes a `depth`-deep queue needs: ring + packaging.
+pub fn control_bytes_needed(depth: u16) -> Option<u64> {
+    let placed = place_ring(0, depth)?;
+    Some(placed.bytes + packaging_bytes())
+}
+
 /// Maximum concurrent direct operations a queue can hold
 /// (03-hardware.md §4: "three direct descriptors in a 128-deep queue
 /// means at most 42 in flight" — `floor(128/3) = 42`). Plans/M7.md item
