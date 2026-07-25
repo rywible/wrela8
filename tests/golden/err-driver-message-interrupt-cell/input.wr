@@ -1,6 +1,6 @@
 module examples.err_driver_message_interrupt_cell
 
-# plans/M8.md item D, decision 16 — the gap the orchestrator's own
+# plans/M8.md item D, decision 23 — the gap the orchestrator's own
 # capability-escape sweep found after the first item-D commit, in the
 # reply direction.
 #

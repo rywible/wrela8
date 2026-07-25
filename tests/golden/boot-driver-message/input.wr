@@ -20,7 +20,7 @@ module examples.boot_driver_message
 #
 # Both go through the identical `rt_enqueue_*` / `rt_select_and_run_*` pair
 # every `@actor` uses; nothing in the runtime can tell the two roots apart,
-# which is decision 12's whole claim.
+# which is decision 19's whole claim.
 #
 # **What stays inside the driver, and is the point:** the ISR
 # (`on_queue_irq`) and the `@task` bottom half (`drain`) are private. They

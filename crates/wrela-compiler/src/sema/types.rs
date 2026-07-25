@@ -914,7 +914,7 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
 /// is caught wherever the wrapper appears).
 ///
 /// **The leaf set is a parameter, and the walk is not** (plans/M8.md item
-/// D, decision 16). Two rules ask this question over two different sets:
+/// D, decision 23). Two rules ask this question over two different sets:
 /// containment/unforgeability asks about 03 §1 capabilities plus the other
 /// sealed authorities (`contains_capability`), and the messageable-driver
 /// message shape asks about those *plus* `InterruptCell[T]`
@@ -1004,7 +1004,7 @@ pub fn sealed_authority_carried(ty: &Type, items: &[DeclItem]) -> Option<String>
     contains_capability(ty, &components_by_name(items))
 }
 
-/// plans/M8.md item D, decision 16: what may not cross a **messageable
+/// plans/M8.md item D, decision 23: what may not cross a **messageable
 /// `@driver`'s mailbox** in either direction — every `sealed_authority_carried`
 /// name, plus `InterruptCell[T]`.
 ///

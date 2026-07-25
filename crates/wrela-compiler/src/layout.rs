@@ -2978,7 +2978,7 @@ pub struct DriverRuntimeLayout {
     /// driver has a `@task`. Layout patches `Reloc::WakePending` against
     /// `driver_state_base + wake_pending_off`.
     pub wake_pending_off: Option<u64>,
-    /// plans/M8.md item D (decision 12): present exactly when this
+    /// plans/M8.md item D (decision 19): present exactly when this
     /// declaration carried `mailbox=n`. The three numbers are the same
     /// three an `ActorRuntimeLayout` carries and are computed by the same
     /// arithmetic — a messageable driver is admitted, selected and
@@ -3118,7 +3118,7 @@ struct ActorMethodShape {
     ret: crate::sema::types::Type,
     /// 03-hardware.md §6's bottom half. A `@task` is woken by an ISR, not
     /// admitted from a mailbox; a `pub` `@task` on a messageable driver
-    /// would give one turn body two entry paths (decision 14).
+    /// would give one turn body two entry paths (decision 21).
     is_task: bool,
 }
 
@@ -4112,7 +4112,7 @@ fn mailbox_root_names(tables: &RuntimeTables) -> Vec<String> {
     out
 }
 
-/// plans/M8.md item D, the security surface (decisions 13/14). A
+/// plans/M8.md item D, the security surface (decisions 20/21). A
 /// messageable `@driver`'s mailbox admits its `pub` methods, so those
 /// signatures are message shapes (02-language.md §9.4) and 03-hardware.md
 /// §1's "a driver may export safe actor APIs but **never raw
@@ -4137,7 +4137,7 @@ fn mailbox_root_names(tables: &RuntimeTables) -> Vec<String> {
 ///      that plans/M8.md item E makes executable. Refused here, by name,
 ///      pointing at item E, rather than admitted into a mailbox whose
 ///      caller cannot resolve what comes back.
-///    - **`InterruptCell[T]`** (decision 16), which is not sealed
+///    - **`InterruptCell[T]`** (decision 23), which is not sealed
 ///      authority at all (M7 decision 17: source-constructible, an
 ///      `@actor` may hold one) and so is invisible to the containment
 ///      rules — but which 03 §6 calls "the **sole** ISR/ordinary-code

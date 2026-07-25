@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_driver_message.wr sha256=179752bf44721c5348c17587a6bf4e1e3e22867da78c5463873485de53141bb3
+  Input path=examples/boot_driver_message.wr sha256=b1681719da556e199dd10c5e67e51acf4b09836afc204e1fad79305ac7dce556
   Name value=boot-driver-message
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
