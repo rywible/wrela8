@@ -2717,6 +2717,17 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
     let Type::Named(sname, targs) = base_ty else {
         return Err(LowerError::internal("field base is not a `Named` type"));
     };
+    // plans/M7.md item E4: IoCompletion is not a DeclStruct.
+    if sname == "IoCompletion" {
+        return match field_name {
+            "payload" => Ok(0),
+            "status" => Ok(1),
+            "written_len" => Ok(2),
+            other => Err(LowerError::internal(format!(
+                "unknown IoCompletion field `{other}`"
+            ))),
+        };
+    }
     let s = resolve_struct(prog, sname, targs)
         .ok_or_else(|| LowerError::internal(format!("struct `{sname}` not found")))?;
     s.fields

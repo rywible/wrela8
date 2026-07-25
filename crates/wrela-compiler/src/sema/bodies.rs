@@ -2355,6 +2355,49 @@ fn check_field_expr(
             return Err(mmio_bare_selection_error(targs, name, span, mctx));
         }
     }
+    // plans/M7.md item E4: `IoCompletion[P]` fields — 03 §3/§8.
+    // 0 payload, 1 status (`Result[unit, IoError]`), 2 written_len
+    // (`Untrusted[usize]`).
+    if let Type::Named(n, targs) = &base_ty {
+        if n == "IoCompletion" {
+            let Some(types::TypeArg::Type(payload)) = targs.first() else {
+                return Err(type_error(
+                    "`IoCompletion` with no payload type argument".to_string(),
+                    span,
+                ));
+            };
+            let field_ty = match name {
+                "payload" => payload.clone(),
+                "status" => Type::Result(
+                    Box::new(Type::Unit),
+                    Box::new(Type::Named("IoError".to_string(), vec![])),
+                ),
+                "written_len" => untrusted_type(Type::Usize),
+                other => {
+                    return Err(type_error(
+                        format!(
+                            "`IoCompletion[P]` has fields `payload`, `status`, and `written_len`; \
+                             found `{other}`"
+                        ),
+                        span,
+                    ));
+                }
+            };
+            let index: usize = match name {
+                "payload" => 0,
+                "status" => 1,
+                "written_len" => 2,
+                _ => unreachable!(),
+            };
+            // Reuse Field spelling; lower maps the name to Project index
+            // via the same order size_of uses.
+            let _ = index;
+            return Ok(TypedExpr {
+                ty: field_ty,
+                kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
+            });
+        }
+    }
     match &base_ty {
         Type::Named(sname, targs) => {
             // A generic instantiation's field (item H): substitute +
@@ -7155,13 +7198,9 @@ fn check_message_args(
     Ok(slots)
 }
 
-/// `await expr` (02-language.md §9.4/§9.5): `expr` must be exactly a
-/// method call through an `Actor[T]` handle, or `g.join_all()` on a
-/// `with group(...) as g:` binding — the plan's own "actor-call
-/// awaitable or group join". Nothing else is an awaitable at M6 (a
-/// self-call to an async method, or a bare free async fn call, is
-/// out of scope — see the module's own "only invocation forms" note on
-/// `TypedExprKind::GroupChild`).
+/// `await expr` (02-language.md §9.4/§9.5 + 03-hardware.md §3/§5): an
+/// actor-handle method call, a group's `join_all()`, or a `Receipt[P]`
+/// value (plans/M7.md item E4: `completion = await receipt`).
 fn check_await(
     inner: &Expr,
     await_span: Span,
@@ -7176,11 +7215,35 @@ fn check_await(
             await_span,
         ));
     }
-    let Expr::Call(callee_expr, call_span, args) = inner else {
+    // plans/M7.md item E4: `await receipt` — not a call.
+    if !matches!(inner, Expr::Call(..)) {
+        let inner_t = check_expr(inner, None, fctx, mctx)?;
+        if let Type::Named(n, targs) = &inner_t.ty {
+            if n == "Receipt" {
+                let Some(types::TypeArg::Type(payload)) = targs.first() else {
+                    return Err(type_error(
+                        "`Receipt` with no payload type argument".to_string(),
+                        await_span,
+                    ));
+                };
+                return Ok(TypedExpr {
+                    ty: Type::Named(
+                        "IoCompletion".to_string(),
+                        vec![types::TypeArg::Type(payload.clone())],
+                    ),
+                    kind: TypedExprKind::Await(Box::new(inner_t)),
+                });
+            }
+        }
         return Err(actor_error(
-            "`await` requires an actor call or a group's `join_all()` (M6 scope)".to_string(),
+            "`await` requires an actor call, a group's `join_all()`, or a `Receipt[P]` \
+             (03-hardware.md §3: `completion = await receipt`)"
+                .to_string(),
             await_span,
         ));
+    }
+    let Expr::Call(callee_expr, call_span, args) = inner else {
+        unreachable!("checked above");
     };
     let Expr::Field(base, fspan, method_name) = callee_expr.as_ref() else {
         return Err(actor_error(

@@ -5520,6 +5520,11 @@ fn emit_await_suspend(
             ctx.push(encode::enc_ret(X_LR), "ret".to_string());
             Ok(())
         }
+        AwaitKind::Receipt { .. } => Err(CodegenError::unimplemented(
+            "`await receipt` suspend (plans/M7.md item E4: park until `drain` resolves the \
+             receipt into an `IoCompletion` — typing and AwaitKind are live; the park/wake \
+             path lands with drain codegen)",
+        )),
     }
 }
 
@@ -5925,6 +5930,10 @@ fn emit_await_resume(
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
+        AwaitKind::Receipt { .. } => Err(CodegenError::unimplemented(
+            "`await receipt` resume (plans/M7.md item E4: compose `IoCompletion` from the \
+             drain-resolved reply — typing and AwaitKind are live; lands with drain codegen)",
+        )),
     }
 }
 

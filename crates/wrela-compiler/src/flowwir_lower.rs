@@ -1013,9 +1013,18 @@ fn build_await_kind(
                 await_expr.ty.clone(),
             ))
         }
-        _ => Err(FlowError::unimplemented(
-            "an `await` target other than an actor call or a group's `join_all()` is",
-        )),
+        // plans/M7.md item E4: `await receipt` — inner is already the
+        // Receipt value (not a call).
+        _ => {
+            let receipt_temp = lower_expr_flat(inner, b, env)?;
+            if !matches!(&inner.ty, Type::Named(n, _) if n == "Receipt") {
+                return Err(FlowError::unimplemented(
+                    "an `await` target other than an actor call, a group's `join_all()`, or a \
+                     `Receipt[P]` is",
+                ));
+            }
+            Ok((AwaitKind::Receipt { receipt_temp }, await_expr.ty.clone()))
+        }
     }
 }
 
