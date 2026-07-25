@@ -1,0 +1,29 @@
+module lib.color
+
+pub enum Color:
+    Red
+    Blue
+
+    pub fn code(read self) -> u32:
+        match self:
+            case .Red:
+                return 1
+            case .Blue:
+                return 2
+
+    pub fn red() -> Color:
+        return Color.Red
+
+    pub fn flip(mut self):
+        match self:
+            case .Red:
+                self = Color.Blue
+            case .Blue:
+                self = Color.Red
+
+    pub fn into_code(take self) -> u32:
+        match self:
+            case .Red:
+                return 1
+            case .Blue:
+                return 2

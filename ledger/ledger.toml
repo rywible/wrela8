@@ -1642,10 +1642,32 @@ note = """02-language.md §7.4 desugars `Err(e)?` needing conversion to `TargetE
 
 **Half A — spelling.** `from` remains a reserved word for `from path import Name` (§2). After `fn` it is accepted as an associated-fn name (`parser::expect_fn_name`): an import's `from` is only ever the first token of a statement, a function name only ever follows `fn`, so the two positions do not overlap. Other keywords stay `keyword <kw> cannot be used as a name`. Pinned by `check-from-explicit` (`fn from(take source: LoadError) -> WrapError` with body `code = n + 100`, image arg `converted=107`).
 
-**Half B — deriving.** No TypedFn is synthesized for `deriving(From)`. Enums carry no methods (§7.2); the conversion is the structural wrap check already validated (`Value::Enum(0, [e])` / `Value::Struct([e])`, or `MakeEnum`/`MakeAggregate` in both lowering paths). An explicit `from` still resolves and is called. Both tiers agree (`mwir.txt` pins `MakeEnum tag=0` for deriving and `Call key=WrapError.from` for explicit).
+**Half B — deriving.** No TypedFn is synthesized for `deriving(From)`. Item B2 (clause `sema.types.enum-methods`) gives enums a method surface, but B's conversion path still wraps structurally when no explicit `from` resolves (`Value::Enum(0, [e])` / `Value::Struct([e])`, or `MakeEnum`/`MakeAggregate` in both lowering paths) — generating the real `from` is item B3. An explicit `from` still resolves and is called. Both tiers agree (`mwir.txt` pins `MakeEnum tag=0` for deriving and `Call key=WrapError.from` for explicit).
 
 **Single-field restriction.** `err-deriving-from-two-fields` pins `deriving(From) requires exactly one field` on a two-field struct (the enum two-variant rejection is the sibling message already in `types::validate_from_shape`).
 
 **Pinned by value.** `check-deriving-from`: `CONVERTED=1000` is `settle(Err(WrapError.Inner(LoadError.Bad(0))))` — an unconverted 0 or an `Ok(0)` cannot produce 1000; `OK=7` is the success path. `check-from-explicit`: `107` is `Bad(7)` after `+ 100` — identity or missing conversion yields 7, not 107.
 
 **Retired.** `err-try-from-underived` (BB decision 61's named gap) — the intended signal that B landed."""
+
+[[clause]]
+id = "sema.types.enum-methods"
+doc = "02-language.md#5, 02-language.md#7.5, 05-library.md#6"
+status = "test"
+tests = [
+  "golden/check-enum-methods",
+  "golden/check-import-enum-method",
+  "golden/check-import-alias-enum-method",
+  "golden/err-enum-init",
+  "golden/err-enum-field-member",
+  "golden/err-enum-pool-member",
+]
+note = """02-language.md §5's receiver/access-mode rules and §7.5's "`deriving(...)` on a struct or enum generates methods" require an enum to have a declared-method surface. 05-library.md §6's "Types implementing the static Format contract declare ..." is the same surface. plans/M9.md item B2 (decisions 121–135) adds it.
+
+**Parser.** An enum body distinguishes a variant (Ident) from a method (`fn`/`pub`/`async` Keyword) by the next token — unambiguous; before B2 the variant-list parser fed every line to `expect_ident`, so `pub fn` / `fn` surfaced as `keyword <kw> cannot be used as a name`. `init`, `pool`, and field-shaped `name: Type` refuse by name (`err-enum-init`/`err-enum-pool-member`/`err-enum-field-member`).
+
+**Receivers.** All three modes (`read`/`mut`/`take self`) and associated fns, unchanged from structs (02 §5.1). `mut self` may reassign the whole sum (`self = OtherVariant`); pinned by value in `check-enum-methods` (`M=11`) and the alias golden (`M=2`).
+
+**Five consumers.** Sema resolution; both `imported` splices (ModuleCtx + TypedProgram, with local-spelling re-key); `lower`/`flowwir_lower` resolve_fn + enum-member emission; layout/codegen inherit via MWIR keys. Import and alias goldens prove the multi-module path.
+
+**Pinned by value.** `check-enum-methods` settle `217`; `check-import-enum-method` settle `12`; `check-import-alias-enum-method` settle `1222`. `asm.txt` pins `Cell.code` / `Hue.code` reaching the guest."""

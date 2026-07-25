@@ -260,7 +260,7 @@ pub fn blk_accepted_features(
         for (name, vs) in &p.enums {
             enum_variants
                 .entry(name.clone())
-                .or_insert_with(|| vs.clone());
+                .or_insert_with(|| vs.variants.clone());
         }
     }
     for d in &graph.devices {
@@ -289,7 +289,7 @@ fn check_blk_device_decls(
         for (name, vs) in &p.enums {
             enum_variants
                 .entry(name.clone())
-                .or_insert_with(|| vs.clone());
+                .or_insert_with(|| vs.variants.clone());
         }
     }
     for (di, d) in graph.devices.iter().enumerate() {

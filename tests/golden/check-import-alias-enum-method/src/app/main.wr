@@ -1,0 +1,59 @@
+module app.main
+
+from lib.color import Color as Hue
+
+# plans/M9.md item B2: aliased imported enum methods resolve under the
+# local spelling — same machinery DD/EE/FF built for structs.
+
+const Z: u32 = Hue.red().code()
+const R: u32 = Hue.Blue.code()
+
+fn mut_path() -> u32:
+    c = Hue.Red
+    c.flip()
+    return c.code()
+
+fn take_path() -> u32:
+    c = Hue.Blue
+    return c.into_code()
+
+const M: u32 = mut_path()
+const T: u32 = take_path()
+
+# settle = Z*1000 + R*100 + M*10 + T = 1000 + 200 + 20 + 2 = 1222
+const SETTLED: u32 = Z * 1000 + R * 100 + M * 10 + T
+
+@test
+pub fn t_assoc():
+    assert Z == 1, "aliased associated fn"
+
+@test
+pub fn t_read():
+    assert R == 2, "aliased read-self"
+
+@test
+pub fn t_mut():
+    assert M == 2, "aliased mut-self"
+
+@test
+pub fn t_take():
+    assert T == 2, "aliased take-self"
+
+@test
+pub fn t_settled():
+    assert SETTLED == 1222, "all four under one settle"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-alias-enum-method", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=SETTLED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

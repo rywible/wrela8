@@ -168,6 +168,20 @@ fn private_candidates(mctx: &ModuleCtx) -> Vec<(String, String)> {
             }
         }
     }
+    // plans/M9.md item B2: same private plain-`self` inference for enums.
+    for (ename, e) in &mctx.enums {
+        for (am, dm) in e.members() {
+            if let (Member::Fn(f), DeclMember::Fn(d)) = (am, dm) {
+                if f.generics.is_empty() {
+                    if let Some(r) = &d.receiver {
+                        if r.mode == AccessMode::Read && !r.is_pub {
+                            out.push((ename.clone(), f.name.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
     out
 }
 
@@ -181,24 +195,19 @@ fn infer_private_effects(mctx: &ModuleCtx) -> EffectMap {
     loop {
         let mut changed = false;
         for key in &candidates {
-            let (sname, mname) = key;
-            let s = &mctx.structs[sname];
-            let (f, _d) = s
-                .method(mname)
-                .expect("private_candidates only names real methods");
-            // A bodyless declaration (the grammar's own "bodyless
-            // forms") has nothing to infer from — it stays at the
-            // fixpoint's own initial `read` default. This is load-bearing,
-            // not vacuous: `private_candidates` names methods of every
-            // struct, generic or not, but `bodies::check` never body-checks
-            // (and so never fails closed on) an *uninstantiated* generic
-            // struct's methods (`check_struct_bodies` skips generic
-            // structs entirely) — so a generic struct's bodyless method
-            // really can reach this skip.
+            let (tname, mname) = key;
+            let (f, _d) = if let Some(s) = mctx.structs.get(tname) {
+                s.method(mname)
+                    .expect("private_candidates only names real methods")
+            } else {
+                mctx.enums[tname]
+                    .method(mname)
+                    .expect("private_candidates only names real methods")
+            };
             let Some(body) = &f.body else {
                 continue;
             };
-            let required = required_self_effect(body, sname, mctx, &effects);
+            let required = required_self_effect(body, tname, mctx, &effects);
             if rank(required) > rank(effects[key]) {
                 effects.insert(key.clone(), required);
                 changed = true;
@@ -409,6 +418,15 @@ fn scan_expr_self(
                 if matches!(self_ref(base), SelfRef::Whole) {
                     if let Some(s) = mctx.structs.get(sname) {
                         if let Some((_, d)) = s.method(name) {
+                            if let Some(r) = &d.receiver {
+                                escalate(
+                                    acc,
+                                    effective_declared(r.mode, r.is_pub, sname, name, effects),
+                                );
+                            }
+                        }
+                    } else if let Some(e) = mctx.enums.get(sname) {
+                        if let Some((_, d)) = e.method(name) {
                             if let Some(r) = &d.receiver {
                                 escalate(
                                     acc,
@@ -1221,6 +1239,9 @@ fn check_field(base: &Expr, name: &str, actx: &mut ACtx) -> Result<Option<Type>,
                 return Ok(None);
             }
             if let Some(e) = actx.mctx.enums.get(bname.as_str()) {
+                if let Some((_, d)) = e.assoc_fn(name) {
+                    return Ok(Some(bodies::fn_value_type(d)));
+                }
                 if e.variants
                     .iter()
                     .any(|v| v.name == name && matches!(v.payload, types::DeclVariantPayload::None))
@@ -1783,6 +1804,13 @@ fn check_call_by_field(
                 return Ok(None); // unreachable on an already-checked call.
             }
             if let Some(e) = actx.mctx.enums.get(bname.as_str()) {
+                if let Some((_af, d)) = e.assoc_fn(name) {
+                    for a in args {
+                        check_arg(a, actx)?;
+                    }
+                    check_mirroring_named(&d.params, args)?;
+                    return Ok(Some(d.ret.clone()));
+                }
                 for a in args {
                     check_payload_arg(a, actx)?;
                 }
@@ -2116,41 +2144,62 @@ fn check_call_by_field(
             fspan,
         ));
     };
-    // `sname` alone decides the target struct regardless of `_targs`
+    // `sname` alone decides the target type regardless of `_targs`
     // (item H): mirroring/receiver-mutability are structural, unaffected
     // by which concrete instantiation this value came from.
-    let Some(s) = actx.mctx.structs.get(sname.as_str()) else {
-        return Err(unimplemented_at(
-            "mirroring a method call through this base expression is",
-            fspan,
-        ));
-    };
-    let Some((_mf, d)) = s.method(name) else {
-        return Ok(None); // unreachable on an already-checked call.
-    };
-    // A generic method's own `[...]` (beyond the struct's, if any) is
-    // item H's documented boundary — `bodies::check` (which runs first)
-    // fails closed on such a call before this pass ever sees it, so
-    // mirroring here proceeds unconditionally: it is either a concrete
-    // method or unreachable.
-    check_mirroring_named(&d.params, args)?;
-    if let Some(r) = &d.receiver {
-        let effective = effective_declared(r.mode, r.is_pub, sname, name, actx.effects);
-        if effective != AccessMode::Read {
-            let ok = match effective {
-                AccessMode::Mut => allows_mut_receiver(root_mode),
-                AccessMode::Take => allows_take_receiver(root_mode),
-                AccessMode::Read => true,
-            };
-            if !ok {
-                return Err(receiver_mutability_error(
-                    effective,
-                    root_mode,
-                    root_name.as_deref(),
-                    fspan,
-                ));
+    if let Some(s) = actx.mctx.structs.get(sname.as_str()) {
+        let Some((_mf, d)) = s.method(name) else {
+            return Ok(None); // unreachable on an already-checked call.
+        };
+        check_mirroring_named(&d.params, args)?;
+        if let Some(r) = &d.receiver {
+            let effective = effective_declared(r.mode, r.is_pub, sname, name, actx.effects);
+            if effective != AccessMode::Read {
+                let ok = match effective {
+                    AccessMode::Mut => allows_mut_receiver(root_mode),
+                    AccessMode::Take => allows_take_receiver(root_mode),
+                    AccessMode::Read => true,
+                };
+                if !ok {
+                    return Err(receiver_mutability_error(
+                        effective,
+                        root_mode,
+                        root_name.as_deref(),
+                        fspan,
+                    ));
+                }
             }
         }
+        return Ok(Some(d.ret.clone()));
     }
-    Ok(Some(d.ret.clone()))
+    // plans/M9.md item B2: same mirroring/receiver check for enum methods.
+    if let Some(e) = actx.mctx.enums.get(sname.as_str()) {
+        let Some((_mf, d)) = e.method(name) else {
+            return Ok(None);
+        };
+        check_mirroring_named(&d.params, args)?;
+        if let Some(r) = &d.receiver {
+            let effective = effective_declared(r.mode, r.is_pub, sname, name, actx.effects);
+            if effective != AccessMode::Read {
+                let ok = match effective {
+                    AccessMode::Mut => allows_mut_receiver(root_mode),
+                    AccessMode::Take => allows_take_receiver(root_mode),
+                    AccessMode::Read => true,
+                };
+                if !ok {
+                    return Err(receiver_mutability_error(
+                        effective,
+                        root_mode,
+                        root_name.as_deref(),
+                        fspan,
+                    ));
+                }
+            }
+        }
+        return Ok(Some(d.ret.clone()));
+    }
+    Err(unimplemented_at(
+        "mirroring a method call through this base expression is",
+        fspan,
+    ))
 }

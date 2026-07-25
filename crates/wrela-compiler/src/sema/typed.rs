@@ -552,12 +552,37 @@ pub struct TypedStruct {
     pub init: Option<TypedFn>,
 }
 
+/// One non-generic enum's checked body (plans/M9.md item B2): variant
+/// names in declaration order (decision 5's `Value::Enum` index) plus
+/// the methods/associated fns 02 §5 / §7.5 give every type — the same
+/// two maps a `TypedStruct` already carries. Before B2 an enum was only
+/// a `Vec<String>` of variant names and had no method surface at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedEnum {
+    pub variants: Vec<String>,
+    pub methods: BTreeMap<String, TypedFn>,
+    pub assoc_fns: BTreeMap<String, TypedFn>,
+}
+
+impl TypedEnum {
+    /// A TypedEnum that only records variant names (prelude enums and
+    /// the pre-B2 shape). Methods/assoc_fns start empty.
+    pub fn from_variants(variants: Vec<String>) -> Self {
+        Self {
+            variants,
+            methods: BTreeMap::new(),
+            assoc_fns: BTreeMap::new(),
+        }
+    }
+}
+
 /// One generic instantiation's checked body (plans/M2.md item H, carried
 /// into M3): keyed in `TypedProgram::instantiations` by
-/// `generics::canonical_key`'s own spelling. An enum instantiation has no
-/// body to check (02-language.md §7.2: enums carry no methods) — nothing
-/// beyond confirming it was checked/reclassified, so it carries no
-/// payload.
+/// `generics::canonical_key`'s own spelling. An enum instantiation with
+/// no methods still carries no payload beyond confirming it was
+/// checked/reclassified; one with methods is out of scope for B2
+/// (generic enum methods fail closed at the same generic-method
+/// boundary structs already use).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypedInstantiation {
     Fn(TypedFn),
@@ -614,15 +639,11 @@ pub struct TypedProgram {
     /// (plans/M3.md item E's own producer addition — `TestDecl`'s own
     /// doc comment).
     pub tests: Vec<TestDecl>,
-    /// Every top-level (non-generic) user enum's own variant names, in
-    /// declaration order (plans/M3.md item B's own addition — the same
-    /// producer gap as `TypedStruct::fields`: an enum has no body to
-    /// check, so nothing before this recorded its declaration anywhere
-    /// in the typed tree, yet decision 5's `Value::Enum(variant index,
-    /// payload)` representation needs exactly this order to construct or
-    /// match a user enum's value). Not rendered by `dump` below — same
+    /// Every top-level (non-generic) user enum (plans/M3.md item B's
+    /// variant-order record, extended by plans/M9.md item B2 with
+    /// methods/associated fns). Not rendered by `dump` below — same
     /// reasoning as `TypedStruct::fields`.
-    pub enums: BTreeMap<String, Vec<String>>,
+    pub enums: BTreeMap<String, TypedEnum>,
     pub instantiations: BTreeMap<String, TypedInstantiation>,
     /// The bare name of this module's own `@image fn`, if it declares
     /// one (plans/M4.md item B) — `sema::bodies::check`'s own addition,
@@ -699,7 +720,7 @@ pub struct ImportedDecls {
     pub consts: BTreeMap<String, TypedConst>,
     pub fns: BTreeMap<String, TypedFn>,
     pub structs: BTreeMap<String, TypedStruct>,
-    pub enums: BTreeMap<String, Vec<String>>,
+    pub enums: BTreeMap<String, TypedEnum>,
     /// The exporting module's own generic instantiations, keyed by
     /// `generics::canonical_key`'s spelling *as the exporter spelled it*.
     /// An importing module that instantiates an imported generic
@@ -1295,6 +1316,20 @@ pub(crate) fn rekey_struct_name(s: &mut TypedStruct, from: &str, to: &str) {
         rekey_fn(f, from, to);
     }
     if let Some(f) = s.init.as_mut() {
+        rekey_fn(f, from, to);
+    }
+}
+
+/// plans/M9.md item B2: same local-spelling re-key as `rekey_struct_name`,
+/// for a spliced `TypedEnum`'s method/associated-fn bodies.
+pub(crate) fn rekey_enum_name(e: &mut TypedEnum, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    for f in e.methods.values_mut() {
+        rekey_fn(f, from, to);
+    }
+    for f in e.assoc_fns.values_mut() {
         rekey_fn(f, from, to);
     }
 }

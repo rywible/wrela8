@@ -1227,7 +1227,7 @@ impl Parser {
         let generics = self.parse_generic_params()?;
         let deriving = self.parse_optional_deriving()?;
         self.expect_op(":")?;
-        let variants = self.parse_indented_variants()?;
+        let (variants, members) = self.parse_indented_enum_body()?;
         Ok(EnumItem {
             span: start,
             name,
@@ -1237,21 +1237,113 @@ impl Parser {
             generics,
             deriving,
             variants,
+            members,
         })
     }
 
-    fn parse_indented_variants(&mut self) -> Result<Vec<Variant>, ParseError> {
+    /// An enum body is a sequence of variants and `fn` members
+    /// (02-language.md §7.2 / §5; plans/M9.md item B2). The distinction is
+    /// lexical and unambiguous: a variant name is an Ident, while a method
+    /// or associated fn begins with `fn`, `pub`, or `async` (Keyword
+    /// tokens). Before this item, `parse_indented_variants` fed every line
+    /// to `parse_variant` → `expect_ident`, so `pub fn` / `fn` surfaced as
+    /// `keyword \`pub\`/\`fn\` cannot be used as a name` — a typo-shaped
+    /// diagnostic for a missing language surface. `init`, `pool`, and
+    /// field-shaped `name: Type` lines are refused by name.
+    fn parse_indented_enum_body(&mut self) -> Result<(Vec<Variant>, Vec<Member>), ParseError> {
         self.expect_newline()?;
         self.expect_indent()?;
         let mut variants = Vec::new();
+        let mut members = Vec::new();
         loop {
             if self.at_kind(TokenKind::Dedent) {
                 break;
             }
+            let (doc, attrs) = self.collect_doc_and_attrs()?;
+            if self.at_kind(TokenKind::Dedent) {
+                if doc.is_some() || !attrs.is_empty() {
+                    return Err(
+                        self.error_here("expected a variant or method after doc comment/attribute")
+                    );
+                }
+                break;
+            }
+            if self.at_enum_method_start() {
+                members.push(self.parse_enum_method(doc, attrs)?);
+                continue;
+            }
+            if self.at_keyword("init") {
+                return Err(self.error_here("an enum may not declare `init`"));
+            }
+            if self.at_keyword("pool") {
+                return Err(self.error_here("an enum may not declare a `pool`"));
+            }
+            // Field-shaped `name: Type` — a struct member, not a variant
+            // (`Name` or `Name(...)`). Refuse before `parse_variant` would
+            // mis-read the ident and choke on the colon.
+            if self.at_kind(TokenKind::Ident)
+                && self.peek_at(1).kind == TokenKind::Op
+                && self.peek_at(1).text == ":"
+            {
+                return Err(self.error_here(
+                    "an enum may not declare fields; a variant is `Name` or `Name(...)`",
+                ));
+            }
+            if doc.is_some() || !attrs.is_empty() {
+                // Variants do not attach doc/attrs today; refuse rather
+                // than silently drop them onto the next variant.
+                return Err(self
+                    .error_here("a doc comment or attribute on an enum variant is not supported"));
+            }
             variants.push(self.parse_variant()?);
         }
         self.expect_dedent()?;
-        Ok(variants)
+        Ok((variants, members))
+    }
+
+    /// `fn` / `pub fn` / `async fn` / `pub async fn` at the start of an
+    /// enum-body line — never a variant name (those are Idents).
+    fn at_enum_method_start(&self) -> bool {
+        if self.at_keyword("fn") {
+            return true;
+        }
+        if self.at_keyword("pub") {
+            let next = self.peek_at(1);
+            if next.kind == TokenKind::Keyword && (next.text == "fn" || next.text == "async") {
+                return true;
+            }
+        }
+        if self.at_keyword("async") && self.peek_is_keyword_at(1, "fn") {
+            return true;
+        }
+        false
+    }
+
+    fn parse_enum_method(
+        &mut self,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<Member, ParseError> {
+        let start = self.peek_span();
+        let mut is_pub = false;
+        if self.at_keyword("pub") {
+            self.bump();
+            is_pub = true;
+        }
+        if self.at_keyword("async") && self.peek_is_keyword_at(1, "fn") {
+            self.bump();
+            self.bump();
+            return self
+                .parse_fn_item(start, is_pub, true, doc, attrs)
+                .map(Member::Fn);
+        }
+        if self.at_keyword("fn") {
+            self.bump();
+            return self
+                .parse_fn_item(start, is_pub, false, doc, attrs)
+                .map(Member::Fn);
+        }
+        Err(self.error_here("expected `fn` after `pub` in an enum body"))
     }
 
     fn parse_variant(&mut self) -> Result<Variant, ParseError> {
@@ -3057,6 +3149,9 @@ fn dump_item(item: &Item, depth: usize, strip: bool, out: &mut String) {
             dump_generics(&e.generics, depth + 1, strip, out);
             for v in &e.variants {
                 dump_variant(v, depth + 1, strip, out);
+            }
+            for m in &e.members {
+                dump_member(m, depth + 1, strip, out);
             }
         }
         Item::Pool(p) => {

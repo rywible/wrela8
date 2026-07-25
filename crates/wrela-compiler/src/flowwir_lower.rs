@@ -464,16 +464,19 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
             // plans/M9.md item A1b / A2: mirror `eval::interp` /
             // `lower::variant_index` — imported enums live in
             // `prog.imported.enums`, not `prog.enums`.
-            let variants = prog
+            let en = prog
                 .enums
                 .get(enum_name)
                 .or_else(|| prog.imported.enums.get(enum_name))
                 .ok_or_else(|| {
                     FlowError::unimplemented("matching a generic enum instantiation's variant is")
                 })?;
-            variants.iter().position(|v| v == variant).ok_or_else(|| {
-                FlowError::internal(format!("unknown variant `{enum_name}.{variant}`"))
-            })
+            en.variants
+                .iter()
+                .position(|v| v == variant)
+                .ok_or_else(|| {
+                    FlowError::internal(format!("unknown variant `{enum_name}.{variant}`"))
+                })
         }
     }
 }
@@ -489,17 +492,28 @@ fn resolve_callee_fn<'p>(
             .or_else(|| prog.imported.fns.get(name))
             .ok_or_else(|| missing_callee(prog, key)),
         CalleeKey::Method(sname, member) => {
-            let s = struct_by_name(prog, sname).ok_or_else(|| missing_callee(prog, key))?;
-            s.methods
+            if let Some(s) = struct_by_name(prog, sname) {
+                return s
+                    .methods
+                    .get(member)
+                    .or_else(|| s.assoc_fns.get(member))
+                    .or_else(|| {
+                        if member == "init" {
+                            s.init.as_ref()
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| missing_callee(prog, key));
+            }
+            let e = prog
+                .enums
+                .get(sname)
+                .or_else(|| prog.imported.enums.get(sname))
+                .ok_or_else(|| missing_callee(prog, key))?;
+            e.methods
                 .get(member)
-                .or_else(|| s.assoc_fns.get(member))
-                .or_else(|| {
-                    if member == "init" {
-                        s.init.as_ref()
-                    } else {
-                        None
-                    }
-                })
+                .or_else(|| e.assoc_fns.get(member))
                 .ok_or_else(|| missing_callee(prog, key))
         }
         CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => {

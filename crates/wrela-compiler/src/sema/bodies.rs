@@ -47,8 +47,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::sema::generics;
 use crate::sema::typed::{
     CalleeKey, TestDecl, TestKind, TypedClosureBody, TypedClosureParam, TypedConst, TypedDeferBody,
-    TypedElif, TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedMatchArm, TypedParam,
-    TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind, TypedStruct,
+    TypedElif, TypedEnum, TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedMatchArm,
+    TypedParam, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
+    TypedStruct,
 };
 use crate::sema::types::{
     self, Classification, DeclMember, DeclParam, DeclVariantPayload, Type, TypeArg,
@@ -190,6 +191,59 @@ impl StructInfo {
     }
 }
 
+/// One enum's declared shape (plans/M9.md item B2): the resolved
+/// `DeclEnum` plus its AST method members, parallel to `StructInfo` so
+/// method/associated-fn lookup and body checking share one zip.
+#[derive(Clone)]
+pub(crate) struct EnumInfo {
+    pub(crate) decl: types::DeclEnum,
+    pub(crate) ast_members: Vec<Member>,
+}
+
+impl EnumInfo {
+    pub(crate) fn members(&self) -> impl Iterator<Item = (&Member, &DeclMember)> {
+        self.ast_members.iter().zip(self.decl.members.iter())
+    }
+
+    pub(crate) fn assoc_fn(&self, name: &str) -> Option<(&ast::FnItem, &types::DeclFn)> {
+        self.members().find_map(|(am, dm)| match (am, dm) {
+            (Member::Fn(f), DeclMember::Fn(d)) if f.name == name && f.receiver.is_none() => {
+                Some((f, d))
+            }
+            _ => None,
+        })
+    }
+
+    pub(crate) fn method(&self, name: &str) -> Option<(&ast::FnItem, &types::DeclFn)> {
+        self.members().find_map(|(am, dm)| match (am, dm) {
+            (Member::Fn(f), DeclMember::Fn(d)) if f.name == name && f.receiver.is_some() => {
+                Some((f, d))
+            }
+            _ => None,
+        })
+    }
+
+    pub(crate) fn has_member_named(&self, name: &str) -> bool {
+        self.ast_members.iter().any(|m| match m {
+            Member::Fn(f) => f.name == name,
+            _ => false,
+        })
+    }
+}
+
+impl std::ops::Deref for EnumInfo {
+    type Target = types::DeclEnum;
+    fn deref(&self) -> &Self::Target {
+        &self.decl
+    }
+}
+
+impl std::ops::DerefMut for EnumInfo {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.decl
+    }
+}
+
 /// One top-level fn's ast (params/defaults/generics/attrs/body) plus its
 /// resolved declaration. `Clone` (plans/M4.md item A): the multi-module
 /// entry (`sema::check_program`) splices an *already-built* `FnInfo`
@@ -214,7 +268,7 @@ pub(crate) struct ModuleCtx {
     pub(crate) shapes: BTreeMap<String, usize>,
     pub(crate) module_pools: BTreeSet<String>,
     pub(crate) structs: BTreeMap<String, StructInfo>,
-    pub(crate) enums: BTreeMap<String, types::DeclEnum>,
+    pub(crate) enums: BTreeMap<String, EnumInfo>,
     pub(crate) fns: BTreeMap<String, FnInfo>,
     pub(crate) consts: BTreeMap<String, Type>,
     /// Every `@layout` type this module declares, by name (plans/M7.md
@@ -325,7 +379,13 @@ pub(crate) fn build_module_ctx(
             }
             (Item::Enum(e), types::DeclItem::Enum(d)) => {
                 shapes.insert(e.name.clone(), e.generics.len());
-                enums.insert(e.name.clone(), d.clone());
+                enums.insert(
+                    e.name.clone(),
+                    EnumInfo {
+                        decl: d.clone(),
+                        ast_members: e.members.clone(),
+                    },
+                );
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
                 fns.insert(
@@ -688,7 +748,9 @@ pub(crate) fn check(
             .iter()
             .map(|v| v.to_string())
             .collect();
-        program.enums.insert(name.to_string(), variants);
+        program
+            .enums
+            .insert(name.to_string(), TypedEnum::from_variants(variants));
     }
     for (ai, di) in ast_items.iter().zip(decl_items.iter()) {
         match (ai, di) {
@@ -767,17 +829,17 @@ pub(crate) fn check(
                     program.structs.insert(s.name.clone(), ts);
                 }
             }
-            (Item::Enum(e), types::DeclItem::Enum(d)) => {
+            (Item::Enum(e), types::DeclItem::Enum(_d)) => {
                 // A generic enum's own variant order is recorded once it
                 // is instantiated (item H's job); a plain enum's is
                 // recorded here, alongside every other plain top-level
                 // declaration this pass checks (`typed::TypedProgram::enums`'s
-                // own doc comment).
+                // own doc comment). Methods/associated fns (plans/M9.md
+                // item B2) are checked into the same entry.
                 if e.generics.is_empty() {
-                    program.enums.insert(
-                        e.name.clone(),
-                        d.variants.iter().map(|v| v.name.clone()).collect(),
-                    );
+                    if let Some(te) = check_enum_bodies(e, mctx)? {
+                        program.enums.insert(e.name.clone(), te);
+                    }
                 }
             }
             _ => {}
@@ -1120,6 +1182,73 @@ fn check_struct_bodies(
     let info = mctx.structs.get(&s.name).expect("struct present in mctx");
     let self_ty = Type::Named(s.name.clone(), vec![]);
     Ok(Some(check_struct_members(info, self_ty, mctx)?))
+}
+
+/// plans/M9.md item B2: check an enum's methods/associated fns into a
+/// `TypedEnum`, same body rules as `check_struct_bodies` (02 §5 applies
+/// unchanged). Variants themselves have no bodies.
+fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<TypedEnum>, SemaError> {
+    if !e.generics.is_empty() {
+        return Ok(None);
+    }
+    let info = mctx.enums.get(&e.name).expect("enum present in mctx");
+    let self_ty = Type::Named(e.name.clone(), vec![]);
+    let mut methods = BTreeMap::new();
+    let mut assoc_fns = BTreeMap::new();
+    for (am, dm) in info.members() {
+        let (Member::Fn(f), DeclMember::Fn(fd)) = (am, dm) else {
+            continue;
+        };
+        if !f.generics.is_empty() {
+            continue; // generic method: same boundary as structs.
+        }
+        if f.is_async && f.receiver.is_none() {
+            return Err(unimplemented_at(
+                "an `async fn` with no receiver (associated fn) is",
+                f.span,
+            ));
+        }
+        let mut fctx = FnCtx::new(fd.ret.clone(), mctx.module_pools.clone());
+        fctx.in_async = f.is_async;
+        fctx.insert_local("self".to_string(), self_ty.clone());
+        let params = check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
+        let body = match &f.body {
+            Some(body) => check_stmts(body, &mut fctx, mctx)?,
+            None => return Err(unimplemented_at("bodyless functions are", f.span)),
+        };
+        if f.is_async {
+            check_cross_await(&body)?;
+        }
+        if fd.is_task {
+            return Err(type_error(
+                format!(
+                    "`@task` is only valid on a `@driver` method (03-hardware.md §6); \
+                     `{}.{}` is an enum method",
+                    e.name, f.name
+                ),
+                f.span,
+            ));
+        }
+        let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
+        let tf = TypedFn {
+            receiver,
+            params,
+            ret: fd.ret.clone(),
+            body,
+            is_async: f.is_async,
+            is_task: fd.is_task,
+        };
+        if f.receiver.is_some() {
+            methods.insert(f.name.clone(), tf);
+        } else {
+            assoc_fns.insert(f.name.clone(), tf);
+        }
+    }
+    Ok(Some(TypedEnum {
+        variants: info.variants.iter().map(|v| v.name.clone()).collect(),
+        methods,
+        assoc_fns,
+    }))
 }
 
 /// `pub(crate)` (item H, generics.rs): the guts of `check_struct_bodies`,
@@ -2042,11 +2171,11 @@ fn variant_payload_types_for(
             // substituted declaration instead of the declared one.
             let e = if targs.is_empty() {
                 match mctx.enums.get(name) {
-                    Some(e) => e.clone(),
+                    Some(e) => std::borrow::Cow::Borrowed(&e.decl),
                     None => return Err(type_error(format!("`{name}` is not an enum"), span)),
                 }
             } else {
-                generics::instantiate_enum(mctx, name, targs, span)?
+                std::borrow::Cow::Owned(generics::instantiate_enum(mctx, name, targs, span)?)
             };
             let Some(dv) = e.variants.iter().find(|v| v.name == variant) else {
                 return Err(type_error(
@@ -2422,6 +2551,22 @@ fn check_field_expr(
                 if !e.generics.is_empty() {
                     return Err(unimplemented_at("generic instantiation is", span));
                 }
+                // plans/M9.md item B2: associated fns share the `Type.name`
+                // spelling with fieldless variants. Look them up first so
+                // a method never surfaces as "no variant".
+                if let Some((_, d)) = e.assoc_fn(name) {
+                    let key = CalleeKey::Method(bname.clone(), name.to_string());
+                    return Ok(TypedExpr {
+                        ty: fn_value_type(d),
+                        kind: TypedExprKind::FnRef(key),
+                    });
+                }
+                if e.has_member_named(name) {
+                    return Err(type_error(
+                        format!("cannot reference method `{name}` without calling it"),
+                        span,
+                    ));
+                }
                 if let Some(dv) = e.variants.iter().find(|v| v.name == name) {
                     if matches!(dv.payload, DeclVariantPayload::None) {
                         // plans/M9.md item DD / decision 9: the local
@@ -2443,7 +2588,7 @@ fn check_field_expr(
                     ));
                 }
                 return Err(type_error(
-                    format!("enum `{bname}` has no variant `{name}`"),
+                    format!("enum `{bname}` has no variant or associated function `{name}`"),
                     span,
                 ));
             }
@@ -3429,6 +3574,20 @@ fn try_from_conversion(
                 }
             }
         }
+        // plans/M9.md item B2: an explicit associated `from` on an enum
+        // is callable the same way a struct's is (B3 generates into this).
+        if let Some((_, d)) = e.assoc_fn("from") {
+            let shape_ok = d.generics.is_empty()
+                && d.params.len() == 1
+                && d.params[0].mode == AccessMode::Take
+                && types_eq(&d.params[0].ty, err_ty);
+            if shape_ok {
+                return Some((
+                    d.ret.clone(),
+                    CalleeKey::Method(name.clone(), "from".to_string()),
+                ));
+            }
+        }
     }
     None
 }
@@ -4334,6 +4493,24 @@ fn check_call_by_field(
                 if !e.generics.is_empty() {
                     return Err(unimplemented_at("generic instantiation is", call_span));
                 }
+                // plans/M9.md item B2: associated fn before variant — a
+                // call `Color.from(...)` is a method, not "no variant".
+                if let Some((af, d)) = e.assoc_fn(name) {
+                    if !d.generics.is_empty() {
+                        return Err(unimplemented_at("generic instantiation is", call_span));
+                    }
+                    let typed_args =
+                        check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
+                    let key = CalleeKey::Method(bname.clone(), name.to_string());
+                    return Ok(TypedExpr {
+                        ty: d.ret.clone(),
+                        kind: TypedExprKind::Call {
+                            callee: key,
+                            receiver: None,
+                            args: typed_args,
+                        },
+                    });
+                }
                 if let Some(dv) = e.variants.iter().find(|v| v.name == name) {
                     let payload_types = decl_variant_payload_types(dv);
                     let typed_args =
@@ -4350,7 +4527,7 @@ fn check_call_by_field(
                     });
                 }
                 return Err(type_error(
-                    format!("enum `{bname}` has no variant `{name}`"),
+                    format!("enum `{bname}` has no variant or associated function `{name}`"),
                     fspan,
                 ));
             }
@@ -4507,54 +4684,82 @@ fn check_call_by_field(
             // A method call through a generic instantiation (item H):
             // substitute + enqueue it, then check the call against the
             // substituted method's (now concrete) signature.
-            let s = if targs.is_empty() {
-                match mctx.structs.get(sname.as_str()) {
-                    Some(s) => std::borrow::Cow::Borrowed(s),
-                    None => {
+            if let Some(s) = if targs.is_empty() {
+                mctx.structs
+                    .get(sname.as_str())
+                    .map(std::borrow::Cow::Borrowed)
+            } else if mctx.structs.contains_key(sname.as_str()) {
+                Some(std::borrow::Cow::Owned(generics::instantiate_struct(
+                    mctx, sname, targs, call_span,
+                )?))
+            } else {
+                None
+            } {
+                let Some((mf, d)) = s.method(name) else {
+                    return Err(missing_method_error(
+                        format!("type `{sname}` has no method `{name}`"),
+                        sname,
+                        name,
+                        fspan,
+                    ));
+                };
+                if !d.generics.is_empty() {
+                    return Err(unimplemented_at("generic instantiation is", call_span));
+                }
+                let typed_args =
+                    check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+                let key = if targs.is_empty() {
+                    CalleeKey::Method(sname.clone(), name.to_string())
+                } else {
+                    CalleeKey::MethodInstance(
+                        generics::canonical_key(InstKind::Struct, sname, targs),
+                        name.to_string(),
+                    )
+                };
+                return Ok(TypedExpr {
+                    ty: d.ret.clone(),
+                    kind: TypedExprKind::Call {
+                        callee: key,
+                        receiver: Some(Box::new(base_t)),
+                        args: typed_args,
+                    },
+                });
+            }
+            // plans/M9.md item B2: the same `Type::Named` method path for
+            // enums — static name-keyed lookup, no dispatch.
+            if targs.is_empty() {
+                if let Some(e) = mctx.enums.get(sname.as_str()) {
+                    let Some((mf, d)) = e.method(name) else {
                         return Err(missing_method_error(
                             format!("type `{sname}` has no method `{name}`"),
                             sname,
                             name,
                             fspan,
                         ));
+                    };
+                    if !d.generics.is_empty() {
+                        return Err(unimplemented_at("generic instantiation is", call_span));
                     }
+                    let typed_args =
+                        check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+                    return Ok(TypedExpr {
+                        ty: d.ret.clone(),
+                        kind: TypedExprKind::Call {
+                            callee: CalleeKey::Method(sname.clone(), name.to_string()),
+                            receiver: Some(Box::new(base_t)),
+                            args: typed_args,
+                        },
+                    });
                 }
-            } else {
-                std::borrow::Cow::Owned(generics::instantiate_struct(
-                    mctx, sname, targs, call_span,
-                )?)
-            };
-            let Some((mf, d)) = s.method(name) else {
-                return Err(missing_method_error(
-                    format!("type `{sname}` has no method `{name}`"),
-                    sname,
-                    name,
-                    fspan,
-                ));
-            };
-            if !d.generics.is_empty() {
-                // A generic *method* (its own `[...]`, beyond the
-                // struct's, if any) is item H's documented scope
-                // boundary.
+            } else if mctx.enums.contains_key(sname.as_str()) {
                 return Err(unimplemented_at("generic instantiation is", call_span));
             }
-            let typed_args = check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
-            let key = if targs.is_empty() {
-                CalleeKey::Method(sname.clone(), name.to_string())
-            } else {
-                CalleeKey::MethodInstance(
-                    generics::canonical_key(InstKind::Struct, sname, targs),
-                    name.to_string(),
-                )
-            };
-            Ok(TypedExpr {
-                ty: d.ret.clone(),
-                kind: TypedExprKind::Call {
-                    callee: key,
-                    receiver: Some(Box::new(base_t)),
-                    args: typed_args,
-                },
-            })
+            Err(missing_method_error(
+                format!("type `{sname}` has no method `{name}`"),
+                sname,
+                name,
+                fspan,
+            ))
         }
         other => {
             let type_name = types::render_type(other);

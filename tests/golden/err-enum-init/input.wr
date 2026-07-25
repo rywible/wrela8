@@ -1,0 +1,10 @@
+module err.enum_init
+
+# plans/M9.md item B2: an enum may not declare `init`.
+
+enum Color:
+    Red
+    Blue
+
+    init(mut self):
+        self = Color.Red

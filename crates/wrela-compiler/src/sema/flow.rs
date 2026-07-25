@@ -289,6 +289,9 @@ fn is_method_reference(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> bool {
                 if let Some(s) = mctx.structs.get(bname.as_str()) {
                     return s.method(name).is_some() || s.assoc_fn(name).is_some();
                 }
+                if let Some(e) = mctx.enums.get(bname.as_str()) {
+                    return e.method(name).is_some() || e.assoc_fn(name).is_some();
+                }
             }
         }
         return false;
@@ -301,11 +304,14 @@ fn is_method_reference(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> bool {
     // `comptime if MODE == DriverMode.Irq` exists only on the expanded
     // instantiation, not on the unsubstituted template in `mctx.structs`.
     if targs.is_empty() {
-        let Some(s) = mctx.structs.get(sname.as_str()) else {
-            return false;
-        };
-        return s.field_ty(name).is_none()
-            && (s.method(name).is_some() || s.assoc_fn(name).is_some());
+        if let Some(s) = mctx.structs.get(sname.as_str()) {
+            return s.field_ty(name).is_none()
+                && (s.method(name).is_some() || s.assoc_fn(name).is_some());
+        }
+        if let Some(e) = mctx.enums.get(sname.as_str()) {
+            return e.method(name).is_some() || e.assoc_fn(name).is_some();
+        }
+        return false;
     }
     let Ok(s) = generics::instantiate_struct(mctx, sname, targs, Span::default()) else {
         return false;

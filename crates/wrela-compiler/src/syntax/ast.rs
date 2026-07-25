@@ -246,7 +246,10 @@ pub struct Variant {
 }
 
 /// `[pub] enum NAME[generics] [deriving(...)]:` body (02-language.md §7.2,
-/// §7.5).
+/// §7.5). Variants and methods/associated fns may interleave; the parser
+/// distinguishes them by the next token (`fn`/`pub`/`async` vs an ident).
+/// `members` holds only `Member::Fn` — an enum has no fields/`init`/`pool`
+/// (plans/M9.md item B2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumItem {
     pub span: Span,
@@ -257,6 +260,7 @@ pub struct EnumItem {
     pub generics: Vec<GenericParam>,
     pub deriving: Vec<String>,
     pub variants: Vec<Variant>,
+    pub members: Vec<Member>,
 }
 
 /// `pool NAME` (02-language.md §4) — an image- or actor-scoped pool name

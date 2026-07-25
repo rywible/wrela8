@@ -247,7 +247,14 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
             let program = &programs[module];
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
-                    Ok(()) => print!("{}", eval::image::dump(&program.enums, &graph)),
+                    Ok(()) => {
+                        let enum_variants: BTreeMap<String, Vec<String>> = program
+                            .enums
+                            .iter()
+                            .map(|(k, e)| (k.clone(), e.variants.clone()))
+                            .collect();
+                        print!("{}", eval::image::dump(&enum_variants, &graph));
+                    }
                     Err(e) => print_sema_error(&e),
                 },
                 Err(e) => print_sema_error(&eval::to_sema_error(e)),
@@ -365,7 +372,12 @@ fn build_report(
                         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
                         let placement = placement::place(&graph, modules, &layout_ctx)
                             .map_err(|e| format!("error[build]: {e}\n"))?;
-                        match report::render(&inputs, &program.enums, &graph, &placement) {
+                        let enum_variants: BTreeMap<String, Vec<String>> = program
+                            .enums
+                            .iter()
+                            .map(|(k, e)| (k.clone(), e.variants.clone()))
+                            .collect();
+                        match report::render(&inputs, &enum_variants, &graph, &placement) {
                             Ok(mut text) => {
                                 let name = first_field_value(&text, "Name value=")
                                     .unwrap_or("")

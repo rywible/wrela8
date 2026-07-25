@@ -848,14 +848,15 @@ struct NodeInfo {
 /// fns (`program.fns`, keyed by bare name — identical to
 /// `CalleeKey::Fn`'s own spelling), each plain struct's methods/
 /// assoc-fns/init (keyed `Struct.member`, identical to
-/// `CalleeKey::Method`'s spelling), and every instantiation
+/// `CalleeKey::Method`'s spelling), each plain enum's methods/assoc-fns
+/// (plans/M9.md item B2 — same keying), and every instantiation
 /// (`program.instantiations`, already keyed by
 /// `generics::canonical_key`'s spelling — identical to
 /// `CalleeKey::FnInstance`; a struct instantiation's own methods/
 /// assoc-fns/init are additionally registered `key.member`, identical to
-/// `CalleeKey::MethodInstance`'s spelling). An enum instantiation has no
-/// body (typed.rs: "enums carry no methods") — nothing to register, and
-/// nothing any `Call` node could ever target.
+/// `CalleeKey::MethodInstance`'s spelling). An enum instantiation still
+/// carries no method payload (generic enum methods fail closed at the
+/// same boundary as generic struct methods).
 fn build_nodes(program: &TypedProgram) -> BTreeMap<String, NodeInfo> {
     let mut nodes = BTreeMap::new();
 
@@ -872,6 +873,15 @@ fn build_nodes(program: &TypedProgram) -> BTreeMap<String, NodeInfo> {
         }
         if let Some(f) = &s.init {
             insert_fn_node(&mut nodes, format!("{struct_name}.init"), f);
+        }
+    }
+
+    for (enum_name, e) in &program.enums {
+        for (member, f) in &e.methods {
+            insert_fn_node(&mut nodes, format!("{enum_name}.{member}"), f);
+        }
+        for (member, f) in &e.assoc_fns {
+            insert_fn_node(&mut nodes, format!("{enum_name}.{member}"), f);
         }
     }
 
@@ -1942,6 +1952,14 @@ fn collect_isr_roots(program: &TypedProgram) -> BTreeSet<String> {
             note(f);
         }
         for f in s.assoc_fns.values() {
+            note(f);
+        }
+    }
+    for e in program.enums.values() {
+        for f in e.methods.values() {
+            note(f);
+        }
+        for f in e.assoc_fns.values() {
             note(f);
         }
     }

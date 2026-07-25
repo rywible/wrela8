@@ -1,0 +1,8 @@
+module err.enum_field_member
+
+# plans/M9.md item B2: an enum may not declare fields; variants are
+# `Name` or `Name(...)`.
+
+enum Color:
+    Red
+    n: u32

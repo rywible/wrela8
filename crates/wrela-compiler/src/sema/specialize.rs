@@ -893,9 +893,12 @@ fn eval_bound_condition(cond: &Expr, mctx: &ModuleCtx) -> Result<bool, SemaError
     let mut program = TypedProgram::default();
     for name in ["Target", "Restart", "DriverMode"] {
         if let Some(vs) = prelude::builtin_enum_variants(name) {
-            program
-                .enums
-                .insert(name.to_string(), vs.iter().map(|v| v.to_string()).collect());
+            program.enums.insert(
+                name.to_string(),
+                crate::sema::typed::TypedEnum::from_variants(
+                    vs.iter().map(|v| v.to_string()).collect(),
+                ),
+            );
         }
     }
     for (name, ty) in &mctx.consts {

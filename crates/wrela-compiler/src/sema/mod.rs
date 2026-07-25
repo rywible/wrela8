@@ -537,8 +537,10 @@ pub fn check_program_typed(
             dst.structs.insert(local.clone(), s);
         }
         if let Some(mut e) = enum_entry {
+            // plans/M9.md item B2: same local-spelling re-key as structs
+            // — an enum's method signatures name `Self` as Type::Named.
             if local != target_name {
-                e.name = local.clone();
+                types::rekey_decl_enum_name(&mut e.decl, &target_name, &local);
             }
             dst.enums.insert(local, e);
         }
@@ -787,7 +789,10 @@ fn splice_imported_decls(
         // it has no local alias to be re-keyed under. Withheld under the
         // same shadowing rule as the bodies they belong to.
         let inst_entries = src.instantiations.clone();
-        let body_bearing = const_entry.is_some() || fn_entry.is_some() || struct_entry.is_some();
+        let body_bearing = const_entry.is_some()
+            || fn_entry.is_some()
+            || struct_entry.is_some()
+            || enum_entry.is_some();
         let dst = programs.get_mut(&key).expect("key is a key of programs");
         if let (Some(witness), true) = (&withheld, body_bearing) {
             dst.imported.unresolvable.insert(
@@ -818,14 +823,18 @@ fn splice_imported_decls(
                 }
                 dst.imported.structs.insert(local.clone(), s);
             }
+            if let Some(mut e) = enum_entry {
+                // plans/M9.md item B2: enums now carry methods; re-key
+                // like structs. Before B2 an enum was only a variant-name
+                // list and always crossed without a shadowing question.
+                if local != target_name {
+                    typed::rekey_enum_name(&mut e, &target_name, &local);
+                }
+                dst.imported.enums.insert(local.clone(), e);
+            }
             for (ikey, inst) in inst_entries {
                 dst.imported.instantiations.entry(ikey).or_insert(inst);
             }
-        }
-        // An `enum` is a list of variant names with no body of any kind,
-        // so no shadowing question arises and it always crosses.
-        if let Some(e) = enum_entry {
-            dst.imported.enums.insert(local, e);
         }
     }
 

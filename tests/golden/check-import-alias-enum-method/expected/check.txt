@@ -1,0 +1,25 @@
+Module path=app.main
+  Const Z: u32
+  Const R: u32
+  Fn mut_path() -> u32
+  Fn take_path() -> u32
+  Const M: u32
+  Const T: u32
+  Const SETTLED: u32
+  Fn t_assoc() -> unit
+  Fn t_read() -> unit
+  Fn t_mut() -> unit
+  Fn t_take() -> unit
+  Fn t_settled() -> unit
+  Struct Store resource
+    field settled: u32
+    init(mut self, settled: read u32) -> unit
+  Fn build() -> Image
+Module path=lib.color
+  Enum Color data
+    variant Red
+    variant Blue
+    fn code(read self) -> u32
+    fn red() -> Color
+    fn flip(mut self) -> unit
+    fn into_code(take self) -> u32

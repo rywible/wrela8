@@ -1,0 +1,36 @@
+module app.main
+
+from lib.color import Color
+
+const D: u32 = Color.red().code()
+const E: u32 = Color.Blue.code()
+
+# settle = D*10 + E = 10 + 2 = 12
+const SETTLED: u32 = D * 10 + E
+
+@test
+pub fn t_read():
+    assert D == 1, "imported enum read-self method"
+
+@test
+pub fn t_assoc():
+    assert E == 2, "imported enum associated construction + method"
+
+@test
+pub fn t_settled():
+    assert SETTLED == 12, "import settle"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-enum-method", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=SETTLED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

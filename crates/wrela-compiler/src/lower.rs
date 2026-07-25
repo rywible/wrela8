@@ -491,6 +491,9 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     for (sname, s) in &program.structs {
         lower_struct_members(sname, s, &mut lw, &mut fns)?;
     }
+    for (ename, e) in &program.enums {
+        lower_enum_members(ename, e, &mut lw, &mut fns)?;
+    }
     for (ikey, inst) in &program.instantiations {
         match inst {
             TypedInstantiation::Fn(f) => {
@@ -526,6 +529,9 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     }
     for (sname, s) in &program.imported.structs {
         lower_struct_members(sname, s, &mut lw, &mut fns)?;
+    }
+    for (ename, e) in &program.imported.enums {
+        lower_enum_members(ename, e, &mut lw, &mut fns)?;
     }
     for (ikey, inst) in &program.imported.instantiations {
         if fns.contains_key(ikey) {
@@ -587,6 +593,36 @@ fn lower_struct_members(
         if !f.is_async {
             fns.insert(format!("{key_prefix}.init"), lower_fn(f, owner, lw)?);
         }
+    }
+    Ok(())
+}
+
+/// plans/M9.md item B2: same keying as `lower_struct_members` —
+/// `"{enum}.{member}"` matches `CalleeKey::Method::spelling()`.
+fn lower_enum_members(
+    key_prefix: &str,
+    e: &crate::sema::typed::TypedEnum,
+    lw: &mut Lowerer,
+    fns: &mut BTreeMap<String, MwirFn>,
+) -> Result<(), LowerError> {
+    let owner = Some(key_prefix.to_string());
+    for (member, f) in &e.methods {
+        if f.is_async {
+            continue;
+        }
+        fns.insert(
+            format!("{key_prefix}.{member}"),
+            lower_fn(f, owner.clone(), lw)?,
+        );
+    }
+    for (member, f) in &e.assoc_fns {
+        if f.is_async {
+            continue;
+        }
+        fns.insert(
+            format!("{key_prefix}.{member}"),
+            lower_fn(f, owner.clone(), lw)?,
+        );
     }
     Ok(())
 }
@@ -2982,7 +3018,10 @@ fn resolve_fn<'p>(prog: &'p TypedProgram, key: &CalleeKey) -> Option<&'p TypedFn
             _ => None,
         },
         CalleeKey::Method(sname, member) => {
-            resolve_struct_member(struct_by_name(prog, sname)?, member)
+            if let Some(s) = struct_by_name(prog, sname) {
+                return resolve_struct_member(s, member);
+            }
+            resolve_enum_member(enum_by_name(prog, sname)?, member)
         }
         CalleeKey::MethodInstance(ikey, member) => match instantiation_by_key(prog, ikey) {
             Some(TypedInstantiation::Struct(s)) => resolve_struct_member(s, member),
@@ -2997,6 +3036,22 @@ fn resolve_struct_member<'p>(s: &'p TypedStruct, member: &str) -> Option<&'p Typ
     } else {
         s.methods.get(member).or_else(|| s.assoc_fns.get(member))
     }
+}
+
+fn resolve_enum_member<'p>(
+    e: &'p crate::sema::typed::TypedEnum,
+    member: &str,
+) -> Option<&'p TypedFn> {
+    e.methods.get(member).or_else(|| e.assoc_fns.get(member))
+}
+
+fn enum_by_name<'p>(
+    prog: &'p TypedProgram,
+    name: &str,
+) -> Option<&'p crate::sema::typed::TypedEnum> {
+    prog.enums
+        .get(name)
+        .or_else(|| prog.imported.enums.get(name))
 }
 
 fn resolve_struct<'p>(
@@ -3256,7 +3311,7 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
             // `IoError` from `stdlib/core/io_error.wr`) fell into the
             // "generic enum instantiation" rejection and named the wrong
             // cause — the same defect A1b already fixed in `eval::interp`.
-            let variants = prog
+            let en = prog
                 .enums
                 .get(enum_name)
                 .or_else(|| prog.imported.enums.get(enum_name))
@@ -3265,9 +3320,12 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
                         "constructing/matching a generic enum instantiation's variant is",
                     )
                 })?;
-            variants.iter().position(|v| v == variant).ok_or_else(|| {
-                LowerError::internal(format!("unknown variant `{enum_name}.{variant}`"))
-            })
+            en.variants
+                .iter()
+                .position(|v| v == variant)
+                .ok_or_else(|| {
+                    LowerError::internal(format!("unknown variant `{enum_name}.{variant}`"))
+                })
         }
     }
 }

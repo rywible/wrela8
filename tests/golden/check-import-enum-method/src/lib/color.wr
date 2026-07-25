@@ -1,0 +1,15 @@
+module lib.color
+
+pub enum Color:
+    Red
+    Blue
+
+    pub fn code(read self) -> u32:
+        match self:
+            case .Red:
+                return 1
+            case .Blue:
+                return 2
+
+    pub fn red() -> Color:
+        return Color.Red

@@ -394,12 +394,12 @@ fn param_domain(program: &TypedProgram, ty: &Type) -> Option<Vec<Value>> {
         // plans/M9.md item A1b: this module's own enums, else the ones it
         // imports — an imported enum is as finite a domain as a local one.
         Type::Named(name, targs) if targs.is_empty() => {
-            let variants = program
+            let en = program
                 .enums
                 .get(name)
                 .or_else(|| program.imported.enums.get(name))?;
             Some(
-                (0..variants.len())
+                (0..en.variants.len())
                     .map(|i| Value::Enum(i, vec![]))
                     .collect(),
             )
@@ -417,7 +417,8 @@ fn render_case_value(program: &TypedProgram, ty: &Type, v: &Value) -> String {
             .get(name)
             .or_else(|| program.imported.enums.get(name))
         {
-            Some(variants) => variants
+            Some(en) => en
+                .variants
                 .get(*idx)
                 .cloned()
                 .unwrap_or_else(|| format!("<variant {idx}>")),
@@ -454,6 +455,9 @@ fn check_comptime_asserts(
     for s in program.structs.values() {
         check_asserts_in_struct(program, legality, s)?;
     }
+    for e in program.enums.values() {
+        check_asserts_in_enum(program, legality, e)?;
+    }
     for inst in program.instantiations.values() {
         match inst {
             TypedInstantiation::Fn(f) => check_asserts_in_fn(program, legality, f)?,
@@ -476,6 +480,20 @@ fn check_asserts_in_struct(
         check_asserts_in_fn(program, legality, f)?;
     }
     if let Some(f) = &s.init {
+        check_asserts_in_fn(program, legality, f)?;
+    }
+    Ok(())
+}
+
+fn check_asserts_in_enum(
+    program: &TypedProgram,
+    legality: &legal::Legality,
+    e: &crate::sema::typed::TypedEnum,
+) -> Result<(), SemaError> {
+    for f in e.methods.values() {
+        check_asserts_in_fn(program, legality, f)?;
+    }
+    for f in e.assoc_fns.values() {
         check_asserts_in_fn(program, legality, f)?;
     }
     Ok(())

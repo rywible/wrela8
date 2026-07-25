@@ -4127,6 +4127,22 @@ fn write_back_self_skipping_interrupt_cells(
     } else {
         crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
     };
+    // plans/M9.md item B2: a `mut self` enum method write-back is the
+    // whole aggregate (tag + payload), not a field walk — enums live in
+    // `LayoutCtx::enums`, not `structs`. Looking only in `structs` was
+    // `internal error: unknown struct \`Cell\`` reachable from ordinary
+    // source (`Cell.fill`).
+    if ctx.layout.enums.contains_key(name.as_str()) || ctx.layout.enums.contains_key(&layout_key) {
+        let size = frame.size_of_temp(self_temp);
+        let src_off = frame.off(self_temp);
+        let mut w = 0;
+        while w < size {
+            ctx.load_slot(X_B, src_off + w);
+            ctx.store_ptr(X_B, X_A, w);
+            w += 8;
+        }
+        return Ok(());
+    }
     let fields = ctx.layout.structs.get(&layout_key).ok_or_else(|| {
         CodegenError::internal(format!("unknown struct `{layout_key}` in layout ctx"))
     })?;

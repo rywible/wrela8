@@ -1852,7 +1852,11 @@ fn run_image_pipeline_once(
                 };
                 match report::render(
                     &[build_input],
-                    &program.enums,
+                    &program
+                        .enums
+                        .iter()
+                        .map(|(k, e)| (k.clone(), e.variants.clone()))
+                        .collect(),
                     &graph,
                     &wrela_compiler::placement::PlacementTable::default(),
                 ) {
@@ -4078,7 +4082,12 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                                 Ok(p) => p,
                                 Err(e) => return Ok((format!("error[build]: {e}\n"), None)),
                             };
-                        match report::render(&inputs, &program.enums, &graph, &placement) {
+                        let enum_variants: BTreeMap<String, Vec<String>> = program
+                            .enums
+                            .iter()
+                            .map(|(k, e)| (k.clone(), e.variants.clone()))
+                            .collect();
+                        match report::render(&inputs, &enum_variants, &graph, &placement) {
                             Ok(mut text) => {
                                 // plans/M7.md item B disclosed this hole in its
                                 // own clause note rather than leaving it to be

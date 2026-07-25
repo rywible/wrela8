@@ -271,6 +271,9 @@ fn print_item(item: &Item, indent: usize, out: &mut String) {
             for v in &e.variants {
                 print_variant(v, indent + 1, out);
             }
+            for m in &e.members {
+                print_member(m, indent + 1, out);
+            }
         }
         Item::Pool(p) => {
             print_doc(&p.doc, indent, out);

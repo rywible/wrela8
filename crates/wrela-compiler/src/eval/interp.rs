@@ -25,9 +25,9 @@ use crate::eval::value::{self, Env, Value};
 use crate::sema::bodies::{self, InstKind};
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TypedClosureBody, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
-    TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
-    TypedStruct,
+    CalleeKey, TypedClosureBody, TypedDeferBody, TypedEnum, TypedExpr, TypedExprKind, TypedFn,
+    TypedForIter, TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
+    TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{AccessMode, BinOp};
@@ -385,6 +385,13 @@ fn struct_by_name<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p Typed
         .or_else(|| program.imported.structs.get(name))
 }
 
+fn enum_by_name<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p TypedEnum> {
+    program
+        .enums
+        .get(name)
+        .or_else(|| program.imported.enums.get(name))
+}
+
 /// This module's own instantiation `key`, else the exporting module's.
 fn instantiation_by_key<'p>(
     program: &'p TypedProgram,
@@ -407,7 +414,10 @@ fn resolve_fn<'p>(program: &'p TypedProgram, key: &CalleeKey) -> Option<&'p Type
             _ => None,
         },
         CalleeKey::Method(sname, member) => {
-            resolve_struct_member(struct_by_name(program, sname)?, member)
+            if let Some(s) = struct_by_name(program, sname) {
+                return resolve_struct_member(s, member);
+            }
+            resolve_enum_member(enum_by_name(program, sname)?, member)
         }
         CalleeKey::MethodInstance(ikey, member) => match instantiation_by_key(program, ikey) {
             Some(TypedInstantiation::Struct(s)) => resolve_struct_member(s, member),
@@ -444,12 +454,17 @@ fn resolve_struct_member<'p>(s: &'p TypedStruct, member: &str) -> Option<&'p Typ
     }
 }
 
+fn resolve_enum_member<'p>(e: &'p TypedEnum, member: &str) -> Option<&'p TypedFn> {
+    e.methods.get(member).or_else(|| e.assoc_fns.get(member))
+}
+
 /// This module's own enum `name`'s variant list, else the imported one.
 fn enum_variants<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p Vec<String>> {
     program
         .enums
         .get(name)
         .or_else(|| program.imported.enums.get(name))
+        .map(|e| &e.variants)
 }
 
 /// Structural `deriving(From)` wrap (05 §8 / 02 §7.5): one field on a
@@ -575,7 +590,7 @@ fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &I
             // ones it imports. Before A1b an *imported* enum landed in
             // the generic-instantiation arm below and was reported as a
             // generic instantiation, which named the wrong cause.
-            let Some(variants) = program
+            let Some(en) = program
                 .enums
                 .get(enum_name)
                 .or_else(|| program.imported.enums.get(enum_name))
@@ -587,11 +602,14 @@ fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &I
                     ),
                 ));
             };
-            variants.iter().position(|v| v == variant).ok_or_else(|| {
-                ctx.abandon(format!(
-                    "internal error: unknown variant `{enum_name}.{variant}`"
-                ))
-            })
+            en.variants
+                .iter()
+                .position(|v| v == variant)
+                .ok_or_else(|| {
+                    ctx.abandon(format!(
+                        "internal error: unknown variant `{enum_name}.{variant}`"
+                    ))
+                })
         }
     }
 }

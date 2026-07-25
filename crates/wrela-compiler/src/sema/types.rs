@@ -248,6 +248,10 @@ pub struct DeclEnum {
     pub deriving: Vec<String>,
     pub classification: Classification,
     pub variants: Vec<DeclVariant>,
+    /// Methods and associated fns (plans/M9.md item B2) — `DeclMember::Fn`
+    /// only. Parallel to `DeclStruct::members` for the fn subset so
+    /// `bodies`/`access` can zip against the AST the same way.
+    pub members: Vec<DeclMember>,
     /// `pub(crate)` (item H): see `DeclStruct::component_types`.
     pub(crate) component_types: Vec<(Type, Span)>,
     pub(crate) span: Span,
@@ -3299,7 +3303,15 @@ fn declare_enum(
     )?;
     let mut variants = Vec::new();
     let mut component_types = Vec::new();
+    let mut seen_names: BTreeSet<String> = BTreeSet::new();
     for v in &e.variants {
+        if !seen_names.insert(v.name.clone()) {
+            return Err(SemaError::at(
+                "type",
+                format!("duplicate variant `{}` on enum `{}`", v.name, e.name),
+                v.span,
+            ));
+        }
         let payload = match &v.payload {
             VariantPayload::None => DeclVariantPayload::None,
             VariantPayload::Tuple(types) => {
@@ -3328,12 +3340,64 @@ fn declare_enum(
             payload,
         });
     }
+    let mut members = Vec::new();
+    for m in &e.members {
+        match m {
+            Member::Fn(f) => {
+                if !seen_names.insert(f.name.clone()) {
+                    return Err(SemaError::at(
+                        "type",
+                        format!(
+                            "method `{}` collides with a variant or method on enum `{}`",
+                            f.name, e.name
+                        ),
+                        f.span,
+                    ));
+                }
+                members.push(DeclMember::Fn(declare_fn(
+                    f,
+                    shapes,
+                    module_pools,
+                    &BTreeSet::new(),
+                    &scope,
+                )?));
+            }
+            Member::Field(f) => {
+                return Err(SemaError::at(
+                    "type",
+                    format!("an enum may not declare fields (at `{}`)", f.name),
+                    f.span,
+                ));
+            }
+            Member::Init(i) => {
+                return Err(SemaError::at(
+                    "type",
+                    "an enum may not declare `init`".to_string(),
+                    i.span,
+                ));
+            }
+            Member::Pool(p) => {
+                return Err(SemaError::at(
+                    "type",
+                    format!("an enum may not declare a `pool` (at `{}`)", p.name),
+                    p.span,
+                ));
+            }
+            Member::ComptimeIf(c) => {
+                return Err(unimplemented_at(
+                    "comptime if members on an enum are",
+                    c.span,
+                ));
+            }
+        }
+    }
     Ok(DeclEnum {
         name: e.name.clone(),
         generics: decl_generics,
         deriving: e.deriving.clone(),
         classification: Classification::Data, // placeholder; classify_all fills this in
         variants,
+        members,
         component_types,
         span: e.span,
     })
@@ -4523,6 +4587,26 @@ fn render_item(
             for v in &e.variants {
                 render_variant(v, depth + 1, out);
             }
+            // plans/M9.md item B2: methods/associated fns, same dump
+            // surface structs already use (without `@driver` handoff —
+            // an enum is never a driver).
+            for m in &e.members {
+                if let DeclMember::Fn(f) = m {
+                    let prefix = if f.is_async { "async fn " } else { "fn " };
+                    let override_mode = f.receiver.as_ref().and_then(|r| {
+                        if r.mode == AccessMode::Read && !r.is_pub && !r.is_init {
+                            effects.get(&(e.name.clone(), f.name.clone())).copied()
+                        } else {
+                            None
+                        }
+                    });
+                    push_line(
+                        out,
+                        depth + 1,
+                        &format!("{prefix}{}", render_fn_signature(f, override_mode)),
+                    );
+                }
+            }
         }
         DeclItem::Pool(name) => push_line(out, depth, &format!("Pool {name}")),
     }
@@ -4629,6 +4713,56 @@ pub(crate) fn rekey_decl_struct_name(s: &mut DeclStruct, from: &str, to: &str) {
         rekey_type_name(ty, from, to);
     }
     for g in &mut s.generics {
+        if let DeclGenericKind::Const(ty) = &mut g.kind {
+            rekey_type_name(ty, from, to);
+        }
+    }
+}
+
+/// plans/M9.md item B2: same local-spelling re-key as
+/// `rekey_decl_struct_name`, for an imported enum's method signatures.
+pub(crate) fn rekey_decl_enum_name(e: &mut DeclEnum, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    if e.name == from {
+        e.name = to.to_string();
+    }
+    for m in &mut e.members {
+        match m {
+            DeclMember::Fn(f) => {
+                for p in &mut f.params {
+                    rekey_type_name(&mut p.ty, from, to);
+                }
+                rekey_type_name(&mut f.ret, from, to);
+                for g in &mut f.generics {
+                    if let DeclGenericKind::Const(ty) = &mut g.kind {
+                        rekey_type_name(ty, from, to);
+                    }
+                }
+            }
+            DeclMember::Field(_) | DeclMember::Init(_) | DeclMember::Pool(_) => {}
+        }
+    }
+    for v in &mut e.variants {
+        match &mut v.payload {
+            DeclVariantPayload::None => {}
+            DeclVariantPayload::Tuple(types) => {
+                for t in types {
+                    rekey_type_name(t, from, to);
+                }
+            }
+            DeclVariantPayload::Named(fields) => {
+                for (_, t) in fields {
+                    rekey_type_name(t, from, to);
+                }
+            }
+        }
+    }
+    for (ty, _) in &mut e.component_types {
+        rekey_type_name(ty, from, to);
+    }
+    for g in &mut e.generics {
         if let DeclGenericKind::Const(ty) = &mut g.kind {
             rekey_type_name(ty, from, to);
         }

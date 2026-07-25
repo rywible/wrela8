@@ -36,7 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::bodies::{self, FnInfo, InstKind, ModuleCtx, QueuedInstantiation, StructInfo};
-use crate::sema::typed::TypedInstantiation;
+use crate::sema::typed::{TypedEnum, TypedInstantiation};
 use crate::sema::types::{
     self, Classification, DeclEnum, DeclField, DeclFn, DeclGenericKind, DeclGenericParam,
     DeclMember, DeclParam, DeclStruct, DeclVariant, DeclVariantPayload, Type, TypeArg,
@@ -236,7 +236,7 @@ fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
         if en.generics.is_empty() {
             program.enums.insert(
                 name.clone(),
-                en.variants.iter().map(|v| v.name.clone()).collect(),
+                TypedEnum::from_variants(en.variants.iter().map(|v| v.name.clone()).collect()),
             );
         }
     }
@@ -244,10 +244,9 @@ fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
     // arguments (`DriverMode.Irq`).
     for name in ["Target", "Restart", "DriverMode"] {
         if let Some(vs) = crate::sema::prelude::builtin_enum_variants(name) {
-            program
-                .enums
-                .entry(name.to_string())
-                .or_insert_with(|| vs.iter().map(|v| v.to_string()).collect());
+            program.enums.entry(name.to_string()).or_insert_with(|| {
+                TypedEnum::from_variants(vs.iter().map(|v| v.to_string()).collect())
+            });
         }
     }
     program
@@ -644,6 +643,11 @@ fn subst_decl_enum(d: &DeclEnum, subst: &Subst, mctx: &ModuleCtx) -> DeclEnum {
             payload: subst_variant_payload(&v.payload, subst),
         })
         .collect();
+    let members: Vec<DeclMember> = d
+        .members
+        .iter()
+        .map(|m| subst_decl_member(m, subst))
+        .collect();
     let component_types: Vec<(Type, Span)> = d
         .component_types
         .iter()
@@ -656,6 +660,7 @@ fn subst_decl_enum(d: &DeclEnum, subst: &Subst, mctx: &ModuleCtx) -> DeclEnum {
         deriving: d.deriving.clone(),
         classification,
         variants,
+        members,
         component_types,
         span: d.span,
     }

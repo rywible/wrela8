@@ -1,0 +1,1 @@
+error[parse]: an enum may not declare `init` at 9:5
