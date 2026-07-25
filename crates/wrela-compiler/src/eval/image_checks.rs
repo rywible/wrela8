@@ -635,6 +635,58 @@ pub fn pool_backings(
         );
     }
 
+    // plans/M7.md item I's sweep. Decision 5's security property is
+    // per-*device* ("the VMM maps exactly the declared pools and nothing
+    // else ... the device model can reach declared pool pages and no
+    // other guest memory, enforced by what the VMM maps"), but the
+    // `BlkPool name= base= size=` line that carries a window to the VMM
+    // has **no device field at all**: `wrela-vmm`'s own `parse_report`
+    // collects every one of them into a single `Vec<PoolWindow>` and
+    // hands the whole list to its one `BlkDevice`. So an image declaring
+    // `img.dma_pool(..., device=a)` alongside `img.dma_pool(..., device=b)`
+    // renders two windows that the *one* device model treats as equally
+    // reachable — pool `b`'s bytes reachable from device `a`.
+    //
+    // Unreachable at a boot today, and only because a second thing is
+    // missing: `parse_report` also refuses a `BlkPool` line with no
+    // `BlkDevice`/`BlkQueue` to bind it to, and those are plans/M7.md item
+    // E's to emit. The fail-open was being held shut by a *different*
+    // absent feature, which is exactly the shape a sweep exists to find
+    // before that feature lands. The real fix is a report-format change
+    // (a device on the mapping line, and a VMM that binds windows per
+    // device) and belongs to whoever emits those two lines anyway; until
+    // then this fails closed and names them.
+    //
+    // Checked here, in the one derivation the checker, the placer and the
+    // report all read (this section's own doc comment), rather than in
+    // `layout::verify_pool_windows`: it is a fact about the *declaration*,
+    // like the ceiling below, and a `@image` whose declaration is refused
+    // must be refused identically by every entry point.
+    let mut devices: Vec<(usize, &str)> = out
+        .values()
+        .filter_map(|b| b.device.map(|d| (d, b.name.as_str())))
+        .collect();
+    devices.sort();
+    devices.dedup_by_key(|(d, _)| *d);
+    if devices.len() > 1 {
+        let named = devices
+            .iter()
+            .map(|(d, n)| format!("`{n}` (device#{d})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(build_error(format!(
+            "this image declares device-reachable pools for {} different devices — {named}. The \
+             report's `BlkPool name= base= size=` mapping line carries no device, and the VMM \
+             maps every one of them for its single device model, so pool bytes declared \
+             reachable from one device would be reachable from another (03-hardware.md §3: all \
+             memory a device can reach originates from *its* bound pools; plans/M7.md decision \
+             5). Failing closed until the report can say which device a window belongs to \
+             (plans/M7.md item E, which owns the `BlkDevice`/`BlkQueue` lines that format needs \
+             anyway).",
+            devices.len()
+        )));
+    }
+
     let total: u64 = out.values().map(|b| b.bytes).fold(0, u64::saturating_add);
     if total > MAX_POOL_BYTES {
         return Err(build_error(format!(
