@@ -1971,13 +1971,15 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
         // which item, not shown a typed node.
         TypedExprKind::Intrinsic { key, .. }
             if crate::sema::bodies::is_mmio_access_intrinsic(key)
-                || crate::sema::bodies::is_device_transport_intrinsic(key) =>
+                || crate::sema::bodies::is_device_transport_intrinsic(key)
+                || crate::sema::bodies::is_irq_cap_intrinsic(key) =>
         {
             Err(FlowError::unimplemented(
-                "a typed MMIO access or bring-up transition (03-hardware.md §2/§9) inside an \
-                 `async fn`: the synchronous path emits both (plans/M7.md item H1), and a \
-                 driver's own `init` is synchronous. The async register readers are 03 §6's ISR \
-                 and §7's bottom-half task, which are plans/M7.md item G — until then this is",
+                "a typed MMIO access, bring-up transition, or IRQ operation (03-hardware.md \
+                 §2/§6/§9) inside an `async fn`: the synchronous path emits these (plans/M7.md \
+                 items H1/G), and a driver's own `init` is synchronous. The async register \
+                 readers are 03 §6's ISR and §7's bottom-half task — until the remaining item-G \
+                 surface lands for async, this is",
             ))
         }
         TypedExprKind::Await(_) | TypedExprKind::GroupChild(_) => Err(FlowError::unimplemented(

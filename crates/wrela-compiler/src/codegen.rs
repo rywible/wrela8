@@ -475,6 +475,12 @@ pub enum Reloc {
     /// Emitted by `GroupCreate`'s own arena scan and by the group-child
     /// poll routines `layout.rs` hand-assembles.
     GroupArenaBase { word: usize },
+    /// plans/M7.md item G, decision 12: the four-word `load_imm` starting
+    /// at `word` materializes the vector bit index the image bound to
+    /// `@driver` `driver` — an `IrqCap[V]`'s one runtime word. Layout
+    /// resolves it from the sealed graph's `vector=` on that driver's
+    /// device.
+    IrqVector { word: usize, driver: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1692,6 +1698,22 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
             ctx.store_slot(X_B, ctx.frame.off(*dst));
+        }
+        // plans/M7.md item G, decision 12: load the driver's vector bit
+        // index into an `IrqCap` word. The immediate is patched by layout
+        // once the sealed graph's `vector=` is known — identical shape to
+        // `Reloc::TurnFrameAddr`/`GroupArenaBase`.
+        Inst::LoadIrqVector { dst, driver } => {
+            let word = ctx.words.len();
+            ctx.load_imm(X_A, 0);
+            if let Some((_, text)) = ctx.words.get_mut(word) {
+                *text = format!("irq-vector[{}] {}", driver, reg_name(X_A));
+            }
+            ctx.relocs.push(Reloc::IrqVector {
+                word,
+                driver: driver.clone(),
+            });
+            ctx.store_slot(X_A, ctx.frame.off(*dst));
         }
         Inst::MmioWrite {
             base,
@@ -5593,6 +5615,15 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::GroupArenaBase word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::IrqVector { word, .. } => {
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::IrqVector word {word} (a 4-word load_imm) is \
                              out of range (code has {} word(s))",
                             f.code.len()
                         ));

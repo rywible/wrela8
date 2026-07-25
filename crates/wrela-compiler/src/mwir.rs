@@ -536,6 +536,17 @@ pub enum Inst {
         ty: Type,
         value: Temp,
     },
+    /// plans/M7.md item G, decision 12: materialize an `IrqCap[V]`'s
+    /// runtime word — the vector bit index the image bound to this
+    /// `@driver`. `driver` is the owning struct's name; `layout` resolves
+    /// it against the sealed graph's `vector=` and patches the codegen
+    /// reloc. Zero is never a valid result (bit 0 is M6's deadline
+    /// vector); a driver whose device declared no vector never reaches
+    /// here (`eval::image_checks::check_vector_bindings` rejects first).
+    LoadIrqVector {
+        dst: Temp,
+        driver: String,
+    },
 
     /// Unconditional abandonment: `assert`'s own failure path, an
     /// explicit `panic(msg)`, and match's own defensive "no arm matched"
@@ -1067,6 +1078,9 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             "MmioWrite base={base} offset={offset:#x} ty={} value={value}",
             types::render_type(ty)
         ),
+        Inst::LoadIrqVector { dst, driver } => {
+            format!("LoadIrqVector dst={dst} driver={driver}")
+        }
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
         }

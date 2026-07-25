@@ -240,7 +240,7 @@ fn set_state(path: &StoragePath, state: &mut StateMap, new_state: PathState) {
 /// is not a storage location at all, so it is never `Uninit`/`Moved` and
 /// never needs a "readable" check — treated as a fresh value instead,
 /// exactly like a call result or a literal.
-fn as_path(expr: &Expr, fctx: &FnCtx) -> Option<StoragePath> {
+fn as_path(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Option<StoragePath> {
     match expr {
         Expr::Name(_, name) => {
             if fctx.lookup_local(name).is_some() {
@@ -249,7 +249,17 @@ fn as_path(expr: &Expr, fctx: &FnCtx) -> Option<StoragePath> {
                 None
             }
         }
-        Expr::Field(base, _, name) => Some(as_path(base, fctx)?.field(name.clone())),
+        Expr::Field(base, _, name) => {
+            let base_path = as_path(base, fctx, mctx)?;
+            // plans/M7.md item G: `self.on_queue_irq` (03-hardware.md §6)
+            // is a method reference for `IrqCap.bind`, not a field place.
+            // A method has no storage path; treating it as `self.<field>`
+            // would falsely report "not initialized".
+            if is_method_reference(expr, fctx, mctx) {
+                return None;
+            }
+            Some(base_path.field(name.clone()))
+        }
         Expr::Index(base, _, args) => {
             if args.len() != 1 {
                 return None;
@@ -258,10 +268,38 @@ fn as_path(expr: &Expr, fctx: &FnCtx) -> Option<StoragePath> {
                 Some(v) => PathStep::Index(v),
                 None => PathStep::RuntimeIndex,
             };
-            Some(as_path(base, fctx)?.index(step))
+            Some(as_path(base, fctx, mctx)?.index(step))
         }
         _ => None,
     }
+}
+
+/// `self.method` / `value.method` naming a declared method or assoc fn —
+/// not a data field. Used so `IrqCap.bind(self.on_queue_irq)` is not
+/// treated as reading an uninitialized field of `self`.
+fn is_method_reference(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> bool {
+    let Expr::Field(base, _, name) = expr else {
+        return false;
+    };
+    let Some(base_ty) = place_type(base, fctx, mctx) else {
+        // `BlkDriver.on_queue_irq` — base is a type name, not a place.
+        if let Expr::Name(_, bname) = base.as_ref() {
+            if fctx.lookup_local(bname).is_none() {
+                if let Some(s) = mctx.structs.get(bname.as_str()) {
+                    return s.method(name).is_some() || s.assoc_fn(name).is_some();
+                }
+            }
+        }
+        return false;
+    };
+    let base_ty = bodies::unwrap_own(base_ty);
+    let Type::Named(sname, _) = &base_ty else {
+        return false;
+    };
+    let Some(s) = mctx.structs.get(sname.as_str()) else {
+        return false;
+    };
+    s.field_ty(name).is_none() && (s.method(name).is_some() || s.assoc_fn(name).is_some())
 }
 
 /// Walks the nested sub-expressions of a place chain that themselves
@@ -526,7 +564,7 @@ fn check_overwrite_live(
 /// passes; a `take`-wrapped operand never reaches this check at all (it
 /// is handled as a real move instead, never as a bare value).
 fn check_storing_value(value: &Expr, fctx: &FnCtx, wctx: &WCtx) -> Result<(), SemaError> {
-    let Some(path) = as_path(value, fctx) else {
+    let Some(path) = as_path(value, fctx, wctx.mctx) else {
         return Ok(());
     };
     if let Some(ty) = place_type(value, fctx, wctx.mctx) {
@@ -595,7 +633,7 @@ fn process_operand<'a>(
     dstack: &mut DStack<'a>,
     loop_marker: usize,
 ) -> Result<(), SemaError> {
-    let Some(path) = as_path(expr, fctx) else {
+    let Some(path) = as_path(expr, fctx, wctx.mctx) else {
         return walk_expr(expr, state, fctx, wctx, dstack, loop_marker);
     };
     walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
@@ -687,7 +725,7 @@ fn apply_pattern_move(
     if !pattern_has_take(pattern) {
         return Ok(());
     }
-    let Some(path) = as_path(scrutinee, fctx) else {
+    let Some(path) = as_path(scrutinee, fctx, wctx.mctx) else {
         return Ok(());
     };
     check_takeable(&path, state, wctx, span)?;
@@ -748,14 +786,20 @@ fn walk_expr<'a>(
                 // storage location, so never `Uninit`/`Moved`.
             }
         }
-        Expr::Field(base, _, _) => match as_path(expr, fctx) {
+        Expr::Field(base, _, _) => match as_path(expr, fctx, wctx.mctx) {
             Some(path) => {
                 walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
                 check_readable(&path, state, wctx, expr.span())
             }
+            None if is_method_reference(expr, fctx, wctx.mctx) => {
+                // plans/M7.md item G: `self.on_queue_irq` names a method,
+                // not a place — do not demand `self` be fully initialized
+                // the way a whole-value field read would.
+                Ok(())
+            }
             None => walk_expr(base, state, fctx, wctx, dstack, loop_marker),
         },
-        Expr::Index(base, ispan, args) => match as_path(expr, fctx) {
+        Expr::Index(base, ispan, args) => match as_path(expr, fctx, wctx.mctx) {
             Some(path) => {
                 walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
                 check_readable(&path, state, wctx, *ispan)
@@ -772,7 +816,7 @@ fn walk_expr<'a>(
             walk_call(callee, *span, args, state, fctx, wctx, dstack, loop_marker)
         }
         Expr::Unary(span, UnaryOp::Take, inner) => {
-            let Some(path) = as_path(inner, fctx) else {
+            let Some(path) = as_path(inner, fctx, wctx.mctx) else {
                 // access.rs already requires `take`'s operand to be a
                 // full place; unreachable for a module that reached
                 // flow, but fail closed rather than panic if it somehow
@@ -1133,7 +1177,7 @@ fn walk_assign<'a>(
         walk_place_subexprs(&a.target, state, fctx, wctx, dstack, loop_marker)?;
     }
 
-    let Some(path) = as_path(&a.target, fctx) else {
+    let Some(path) = as_path(&a.target, fctx, wctx.mctx) else {
         return Ok(());
     };
     if a.op == AssignOp::Assign {
@@ -1597,7 +1641,7 @@ fn walk_for<'a>(
     // the body, same reasoning as `walk_while`.
     let body_marker = dstack.len();
     if let Expr::Unary(span, UnaryOp::Take, inner) = &f.iterable {
-        match as_path(inner, fctx) {
+        match as_path(inner, fctx, wctx.mctx) {
             Some(path) => {
                 walk_place_subexprs(inner, &mut entry, fctx, wctx, dstack, body_marker)?;
                 check_takeable(&path, &entry, wctx, *span)?;

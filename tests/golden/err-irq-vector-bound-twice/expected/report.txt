@@ -1,0 +1,1 @@
+error[build]: vector 1 is bound twice — first in `BlkDriver.init` to `BlkDriver.on_queue_irq`, then in `BlkDriver.init` to `BlkDriver.on_config_irq` (03-hardware.md §6: exactly one handler per vector)

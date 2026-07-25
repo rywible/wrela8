@@ -1,0 +1,1 @@
+error[build]: `BlkDriver.init` calls `take_irq()`, but `@driver` `BlkDriver`'s device declared no `vector=` — 03-hardware.md §6: source cannot bind an unowned vector. Add `vector=N` (1..=63) to the `img.device` call, or drop the call for a poll build (03-hardware.md §7)

@@ -549,10 +549,22 @@ fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> 
         TypedExprKind::Intrinsic { key, .. }
             if crate::sema::bodies::is_device_transport_intrinsic(key) =>
         {
-            Some(if key == "Device.claim" {
-                "a device claim (03-hardware.md §9's bring-up chain)".to_string()
+            Some(match key.as_str() {
+                "Device.claim" => "a device claim (03-hardware.md §9's bring-up chain)".to_string(),
+                "Device.take_irq" => {
+                    "taking an `IrqCap` from a claimed device (03-hardware.md §6)".to_string()
+                }
+                _ => "an MMIO claim partitioning".to_string(),
+            })
+        }
+        // plans/M7.md item G (03-hardware.md §6): binding a vector or
+        // unmasking one is an IRQ-state touch — the same §1 provenance
+        // sentence that already covers holding an `IrqCap[V]`.
+        TypedExprKind::Intrinsic { key, .. } if crate::sema::bodies::is_irq_cap_intrinsic(key) => {
+            Some(if key == "IrqCap.bind" {
+                "binding an interrupt vector (03-hardware.md §6)".to_string()
             } else {
-                "an MMIO claim partitioning".to_string()
+                "unmasking an interrupt vector (03-hardware.md §6)".to_string()
             })
         }
         TypedExprKind::Int(_)
@@ -945,6 +957,11 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
                 // bring-up transition is a hardware effect, so it is
                 // comptime-illegal wherever an MMIO access is.
                 Some("a device bring-up transition (03-hardware.md §9)")
+            } else if crate::sema::bodies::is_irq_cap_intrinsic(key) {
+                // plans/M7.md item G: binding/unmasking a vector is an
+                // IRQ-state effect, comptime-illegal for the same §12
+                // sentence.
+                Some("an interrupt-vector operation (03-hardware.md §6)")
             } else if crate::sema::typed::is_restricted_intrinsic(key) {
                 Some("an `@image` builder intrinsic")
             } else if key == "now" {

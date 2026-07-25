@@ -1,0 +1,1 @@
+error[build]: handler `BlkDriver.on_irq` is bound to two vectors (1 via `BlkDriver.init`, 2 via `BlkDriver.init`) — 03-hardware.md §6: exactly one handler per vector, and this compiler rejects one handler serving two

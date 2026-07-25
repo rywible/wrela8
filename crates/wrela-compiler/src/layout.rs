@@ -799,6 +799,48 @@ fn patch_load_imm_words(words: &mut [u32], word: usize, value: u64) {
     words[word + 3] = encode::enc_movk(rd, ((value >> 48) & 0xFFFF) as u16, 48, true);
 }
 
+/// plans/M7.md item G, decision 12: the vector bit index an `IrqCap` for
+/// `@driver` `driver` materializes. Read from the sealed graph's
+/// `vector=` on that driver's bound device — the same fact
+/// `eval::image_checks::check_vector_bindings` already validated.
+fn driver_irq_vector(graph: Option<&ImageGraph>, driver: &str) -> Result<u64, LayoutError> {
+    let Some(graph) = graph else {
+        return Err(LayoutError::new(format!(
+            "internal error: `LoadIrqVector` for `{driver}` needs the sealed image graph, but \
+             this layout has none"
+        )));
+    };
+    for decl in &graph.drivers {
+        let crate::sema::types::Type::Named(name, _) = &decl.actor_type else {
+            continue;
+        };
+        if name != driver {
+            continue;
+        }
+        let Some(i) = device_index_of(&decl.args) else {
+            return Err(LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` has a `LoadIrqVector` but no `device=` \
+                 binding"
+            )));
+        };
+        let Some(dev) = graph.devices.get(i) else {
+            return Err(LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` binds device#{i}, which does not exist"
+            )));
+        };
+        return crate::eval::image_checks::device_vector(&dev.args).ok_or_else(|| {
+            LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` has a `LoadIrqVector` but its device \
+                 declared no `vector=` — `check_vector_bindings` should have rejected first"
+            ))
+        });
+    }
+    Err(LayoutError::new(format!(
+        "internal error: `LoadIrqVector` names `{driver}`, which this image never declared as a \
+         `@driver`"
+    )))
+}
+
 fn patch_adrp_add(
     words: &mut [u32],
     word_adrp: usize,
@@ -1710,6 +1752,10 @@ pub fn layout_program(
                     })?;
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                Reloc::IrqVector { word, driver } => {
+                    let vector = driver_irq_vector(boot.as_ref().map(|b| b.graph), driver)?;
+                    patch_load_imm_words(&mut all_code_words, base + word, vector);
+                }
             }
         }
     }
@@ -1753,10 +1799,12 @@ pub fn layout_program(
                 | Reloc::AbortVal { .. }
                 | Reloc::CheckpointService { .. }
                 | Reloc::TurnFrameAddr { .. }
-                | Reloc::GroupArenaBase { .. } => {
+                | Reloc::GroupArenaBase { .. }
+                | Reloc::IrqVector { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit a Rodata/\
-                         AbortFixed/AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase reloc",
+                         AbortFixed/AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase/\
+                         IrqVector reloc",
                     ));
                 }
             }
@@ -2618,6 +2666,7 @@ fn build_boot_init_calls(
             &decl.actor_type,
             &decl.args,
             None,
+            graph,
             inits,
         )?);
     }
@@ -2629,6 +2678,7 @@ fn build_boot_init_calls(
             &decl.actor_type,
             &decl.args,
             device,
+            graph,
             inits,
         )?);
     }
@@ -2659,6 +2709,7 @@ fn one_boot_init_call(
     decl_type: &crate::sema::types::Type,
     decl_args: &[crate::eval::image::DeclArg],
     device: Option<usize>,
+    graph: &ImageGraph,
     inits: &BTreeMap<String, ActorInit>,
 ) -> Result<Option<BootInitCall>, LayoutError> {
     use crate::sema::types::{Type, render_type};
@@ -2748,13 +2799,42 @@ fn one_boot_init_call(
                     args.push(BootInitArg::PoolBase(pool.clone()));
                     continue;
                 }
+                // plans/M7.md item G, decision 12: an `IrqCap[V]` parameter
+                // is the vector bit index. `check_irq_cap_mint` already
+                // required `vector=`; the word is known here, so it is a
+                // plain `Word` rather than a reloc against placement.
+                if tn == "IrqCap" {
+                    let Some(i) = device else {
+                        return Err(LayoutError::new(format!(
+                            "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, but this \
+                             declaration binds no device — an `IrqCap[V]` is minted from a \
+                             device's declared `vector=` (03-hardware.md §6).",
+                            p.name
+                        )));
+                    };
+                    let Some(dev) = graph.devices.get(i) else {
+                        return Err(LayoutError::new(format!(
+                            "internal error: `{name}.init` takes an `IrqCap` for device#{i}, \
+                             which does not exist"
+                        )));
+                    };
+                    let Some(v) = crate::eval::image_checks::device_vector(&dev.args) else {
+                        return Err(LayoutError::new(format!(
+                            "internal error: `{name}.init` takes an `IrqCap` for device#{i}, \
+                             which declared no `vector=` — `check_vector_bindings` should have \
+                             rejected first"
+                        )));
+                    };
+                    args.push(BootInitArg::Word(v));
+                    continue;
+                }
                 if crate::eval::image_checks::is_capability_type_name(tn) {
                     return Err(LayoutError::new(format!(
                         "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, a capability this \
-                         image never wires explicitly — the image binding mints a `DeviceCap[D]` \
-                         and a `DmaPool[P, N]` and nothing else (plans/M7.md item H1); an \
-                         `Mmio[L]` comes from the sealed transport's own `map_partition` \
-                         (03-hardware.md §2/§9), and the rest are named by \
+                         image never wires explicitly — the image binding mints a `DeviceCap[D]`, \
+                         a `DmaPool[P, N]` and an `IrqCap[V]` (from `vector=`) and nothing else \
+                         (plans/M7.md items H1/G); an `Mmio[L]` comes from the sealed transport's \
+                         own `map_partition` (03-hardware.md §2/§9), and the rest are named by \
                          `eval::image_checks::check_capability_substitution`. Failing closed \
                          rather than passing a zero.",
                         p.name
@@ -6215,9 +6295,11 @@ pub fn layout_test_image(
             Reloc::AbortFixed { .. }
             | Reloc::AbortVal { .. }
             | Reloc::CheckpointService { .. }
-            | Reloc::GroupArenaBase { .. } => {
+            | Reloc::GroupArenaBase { .. }
+            | Reloc::IrqVector { .. } => {
                 return Err(LayoutError::new(
-                    "internal error: the harness section itself must never emit an AbortFixed/AbortVal/CheckpointService/GroupArenaBase reloc",
+                    "internal error: the harness section itself must never emit an \
+                     AbortFixed/AbortVal/CheckpointService/GroupArenaBase/IrqVector reloc",
                 ));
             }
         }
@@ -6297,6 +6379,10 @@ pub fn layout_test_image(
                             )
                         })?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                Reloc::IrqVector { word, driver } => {
+                    let vector = driver_irq_vector(boot.as_ref().map(|b| b.graph), driver)?;
+                    patch_load_imm_words(&mut code_words, base + word, vector);
                 }
             }
         }
@@ -6798,7 +6884,7 @@ pub struct Store:
     fn every_other_capability_and_every_state_still_fails_closed() {
         for (ty, needle) in [
             (named1("Mmio", "VirtioIrqMmio"), "map_partition"),
-            (named1("IrqCap", "V"), "check_capability_substitution"),
+            (named1("IrqCap", "V"), "vector="),
             (
                 named1("DriverClaimedDevice", "VirtioBlock"),
                 "produced by a transition inside the driver",

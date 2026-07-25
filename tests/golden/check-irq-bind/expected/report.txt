@@ -1,0 +1,35 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/check_irq_bind.wr sha256=d656aa7ac7552af124c6444ed7d0e3db614b36c87fb94d74c3dc9f93bfdf39ff
+  Name value=check-irq-bind
+  Target value=Target.wrela_machine_v1
+  Device index=0 type=VirtioBlock
+    Arg label=transport value=8192
+    Arg label=vector value=1
+  Driver index=0 type=BlkDriver
+  Edge from=driver#0 to=device#0
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=driver#0
+  Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
+    Padding offset=0x0 size=96
+    Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
+    Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=4194304
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=340
+  Section name=abort base=0x405001a4 size=120
+  Section name=checkpoint base=0x4050021c size=104
+  Section name=rtcode base=0x40500284 size=120
+  Section name=rtdata base=0x40500300 size=32
+  Section name=devregs base=0x40500320 size=104
+  Entry base=0x40500000
+  Driver name=BlkDriver state=16
+  Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=32
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500320 size=104

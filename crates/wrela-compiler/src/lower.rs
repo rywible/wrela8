@@ -243,6 +243,10 @@ struct FnBuilder<'p, 'l> {
     lw: &'l mut Lowerer<'p>,
     temp_types: Vec<Type>,
     body: Vec<Inst>,
+    /// plans/M7.md item G: when this fn is a struct member, the struct's
+    /// own name — `LoadIrqVector` needs the `@driver` that owns the
+    /// vector. `None` for free fns.
+    owner_struct: Option<String>,
 }
 
 impl<'p, 'l> FnBuilder<'p, 'l> {
@@ -394,7 +398,7 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
         if f.is_async {
             continue;
         }
-        let mf = lower_fn(f, &mut lw)?;
+        let mf = lower_fn(f, None, &mut lw)?;
         fns.insert(name.clone(), mf);
     }
     for (sname, s) in &program.structs {
@@ -406,7 +410,7 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
                 if f.is_async {
                     continue;
                 }
-                let mf = lower_fn(f, &mut lw)?;
+                let mf = lower_fn(f, None, &mut lw)?;
                 fns.insert(ikey.clone(), mf);
             }
             TypedInstantiation::Struct(s) => {
@@ -434,31 +438,43 @@ fn lower_struct_members(
     lw: &mut Lowerer,
     fns: &mut BTreeMap<String, MwirFn>,
 ) -> Result<(), LowerError> {
+    let owner = Some(key_prefix.to_string());
     for (member, f) in &s.methods {
         if f.is_async {
             continue;
         }
-        fns.insert(format!("{key_prefix}.{member}"), lower_fn(f, lw)?);
+        fns.insert(
+            format!("{key_prefix}.{member}"),
+            lower_fn(f, owner.clone(), lw)?,
+        );
     }
     for (member, f) in &s.assoc_fns {
         if f.is_async {
             continue;
         }
-        fns.insert(format!("{key_prefix}.{member}"), lower_fn(f, lw)?);
+        fns.insert(
+            format!("{key_prefix}.{member}"),
+            lower_fn(f, owner.clone(), lw)?,
+        );
     }
     if let Some(f) = &s.init {
         if !f.is_async {
-            fns.insert(format!("{key_prefix}.init"), lower_fn(f, lw)?);
+            fns.insert(format!("{key_prefix}.init"), lower_fn(f, owner, lw)?);
         }
     }
     Ok(())
 }
 
-fn lower_fn(f: &TypedFn, lw: &mut Lowerer) -> Result<MwirFn, LowerError> {
+fn lower_fn(
+    f: &TypedFn,
+    owner_struct: Option<String>,
+    lw: &mut Lowerer,
+) -> Result<MwirFn, LowerError> {
     let mut b = FnBuilder {
         lw,
         temp_types: Vec::new(),
         body: Vec::new(),
+        owner_struct,
     };
     let mut env: LEnv = vec![BTreeMap::new()];
     let receiver = match &f.receiver {
@@ -1831,6 +1847,20 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             args,
             ..
         } if crate::sema::bodies::is_device_transport_intrinsic(key) => {
+            if key == "Device.take_irq" {
+                // plans/M7.md item G, decision 12: the word is the vector
+                // bit index. Layout patches the reloc against this
+                // driver's `vector=` once the image graph is in hand.
+                let Some(driver) = b.owner_struct.clone() else {
+                    return Err(LowerError::internal(
+                        "`Device.take_irq` reached lowering outside a `@driver` member".to_string(),
+                    ));
+                };
+                let _ = receiver; // authority already checked; the word does not need the base
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::LoadIrqVector { dst, driver });
+                return Ok(dst);
+            }
             let src = match (key.as_str(), receiver, args.first()) {
                 ("Device.claim", _, Some((_, cap))) => lower_expr(cap, b, env)?,
                 ("Device.map_partition", Some(state), _) => lower_expr(state, b, env)?,
@@ -1842,6 +1872,17 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             };
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::Copy { dst, src });
+            Ok(dst)
+        }
+        // plans/M7.md item G: bind/unmask are build-time facts for the
+        // vector table (collected from the typed tree by
+        // `eval::image_checks::check_vector_bindings`). At runtime they
+        // are no-ops — the table is already wired, and this machine has
+        // no per-vector mask bit in the pending word (06 §4; the
+        // InterruptCell level signal is the ISR/ordinary channel).
+        TypedExprKind::Intrinsic { key, .. } if crate::sema::bodies::is_irq_cap_intrinsic(key) => {
+            let dst = b.fresh(expr.ty.clone());
+            b.emit(Inst::ConstUnit { dst });
             Ok(dst)
         }
         // plans/M7.md item H1: a typed MMIO access, emitted at last. The
@@ -2277,6 +2318,7 @@ mod builder_tests {
             lw: &mut lw,
             temp_types: Vec::new(),
             body: Vec::new(),
+            owner_struct: None,
         };
         let cond = b.fresh(Type::Bool);
         b.emit(Inst::ConstBool {
@@ -2306,6 +2348,7 @@ mod builder_tests {
             lw: &mut lw,
             temp_types: Vec::new(),
             body: Vec::new(),
+            owner_struct: None,
         };
         let a = b.intern(b"hello".to_vec());
         let c = b.intern(b"world".to_vec());

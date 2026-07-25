@@ -1,0 +1,35 @@
+module examples.err_irq_unowned_vector
+
+# plans/M7.md item G: 03-hardware.md §6 — "source cannot bind an unowned
+# vector". The device declares no `vector=`, so `take_irq` has nothing to
+# mint. Poll builds (03 §7) are the ones that omit the vector entirely.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+
+    fn on_queue_irq(self):
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-irq-unowned", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -1841,8 +1841,28 @@ fn check_call_by_field(
                     )));
                 }
             }
+            // plans/M7.md item G: `take_irq()` → `IrqCap[u32]` so a
+            // subsequent `.bind(...)` keeps a typed receiver.
+            if name == "take_irq" {
+                return Ok(Some(Type::Named(
+                    "IrqCap".to_string(),
+                    vec![types::TypeArg::Type(Type::U32)],
+                )));
+            }
             let _ = targs;
             return Ok(None);
+        }
+        // plans/M7.md item G: `IrqCap[V]` is a builtin capability — no
+        // declared struct — with `bind`/`unmask` returning unit. The
+        // handler argument of `bind` is a method reference, not a value
+        // (`bodies::resolve_irq_bind_handler`); `check_arg` still walks it
+        // so any nested place is mirrored, and `check_field` already
+        // returns `None` for a method name (no value form).
+        if n == "IrqCap" {
+            for a in args {
+                check_arg(a, actx)?;
+            }
+            return Ok(Some(Type::Unit));
         }
     }
     let Type::Named(sname, _targs) = &base_ty else {

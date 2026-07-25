@@ -1,8 +1,10 @@
 module examples.err_device_take_irq
 
-# plans/M7.md item H1 self-audit — `claimed.take_irq()` — still a named rejection
+# plans/M7.md item H1 self-audit — `claimed.take_irq()` — opened by item G
 #
-# What this case would catch: an `IrqCap[V]` out of the claim. Vector binding is plans/M7.md item G.
+# What this case caught: the H1 fail-closed that named item G. `take_irq`
+# now type-checks and returns `IrqCap[u32]`; whether the device owns a
+# vector is checked over the sealed graph (`golden/err-irq-unowned-vector`).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
