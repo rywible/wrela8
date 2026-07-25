@@ -40,3 +40,4 @@ pub mod mwir;
 pub mod report;
 pub mod sema;
 pub mod syntax;
+pub mod virtqueue;

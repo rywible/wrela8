@@ -77,6 +77,13 @@ const MARKED_VALUES: &[&str] = &["Untrusted", "Validated", "Secret"];
 /// owning item.
 const FAIL_CLOSED_TYPES: &[&str] = &["IoCompletion"];
 
+/// plans/M7.md item E1: `BootError` (03-hardware.md §1/§9's own `init`
+/// failure vocabulary) and `VirtQueue` (03 §4's queue type). Both must
+/// resolve with no import — an annotation naming one is how a driver is
+/// written. `BootError`'s one variant is in `builtin_enum_variants`;
+/// `VirtQueue[..N]`'s bound argument is `sema::types::resolve_named`.
+const HARDWARE_SURFACE: &[&str] = &["BootError", "VirtQueue"];
+
 /// Is `name` one of the fixed prelude names above?
 ///
 /// The one entry with no array of its own here: 03-hardware.md §1's four
@@ -98,6 +105,7 @@ pub fn is_builtin(name: &str) -> bool {
         || MMIO_WRAPPERS.contains(&name)
         || MARKED_VALUES.contains(&name)
         || FAIL_CLOSED_TYPES.contains(&name)
+        || HARDWARE_SURFACE.contains(&name)
         || crate::eval::image_checks::is_sealed_authority_type_name(name)
 }
 
@@ -120,6 +128,13 @@ pub fn builtin_enum_variants(name: &str) -> Option<&'static [&'static str]> {
         // virtio-storage.wr worked example additionally exercises
         // `Restart.OneForAll` (`img.supervise(strategy=Restart.OneForAll, ...)`).
         "Restart" => Some(&["OneForOne", "OneForAll", "RestForOne"]),
+        // plans/M7.md item E1: 03-hardware.md §1/§9's own `init` failure
+        // vocabulary. One unit variant — enough to spell `Err(BootError.Failed)`
+        // (and enough for a vacuity control that returns `Err` from `init`);
+        // richer taxonomy is not load-bearing at E1 because every live
+        // transition on this machine is a build-time fact that cannot fail
+        // at runtime (decision 14).
+        "BootError" => Some(&["Failed"]),
         _ => None,
     }
 }

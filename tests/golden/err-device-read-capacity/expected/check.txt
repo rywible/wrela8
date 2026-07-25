@@ -1,1 +1,1 @@
-error[unimplemented]: `DriverClaimedDevice[VirtioBlock].read_capacity_sectors()` — a virtio-blk config read. The device's capacity is an image-declared, report-carried fact on this machine (`BlkDevice capacity_sectors=`, plans/M7.md item F's own VMM configuration), not a register this guest can read, and nothing yet hands it to the guest. That not checked yet at 20:42
+error[type]: `DriverClaimedDevice[VirtioBlock].read_capacity_sectors()` is a virtio-blk config read on a features-accepted (or queues-configured) device; found `DriverClaimedDevice[VirtioBlock]` at 20:21

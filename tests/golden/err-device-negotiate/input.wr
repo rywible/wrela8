@@ -1,6 +1,6 @@
 module examples.err_device_negotiate
 
-# plans/M7.md item H1 self-audit — `claimed.negotiate(...)` — still a named rejection
+# plans/M7.md item E1 — `negotiate` call-site shape (`required=`/`optional=` must be feature lists).
 #
 # What this case would catch: the `DriverClaimed -> FeaturesAccepted` transition. The accepted set is decided before the guest runs; nothing carries it into a guest window.
 

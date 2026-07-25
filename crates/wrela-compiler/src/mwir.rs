@@ -855,6 +855,14 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             };
             Ok(SLOT + size_of(e_ty, ctx)?.max(SLOT))
         }
+        // plans/M7.md item E1: `BootError` is a prelude enum (one unit
+        // variant), never a DeclEnum in this LayoutCtx — same vehicle as
+        // Target/Restart for the builder. Tag only.
+        Type::Named(name, targs)
+            if targs.is_empty() && matches!(name.as_str(), "BootError" | "Target" | "Restart") =>
+        {
+            Ok(SLOT)
+        }
         Type::Named(name, targs) => {
             if !targs.is_empty() {
                 return Err(
