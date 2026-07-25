@@ -466,9 +466,17 @@ pub(crate) struct FnCtx {
     /// (`self.queue`, a local, …). `reclaim`'s `pool=`/`payload=` must
     /// match — the declaration otherwise mints an `own[P2]` handle whose
     /// bytes still belong to `P1` (04-compiler.md §1: "DMA ownership
-    /// transitions are valid"). Restored across `match` arms with the
-    /// arm's own scope so a brand cannot leak into a sibling arm or past
-    /// the match.
+    /// transitions are valid").
+    ///
+    /// **Scoped with `scoped()`, not by hand.** A brand recorded inside a
+    /// conditionally executed region must not be visible after it — the
+    /// first fix restored only across `match` arms and left `if`/`while`
+    /// leaking (item H follow-up, 2026-07-25): `recover` inside `if` then
+    /// `reclaim` outside typechecked, and a two-brand if/else overwrite
+    /// re-opened the original hole at runtime. `scoped()` already bounds
+    /// every `if`/`elif`/`else`/`while`/`for`/`match`-arm suite; folding
+    /// the map into that push/pop is the one place a future construct
+    /// cannot forget.
     quarantined_by_queue: BTreeMap<String, (String, String)>,
 }
 
@@ -552,12 +560,19 @@ impl FnCtx {
 /// here — see `check_assign`'s doc comment for how a *plain* (untyped)
 /// assignment still reaches an outer scope instead (the arm-merge idiom,
 /// 02-language.md §8.1).
+///
+/// Also restores `quarantined_by_queue` (plans/M8.md item H): a
+/// `VirtQueue.recover` brand recorded inside this suite must not be
+/// visible to a `reclaim` after it. Same boundary as the name scope —
+/// one push/pop, nothing for the next control-flow construct to forget.
 pub(crate) fn scoped<T>(
     fctx: &mut FnCtx,
     f: impl FnOnce(&mut FnCtx) -> Result<T, SemaError>,
 ) -> Result<T, SemaError> {
     fctx.push_scope();
+    let saved_quarantine = fctx.quarantined_by_queue.clone();
     let result = f(fctx);
+    fctx.quarantined_by_queue = saved_quarantine;
     fctx.pop_scope();
     result
 }
@@ -1390,13 +1405,12 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
         // Pattern bindings, guard, and body all share one pushed scope
         // per arm: a binding from one arm's pattern must not leak into a
         // sibling arm or past the whole `match`, exactly like an
-        // `if`/`elif`/`else` branch. The reclaim-quarantine map restores
-        // with the same boundary (plans/M8.md item H attack 1).
+        // `if`/`elif`/`else` branch. `scoped()` also restores the
+        // reclaim-quarantine map (plans/M8.md item H).
         let unknown_arm = outcome_match && pattern_can_match_unknown(&arm.pattern);
         if unknown_arm {
             fctx.unknown_outcome_arms += 1;
         }
-        let saved_quarantine = fctx.quarantined_by_queue.clone();
         let checked = scoped(fctx, |fctx| {
             let pattern = check_pattern(&arm.pattern, &sty, fctx, mctx)?;
             let guard = match &arm.guard {
@@ -1406,7 +1420,6 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
             let body = check_stmts(&arm.body, fctx, mctx)?;
             Ok((pattern, guard, body))
         });
-        fctx.quarantined_by_queue = saved_quarantine;
         if unknown_arm {
             fctx.unknown_outcome_arms -= 1;
         }

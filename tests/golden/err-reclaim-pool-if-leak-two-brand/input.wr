@@ -1,0 +1,204 @@
+
+module examples.err_reclaim_pool_if_leak_two_brand
+
+# plans/M8.md item H attack 1 follow-up: the if-leak re-opens the original
+# pool-confused hole once two brands are in play. `if status != 0` recovers
+# BlockPayloads and stashes the OtherPayloads receipt; `else` does the
+# opposite. Sema walks both arms; without restoring the brand map across
+# `if`, the else arm's OtherPayloads brand leaked to a later `reclaim`, and
+# at runtime (status != 0) the quarantined bytes were BlockPayloads while
+# the handle was `own[OtherPayloads]` — MAGIC asserted through the wrong
+# brand. Sibling of `err-reclaim-pool-mismatch` / `err-reclaim-pool-if-leak`.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+const BLK_T_OUT: u32 = 1
+const MAGIC: u64 = 0xC0FFEE00BEEF42A1
+
+pool BlockControl
+pool BlockPayloads
+pool OtherPayloads
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+    inflight: Option[Receipt[own[BlockPayloads] DmaBlock]]
+    inflight_other: Option[Receipt[own[OtherPayloads] DmaBlock]]
+    phase: u32
+    seen: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512],
+         take buffer: own[BlockPayloads] DmaBlock,
+         take other: own[OtherPayloads] DmaBlock)
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        self.phase = 0
+        self.seen = 0
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        irq = negotiated.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+        self.device = negotiated.start()
+        b = take buffer
+        b.word = MAGIC
+        permit = self.queue.reserve_proven(descriptors=3)
+        op = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=0),
+            payload=take b,
+            device_writes_payload=false,
+            status=BlkReqStatus(status=0xff),
+            idempotent=true,
+        )
+        receipt = self.queue.publish(operation=take op)
+        self.inflight = Some(take receipt)
+        rejected = self.queue.reject(
+            payload=take other,
+            error=IoError.OutOfRange,
+        )
+        self.inflight_other = Some(take rejected)
+        self.phase = 1
+        return Ok(unit)
+
+    fn on_queue_irq(self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.irq_regs.interrupt_ack.write(handled)
+            wake(BlkDriver.drain)
+
+    @task
+    fn drain(mut self):
+        status = self.pending.swap_acquire(0)
+        if status == 0:
+            return unit
+        if self.phase != 1:
+            return unit
+        slot = take self.inflight
+        other = take self.inflight_other
+        match slot:
+            case .None:
+                self.inflight = None
+                self.inflight_other = take other
+                return unit
+            case .Some(r):
+                match other:
+                    case .None:
+                        self.inflight = Some(take r)
+                        self.inflight_other = None
+                        return unit
+                    case .Some(r_op):
+                        self.queue.drain(max=QDEPTH)
+                        # if/else: each path consumes exactly one receipt via
+                        # recover and returns the other to a field. Sema walks
+                        # BOTH arms; without if-restore the last arm's brand
+                        # (OtherPayloads) leaks to the reclaim below.
+                        if status != 0:
+                            first = self.queue.recover(receipt=take r)
+                            match first:
+                                case .Completed:
+                                    pass
+                                case .NotCompleted:
+                                    assert false, "expected Completed"
+                                case .Unknown:
+                                    assert false, "expected Completed"
+                            self.inflight_other = Some(take r_op)
+                            self.inflight = None
+                        else:
+                            second = self.queue.recover(receipt=take r_op)
+                            match second:
+                                case .Completed:
+                                    pass
+                                case .NotCompleted:
+                                    pass
+                                case .Unknown:
+                                    pass
+                            self.inflight = Some(take r)
+                            self.inflight_other = None
+                        self.device = self.device.reset(queue=mut self.queue)
+                        b = self.queue.reclaim(pool=OtherPayloads, payload=DmaBlock)
+                        self.seen = b.word
+                        assert self.seen == MAGIC, "confused own[OtherPayloads] saw BlockPayloads MAGIC"
+                        self.phase = 2
+                        return unit
+        return unit
+
+@actor
+pub struct Ledger:
+    marks: u64
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks * 10 + n
+        return unit
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@test(runtime)
+async fn two_brand_if_leak(led: Actor[Ledger]):
+    a = await led.mark(n=1)
+    match a:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-reclaim-pool-if-leak-two-brand", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=1)
+    others = img.dma_pool[DmaBlock](name=OtherPayloads, device=blk, count=1)
+    disk = img.driver(BlkDriver, device=blk, buffer=take payloads, other=take others)
+    led = img.actor(Ledger, mailbox=4)
+    img.supervise(children=[disk, led], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
