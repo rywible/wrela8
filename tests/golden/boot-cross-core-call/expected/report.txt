@@ -28,6 +28,6 @@ ImageReport v0
   CoreEntry core=2 base=0x40500e18
   Actor name=Off mailbox=4 slot=16 frame=56 state=8
   Turn fn=runs_off_core frame=296
-  Ring kind=request src=0 dst=1 target=Off cap=4 slot=16 bytes=88
-  Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40
+  Ring kind=request src=0 dst=1 target=Off cap=4 slot=16 bytes=88 base=0x405010c8
+  Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40 base=0x40501120
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=648

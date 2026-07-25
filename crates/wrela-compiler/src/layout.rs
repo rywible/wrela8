@@ -2096,6 +2096,97 @@ pub fn derive_blk_report(
     }))
 }
 
+/// Every line the VMM's own `parse_report` consumes beyond the `Machine
+/// revision=`/`Input path=`/`Section name=`/`Entry base=` preamble, in one
+/// place — `bin/wrela.rs`'s runtime tier and `xtask`'s own two hand-built
+/// report writers all call this rather than each carrying their own copy
+/// of the list.
+///
+/// plans/M8.md item C3 collapsed the copies rather than adding a fourth:
+/// the `Ring` lines this item's admission recorder needs were the second
+/// fact (after item C1's `CoreEntry`) that `bin/wrela.rs` emitted and
+/// `xtask` did not, which is why `xtask`'s runtime-test images could not
+/// boot a cross-core image at all. A single writer makes that class of
+/// drift a compile-time impossibility instead of a discovery.
+///
+/// Order matters only for human readability — `parse_report` is
+/// line-oriented and order-independent — and mirrors `render_layout_
+/// section`'s own order so the two artifacts read alike.
+pub fn append_vmm_runtime_lines(out: &mut String, layout: &ImageLayout) {
+    // plans/M8.md item C1 / 06 §3: where the VMM starts vCPU N once the
+    // guest rings `mmio::RELEASE_MMIO_ADDR`. Absent for a single-core image.
+    for (core, base) in &layout.core_entries {
+        out.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
+    }
+    // plans/M8.md item C3: this image's cross-core rings, addresses
+    // included — 06 §8 makes the VMM the recorder of "per-mailbox
+    // cross-core admission order", and the admission happens in guest
+    // memory the VMM has to be told about. Absent for a single-core image.
+    append_ring_vmm_lines(out, layout);
+    append_blk_vmm_lines(out, layout);
+    // plans/M7.md item G: host `interrupt_status` write + vector raise.
+    for inj in &layout.irq_host_injects {
+        out.push_str(&format!(
+            "IrqHostInject base={:#x} offset={:#x} status={:#x} vector={}\n",
+            inj.base, inj.offset, inj.status, inj.vector
+        ));
+    }
+}
+
+/// The `Ring ...` lines, in `RuntimeTables::rings` order — the same order
+/// `build_rt_drain` walks its lanes, which is what makes the VMM's
+/// reconstruction of admission order an ordered one. Shares
+/// `render_layout_section`'s own rendering so the runtime report and the
+/// `--stage=report` artifact cannot disagree about a ring.
+fn append_ring_vmm_lines(out: &mut String, layout: &ImageLayout) {
+    for line in ring_report_lines(layout) {
+        out.push_str(&line);
+        out.push('\n');
+    }
+}
+
+/// One `Ring kind=... base=0x...` line per cross-core ring. Empty for an
+/// image with no cross-core message edge. The addresses are recomputed
+/// from the already-placed `rtdata` base through the identical
+/// `place_runtime_tables` the emitter used, never by a second rule that
+/// could drift from it.
+fn ring_report_lines(layout: &ImageLayout) -> Vec<String> {
+    let Some(tables) = &layout.runtime else {
+        return Vec::new();
+    };
+    if tables.rings.is_empty() {
+        return Vec::new();
+    }
+    let rtdata_base = layout
+        .sections
+        .iter()
+        .find(|s| s.name == "rtdata")
+        .map(|s| s.base)
+        .unwrap_or_else(|| {
+            debug_assert!(false, "an image with rings always places `rtdata`");
+            0
+        });
+    let addrs = place_runtime_tables(rtdata_base, tables).rings;
+    tables
+        .rings
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            format!(
+                "Ring kind={} src={} dst={} target={} cap={} slot={} bytes={} base={:#x}",
+                r.kind_name(),
+                r.src,
+                r.dst,
+                r.actor.as_deref().unwrap_or("-"),
+                r.capacity,
+                r.slot_size,
+                r.bytes(),
+                addrs[i].ring,
+            )
+        })
+        .collect()
+}
+
 /// Append the VMM-facing `BlkDevice`/`BlkQueue`/`BlkPool` lines (and the
 /// decision-2c accounting fact E1 can honestly derive) for a test-image
 /// hand-built report. No-op when `layout.blk` is `None`.
@@ -5020,21 +5111,16 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         // reviewer can see how many there are, which core produces into
         // each, how deep it is, and where the capacity came from. Absent
         // entirely for an image with no cross-core message edge.
-        for r in &tables.rings {
-            push_line(
-                out,
-                1,
-                &format!(
-                    "Ring kind={} src={} dst={} target={} cap={} slot={} bytes={}",
-                    r.kind_name(),
-                    r.src,
-                    r.dst,
-                    r.actor.as_deref().unwrap_or("-"),
-                    r.capacity,
-                    r.slot_size,
-                    r.bytes(),
-                ),
-            );
+        //
+        // plans/M8.md item C3, decision 42: the line also carries the
+        // ring's own placed `base=`, because the report is the VMM's whole
+        // configuration and 06 §8 makes the VMM the recorder of
+        // "per-mailbox cross-core admission order" — an admission this VMM
+        // cannot address is one it cannot witness. One renderer
+        // (`ring_report_lines`) serves this artifact and the runtime
+        // report the VMM actually parses, so the two cannot disagree.
+        for line in ring_report_lines(layout) {
+            push_line(out, 1, &line);
         }
         push_line(
             out,

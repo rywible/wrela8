@@ -1341,24 +1341,11 @@ fn test_cmd(args: &[String]) -> ExitCode {
         ));
     }
     report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
-    // plans/M8.md item C1: the secondary cores' own entries, in the same
-    // spelling `--stage=report` uses — the VMM starts vCPU N here when the
-    // guest rings `mmio::RELEASE_MMIO_ADDR` (06 §3). Absent for a
-    // single-core image.
-    for (core, base) in &image_layout.core_entries {
-        report_text.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
-    }
-    // plans/M7.md item E1: the VMM-facing Blk* lines (absent when no queue).
-    layout::append_blk_vmm_lines(&mut report_text, &image_layout);
-    // plans/M7.md item G: host `interrupt_status` write + vector raise,
-    // carried into the runtime report the VMM parses (the full
-    // `--stage=report` artifact already emits the same line).
-    for inj in &image_layout.irq_host_injects {
-        report_text.push_str(&format!(
-            "IrqHostInject base={:#x} offset={:#x} status={:#x} vector={}\n",
-            inj.base, inj.offset, inj.status, inj.vector
-        ));
-    }
+    // Every remaining line the VMM's `parse_report` consumes — secondary
+    // core entries (item C1), cross-core rings (item C3), the Blk* device
+    // lines (M7 item E1) and the ISR host injects (M7 item G) — from the
+    // one writer `xtask`'s own hand-built reports share.
+    layout::append_vmm_runtime_lines(&mut report_text, &image_layout);
     if let Err(e) = std::fs::write(&report_path, &report_text) {
         eprintln!("error: cannot write {}: {e}", report_path.display());
         return ExitCode::FAILURE;
