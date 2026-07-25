@@ -464,6 +464,10 @@ fn scan_expr_self(
                 scan_expr_self(i, sname, mctx, effects, acc);
             }
         }
+        Expr::ArrayRepeat(_, elem, count) => {
+            scan_expr_self(elem, sname, mctx, effects, acc);
+            scan_expr_self(count, sname, mctx, effects, acc);
+        }
         Expr::Int(..)
         | Expr::Float(..)
         | Expr::Str(..)
@@ -1217,6 +1221,11 @@ fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
                     Box::new(Expr::Int(*span, items.len().to_string())),
                 )
             }))
+        }
+        Expr::ArrayRepeat(_span, elem, count) => {
+            let elem_ty = check_expr(elem, actx)?;
+            check_expr(count, actx)?;
+            Ok(elem_ty.map(|e| Type::Array(Box::new(e), count.clone())))
         }
     }
 }
@@ -2192,6 +2201,32 @@ fn check_call_by_field(
                 k.to_string(),
             )))));
         }
+    }
+    // plans/M9.md item F3: sealed array methods — no user Decl to mirror;
+    // bodies already checked the mapper shape.
+    if matches!(base_ty, Type::Array(..)) && (name == "map_take" || name == "try_map_take") {
+        if args.len() != 1 {
+            return Err(SemaError::at(
+                "access",
+                format!("expected 1 argument(s), found {}", args.len()),
+                fspan,
+            ));
+        }
+        if args[0].mode != AccessMode::Read {
+            return Err(SemaError::at(
+                "access",
+                format!(
+                    "parameter `mapper` takes an unmarked argument, found {}",
+                    match args[0].mode {
+                        AccessMode::Mut => "`mut`",
+                        AccessMode::Take => "`take`",
+                        AccessMode::Read => "an unmarked argument",
+                    }
+                ),
+                args[0].span,
+            ));
+        }
+        return Ok(None);
     }
     let Type::Named(sname, _targs) = &base_ty else {
         return Err(SemaError::at(

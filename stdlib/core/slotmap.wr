@@ -1,0 +1,150 @@
+# plans/M9.md item F2 (decision 346): `SlotMap[T, ..N]` with three-field
+# key discipline. `Key` is module-level (no nested `SlotMap.Key` path);
+# generation is `u8` so `GenerationExhausted` is reachable in a golden.
+# Lookups validate map_id + index + generation — foreign and stale keys
+# miss, never alias. `reserve`/`resolve` stay OUT (M10).
+#
+# Doc `get(key, fn -> R) -> Option[R]` needs a method type parameter
+# (JJ decision 185) — ship `get_value` / `lend` / `contains` until then.
+module slotmap
+
+pub enum GenerationExhausted:
+    GenerationExhausted
+
+pub enum SlotMapFull:
+    SlotMapFull
+
+## Copyable `(map_id, index, generation)` — 05-library.md §7's `SlotMap.Key`.
+pub struct Key:
+    pub map_id: u64
+    pub index: usize
+    pub generation: u8
+
+pub struct SlotMap[T, const N: usize]:
+    map_id: u64
+    len: usize
+    generations: [u8; N]
+    occupied: [bool; N]
+    retired: [bool; N]
+    data: [Option[T]; N]
+
+    init(mut self, map_id: u64):
+        self.map_id = map_id
+        self.len = 0
+        self.generations = [0; N]
+        self.occupied = [false; N]
+        self.retired = [false; N]
+        self.data = [None; N]
+
+    pub fn len(read self) -> usize:
+        return self.len
+
+    pub fn insert(mut self, take x: T) -> Result[Key, SlotMapFull]:
+        i: usize = 0
+        while i < N:
+            if not self.occupied[i] and not self.retired[i]:
+                self.occupied[i] = true
+                self.data[i] = Some(x)
+                self.len = self.len + 1
+                return Ok(Key(
+                    map_id=self.map_id,
+                    index=i,
+                    generation=self.generations[i],
+                ))
+            i = i + 1
+        return Err(SlotMapFull.SlotMapFull)
+
+    ## Insert, naming generation exhaustion when every free slot has been
+    ## permanently retired (05 §7: remove never wraps).
+    pub fn try_insert(mut self, take x: T) -> Result[Key, GenerationExhausted]:
+        i: usize = 0
+        saw_retired: bool = false
+        while i < N:
+            if self.retired[i] and not self.occupied[i]:
+                saw_retired = true
+            if not self.occupied[i] and not self.retired[i]:
+                self.occupied[i] = true
+                self.data[i] = Some(x)
+                self.len = self.len + 1
+                return Ok(Key(
+                    map_id=self.map_id,
+                    index=i,
+                    generation=self.generations[i],
+                ))
+            i = i + 1
+        if saw_retired:
+            return Err(GenerationExhausted.GenerationExhausted)
+        return Err(GenerationExhausted.GenerationExhausted)
+
+    pub fn remove(mut self, key: Key) -> Option[T]:
+        if key.map_id != self.map_id:
+            return None
+        if key.index >= N:
+            return None
+        if not self.occupied[key.index]:
+            return None
+        if self.generations[key.index] != key.generation:
+            return None
+        self.occupied[key.index] = false
+        if self.generations[key.index] == 255:
+            self.retired[key.index] = true
+        else:
+            self.generations[key.index] = self.generations[key.index] + 1
+        match self.data[key.index]:
+            case .Some(v):
+                self.data[key.index] = None
+                self.len = self.len - 1
+                return Some(v)
+            case .None:
+                return None
+
+    pub fn get_value(read self, key: Key) -> Option[T]:
+        if key.map_id != self.map_id:
+            return None
+        if key.index >= N:
+            return None
+        if not self.occupied[key.index]:
+            return None
+        if self.generations[key.index] != key.generation:
+            return None
+        return self.data[key.index]
+
+    pub fn lend(read self, key: Key, body: fn(read T)) -> bool:
+        if key.map_id != self.map_id:
+            return false
+        if key.index >= N:
+            return false
+        if not self.occupied[key.index]:
+            return false
+        if self.generations[key.index] != key.generation:
+            return false
+        match self.data[key.index]:
+            case .Some(v):
+                body(v)
+                return true
+            case .None:
+                return false
+
+    pub fn contains(read self, key: Key) -> bool:
+        if key.map_id != self.map_id:
+            return false
+        if key.index >= N:
+            return false
+        if not self.occupied[key.index]:
+            return false
+        return self.generations[key.index] == key.generation
+
+    pub fn each_pair(read self, body: fn(Key, read T)):
+        i: usize = 0
+        while i < N:
+            if self.occupied[i]:
+                match self.data[i]:
+                    case .Some(v):
+                        body(Key(
+                            map_id=self.map_id,
+                            index=i,
+                            generation=self.generations[i],
+                        ), v)
+                    case .None:
+                        pass
+            i = i + 1

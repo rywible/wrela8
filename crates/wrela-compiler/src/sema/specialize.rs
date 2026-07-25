@@ -338,6 +338,10 @@ fn collect_names_in_expr(e: &Expr, out: &mut BTreeSet<String>) {
                 collect_names_in_expr(i, out);
             }
         }
+        Expr::ArrayRepeat(_, elem, count) => {
+            collect_names_in_expr(elem, out);
+            collect_names_in_expr(count, out);
+        }
     }
 }
 

@@ -1,0 +1,105 @@
+module examples.check_slotmap_key_discipline
+
+# plans/M9.md item F2 / 05-library.md §7: foreign and stale keys miss
+# instead of aliasing — property over adversarial key shapes, not one
+# happy path. Comptime-only (@test); backend pin is check-slotmap-backend.
+
+from core.slotmap import SlotMap, Key, GenerationExhausted
+
+@test
+fn foreign_map_id_misses():
+    a = SlotMap[u64, 2](map_id=1)
+    b = SlotMap[u64, 2](map_id=2)
+    x: u64 = 10
+    k: Key = Key(map_id=0, index=0, generation=0)
+    match a.insert(take x):
+        case .Ok(kk):
+            k = kk
+        case .Err(_):
+            assert false, "insert a"
+    assert not b.contains(k), "foreign contains"
+    match b.get_value(k):
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "foreign aliased"
+
+@test
+fn stale_after_remove_misses():
+    m = SlotMap[u64, 2](map_id=1)
+    x: u64 = 1
+    k: Key = Key(map_id=0, index=0, generation=0)
+    match m.insert(take x):
+        case .Ok(kk):
+            k = kk
+        case .Err(_):
+            assert false, "insert"
+    _ = m.remove(k)
+    assert not m.contains(k), "stale contains"
+    match m.get_value(k):
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "stale aliased"
+    # reuse slot — new key must not match the stale one
+    y: u64 = 2
+    match m.insert(take y):
+        case .Ok(k2):
+            assert k2.generation != k.generation, "gen advanced"
+            assert not m.contains(k), "stale still misses"
+            assert m.contains(k2), "fresh hits"
+        case .Err(_):
+            assert false, "reinsert"
+
+@test
+fn wrong_generation_in_range_misses():
+    m = SlotMap[u64, 2](map_id=1)
+    x: u64 = 1
+    k: Key = Key(map_id=0, index=0, generation=0)
+    match m.insert(take x):
+        case .Ok(kk):
+            k = kk
+        case .Err(_):
+            assert false, "insert"
+    bad = Key(map_id=k.map_id, index=k.index, generation=k.generation +% 1)
+    assert not m.contains(bad), "wrong gen"
+    match m.get_value(bad):
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "wrong-gen aliased"
+
+@test
+fn fabricated_keys_miss():
+    m = SlotMap[u64, 2](map_id=1)
+    x: u64 = 1
+    match m.insert(take x):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "insert"
+    foreign = Key(map_id=99, index=0, generation=0)
+    oob = Key(map_id=1, index=99, generation=0)
+    empty_slot = Key(map_id=1, index=1, generation=0)
+    assert not m.contains(foreign), "fabricated foreign"
+    assert not m.contains(oob), "fabricated oob"
+    assert not m.contains(empty_slot), "fabricated empty index"
+
+@test
+fn generation_exhausted_never_wraps():
+    m = SlotMap[u64, 1](map_id=1)
+    i: u16 = 0
+    while i < 256:
+        x: u64 = i.to[u64]()
+        match m.try_insert(take x):
+            case .Ok(k):
+                _ = m.remove(k)
+            case .Err(_):
+                assert false, "early exhaust"
+        i = i + 1
+    y: u64 = 999
+    match m.try_insert(take y):
+        case .Err(.GenerationExhausted):
+            pass
+        case .Ok(_):
+            assert false, "wrapped"

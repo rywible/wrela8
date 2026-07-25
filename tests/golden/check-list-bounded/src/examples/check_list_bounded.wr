@@ -1,0 +1,31 @@
+module examples.check_list_bounded
+
+# plans/M9.md item F2: List[T, ..N] never exceeds N; Bound annotation
+# equals Const construction. Comptime-only.
+
+from core.list import List, ListFull
+
+@test
+fn push_respects_bound():
+    xs = List[u64, 2]()
+    a: u64 = 1
+    b: u64 = 2
+    c: u64 = 3
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "first"
+    match xs.push(take b):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "second"
+    match xs.push(take c):
+        case .Err(.ListFull):
+            pass
+        case .Ok(_):
+            assert false, "exceeded N"
+    assert xs.len() == 2, "len"
+    ys: List[u64, ..2] = List[u64, 2]()
+    assert ys.is_empty(), "bound annot"

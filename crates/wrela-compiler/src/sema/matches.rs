@@ -1027,6 +1027,10 @@ fn walk_expr(e: &Expr, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaErr
             }
             Ok(())
         }
+        Expr::ArrayRepeat(_, elem, count) => {
+            walk_expr(elem, fctx, mctx)?;
+            walk_expr(count, fctx, mctx)
+        }
     }
 }
 

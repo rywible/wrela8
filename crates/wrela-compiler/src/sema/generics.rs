@@ -116,18 +116,211 @@ fn subst_type_arg(arg: &TypeArg, subst: &Subst) -> TypeArg {
     }
 }
 
-/// Only ever rewrites a bare `Expr::Name` naming a const generic
-/// parameter — the *only* shape a length/const expression takes inside a
-/// generic declaration that this item resolves (mirrors
-/// `bodies::types_eq`'s own `same_len_expr` scope: M2 does not evaluate
-/// arbitrary expressions, only compare these two shapes).
+/// Rewrite const-generic names to their concrete argument expressions.
+/// Length/type positions only need a bare-name rewrite; method bodies
+/// (plans/M9.md item F1 decision 342) need a deep walk so `return N` /
+/// `[None; N]` / `self.len >= N` see the concrete value.
 fn subst_expr(e: &Expr, subst: &Subst) -> Expr {
-    if let Expr::Name(_, name) = e {
-        if let Some(v) = subst.consts.get(name) {
-            return v.clone();
+    match e {
+        Expr::Name(_, name) => subst.consts.get(name).cloned().unwrap_or_else(|| e.clone()),
+        Expr::Field(base, span, name) => {
+            Expr::Field(Box::new(subst_expr(base, subst)), *span, name.clone())
         }
+        Expr::Index(base, span, args) => Expr::Index(
+            Box::new(subst_expr(base, subst)),
+            *span,
+            args.iter().map(|a| subst_expr(a, subst)).collect(),
+        ),
+        Expr::Call(callee, span, args) => Expr::Call(
+            Box::new(subst_expr(callee, subst)),
+            *span,
+            args.iter()
+                .map(|a| Arg {
+                    span: a.span,
+                    label: a.label.clone(),
+                    mode: a.mode,
+                    value: subst_expr(&a.value, subst),
+                })
+                .collect(),
+        ),
+        Expr::Unary(span, op, inner) => Expr::Unary(*span, *op, Box::new(subst_expr(inner, subst))),
+        Expr::Try(span, inner) => Expr::Try(*span, Box::new(subst_expr(inner, subst))),
+        Expr::Binary(span, op, l, r) => Expr::Binary(
+            *span,
+            *op,
+            Box::new(subst_expr(l, subst)),
+            Box::new(subst_expr(r, subst)),
+        ),
+        Expr::Range(span, f, t, incl) => Expr::Range(
+            *span,
+            Box::new(subst_expr(f, subst)),
+            Box::new(subst_expr(t, subst)),
+            *incl,
+        ),
+        Expr::Is(span, inner, pat) => {
+            Expr::Is(*span, Box::new(subst_expr(inner, subst)), pat.clone())
+        }
+        Expr::Not(span, inner) => Expr::Not(*span, Box::new(subst_expr(inner, subst))),
+        Expr::And(span, l, r) => Expr::And(
+            *span,
+            Box::new(subst_expr(l, subst)),
+            Box::new(subst_expr(r, subst)),
+        ),
+        Expr::Or(span, l, r) => Expr::Or(
+            *span,
+            Box::new(subst_expr(l, subst)),
+            Box::new(subst_expr(r, subst)),
+        ),
+        Expr::DotVariant(span, name, args) => Expr::DotVariant(
+            *span,
+            name.clone(),
+            args.iter()
+                .map(|a| Arg {
+                    span: a.span,
+                    label: a.label.clone(),
+                    mode: a.mode,
+                    value: subst_expr(&a.value, subst),
+                })
+                .collect(),
+        ),
+        Expr::Send(span, inner) => Expr::Send(*span, Box::new(subst_expr(inner, subst))),
+        Expr::Tuple(span, items) => {
+            Expr::Tuple(*span, items.iter().map(|i| subst_expr(i, subst)).collect())
+        }
+        Expr::List(span, items) => {
+            Expr::List(*span, items.iter().map(|i| subst_expr(i, subst)).collect())
+        }
+        Expr::ArrayRepeat(span, elem, count) => Expr::ArrayRepeat(
+            *span,
+            Box::new(subst_expr(elem, subst)),
+            Box::new(subst_expr(count, subst)),
+        ),
+        Expr::Closure(c) => Expr::Closure(crate::syntax::ast::ClosureExpr {
+            body: match &c.body {
+                ClosureBody::Expr(e) => ClosureBody::Expr(Box::new(subst_expr(e, subst))),
+                ClosureBody::Suite(stmts) => {
+                    ClosureBody::Suite(stmts.iter().map(|s| subst_stmt(s, subst)).collect())
+                }
+            },
+            ..c.clone()
+        }),
+        Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _)
+        | Expr::BStr(_, _)
+        | Expr::Char(_, _)
+        | Expr::FStr(_)
+        | Expr::Bool(_, _)
+        | Expr::Unit(_) => e.clone(),
     }
-    e.clone()
+}
+
+fn subst_stmt(s: &Stmt, subst: &Subst) -> Stmt {
+    match s {
+        Stmt::Assign(a) => Stmt::Assign(crate::syntax::ast::AssignStmt {
+            target: subst_expr(&a.target, subst),
+            value: subst_expr(&a.value, subst),
+            ..a.clone()
+        }),
+        Stmt::If(i) => Stmt::If(crate::syntax::ast::IfStmt {
+            cond: subst_expr(&i.cond, subst),
+            then_branch: i.then_branch.iter().map(|s| subst_stmt(s, subst)).collect(),
+            elifs: i
+                .elifs
+                .iter()
+                .map(|e| crate::syntax::ast::ElifClause {
+                    cond: subst_expr(&e.cond, subst),
+                    body: e.body.iter().map(|s| subst_stmt(s, subst)).collect(),
+                    ..e.clone()
+                })
+                .collect(),
+            else_branch: i
+                .else_branch
+                .as_ref()
+                .map(|b| b.iter().map(|s| subst_stmt(s, subst)).collect()),
+            ..i.clone()
+        }),
+        Stmt::Match(m) => Stmt::Match(crate::syntax::ast::MatchStmt {
+            scrutinee: subst_expr(&m.scrutinee, subst),
+            arms: m
+                .arms
+                .iter()
+                .map(|a| crate::syntax::ast::MatchArm {
+                    guard: a.guard.as_ref().map(|g| subst_expr(g, subst)),
+                    body: a.body.iter().map(|s| subst_stmt(s, subst)).collect(),
+                    ..a.clone()
+                })
+                .collect(),
+            ..m.clone()
+        }),
+        Stmt::For(f) => Stmt::For(crate::syntax::ast::ForStmt {
+            iterable: subst_expr(&f.iterable, subst),
+            body: f.body.iter().map(|s| subst_stmt(s, subst)).collect(),
+            ..f.clone()
+        }),
+        Stmt::While(w) => Stmt::While(crate::syntax::ast::WhileStmt {
+            cond: subst_expr(&w.cond, subst),
+            body: w.body.iter().map(|s| subst_stmt(s, subst)).collect(),
+            ..w.clone()
+        }),
+        Stmt::Return(span, Some(e)) => Stmt::Return(*span, Some(subst_expr(e, subst))),
+        Stmt::Assert(a) => Stmt::Assert(crate::syntax::ast::AssertStmt {
+            cond: subst_expr(&a.cond, subst),
+            message: a.message.as_ref().map(|m| subst_expr(m, subst)),
+            ..a.clone()
+        }),
+        Stmt::Defer(d) => Stmt::Defer(crate::syntax::ast::DeferStmt {
+            body: match &d.body {
+                crate::syntax::ast::DeferBody::Expr(e) => {
+                    crate::syntax::ast::DeferBody::Expr(Box::new(subst_expr(e, subst)))
+                }
+                crate::syntax::ast::DeferBody::Suite(stmts) => {
+                    crate::syntax::ast::DeferBody::Suite(
+                        stmts.iter().map(|s| subst_stmt(s, subst)).collect(),
+                    )
+                }
+            },
+            ..d.clone()
+        }),
+        Stmt::With(w) => Stmt::With(crate::syntax::ast::WithStmt {
+            expr: subst_expr(&w.expr, subst),
+            body: w.body.iter().map(|s| subst_stmt(s, subst)).collect(),
+            ..w.clone()
+        }),
+        Stmt::Send(span, e) => Stmt::Send(*span, subst_expr(e, subst)),
+        Stmt::Expr(span, e) => Stmt::Expr(*span, subst_expr(e, subst)),
+        Stmt::ComptimeAssert(span, cond, msg) => Stmt::ComptimeAssert(
+            *span,
+            subst_expr(cond, subst),
+            msg.as_ref().map(|m| subst_expr(m, subst)),
+        ),
+        Stmt::Break(_)
+        | Stmt::Continue(_)
+        | Stmt::Return(_, None)
+        | Stmt::Pass(_)
+        | Stmt::ComptimeIf(_) => s.clone(),
+    }
+}
+
+fn subst_member_ast(m: &Member, subst: &Subst) -> Member {
+    match m {
+        Member::Fn(f) => Member::Fn(crate::syntax::ast::FnItem {
+            body: f
+                .body
+                .as_ref()
+                .map(|b| b.iter().map(|s| subst_stmt(s, subst)).collect()),
+            ..f.clone()
+        }),
+        Member::Init(i) => Member::Init(crate::syntax::ast::InitItem {
+            body: i.body.iter().map(|s| subst_stmt(s, subst)).collect(),
+            ..i.clone()
+        }),
+        Member::Field(f) => Member::Field(crate::syntax::ast::FieldItem {
+            default: f.default.as_ref().map(|d| subst_expr(d, subst)),
+            ..f.clone()
+        }),
+        Member::Pool(_) | Member::ComptimeIf(_) => m.clone(),
+    }
 }
 
 /// `pub(crate)` reuse for `flow.rs`'s own best-effort place typing
@@ -297,6 +490,9 @@ fn contains_generic_brackets(e: &Expr) -> bool {
         },
         Expr::Send(_, inner) => contains_generic_brackets(inner),
         Expr::Tuple(_, items) | Expr::List(_, items) => items.iter().any(contains_generic_brackets),
+        Expr::ArrayRepeat(_, elem, count) => {
+            contains_generic_brackets(elem) || contains_generic_brackets(count)
+        }
     }
 }
 
@@ -479,7 +675,10 @@ fn build_subst(
             (DeclGenericKind::Type, TypeArg::Type(t)) => {
                 subst.types.insert(g.name.clone(), t.clone());
             }
-            (DeclGenericKind::Const(cty), TypeArg::Const(e)) => {
+            (DeclGenericKind::Const(cty), TypeArg::Const(e))
+            // plans/M9.md item F1 decision 341: `..N` is occupancy
+            // spelling of the same const argument.
+            | (DeclGenericKind::Const(cty), TypeArg::Bound(e)) => {
                 let v = eval_const_expr(e, Some(cty), mctx)?;
                 subst.consts.insert(g.name.clone(), v);
             }
@@ -703,6 +902,13 @@ pub(crate) fn instantiate_struct(
         &const_subst,
         mctx,
     )?;
+    // plans/M9.md item F1 decision 342: deep-substitute const names
+    // through method/init bodies so capacity checks and `[None; N]`
+    // see the concrete argument.
+    let expanded: Vec<Member> = expanded
+        .iter()
+        .map(|m| subst_member_ast(m, &subst))
+        .collect();
     let decl = if orig.deferred_comptime_members.is_empty()
         && !orig
             .ast_members
@@ -802,6 +1008,10 @@ pub(crate) fn instantiate_fn(
     let decl = subst_decl_fn_direct(&orig.decl, &subst);
     let mut ast = orig.ast.clone();
     ast.generics = Vec::new();
+    // plans/M9.md item F1 decision 342: const names in the body too.
+    if let Some(body) = ast.body.as_mut() {
+        *body = body.iter().map(|s| subst_stmt(s, &subst)).collect();
+    }
     bodies::enqueue_instantiation(mctx, InstKind::Fn, name, args, call_span)?;
     Ok(FnInfo { ast, decl })
 }

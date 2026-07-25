@@ -1,0 +1,33 @@
+module examples.err_each_suspends
+
+# plans/M9.md item F1 decision 344 / 05 §7: lent iteration closures cannot
+# suspend. `each`'s body is a non-escaping closure — `await` inside is
+# `error[type]: a closure cannot contain await`.
+
+from core.list import List
+
+@actor
+pub struct Store:
+    n: u64
+
+    init(mut self, n: u64):
+        self.n = n
+
+    pub async fn tick(mut self) -> u64:
+        xs = List[u64, 4]()
+        xs.each(|v: u64|:
+            _ = await self.other()
+            return
+        )
+        return self.n
+
+    pub async fn other(mut self) -> u64:
+        return self.n
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-each-suspends", target=Target.wrela_machine_v1)
+    a = img.actor(Store, n=1, mailbox=4)
+    img.supervise(children=[a], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

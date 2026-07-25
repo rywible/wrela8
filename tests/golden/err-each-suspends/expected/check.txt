@@ -1,0 +1,1 @@
+error[type]: a closure cannot contain `await` at 19:17

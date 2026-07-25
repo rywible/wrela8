@@ -123,6 +123,17 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
          recorded/replayed through the recorder's `ClockRead` choice entry — wrela source can \
          express neither the prohibition nor the choice-point binding.",
     ),
+    // --- 05 §7: sealed array whole-consumption -------------------------
+    (
+        "Array.map_take",
+        "05 §7: sealed whole-array consumption on the builtin `[T; N]` — there is no \
+         wrela type to attach the method to; the receiver is a language primitive.",
+    ),
+    (
+        "Array.try_map_take",
+        "05 §7: sealed fallible whole-array consumption with unwind-and-reclaim on Err — \
+         same reason as `Array.map_take`.",
+    ),
     // --- 05 §9 adjacent: builder vocabulary with no parameter list ----
     (
         "RestartIntensity",

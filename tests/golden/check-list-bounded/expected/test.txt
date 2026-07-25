@@ -1,0 +1,2 @@
+test push_respects_bound: ok
+1 passed, 0 failed

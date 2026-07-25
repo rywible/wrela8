@@ -1,0 +1,6 @@
+test foreign_map_id_misses: ok
+test stale_after_remove_misses: ok
+test wrong_generation_in_range_misses: ok
+test fabricated_keys_miss: ok
+test generation_exhausted_never_wraps: ok
+5 passed, 0 failed

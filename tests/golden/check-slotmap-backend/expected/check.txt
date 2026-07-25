@@ -1,0 +1,31 @@
+Module path=slotmap
+  Enum GenerationExhausted data
+    variant GenerationExhausted
+  Enum SlotMapFull data
+    variant SlotMapFull
+  Struct Key data
+    field map_id: u64
+    field index: usize
+    field generation: u8
+  Struct SlotMap[T, const N: usize] data
+    field map_id: u64
+    field len: usize
+    field generations: [u8; N]
+    field occupied: [bool; N]
+    field retired: [bool; N]
+    field data: [Option[T]; N]
+    init(mut self, map_id: read u64) -> unit
+    fn len(read self) -> usize
+    fn insert(mut self, x: take T) -> Result[Key, SlotMapFull]
+    fn try_insert(mut self, x: take T) -> Result[Key, GenerationExhausted]
+    fn remove(mut self, key: read Key) -> Option[T]
+    fn get_value(read self, key: read Key) -> Option[T]
+    fn lend(read self, key: read Key, body: read fn(read T) -> unit) -> bool
+    fn contains(read self, key: read Key) -> bool
+    fn each_pair(read self, body: read fn(read Key, read T) -> unit) -> unit
+Module path=examples.check_slotmap_backend
+  Struct Store resource
+    field map_id: u64
+    init(mut self, map_id: read u64) -> unit
+    fn id(read self) -> u64
+  Fn build() -> Image

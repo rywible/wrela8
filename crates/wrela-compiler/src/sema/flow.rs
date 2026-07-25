@@ -1097,6 +1097,10 @@ fn walk_expr<'a>(
             }
             Ok(())
         }
+        Expr::ArrayRepeat(_, elem, count) => {
+            walk_expr(elem, state, fctx, wctx, dstack, loop_marker)?;
+            walk_expr(count, state, fctx, wctx, dstack, loop_marker)
+        }
     }
 }
 
@@ -1190,6 +1194,10 @@ fn walk_ephemeral_expr(
                 walk_ephemeral_expr(i, state, fctx, wctx)?;
             }
             Ok(())
+        }
+        Expr::ArrayRepeat(_, elem, count) => {
+            walk_ephemeral_expr(elem, state, fctx, wctx)?;
+            walk_ephemeral_expr(count, state, fctx, wctx)
         }
         Expr::Closure(c) => match &c.body {
             ClosureBody::Expr(e) => walk_ephemeral_expr(e, state, fctx, wctx),

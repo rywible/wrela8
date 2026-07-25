@@ -1,0 +1,30 @@
+module examples.check_slotmap_backend
+
+# plans/M9.md item F2: SlotMap used from an @actor so the type is in the
+# guest type universe. Method bodies that assign `self.data[i]` cannot
+# lower today (`nested field/index chain` unimplemented) — so this golden
+# pins `--stage=check` (and the image graph), not mwir/asm. Comptime key
+# discipline is check-slotmap-key-discipline.
+
+from core.slotmap import SlotMap, Key
+
+@actor
+pub struct Store:
+    map_id: u64
+
+    init(mut self, map_id: u64):
+        self.map_id = map_id
+
+    # Type-level reachability only — does not call SlotMap methods (lower
+    # cannot yet assign through `self.field[i]` inside monomorphized
+    # methods).
+    pub fn id(read self) -> u64:
+        return self.map_id
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-slotmap-backend", target=Target.wrela_machine_v1)
+    a = img.actor(Store, map_id=1, mailbox=4)
+    img.supervise(children=[a], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

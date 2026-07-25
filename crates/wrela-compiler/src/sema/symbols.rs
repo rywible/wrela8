@@ -645,6 +645,10 @@ impl<'a> Resolver<'a> {
                 }
                 Ok(())
             }
+            Expr::ArrayRepeat(_span, elem, count) => {
+                self.resolve_expr(elem)?;
+                self.resolve_expr(count)
+            }
         }
     }
 

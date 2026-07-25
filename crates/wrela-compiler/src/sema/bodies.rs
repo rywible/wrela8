@@ -2880,6 +2880,9 @@ fn synth_expr(
         Expr::Send(span, inner) => check_send(inner, *span, fctx, mctx),
         Expr::Tuple(span, items) => synth_tuple(*span, items, expected, fctx, mctx),
         Expr::List(span, items) => synth_list(*span, items, expected, fctx, mctx),
+        Expr::ArrayRepeat(span, elem, count) => {
+            synth_array_repeat(*span, elem, count, expected, fctx, mctx)
+        }
     }
 }
 
@@ -3419,6 +3422,65 @@ fn synth_list(
     })
 }
 
+/// `[elem; N]` (plans/M9.md item F1 decision 343): desugar to a fixed
+/// list of `N` copies. `N` must be a literal usize after const-generic
+/// substitution.
+fn synth_array_repeat(
+    span: Span,
+    elem: &Expr,
+    count: &Expr,
+    expected: Option<&Type>,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let n = literal_array_len(count).ok_or_else(|| {
+        type_error(
+            "`[elem; N]` needs a literal usize count (after const-generic substitution)"
+                .to_string(),
+            count.span(),
+        )
+    })?;
+    if n < 0 {
+        return Err(type_error(
+            "`[elem; N]` count must be nonnegative".to_string(),
+            count.span(),
+        ));
+    }
+    if n > 65_536 {
+        return Err(type_error(
+            format!("`[elem; N]` count {n} exceeds the 65536-element build limit"),
+            count.span(),
+        ));
+    }
+    let n_usize = n as usize;
+    let elem_expected = match expected {
+        Some(Type::Array(elem_ty, len_expr)) => {
+            if let Some(en) = literal_array_len(len_expr) {
+                if en != n {
+                    return Err(type_error(
+                        format!("array expects {en} element(s), found {n}"),
+                        span,
+                    ));
+                }
+            }
+            Some(elem_ty.as_ref())
+        }
+        _ => None,
+    };
+    let first = check_expr(elem, elem_expected, fctx, mctx)?;
+    let elem_ty = first.ty.clone();
+    let mut typed_items = Vec::with_capacity(n_usize);
+    typed_items.push(first);
+    for _ in 1..n_usize {
+        typed_items.push(check_expr(elem, Some(&elem_ty), fctx, mctx)?);
+    }
+    let len = count.clone();
+    Ok(TypedExpr {
+        ty: Type::Array(Box::new(elem_ty), Box::new(len)),
+        kind: TypedExprKind::List(typed_items),
+    })
+}
+
 // --- unary `-`, binary operators (02-language.md §7.4, §8.2; 05-library.md §8) --
 
 fn is_integer_scalar(t: &Type) -> bool {
@@ -3516,6 +3578,10 @@ fn type_args_eq(a: &types::TypeArg, b: &types::TypeArg) -> bool {
         (types::TypeArg::Type(x), types::TypeArg::Type(y)) => types_eq(x, y),
         (types::TypeArg::Const(x), types::TypeArg::Const(y)) => same_len_expr(x, y),
         (types::TypeArg::Bound(x), types::TypeArg::Bound(y)) => same_len_expr(x, y),
+        // plans/M9.md item F1 decision 341: `..N` and `N` are the same
+        // const argument at a `const` generic parameter.
+        (types::TypeArg::Const(x), types::TypeArg::Bound(y))
+        | (types::TypeArg::Bound(x), types::TypeArg::Const(y)) => same_len_expr(x, y),
         // plans/M7.md item D introduced `TypeArg::Pool`; equality was
         // incomplete (Pool vs Pool fell to `false`), so `Option[DmaShared
         // [P, L]] = None` rendered identical expected/found and still
@@ -4246,8 +4312,19 @@ fn check_closure(
     if c.params.len() != exp_params.len() {
         return Err(arity_error(exp_params.len(), c.params.len(), c.span));
     }
+    // plans/M9.md item F1 decision 344: closures are synchronous and
+    // non-escaping (02 §8.3) — they cannot suspend.
+    if let Some(span) = scan_closure_await(&c.body) {
+        return Err(type_error(
+            "a closure cannot contain `await`".to_string(),
+            span,
+        ));
+    }
     fctx.push_scope();
+    let saved_async = fctx.in_async;
+    fctx.in_async = false;
     let result = check_closure_body(c, &exp_params, &exp_ret, fctx, mctx);
+    fctx.in_async = saved_async;
     fctx.pop_scope();
     let (params, body) = result?;
     Ok(TypedExpr {
@@ -5275,6 +5352,25 @@ fn check_call_by_field(
     }
     if base_ty == image_decl_type() {
         return check_image_decl_method_intrinsic(base_t, name, args, fspan, call_span, fctx, mctx);
+    }
+    // plans/M9.md item F3 decision 347: sealed `[T; N].map_take` /
+    // `try_map_take` (05-library.md §7).
+    if let Type::Array(elem, len) = &base_ty {
+        if name == "map_take" || name == "try_map_take" {
+            return check_array_map_take(
+                base_t, name, elem, len, args, fspan, call_span, fctx, mctx,
+            );
+        }
+        if name == "each" || name == "each_mut" {
+            return Err(type_error(
+                format!(
+                    "`[{}; N]` has no method `{name}`; lent array iteration is \
+                     `List[T, ..N].each` / `.each_mut` (05-library.md §7)",
+                    types::render_type(elem)
+                ),
+                fspan,
+            ));
+        }
     }
     match &base_ty {
         Type::Named(sname, targs) => {
@@ -8477,6 +8573,115 @@ fn check_interrupt_cell_call(
     }
 }
 
+// --- plans/M9.md item F3: `[T; N].map_take` / `try_map_take` (05 §7) --------
+
+fn check_array_map_take(
+    base_t: TypedExpr,
+    name: &str,
+    elem: &Type,
+    len: &Expr,
+    args: &[Arg],
+    _fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if args.len() != 1 {
+        return Err(arity_error(1, args.len(), call_span));
+    }
+    let a = &args[0];
+    if a.label.is_some() {
+        return Err(type_error(
+            format!("`{name}`'s mapper argument must not be labeled"),
+            a.span,
+        ));
+    }
+    if a.mode != AccessMode::Read {
+        return Err(type_error(
+            format!("`{name}`'s mapper is passed unmarked (a function value)"),
+            a.span,
+        ));
+    }
+    // Closures need a full expected `fn(...) -> R`; return inference for
+    // a mapper is out of this item — named functions match the virtio
+    // example (`blocks.map_take(CacheLine.invalid)`).
+    if matches!(a.value, Expr::Closure(_)) {
+        return Err(type_error(
+            format!(
+                "`{name}` takes a named function today (`fn(take T) -> ...`); \
+                 a closure mapper needs return-type inference (plans/M9.md item F3)"
+            ),
+            a.span,
+        ));
+    }
+    let mapper = check_expr(&a.value, None, fctx, mctx)?;
+    let Type::Fn(params, ret) = &mapper.ty else {
+        return Err(type_error(
+            format!(
+                "`{name}` expects a function value, found `{}`",
+                types::render_type(&mapper.ty)
+            ),
+            a.span,
+        ));
+    };
+    if params.len() != 1 || params[0].0 != AccessMode::Take || !types_eq(&params[0].1, elem) {
+        return Err(type_error(
+            format!(
+                "`{name}` expects `fn(take {}) -> ...`, found `{}`",
+                types::render_type(elem),
+                types::render_type(&mapper.ty)
+            ),
+            a.span,
+        ));
+    }
+    match name {
+        "map_take" => Ok(TypedExpr {
+            ty: Type::Array(Box::new((**ret).clone()), Box::new(len.clone())),
+            kind: TypedExprKind::Intrinsic {
+                key: "Array.map_take".to_string(),
+                receiver: Some(Box::new(base_t)),
+                type_arg: None,
+                args: vec![("mapper".to_string(), mapper)],
+            },
+        }),
+        "try_map_take" => {
+            let Type::Result(ok, err) = ret.as_ref() else {
+                return Err(type_error(
+                    format!(
+                        "`try_map_take` expects `fn(take {}) -> Result[U, E]`, found `{}`",
+                        types::render_type(elem),
+                        types::render_type(&mapper.ty)
+                    ),
+                    a.span,
+                ));
+            };
+            // Both element classes must be auto-reclaimable (data); a
+            // resource T or U refuses by name (05 §7).
+            if is_resource_type(elem, mctx) || is_resource_type(ok, mctx) {
+                return Err(type_error(
+                    "`try_map_take` requires auto-reclaimable (data) element types; \
+                     protocol resources need an explicit loop (05-library.md §7)"
+                        .to_string(),
+                    call_span,
+                ));
+            }
+            Ok(TypedExpr {
+                ty: Type::Result(
+                    Box::new(Type::Array(Box::new((**ok).clone()), Box::new(len.clone()))),
+                    Box::new((**err).clone()),
+                ),
+                kind: TypedExprKind::Intrinsic {
+                    key: "Array.try_map_take".to_string(),
+                    receiver: Some(Box::new(base_t)),
+                    type_arg: None,
+                    args: vec![("mapper".to_string(), mapper)],
+                },
+            })
+        }
+        _ => unreachable!(),
+    }
+}
+
 // --- plans/M7.md item G: wake(Driver.method) (03-hardware.md §6) ------------
 //
 // "wake(...) a statically bound task." The argument is the same method-
@@ -10549,6 +10754,101 @@ fn scan_expr_forbidden(e: &Expr) -> Option<(&'static str, Span)> {
         },
         Expr::Send(_, i) => scan_expr_forbidden(i),
         Expr::Tuple(_, items) | Expr::List(_, items) => items.iter().find_map(scan_expr_forbidden),
+        Expr::ArrayRepeat(_, elem, count) => {
+            scan_expr_forbidden(elem).or_else(|| scan_expr_forbidden(count))
+        }
+        _ => None,
+    }
+}
+
+/// plans/M9.md item F1 decision 344: scan a closure body for `await`.
+fn scan_closure_await(body: &ClosureBody) -> Option<Span> {
+    match body {
+        ClosureBody::Expr(e) => scan_expr_await(e),
+        ClosureBody::Suite(stmts) => stmts.iter().find_map(scan_stmt_await),
+    }
+}
+
+fn scan_stmt_await(s: &Stmt) -> Option<Span> {
+    match s {
+        Stmt::Assign(a) => scan_expr_await(&a.target).or_else(|| scan_expr_await(&a.value)),
+        Stmt::If(i) => scan_expr_await(&i.cond)
+            .or_else(|| i.then_branch.iter().find_map(scan_stmt_await))
+            .or_else(|| {
+                i.elifs.iter().find_map(|e| {
+                    scan_expr_await(&e.cond).or_else(|| e.body.iter().find_map(scan_stmt_await))
+                })
+            })
+            .or_else(|| {
+                i.else_branch
+                    .as_ref()
+                    .and_then(|b| b.iter().find_map(scan_stmt_await))
+            }),
+        Stmt::Match(m) => scan_expr_await(&m.scrutinee).or_else(|| {
+            m.arms.iter().find_map(|a| {
+                a.guard
+                    .as_ref()
+                    .and_then(scan_expr_await)
+                    .or_else(|| a.body.iter().find_map(scan_stmt_await))
+            })
+        }),
+        Stmt::For(f) => {
+            scan_expr_await(&f.iterable).or_else(|| f.body.iter().find_map(scan_stmt_await))
+        }
+        Stmt::While(w) => {
+            scan_expr_await(&w.cond).or_else(|| w.body.iter().find_map(scan_stmt_await))
+        }
+        Stmt::Return(_, e) => e.as_ref().and_then(scan_expr_await),
+        Stmt::Assert(a) => {
+            scan_expr_await(&a.cond).or_else(|| a.message.as_ref().and_then(scan_expr_await))
+        }
+        Stmt::Defer(d) => match &d.body {
+            DeferBody::Expr(e) => scan_expr_await(e),
+            DeferBody::Suite(s) => s.iter().find_map(scan_stmt_await),
+        },
+        Stmt::With(w) => {
+            scan_expr_await(&w.expr).or_else(|| w.body.iter().find_map(scan_stmt_await))
+        }
+        Stmt::Send(_, e) | Stmt::Expr(_, e) => scan_expr_await(e),
+        Stmt::ComptimeIf(c) => scan_expr_await(&c.cond)
+            .or_else(|| c.then_branch.iter().find_map(scan_stmt_await))
+            .or_else(|| {
+                c.else_branch
+                    .as_ref()
+                    .and_then(|b| b.iter().find_map(scan_stmt_await))
+            }),
+        Stmt::ComptimeAssert(_, e, m) => {
+            scan_expr_await(e).or_else(|| m.as_ref().and_then(scan_expr_await))
+        }
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => None,
+    }
+}
+
+fn scan_expr_await(e: &Expr) -> Option<Span> {
+    match e {
+        Expr::Unary(span, UnaryOp::Await, _) => Some(*span),
+        Expr::Unary(_, _, inner)
+        | Expr::Try(_, inner)
+        | Expr::Not(_, inner)
+        | Expr::Send(_, inner) => scan_expr_await(inner),
+        Expr::Field(base, _, _) => scan_expr_await(base),
+        Expr::Index(base, _, args) => {
+            scan_expr_await(base).or_else(|| args.iter().find_map(scan_expr_await))
+        }
+        Expr::Call(callee, _, args) => {
+            scan_expr_await(callee).or_else(|| args.iter().find_map(|a| scan_expr_await(&a.value)))
+        }
+        Expr::Binary(_, _, l, r) | Expr::And(_, l, r) | Expr::Or(_, l, r) => {
+            scan_expr_await(l).or_else(|| scan_expr_await(r))
+        }
+        Expr::Range(_, a, b, _) => scan_expr_await(a).or_else(|| scan_expr_await(b)),
+        Expr::Is(_, s, _) => scan_expr_await(s),
+        Expr::DotVariant(_, _, args) => args.iter().find_map(|a| scan_expr_await(&a.value)),
+        Expr::Closure(c) => scan_closure_await(&c.body),
+        Expr::Tuple(_, items) | Expr::List(_, items) => items.iter().find_map(scan_expr_await),
+        Expr::ArrayRepeat(_, elem, count) => {
+            scan_expr_await(elem).or_else(|| scan_expr_await(count))
+        }
         _ => None,
     }
 }

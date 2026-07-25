@@ -569,6 +569,10 @@ pub enum Expr {
     /// normative in the sense that they must parse, so this is treated as
     /// an ordinary primary expression alongside literals and closures.
     List(Span, Vec<Expr>),
+    /// `[elem; N]` — array-repeat (plans/M9.md item F1, decision 343).
+    /// Sema desugars to a fixed `[T; N]` list of `N` copies; `N` is a
+    /// comptime usize expression (literal or const-generic name).
+    ArrayRepeat(Span, Box<Expr>, Box<Expr>),
 }
 
 impl Expr {
@@ -595,7 +599,8 @@ impl Expr {
             | Expr::DotVariant(s, _, _)
             | Expr::Send(s, _)
             | Expr::Tuple(s, _)
-            | Expr::List(s, _) => *s,
+            | Expr::List(s, _)
+            | Expr::ArrayRepeat(s, _, _) => *s,
             Expr::Field(_, s, _) => *s,
             Expr::FStr(f) => f.span,
             Expr::Closure(c) => c.span,

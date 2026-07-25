@@ -2181,6 +2181,93 @@ fn duration_as_nanos(v: Value, ctx: &Interp<'_>) -> Result<Value, Unwind> {
         other => Err(ctx.abandon(format!(
             "internal error: RestartIntensity.within is not a Duration (found {other:?})"
         ))),
+fn eval_array_map_take<'a, 'p>(
+    key: &str,
+    receiver: &'a Option<Box<TypedExpr>>,
+    args: &'a [(String, TypedExpr)],
+    env: &mut Env,
+    dstack: &mut Vec<&'a TypedDeferBody>,
+    loop_marker: usize,
+    ctx: &mut Interp<'p>,
+) -> R<Value> {
+    let Some(recv) = receiver else {
+        return Err(ctx.abandon(format!("internal error: `{key}` missing array receiver")));
+    };
+    let arr_v = eval_expr(recv, env, dstack, loop_marker, ctx)?;
+    let Value::Array(mut inputs) = arr_v else {
+        return Err(ctx.abandon(format!(
+            "internal error: `{key}` receiver is not an array ({arr_v:?})"
+        )));
+    };
+    let Some((_, mapper_expr)) = args.first() else {
+        return Err(ctx.abandon(format!("internal error: `{key}` missing mapper")));
+    };
+    let mapper_v = eval_expr(mapper_expr, env, dstack, loop_marker, ctx)?;
+    let Value::Fn(mapper_key) = mapper_v else {
+        return Err(ctx.abandon(format!(
+            "internal error: `{key}` mapper is not a fn value ({mapper_v:?})"
+        )));
+    };
+    let f = resolve_fn(ctx.program, &mapper_key).ok_or_else(|| {
+        ctx.abandon_missing(
+            &callee_decl_name(&mapper_key),
+            format!(
+                "internal error: `{key}` mapper `{}` not found",
+                mapper_key.spelling()
+            ),
+        )
+    })?;
+    let is_try = key == "Array.try_map_take";
+    let mut outputs = Vec::with_capacity(inputs.len());
+    let mut idx = 0usize;
+    while idx < inputs.len() {
+        let elem = std::mem::replace(&mut inputs[idx], Value::Unit);
+        let frame = mapper_key.spelling();
+        let outcome = run_call(
+            f,
+            None,
+            frame,
+            |callee_env, _ictx| {
+                let pname = f
+                    .params
+                    .first()
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| "x".to_string());
+                env_insert(callee_env, pname, elem);
+                Ok(())
+            },
+            ctx,
+        )?;
+        if is_try {
+            match outcome.result {
+                Value::Enum(value::RESULT_OK, mut payload) => {
+                    let v = payload.pop().unwrap_or(Value::Unit);
+                    outputs.push(v);
+                }
+                Value::Enum(value::RESULT_ERR, payload) => {
+                    // Unwind constructed outputs (data: drop) and reclaim
+                    // remaining inputs (data: drop). Evidence for the
+                    // golden is the Err payload surviving.
+                    let _drop_outputs = outputs;
+                    let _drop_rest: Vec<_> = inputs.drain(idx + 1..).collect();
+                    return Ok(Value::Enum(value::RESULT_ERR, payload));
+                }
+                other => {
+                    return Err(ctx.abandon(format!(
+                        "internal error: `try_map_take` mapper returned non-Result ({other:?})"
+                    )));
+                }
+            }
+        } else {
+            outputs.push(outcome.result);
+        }
+        idx += 1;
+    }
+    let arr = Value::Array(outputs);
+    if is_try {
+        Ok(Value::Enum(value::RESULT_OK, vec![arr]))
+    } else {
+        Ok(arr)
     }
 }
 

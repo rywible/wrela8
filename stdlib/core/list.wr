@@ -1,0 +1,93 @@
+# plans/M9.md item F2 (decision 345): `List[T, ..N]` — bounded occupancy
+# with `{ len, data: [Option[T]; N] }` (C1's `{len, data}` shape; Option is
+# the writeable empty-slot marker, Ring precedent in 02 §6.3).
+#
+# `get[R](... fn -> R)` is the doc spelling (05 §7) but free/method type
+# parameters beyond the struct's own are the JJ open finding (decision
+# 185) — ship `get_value` / `lend` / `lend_mut` until that lands.
+module list
+
+pub enum ListFull:
+    ListFull
+
+pub struct List[T, const N: usize]:
+    len: usize
+    data: [Option[T]; N]
+
+    init(mut self):
+        self.len = 0
+        self.data = [None; N]
+
+    pub fn len(read self) -> usize:
+        return self.len
+
+    pub fn is_empty(read self) -> bool:
+        return self.len == 0
+
+    pub fn is_full(read self) -> bool:
+        return self.len >= N
+
+    pub fn push(mut self, take x: T) -> Result[unit, ListFull]:
+        if self.len >= N:
+            return Err(ListFull.ListFull)
+        self.data[self.len] = Some(x)
+        self.len = self.len + 1
+        return Ok(unit)
+
+    pub fn pop(mut self) -> Option[T]:
+        if self.len == 0:
+            return None
+        self.len = self.len - 1
+        match self.data[self.len]:
+            case .Some(v):
+                self.data[self.len] = None
+                return Some(v)
+            case .None:
+                return None
+
+    pub fn get_value(read self, index: usize) -> Option[T]:
+        if index >= self.len:
+            return None
+        return self.data[index]
+
+    pub fn lend(read self, index: usize, body: fn(read T)) -> bool:
+        if index >= self.len:
+            return false
+        match self.data[index]:
+            case .Some(v):
+                body(v)
+                return true
+            case .None:
+                return false
+
+    pub fn lend_mut(mut self, index: usize, body: fn(mut T)) -> bool:
+        if index >= self.len:
+            return false
+        match self.data[index]:
+            case .Some(v):
+                body(mut v)
+                self.data[index] = Some(v)
+                return true
+            case .None:
+                return false
+
+    pub fn each(read self, body: fn(read T)):
+        i: usize = 0
+        while i < self.len:
+            match self.data[i]:
+                case .Some(v):
+                    body(v)
+                case .None:
+                    pass
+            i = i + 1
+
+    pub fn each_mut(mut self, body: fn(mut T)):
+        i: usize = 0
+        while i < self.len:
+            match self.data[i]:
+                case .Some(v):
+                    body(mut v)
+                    self.data[i] = Some(v)
+                case .None:
+                    pass
+            i = i + 1

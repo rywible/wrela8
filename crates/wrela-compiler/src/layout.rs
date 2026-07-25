@@ -1516,6 +1516,10 @@ fn collect_bind_handlers_expr(e: &crate::syntax::ast::Expr, out: &mut Vec<String
                 collect_bind_handlers_expr(i, out);
             }
         }
+        Expr::ArrayRepeat(_, elem, count) => {
+            collect_bind_handlers_expr(elem, out);
+            collect_bind_handlers_expr(count, out);
+        }
         Expr::DotVariant(_, _, args) => {
             for a in args {
                 collect_bind_handlers_expr(&a.value, out);

@@ -603,6 +603,7 @@ fn is_atomic(e: &Expr) -> bool {
             | Expr::Call(..)
             | Expr::Tuple(..)
             | Expr::List(..)
+            | Expr::ArrayRepeat(..)
             | Expr::DotVariant(..)
     )
 }
@@ -701,6 +702,11 @@ fn print_expr(e: &Expr, indent: usize) -> String {
                 .map(|elem| print_expr(elem, indent))
                 .collect::<Vec<_>>()
                 .join(", ")
+        ),
+        Expr::ArrayRepeat(_, elem, count) => format!(
+            "[{}; {}]",
+            print_expr(elem, indent),
+            print_expr(count, indent)
         ),
     }
 }

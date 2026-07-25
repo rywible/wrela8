@@ -2036,14 +2036,26 @@ impl Parser {
             }
             TokenKind::Op if self.peek_text() == "[" => {
                 self.bump();
-                let mut elems = Vec::new();
+                if self.at_op("]") {
+                    self.bump();
+                    return Ok(Expr::List(span, Vec::new()));
+                }
+                let first = self.parse_or()?;
+                // plans/M9.md item F1 decision 343: `[elem; N]` array-repeat.
+                if self.at_op(";") {
+                    self.bump();
+                    let count = self.parse_or()?;
+                    self.expect_op("]")?;
+                    return Ok(Expr::ArrayRepeat(span, Box::new(first), Box::new(count)));
+                }
+                let mut elems = vec![first];
                 loop {
-                    if self.at_op("]") {
-                        break;
-                    }
-                    elems.push(self.parse_or()?);
                     if self.at_op(",") {
                         self.bump();
+                        if self.at_op("]") {
+                            break;
+                        }
+                        elems.push(self.parse_or()?);
                         continue;
                     }
                     break;
@@ -3629,6 +3641,11 @@ fn dump_expr(e: &Expr, depth: usize, strip: bool, out: &mut String) {
             for e in elems {
                 dump_expr(e, depth + 1, strip, out);
             }
+        }
+        Expr::ArrayRepeat(s, elem, count) => {
+            push_line(out, depth, &hdr(strip, "ArrayRepeat", *s));
+            dump_expr(elem, depth + 1, strip, out);
+            dump_expr(count, depth + 1, strip, out);
         }
     }
 }

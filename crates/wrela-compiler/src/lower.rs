@@ -3377,6 +3377,14 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         {
             Err(LowerError::unimplemented(&format!("`{key}` ({owner}) is")))
         }
+        TypedExprKind::Intrinsic { key, .. }
+            if key == "Array.map_take" || key == "Array.try_map_take" =>
+        {
+            Err(LowerError::unimplemented(
+                "`Array.map_take` / `Array.try_map_take` at runtime (comptime eval is live; \
+                 guest lowering is plans/M9.md item F3 follow-up) is",
+            ))
+        }
         TypedExprKind::Intrinsic { .. } => Err(LowerError::unimplemented(
             "an `@image` builder intrinsic (reachable only inside the one `@image` fn, which is never lowered) is",
         )),

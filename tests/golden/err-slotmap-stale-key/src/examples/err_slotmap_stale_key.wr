@@ -1,0 +1,25 @@
+module examples.err_slotmap_stale_key
+
+# plans/M9.md item F: stale keys miss (05 §7). Dynamic property — pinned
+# as a test oracle (expected/test.txt). Named `err-*` in the plan because
+# aliasing would be the safety bug; the assert fires if a stale key hits.
+
+from core.slotmap import SlotMap, Key
+
+@test
+fn stale_key_must_miss():
+    m = SlotMap[u64, 1](map_id=1)
+    x: u64 = 7
+    k: Key = Key(map_id=0, index=0, generation=0)
+    match m.insert(take x):
+        case .Ok(kk):
+            k = kk
+        case .Err(_):
+            assert false, "insert"
+    _ = m.remove(k)
+    assert not m.contains(k), "stale key must miss, not alias"
+    match m.get_value(k):
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "stale key aliased into a live value"
