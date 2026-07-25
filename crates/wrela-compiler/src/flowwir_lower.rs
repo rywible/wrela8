@@ -1991,6 +1991,19 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                  (plans/M7.md item H2a); an async narrowing is",
             ))
         }
+        // plans/M7.md item E2: reserve/prepare lower on the sync path;
+        // an async driver method that uses them (submit_read) is the
+        // handoff convention (E3) and still fails closed until that lands.
+        TypedExprKind::Intrinsic { key, .. }
+            if crate::sema::bodies::is_queue_op_intrinsic(key)
+                || crate::sema::bodies::is_queue_op_deferred(key).is_some() =>
+        {
+            Err(FlowError::unimplemented(
+                "a queue operation (03-hardware.md §4) inside an `async fn`: the synchronous \
+                 path types and lowers `reserve_proven`/`prepare_block` (plans/M7.md item E2); \
+                 an async submit that publishes is plans/M7.md item E3 — until then this is",
+            ))
+        }
         TypedExprKind::Await(_) | TypedExprKind::GroupChild(_) => Err(FlowError::unimplemented(
             "an `await`/group-child nested inside a larger expression (only a direct \
              `let`/assignment/`return`/bare-statement operand is supported) is",

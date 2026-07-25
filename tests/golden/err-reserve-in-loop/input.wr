@@ -1,0 +1,69 @@
+module examples.err_reserve_in_loop
+
+# plans/M7.md item E2: a `reserve_proven` site inside a loop is not
+# at-most-once (same shape as `sema::send_proof` / decision 6).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    queue: VirtQueue[..8]
+    device: RunningDevice[VirtioBlock]
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=8,
+        )?
+        _cap = negotiated.read_capacity_sectors()?
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    fn many(mut self, n: u32) -> unit:
+        i: u32 = 0
+        while i < n:
+            _ = self.queue.reserve_proven(descriptors=3)
+            i = i + 1
+        return unit
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-reserve-in-loop", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

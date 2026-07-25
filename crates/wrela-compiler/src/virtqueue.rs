@@ -143,9 +143,19 @@ pub fn accepted_features(required_variant_names: &[&str]) -> Result<u64, String>
 
 /// Descriptors a single virtio-blk operation needs (header + data +
 /// status). Decision 2c: the report should carry the numbers that would
-/// decide a bespoke ring later. E1 can honestly derive this constant;
-/// occupancy bound / exits-per-op need E2/E4's proof and workload.
+/// decide a bespoke ring later.
 pub const DESCRIPTORS_PER_BLK_OP: u16 = 3;
+
+/// Maximum concurrent direct operations a queue can hold
+/// (03-hardware.md §4: "three direct descriptors in a 128-deep queue
+/// means at most 42 in flight" — `floor(128/3) = 42`). Plans/M7.md item
+/// E2 emits this as `BlkAccounting occupancy_bound=`.
+pub fn occupancy_bound(queue_depth: u16, descriptors_per_op: u16) -> u16 {
+    if descriptors_per_op == 0 {
+        return 0;
+    }
+    queue_depth / descriptors_per_op
+}
 
 #[cfg(test)]
 mod tests {
@@ -178,5 +188,15 @@ mod tests {
         let err = accepted_features(&["RingReset"]).unwrap_err();
         assert!(err.contains("RingReset"), "{err}");
         assert!(err.contains("does not offer"), "{err}");
+    }
+
+    #[test]
+    fn occupancy_bound_is_floor_depth_over_descriptors() {
+        // 03-hardware.md §4's own worked numbers, hand-computed.
+        assert_eq!(occupancy_bound(128, 3), 42);
+        assert_eq!(occupancy_bound(8, 3), 2);
+        assert_eq!(occupancy_bound(7, 3), 2);
+        assert_eq!(occupancy_bound(2, 3), 0);
+        assert_eq!(occupancy_bound(3, 3), 1);
     }
 }

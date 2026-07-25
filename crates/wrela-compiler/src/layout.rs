@@ -243,9 +243,11 @@ pub struct BlkReport {
     pub capacity_sectors: u64,
     pub features: u64,
     pub queue: BlkQueueReport,
-    /// Decision 2c: descriptors a single blk op needs. Occupancy bound /
-    /// exits-per-op need E2/E4.
+    /// Decision 2c: descriptors a single blk op needs, and the occupancy
+    /// bound `floor(queue_depth / descriptors_per_op)` (plans/M7.md item
+    /// E2 / 03-hardware.md §4). Exits-per-op needs E4's publish workload.
     pub descriptors_per_op: u16,
+    pub occupancy_bound: u16,
 }
 
 /// One bound pool as it was actually placed: everything the checker
@@ -1238,6 +1240,10 @@ pub fn derive_blk_report(
             pool_name,
         },
         descriptors_per_op: crate::virtqueue::DESCRIPTORS_PER_BLK_OP,
+        occupancy_bound: crate::virtqueue::occupancy_bound(
+            depth,
+            crate::virtqueue::DESCRIPTORS_PER_BLK_OP,
+        ),
     }))
 }
 
@@ -1265,8 +1271,8 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
         ));
     }
     out.push_str(&format!(
-        "BlkAccounting descriptors_per_op={}\n",
-        blk.descriptors_per_op
+        "BlkAccounting descriptors_per_op={} occupancy_bound={}\n",
+        blk.descriptors_per_op, blk.occupancy_bound
     ));
 }
 
@@ -3608,14 +3614,14 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
                 q.index, q.size, q.desc, q.avail, q.used, q.doorbell
             ),
         );
-        // Decision 2c: numbers that would decide a bespoke ring later.
-        // Occupancy bound / exits-per-op need E2/E4.
+        // Decision 2c / plans/M7.md item E2: occupancy bound is
+        // floor(queue_depth / descriptors_per_op). Exits-per-op needs E4.
         push_line(
             out,
             1,
             &format!(
-                "BlkAccounting descriptors_per_op={} queue_depth={}",
-                blk.descriptors_per_op, q.size
+                "BlkAccounting descriptors_per_op={} queue_depth={} occupancy_bound={}",
+                blk.descriptors_per_op, q.size, blk.occupancy_bound
             ),
         );
     }

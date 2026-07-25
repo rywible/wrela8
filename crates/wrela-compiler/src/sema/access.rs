@@ -1871,6 +1871,31 @@ fn check_call_by_field(
             }
             return Ok(None);
         }
+        // plans/M7.md item E2: `VirtQueue[..N]` methods. Result types
+        // mirror `bodies::check_virtqueue_method` so assignments keep
+        // tracking. Receiver is **mut** for reserve/prepare (they update
+        // queue bookkeeping); publish/reject/drain stay deferred in bodies.
+        if n == "VirtQueue" {
+            match name {
+                "reserve_proven" | "prepare_block" => {
+                    if !allows_mut_receiver(root_mode) {
+                        return Err(receiver_mutability_error(
+                            AccessMode::Mut,
+                            root_mode,
+                            root_name.as_deref(),
+                            fspan,
+                        ));
+                    }
+                    let ret = if name == "reserve_proven" {
+                        Type::Named("QueuePermit".to_string(), vec![])
+                    } else {
+                        Type::Named("QueueOp".to_string(), vec![])
+                    };
+                    return Ok(Some(ret));
+                }
+                _ => return Ok(None),
+            }
+        }
         // plans/M7.md item H1: 03-hardware.md §9's bring-up states are
         // builtin types with no declared struct behind them, exactly like
         // `Actor[T]`/`Group` above. `bodies` has already resolved the

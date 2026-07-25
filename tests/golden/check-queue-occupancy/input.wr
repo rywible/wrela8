@@ -1,0 +1,69 @@
+module examples.check_queue_occupancy
+
+# plans/M7.md item E2: hand-computed occupancy bound pinned in the report.
+# 03-hardware.md §4: "three direct descriptors in a 128-deep queue means
+# at most 42 in flight" — floor(128/3) = 42. No reserve site here; the
+# number is a property of the configured queue geometry (E1 deferred it
+# to E2 by name).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 128
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..128]
+    capacity_sectors: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 4096])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = negotiated.read_capacity_sectors()?
+        self.device = negotiated.start()
+        return Ok(unit)
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-queue-occupancy", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+    )
+    # Ring for depth 128 needs ~3.4 KiB; 256 * 16 = 4096 covers it.
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=256)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -28,6 +28,7 @@ pub mod imports;
 pub mod matches;
 pub mod paths;
 pub mod prelude;
+pub mod reserve_proof;
 pub mod send_proof;
 pub mod specialize;
 pub mod symbols;
@@ -232,6 +233,10 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     // Single-module entry: the "closure" is this one module.
     let one = BTreeMap::from([(specialized.path.join("."), &program)]);
     send_proof::check(&one)?;
+    // plans/M7.md item E2, decision 6: `reserve_proven`'s whole-image
+    // descriptor-capacity proof — same shape as `send_proof`, same
+    // placement (after the typed program exists, before any consumer).
+    reserve_proof::check(&one)?;
     Ok(program)
 }
 
@@ -476,6 +481,8 @@ pub fn check_program_typed(
     let by_name: BTreeMap<String, &typed::TypedProgram> =
         programs.iter().map(|(k, p)| (k.join("."), p)).collect();
     send_proof::check(&by_name)?;
+    // plans/M7.md item E2: whole-closure half of the reserve proof.
+    reserve_proof::check(&by_name)?;
 
     Ok(programs)
 }

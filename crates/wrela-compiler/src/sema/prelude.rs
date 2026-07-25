@@ -82,7 +82,7 @@ const FAIL_CLOSED_TYPES: &[&str] = &["IoCompletion"];
 /// resolve with no import — an annotation naming one is how a driver is
 /// written. `BootError`'s one variant is in `builtin_enum_variants`;
 /// `VirtQueue[..N]`'s bound argument is `sema::types::resolve_named`.
-const HARDWARE_SURFACE: &[&str] = &["BootError", "VirtQueue"];
+const HARDWARE_SURFACE: &[&str] = &["BootError", "VirtQueue", "QueuePermit", "QueueOp"];
 
 /// Is `name` one of the fixed prelude names above?
 ///
