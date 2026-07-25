@@ -1656,6 +1656,7 @@ doc = "02-language.md#5, 02-language.md#7.5, 05-library.md#6"
 status = "test"
 tests = [
   "golden/check-enum-methods",
+  "golden/check-enum-method-properties",
   "golden/check-import-enum-method",
   "golden/check-import-alias-enum-method",
   "golden/err-enum-init",
@@ -1663,6 +1664,8 @@ tests = [
   "golden/err-enum-pool-member",
 ]
 note = """02-language.md §5's receiver/access-mode rules and §7.5's "`deriving(...)` on a struct or enum generates methods" require an enum to have a declared-method surface. 05-library.md §6's "Types implementing the static Format contract declare ..." is the same surface. plans/M9.md item B2 (decisions 121–135) adds it.
+
+**`check-enum-method-properties` pins what is new about a sum receiver (orchestrator review, decision 136).** `check-enum-methods` covers the four receiver shapes; this case covers the thing a product receiver never had — `mut self` on an enum may change **which variant is live**. Seven properties, each with a value no other outcome reaches, because the three variants score in disjoint ranges (`Idle` → 1, `Running(n)` → 200+n, `Done(n)` → 30000+n) so a wrong variant can never coincide with a right one: a variant change is observable by the caller (205, where a dropped write-back is 1); two `mut self` calls compose (`Idle` → `Running(5)` → `Done(50)` → 30050); a `mut self` method that keeps the variant does not clobber the payload (30004); `take self` on a sum (79); an associated fn constructs (206); a method calls a sibling method (402); and item CC's non-receiver `mut` write-back holds when the parameter is a sum (208). All seven are `diff-eval` agreements, so each is a two-tier lock rather than an evaluator test — which matters here specifically, because B2's own five-consumer audit found a reachable `internal error: unknown struct` in `write_back_mut_self`, i.e. the `mut self` path for enums was the one that had never run.
 
 **Parser.** An enum body distinguishes a variant (Ident) from a method (`fn`/`pub`/`async` Keyword) by the next token — unambiguous; before B2 the variant-list parser fed every line to `expect_ident`, so `pub fn` / `fn` surfaced as `keyword <kw> cannot be used as a name`. `init`, `pool`, and field-shaped `name: Type` refuse by name (`err-enum-init`/`err-enum-pool-member`/`err-enum-field-member`).
 

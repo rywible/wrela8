@@ -1,0 +1,142 @@
+module examples.check_enum_method_properties
+
+# plans/M9.md item B2, orchestrator review. `check-enum-methods` covers
+# the four receiver shapes; this case covers what is new about a receiver
+# that is a **sum** rather than a product. `mut self` on an enum may
+# change which variant is live — no struct method can do that — so the
+# properties worth pinning are the ones a product receiver never had:
+# that a variant change is observable by the caller, that two such calls
+# compose, that a method which keeps the variant does not clobber the
+# payload, that a method may call a sibling, and that item CC's
+# non-receiver `mut` write-back holds when the parameter is a sum.
+#
+# Every value is chosen so a dropped write-back, a kept-old-variant, or a
+# lost payload lands on a different number than the correct answer: the
+# three variants score in disjoint ranges (1, 200+n, 30000+n), so a
+# wrong variant can never coincide with a right one.
+
+enum State:
+    Idle
+    Running(u32)
+    Done(u32)
+
+    # `mut self` that changes the variant AND the payload width.
+    pub fn start(mut self, n: u32):
+        self = State.Running(n)
+
+    # `mut self` that advances Running -> Done, carrying the payload.
+    pub fn finish(mut self):
+        match self:
+            case .Running(n):
+                self = State.Done(n * 10)
+            case .Idle:
+                self = State.Done(1)
+            case .Done(n):
+                self = State.Done(n)
+
+    pub fn score(read self) -> u32:
+        match self:
+            case .Idle:
+                return 1
+            case .Running(n):
+                return 200 + n
+            case .Done(n):
+                return 30000 + n
+
+    # `take self` on a sum.
+    pub fn consume(take self) -> u32:
+        match self:
+            case .Idle:
+                return 7
+            case .Running(n):
+                return n + 70
+            case .Done(n):
+                return n + 700
+
+    # An associated fn (no receiver) that constructs.
+    pub fn fresh(n: u32) -> State:
+        return State.Running(n)
+
+    # A method calling another method on the same enum.
+    pub fn double_score(read self) -> u32:
+        return self.score() * 2
+
+# 1. mut self changes the variant, observed by the caller.
+fn p_variant_change() -> u32:
+    s = State.Idle
+    s.start(5)
+    return s.score()            # Running(5) -> 205, not 1
+
+# 2. Two chained mut self calls: Idle -> Running(5) -> Done(50).
+fn p_chain() -> u32:
+    s = State.Idle
+    s.start(5)
+    s.finish()
+    return s.score()            # Done(50) -> 30050
+
+# 3. A mut self method that does NOT change the variant must not clobber.
+fn p_no_clobber() -> u32:
+    s = State.Done(4)
+    s.finish()
+    return s.score()            # Done(4) -> 30004
+
+# 4. take self on a sum.
+fn p_take() -> u32:
+    s = State.Running(9)
+    return s.consume()          # 79
+
+# 5. An associated fn constructs, then a read method reads.
+fn p_assoc() -> u32:
+    s = State.fresh(6)
+    return s.score()            # 206
+
+# 6. A method calling a sibling method.
+fn p_sibling() -> u32:
+    s = State.Running(1)
+    return s.double_score()     # 201 * 2 = 402
+
+# 7. mut self on an enum passed as a non-receiver `mut` param (item CC's
+#    write-back, now over a sum).
+fn bump_state(mut s: State):
+    s.start(8)
+
+fn p_mut_param() -> u32:
+    s = State.Idle
+    bump_state(mut s)
+    return s.score()            # 208
+
+const P1: u32 = p_variant_change()
+const P2: u32 = p_chain()
+const P3: u32 = p_no_clobber()
+const P4: u32 = p_take()
+const P5: u32 = p_assoc()
+const P6: u32 = p_sibling()
+const P7: u32 = p_mut_param()
+
+@test
+pub fn t_variant_change():
+    assert P1 == 205, "`mut self` on a sum may change the live variant"
+
+@test
+pub fn t_chain():
+    assert P2 == 30050, "two chained `mut self` calls compose"
+
+@test
+pub fn t_no_clobber():
+    assert P3 == 30004, "a `mut self` method that keeps the variant keeps the payload"
+
+@test
+pub fn t_take():
+    assert P4 == 79, "`take self` on a sum"
+
+@test
+pub fn t_assoc():
+    assert P5 == 206, "an enum associated fn constructs"
+
+@test
+pub fn t_sibling():
+    assert P6 == 402, "an enum method calls a sibling method"
+
+@test
+pub fn t_mut_param():
+    assert P7 == 208, "an enum through a non-receiver `mut` param writes back"

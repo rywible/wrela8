@@ -1,0 +1,33 @@
+Module path=examples.check_enum_method_properties
+  Enum State data
+    variant Idle
+    variant Running(u32)
+    variant Done(u32)
+    fn start(mut self, n: read u32) -> unit
+    fn finish(mut self) -> unit
+    fn score(read self) -> u32
+    fn consume(take self) -> u32
+    fn fresh(n: read u32) -> State
+    fn double_score(read self) -> u32
+  Fn p_variant_change() -> u32
+  Fn p_chain() -> u32
+  Fn p_no_clobber() -> u32
+  Fn p_take() -> u32
+  Fn p_assoc() -> u32
+  Fn p_sibling() -> u32
+  Fn bump_state(s: mut State) -> unit
+  Fn p_mut_param() -> u32
+  Const P1: u32
+  Const P2: u32
+  Const P3: u32
+  Const P4: u32
+  Const P5: u32
+  Const P6: u32
+  Const P7: u32
+  Fn t_variant_change() -> unit
+  Fn t_chain() -> unit
+  Fn t_no_clobber() -> unit
+  Fn t_take() -> unit
+  Fn t_assoc() -> unit
+  Fn t_sibling() -> unit
+  Fn t_mut_param() -> unit

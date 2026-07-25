@@ -1,0 +1,8 @@
+test t_variant_change: ok
+test t_chain: ok
+test t_no_clobber: ok
+test t_take: ok
+test t_assoc: ok
+test t_sibling: ok
+test t_mut_param: ok
+7 passed, 0 failed
