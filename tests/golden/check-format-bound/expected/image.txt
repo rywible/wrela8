@@ -3,6 +3,8 @@ ImageGraph v0
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
     Arg label=scalar value=2052050
+    Arg label=literal value=2052050
+    Arg label=inferred value=2052050
     Arg label=boolv value=4116114
     Arg label=concat value=3104105
     Arg label=point value=15080111

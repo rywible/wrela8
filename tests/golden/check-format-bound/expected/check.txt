@@ -15,6 +15,10 @@ Module path=examples.check_format_bound
   Fn digest_concat(s: read String[..3]) -> u64
   Const FORTY_TWO: u32
   Const SCALAR: u64
+  Fn digest_i64(s: read String[..20]) -> u64
+  Const LITERAL: u64
+  Fn inferred_format() -> u64
+  Const INFERRED: u64
   Fn bool_digest(s: read String[..5]) -> u64
   Const FLAG: bool
   Const BOOL: u64
@@ -24,6 +28,8 @@ Module path=examples.check_format_bound
   Const BOUND: u64
   Const HUE: u64
   Fn t_scalar() -> unit
+  Fn t_literal() -> unit
+  Fn t_inferred() -> unit
   Fn t_bool() -> unit
   Fn t_concat() -> unit
   Fn t_point() -> unit
@@ -31,10 +37,12 @@ Module path=examples.check_format_bound
   Fn t_hue() -> unit
   Struct Store resource
     field scalar: u64
+    field literal: u64
+    field inferred: u64
     field boolv: u64
     field concat: u64
     field point: u64
     field bound: u64
     field hue: u64
-    init(mut self, scalar: read u64, boolv: read u64, concat: read u64, point: read u64, bound: read u64, hue: read u64) -> unit
+    init(mut self, scalar: read u64, literal: read u64, inferred: read u64, boolv: read u64, concat: read u64, point: read u64, bound: read u64, hue: read u64) -> unit
   Fn build() -> Image

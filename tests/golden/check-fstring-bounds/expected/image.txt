@@ -2,6 +2,8 @@ ImageGraph v0
   Name value=check-fstring-bounds
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
+    Arg label=lit value=2052050
+    Arg label=inf value=4097061
     Arg label=mixed value=13110061
     Arg label=braces value=9123108
     Arg label=label value=4105100

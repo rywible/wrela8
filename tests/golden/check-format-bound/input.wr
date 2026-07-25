@@ -29,6 +29,19 @@ fn digest_concat(s: String[..3]) -> u64:
 const FORTY_TWO: u32 = 42
 const SCALAR: u64 = digest_small(FORTY_TWO.format())
 
+# plans/M9.md item D2: literal / inferred receivers (02 §1.1 defaulting).
+# These are the spellings users type; annotated consts alone hid the gap.
+fn digest_i64(s: String[..20]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+const LITERAL: u64 = digest_i64(42.format())
+
+fn inferred_format() -> u64:
+    a = 42
+    return digest_i64(a.format())
+
+const INFERRED: u64 = inferred_format()
+
 # Bool Format: true → "true".
 fn bool_digest(s: String[..5]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
@@ -56,6 +69,14 @@ pub fn t_scalar():
     assert SCALAR == 2052050, "u32 42 formats as \"42\""
 
 @test
+pub fn t_literal():
+    assert LITERAL == 2052050, "42.format() defaults to i64"
+
+@test
+pub fn t_inferred():
+    assert INFERRED == 2052050, "a = 42; a.format()"
+
+@test
 pub fn t_bool():
     assert BOOL == 4116114, "true formats as \"true\""
 
@@ -78,14 +99,18 @@ pub fn t_hue():
 @actor
 pub struct Store:
     scalar: u64
+    literal: u64
+    inferred: u64
     boolv: u64
     concat: u64
     point: u64
     bound: u64
     hue: u64
 
-    init(mut self, scalar: u64, boolv: u64, concat: u64, point: u64, bound: u64, hue: u64):
+    init(mut self, scalar: u64, literal: u64, inferred: u64, boolv: u64, concat: u64, point: u64, bound: u64, hue: u64):
         self.scalar = scalar
+        self.literal = literal
+        self.inferred = inferred
         self.boolv = boolv
         self.concat = concat
         self.point = point
@@ -95,8 +120,9 @@ pub struct Store:
 @image
 pub fn build() -> Image:
     img = Image(name="check-format-bound", target=Target.wrela_machine_v1)
-    storage = img.actor(Store, scalar=SCALAR, boolv=BOOL, concat=CONCAT,
-                        point=POINT, bound=BOUND, hue=HUE, mailbox=4)
+    storage = img.actor(Store, scalar=SCALAR, literal=LITERAL, inferred=INFERRED,
+                        boolv=BOOL, concat=CONCAT, point=POINT, bound=BOUND,
+                        hue=HUE, mailbox=4)
     img.supervise(children=[storage], strategy=Restart.OneForOne,
                   intensity=RestartIntensity(max=3, within=seconds(10)))
     return img.seal()

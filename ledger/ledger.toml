@@ -262,7 +262,7 @@ note = """05-library.md §6 / 02-language.md §7.5: the static `Format` contract
 
 **`deriving(Format)` (decision 205).** Fieldless structs and unit enums format their names. Fieldful structs generate `\"Name(f1=\" + self.f1.format() + \", f2=\" + ... + \")\"` with bound = name + punctuation + each field's scalar Format bound. Payload-bearing enums refuse by name. Conflict with an explicit `format` / `max_formatted_len` refuses (same rule as `deriving(From)` vs explicit `from`). `Secret` has no Format (05 §6) — deriving or hand-declared.
 
-**Pinned.** `check-format-bound`: scalar `42` → settle `2052050`; `true` → `4116114`; `\"hi\"+\"!\"` → `3104105`; `Point(x=3,y=7).format()` → `15080111` with bound `33`; `Hue.Red` → `3082101`; mwir shows `FormatScalar`/`StringConcat` in `Point.format`. Import / alias goldens pin `Tag(n=9)` → `8084097`."""
+**Pinned.** `check-format-bound`: scalar `42` → settle `2052050`; literal `42.format()` and inferred `a = 42; a.format()` → `2052050` (item D2); `true` → `4116114`; `\"hi\"+\"!\"` → `3104105`; `Point(x=3,y=7).format()` → `15080111` with bound `33`; `Hue.Red` → `3082101`; mwir shows `FormatScalar`/`StringConcat` in `Point.format`. Import / alias goldens pin `Tag(n=9)` → `8084097`."""
 
 [[clause]]
 id = "sema.names.imports"
@@ -804,7 +804,7 @@ note = """02-language.md §1.1 / 05-library.md §6: `f\"...\"` type-checks every
 
 **Refusals.** No Format → f-string operand of type T has no Format (unbounded / no max_formatted_len; 05-library.md §6) (`err-fstring-unbounded-operand`, `err-fstring-secret` against a no-Format type until item G lands Secret[T]). ISR formatting → uses formatting (f-string / Format) (`err-fstring-in-isr`). Assert messages stay text-literal-only.
 
-**Pinned.** `check-fstring-bounds`: `f\"n={42} ok={false}\"` settle `13110061` (value `n=42 ok=false`), braces `9123108`, `label(7)` → `4105100`, bound `21`; mwir `label` emits `FormatScalar` + `StringConcat` (guest tier, not comptime-only)."""
+**Pinned.** `check-fstring-bounds`: `f\"{42}\"` settle `2052050`; inferred `f\"a={a}\"` → `4097061`; `f\"n={42u32} ok={false}\"` → `13110061` (value `n=42 ok=false`), braces `9123108`, `label(7)` → `4105100`, bound `21`; mwir `label` emits `FormatScalar` + `StringConcat` (guest tier, not comptime-only). Item D2 extended the golden to lead with the literal/inferred spellings."""
 
 [[clause]]
 id = "comptime.eval.no-panics"

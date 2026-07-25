@@ -1,4 +1,10 @@
 Module path=examples.check_fstring_bounds
+  Fn dig20(s: read String[..20]) -> u64
+  Fn dig22(s: read String[..22]) -> u64
+  Fn fstr_lit() -> u64
+  Const LIT: u64
+  Fn fstr_inf() -> u64
+  Const INF: u64
   Const X: u32
   Const Y: bool
   Fn dig21(s: read String[..21]) -> u64
@@ -10,14 +16,18 @@ Module path=examples.check_fstring_bounds
   Const LABEL: u64
   Fn bound_of(s: read String[..21]) -> u64
   Const BOUND: u64
+  Fn t_lit() -> unit
+  Fn t_inf() -> unit
   Fn t_mixed() -> unit
   Fn t_braces() -> unit
   Fn t_label() -> unit
   Fn t_bound() -> unit
   Struct Store resource
+    field lit: u64
+    field inf: u64
     field mixed: u64
     field braces: u64
     field label: u64
     field bound: u64
-    init(mut self, mixed: read u64, braces: read u64, label: read u64, bound: read u64) -> unit
+    init(mut self, lit: read u64, inf: read u64, mixed: read u64, braces: read u64, label: read u64, bound: read u64) -> unit
   Fn build() -> Image

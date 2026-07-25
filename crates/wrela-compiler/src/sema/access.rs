@@ -20,13 +20,12 @@
 //! tracked name (a parameter, `self`, or a closure parameter) keeps its
 //! declared type and mode; a plain local introduced by assignment/
 //! pattern/`for` keeps a best-effort type (propagated from its
-//! initializer through the same lookup) and no mode at all (an ordinary
-//! owned binding is never restricted). A method call whose receiver
-//! expression's type cannot be determined this way (a chain rooted in
-//! something other than a tracked name, e.g. a call whose own callee this
-//! pass cannot resolve) fails closed rather than silently skipping
-//! mirroring; nothing in the M2 sema corpus (goldens in this commit
-//! included) needs more than this.
+//! initializer through the same lookup — including 02 §1.1's
+//! unconstrained literal defaulting, plans/M9.md item D2) and no mode
+//! at all (an ordinary owned binding is never restricted). A method call
+//! whose receiver expression's type cannot be determined this way fails
+//! closed with a precise `error[type]` naming the method rather than
+//! silently skipping mirroring.
 //!
 //! Receiver-effect inference (item 3): the AST cannot distinguish a
 //! plain `self` from an explicitly spelled `read self` (types.rs's
@@ -1088,17 +1087,20 @@ fn variant_payload_types(scrutinee: &Type, variant: &str, mctx: &ModuleCtx) -> O
 /// cannot get fails closed, in `check_call_by_field`/`check_call`).
 fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
     match expr {
-        Expr::Int(..)
-        | Expr::Float(..)
-        | Expr::Str(..)
-        | Expr::BStr(..)
-        | Expr::Char(..)
-        | Expr::Bool(..)
-        | Expr::Unit(_) => Ok(None),
+        // plans/M9.md item D2: apply 02 §1.1's unconstrained literal
+        // defaulting here so access's method-mirroring sees the same
+        // type bodies already settled — without this, `42.format()`,
+        // `a = 42; a.format()`, and `f"{42}"` all fail closed as
+        // "mirroring a method call through this base expression".
+        Expr::Int(span, text) => Ok(Some(defaulted_int_literal_type(text, *span)?)),
+        Expr::Float(_, _) => Ok(Some(Type::F64)),
+        Expr::Bool(_, _) => Ok(Some(Type::Bool)),
+        Expr::Char(_, _) => Ok(Some(Type::Char)),
+        Expr::Unit(_) => Ok(Some(Type::Unit)),
+        Expr::Str(..) | Expr::BStr(..) => Ok(None),
         Expr::FStr(f) => {
             let desugared = crate::sema::fstring::desugar_fstring(f)?;
-            check_expr(&desugared, actx)?;
-            Ok(None)
+            check_expr(&desugared, actx)
         }
         Expr::Name(_, name) => Ok(name_ty(name, actx)),
         Expr::Field(base, _span, name) => check_field(base, name, actx),
@@ -1138,6 +1140,9 @@ fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
             }
             check_expr(inner, actx)
         }
+        // Neg/BitNot keep the operand's type (so `(-7).format()` mirrors);
+        // Await/other unaries stay best-effort `None` for the result.
+        Expr::Unary(_, UnaryOp::Neg | UnaryOp::BitNot, inner) => check_expr(inner, actx),
         Expr::Unary(_, _, inner) => {
             check_expr(inner, actx)?;
             Ok(None)
@@ -1232,6 +1237,24 @@ fn name_ty(name: &str, actx: &ACtx) -> Option<Type> {
         return Some(bodies::fn_value_type(&f.decl));
     }
     None
+}
+
+/// 02-language.md §1.1 unconstrained integer defaulting (same rule as
+/// `bodies::synth_int_literal`): `i64` when it fits, else `u64`.
+fn defaulted_int_literal_type(text: &str, span: Span) -> Result<Type, SemaError> {
+    let value = bodies::parse_int_literal(text)
+        .ok_or_else(|| SemaError::at("type", "invalid integer literal".to_string(), span))?;
+    if value <= i64::MAX as i128 {
+        Ok(Type::I64)
+    } else if value <= u64::MAX as i128 {
+        Ok(Type::U64)
+    } else {
+        Err(SemaError::at(
+            "type",
+            "integer literal out of range".to_string(),
+            span,
+        ))
+    }
 }
 
 /// A bare `x.field` (or `Type.assoc_fn`/`Enum.Variant`, used as a value
@@ -1893,8 +1916,12 @@ fn check_call_by_field(
         return Ok(Some(Type::Named("ImageDecl".to_string(), vec![])));
     }
     let Some(base_ty) = base_ty.map(bodies::unwrap_own) else {
-        return Err(unimplemented_at(
-            "mirroring a method call through this base expression is",
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "cannot determine the type of this `{name}` receiver \
+                 (annotate the binding or give the literal an expected type)"
+            ),
             fspan,
         ));
     };
@@ -2156,8 +2183,12 @@ fn check_call_by_field(
         }
     }
     let Type::Named(sname, _targs) = &base_ty else {
-        return Err(unimplemented_at(
-            "mirroring a method call through this base expression is",
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "type `{}` has no method `{name}`",
+                types::render_type(&base_ty)
+            ),
             fspan,
         ));
     };
@@ -2215,8 +2246,9 @@ fn check_call_by_field(
         }
         return Ok(Some(d.ret.clone()));
     }
-    Err(unimplemented_at(
-        "mirroring a method call through this base expression is",
+    Err(SemaError::at(
+        "type",
+        format!("type `{sname}` has no method `{name}`"),
         fspan,
     ))
 }

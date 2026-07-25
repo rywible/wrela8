@@ -1,8 +1,31 @@
 module examples.check_fstring_bounds
 
-# plans/M9.md item D. f-strings sum Format bounds into String[..N]
+# plans/M9.md item D / D2. f-strings sum Format bounds into String[..N]
 # (02 §1.1 / 05 §6). Value pins (bytes + length), not mere compilation.
 # Guest tier: `label` lowers to FormatScalar + StringConcat (mwir).
+#
+# Item D2: the most obvious spellings first — `f"{42}"`, inferred
+# `a = 42; f"a={a}"` — not only annotated consts/params (which hid the
+# access-pass literal-defaulting hole).
+
+fn dig20(s: String[..20]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+fn dig22(s: String[..22]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+# Literal interpolation (defaults to i64 → String[..20]): value "42".
+fn fstr_lit() -> u64:
+    return dig20(f"{42}")
+
+const LIT: u64 = fstr_lit()
+
+# Inferred local interpolation: value "a=42".
+fn fstr_inf() -> u64:
+    a = 42
+    return dig22(f"a={a}")
+
+const INF: u64 = fstr_inf()
 
 const X: u32 = 42
 const Y: bool = false
@@ -34,6 +57,14 @@ fn bound_of(s: String[..21]) -> u64:
 const BOUND: u64 = bound_of(f"n={X} ok={Y}")
 
 @test
+pub fn t_lit():
+    assert LIT == 2052050, "f\"{42}\" is \"42\""
+
+@test
+pub fn t_inf():
+    assert INF == 4097061, "f\"a={a}\" with a=42 inferred"
+
+@test
 pub fn t_mixed():
     assert MIXED == 13110061, "n=42 ok=false"
 
@@ -51,12 +82,16 @@ pub fn t_bound():
 
 @actor
 pub struct Store:
+    lit: u64
+    inf: u64
     mixed: u64
     braces: u64
     label: u64
     bound: u64
 
-    init(mut self, mixed: u64, braces: u64, label: u64, bound: u64):
+    init(mut self, lit: u64, inf: u64, mixed: u64, braces: u64, label: u64, bound: u64):
+        self.lit = lit
+        self.inf = inf
         self.mixed = mixed
         self.braces = braces
         self.label = label
@@ -65,8 +100,8 @@ pub struct Store:
 @image
 pub fn build() -> Image:
     img = Image(name="check-fstring-bounds", target=Target.wrela_machine_v1)
-    storage = img.actor(Store, mixed=MIXED, braces=BRACES, label=LABEL,
-                        bound=BOUND, mailbox=4)
+    storage = img.actor(Store, lit=LIT, inf=INF, mixed=MIXED, braces=BRACES,
+                        label=LABEL, bound=BOUND, mailbox=4)
     img.supervise(children=[storage], strategy=Restart.OneForOne,
                   intensity=RestartIntensity(max=3, within=seconds(10)))
     return img.seal()
