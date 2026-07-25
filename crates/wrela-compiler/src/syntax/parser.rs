@@ -1402,14 +1402,35 @@ impl Parser {
 
     /// One generic argument at a use site: `..N` (bounded occupancy), a
     /// type, or — since bounded-type parameter positions can also take a
+    /// A type argument, a comptime expression like `40 + z + 96`, or a
     /// plain comptime expression like `256.KiB` — a fallback to expression
     /// parsing when the current token cannot start a type at all.
+    ///
+    /// Expression starters include unary prefixes (`-`/`~`) and a `(`
+    /// whose interior itself starts an expression. The pretty-printer
+    /// always wraps non-atomic Binary/Unary operands in parens
+    /// (`(40 + z) + 96`, `(-40) + z`), and without this branch those
+    /// spellings fell into `parse_type`'s tuple/grouping arm and rejected
+    /// the integer — a sema-roundtrip hole the deep soak found
+    /// (seed=8802). Tuple types `(T, U)` and `(u64)` grouping still start
+    /// with a type token after `(` and keep the type path.
     fn parse_generic_arg(&mut self) -> Result<GenericArg, ParseError> {
         if self.at_op("..") {
             self.bump();
             let e = self.parse_or()?;
             return Ok(GenericArg::Bound(e));
         }
+        if self.starts_generic_arg_expr() {
+            let e = self.parse_or()?;
+            return Ok(GenericArg::Expr(e));
+        }
+        let ty = self.parse_type()?;
+        Ok(GenericArg::Type(ty))
+    }
+
+    /// See `parse_generic_arg`: tokens that begin a const/expression
+    /// generic arg rather than a type.
+    fn starts_generic_arg_expr(&self) -> bool {
         if matches!(
             self.peek_kind(),
             TokenKind::Int
@@ -1421,11 +1442,37 @@ impl Parser {
         ) || self.at_keyword("true")
             || self.at_keyword("false")
         {
-            let e = self.parse_or()?;
-            return Ok(GenericArg::Expr(e));
+            return true;
         }
-        let ty = self.parse_type()?;
-        Ok(GenericArg::Type(ty))
+        if self.at_op("-") || self.at_op("~") {
+            return true;
+        }
+        if self.at_op("(") {
+            let inner = self.peek_at(1);
+            if matches!(
+                inner.kind,
+                TokenKind::Int
+                    | TokenKind::Float
+                    | TokenKind::Str
+                    | TokenKind::BStr
+                    | TokenKind::FStr
+                    | TokenKind::Char
+            ) {
+                return true;
+            }
+            if inner.kind == TokenKind::Keyword
+                && matches!(
+                    inner.text.as_str(),
+                    "true" | "false" | "not" | "await" | "take"
+                )
+            {
+                return true;
+            }
+            if inner.kind == TokenKind::Op && matches!(inner.text.as_str(), "-" | "~" | "(") {
+                return true;
+            }
+        }
+        false
     }
 }
 

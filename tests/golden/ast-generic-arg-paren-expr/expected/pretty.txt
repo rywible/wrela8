@@ -1,0 +1,7 @@
+module examples.ast_generic_arg_paren_expr
+
+pool Payloads
+
+struct Record:
+    payloads: DmaPool[Payloads, (40 + z) + 96]
+    negated: DmaPool[Payloads, (-40) + z]

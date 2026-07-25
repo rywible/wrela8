@@ -4767,19 +4767,14 @@ pub fn is_mmio_access_intrinsic(key: &str) -> bool {
 //
 // ## Where a marked value comes from
 //
-// Nothing in source produces an `Untrusted[T]` today — that is the
-// honest state, recorded as gap `hardware.untrusted.checked-narrowing`
-// (plans/M7.md decision 13). 03 §8's worked producer is
-// `completion.written_len` (`IoCompletion[P]`, item E4); 03 §6
-// independently calls an interrupt-status register untrusted, which
-// makes a `ReadOnly[T]` read the other candidate (item G). Whichever
-// lands first owns the decision. `checked_le`'s lowering is kept and
-// dump-covered the same way item C kept MMIO's typed surface before
-// anything could emit — a dump oracle for an unreachable-but-emitted
-// path, not a claim that one has executed.
+// `IoCompletion[P].written_len` is the live producer (plans/M7.md item E4 /
+// decision 22) — `golden/boot-blk-roundtrip` exercises both `checked_le`
+// outcomes on a real used-ring length. Item G declined the ISR
+// interrupt-status fork (status stays plain `u32`). A source-visible
+// `Untrusted.mark` constructor stays rejected. `Validated` / `Secret`
+// remain out of M7's honest-scope line.
 
 /// `Untrusted[<inner>]`.
-#[allow(dead_code)] // producers (E4 / G) will mint through this
 pub(crate) fn untrusted_type(inner: Type) -> Type {
     Type::Named("Untrusted".to_string(), vec![types::TypeArg::Type(inner)])
 }
