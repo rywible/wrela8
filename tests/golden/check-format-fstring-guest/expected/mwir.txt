@@ -1,0 +1,120 @@
+Program
+  Fn key=Pt.format ret=String[..30] temps=31 receiver=t0:read
+    Temp t0 ty=Pt
+    Temp t1 ty=usize
+    Temp t2 ty=u8
+    Temp t3 ty=u8
+    Temp t4 ty=u8
+    Temp t5 ty=String[..3]
+    Temp t6 ty=usize
+    Temp t7 ty=u8
+    Temp t8 ty=u8
+    Temp t9 ty=String[..2]
+    Temp t10 ty=String[..5]
+    Temp t11 ty=u32
+    Temp t12 ty=String[..10]
+    Temp t13 ty=String[..15]
+    Temp t14 ty=usize
+    Temp t15 ty=u8
+    Temp t16 ty=u8
+    Temp t17 ty=String[..2]
+    Temp t18 ty=String[..17]
+    Temp t19 ty=usize
+    Temp t20 ty=u8
+    Temp t21 ty=u8
+    Temp t22 ty=String[..2]
+    Temp t23 ty=String[..19]
+    Temp t24 ty=u32
+    Temp t25 ty=String[..10]
+    Temp t26 ty=String[..29]
+    Temp t27 ty=usize
+    Temp t28 ty=u8
+    Temp t29 ty=String[..1]
+    Temp t30 ty=String[..30]
+    Body
+      0000: ConstInt dst=t1 ty=usize value=3
+      0001: ConstInt dst=t2 ty=u8 value=80
+      0002: ConstInt dst=t3 ty=u8 value=116
+      0003: ConstInt dst=t4 ty=u8 value=40
+      0004: MakeAggregate dst=t5 elems=[t1,t2,t3,t4]
+      0005: ConstInt dst=t6 ty=usize value=2
+      0006: ConstInt dst=t7 ty=u8 value=120
+      0007: ConstInt dst=t8 ty=u8 value=61
+      0008: MakeAggregate dst=t9 elems=[t6,t7,t8]
+      0009: StringConcat dst=t10 lhs=t5 rhs=t9 lhs_cap=3 rhs_cap=2
+      0010: Project dst=t11 base=t0 index=0
+      0011: FormatScalar dst=t12 src=t11 src_ty=u32 capacity=10
+      0012: StringConcat dst=t13 lhs=t10 rhs=t12 lhs_cap=5 rhs_cap=10
+      0013: ConstInt dst=t14 ty=usize value=2
+      0014: ConstInt dst=t15 ty=u8 value=44
+      0015: ConstInt dst=t16 ty=u8 value=32
+      0016: MakeAggregate dst=t17 elems=[t14,t15,t16]
+      0017: StringConcat dst=t18 lhs=t13 rhs=t17 lhs_cap=15 rhs_cap=2
+      0018: ConstInt dst=t19 ty=usize value=2
+      0019: ConstInt dst=t20 ty=u8 value=121
+      0020: ConstInt dst=t21 ty=u8 value=61
+      0021: MakeAggregate dst=t22 elems=[t19,t20,t21]
+      0022: StringConcat dst=t23 lhs=t18 rhs=t22 lhs_cap=17 rhs_cap=2
+      0023: Project dst=t24 base=t0 index=1
+      0024: FormatScalar dst=t25 src=t24 src_ty=u32 capacity=10
+      0025: StringConcat dst=t26 lhs=t23 rhs=t25 lhs_cap=19 rhs_cap=10
+      0026: ConstInt dst=t27 ty=usize value=1
+      0027: ConstInt dst=t28 ty=u8 value=41
+      0028: MakeAggregate dst=t29 elems=[t27,t28]
+      0029: StringConcat dst=t30 lhs=t26 rhs=t29 lhs_cap=29 rhs_cap=1
+      0030: Return value=t30
+      0031: Return
+  Fn key=Store.fmt_len ret=usize temps=22 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=usize
+    Temp t2 ty=u8
+    Temp t3 ty=u8
+    Temp t4 ty=u8
+    Temp t5 ty=String[..3]
+    Temp t6 ty=u32
+    Temp t7 ty=u32
+    Temp t8 ty=Pt
+    Temp t9 ty=String[..30]
+    Temp t10 ty=String[..33]
+    Temp t11 ty=usize
+    Temp t12 ty=u8
+    Temp t13 ty=u8
+    Temp t14 ty=u8
+    Temp t15 ty=String[..3]
+    Temp t16 ty=String[..36]
+    Temp t17 ty=usize
+    Temp t18 ty=String[..20]
+    Temp t19 ty=String[..56]
+    Temp t20 ty=String[..56]
+    Temp t21 ty=usize
+    Body
+      0000: ConstInt dst=t1 ty=usize value=3
+      0001: ConstInt dst=t2 ty=u8 value=112
+      0002: ConstInt dst=t3 ty=u8 value=116
+      0003: ConstInt dst=t4 ty=u8 value=61
+      0004: MakeAggregate dst=t5 elems=[t1,t2,t3,t4]
+      0005: ConstInt dst=t6 ty=u32 value=3
+      0006: ConstInt dst=t7 ty=u32 value=7
+      0007: MakeAggregate dst=t8 elems=[t6,t7]
+      0008: Call key=Pt.format dst=t9 args=[t8]
+      0009: StringConcat dst=t10 lhs=t5 rhs=t9 lhs_cap=3 rhs_cap=30
+      0010: ConstInt dst=t11 ty=usize value=3
+      0011: ConstInt dst=t12 ty=u8 value=32
+      0012: ConstInt dst=t13 ty=u8 value=110
+      0013: ConstInt dst=t14 ty=u8 value=61
+      0014: MakeAggregate dst=t15 elems=[t11,t12,t13,t14]
+      0015: StringConcat dst=t16 lhs=t10 rhs=t15 lhs_cap=33 rhs_cap=3
+      0016: Project dst=t17 base=t0 index=0
+      0017: FormatScalar dst=t18 src=t17 src_ty=usize capacity=20
+      0018: StringConcat dst=t19 lhs=t16 rhs=t18 lhs_cap=36 rhs_cap=20
+      0019: Copy dst=t20 src=t19
+      0020: Project dst=t21 base=t20 index=0
+      0021: Return value=t21
+      0022: Return
+  Fn key=Store.init ret=unit temps=2 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=usize
+    Body
+      0000: ConstInt dst=t1 ty=usize value=0
+      0001: SetField base=t0 index=0 value=t1
+      0002: Return

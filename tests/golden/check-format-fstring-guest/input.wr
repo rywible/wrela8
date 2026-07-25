@@ -1,0 +1,41 @@
+module examples.check_format_fstring_guest
+
+# plans/M9.md item D3: guest-reachable Format + f-string lowering.
+# H3's reachability walk dropped every comptime-only Format/f-string fn
+# from check-format-bound / check-fstring-bounds mwir dumps, so those
+# goldens no longer pin the backend. A `pub` method on an `@actor` is a
+# real guest root (method-index dispatch); this fixture pins mwir
+# (FormatScalar / StringConcat / Call Pt.format), asm (frames), and a
+# boot value through that method.
+
+pub struct Pt deriving(Format):
+    x: u32
+    y: u32
+
+@actor
+pub struct Store:
+    n: usize
+
+    init(mut self):
+        self.n = 0
+
+    pub fn fmt_len(mut self) -> usize:
+        s = f"pt={Pt(x=3, y=7)} n={self.n}"
+        return s.len
+
+@test(runtime)
+async fn guest_fmt(store: Actor[Store]):
+    v = await store.fmt_len()
+    match v:
+        case .Ok(n):
+            assert n == 19, "pt=Pt(x=3, y=7) n=0 is 19 bytes"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-format-fstring-guest", target=Target.wrela_machine_v1)
+    a = img.actor(Store, mailbox=4)
+    img.supervise(children=[a], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

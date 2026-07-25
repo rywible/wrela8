@@ -2,7 +2,8 @@ module examples.check_fstring_bounds
 
 # plans/M9.md item D / D2. f-strings sum Format bounds into String[..N]
 # (02 §1.1 / 05 §6). Value pins (bytes + length), not mere compilation.
-# Guest tier: `label` lowers to FormatScalar + StringConcat (mwir).
+# Guest-tier lowering is pinned by check-format-fstring-guest (item D3);
+# after H3 this fixture's mwir is only Store.init (comptime-only callees).
 #
 # Item D2: the most obvious spellings first — `f"{42}"`, inferred
 # `a = 42; f"a={a}"` — not only annotated consts/params (which hid the

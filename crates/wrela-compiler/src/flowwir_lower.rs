@@ -103,6 +103,15 @@ impl FlowError {
         }
     }
 
+    /// Complete fail-closed message — same rule as `LowerError::named`
+    /// (plans/M9.md item D3): do not wrap an `unresolvable` note that
+    /// already ends in "is not supported yet".
+    fn named(message: impl Into<String>) -> FlowError {
+        FlowError {
+            message: message.into(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> FlowError {
         FlowError {
             message: format!("internal error: {}", message.into()),
@@ -386,7 +395,7 @@ fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStr
 
 fn missing_struct(prog: &TypedProgram, name: &str) -> FlowError {
     if let Some(note) = prog.imported.unresolvable.get(name) {
-        return FlowError::unimplemented(format!("`{name}` {note}"));
+        return FlowError::named(format!("`{name}` {note}"));
     }
     FlowError::unimplemented(format!(
         "struct `{name}` is not declared in this module and not present in its import closure"
@@ -407,7 +416,7 @@ fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> FlowError {
             .to_string(),
     };
     if let Some(note) = prog.imported.unresolvable.get(&name) {
-        return FlowError::unimplemented(format!("`{name}` {note}"));
+        return FlowError::named(format!("`{name}` {note}"));
     }
     match key {
         CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => {

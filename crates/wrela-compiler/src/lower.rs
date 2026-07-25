@@ -208,6 +208,17 @@ impl LowerError {
         }
     }
 
+    /// A complete fail-closed message that already carries its own ending
+    /// (an `imported.unresolvable` note ends in "is not supported yet").
+    /// Must not go through `unimplemented` — that would print
+    /// `lowering \`name\` is declared … is not supported yet not
+    /// implemented yet` (plans/M9.md item D3).
+    fn named(message: impl Into<String>) -> LowerError {
+        LowerError {
+            message: message.into(),
+        }
+    }
+
     /// A producer-bug guard — should be unreachable for any program
     /// `sema::check_typed` accepted; mirrors `interp.rs`'s own
     /// `"internal error: ..."` abandonment wording exactly (same
@@ -3707,7 +3718,9 @@ fn callee_decl_name(key: &CalleeKey) -> String {
 fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
     let name = callee_decl_name(key);
     if let Some(note) = prog.imported.unresolvable.get(&name) {
-        return LowerError::unimplemented(format!("`{name}` {note}"));
+        // Note is a complete sentence (`` `{name}` is declared… ``);
+        // `named`, not `unimplemented` (plans/M9.md item D3).
+        return LowerError::named(format!("`{name}` {note}"));
     }
     match key {
         CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => LowerError::unimplemented(
@@ -3726,7 +3739,7 @@ fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
 /// resolves, and a genuine miss names the import closure.
 fn missing_struct(prog: &TypedProgram, name: &str) -> LowerError {
     if let Some(note) = prog.imported.unresolvable.get(name) {
-        return LowerError::unimplemented(format!("`{name}` {note}"));
+        return LowerError::named(format!("`{name}` {note}"));
     }
     LowerError::unimplemented(format!(
         "struct `{name}` is not declared in this module and not present in its import closure"

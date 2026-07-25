@@ -1,0 +1,12 @@
+Module path=examples.check_format_fstring_guest
+  Struct Pt data deriving(Format)
+    field x: u32
+    field y: u32
+    fn max_formatted_len() -> usize
+    fn format(read self) -> String[..30]
+  Struct Store resource
+    field n: usize
+    init(mut self) -> unit
+    fn fmt_len(mut self) -> usize
+  AsyncFn guest_fmt(store: read Actor[Store]) -> unit
+  Fn build() -> Image

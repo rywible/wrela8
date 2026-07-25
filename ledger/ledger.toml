@@ -238,7 +238,7 @@ note = """02-language.md §6.2: `String[..N]` is owned UTF-8 with capacity `N`; 
 
 **Surface.** Text literals coerce into `String[..N]` when the expected type asks and the occupied byte length ≤ `N` (else a type error, not truncation). `.len` is the occupied length; `[i]` with a literal index projects byte slot `1+i`. Exact `String[N]` and bare `String` (bound-elided) refuse by name. `Bytes[..N]` does **not** fall out of this change and stays `unimplemented_at`.
 
-**Pinned.** `check-string-bound`: settle `2104105` (len=2, 'h'=104, 'i'=105), mwir shows `Temp t0 ty=String[..8]` and `Project` indices 0/1/2, image arg `settled=2104105`. Capacity and exact-form refusals pinned separately."""
+**Pinned.** `check-string-bound`: settle `2104105` (len=2, 'h'=104, 'i'=105), image arg `settled=2104105` (eval/value pins). After H3, its mwir is only `Store.init` — the former `String[..8]` Project pins are a coverage-loss finding recorded in plans/M9.md item D3 decision 324, not restored here. Capacity and exact-form refusals pinned separately."""
 
 [[clause]]
 id = "library.format.contract"
@@ -246,6 +246,7 @@ doc = "05-library.md#6"
 status = "test"
 tests = [
   "golden/check-format-bound",
+  "golden/check-format-fstring-guest",
   "golden/err-format-conflict",
   "golden/err-format-secret",
   "golden/err-format-payload-enum",
@@ -262,7 +263,9 @@ note = """05-library.md §6 / 02-language.md §7.5: the static `Format` contract
 
 **`deriving(Format)` (decision 205).** Fieldless structs and unit enums format their names. Fieldful structs generate `\"Name(f1=\" + self.f1.format() + \", f2=\" + ... + \")\"` with bound = name + punctuation + each field's scalar Format bound. Payload-bearing enums refuse by name. Conflict with an explicit `format` / `max_formatted_len` refuses (same rule as `deriving(From)` vs explicit `from`). `Secret` has no Format (05 §6) — deriving or hand-declared.
 
-**Pinned.** `check-format-bound`: scalar `42` → settle `2052050`; literal `42.format()` and inferred `a = 42; a.format()` → `2052050` (item D2); `true` → `4116114`; `\"hi\"+\"!\"` → `3104105`; `Point(x=3,y=7).format()` → `15080111` with bound `33`; `Hue.Red` → `3082101`; mwir shows `FormatScalar`/`StringConcat` in `Point.format`. Import / alias goldens pin `Tag(n=9)` → `8084097`."""
+**Pinned.** `check-format-bound`: scalar `42` → settle `2052050`; literal `42.format()` and inferred `a = 42; a.format()` → `2052050` (item D2); `true` → `4116114`; `\"hi\"+\"!\"` → `3104105`; `Point(x=3,y=7).format()` → `15080111` with bound `33`; `Hue.Red` → `3082101` (eval/value pins; after H3 its mwir is only `Store.init` — guest-tier Format is pinned by `check-format-fstring-guest` instead). Import / alias goldens pin `Tag(n=9)` → `8084097`.
+
+**Guest tier (plans/M9.md item D3, decision 320).** `check-format-fstring-guest`: `@actor` `pub fn fmt_len` builds `f\"pt={Pt(x=3, y=7)} n={self.n}\"`, returns `.len`; mwir pins `FormatScalar`/`StringConcat`/`Call key=Pt.format`, asm pins `Pt.format` frame=1440 / `Store.fmt_len` frame=2096, boot asserts `19`. Measured frames do not threaten the 1 MiB per-core stack under realistic nesting (decision 323)."""
 
 [[clause]]
 id = "sema.names.imports"
@@ -708,14 +711,16 @@ note = "plans/M9.md item A1b, and a defect that predates it: 02 \u00a712 says `c
 id = "compiler.lower.import-closure"
 doc = "04-compiler.md#3"
 status = "test"
-tests = ["golden/check-import-lower"]
+tests = ["golden/check-import-lower", "golden/err-import-lower-body-helper"]
 note = """plans/M9.md item EE (half 1): the backend sees the import closure the evaluator already saw after A1b.
 
 **The defect, measured at `ab85f36`.** Three shapes, all ordinary source through a project root, all with a working comptime tier (`wrela test` ok): an imported struct's method (`p.sum()`), an imported plain fn (`twice(21)`), and an imported struct's fields (`p.a + p.b`). The first two failed closed at `--stage=mwir`/`asm` blaming \"an unresolved generic instantiation\" — the wrong cause (`lower::resolve_fn` never consulted `TypedProgram::imported`). The third was worse and a bug by house rule: `error[unimplemented]: internal error: struct \\`Pair\\` not found`, reachable from ordinary source — the exact shape A1b fixed for the evaluator, never for lower. A2's decision 82 had wired *enums* into `lower`/`flowwir_lower` because `check-stdlib-loaded` needed it; structs and fns were left.
 
 **Mechanism (decisions 90–91).** `lower::resolve_fn` / `resolve_struct` / `field_index` and `flowwir_lower::resolve_callee_fn` / `field_index` / StructLiteral lookup read \"own, else imported\", mirroring `eval::interp`. Emission still does not merge into `TypedProgram::fns`/`structs` (decision 13 rejected that — `try_layout_program` lowers every module and would emit once per importer). Instead `lower_program` / `flowwir_lower::lower_program` also walk `imported.fns`/`structs`/`instantiations` and emit under the *local* spelling (decision 9), so a Call keyed `Pair.sum` / `twice` / `Duo.sum` resolves in the importer's own MWIR without inventing a second name table. An unaliased name that also exists in the exporter's own lower may collide at `merge_mwir_programs` last-wins — already disclosed there. Genuine residue fails closed naming the import closure or the splice's own `unresolvable` note — never \"an unresolved generic instantiation\" for a plain imported name, and never `internal error: struct \\`X\\` not found` from ordinary source.
 
-**Pinned.** golden/check-import-lower covers all three shapes in one case, dumped at `--stage=mwir` and `--stage=asm`, with four `@test`s and `Arg label=mailbox value=71142` (fields=7, method=11, fn=42 → `7*10000 + 11*100 + 42`) so \"accepted\" and \"correct\" are different results. `cargo xtask diff-eval` agrees on all four once half 2 widens the oracle (clause `compiler.eval.matches-backend`).\n\nplans/M9.md item FF closes the aliased-layout residue decision 95 recorded: `merge_layout_ctx` now installs the local spelling, so `check-import-alias-method`/`check-import-alias-pattern` are `diff-eval` agreements rather than lowering-skips. See `sema.names.imported-types` for the four-layer sequence."""
+**Pinned.** golden/check-import-lower covers all three shapes in one case, dumped at `--stage=mwir` and `--stage=asm`, with four `@test`s and `Arg label=mailbox value=71142` (fields=7, method=11, fn=42 → `7*10000 + 11*100 + 42`) so \"accepted\" and \"correct\" are different results. `cargo xtask diff-eval` agrees on all four once half 2 widens the oracle (clause `compiler.eval.matches-backend`).\n\nplans/M9.md item FF closes the aliased-layout residue decision 95 recorded: `merge_layout_ctx` now installs the local spelling, so `check-import-alias-method`/`check-import-alias-pattern` are `diff-eval` agreements rather than lowering-skips. See `sema.names.imported-types` for the four-layer sequence.
+
+**Body-only helper at lower (plans/M9.md item D3, decisions 321–322).** An imported body's call to a name present only in the exporter (not in any imported signature) refuses with the splice's `unresolvable` note via `LowerError::named` / `FlowError::named` — never `unimplemented`'s \"lowering … not implemented yet\" wrapper, which doubled the suffix (`… is not supported yet not implemented yet`). Pinned: `err-import-lower-body-helper`. Same-spelling free fns across modules remain last-wins at `merge_mwir_programs`; that collision is currently unreachable behind this refusal, and whoever lifts the refusal must fix merge keying in the same commit."""
 
 [[clause]]
 id = "comptime.eval.quotas"
@@ -791,6 +796,7 @@ doc = "02-language.md#12"
 status = "test"
 tests = [
   "golden/check-fstring-bounds",
+  "golden/check-format-fstring-guest",
   "golden/err-fstring-unbounded-operand",
   "golden/err-fstring-secret",
   "golden/err-fstring-no-widen",
@@ -804,7 +810,9 @@ note = """02-language.md §1.1 / 05-library.md §6: `f\"...\"` type-checks every
 
 **Refusals.** No Format → f-string operand of type T has no Format (unbounded / no max_formatted_len; 05-library.md §6) (`err-fstring-unbounded-operand`, `err-fstring-secret` against a no-Format type until item G lands Secret[T]). ISR formatting → uses formatting (f-string / Format) (`err-fstring-in-isr`). Assert messages stay text-literal-only.
 
-**Pinned.** `check-fstring-bounds`: `f\"{42}\"` settle `2052050`; inferred `f\"a={a}\"` → `4097061`; `f\"n={42u32} ok={false}\"` → `13110061` (value `n=42 ok=false`), braces `9123108`, `label(7)` → `4105100`, bound `21`; mwir `label` emits `FormatScalar` + `StringConcat` (guest tier, not comptime-only). Item D2 extended the golden to lead with the literal/inferred spellings."""
+**Pinned.** `check-fstring-bounds`: `f\"{42}\"` settle `2052050`; inferred `f\"a={a}\"` → `4097061`; `f\"n={42u32} ok={false}\"` → `13110061` (value `n=42 ok=false`), braces `9123108`, `label(7)` → `4105100`, bound `21` (eval/value pins; after H3 its mwir is only `Store.init` — the former `label` guest claim is restored by `check-format-fstring-guest`). Item D2 extended the golden to lead with the literal/inferred spellings.
+
+**Guest tier (plans/M9.md item D3, decision 320).** Same `check-format-fstring-guest` pins f-string lowering in a guest-reachable `@actor` method (mwir `FormatScalar`/`StringConcat`, boot `19`)."""
 
 [[clause]]
 id = "comptime.eval.no-panics"

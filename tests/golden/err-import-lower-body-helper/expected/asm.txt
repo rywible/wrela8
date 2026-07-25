@@ -1,0 +1,1 @@
+error[unimplemented]: `helper` is declared in module `lib.a`, which module `app.main` does not import; evaluating an imported body that reaches a declaration present only in that body's private helpers (not in any imported signature) is not supported yet
