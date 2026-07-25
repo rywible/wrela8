@@ -203,12 +203,13 @@ fn main() -> ExitCode {
         // xtask report-determinism` rather than a bare synonym for it.
         Some("repro") => repro(),
         Some("diff-eval") => diff_eval(),
+        Some("diff-blk") => diff_blk(),
         Some("profile") => profile(),
         Some("fuzz") => fuzz(&args[1..]),
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower|async] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower|async] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -4707,28 +4708,18 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
     use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
 
     // The split ring's own shape and the virtio-blk request format, as
-    // `wrela-vmm`'s `devices` module implements them. Spelled out here
-    // rather than imported for the boundary reason above.
-    const QUEUE_SIZE: u64 = 8;
-    const DESC_SIZE: u64 = 16;
-    const DESC_F_NEXT: u16 = 1;
-    const DESC_F_WRITE: u16 = 2;
-    const T_IN: u32 = 0;
-    const T_OUT: u32 = 1;
+    // `wrela-vmm`'s `devices` module implements them — shared verbatim
+    // with the QEMU side of the differential oracle (`blk_shape`,
+    // `fill_blk_ring`), so "both implementations were handed the same
+    // ring" is a fact about one function rather than a claim about two.
+    use blk_shape::*;
     const DEVICE_FEATURES: u64 = (1 << 32) | (1 << 9); // VERSION_1 | BLK_F_FLUSH
     const BLK_VECTOR: u64 = 1;
-
-    const OFF_DESC: u64 = 0x000;
-    const OFF_AVAIL: u64 = 0x080;
-    const OFF_USED: u64 = 0x0C0;
+    /// 06 §5's shared-memory doorbell word. It has no QEMU counterpart at
+    /// all — QEMU's notification is a trapping `QueueNotify` MMIO write,
+    /// which is exactly the thing 06 §5 deletes — so it lives here rather
+    /// than in the shared shape.
     const OFF_DOORBELL: u64 = 0x140;
-    const OFF_HDR1: u64 = 0x150;
-    const OFF_HDR2: u64 = 0x160;
-    const OFF_STATUS1: u64 = 0x170;
-    const OFF_STATUS2: u64 = 0x178;
-    const OFF_SRC: u64 = 0x200;
-    const OFF_DST: u64 = 0x400;
-    const DATA_REGION_SIZE: u64 = 0x600;
 
     fn load_imm(reg: u8, value: u64) -> Vec<u32> {
         use wrela_compiler::encode;
@@ -4838,40 +4829,7 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
         0,
     );
     let data_off = (data_base - machine_layout::IMAGE_BASE) as usize;
-    let put = |img: &mut Vec<u8>, off: u64, bytes: &[u8]| {
-        let at = data_off + off as usize;
-        img[at..at + bytes.len()].copy_from_slice(bytes);
-    };
-    let desc = |img: &mut Vec<u8>, i: u64, addr: u64, len: u32, flags: u16, next: u16| {
-        let at = OFF_DESC + i * DESC_SIZE;
-        put(img, at, &addr.to_le_bytes());
-        put(img, at + 8, &len.to_le_bytes());
-        put(img, at + 12, &flags.to_le_bytes());
-        put(img, at + 14, &next.to_le_bytes());
-    };
-    put(&mut img, OFF_HDR1, &T_OUT.to_le_bytes());
-    put(&mut img, OFF_HDR1 + 8, &0u64.to_le_bytes());
-    desc(&mut img, 0, data_base + OFF_HDR1, 16, DESC_F_NEXT, 1);
-    desc(&mut img, 1, data_base + OFF_SRC, 512, DESC_F_NEXT, 2);
-    desc(&mut img, 2, data_base + OFF_STATUS1, 1, DESC_F_WRITE, 0);
-    put(&mut img, OFF_HDR2, &T_IN.to_le_bytes());
-    put(&mut img, OFF_HDR2 + 8, &0u64.to_le_bytes());
-    desc(&mut img, 3, data_base + OFF_HDR2, 16, DESC_F_NEXT, 4);
-    desc(
-        &mut img,
-        4,
-        data_base + OFF_DST,
-        512,
-        DESC_F_NEXT | DESC_F_WRITE,
-        5,
-    );
-    desc(&mut img, 5, data_base + OFF_STATUS2, 1, DESC_F_WRITE, 0);
-    // Both status bytes are pre-poisoned: `0` is `STATUS_OK`, and the
-    // image is zero-padded, so an unwritten status byte would otherwise
-    // read as a pass.
-    put(&mut img, OFF_STATUS1, &[0xEE]);
-    put(&mut img, OFF_STATUS2, &[0xEE]);
-    put(&mut img, OFF_SRC, &payload);
+    fill_blk_ring(&mut img, data_off, data_base);
 
     let report_text = format!(
         "Machine revision={}\n\
@@ -6499,6 +6457,13 @@ fn ledger() -> Result<(), String> {
                             "corpus"
                                 | "repro"
                                 | "diff-eval"
+                                // plans/M7.md item F, decision 2a: the
+                                // QEMU differential oracle for ring
+                                // handling. Standalone (never wired into
+                                // `check`) because 06 §1 has QEMU
+                                // scheduled for retirement — see
+                                // `diff_blk`'s own doc comment.
+                                | "diff-blk"
                                 | "profile"
                                 | "bench"
                                 | "fuzz"
@@ -6530,4 +6495,753 @@ fn ledger() -> Result<(), String> {
         println!("  gap: {g}");
     }
     Ok(())
+}
+
+// --- diff-blk: the QEMU differential oracle (plans/M7.md decision 2a) -------
+
+/// Homebrew's own path on this development host. Fails closed (never
+/// skips) if absent — see `diff_blk`.
+const QEMU_AARCH64: &str = "/opt/homebrew/bin/qemu-system-aarch64";
+
+/// PL011 UART data register on QEMU's `virt` machine.
+const VIRT_UART: u64 = 0x0900_0000;
+
+/// `cargo xtask diff-blk`: the QEMU differential oracle (plans/M7.md
+/// decision 2a — "the QEMU bootstrap implementation (06 §1, scheduled for
+/// retirement) is used as a **differential oracle** for ring handling
+/// while it still exists — the one thing that gets permanently harder
+/// later, since a bespoke ring would have no second implementation to
+/// disagree with").
+///
+/// One ring, two devices. `fill_blk_ring` writes the *identical*
+/// descriptor chains, request headers, poisoned status bytes and payload
+/// into both guests' data regions; each guest then publishes those chains
+/// through its own transport — the wrela machine's shared-memory doorbell
+/// (06 §5) on one side, QEMU's trapping `QueueNotify` MMIO write on the
+/// other — and both devices' answers are compared field by field: the used
+/// ring's own index and every `(id, len)` entry, both status bytes, and an
+/// FNV-1a digest over the transferred payload plus its status byte,
+/// computed identically on both sides (`wrela_vmm::record::digest_hex` in
+/// Rust; the same loop hand-assembled in the QEMU guest).
+///
+/// **Deliberately not wired into `cargo xtask check`**: 06 §1 has QEMU
+/// "used until the wrela VMM boots images, then retired", so making the
+/// gate depend on a tool that is scheduled to go away would turn its
+/// eventual removal into a gate failure. It fails closed — never skips —
+/// when QEMU is absent, so an operator who runs it always learns whether
+/// it ran.
+///
+/// What it can and cannot compare, stated plainly: the *ring handling and
+/// request format* (which is exactly what decision 2a asks for), not the
+/// transport (this machine has none) and not the doorbell (QEMU's
+/// notification is a trap, which is the thing 06 §5 deletes).
+fn diff_blk() -> Result<(), String> {
+    if !Path::new(QEMU_AARCH64).exists() {
+        return fail_closed(
+            "diff-blk",
+            &format!("{QEMU_AARCH64} is not installed on this host"),
+        );
+    }
+    let dir = root().join("target/diff-blk-tmp");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+
+    // (0) Prove QEMU runs a hand-assembled guest of ours at all, before
+    // any comparison is attempted — an oracle that silently degrades into
+    // "QEMU printed nothing, so nothing disagreed" would be worse than
+    // none.
+    let smoke_path = dir.join("smoke.bin");
+    std::fs::write(&smoke_path, build_qemu_smoke_guest()).map_err(|e| format!("write: {e}"))?;
+    let smoke = run_qemu(&smoke_path, None)?;
+    if !smoke.contains("WRELA-SMOKE") {
+        return Err(format!(
+            "diff-blk: QEMU did not run this harness's own smallest guest at all (got {smoke:?}) — \
+             the oracle refuses to report agreement it never established"
+        ));
+    }
+
+    // (1) QEMU's virtio-blk.
+    let guest_path = dir.join("guest.bin");
+    std::fs::write(&guest_path, build_qemu_blk_guest()).map_err(|e| format!("write guest: {e}"))?;
+    let disk_path = dir.join("disk.img");
+    std::fs::write(&disk_path, vec![0u8; 16 * 512]).map_err(|e| format!("write disk: {e}"))?;
+    let qemu_out = run_qemu(&guest_path, Some(&disk_path))?;
+    let fields: Vec<u64> = match qemu_out.split_whitespace().collect::<Vec<_>>().as_slice() {
+        ["R", rest @ ..] if rest.len() == 7 => rest
+            .iter()
+            .map(|h| u64::from_str_radix(h, 16).map_err(|e| format!("bad qemu hex {h:?}: {e}")))
+            .collect::<Result<_, _>>()?,
+        _ => {
+            return Err(format!(
+                "diff-blk: the QEMU guest did not complete its own two operations (it prints \
+                 `NODEV`/`FEAT`/`TMO1`/`TMO2` for each way bring-up can fail): {qemu_out:?}"
+            ));
+        }
+    };
+    let (used_w0, used_w1, used_w2) = (fields[0], fields[1], fields[2]);
+    let qemu = BlkAnswer {
+        used_idx: ((used_w0 >> 16) & 0xFFFF) as u32,
+        head0: (used_w0 >> 32) as u32,
+        len0: (used_w1 & 0xFFFF_FFFF) as u32,
+        head1: (used_w1 >> 32) as u32,
+        len1: (used_w2 & 0xFFFF_FFFF) as u32,
+        status0: fields[3] as u32,
+        status1: fields[4] as u32,
+        digest0: format!("{:016x}", fields[5]),
+        digest1: format!("{:016x}", fields[6]),
+    };
+
+    // (2) The wrela VMM's own model, over the identical ring — read back
+    // out of the recorded choice sequence (the completions themselves)
+    // plus the guest's own checks (its exit code).
+    let vmm = build_and_sign_vmm()?;
+    let (img_bytes, report_text) = blk_conformance_image();
+    let img_path = dir.join("wrela.img");
+    let report_path = dir.join("wrela.report.txt");
+    let record_path = dir.join("wrela.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+    let out = Command::new(&vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm: {e}"))?;
+    if out.status.code() != Some(0) {
+        return Err(format!(
+            "diff-blk: the wrela side's own boot failed (exit {:?}):\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    let completions: Vec<BTreeMap<String, String>> = record_text
+        .lines()
+        .filter(|l| l.contains("=DeviceCompletion "))
+        .map(|l| {
+            l.split_whitespace()
+                .filter_map(|p| p.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        })
+        .collect();
+    if completions.len() != 2 {
+        return Err(format!(
+            "diff-blk: the wrela side recorded {} completion(s), expected 2",
+            completions.len()
+        ));
+    }
+    let field = |i: usize, k: &str| -> Result<String, String> {
+        completions[i]
+            .get(k)
+            .cloned()
+            .ok_or_else(|| format!("diff-blk: recorded completion #{i} has no `{k}` field"))
+    };
+    let num = |i: usize, k: &str| -> Result<u32, String> {
+        field(i, k)?
+            .parse()
+            .map_err(|e| format!("diff-blk: completion #{i} field `{k}`: {e}"))
+    };
+    let wrela = BlkAnswer {
+        // The wrela model publishes one used entry per completion, in
+        // order, so its own used index is simply how many it published.
+        used_idx: completions.len() as u32,
+        head0: num(0, "head")?,
+        len0: num(0, "len")?,
+        head1: num(1, "head")?,
+        len1: num(1, "len")?,
+        status0: num(0, "status")?,
+        status1: num(1, "status")?,
+        digest0: field(0, "digest")?,
+        digest1: field(1, "digest")?,
+    };
+
+    // (3) The comparison itself.
+    let facts: Vec<(&str, String, String)> = vec![
+        (
+            "used.idx",
+            wrela.used_idx.to_string(),
+            qemu.used_idx.to_string(),
+        ),
+        (
+            "write: used id",
+            wrela.head0.to_string(),
+            qemu.head0.to_string(),
+        ),
+        (
+            "write: used len",
+            wrela.len0.to_string(),
+            qemu.len0.to_string(),
+        ),
+        (
+            "write: status",
+            wrela.status0.to_string(),
+            qemu.status0.to_string(),
+        ),
+        (
+            "write: payload digest",
+            wrela.digest0.clone(),
+            qemu.digest0.clone(),
+        ),
+        (
+            "read: used id",
+            wrela.head1.to_string(),
+            qemu.head1.to_string(),
+        ),
+        (
+            "read: used len",
+            wrela.len1.to_string(),
+            qemu.len1.to_string(),
+        ),
+        (
+            "read: status",
+            wrela.status1.to_string(),
+            qemu.status1.to_string(),
+        ),
+        (
+            "read: payload digest",
+            wrela.digest1.clone(),
+            qemu.digest1.clone(),
+        ),
+    ];
+    let mut disagreements = Vec::new();
+    for (what, w, q) in &facts {
+        if w != q {
+            disagreements.push(format!("  {what}: wrela says `{w}`, QEMU says `{q}`"));
+        }
+    }
+    if !disagreements.is_empty() {
+        return Err(format!(
+            "diff-blk: the two virtio-blk implementations disagree on {} of {} compared fact(s):\n{}",
+            disagreements.len(),
+            facts.len(),
+            disagreements.join("\n")
+        ));
+    }
+    for (what, w, _) in &facts {
+        println!("diff-blk:   {what} = {w} (both)");
+    }
+    println!(
+        "diff-blk: {} fact(s) agree between wrela-vmm's own virtio-blk model and QEMU {}'s, over \
+         the identical descriptor chains",
+        facts.len(),
+        qemu_version()?
+    );
+    Ok(())
+}
+
+/// What one implementation answered for the two-operation workload. Both
+/// sides fill this in from entirely different sources — the wrela side
+/// from its own recorded choice sequence, QEMU's from the used ring its
+/// guest read back — and it is the whole comparison surface.
+struct BlkAnswer {
+    used_idx: u32,
+    head0: u32,
+    len0: u32,
+    head1: u32,
+    len1: u32,
+    status0: u32,
+    status1: u32,
+    digest0: String,
+    digest1: String,
+}
+
+/// The QEMU build actually compared against, recorded in the oracle's own
+/// output line (a differential result means nothing without naming the
+/// other implementation).
+fn qemu_version() -> Result<String, String> {
+    let out = Command::new(QEMU_AARCH64)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("run qemu --version: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or("qemu-system-aarch64")
+        .trim()
+        .to_string())
+}
+
+/// Runs one hand-assembled bare-metal guest under QEMU's `virt` machine
+/// and returns everything it printed on the UART. Bounded by a wall clock
+/// (a guest that never reaches its own `SYSTEM_OFF` is killed and
+/// reported, never left to hang the harness).
+fn run_qemu(guest: &Path, disk: Option<&Path>) -> Result<String, String> {
+    let mut cmd = Command::new(QEMU_AARCH64);
+    cmd.args([
+        "-M",
+        "virt",
+        "-cpu",
+        "cortex-a72",
+        "-m",
+        "256",
+        "-nographic",
+        "-no-reboot",
+        // QEMU's virtio-mmio transport still defaults to the **legacy**
+        // (v1) interface, whose ring layout and feature words are not the
+        // ones 03-hardware.md §1 names ("OASIS VIRTIO 1.2 split rings as
+        // profiled by the machine spec"). Without this the guest's own
+        // scan finds a `Version=1` transport and prints `NODEV` — found
+        // the honest way, by the oracle refusing to run, not by guessing.
+        "-global",
+        "virtio-mmio.force-legacy=false",
+    ]);
+    cmd.arg("-device");
+    cmd.arg(format!(
+        "loader,file={},addr=0x40100000,force-raw=on",
+        guest.display()
+    ));
+    cmd.arg("-device").arg("loader,addr=0x40100000,cpu-num=0");
+    if let Some(disk) = disk {
+        cmd.arg("-drive")
+            .arg(format!("if=none,file={},format=raw,id=d0", disk.display()));
+        cmd.arg("-device").arg("virtio-blk-device,drive=d0");
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| format!("spawn qemu: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match child.try_wait().map_err(|e| format!("wait qemu: {e}"))? {
+            Some(_) => break,
+            None => {
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(
+                        "diff-blk: the QEMU guest never reached its own SYSTEM_OFF within 20s"
+                            .to_string(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("collect qemu output: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn qemu_load_imm(reg: u8, value: u64) -> Vec<u32> {
+    use wrela_compiler::encode;
+    vec![
+        encode::enc_movz(reg, (value & 0xFFFF) as u16, 0, true),
+        encode::enc_movk(reg, ((value >> 16) & 0xFFFF) as u16, 16, true),
+        encode::enc_movk(reg, ((value >> 32) & 0xFFFF) as u16, 32, true),
+        encode::enc_movk(reg, ((value >> 48) & 0xFFFF) as u16, 48, true),
+    ]
+}
+
+/// `hvc #0` — PSCI's own conduit on QEMU's `virt` machine without
+/// `virtualization=on`. Not in `wrela_compiler::encode` because this
+/// machine has no hypercall instruction at all (06 §5: the guest exits
+/// via a trapping store), so the one raw word is spelled here.
+const ENC_HVC0: u32 = 0xD400_0002;
+
+/// `x0 = PSCI SYSTEM_OFF; hvc #0` — how a QEMU guest ends. Nothing after
+/// it ever runs.
+fn qemu_system_off(w: &mut Vec<u32>) {
+    w.extend(qemu_load_imm(0, 0x8400_0008));
+    w.push(ENC_HVC0);
+}
+
+fn build_qemu_smoke_guest() -> Vec<u8> {
+    use wrela_compiler::encode;
+    let mut w = Vec::new();
+    w.extend(qemu_load_imm(9, VIRT_UART));
+    for b in b"WRELA-SMOKE\n" {
+        w.push(encode::enc_movz(10, *b as u16, 0, false));
+        w.push(encode::enc_str_w_imm(10, 9, 0));
+    }
+    qemu_system_off(&mut w);
+    w.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+// --- the QEMU-side driver ---------------------------------------------------
+//
+// virtio-mmio v2 register file (OASIS VIRTIO 1.2 §4.2.2) — the transport
+// **this machine does not have** (06 §3/§5 delete discovery and trapping
+// notification alike), present here for exactly one reason: it is how a
+// guest reaches QEMU's virtio-blk, and QEMU's virtio-blk is the second
+// implementation decision 2a wants to disagree with. Nothing below is
+// modelled by `wrela-vmm`, and nothing below should ever be.
+
+const MMIO_MAGIC: u16 = 0x000;
+const MMIO_VERSION: u16 = 0x004;
+const MMIO_DEVICE_ID: u16 = 0x008;
+const MMIO_DEVICE_FEATURES: u16 = 0x010;
+const MMIO_DEVICE_FEATURES_SEL: u16 = 0x014;
+const MMIO_DRIVER_FEATURES: u16 = 0x020;
+const MMIO_DRIVER_FEATURES_SEL: u16 = 0x024;
+const MMIO_QUEUE_SEL: u16 = 0x030;
+const MMIO_QUEUE_NUM: u16 = 0x038;
+const MMIO_QUEUE_READY: u16 = 0x044;
+const MMIO_QUEUE_NOTIFY: u16 = 0x050;
+const MMIO_STATUS: u16 = 0x070;
+const MMIO_QUEUE_DESC_LOW: u16 = 0x080;
+const MMIO_QUEUE_DESC_HIGH: u16 = 0x084;
+const MMIO_QUEUE_DRIVER_LOW: u16 = 0x090;
+const MMIO_QUEUE_DRIVER_HIGH: u16 = 0x094;
+const MMIO_QUEUE_DEVICE_LOW: u16 = 0x0A0;
+const MMIO_QUEUE_DEVICE_HIGH: u16 = 0x0A4;
+
+const VIRT_MMIO_BASE: u64 = 0x0A00_0000;
+const VIRT_MMIO_STRIDE: u64 = 0x200;
+const VIRT_MMIO_SLOTS: u64 = 32;
+/// Where QEMU's generic loader puts this guest, and therefore where its
+/// own trailing data region (ring + buffers) lives.
+const QEMU_LOAD_ADDR: u64 = 0x4010_0000;
+
+/// The shared shape of both sides of the oracle: the identical ring
+/// geometry, descriptor chains, and payload `blk_conformance_image` gives
+/// the wrela VMM, expressed as offsets within one data region.
+mod blk_shape {
+    pub const QUEUE_SIZE: u64 = 8;
+    pub const DESC_SIZE: u64 = 16;
+    pub const DESC_F_NEXT: u16 = 1;
+    pub const DESC_F_WRITE: u16 = 2;
+    pub const T_IN: u32 = 0;
+    pub const T_OUT: u32 = 1;
+    pub const OFF_DESC: u64 = 0x000;
+    pub const OFF_AVAIL: u64 = 0x080;
+    pub const OFF_USED: u64 = 0x0C0;
+    pub const OFF_HDR1: u64 = 0x150;
+    pub const OFF_HDR2: u64 = 0x160;
+    pub const OFF_STATUS1: u64 = 0x170;
+    pub const OFF_STATUS2: u64 = 0x178;
+    pub const OFF_SRC: u64 = 0x200;
+    pub const OFF_DST: u64 = 0x400;
+    pub const DATA_REGION_SIZE: u64 = 0x600;
+
+    /// The one payload both sides write and read back.
+    pub fn payload() -> Vec<u8> {
+        (0..512u32).map(|i| ((i * 7 + 3) % 256) as u8).collect()
+    }
+}
+
+/// Writes the ring's own prefilled bytes (descriptor chains, both request
+/// headers, the poisoned status bytes, the source payload) into `img` at
+/// `data_off`, given the region's guest-physical `data_base`. **The one
+/// copy both sides of the oracle use**, so "the same ring" is a fact
+/// rather than a claim: `blk_conformance_image` (the wrela VMM's own
+/// image) and `build_qemu_blk_guest` (QEMU's) both call this.
+fn fill_blk_ring(img: &mut [u8], data_off: usize, data_base: u64) {
+    use blk_shape::*;
+    let put = |img: &mut [u8], off: u64, bytes: &[u8]| {
+        let at = data_off + off as usize;
+        img[at..at + bytes.len()].copy_from_slice(bytes);
+    };
+    let desc = |img: &mut [u8], i: u64, addr: u64, len: u32, flags: u16, next: u16| {
+        let at = OFF_DESC + i * DESC_SIZE;
+        put(img, at, &addr.to_le_bytes());
+        put(img, at + 8, &len.to_le_bytes());
+        put(img, at + 12, &flags.to_le_bytes());
+        put(img, at + 14, &next.to_le_bytes());
+    };
+    put(img, OFF_HDR1, &T_OUT.to_le_bytes());
+    put(img, OFF_HDR1 + 8, &0u64.to_le_bytes());
+    desc(img, 0, data_base + OFF_HDR1, 16, DESC_F_NEXT, 1);
+    desc(img, 1, data_base + OFF_SRC, 512, DESC_F_NEXT, 2);
+    desc(img, 2, data_base + OFF_STATUS1, 1, DESC_F_WRITE, 0);
+    put(img, OFF_HDR2, &T_IN.to_le_bytes());
+    put(img, OFF_HDR2 + 8, &0u64.to_le_bytes());
+    desc(img, 3, data_base + OFF_HDR2, 16, DESC_F_NEXT, 4);
+    desc(
+        img,
+        4,
+        data_base + OFF_DST,
+        512,
+        DESC_F_NEXT | DESC_F_WRITE,
+        5,
+    );
+    desc(img, 5, data_base + OFF_STATUS2, 1, DESC_F_WRITE, 0);
+    // `0` is `STATUS_OK` and the image is zero-padded, so an unwritten
+    // status byte would read as a pass. Poison both.
+    put(img, OFF_STATUS1, &[0xEE]);
+    put(img, OFF_STATUS2, &[0xEE]);
+    put(img, OFF_SRC, &blk_shape::payload());
+}
+
+/// A bare-metal virtio-mmio blk driver, hand-assembled, for QEMU's `virt`
+/// machine. Scans the 32 virtio-mmio transports for a block device, brings
+/// it up (reset -> ACKNOWLEDGE -> DRIVER -> features -> FEATURES_OK ->
+/// queue -> DRIVER_OK), publishes the *same two chains* the wrela side
+/// publishes, polls the used ring, then prints one line the harness parses:
+///
+/// ```text
+/// R <used[0..8]> <used[8..16]> <used[16..24]> <fnv(SRC||status1)> <fnv(DST||status2)>
+/// ```
+///
+/// Every failure has its own printed marker instead of a hang (`NODEV`,
+/// `FEAT`, `TMO1`, `TMO2`), so a broken oracle says which step broke.
+fn build_qemu_blk_guest() -> Vec<u8> {
+    use blk_shape::*;
+    use wrela_compiler::encode;
+    use wrela_compiler::encode::Cond;
+
+    // Registers: x20 = transport base, x21 = data base, x22 = UART,
+    // x9/x10/x11/x12/x13/x14/x15/x16 = scratch, x23..x27 = results.
+    let build = |data_base: u64| -> Vec<u32> {
+        let mut w: Vec<u32> = Vec::new();
+        let li = |w: &mut Vec<u32>, reg: u8, v: u64| w.extend(qemu_load_imm(reg, v));
+
+        li(&mut w, 22, VIRT_UART);
+        li(&mut w, 21, data_base);
+
+        // --- print one byte through the UART -------------------------
+        let putc = |w: &mut Vec<u32>, b: u8| {
+            w.push(encode::enc_movz(10, b as u16, 0, false));
+            w.push(encode::enc_str_w_imm(10, 22, 0));
+        };
+        let puts = |w: &mut Vec<u32>, s: &[u8]| {
+            for b in s {
+                putc(w, *b);
+            }
+        };
+
+        // --- scan the 32 virtio-mmio transports for DeviceID 2 --------
+        li(&mut w, 20, VIRT_MMIO_BASE);
+        li(&mut w, 19, VIRT_MMIO_SLOTS);
+        let scan_top = w.len();
+        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_MAGIC));
+        li(&mut w, 10, 0x7472_6976); // 'virt'
+        w.push(encode::enc_cmp_reg(9, 10, false));
+        let magic_ne = w.len();
+        w.push(0); // b.ne next
+        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_VERSION));
+        w.push(encode::enc_cmp_imm(9, 2, false));
+        let version_ne = w.len();
+        w.push(0); // b.ne next
+        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_DEVICE_ID));
+        w.push(encode::enc_cmp_imm(9, 2, false)); // VIRTIO_ID_BLOCK
+        let id_eq = w.len();
+        w.push(0); // b.eq found
+        let next_slot = w.len();
+        li(&mut w, 10, VIRT_MMIO_STRIDE);
+        w.push(encode::enc_add_reg(20, 20, 10, true));
+        w.push(encode::enc_subs_imm(19, 19, 1, true));
+        {
+            let this = w.len();
+            w.push(encode::enc_cbnz(
+                19,
+                ((scan_top as i64 - this as i64) * 4) as i32,
+                true,
+            ));
+        }
+        puts(&mut w, b"NODEV\n");
+        qemu_system_off(&mut w);
+        let found = w.len();
+        for (at, cond) in [(magic_ne, Cond::Ne), (version_ne, Cond::Ne)] {
+            w[at] = encode::enc_b_cond(cond, ((next_slot as i64 - at as i64) * 4) as i32);
+        }
+        w[id_eq] = encode::enc_b_cond(Cond::Eq, ((found as i64 - id_eq as i64) * 4) as i32);
+
+        // --- bring-up (VIRTIO 1.2 §3.1) -------------------------------
+        let status = |w: &mut Vec<u32>, bits: u16| {
+            w.push(encode::enc_movz(10, bits, 0, false));
+            w.push(encode::enc_str_w_imm(10, 20, MMIO_STATUS));
+        };
+        status(&mut w, 0); // reset
+        status(&mut w, 1); // ACKNOWLEDGE
+        status(&mut w, 3); // ACKNOWLEDGE | DRIVER
+
+        // Feature word 1 (bits 32..63): accept VIRTIO_F_VERSION_1 (bit 32).
+        w.push(encode::enc_movz(10, 1, 0, false));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_DEVICE_FEATURES_SEL));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES_SEL));
+        w.push(encode::enc_movz(10, 1, 0, false));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES));
+        // Feature word 0: accept VIRTIO_BLK_F_FLUSH (bit 9) if offered.
+        w.push(encode::enc_movz(10, 0, 0, false));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_DEVICE_FEATURES_SEL));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES_SEL));
+        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_DEVICE_FEATURES));
+        w.push(encode::enc_movz(10, 1 << 9, 0, false));
+        w.push(encode::enc_and_reg(10, 10, 9, false));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES));
+
+        status(&mut w, 3 | 8); // FEATURES_OK
+        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_STATUS));
+        w.push(encode::enc_movz(10, 8, 0, false));
+        w.push(encode::enc_and_reg(9, 9, 10, false));
+        let feat_ok = w.len();
+        w.push(0); // cbnz x9, ok
+        puts(&mut w, b"FEAT\n");
+        qemu_system_off(&mut w);
+        {
+            let target = w.len();
+            w[feat_ok] = encode::enc_cbnz(9, ((target as i64 - feat_ok as i64) * 4) as i32, true);
+        }
+
+        // --- queue 0 --------------------------------------------------
+        w.push(encode::enc_movz(10, 0, 0, false));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_SEL));
+        w.push(encode::enc_movz(10, QUEUE_SIZE as u16, 0, false));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_NUM));
+        for (lo, hi, addr) in [
+            (
+                MMIO_QUEUE_DESC_LOW,
+                MMIO_QUEUE_DESC_HIGH,
+                data_base + OFF_DESC,
+            ),
+            (
+                MMIO_QUEUE_DRIVER_LOW,
+                MMIO_QUEUE_DRIVER_HIGH,
+                data_base + OFF_AVAIL,
+            ),
+            (
+                MMIO_QUEUE_DEVICE_LOW,
+                MMIO_QUEUE_DEVICE_HIGH,
+                data_base + OFF_USED,
+            ),
+        ] {
+            li(&mut w, 10, addr & 0xFFFF_FFFF);
+            w.push(encode::enc_str_w_imm(10, 20, lo));
+            li(&mut w, 10, addr >> 32);
+            w.push(encode::enc_str_w_imm(10, 20, hi));
+        }
+        w.push(encode::enc_movz(10, 1, 0, false));
+        w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_READY));
+        status(&mut w, 3 | 8 | 4); // DRIVER_OK
+
+        // --- publish + notify + poll, twice ---------------------------
+        let mut timeout_markers: Vec<(usize, &[u8])> = Vec::new();
+        for (round, (avail_idx, want_used)) in [(1u64, 1u32), (2u64, 2u32)].iter().enumerate() {
+            // avail: one aligned 64-bit store of flags/idx/ring[0]/ring[1].
+            li(&mut w, 9, data_base + OFF_AVAIL);
+            li(&mut w, 10, (avail_idx << 16) | (3 << 48));
+            w.push(encode::enc_str_x_imm(10, 9, 0));
+            // The doorbell QEMU actually has: a trapping MMIO write.
+            w.push(encode::enc_movz(10, 0, 0, false));
+            w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_NOTIFY));
+            // Poll used.idx, bounded.
+            li(&mut w, 12, 200_000_000);
+            li(&mut w, 9, data_base + OFF_USED);
+            let poll_top = w.len();
+            w.push(encode::enc_ldr_w_imm(10, 9, 0)); // flags | idx<<16
+            w.push(encode::enc_lsr_imm(10, 10, 16, false));
+            w.push(encode::enc_cmp_imm(10, *want_used as u16, false));
+            let done = w.len();
+            w.push(0); // b.eq done
+            w.push(encode::enc_subs_imm(12, 12, 1, true));
+            {
+                let this = w.len();
+                w.push(encode::enc_cbnz(
+                    12,
+                    ((poll_top as i64 - this as i64) * 4) as i32,
+                    true,
+                ));
+            }
+            let marker: &[u8] = if round == 0 { b"TMO1\n" } else { b"TMO2\n" };
+            timeout_markers.push((w.len(), marker));
+            puts(&mut w, marker);
+            qemu_system_off(&mut w);
+            let target = w.len();
+            w[done] = encode::enc_b_cond(Cond::Eq, ((target as i64 - done as i64) * 4) as i32);
+        }
+        let _ = timeout_markers;
+
+        // --- read the three used-ring words and both status bytes -----
+        li(&mut w, 9, data_base + OFF_USED);
+        w.push(encode::enc_ldr_x_imm(23, 9, 0));
+        w.push(encode::enc_ldr_x_imm(24, 9, 8));
+        w.push(encode::enc_ldr_x_imm(25, 9, 16));
+        li(&mut w, 9, data_base + OFF_STATUS1);
+        w.push(encode::enc_ldrb_imm(19, 9, 0));
+        li(&mut w, 9, data_base + OFF_STATUS2);
+        w.push(encode::enc_ldrb_imm(28, 9, 0));
+
+        // --- FNV-1a over (buffer || status), twice --------------------
+        // Matches `wrela_vmm::record::digest_hex` exactly: h = OFFSET;
+        // for b: h ^= b; h *= PRIME.
+        let fnv = |w: &mut Vec<u32>, start: u64, len: u64, status_at: u64, out: u8| {
+            li(w, 13, 0xcbf2_9ce4_8422_2325); // hash
+            li(w, 14, 0x0000_0100_0000_01b3); // prime
+            li(w, 11, start);
+            li(w, 15, start + len);
+            let top = w.len();
+            w.push(encode::enc_ldrb_imm(16, 11, 0));
+            w.push(encode::enc_eor_reg(13, 13, 16, true));
+            w.push(encode::enc_mul(13, 13, 14, true));
+            w.push(encode::enc_add_imm(11, 11, 1, true));
+            w.push(encode::enc_cmp_reg(11, 15, true));
+            {
+                let this = w.len();
+                w.push(encode::enc_b_cond(
+                    Cond::Ne,
+                    ((top as i64 - this as i64) * 4) as i32,
+                ));
+            }
+            li(w, 11, status_at);
+            w.push(encode::enc_ldrb_imm(16, 11, 0));
+            w.push(encode::enc_eor_reg(13, 13, 16, true));
+            w.push(encode::enc_mul(13, 13, 14, true));
+            w.push(encode::enc_mov_reg(out, 13, true));
+        };
+        fnv(
+            &mut w,
+            data_base + OFF_SRC,
+            512,
+            data_base + OFF_STATUS1,
+            26,
+        );
+        fnv(
+            &mut w,
+            data_base + OFF_DST,
+            512,
+            data_base + OFF_STATUS2,
+            27,
+        );
+
+        // --- print `R <5 hex words>\n` --------------------------------
+        let print_hex = |w: &mut Vec<u32>, src: u8| {
+            // x11 = shift, counting 60, 56, ... 0.
+            w.push(encode::enc_movz(11, 60, 0, true));
+            let top = w.len();
+            w.push(encode::enc_lsr_reg(12, src, 11, true));
+            w.push(encode::enc_movz(13, 0xF, 0, true));
+            w.push(encode::enc_and_reg(12, 12, 13, true));
+            w.push(encode::enc_cmp_imm(12, 10, true));
+            // digit = nibble + ('0' or 'a' - 10), chosen branch-free.
+            w.push(encode::enc_movz(13, b'0' as u16, 0, true));
+            w.push(encode::enc_movz(14, (b'a' - 10) as u16, 0, true));
+            // `Cc` is `Lo`: unsigned lower, i.e. nibble < 10.
+            w.push(encode::enc_csel(13, 13, 14, Cond::Cc, true));
+            w.push(encode::enc_add_reg(12, 12, 13, true));
+            w.push(encode::enc_str_w_imm(12, 22, 0));
+            w.push(encode::enc_subs_imm(11, 11, 4, true));
+            {
+                let this = w.len();
+                w.push(encode::enc_b_cond(
+                    Cond::Ge,
+                    ((top as i64 - this as i64) * 4) as i32,
+                ));
+            }
+        };
+        puts(&mut w, b"R ");
+        for reg in [23u8, 24, 25, 19, 28, 26, 27] {
+            print_hex(&mut w, reg);
+            putc(&mut w, b' ');
+        }
+        putc(&mut w, b'\n');
+        qemu_system_off(&mut w);
+        w
+    };
+
+    let probe_len = build(0).len();
+    let data_base = {
+        let after_code = QEMU_LOAD_ADDR + (probe_len as u64) * 4;
+        after_code.div_ceil(16) * 16
+    };
+    let words = build(data_base);
+    assert_eq!(words.len(), probe_len, "guest length must not move");
+    let mut img: Vec<u8> = words.iter().flat_map(|x| x.to_le_bytes()).collect();
+    img.resize((data_base - QEMU_LOAD_ADDR + DATA_REGION_SIZE) as usize, 0);
+    let data_off = (data_base - QEMU_LOAD_ADDR) as usize;
+    fill_blk_ring(&mut img, data_off, data_base);
+    img
 }
