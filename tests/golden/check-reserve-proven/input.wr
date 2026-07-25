@@ -70,7 +70,7 @@ pub struct BlkDriver:
     # parameter (nothing constructs an `own[P] T` yet; same honest state
     # as H2a's `Untrusted[T]` parameter).
     fn prepare_read(mut self, take buffer: own[BlockPayloads] DmaBlock,
-                    lba: u64) -> QueueOp:
+                    lba: u64) -> QueueOp[own[BlockPayloads] DmaBlock]:
         permit = self.queue.reserve_proven(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,

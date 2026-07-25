@@ -53,12 +53,16 @@ struct VirtioBlock:
 pub struct BlkDriver:
     irq_regs: Mmio[VirtioIrqMmio]
     low_regs: Mmio[VirtioLowAckMmio]
+    # H1 stops at claim + map_partition; the claimed state is stored so it
+    # is not dropped (02 §3.1). Full chain to Running is boot-device-bringup.
+    claimed: DriverClaimedDevice[VirtioBlock]
     handled_bits: u32
 
     init(mut self, take cap: DeviceCap[VirtioBlock]):
         claimed = VirtioBlock.claim(cap=take cap)
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         self.low_regs = claimed.map_partition(VirtioLowAckMmio)
+        self.claimed = take claimed
         self.handled_bits = 0
 
     fn on_queue_irq(mut self):

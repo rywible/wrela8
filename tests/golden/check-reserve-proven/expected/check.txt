@@ -24,5 +24,5 @@ Module path=examples.check_reserve_proven
     field queue: VirtQueue[..8]
     field capacity_sectors: u64
     init(mut self, cap: take DeviceCap[VirtioBlock], control_pool: take DmaPool[BlockControl, 512]) -> Result[unit, BootError]
-    fn prepare_read(mut self, buffer: take own[BlockPayloads] DmaBlock, lba: read u64) -> QueueOp
+    fn prepare_read(mut self, buffer: take own[BlockPayloads] DmaBlock, lba: read u64) -> QueueOp[own[BlockPayloads] DmaBlock]
   Fn build() -> Image

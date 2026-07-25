@@ -15,10 +15,12 @@ struct VirtioBlock:
 @driver
 pub struct BlkDriver:
     regs: Mmio[VirtioIrqMmio]
+    claimed: DriverClaimedDevice[VirtioBlock]
 
     init(mut self, take cap: DeviceCap[VirtioBlock]):
         claimed = VirtioBlock.claim(cap=take cap)
         self.regs = claimed.map_partition(VirtioIrqMmio)
+        self.claimed = take claimed
 
     pub async fn on_irq(mut self):
         status = self.regs.interrupt_status.read()

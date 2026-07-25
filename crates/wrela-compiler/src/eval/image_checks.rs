@@ -1214,6 +1214,10 @@ pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
         // resources, one opaque word each, never constructible from source.
         || name == "QueuePermit"
         || name == "QueueOp"
+        // plans/M7.md item E3: `Receipt[P]` (03-hardware.md §5) — the
+        // sealed resource state machine for published work. One opaque
+        // word (caller endpoint); never constructible from source.
+        || name == "Receipt"
 }
 
 /// The noun phrase (with its normative citation) a diagnostic uses for one
@@ -1228,8 +1232,45 @@ pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
         "a sealed queue (03-hardware.md §4)"
     } else if name == "QueuePermit" || name == "QueueOp" {
         "a sealed queue value (03-hardware.md §4)"
+    } else if name == "Receipt" {
+        "a sealed receipt (03-hardware.md §5)"
     } else {
         "a capability type (03-hardware.md §1)"
+    }
+}
+
+/// 02-language.md §3.1's second bullet: protocol resources whose only
+/// consumers are protocol operations — every control-flow path must
+/// explicitly consume, return, or transfer them (or cover with `defer`).
+/// plans/M7.md item E3 flips `values.resource.protocol-consumption`.
+///
+/// **In:** `DeviceCap` / `Mmio` / `IrqCap` (capability types whose only
+/// consumers are protocol ops); every §9 bring-up state; `VirtQueue` /
+/// `QueuePermit` / `QueueOp` / `Receipt`.
+///
+/// **Out — and why that is not an exception:**
+/// - `DmaPool[P, N]`: §3.1's *first* bullet names "pool handles" as the
+///   compiler-known non-failing reclaim case. A `DmaPool` is that handle;
+///   putting it in bullet two would invent a consume-on-every-path
+///   obligation the first bullet already answers.
+/// - `DmaShared[P, L]`: permanently shared control memory (03 §3). Its
+///   field-wise ops do not consume the handle, and the language has no
+///   terminal sink for a bare `DmaShared` value (returning one is refused;
+///   `VirtQueue.configure` keeps the shared memory inside the queue).
+///   Forcing bullet two here would require a laundering holder or a
+///   vacuous drop. When a real sink exists, add the name.
+pub(crate) fn is_protocol_consuming_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "DeviceCap" | "Mmio" | "IrqCap" | "VirtQueue" | "QueuePermit" | "QueueOp" | "Receipt"
+    ) || is_protocol_state_type_name(name)
+}
+
+/// Structural form of `is_protocol_consuming_type_name` over a `Type`.
+pub(crate) fn is_protocol_consuming_type(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, _) => is_protocol_consuming_type_name(name),
+        _ => false,
     }
 }
 

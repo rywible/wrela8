@@ -1,0 +1,87 @@
+module examples.err_handoff_no_transition
+
+# plans/M7.md item E3 / 03-hardware.md §5: a handoff method's every path
+# must return queue.publish(...) or queue.reject(...).
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    kind: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+pool BlockControl
+pool BlockPayloads
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    queue: VirtQueue[..8]
+    device: RunningDevice[VirtioBlock]
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=8,
+        )?
+        _cap = negotiated.read_capacity_sectors()?
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    pub fn submit_read(mut self, take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
+        permit = self.queue.reserve_proven(descriptors=3)
+        operation = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=0, reserved=0, sector=0),
+            payload=take buffer,
+            device_writes_payload=true,
+            status=BlkReqStatus(status=0xff),
+        )
+        # Storing the receipt and returning the local is not a producer
+        # transition — 03 §5 requires `return queue.publish(...)` directly.
+        r = self.queue.publish(operation=take operation)
+        return take r
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-handoff-no-transition", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    _payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=4)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

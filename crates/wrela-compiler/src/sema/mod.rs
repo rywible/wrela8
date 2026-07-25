@@ -24,6 +24,7 @@ pub mod access;
 pub mod bodies;
 pub mod flow;
 pub mod generics;
+pub mod handoff;
 pub mod imports;
 pub mod matches;
 pub mod paths;
@@ -207,6 +208,10 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     program.layouts = layouts;
     access::check(&specialized, &decl_items, &mctx)?;
     flow::check(&specialized, &decl_items, &mctx)?;
+    // plans/M7.md item E3: handoff signature + producer-transition body
+    // (03-hardware.md §5). Runs after flow so a missing return is already
+    // diagnosed; this pass only insists every `return` is publish/reject.
+    handoff::check(&specialized, &decl_items, &mctx)?;
     matches::check(&specialized, &decl_items, &mctx)?;
     program.instantiations = generics::check(&specialized, &decl_items, &mctx, path)?;
     crate::eval::check_comptime(&program)?;
@@ -454,6 +459,7 @@ pub fn check_program_typed(
         program.layouts = layouts.get(key).cloned().unwrap_or_default();
         access::check(module, decl_items, mctx)?;
         flow::check(module, decl_items, mctx)?;
+        handoff::check(module, decl_items, mctx)?;
         matches::check(module, decl_items, mctx)?;
         let empty_path = String::new();
         let path = paths.get(key).unwrap_or(&empty_path);

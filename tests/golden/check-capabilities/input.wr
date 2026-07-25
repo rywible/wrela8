@@ -91,17 +91,23 @@ pub struct IrqPartition:
 
 @driver
 pub struct BlkDriver:
+    # Minted capability stored — this golden pins containment/provenance
+    # typing, not claim (check-device-claim). Dropping `cap` is illegal
+    # under 02-language.md §3.1 protocol consumption.
+    held: DeviceCap[VirtioBlock]
     sectors: u64
 
     # §1's own worked-example constructor shape, minus the parts later
     # items own: `take pool: DmaPool[P, N]` needs item D to mint a pool
     # and `-> Result[unit, BootError]` needs item H's bring-up chain.
     init(mut self, take cap: DeviceCap[VirtioBlock], sectors: u64):
+        self.held = take cap
         self.sectors = sectors
 
     # A private helper taking a capability: the driver delegating inside
     # its own authority. The same signature on a `pub` method is
-    # `golden/err-cap-driver-message`.
+    # `golden/err-cap-driver-message`. `read vector` is a loan — not an
+    # owned drop obligation.
     fn service(read self, read vector: IrqCap[u32], read bundle: RegsBundle) -> u64:
         return ack_vector(vector) + bundle.tag_of() + self.sectors
 

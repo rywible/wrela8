@@ -49,6 +49,11 @@ pool BlockControl
 pub struct BlkDriver:
     sectors: u64
 
+    # `DmaPool` is §3.1 bullet one's pool-handle reclaim — dropping
+    # `control` in `init` is fine. `DmaShared` is permanently shared
+    # (03 §3) with no terminal sink yet, so it is not in the
+    # protocol-consumption predicate; this method still proves `take`
+    # moves (err-dma-shared-lend is the loan rejection).
     init(mut self, take control: DmaPool[BlockControl, 4096], sectors: u64):
         self.sectors = sectors
 

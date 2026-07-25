@@ -14,8 +14,10 @@ struct Dev:
 @driver
 pub struct BlkDriver:
     regs: Mmio[Regs]
+    claimed: DriverClaimedDevice[Dev]
 
     init(mut self, take cap: DeviceCap[Dev]):
         claimed = Dev.claim(cap=take cap)
         self.regs = claimed.map_partition(Regs)
+        self.claimed = take claimed
         _ = self.regs.status.read()

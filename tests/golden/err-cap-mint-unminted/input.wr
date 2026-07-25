@@ -23,9 +23,11 @@ struct BlockHw:
 
 @driver
 pub struct BlkDriver:
+    held: Mmio[VirtioIrqMmio]
     sectors: u64
 
     init(mut self, take regs: Mmio[VirtioIrqMmio], sectors: u64):
+        self.held = take regs
         self.sectors = sectors
 
     pub fn capacity(read self) -> u64:

@@ -56,7 +56,7 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    fn bad(mut self, take buffer: own[BlockPayloads] DmaBlock) -> QueueOp:
+    fn bad(mut self, take buffer: own[BlockPayloads] DmaBlock) -> QueueOp[own[BlockPayloads] DmaBlock]:
         permit = self.queue.reserve_proven(descriptors=3)
         return self.queue.prepare_block(
             permit=permit,

@@ -24,14 +24,15 @@ Program
       0003: SetField base=t0 index=0 value=t4
       0004: Copy dst=t5 src=t3
       0005: SetField base=t0 index=1 value=t5
-      0006: ConstInt dst=t6 ty=u32 value=0
-      0007: SetField base=t0 index=2 value=t6
-      0008: Return
+      0006: SetField base=t0 index=2 value=t3
+      0007: ConstInt dst=t6 ty=u32 value=0
+      0008: SetField base=t0 index=3 value=t6
+      0009: Return
   Fn key=BlkDriver.last_handled ret=u32 temps=2 receiver=t0:read
     Temp t0 ty=BlkDriver
     Temp t1 ty=u32
     Body
-      0000: Project dst=t1 base=t0 index=2
+      0000: Project dst=t1 base=t0 index=3
       0001: Return value=t1
       0002: Return
   Fn key=BlkDriver.on_queue_irq ret=unit temps=11 receiver=t0:mut
@@ -56,7 +57,7 @@ Program
       0006: ConstInt dst=t7 ty=u32 value=0
       0007: Compare op=!= ty=u32 dst=t8 lhs=t6 rhs=t7
       0008: JumpIfFalse cond=t8 target=0014
-      0009: SetField base=t0 index=2 value=t6
+      0009: SetField base=t0 index=3 value=t6
       0010: Project dst=t9 base=t0 index=0
       0011: MmioWrite base=t9 offset=0x64 ty=u32 value=t6
       0012: ConstUnit dst=t10

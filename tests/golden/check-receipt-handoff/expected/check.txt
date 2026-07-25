@@ -1,0 +1,27 @@
+Module path=examples.check_receipt_handoff
+  Struct VirtioIrqMmio data
+    field interrupt_status: ReadOnly[u32]
+  Struct BlkReqHeader data
+    field kind: u32
+    field reserved: u32
+    field sector: u64
+  Struct BlkReqStatus data
+    field status: u8
+  Struct DmaBlock data
+    field kind: u64
+    field pad: u64
+  Struct VirtioBlock data
+    field id: u32
+  Enum Feature data
+    variant Flush
+  Const QDEPTH: usize
+  Pool BlockControl
+  Pool BlockPayloads
+  Struct BlkDriver resource
+    field irq_regs: Mmio[VirtioIrqMmio]
+    field device: RunningDevice[VirtioBlock]
+    field queue: VirtQueue[..8]
+    field capacity_sectors: u64
+    init(mut self, cap: take DeviceCap[VirtioBlock], control_pool: take DmaPool[BlockControl, 512]) -> Result[unit, BootError]
+    handoff fn submit_read(mut self, lba: read u64, buffer: take own[BlockPayloads] DmaBlock) -> Receipt[own[BlockPayloads] DmaBlock]
+  Fn build() -> Image

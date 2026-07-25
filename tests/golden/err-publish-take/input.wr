@@ -1,6 +1,7 @@
-module examples.err_publish_e3
+module examples.err_publish_take
 
-# plans/M7.md item E2 leaves `publish` fail-closed by name for item E3.
+# plans/M7.md item E3: publish consumes the operation — `operation=take`
+# is load-bearing (mirrors err-prepare-block-take).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -55,7 +56,8 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    fn bad(mut self, take buffer: own[BlockPayloads] DmaBlock) -> unit:
+    pub fn submit_read(mut self, take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
         permit = self.queue.reserve_proven(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
@@ -64,12 +66,11 @@ pub struct BlkDriver:
             device_writes_payload=true,
             status=BlkReqStatus(status=0xff),
         )
-        _ = self.queue.publish(operation=take operation)
-        return unit
+        return self.queue.publish(operation=operation)
 
 @image
 pub fn build() -> Image:
-    img = Image(name="err-publish-e3", target=Target.wrela_machine_v1)
+    img = Image(name="err-publish-take", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](
         transport=0x2000,
         capacity_sectors=16,

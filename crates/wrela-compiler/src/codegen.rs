@@ -1716,6 +1716,23 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
         }
+        // plans/M7.md item E3 / decision 16: the sealed write *order* is an
+        // mwir fact (`QueuePublish order=[...]`). Real DRAM stores against
+        // pool-backed addresses wait for E4's image-bound `own[P] T`
+        // wiring — inventing stack addresses as descriptor targets would
+        // pretend a transfer payload lived in a declared pool. Mint the
+        // Receipt word; keep the operands live.
+        Inst::QueuePublish {
+            dst,
+            queue,
+            operation,
+            steps: _,
+        } => {
+            ctx.load_slot(X_A, ctx.frame.off(*queue));
+            ctx.load_slot(X_B, ctx.frame.off(*operation));
+            ctx.load_imm(0, 0);
+            ctx.store_slot(0, ctx.frame.off(*dst));
+        }
     }
     Ok(())
 }

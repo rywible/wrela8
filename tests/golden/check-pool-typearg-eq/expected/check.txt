@@ -1,0 +1,13 @@
+Module path=examples.check_pool_typearg_eq
+  Struct RingControl data
+    field flags: u16
+    field idx: u16
+  Struct BlockHw data
+    field id: u32
+  Pool BlockControl
+  Struct BlkDriver resource
+    field ring: Option[DmaShared[BlockControl, RingControl]]
+    field sectors: u64
+    init(mut self, control: take DmaPool[BlockControl, 4096], sectors: read u64) -> unit
+    fn capacity(read self) -> u64
+  Fn build() -> Image

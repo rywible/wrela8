@@ -50,6 +50,7 @@ struct VirtioBlock:
 pub struct BlkDriver:
     irq_regs: Mmio[VirtioIrqMmio]
     probe_regs: Mmio[BlkProbeMmio]
+    claimed: DriverClaimedDevice[VirtioBlock]
     handled_bits: u32
 
     init(mut self, take cap: DeviceCap[VirtioBlock]):
@@ -59,6 +60,7 @@ pub struct BlkDriver:
         claimed = VirtioBlock.claim(cap=take cap)
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         self.probe_regs = claimed.map_partition(BlkProbeMmio)
+        self.claimed = take claimed
         self.handled_bits = 0
 
         # A real load at base+0x60, 32 bits wide.

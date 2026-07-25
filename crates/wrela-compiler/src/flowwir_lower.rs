@@ -1991,17 +1991,18 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                  (plans/M7.md item H2a); an async narrowing is",
             ))
         }
-        // plans/M7.md item E2: reserve/prepare lower on the sync path;
-        // an async driver method that uses them (submit_read) is the
-        // handoff convention (E3) and still fails closed until that lands.
+        // plans/M7.md item E2/E3: reserve/prepare/publish/reject lower on
+        // the sync path; an async body that uses them still fails closed
+        // until a real async submit path exists (handoff methods themselves
+        // are synchronous — 03 §5).
         TypedExprKind::Intrinsic { key, .. }
             if crate::sema::bodies::is_queue_op_intrinsic(key)
                 || crate::sema::bodies::is_queue_op_deferred(key).is_some() =>
         {
             Err(FlowError::unimplemented(
-                "a queue operation (03-hardware.md §4) inside an `async fn`: the synchronous \
-                 path types and lowers `reserve_proven`/`prepare_block` (plans/M7.md item E2); \
-                 an async submit that publishes is plans/M7.md item E3 — until then this is",
+                "a queue operation (03-hardware.md §4/§5) inside an `async fn`: the synchronous \
+                 path types and lowers `reserve_proven`/`prepare_block`/`publish`/`reject` \
+                 (plans/M7.md items E2/E3); an async body that publishes is",
             ))
         }
         TypedExprKind::Await(_) | TypedExprKind::GroupChild(_) => Err(FlowError::unimplemented(

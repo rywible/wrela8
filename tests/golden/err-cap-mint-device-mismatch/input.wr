@@ -14,9 +14,11 @@ struct NicHw:
 
 @driver
 pub struct BlkDriver:
+    held: DeviceCap[NicHw]
     sectors: u64
 
     init(mut self, take cap: DeviceCap[NicHw], sectors: u64):
+        self.held = take cap
         self.sectors = sectors
 
     pub fn capacity(read self) -> u64:
