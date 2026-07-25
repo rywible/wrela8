@@ -1595,34 +1595,61 @@ fn driver_wake_pending_addr(
             continue;
         }
         let Some(off) = d.wake_pending_off else {
+            // Unreachable from source: `sema` rejects `wake(D.m)` when `m`
+            // is not `@task` (`golden/err-wake-not-task`), and only a
+            // `@task` reserves the wake-pending word.
             return Err(LayoutError::new(format!(
                 "internal error: `Wake` for `{driver}` but that driver has no `@task` \
                  (no wake-pending word was reserved)"
             )));
         };
         let Some(&state_base) = placement.drivers.get(i) else {
+            // Unreachable from source: `place_runtime_tables` emits one
+            // base per `tables.drivers` entry.
             return Err(LayoutError::new(format!(
                 "internal error: `@driver` `{driver}` has no placed state"
             )));
         };
         return Ok(state_base + off);
     }
-    Err(LayoutError::new(format!(
-        "internal error: `Wake` names `{driver}`, which this image never declared as a `@driver`"
-    )))
+    // Author-reachable: a `@driver` with `wake(...)` compiled into the
+    // module, while this `@image` never declared that driver (sibling of
+    // `irq_driver_undeclared` / the LoadIrqVector soak find).
+    Err(wake_driver_undeclared(driver))
+}
+
+fn wake_driver_undeclared(driver: &str) -> LayoutError {
+    LayoutError::new(format!(
+        "`wake` names `@driver` `{driver}`, which this image never declared — add \
+         `img.driver({driver}, ...)` to the `@image` fn, or remove the `wake` \
+         (03-hardware.md §6)"
+    ))
+}
+
+fn wake_needs_rtdata(driver: &str) -> LayoutError {
+    LayoutError::new(format!(
+        "`wake` for `@driver` `{driver}` needs a sealed `@image` that declares that driver — \
+         this layout has no runtime tables for it. Add `img.driver({driver}, ...)` to an \
+         `@image` fn, or remove the `wake` (03-hardware.md §6)"
+    ))
 }
 
 /// plans/M7.md item G, decision 12: the vector bit index an `IrqCap` for
 /// `@driver` `driver` materializes. Read from the sealed graph's
 /// `vector=` on that driver's bound device — the same fact
 /// `eval::image_checks::check_vector_bindings` already validated.
+///
+/// The "no graph / driver never declared" arms are author-reachable: a
+/// `@driver` that binds an IRQ lowers a `LoadIrqVector`, and
+/// `layout_test_image` will try to patch it even when this module has no
+/// `@image` (or an `@image` that never wires that driver). Those get a
+/// named `error[build]` diagnostic — never `internal error:`, which is
+/// reserved for states only a producer bug can make. The remaining arms
+/// (`no device=`, missing `device#i`, no `vector=`) stay internal: every
+/// sealed graph that reaches here already passed `check_init_args` /
+/// `check_vector_bindings` / `check_driver_mode` (plans/M8.md item H soak,
+/// seed 8103 find).
 fn driver_irq_vector(graph: Option<&ImageGraph>, driver: &str) -> Result<u64, LayoutError> {
-    let Some(graph) = graph else {
-        return Err(LayoutError::new(format!(
-            "internal error: `LoadIrqVector` for `{driver}` needs the sealed image graph, but \
-             this layout has none"
-        )));
-    };
     // Decision 18: `LoadIrqVector` may carry `struct:BlkDriver[DriverMode.Irq]`
     // (instantiation owner) or the bare `BlkDriver`.
     let bare_want = driver
@@ -1631,6 +1658,9 @@ fn driver_irq_vector(graph: Option<&ImageGraph>, driver: &str) -> Result<u64, La
         .split('[')
         .next()
         .unwrap_or(driver);
+    let Some(graph) = graph else {
+        return Err(irq_driver_undeclared(bare_want));
+    };
     for decl in &graph.drivers {
         let crate::sema::types::Type::Named(name, _) = &decl.actor_type else {
             continue;
@@ -1656,10 +1686,20 @@ fn driver_irq_vector(graph: Option<&ImageGraph>, driver: &str) -> Result<u64, La
             ))
         });
     }
-    Err(LayoutError::new(format!(
-        "internal error: `LoadIrqVector` names `{driver}`, which this image never declared as a \
-         `@driver`"
-    )))
+    Err(irq_driver_undeclared(bare_want))
+}
+
+/// Author-reachable refusal: a `LoadIrqVector` reloc has nowhere to read
+/// the vector from. Shared by the `graph: None` path (lower-fuzz /
+/// `layout_test_image` without a `BootCtx`) and the empty/missing-driver
+/// path (`wrela test` with no `@image`, or an `@image` that never wired
+/// this driver) — both are the same author mistake.
+fn irq_driver_undeclared(driver: &str) -> LayoutError {
+    LayoutError::new(format!(
+        "`LoadIrqVector` names `@driver` `{driver}`, which this image never declared — add \
+         `img.driver({driver}, device=...)` with `vector=N` (1..=63) on the device to an \
+         `@image` fn, or drop the IRQ bind for a poll build (03-hardware.md §6/§7)"
+    ))
 }
 
 fn patch_adrp_add(
@@ -2970,9 +3010,7 @@ pub fn layout_program(
                     let (p, t) = match (placement.as_ref(), runtime_live) {
                         (Some(p), Some(t)) => (p, t),
                         _ => {
-                            return Err(LayoutError::new(format!(
-                                "internal error: `Wake` for `{driver}` needs rtdata placement"
-                            )));
+                            return Err(wake_needs_rtdata(driver));
                         }
                     };
                     let addr = driver_wake_pending_addr(p, t, driver)?;
@@ -9480,9 +9518,7 @@ pub fn layout_test_image(
                     let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
                         (Some(p), Some(t)) => (p, t),
                         _ => {
-                            return Err(LayoutError::new(format!(
-                                "internal error: `Wake` for `{driver}` needs rtdata placement"
-                            )));
+                            return Err(wake_needs_rtdata(driver));
                         }
                     };
                     let addr = driver_wake_pending_addr(p, t, driver)?;

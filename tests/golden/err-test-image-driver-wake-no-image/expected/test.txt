@@ -1,0 +1,1 @@
+error[build]: the runtime test tier could not lay out the test image: `wake` for `@driver` `BlkDriver` needs a sealed `@image` that declares that driver — this layout has no runtime tables for it. Add `img.driver(BlkDriver, ...)` to an `@image` fn, or remove the `wake` (03-hardware.md §6)

@@ -1,0 +1,37 @@
+module examples.err_test_image_driver_wake_undeclared
+
+# Sibling of `err-test-image-driver-wake-no-image`: the module has an
+# `@image` (so runtime tables exist for an actor), but that image never
+# declares the `@driver` that `wake`s.
+
+@driver
+pub struct BlkDriver:
+    pending: InterruptCell[u32]
+
+    init(mut self):
+        self.pending = InterruptCell(0)
+
+    @task
+    fn drain(mut self):
+        wake(BlkDriver.drain)
+        return unit
+
+@actor
+pub struct Ledger:
+    n: u64
+
+    pub fn bump(mut self) -> unit:
+        self.n = self.n + 1
+        return unit
+
+@test(runtime)
+pub fn t(led: Actor[Ledger]):
+    assert true
+
+@image
+pub fn build() -> Image:
+    img = Image(name="wake-undeclared", target=Target.wrela_machine_v1)
+    led = img.actor(Ledger, mailbox=4)
+    img.supervise(children=[led], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
