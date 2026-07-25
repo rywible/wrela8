@@ -34,6 +34,24 @@ everywhere else:
   clock) is small and is the runner we keep.
 - Diagnostics are the one place not to be dumb: errors are pinned golden
   artifacts and a core feature.
+- **No foreign code in an image, ever.** 01 §2 already forbids the
+  mechanisms ("There is no dynamic loader, JIT, runtime dispatch, `dyn`
+  type, or unbounded task creation"); this bullet names the consequence,
+  because the temptation recurs in one specific shape — importing a
+  general-purpose OS's driver stack instead of writing drivers. Both forms
+  are permanently out. *JIT-ing driver code at boot* deletes sealed images,
+  digest validation, whole-program reachability,
+  `compiler.repro.byte-identical`, and record/replay in a single move
+  (JIT'd code is not in the recording). *Fusing a Linux driver at comptime*
+  is self-defeating rather than merely hard: such a driver is a client of
+  kmalloc, the DMA API, workqueues, RCU, raw aliasing, and inline asm —
+  exactly the constructs this language exists to forbid — so importing one
+  turns every guarantee in the report (memory ceiling, DMA ownership,
+  checkpoint bounds, no dynamic allocation) into a false statement, and
+  GPLv2 makes every image a derivative work besides. The legitimate form of
+  "reuse Linux's driver knowledge" is to read a driver as a *specification*
+  of the hardware's register contract and then write the driver in wrela
+  under 03's rules: documentation that happens to be C, not fusion.
 
 ## The session loop
 
@@ -138,8 +156,49 @@ receipts, DMA ownership, reset — chapter 03 end to end on one device.
 Opens: `hardware.*` clauses.
 
 ### M8 — Multicore
-Placement inference, cross-core rings, 4 vCPUs, per-mailbox admission
+Placement inference, cross-core rings, **3 vCPUs**, per-mailbox admission
 recording. Flips: `actors.placement.deterministic`.
+
+Settled (2026-07-24, human decision): the machine is **3 vCPUs, always** —
+down from 4. The flagship host runs a thin Linux underneath the VMM (core
+isolation plus VFIO for devices), and one core is pinned to it permanently:
+Linux housekeeping (timers, RCU, unoffloadable kthreads), the VMM's polling
+I/O threads, and the recorder. The trade is deliberate — one core buys the
+entire device driver stack of a general-purpose OS, against a machine whose
+wins are in the overheads that surround compute (no syscalls, no context
+switches, no scheduler jitter, no allocator) rather than in ALU throughput,
+which is exactly where a message-passing machine collects them.
+
+Record the **derivation, not just the number**, so the next board change is
+arithmetic instead of rediscovery: `vCPUs = flagship core count − 1
+housekeeping core`. Today that is 4 − 1 = 3 on a Raspberry Pi 5. It is a
+machine-revision constant; a different flagship recomputes it deliberately,
+in its own commit.
+
+Rejected alternative (recorded once): keeping 4 vCPUs and moving the
+flagship to an 8-core RK3588-class board, where the A76 cluster would be
+the machine and the A55 cluster the housekeeping — a good fit on paper
+(the ISA baseline and `wrela-cost-v1` are both A76-defined) and rejected
+because the board is a product decision, not a contract-driven one.
+
+The blast radius is small and belongs to this milestone's own plan, not to
+an ad-hoc edit: 06 §1's "4 vCPUs, always" and README's summary line (both
+normative — minimal edit, same-commit clause, REVIEW-QUEUE line);
+`wrela-machine`'s stack-region doc comments; and the four `core_stack_N`
+report entries, which become three and move every golden carrying a layout
+section. Because the report enumerates cores, this is a golden-moving
+change and must land as its own reviewed commit.
+
+Note for the scaling question this decision raises: **Linux's own
+housekeeping never needs more than one core at any scale** — it is constant,
+not proportional to I/O. What scales with I/O is the VMM's own
+virtio→hardware translation (~2M descriptors/sec/core; roughly one PCIe 4.0
+x4 NVMe, or 10–40 Gbps of networking, per core). That cost exists only
+because the guest speaks virtio while the device speaks NVMe, and it goes to
+**zero** — at any I/O rate, with the virtio contract intact — on vDPA
+hardware, where the guest's queues are the device's queues and the VMM
+leaves the data path entirely. Recorded so a future bandwidth problem is
+answered by hardware selection rather than by conceding cores.
 
 ### M9 — Pixels
 Display + input devices, a dumb scalar tile compositor, golden frame
@@ -345,6 +404,14 @@ load, back to today's cost, still an index and never an address); and that
 nothing else in the runtime holds a raw address — the group arena and the
 checkpoint stub's saved-register area have not been traced closely.
 
+Take the free structural win while in there: `layout.rs` is 6339 lines
+doing five unrelated jobs — section packing, relocation resolution, report
+rendering, runtime codegen, and the boot harness. "Prefer long obvious
+files" is a good rule that this file has outgrown; the runtime routines in
+particular have nothing to do with section packing. Extracting them is
+already implied by migrating them, so the split costs nothing extra here
+and should not be deferred to a separate cleanup that never happens.
+
 Opens: `runtime.*` clauses (there are none today — every one is opened
 here). Non-goals: self-hosting the compiler; touching codegen; and
 optimizing the scheduler — M11 makes the scheduler *reachable* by the
@@ -398,6 +465,159 @@ full three-part price like everything else.
   underneath an already-recorded park/unpark decision — a cleverness-budget
   purchase against idle cores, which do not exist before M8.
 
+### M12 — The cost contract
+Perf without chasing hardware. Today `compiler.costs.predicted-vs-measured`
+is a gap whose own note says it plainly: `report::render` predicts no costs
+anywhere, so `profile` has nothing to diff its measurements against. This
+milestone builds the prediction side, and it builds it as a **contract**,
+not as a chip.
+
+**`wrela-cost-v1` — the cost model is designed, not inherited.** 06 §1
+currently says "the compiler's one cost model is the A76," which is the
+last place this machine inherits rather than designs. The ISA line one
+sentence earlier already shows the right pattern — ARMv8.2-A, "the
+intersection of Cortex-A76 and Apple Silicon," a contract real chips
+happen to satisfy. Do the same for cost: a versioned parameter file beside
+`wrela-machine-v1`'s address constants, holding the latency table, issue
+width, port set, ROB depth, cache geometry, and branch costs as **data** —
+checked in, diffable, revised only in its own commit
+(`bench/thresholds.toml`'s precedent exactly). The A76 is demoted from
+*definition* to **calibration donor**: the chip v1's constants were first
+measured on, and the floor the envelope tracks. The unit is the **v1
+work-cycle**, matching 02 §883's own word for `@budget` ("proven work
+bound") — defined by the contract, measured in the world.
+
+Three consequences, each solving a problem that would otherwise need its
+own mechanism:
+
+- **Soundness gets a direction.** The profile is the *pessimal envelope*:
+  every conforming host must meet or beat it — the performance analogue of
+  the ISA intersection. A `@budget(cycles=N)` proof discharged against the
+  profile is then sound on every host, and `predicted-vs-measured` stops
+  being a vague "diff them" and becomes an inequality with teeth:
+  **measured ≤ predicted, always.** A host that exceeds the envelope is
+  either a model bug or a nonconforming host — both findings, both
+  pinnable. That is also the crisp definition of "supported host" this
+  project lacks: ISA conformance asserted at boot, cost conformance
+  asserted at calibration.
+- **Determinism comes free.** The model is a pure function of (instruction
+  stream, profile file), so cycle goldens are byte-identical on every dev
+  machine regardless of the chip in it. That property is what makes cycle
+  counts *goldens* at all; a model defined as "the A76" would leak
+  whichever laptop measured it.
+- **Revision already has a ritual.** Changing a constant moves goldens, so
+  it goes through `golden --update`: deliberate commit, diff reviewed,
+  clause cited. And 04 §7 already requires build identity to carry "the
+  build-affecting constants" — the profile version slots into an existing
+  report line.
+
+**Two models, two soundness requirements.** *Static, worst-case, per turn*:
+data-dependent branches take their worst outcome, loops take the bounds
+`sema.bounds.loops` proves; must be a sound **upper bound**, because this
+is what discharges `@budget(cycles=N)` — an optimistic proof is a lie — and
+fails closed when it cannot bound something. *Replay-exact, per recording*:
+deterministic replay fixes every branch outcome and every address, so the
+only residual uncertainty is microarchitectural, never semantic; this one
+scores optimization search and backs the cycle goldens.
+
+**Build order, largest error term first, each independently verifiable.**
+(1) Structural simulation — a scoreboard of per-register ready cycles,
+per-port free cycles, and a decode/ROB cap, walked over the emitted
+instruction stream. Not "simulate an A76" (unverifiable) but model the
+declared resources: ~200 lines, no recursion, deterministic, and the
+difference between ~3x error and single digits. Note this is only possible
+because there is no LLVM — `codegen.rs` emits every word, so the model
+reads the exact final stream with no black box between. (2) Exact cache
+simulation from the replay address trace — static layout means the address
+sequence is known, so misses are computed, not estimated. (3) The branch
+taxonomy: bounds checks, checkpoint tests, and overflow checks are
+statically biased and predict near-perfectly; a loop with a proven trip
+count mispredicts exactly once per execution; only genuine data-dependent
+conditionals are unmodelable, and the report **declares** them rather than
+folding them in — `812 cycles (780 exact, 32 estimated across 2 sites)`.
+(4) The prefetcher, only if (2)'s residual says it matters.
+
+**Zero tolerance on the semantic half.** The replay-exact model also
+predicts every *architectural* count the recorder already logs — vCPU
+exits, clock reads, transcript bytes, checkpoint crossings (`xtask profile`
+prints these today; `bench guest` already asserts them identical across
+boots). Those must match **exactly**: they are semantic, not
+microarchitectural, so a mismatch is a bug, full stop. Timing error is a
+calibration question; semantic error never is. The whole semantic half can
+be built and verified before a single latency constant exists.
+
+**Cost carries why-chains.** 04 §7 already requires whole-image analyses to
+show causality ("Inference reduces annotations; it must not hide
+causality"). Apply it to cost: every term cites its site and the profile
+constant that produced it, so a golden diff of `cycles_per_turn: 812 -> 852`
+expands into which block, which instruction class, which constant. That is
+what makes a cycle regression reviewable like a correctness change instead
+of a number that moved — and it is the audit trail that makes a
+search-found "win" show its work.
+
+**Calibration is a pinning discipline, not an afternoon on a laptop.**
+Never model an effect without an isolating microbenchmark that pins it;
+each modeled element (port pressure, ROB depth, L1 geometry, prefetcher)
+gets one, measured once on real hardware and committed as a constant. When
+measured deviates from predicted beyond tolerance, handle it exactly like a
+fuzz find: minimize to an isolating case, pin it, re-lock the constant it
+exposes — never nudge a number until the diff goes quiet. Calibration
+workloads are themselves recorded, replayable, in-tree goldens. This gives
+real hardware its correct and minimal role: **calibrating parameters,
+rarely — never chasing regressions.**
+
+**Acceptance rule (settled here).** There is **no percent threshold on a
+win**, because the reason thresholds exist — measurement noise — does not
+apply to a pure function. The model has zero variance and nonzero *bias*,
+so the gate is the model's own declared uncertainty on the terms a change
+touches: a 1-cycle win in exactly-modeled code is a real cycle and lands; a
+50-cycle win concentrated in data-dependent estimates is untrustworthy at
+any size. The rule self-tightens as calibration improves, with no constant
+to relitigate. Directions are asymmetric: **regressions threshold at zero**
+— any increase is a golden diff that must be explained — while wins have no
+floor. And the complexity gate stays where it already is: a small win that
+adds a special case fails the regeneration test, and would fail it at 100
+cycles too. Never reject a win for being small; only reject complexity that
+is not paid for.
+
+**The model proposes; the recording disposes.** Search may use the model to
+rank a million candidates — that is what it is for. **Landing** still pays
+the cleverness budget's full three-part price, including a before/after on
+a named recording. The model never becomes the landing authority. That is
+the structural anti-Goodhart bound: exploiting a model bias can win a
+search, but it cannot merge, because the recording will not corroborate it.
+
+Flips: `compiler.costs.predicted-vs-measured`. Depends on
+`sema.bounds.loops` (whose own gap note already says proving it "needs the
+comptime engine and cost model" — the two are mutually referencing, and
+either half helps the other). Requires a normative edit to 06 §1's
+cost-model sentence: minimal, same-commit clause, REVIEW-QUEUE line.
+Non-goals: optimizing anything (M12 builds the oracle; spending it is the
+cleverness budget's job, in the order recorded below); multicore
+contention modelling (single-core per-turn is the granularity optimization
+decisions are made at, and cross-core sharing is a measured calibration
+factor, not a modelled one); DVFS and thermal, permanently out of scope.
+
+**Settled here: no learned policy inside the compiler.** A fast
+deterministic oracle is exactly what learned compiler optimization needs,
+and it demonstrably works elsewhere — that is not the objection. The
+objections are that a weights blob is the most anti-regeneration artifact
+that exists ("any crate should be rewritable from docs + contracts + tests
+alone" — a learned policy is definitionally not), that 04 §7's
+must-not-hide-causality requirement is violated by construction (a policy
+cannot answer "why did it spill x9?"), and that Goodhart goes from
+incidental to systematic and uninspectable, since the policy is *trained*
+to exploit model bias. The win is available without the artifact: run the
+search offline and ship a **table**. Bounded exhaustive search under a
+budget, failing closed over it (structurally identical to the DST schedule
+enumeration in the coverage pass); superoptimization over small windows
+whose verified result commits as a peephole table — data, diffable,
+regenerable from oracle plus search. Register allocation needs no learning
+at all: linear scan, the scorer, and bounded search over spill choices. The
+rule, stated once: **ML may inform an artifact; it may never be an
+artifact** — the same relationship this project already has with fuzzing,
+where the fuzzer is not in the compiler and the pinned case it found is.
+
 ### Recorded language intentions (not yet scheduled)
 
 - **Inferred error sets** (stdlib milestone, via doc revision): extend
@@ -420,12 +640,93 @@ full three-part price like everything else.
   [06 §](docs/language/06-machine.md) names Linux/KVM as the product
   backend — but `wrela-vmm`'s `kvm` module is unimplemented and every
   hardware-facing path is `#[cfg(all(target_os = "macos", target_arch =
-  "aarch64"))]`. M5–M11 all boot on Hypervisor.framework on a Mac, and
+  "aarch64"))]`. M5–M12 all boot on Hypervisor.framework on a Mac, and
   `xtask check`'s boot/repro/diff-eval/bench-guest lanes fail honestly
   (never silently skip) on any other host. So the ladder's development
   host is not the product's host. Recorded as a known, deliberate gap so
   it is a decision rather than an oversight; scheduling it is a human
-  call.
+  call. Shape decided 2026-07-24 (see M8): the flagship runs a **thin
+  Linux under the VMM** — core isolation, VFIO passthrough for devices,
+  one core pinned to housekeeping — never bare metal. wrela owns three
+  cores and every device contract; Linux is a bootloader, an IOMMU
+  configurator, and a janitor. The alternative (bare-metal Pi: PCIe
+  bringup, real-hardware drivers, and a machine revision replacing 06 §6's
+  virtio-family device set) is rejected as a driver-engineering project,
+  not a language project. Note the VMM boundary is also what makes every
+  device interaction a recordable choice point, so this is not a
+  concession — record in the field, replay in the lab, one image.
+
+  *How real hardware gets behind a virtio contract, without the guest ever
+  learning about it.* 06 §6's device set is closed and virtio-family, and
+  06 §3 already says "device topology is a **build output**, not a probed
+  fact" — so the driver/device seam is the insulation layer, and how the
+  VMM *backs* a contract is its own business. Three backings, in increasing
+  order of how much of the host they erase: a file or ramdisk (today);
+  **VFIO passthrough**, where a userspace process gets direct MMIO and
+  IOMMU-mapped DMA to a real PCIe device with no kernel driver in the path
+  (the DPDK/SPDK architecture, mainstream and proven), with the VMM
+  translating virtio descriptors to the device's own protocol; and **vDPA**
+  hardware, which speaks virtio natively, so the guest's queues *are* the
+  device's queues and the VMM leaves the data path entirely. The
+  host-specific half of a build is legitimate and already blessed by 06 §3:
+  the toolchain may enumerate the actual hardware at build time and record
+  in the report which VFIO device backs which contract — comptime
+  discovery, sealed into the image, guest unchanged.
+
+  *The overhead budget, so nobody has to re-derive it.* The hot path takes
+  **zero VM exits by construction** (06 §5: "Hot paths never trap"; a
+  doorbell is a plain store to normal memory, a completion a plain load) —
+  and a userspace MMIO exit at 2–5 µs is what kills naive VMM I/O, so the
+  dominant cost is already designed out. What remains: notification
+  latency (~150–300 ns, one cache-line transfer between cores),
+  virtio→device translation (~500 ns, erased by vDPA), copies (zero once
+  DMA lands in guest pool pages — what M7's `DmaPool` is for), and guest
+  wakeup (**zero**: the event loop is already running cooperatively, so a
+  completion is a memory read at the next checkpoint, not a thread wake —
+  a cost that structurally does not exist rather than one optimized away).
+  Realistic software round trip ~1 µs, SPDK-class. Mapping the device BAR
+  into the guest's stage-2 tables as device memory lets the guest ring a
+  real doorbell with no trap; combined with vDPA that removes even the
+  software hop SPDK itself pays.
+
+  *The IOMMU caveat, which changes threat model on the day passthrough
+  lands.* plans/M7.md already records that the flagship host has no IOMMU
+  ("pools are host-mapped directly, recorded not silently assumed"). That
+  is benign **today**, because devices are emulated and the VMM is software
+  that cannot scribble. It stops being benign the moment a real device is
+  passed through: `vfio-noiommu` grants the physical device write access to
+  all of host memory, so a device or driver fault can corrupt anything.
+  Chapter 03's DMA ownership proofs are guest-side discipline and 03 §3
+  already hedges ("targets with an IOMMU map only those pools") — the IOMMU
+  is the hardware backstop, and the flagship has none. Recorded now so it
+  is a known cost of the VFIO path, not a discovery during bring-up.
+
+- **VMM idle policy and the power story** (recorded 2026-07-24; unscheduled,
+  same human gate). The zero-exit design depends on the VMM's I/O threads
+  polling doorbells, and polling burns a core continuously: order 1–1.5 W
+  on an A76, against a board that idles near 2–3 W — drawn whether or not
+  any I/O is happening, which would flatly contradict 06 §5's own claim
+  that "idle is codesigned for power... letting the host reach deep idle
+  states." The design already anticipates this in the same sentence that
+  creates the problem: I/O threads "poll hot doorbells on their own host
+  cores **and arm wakes when idle**." So adaptive polling is in the
+  contract and the power story survives. **What is undefined is the
+  policy** — how long to spin before arming, per device. That should be a
+  *build output*, not a runtime heuristic: 06 §5 already has the report
+  stating "expected exit rates per device," which is exactly the input, and
+  the report is already the VMM's whole configuration. No general-purpose
+  OS can do this, because none of them know what is coming; Linux guesses
+  with `io_uring` poll timeouts and NAPI budgets. Honest crossover to keep
+  in view: polling **loses** on power at low utilization and **wins** at
+  high, so for a mostly-idle appliance this policy is not a detail — it is
+  the entire power story. Three numbers must exist before any power claim
+  is made, all of them ordinary `bench guest` measurements and all lockable
+  with existing machinery: idle board power with the VMM running and no
+  I/O, in both always-poll and armed-wake modes; first-I/O-after-idle
+  latency in armed-wake mode (the ~5–20 µs wakeup being traded for those
+  watts); and the crossover utilization at which polling becomes cheaper.
+  Until those exist, "performant" is supportable and "power-efficient" is
+  an overclaim.
 
 ## The cleverness budget (permanent)
 
@@ -464,12 +765,34 @@ Rules that follow:
   is unreachable by this budget until it stops being hand-assembly) wait
   their turn like everything else: the profile says when, and until then
   dumb code calling stdlib SIMD ops is the answer.
+- **Where I/O effort is worth spending, and where it is not.** For
+  storage, the software path is already below the device's noise floor — a
+  ~1 µs round trip against a 10–80 µs NVMe read is 1–5%, so optimizing it
+  further buys something invisible and spends budget that has somewhere
+  better to go. For networking, where wire times are sub-microsecond,
+  software dominates and the zero-exit/zero-copy/vDPA path is where the
+  wins actually are. Check which regime a workload is in *before* profiling
+  it, or the profile will faithfully measure something that does not
+  matter.
+- **The win is the tail, not the mean** — and this reframes what "beating a
+  general-purpose OS" means. Throughput parity with a tuned Linux is
+  achievable and unremarkable. What a general-purpose OS cannot offer is a
+  flat p99.9: its tail is dominated by scheduling, interference, page
+  faults, and allocator behavior, and wrela has none of those by
+  construction. That win is not earned by optimization; it is already true,
+  and it is the claim to defend. It also compounds with M12 — `@budget
+  (cycles=N)` against the cost envelope means the tail can be **proven at
+  build time** rather than measured and hoped for. No operating system can
+  make that offer. Measure tails, not averages; a benchmark reporting only
+  a mean is measuring the half of the story wrela does not win on.
 - **The scheduler's own spend order** (recorded so it is not improvised
   the first time someone profiles a boot). Each step manufactures the
   evidence the next one needs: (1) M11 — the runtime becomes wrela, and
   the dispatch compare chain stops being hand-written by construction;
   (2) **measure** — `bench guest` over byte-identical transcripts gives the
-  exact before/after that has never existed for this code; (3) the two
+  exact before/after that has never existed for this code, and M12's cost
+  contract turns it into a zero-variance golden diff rather than a timing
+  run; (3) the two
   dumb wins, if and only if the profile asks for them — populate the
   already-reserved ready-queue table (O(actors) scan → O(1) pop, no layout
   change, the slots are placed already) and lower a dense comptime-known

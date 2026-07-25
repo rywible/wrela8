@@ -1,5 +1,5 @@
 You are the orchestrator for this repo. Work without human check-ins until
-the ROADMAP.md milestone ladder (M4 through M11) is complete and the
+the ROADMAP.md milestone ladder (M4 through M12) is complete and the
 post-roadmap coverage pass (below) is done. Subagents produce; **you
 personally verify acceptance criteria and code outcomes.** Never end a turn
 with a plan, an offer, or a question — take the next action. The only
@@ -21,7 +21,7 @@ terminal states are: everything complete, or blocked per "Blockers".
 - Commits are small (one green item boundary each), cite clause ids, and
   end with: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
 
-## The milestone loop (repeat for M4, M5, ... M11)
+## The milestone loop (repeat for M4, M5, ... M12)
 
 1. **Plan.** If `plans/M<n>.md` does not exist, write it as the
    milestone's first deliverable and commit it: numbered frozen decisions,
@@ -57,7 +57,9 @@ terminal states are: everything complete, or blocked per "Blockers".
 ## Decisions without a human
 
 - Never relitigate anything marked settled or doctrine (e.g. group/pool
-  two-construct split; no manifest; quotas as language constants).
+  two-construct split; no manifest; quotas as language constants; **no
+  foreign code in an image** — no JIT, no fused OS drivers, however
+  attractive that looks when a milestone needs hardware support).
 - When the docs determine the answer, follow the docs.
 - At a genuinely underdetermined fork: choose the dumbest fail-closed
   option that keeps the docs self-consistent, record the decision and the
@@ -82,7 +84,7 @@ done, how to resume), and continue with whatever later work does not
 depend on it. Stop entirely only when nothing unblocked remains or the
 environment itself is broken — and stop with master green.
 
-## Phase 2 — coverage pass (after M11 closes)
+## Phase 2 — coverage pass (after M12 closes)
 
 Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
 
@@ -129,6 +131,15 @@ Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
   exactly one rerun. If it persists, investigate; raising a threshold is
   permitted but is a REVIEW-QUEUE entry with the before/after numbers —
   never a silent edit. Never delete a lock.
+- **The compiler-lane locks are losing resolution.** `check_golden_median_us`
+  was re-locked 40000 -> 400000 as the corpus grew 25 -> 154 entries. The
+  methodology (10x the measured median) is consistent, but a whole-corpus
+  *absolute* lock dilutes every time a golden is added, so a real per-entry
+  regression can hide inside corpus growth forever. Fix when next touched:
+  lock **microseconds per entry**, which is corpus-size invariant and
+  catches what the current lock structurally cannot. That is a
+  methodology change, so it is its own commit with the before/after
+  numbers and a REVIEW-QUEUE line — not a quiet edit during another item.
 - **Resume after compaction.** On any resume, re-derive state mechanically:
   `git log` since the milestone's first commit, the active plan's item
   checkboxes, `cargo xtask check`, `ledger` gap list. Trust those over
@@ -167,6 +178,22 @@ Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
   disagreements in small cited commits, and only then make corpus
   sema-checking mandatory in `check`. Never `golden --update` a batch you
   have not read case by case.
+- **M12's calibration rule (never relax it).** A cost-model constant is
+  changed only by an isolating microbenchmark that witnesses it, committed
+  alongside the new value. When measured deviates from predicted, minimize
+  to an isolating case and pin it — exactly like a fuzz find. Never tune a
+  constant until a diff goes quiet; that fits the model to one workload and
+  silently destroys the `measured <= predicted` envelope every `@budget`
+  proof rests on. Semantic counts (vCPU exits, clock reads, transcript
+  bytes, checkpoint crossings) have **zero** tolerance and are never a
+  calibration question: a mismatch there is a bug.
+- **M12's search rule.** A search may rank candidates with the cost model;
+  it may never land one on the model's authority alone. Landing pays the
+  full three-part cleverness price including a before/after on a named
+  recording. And no learned policy ships inside the compiler — ML may
+  inform an artifact (a table, a constant), never be one. Both are settled
+  in ROADMAP M12; do not relitigate either when a search result looks too
+  good to pass up. That is precisely the case they exist for.
 - **M11's migration rule (never relax it).** A runtime routine's wrela
   version replaces its hand-assembled version only after producing a
   byte-identical transcript on every existing boot/replay golden. The
