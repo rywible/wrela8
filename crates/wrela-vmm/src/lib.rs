@@ -389,7 +389,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut ring_ranges: Vec<RingRange> = Vec::new();
     let mut placements: Vec<ReportPlacement> = Vec::new();
     let mut declared_roots: Vec<DeclaredRoot> = Vec::new();
-    let mut layout_actor_names: Vec<String> = Vec::new();
+    let mut layout_root_names: Vec<String> = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
@@ -610,7 +610,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                     type_name: type_name.to_string(),
                 });
             } else if let Some(name) = fields.get("name").copied() {
-                layout_actor_names.push(name.to_string());
+                layout_root_names.push(name.to_string());
             } else {
                 return Err(VmmError::MalformedReport(
                     "`Actor` line names neither `index=` nor `name=`".to_string(),
@@ -635,6 +635,11 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                     id: format!("driver#{n}"),
                     type_name: type_name.to_string(),
                 });
+            } else if let Some(name) = fields.get("name").copied() {
+                // A messageable driver is a ring target like any mailbox
+                // root, so its layout-section name belongs in the same
+                // pool invariant (9) checks against.
+                layout_root_names.push(name.to_string());
             }
         } else if let Some(rest) = line.strip_prefix("BlkDevice ") {
             let fields = parse_report_fields(
@@ -795,7 +800,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
         &ring_ranges,
         &placements,
         &declared_roots,
-        &layout_actor_names,
+        &layout_root_names,
     )?;
     Ok(ParsedReport {
         entry,
@@ -836,7 +841,7 @@ fn validate_report_invariants(
     ring_ranges: &[RingRange],
     placements: &[ReportPlacement],
     declared_roots: &[DeclaredRoot],
-    layout_actor_names: &[String],
+    layout_root_names: &[String],
 ) -> Result<(), VmmError> {
     // (1) Sections are pairwise disjoint.
     for (i, a) in sections.iter().enumerate() {
@@ -999,6 +1004,41 @@ fn validate_report_invariants(
         }
     }
 
+    // (9) Every request ring's `target=` names a root this report
+    // declares. A ring is the delivery path into a mailbox, so a target
+    // no `Actor`/`Driver` line accounts for is a forged edge — the same
+    // set-level defect as a repeated `Placement id=`, one field over.
+    // A reply ring carries `target=-` (it delivers back to its caller,
+    // not into a named mailbox) and is exempt by that spelling.
+    if !declared_roots.is_empty() || !layout_root_names.is_empty() {
+        for r in ring_ranges {
+            if r.target == "-" {
+                continue;
+            }
+            let known = declared_roots.iter().any(|d| d.type_name == r.target)
+                || layout_root_names.iter().any(|n| n == &r.target);
+            if !known {
+                let mut declared: Vec<&str> = declared_roots
+                    .iter()
+                    .map(|d| d.type_name.as_str())
+                    .chain(layout_root_names.iter().map(|s| s.as_str()))
+                    .collect();
+                declared.sort_unstable();
+                declared.dedup();
+                return Err(VmmError::MalformedReport(format!(
+                    "`Ring kind={} src={} dst={} target={}` names a root this report never \
+                     declares (known roots: {}) — a ring is the delivery path into a mailbox, \
+                     so a target no `Actor`/`Driver` line accounts for is a forged edge",
+                    r.kind,
+                    r.src,
+                    r.dst,
+                    r.target,
+                    declared.join(", ")
+                )));
+            }
+        }
+    }
+
     // (8) Placement set — only when Placement lines are present (the
     // VMM-facing subset from `append_vmm_runtime_lines` emits none).
     if placements.is_empty() {
@@ -1034,13 +1074,13 @@ fn validate_report_invariants(
                     p.id, p.type_name, root.type_name
                 )));
             }
-        } else if layout_actor_names.iter().any(|n| n == &p.id) {
+        } else if layout_root_names.iter().any(|n| n == &p.id) {
             // Bare-name Placement against a layout-section Actor name=.
-        } else if !declared_roots.is_empty() || !layout_actor_names.is_empty() {
+        } else if !declared_roots.is_empty() || !layout_root_names.is_empty() {
             let declared: Vec<&str> = declared_roots
                 .iter()
                 .map(|r| r.id.as_str())
-                .chain(layout_actor_names.iter().map(|s| s.as_str()))
+                .chain(layout_root_names.iter().map(|s| s.as_str()))
                 .collect();
             return Err(VmmError::MalformedReport(format!(
                 "`Placement id={}` names an actor this report's `Actor` lines do not \
@@ -5682,6 +5722,39 @@ pub fn build() -> Image:
                  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=16 bytes=88 base=0x40501000\n"
             );
             parse_report(&text).expect("well-formed Placement set must parse");
+        }
+        // (14) A request ring whose `target=` names no declared root.
+        // Found by orchestrator spot-probe after (8)–(13) landed: the
+        // set-level pass validated the Placement set but left the ring's
+        // own delivery target unaccounted for, one field over.
+        {
+            let text = format!(
+                "{head}{cores}\
+                 Actor index=0 type=Sink\n\
+                 Placement id=actor#0 type=Sink core=1 source=explicit work=0 work_source=unproved \
+                 bytes=1 bytes_state=1 bytes_mailbox=0 bytes_pool=0\n\
+                 Ring kind=request src=0 dst=1 target=Ghost cap=4 slot=16 bytes=88 base=0x40501000\n"
+            );
+            let err = parse_report(&text).expect_err("ring target names no declared root");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("names a root this report never declares")
+                    && msg.contains("known roots: Sink"),
+                "{msg}"
+            );
+        }
+        // (15) A reply ring carries `target=-` and must stay exempt —
+        // it delivers back to its caller, not into a named mailbox.
+        {
+            let text = format!(
+                "{head}{cores}\
+                 Actor index=0 type=Sink\n\
+                 Placement id=actor#0 type=Sink core=1 source=explicit work=0 work_source=unproved \
+                 bytes=1 bytes_state=1 bytes_mailbox=0 bytes_pool=0\n\
+                 Ring kind=request src=0 dst=1 target=Sink cap=4 slot=16 bytes=88 base=0x40501000\n\
+                 Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40 base=0x40501100\n"
+            );
+            parse_report(&text).expect("a reply ring's `target=-` is not a root name");
         }
     }
 
