@@ -1,5 +1,5 @@
 You are the orchestrator for this repo. Work without human check-ins until
-the ROADMAP.md milestone ladder (M4 through M12) is complete and the
+the ROADMAP.md milestone ladder (M4 through M11) is complete and the
 post-roadmap coverage pass (below) is done. Subagents produce; **you
 personally verify acceptance criteria and code outcomes.** Never end a turn
 with a plan, an offer, or a question — take the next action. The only
@@ -21,7 +21,7 @@ terminal states are: everything complete, or blocked per "Blockers".
 - Commits are small (one green item boundary each), cite clause ids, and
   end with: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
 
-## The milestone loop (repeat for M4, M5, ... M12)
+## The milestone loop (repeat for M4, M5, ... M11)
 
 1. **Plan.** If `plans/M<n>.md` does not exist, write it as the
    milestone's first deliverable and commit it: numbered frozen decisions,
@@ -84,7 +84,7 @@ done, how to resume), and continue with whatever later work does not
 depend on it. Stop entirely only when nothing unblocked remains or the
 environment itself is broken — and stop with master green.
 
-## Phase 2 — coverage pass (after M12 closes)
+## Phase 2 — coverage pass (after M11 closes)
 
 Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
 
@@ -159,8 +159,6 @@ Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
   deterministic replay counts (steps, instructions, checkpoint counts) —
   exact because replay is exact. Do not chase PMU/Instruments
   integration; record it as an intention if wanted.
-- **Display (M9).** Headless only: software scanout into memory, golden
-  frame digests. Never open a window; no GUI dependencies.
 - **Toolchain.** Never update rustc/cargo or any tool mid-run. If the
   environment itself breaks (toolchain, disk, signing), that is a true
   blocker: BLOCKED.md, master green, stop.
@@ -169,7 +167,7 @@ Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
   (Pi 5 / Linux-KVM) note, which is not a language item but lives there
   under the same gate. Never schedule or implement them, however adjacent,
   and however much a milestone you are in seems to want them.
-- **M10's corpus flip.** The stdlib milestone makes the doc corpus
+- **M9's corpus flip.** The stdlib milestone makes the doc corpus
   sema-checkable for the first time (plans/M2.md decision 5 is what blocks
   it today). Expect that to surface a large batch of real doc/compiler
   disagreements at once. Per ground-truth rule 1 the docs win by default,
@@ -178,7 +176,7 @@ Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
   disagreements in small cited commits, and only then make corpus
   sema-checking mandatory in `check`. Never `golden --update` a batch you
   have not read case by case.
-- **M12's calibration rule (never relax it).** A cost-model constant is
+- **M11's calibration rule (never relax it).** A cost-model constant is
   changed only by an isolating microbenchmark that witnesses it, committed
   alongside the new value. When measured deviates from predicted, minimize
   to an isolating case and pin it — exactly like a fuzz find. Never tune a
@@ -187,14 +185,14 @@ Write `plans/COVERAGE.md` in the same two-resolution style, then execute:
   proof rests on. Semantic counts (vCPU exits, clock reads, transcript
   bytes, checkpoint crossings) have **zero** tolerance and are never a
   calibration question: a mismatch there is a bug.
-- **M12's search rule.** A search may rank candidates with the cost model;
+- **M11's search rule.** A search may rank candidates with the cost model;
   it may never land one on the model's authority alone. Landing pays the
   full three-part cleverness price including a before/after on a named
   recording. And no learned policy ships inside the compiler — ML may
   inform an artifact (a table, a constant), never be one. Both are settled
-  in ROADMAP M12; do not relitigate either when a search result looks too
+  in ROADMAP M11; do not relitigate either when a search result looks too
   good to pass up. That is precisely the case they exist for.
-- **M11's migration rule (never relax it).** A runtime routine's wrela
+- **M10's migration rule (never relax it).** A runtime routine's wrela
   version replaces its hand-assembled version only after producing a
   byte-identical transcript on every existing boot/replay golden. The
   hand-asm implementation is the reference oracle, so it is deleted

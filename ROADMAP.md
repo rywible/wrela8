@@ -200,12 +200,7 @@ hardware, where the guest's queues are the device's queues and the VMM
 leaves the data path entirely. Recorded so a future bandwidth problem is
 answered by hardware selection rather than by conceding cores.
 
-### M9 — Pixels
-Display + input devices, a dumb scalar tile compositor, golden frame
-digests. SIMD/NEON tuning only after a frame exists to measure. Flips:
-`machine.display.golden-frames`.
-
-### M10 — The stdlib
+### M9 — The stdlib
 The milestone the code has been citing by name since M2 without it ever
 existing on this ladder (`ledger.toml`, plans/M2–M5 — grep "stdlib
 milestone"). Today `stdlib/` is a README and an empty directory, while
@@ -229,7 +224,7 @@ Flips: `comptime.fstring.bounds`, `image.report.layout-asserts`,
 `values.resource.protocol-consumption`. Unblocks the inferred-error-sets
 intention below (still human-gated).
 
-### M11 — The runtime in wrela
+### M10 — The runtime in wrela
 Today the runtime is not a library: it is hand-assembled A64 emitted word
 by word from `layout.rs` (`build_rt_select_and_run`, `build_rt_enqueue`,
 `build_rt_run_one`, `build_group_child_poll`, the console formatter
@@ -304,7 +299,7 @@ newtype over an index makes a waker a *value* sema can reason about, whose
 only legal use is indexing `RT.turns` — which also sets up bounds-check
 elision later as a **proof** (the same shape as the existing erasure of
 impossible `CallError` variants, 02 §9.4) rather than as a fast path. Do
-not do that elision in M11; only make it possible.
+not do that elision in M10; only make it possible.
 
 Intrinsic surface, target: **`@placed`. One.** It is barely new —
 `wrela-machine` already defines fixed addresses; this is the language
@@ -351,7 +346,7 @@ language that deliberately has none: today an inexpressible thing is a
 fail-closed error with a named gap, and that pressure is what has been
 improving the language every milestone. The asymmetry decides it — twenty
 hand-encoded words cannot grow, because nothing in the language can reach
-them; `@naked` grows by default. It can be added later on evidence M11
+them; `@naked` grows by default. It can be added later on evidence M10
 itself would produce. It cannot be removed later.
 
 **Migration discipline (what makes this safe at all).** Item order, and
@@ -381,7 +376,7 @@ differential oracle, and the hand-asm implementation is the reference the
 new one is diffed against, exactly as `diff-eval` uses the evaluator
 against the backend.
 
-**What M11 costs, stated honestly up front.** It will probably make the
+**What M10 costs, stated honestly up front.** It will probably make the
 scheduler *slower*: bounds checks on every index (the hand-asm has none)
 and the spill-everything frame convention (the current scheduler keeps
 everything in registers across its whole body). Some of that is offset —
@@ -389,7 +384,7 @@ the current mailbox slot computation uses a `mul`, which power-of-two
 striding turns into a shifted add — but assume a regression and do not
 pre-optimize to avoid it. **That is the trade, and it is the right one:**
 because the transcripts are byte-identical, `bench guest` measures the
-identical workload before and after, so M11 hands you an exact before/after
+identical workload before and after, so M10 hands you an exact before/after
 on an identical recording — precisely the evidence the cleverness budget
 demands and which has never been obtainable for this code. Lock the bench
 before migrating, measure after, and record the delta in the plan as a
@@ -414,7 +409,7 @@ and should not be deferred to a separate cleanup that never happens.
 
 Opens: `runtime.*` clauses (there are none today — every one is opened
 here). Non-goals: self-hosting the compiler; touching codegen; and
-optimizing the scheduler — M11 makes the scheduler *reachable* by the
+optimizing the scheduler — M10 makes the scheduler *reachable* by the
 cleverness budget, it does not spend it. The first optimization pays the
 full three-part price like everything else.
 
@@ -438,7 +433,7 @@ full three-part price like everything else.
   exists *because of the medium*: a dense match over a comptime-known index
   is a jump table, and nobody hand-patches a jump table by index — so
   migrating to wrela relocates that fix to one codegen improvement
-  benefiting every `match` in the language. And after M11 fusion is a
+  benefiting every `match` in the language. And after M10 fusion is a
   *lowering* decision with `diff-eval` as its oracle, not a rewrite —
   another reason it comes after, never instead.
 - **`WFE`/exclusive-monitor "yield on a memory address" as the idle or
@@ -465,7 +460,7 @@ full three-part price like everything else.
   underneath an already-recorded park/unpark decision — a cleverness-budget
   purchase against idle cores, which do not exist before M8.
 
-### M12 — The cost contract
+### M11 — The cost contract
 Perf without chasing hardware. Today `compiler.costs.predicted-vs-measured`
 is a gap whose own note says it plainly: `report::render` predicts no costs
 anywhere, so `profile` has nothing to diff its measurements against. This
@@ -592,7 +587,7 @@ Flips: `compiler.costs.predicted-vs-measured`. Depends on
 comptime engine and cost model" — the two are mutually referencing, and
 either half helps the other). Requires a normative edit to 06 §1's
 cost-model sentence: minimal, same-commit clause, REVIEW-QUEUE line.
-Non-goals: optimizing anything (M12 builds the oracle; spending it is the
+Non-goals: optimizing anything (M11 builds the oracle; spending it is the
 cleverness budget's job, in the order recorded below); multicore
 contention modelling (single-core per-turn is the granularity optimization
 decisions are made at, and cross-core sharing is a measured calibration
@@ -640,7 +635,7 @@ where the fuzzer is not in the compiler and the pinned case it found is.
   [06 §](docs/language/06-machine.md) names Linux/KVM as the product
   backend — but `wrela-vmm`'s `kvm` module is unimplemented and every
   hardware-facing path is `#[cfg(all(target_os = "macos", target_arch =
-  "aarch64"))]`. M5–M12 all boot on Hypervisor.framework on a Mac, and
+  "aarch64"))]`. M5–M11 all boot on Hypervisor.framework on a Mac, and
   `xtask check`'s boot/repro/diff-eval/bench-guest lanes fail honestly
   (never silently skip) on any other host. So the ladder's development
   host is not the product's host. Recorded as a known, deliberate gap so
@@ -728,6 +723,40 @@ where the fuzzer is not in the compiler and the pinned case it found is.
   Until those exist, "performant" is supportable and "power-efficient" is
   an overclaim.
 
+- **Pixels** (recorded 2026-07-25; deliberately *not* a milestone —
+  human-gated like everything else in this section). Display and input
+  devices, a dumb scalar tile compositor, and golden frame digests were
+  rung 9 of the ladder. They are now off it, and the reason is not that
+  the work is hard: it is that nothing else needs it. Every remaining rung
+  — the stdlib, the runtime in wrela, the cost contract — is compiler and
+  machine work, and a compositor would interrupt that rather than inform
+  it. Pixels is the one item whose dependencies all point *backwards* with
+  nothing pointing back: the compositor is guest wrela source, so it wants
+  the stdlib's closed SIMD vector set ([05 §8.1](docs/language/05-library.md),
+  whose NEON lowering 04 §6 already calls a backend obligation because
+  "the flagship's compositor is its hottest loop"), and its inner loop is
+  a named future hot spot (see the cleverness budget), so it wants the
+  cost contract — with which "tune only after a frame exists to measure"
+  stops being a deferral and becomes an ordinary budget purchase priced
+  against the envelope.
+
+  *What descheduling leaves open, stated rather than implied.*
+  `machine.display.golden-frames` is a gap **no rung owns**, recorded as
+  such in the clause's own note — the same shape as
+  `compiler.progress.wait-for-graph`. 06 §10 lists the golden-image
+  display tests in the machine conformance suite, so machine v1 is not
+  conformant until this lands; it keeps company there with `net`, `sound`
+  and `entropy`, three more contracts in 06 §6's closed device set that no
+  rung owns either. And the VMM's cross-device pool oracle stays half a
+  unit test: `devices::tests::a_window_bound_to_another_device_is_refused_by_name`
+  becomes a *boot* only once a second device model exists, whichever
+  device that turns out to be.
+
+  *The scope, if it is ever scheduled: **headless**.* Software scanout
+  into memory and golden frame digests — never open a window, no GUI
+  dependencies. That constraint was GOAL.md's standing rule while this was
+  a rung and is preserved here so it is not rediscovered.
+
 ## The cleverness budget (permanent)
 
 Cleverness is a resource, acquired only through a profile. An optimization
@@ -761,7 +790,7 @@ Rules that follow:
   density, the doorbell ABI, and image/frame layout rules bake into the
   machine spec and are revised deliberately, not patched.
 - Known future hot spots (compositor inner loop, naive codegen quality,
-  and — once M11 lands — the scheduler, which runs between every turn and
+  and — once M10 lands — the scheduler, which runs between every turn and
   is unreachable by this budget until it stops being hand-assembly) wait
   their turn like everything else: the profile says when, and until then
   dumb code calling stdlib SIMD ops is the answer.
@@ -780,17 +809,17 @@ Rules that follow:
   flat p99.9: its tail is dominated by scheduling, interference, page
   faults, and allocator behavior, and wrela has none of those by
   construction. That win is not earned by optimization; it is already true,
-  and it is the claim to defend. It also compounds with M12 — `@budget
+  and it is the claim to defend. It also compounds with M11 — `@budget
   (cycles=N)` against the cost envelope means the tail can be **proven at
   build time** rather than measured and hoped for. No operating system can
   make that offer. Measure tails, not averages; a benchmark reporting only
   a mean is measuring the half of the story wrela does not win on.
 - **The scheduler's own spend order** (recorded so it is not improvised
   the first time someone profiles a boot). Each step manufactures the
-  evidence the next one needs: (1) M11 — the runtime becomes wrela, and
+  evidence the next one needs: (1) M10 — the runtime becomes wrela, and
   the dispatch compare chain stops being hand-written by construction;
   (2) **measure** — `bench guest` over byte-identical transcripts gives the
-  exact before/after that has never existed for this code, and M12's cost
+  exact before/after that has never existed for this code, and M11's cost
   contract turns it into a zero-variance golden diff rather than a timing
   run; (3) the two
   dumb wins, if and only if the profile asks for them — populate the
@@ -800,7 +829,7 @@ Rules that follow:
   the language, not a bespoke scheduler hack); (4) only then consider
   fusion, as a FlowWir → mwir *lowering* validated by `diff-eval`, never a
   rewrite. Nothing in this list needs `WFE`, an interrupt controller, or a
-  global state machine — see M11's settled rejections.
+  global state machine — see M10's settled rejections.
 
 Also permanently out: abstractions serving futures that are not ledger
 clauses; incremental/parallel/cached anything in the compiler until a

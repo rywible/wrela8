@@ -17,7 +17,7 @@
 //!
 //! - **work**: proved maximum uninterrupted turn work. The cost model that
 //!   would prove it is OUT of M8 (`compiler.costs.predicted-vs-measured`,
-//!   M12). Until then every placeable publishes `work=0` with
+//!   M11). Until then every placeable publishes `work=0` with
 //!   `work_source=unproved` — equal work, never an invented ranking.
 //! - **bytes**: owned image state + mailbox physical bytes + reserved pool
 //!   bytes attributed to that placeable (DMA pools via their `device=` to

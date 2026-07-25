@@ -22,7 +22,7 @@ module examples.boot_blk_two_devices
 # That direction is a unit test —
 # `devices::tests::a_window_bound_to_another_device_is_refused_by_name`
 # builds both views over the same window list — and cannot be a boot until
-# a second device model exists (M9).
+# a second device model exists — which no rung of the ladder schedules.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
