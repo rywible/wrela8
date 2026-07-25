@@ -107,11 +107,16 @@
 //!              every tests/golden/*/input.wr that lexes and parses (both
 //!              sema-ok and sema-error outcomes count; lex/parse-error
 //!              inputs are excluded), same 3+15 shape, its own locked
-//!              median (`check_golden_median_us`). plans/M3.md item F adds
+//!              per-entry median (`check_golden_per_entry_us`). plans/M3.md
+//!              item F adds
 //!              a third lane: lex+parse+`sema::check_typed`+
 //!              `eval::run_tests` over every test-bearing golden (the
 //!              `check-tests-*` cases with a pinned `test.txt`), same
-//!              3+15 shape, its own locked median (`eval_tests_median_us`).
+//!              3+15 shape, its own locked per-entry median
+//!              (`eval_tests_per_entry_us`). The three corpus-sized lanes lock
+//!              microseconds *per entry* (GOAL.md, 2026-07-25): a
+//!              whole-corpus absolute dilutes on every added golden, so a
+//!              per-entry regression could hide inside corpus growth.
 //!              plans/M4.md item E adds `bench build`, its own lane in its
 //!              own subcommand rather than a fourth `bench compiler` key:
 //!              the whole build pipeline (loader/single-file fork ->
@@ -6145,15 +6150,60 @@ fn bench_threshold_us(section: &str, key: &str) -> Result<u128, String> {
 }
 
 fn compiler_bench_threshold_us() -> Result<u128, String> {
-    bench_threshold_us("compiler", "full_corpus_median_us")
+    bench_threshold_us("compiler", "full_corpus_per_entry_us")
 }
 
 fn check_bench_threshold_us() -> Result<u128, String> {
-    bench_threshold_us("compiler", "check_golden_median_us")
+    bench_threshold_us("compiler", "check_golden_per_entry_us")
 }
 
 fn eval_bench_threshold_us() -> Result<u128, String> {
-    bench_threshold_us("compiler", "eval_tests_median_us")
+    bench_threshold_us("compiler", "eval_tests_per_entry_us")
+}
+
+/// The three corpus-sized compiler lanes lock **microseconds per entry**,
+/// not a whole-corpus absolute (GOAL.md, "the compiler-lane locks are
+/// losing resolution"): `check_golden_median_us` had already been re-locked
+/// 40000 -> 400000 as the corpus grew 25 -> 154 entries, and an absolute
+/// lock dilutes on every added golden, so a real per-entry regression can
+/// hide inside corpus growth forever. A per-entry lock is corpus-size
+/// invariant: adding goldens moves the measured number not at all, and a
+/// lane that gets 2x slower per entry trips it whatever the corpus size.
+///
+/// The comparison never divides the measurement. `median_ns` is checked
+/// against `threshold_per_entry_us * 1000 * entries`, so the lock keeps
+/// full timer resolution however small a per-entry median becomes; the
+/// divided number is computed for the printout only. The `[build]` and
+/// `[guest]` lanes keep absolute locks on purpose — each times one fixed
+/// workload (the example appliance, one `boot-hello` boot), so there is no
+/// corpus to divide by and nothing to dilute.
+fn enforce_per_entry_lock(
+    lane: &str,
+    median: Duration,
+    entries: usize,
+    threshold_per_entry_us: u128,
+) -> Result<(), String> {
+    if entries == 0 {
+        return Err(format!(
+            "{lane}: FAIL: zero entries — a per-entry lock over an empty corpus measures \
+             nothing, and a lane that silently benchmarks nothing is the failure this \
+             check exists to make loud"
+        ));
+    }
+    let per_entry_us = median.as_nanos() / 1000 / entries as u128;
+    let budget_ns = threshold_per_entry_us * 1000 * entries as u128;
+    if median.as_nanos() > budget_ns {
+        return Err(format!(
+            "{lane}: FAIL: measured {per_entry_us}us/entry over {entries} entries exceeds \
+             locked threshold {threshold_per_entry_us}us/entry (bench/thresholds.toml) — an \
+             algorithmic blowup, not machine noise, is what this lock exists to catch"
+        ));
+    }
+    println!(
+        "{lane}: {per_entry_us}us/entry over {entries} entries, within locked \
+         {threshold_per_entry_us}us/entry (bench/thresholds.toml)"
+    );
+    Ok(())
 }
 
 /// plans/M4.md item E: `xtask bench build`'s own locked median, kept in its
@@ -6214,17 +6264,12 @@ fn bench_compiler() -> Result<(), String> {
         tracked_med.as_micros()
     );
 
-    let threshold_us = compiler_bench_threshold_us()?;
-    if median_us > threshold_us {
-        return Err(format!(
-            "bench compiler: FAIL: measured median {median_us}us exceeds locked threshold \
-             {threshold_us}us (bench/thresholds.toml) — an algorithmic blowup, not machine \
-             noise, is what this lock exists to catch"
-        ));
-    }
-    println!(
-        "bench compiler: median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
-    );
+    enforce_per_entry_lock(
+        "bench compiler",
+        med,
+        entries.len(),
+        compiler_bench_threshold_us()?,
+    )?;
 
     bench_check_lane()
 }
@@ -6234,7 +6279,7 @@ fn bench_compiler() -> Result<(), String> {
 /// sema-error outcomes are timed; lex/parse-error golden inputs are
 /// excluded — see `bench_check_entries`). Same 3 warmup + 15 timed shape
 /// as the lex+parse lane above, its own locked median
-/// (`check_golden_median_us`, kept separate from `full_corpus_median_us`
+/// (`check_golden_per_entry_us`, kept separate from `full_corpus_per_entry_us`
 /// so the two lanes never mask one another).
 fn bench_check_lane() -> Result<(), String> {
     let entries = bench_check_entries()?;
@@ -6266,26 +6311,21 @@ fn bench_check_lane() -> Result<(), String> {
         max.as_micros()
     );
 
-    let threshold_us = check_bench_threshold_us()?;
-    if median_us > threshold_us {
-        return Err(format!(
-            "bench compiler (check lane): FAIL: measured median {median_us}us exceeds locked \
-             threshold {threshold_us}us (bench/thresholds.toml) — an algorithmic blowup, not \
-             machine noise, is what this lock exists to catch"
-        ));
-    }
-    println!(
-        "bench compiler (check lane): median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
-    );
+    enforce_per_entry_lock(
+        "bench compiler (check lane)",
+        med,
+        entries.len(),
+        check_bench_threshold_us()?,
+    )?;
     bench_eval_lane()
 }
 
 /// The eval lane (plans/M3.md item F): full pipeline + `eval::run_tests`
 /// over every test-bearing golden (`bench_eval_entries`). Same 3 warmup +
 /// 15 timed shape as the other two lanes, its own locked median
-/// (`eval_tests_median_us`, kept separate from the other two thresholds
-/// for the same reason `check_golden_median_us` is kept separate from
-/// `full_corpus_median_us` — one lane's regression must never mask
+/// (`eval_tests_per_entry_us`, kept separate from the other two thresholds
+/// for the same reason `check_golden_per_entry_us` is kept separate from
+/// `full_corpus_per_entry_us` — one lane's regression must never mask
 /// another's).
 fn bench_eval_lane() -> Result<(), String> {
     let entries = bench_eval_entries()?;
@@ -6317,17 +6357,12 @@ fn bench_eval_lane() -> Result<(), String> {
         max.as_micros()
     );
 
-    let threshold_us = eval_bench_threshold_us()?;
-    if median_us > threshold_us {
-        return Err(format!(
-            "bench compiler (eval lane): FAIL: measured median {median_us}us exceeds locked \
-             threshold {threshold_us}us (bench/thresholds.toml) — an algorithmic blowup, not \
-             machine noise, is what this lock exists to catch"
-        ));
-    }
-    println!(
-        "bench compiler (eval lane): median {median_us}us within locked threshold {threshold_us}us (bench/thresholds.toml)"
-    );
+    enforce_per_entry_lock(
+        "bench compiler (eval lane)",
+        med,
+        entries.len(),
+        eval_bench_threshold_us()?,
+    )?;
     Ok(())
 }
 
