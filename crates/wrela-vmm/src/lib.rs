@@ -818,6 +818,11 @@ fn boot_image_core(
         /// destroying its vCPU, so the watchdog can never force-exit a
         /// handle that no longer exists.
         vcpus: [u64; NCORES],
+        /// Did the guest ring the release doorbell? Recorded rather than
+        /// inferred from `sched.state`, which is `Finished` for every core
+        /// by the time the marks are checked and so cannot say whether a
+        /// core was ever released.
+        released: bool,
     }
     // Every field above is touched only by the thread currently holding the
     // baton (or by the main thread, before any core runs and after all have
@@ -874,6 +879,7 @@ fn boot_image_core(
             },
             done: false,
         },
+        released: false,
         chooser: match replay_choices {
             Some(log) => record::Chooser::replayer(log),
             None => record::Chooser::recorder(),
@@ -1032,6 +1038,7 @@ fn boot_image_core(
                         }
                         g.sched.state[c] = CoreState::Runnable;
                     }
+                    g.released = true;
                     drop(g);
                     Ok(Step::Yield)
                 } else if ipa == mmio::PARK_MMIO_ADDR {
@@ -1486,7 +1493,22 @@ fn boot_image_core(
     // there — a released-but-dead core is a machine that silently ran an
     // image on fewer cores than it claims, which is the exact failure this
     // item exists to make impossible.
-    check_core_marks(host_ram, cores_declared)?;
+    //
+    // Keyed on the release the guest actually rang, not on the report's
+    // declared count. A `wrela build` image is the case that forced this:
+    // `layout_program`'s entry stub halts with `EXIT_CODE_NO_RUNTIME` and
+    // never calls `build_entry_driver`, so its release block — the same one
+    // that writes core 0's own mark — is never emitted at all. Such an
+    // image still carries `CoreEntry` lines in its report, because it still
+    // *contains* the secondary entry blocks; checking the declared count
+    // there reported "core 0 was released but never ran its own entry
+    // block" about a core that was never released, and turned a clean
+    // "no runtime yet" exit (1) into a bad-image fault (2). The marks are
+    // evidence of the release, so the release is what decides whether to
+    // demand them.
+    if shared.released {
+        check_core_marks(host_ram, cores_declared)?;
+    }
 
     // decision 12: the transcript is read from the ring pages only after the
     // guest halts.
@@ -2738,6 +2760,74 @@ mod tests {
         // writes for `wrela test`, so a conformance image built here boots
         // the identical way a real one does (absent for a single-core
         // image, which is every conformance image before this item).
+        for (core, base) in &image.core_entries {
+            report.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
+        }
+        (image, report)
+    }
+
+    /// The `wrela build` flavor of `compile_test_image`: the same pipeline
+    /// up to layout, then `layout_program` instead of `layout_test_image`.
+    /// Deliberately a separate fn rather than a flag on the other one —
+    /// it needs no runtime tests, no async-test set and no test args, and
+    /// threading three unused parameters through would obscure the one
+    /// difference that matters (which layout fn runs).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn compile_program_image(src: &str) -> (wrela_compiler::layout::ImageLayout, String) {
+        use std::collections::BTreeMap;
+        use wrela_compiler::{codegen, layout};
+
+        let tokens = wrela_compiler::syntax::lexer::lex(src).expect("conformance source must lex");
+        let module = wrela_compiler::syntax::parser::parse(tokens).expect("must parse");
+        let program =
+            wrela_compiler::sema::check_typed(&module, "<conformance>").expect("must check");
+        let mut modules = BTreeMap::new();
+        modules.insert(module.path.join("."), module.clone());
+        let layout_ctx = layout::merge_layout_ctx(&modules).expect("layout ctx");
+        let mwir_program = wrela_compiler::lower::lower_program(&program).expect("sync lower");
+        let flow_program =
+            wrela_compiler::flowwir_lower::lower_program(&program).expect("flowwir lower");
+        let graph = match &program.image_fn {
+            Some(fn_name) => {
+                wrela_compiler::eval::interp::eval_image(&program, fn_name).expect("image graph")
+            }
+            None => Default::default(),
+        };
+        let method_index =
+            layout::actor_method_index_tables(&modules, &layout_ctx).expect("method index");
+        let group_arena_capacity = layout::count_with_group_sites(&modules);
+        let codegen_program = codegen::codegen_program_with_async(
+            &mwir_program,
+            &flow_program,
+            &layout_ctx,
+            &method_index,
+            group_arena_capacity,
+        )
+        .expect("codegen");
+        let async_frames =
+            codegen::async_frame_sizes(&flow_program, &layout_ctx).expect("async frames");
+        let group_child_index =
+            codegen::compute_group_child_indices(&flow_program).expect("group child index");
+        let boot = layout::BootCtx {
+            graph: &graph,
+            modules: &modules,
+            layout_ctx: &layout_ctx,
+            async_frames: &async_frames,
+            group_child_index: &group_child_index,
+        };
+        let image = layout::layout_program(&codegen_program, Some(boot)).expect("layout_program");
+
+        let mut report = format!(
+            "Machine revision={}\nInput path=<conformance> digest=deadbeef\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        for sec in &image.sections {
+            report.push_str(&format!(
+                "Section name={} base={:#x} size={}\n",
+                sec.name, sec.base, sec.size
+            ));
+        }
+        report.push_str(&format!("Entry base={:#x}\n", image.entry));
         for (core, base) in &image.core_entries {
             report.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
         }
@@ -4353,6 +4443,42 @@ pub fn build() -> Image:
         assert!(
             msg.contains("core 2 was released but never ran its own entry block"),
             "{msg}"
+        );
+    }
+
+    /// A `wrela build` (production) image of a **cross-core** program halts
+    /// with `EXIT_CODE_NO_RUNTIME`, exactly like its single-core twin —
+    /// it does not fail with a bring-up fault about cores it never
+    /// released.
+    ///
+    /// The sibling above pins the mark check; this one pins its *scope*.
+    /// `layout_program`'s entry stub halts before any release, so
+    /// `build_entry_driver`'s release block — the same code that writes
+    /// core 0's own mark — is never emitted at all. But such an image
+    /// still carries `CoreEntry` lines, because it still *contains* the
+    /// secondary entry blocks, and the check used to key off that declared
+    /// count: the boot then died with "core 0 was released but never ran
+    /// its own entry block", naming a release that never happened and
+    /// turning a clean exit 1 into a bad-image exit 2. Found by probing a
+    /// `wrela build` of the cross-core golden by hand.
+    ///
+    /// `sched.state` cannot answer this question — every core is
+    /// `Finished` by the time the marks are checked — which is why
+    /// `Shared::released` records the doorbell instead of inferring it.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_production_cross_core_image_halts_with_no_runtime_not_a_bring_up_fault() {
+        let (image, report) = compile_program_image(CROSS_CORE_SRC);
+        assert!(
+            !image.core_entries.is_empty(),
+            "the program image must still declare its secondary entries — \
+             otherwise this test passes for the wrong reason"
+        );
+        let outcome = boot_blob(&image.blob, &report, "prod-cross-core");
+        assert_eq!(
+            outcome.exit_code,
+            wrela_compiler::layout::EXIT_CODE_NO_RUNTIME,
+            "a production image halts with no runtime, on any core count"
         );
     }
 
