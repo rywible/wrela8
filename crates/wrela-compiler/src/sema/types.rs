@@ -1261,6 +1261,23 @@ fn validate_fn_capability_types(
     let Some(found) = contains_capability(ret, components) else {
         return Ok(());
     };
+    // plans/M7.md item E2: `QueuePermit` / `QueueOp` are minted by
+    // `reserve_proven` / `prepare_block` — sealed queue values, not
+    // image-bound capabilities. A function may return one; that is how
+    // the permit reaches `prepare_block` and the operation reaches
+    // `publish` (E3).
+    // plans/M7.md item E3: `Receipt[P]` is likewise minted only by
+    // `publish` / `reject` / the handoff admission commit — returning
+    // one is how a handoff method transfers the caller endpoint. Must
+    // run before the pub-method rejection below, or every handoff
+    // signature is illegally rejected as "raw capabilities".
+    if found.starts_with("QueuePermit")
+        || found.starts_with("QueueOp")
+        || found.starts_with("Receipt[")
+        || found == "Receipt"
+    {
+        return Ok(());
+    }
     if is_pub_method && owner != CapOwner::Plain {
         return Err(SemaError::at(
             "type",
@@ -1271,14 +1288,6 @@ fn validate_fn_capability_types(
             ),
             span,
         ));
-    }
-    // plans/M7.md item E2: `QueuePermit` / `QueueOp` are minted by
-    // `reserve_proven` / `prepare_block` — sealed queue values, not
-    // image-bound capabilities. A function may return one; that is how
-    // the permit reaches `prepare_block` and the operation reaches
-    // `publish` (E3).
-    if found.starts_with("QueuePermit") || found.starts_with("QueueOp") {
-        return Ok(());
     }
     // The general unforgeability arm. Nothing in the source language can
     // *produce* a capability (03-hardware.md §1: "their constructors are
@@ -3321,10 +3330,13 @@ fn resolve_named(
         // plans/M7.md item E1: 03-hardware.md §1/§9's `BootError` — a
         // zero-argument prelude enum (variants in `builtin_enum_variants`).
         "BootError" => Some(Type::Named("BootError".to_string(), vec![])),
-        // plans/M7.md item E2: sealed permit / operation values
-        // (03-hardware.md §4). Zero type arguments; minted only by
-        // `reserve_proven` / `prepare_block`.
-        "QueuePermit" | "QueueOp" => Some(Type::Named(n.name.clone(), vec![])),
+        // plans/M7.md item E2: sealed permit (zero type arguments).
+        // `QueueOp` carries its payload brand as of E3 — see the match
+        // arm below.
+        "QueuePermit" => Some(Type::Named(n.name.clone(), vec![])),
+        // plans/M7.md item E3: `IoError` — prelude enum for `reject`'s
+        // `error=` and (later, E4) `IoCompletion.status`.
+        "IoError" => Some(Type::Named("IoError".to_string(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {
@@ -3349,6 +3361,29 @@ fn resolve_named(
             return Ok(Type::Static(Box::new(inner)));
         }
         "Bytes" => return resolve_bytes(n, param_position),
+        // plans/M7.md item E2/E3: `QueueOp[P]` — sealed prepared operation
+        // carrying the transfer-payload brand `P` so `publish` can yield
+        // `Receipt[P]`. `prepare_block` always produces the branded form.
+        "QueueOp" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named(
+                "QueueOp".to_string(),
+                vec![TypeArg::Type(inner)],
+            ));
+        }
+        // plans/M7.md item E3: `Receipt[P]` (03-hardware.md §5) — sealed
+        // resource state machine. `P` is the payload brand the receipt
+        // recovers; minted only by `publish` / `reject` / handoff
+        // admission.
+        "Receipt" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named(
+                "Receipt".to_string(),
+                vec![TypeArg::Type(inner)],
+            ));
+        }
         // `Actor[T]` (plans/M6.md item A, 02-language.md §9.1): the
         // generated handle type — `T` is structurally resolved here
         // exactly like `Option`/`Static`'s own inner argument; *which*
@@ -4119,7 +4154,7 @@ fn render_item(
                 ),
             );
             for m in &s.members {
-                render_member(m, depth + 1, &s.name, effects, out);
+                render_member(m, depth + 1, s, effects, out);
             }
         }
         DeclItem::Enum(e) => {
@@ -4145,7 +4180,7 @@ fn render_item(
 fn render_member(
     m: &DeclMember,
     depth: usize,
-    struct_name: &str,
+    owner: &DeclStruct,
     effects: &BTreeMap<(String, String), AccessMode>,
     out: &mut String,
 ) {
@@ -4164,17 +4199,18 @@ fn render_member(
             // source and needs no lookup.
             let override_mode = f.receiver.as_ref().and_then(|r| {
                 if r.mode == AccessMode::Read && !r.is_pub && !r.is_init {
-                    effects
-                        .get(&(struct_name.to_string(), f.name.clone()))
-                        .copied()
+                    effects.get(&(owner.name.clone(), f.name.clone())).copied()
                 } else {
                     None
                 }
             });
+            // plans/M7.md item E3: 03-hardware.md §5 — handoff is
+            // signature-determined and "displayed by tooling".
+            let handoff = crate::sema::handoff::handoff_dump_prefix(owner, f);
             push_line(
                 out,
                 depth,
-                &format!("{prefix}{}", render_fn_signature(f, override_mode)),
+                &format!("{handoff}{prefix}{}", render_fn_signature(f, override_mode)),
             );
         }
         DeclMember::Init(f) => push_line(out, depth, &render_fn_signature(f, None)),

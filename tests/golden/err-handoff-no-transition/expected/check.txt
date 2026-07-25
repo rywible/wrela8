@@ -1,0 +1,1 @@
+error[type]: a handoff method's every path must `return queue.publish(...)` or `return queue.reject(...)` (03-hardware.md §5); this `return` is not a producer transition at 72:9

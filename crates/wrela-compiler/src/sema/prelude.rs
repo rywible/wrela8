@@ -82,7 +82,18 @@ const FAIL_CLOSED_TYPES: &[&str] = &["IoCompletion"];
 /// resolve with no import — an annotation naming one is how a driver is
 /// written. `BootError`'s one variant is in `builtin_enum_variants`;
 /// `VirtQueue[..N]`'s bound argument is `sema::types::resolve_named`.
-const HARDWARE_SURFACE: &[&str] = &["BootError", "VirtQueue", "QueuePermit", "QueueOp"];
+// plans/M7.md item E3: `Receipt` (03 §5) and `IoError` (`reject`'s
+// `error=` / `IoCompletion.status`'s Err arm). `Receipt[P]`'s argument
+// is resolved in `sema::types::resolve_named`; `IoError`'s variants are
+// in `builtin_enum_variants`.
+const HARDWARE_SURFACE: &[&str] = &[
+    "BootError",
+    "VirtQueue",
+    "QueuePermit",
+    "QueueOp",
+    "Receipt",
+    "IoError",
+];
 
 /// Is `name` one of the fixed prelude names above?
 ///
@@ -135,6 +146,11 @@ pub fn builtin_enum_variants(name: &str) -> Option<&'static [&'static str]> {
         // transition on this machine is a build-time fact that cannot fail
         // at runtime (decision 14).
         "BootError" => Some(&["Failed"]),
+        // plans/M7.md item E3: 03-hardware.md §5 / the reference driver's
+        // `reject(error=IoError.OutOfRange)`. One unit variant is enough
+        // for E3's dump oracles; richer taxonomy is not load-bearing
+        // until E4's completion status is inspected.
+        "IoError" => Some(&["OutOfRange"]),
         _ => None,
     }
 }

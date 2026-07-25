@@ -537,6 +537,20 @@ pub enum Inst {
         value: Temp,
     },
 
+    /// `VirtQueue.publish` (plans/M7.md item E3, 03-hardware.md §3/§5,
+    /// decision 15/16): the sealed ring-write sequence in normative order.
+    /// `steps` is exactly `virtqueue::PUBLISH_WRITE_ORDER` — pinned in the
+    /// mwir dump and by unit test. Real DRAM stores against pool-backed
+    /// addresses wait for E4's image-bound `own[P] T` wiring (decision 16);
+    /// this node is the oracle that the order lives in `publish`, not in
+    /// `prepare_block`. `dst` is the minted `Receipt[P]` word.
+    QueuePublish {
+        dst: Temp,
+        queue: Temp,
+        operation: Temp,
+        steps: &'static [&'static str],
+    },
+
     /// Unconditional abandonment: `assert`'s own failure path, an
     /// explicit `panic(msg)`, and match's own defensive "no arm matched"
     /// fallthrough (present for parity with `interp::exec_stmt`'s own
@@ -859,7 +873,11 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         // variant), never a DeclEnum in this LayoutCtx — same vehicle as
         // Target/Restart for the builder. Tag only.
         Type::Named(name, targs)
-            if targs.is_empty() && matches!(name.as_str(), "BootError" | "Target" | "Restart") =>
+            if targs.is_empty()
+                && matches!(
+                    name.as_str(),
+                    "BootError" | "Target" | "Restart" | "IoError"
+                ) =>
         {
             Ok(SLOT)
         }
@@ -1096,6 +1114,15 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         } => format!(
             "MmioWrite base={base} offset={offset:#x} ty={} value={value}",
             types::render_type(ty)
+        ),
+        Inst::QueuePublish {
+            dst,
+            queue,
+            operation,
+            steps,
+        } => format!(
+            "QueuePublish dst={dst} queue={queue} operation={operation} order=[{}]",
+            steps.join(", ")
         ),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))

@@ -1,7 +1,7 @@
-module examples.err_prepare_block_take
+module examples.err_receipt_drop
 
-# plans/M7.md item E2: `prepare_block` consumes the permit — `take` is
-# load-bearing (03-hardware.md §4).
+# plans/M7.md item E3 / 02-language.md §3.1 / 03-hardware.md §5:
+# "A receipt resolves exactly once; dropping one is illegal in every state."
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -56,19 +56,21 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    fn bad(mut self, take buffer: own[BlockPayloads] DmaBlock) -> QueueOp[own[BlockPayloads] DmaBlock]:
+    fn drop_receipt(mut self, take buffer: own[BlockPayloads] DmaBlock) -> unit:
         permit = self.queue.reserve_proven(descriptors=3)
-        return self.queue.prepare_block(
-            permit=permit,
+        operation = self.queue.prepare_block(
+            permit=take permit,
             header=BlkReqHeader(kind=0, reserved=0, sector=0),
             payload=take buffer,
             device_writes_payload=true,
             status=BlkReqStatus(status=0xff),
         )
+        r = self.queue.publish(operation=take operation)
+        return unit
 
 @image
 pub fn build() -> Image:
-    img = Image(name="err-prepare-block-take", target=Target.wrela_machine_v1)
+    img = Image(name="err-receipt-drop", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](
         transport=0x2000,
         capacity_sectors=16,

@@ -146,6 +146,16 @@ pub fn accepted_features(required_variant_names: &[&str]) -> Result<u64, String>
 /// decide a bespoke ring later.
 pub const DESCRIPTORS_PER_BLK_OP: u16 = 3;
 
+/// `VirtQueue.publish`'s sealed write order (03-hardware.md §3:
+/// "payload writes before publication, publication before doorbell";
+/// the sealed ops named there are `write_descriptors`,
+/// `publish_available`, `notify_queue`). plans/M7.md item E3 / decision
+/// 16: this slice is what `Inst::QueuePublish` carries into the mwir
+/// dump — the oracle that the order lives in `publish`, not in
+/// `prepare_block` (decision 15).
+pub const PUBLISH_WRITE_ORDER: &[&str] =
+    &["write_descriptors", "publish_available", "notify_queue"];
+
 /// Maximum concurrent direct operations a queue can hold
 /// (03-hardware.md §4: "three direct descriptors in a 128-deep queue
 /// means at most 42 in flight" — `floor(128/3) = 42`). Plans/M7.md item
@@ -198,5 +208,14 @@ mod tests {
         assert_eq!(occupancy_bound(7, 3), 2);
         assert_eq!(occupancy_bound(2, 3), 0);
         assert_eq!(occupancy_bound(3, 3), 1);
+    }
+
+    #[test]
+    fn publish_write_order_is_descriptors_then_available_then_doorbell() {
+        // 03-hardware.md §3's normative order, pinned for Inst::QueuePublish.
+        assert_eq!(
+            PUBLISH_WRITE_ORDER,
+            &["write_descriptors", "publish_available", "notify_queue"]
+        );
     }
 }

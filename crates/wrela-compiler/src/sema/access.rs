@@ -1871,13 +1871,13 @@ fn check_call_by_field(
             }
             return Ok(None);
         }
-        // plans/M7.md item E2: `VirtQueue[..N]` methods. Result types
+        // plans/M7.md item E2/E3: `VirtQueue[..N]` methods. Result types
         // mirror `bodies::check_virtqueue_method` so assignments keep
-        // tracking. Receiver is **mut** for reserve/prepare (they update
-        // queue bookkeeping); publish/reject/drain stay deferred in bodies.
+        // tracking. Receiver is **mut** for reserve/prepare/publish/reject
+        // (they update queue bookkeeping); drain stays deferred in bodies.
         if n == "VirtQueue" {
             match name {
-                "reserve_proven" | "prepare_block" => {
+                "reserve_proven" => {
                     if !allows_mut_receiver(root_mode) {
                         return Err(receiver_mutability_error(
                             AccessMode::Mut,
@@ -1886,10 +1886,30 @@ fn check_call_by_field(
                             fspan,
                         ));
                     }
-                    let ret = if name == "reserve_proven" {
-                        Type::Named("QueuePermit".to_string(), vec![])
+                    return Ok(Some(Type::Named("QueuePermit".to_string(), vec![])));
+                }
+                "prepare_block" | "publish" | "reject" => {
+                    if !allows_mut_receiver(root_mode) {
+                        return Err(receiver_mutability_error(
+                            AccessMode::Mut,
+                            root_mode,
+                            root_name.as_deref(),
+                            fspan,
+                        ));
+                    }
+                    // access pass only needs *a* result type so a later
+                    // assignment keeps tracking; bodies owns the precise
+                    // `QueueOp[P]` / `Receipt[P]` brand.
+                    let ret = if name == "prepare_block" {
+                        Type::Named(
+                            "QueueOp".to_string(),
+                            vec![types::TypeArg::Type(Type::Unit)],
+                        )
                     } else {
-                        Type::Named("QueueOp".to_string(), vec![])
+                        Type::Named(
+                            "Receipt".to_string(),
+                            vec![types::TypeArg::Type(Type::Unit)],
+                        )
                     };
                     return Ok(Some(ret));
                 }

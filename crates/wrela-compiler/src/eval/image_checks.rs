@@ -1214,6 +1214,10 @@ pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
         // resources, one opaque word each, never constructible from source.
         || name == "QueuePermit"
         || name == "QueueOp"
+        // plans/M7.md item E3: `Receipt[P]` (03-hardware.md §5) — the
+        // sealed resource state machine for published work. One opaque
+        // word (caller endpoint); never constructible from source.
+        || name == "Receipt"
 }
 
 /// The noun phrase (with its normative citation) a diagnostic uses for one
@@ -1228,8 +1232,34 @@ pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
         "a sealed queue (03-hardware.md §4)"
     } else if name == "QueuePermit" || name == "QueueOp" {
         "a sealed queue value (03-hardware.md §4)"
+    } else if name == "Receipt" {
+        "a sealed receipt (03-hardware.md §5)"
     } else {
         "a capability type (03-hardware.md §1)"
+    }
+}
+
+/// 02-language.md §3.1's second bullet: protocol resources whose only
+/// consumers are protocol operations — every control-flow path must
+/// explicitly consume, return, or transfer them (or cover with `defer`).
+/// plans/M7.md item E3 flips `values.resource.protocol-consumption` on
+/// this predicate for the queue/receipt surface.
+///
+/// **Scoped to `QueuePermit` / `QueueOp` / `Receipt`.** Capabilities are
+/// named by the same §3.1 sentence, but every earlier M7 dump oracle that
+/// takes a `DeviceCap`/`IrqCap` parameter for typing alone (without a
+/// claim/consume path) would overturn if this predicate included them —
+/// decision 16 records that capability drop stays a named thin spot
+/// rather than a silent widen of every typed-only golden.
+pub(crate) fn is_protocol_consuming_type_name(name: &str) -> bool {
+    matches!(name, "QueuePermit" | "QueueOp" | "Receipt")
+}
+
+/// Structural form of `is_protocol_consuming_type_name` over a `Type`.
+pub(crate) fn is_protocol_consuming_type(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, _) => is_protocol_consuming_type_name(name),
+        _ => false,
     }
 }
 

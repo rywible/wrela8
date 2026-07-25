@@ -555,7 +555,17 @@ fn check_storing_value(value: &Expr, fctx: &FnCtx, wctx: &WCtx) -> Result<(), Se
 /// obligation exists for any M2-expressible type; the auto-reclaim
 /// machinery tears down whatever remains, piecewise) — only a `mut`
 /// root's caller-visible coherence is actually at stake here.
-fn check_exit_obligations(state: &StateMap, wctx: &WCtx, span: Span) -> Result<(), SemaError> {
+///
+/// plans/M7.md item E3 / 02-language.md §3.1's second bullet: protocol
+/// resources (capabilities, permits, receipts — and E2's sealed queue
+/// values) must be consumed, returned, or transferred on every path.
+/// A live `Init` root of such a type at exit is `error[move]`.
+fn check_exit_obligations(
+    state: &StateMap,
+    fctx: &FnCtx,
+    wctx: &WCtx,
+    span: Span,
+) -> Result<(), SemaError> {
     for (root, mode) in &wctx.modes {
         if *mode != AccessMode::Mut {
             continue;
@@ -571,6 +581,49 @@ fn check_exit_obligations(state: &StateMap, wctx: &WCtx, span: Span) -> Result<(
                 span,
             ));
         }
+    }
+    check_protocol_consumption(state, fctx, wctx, span)
+}
+
+/// 02-language.md §3.1: "If its only consumers are protocol operations
+/// (capabilities, permits, receipts), every control-flow path must
+/// explicitly consume, return, or transfer it". A still-`Init` owned
+/// root of a protocol-consuming type is a drop — illegal in every state
+/// for a receipt, and the honesty hole E2 left open for a dropped permit.
+fn check_protocol_consumption(
+    state: &StateMap,
+    fctx: &FnCtx,
+    wctx: &WCtx,
+    span: Span,
+) -> Result<(), SemaError> {
+    let mut checked: BTreeSet<String> = BTreeSet::new();
+    for (path, st) in state {
+        if *st != PathState::Init || !path.steps.is_empty() {
+            continue;
+        }
+        let name = &path.root;
+        if !checked.insert(name.clone()) {
+            continue;
+        }
+        // Borrowed `mut` roots stay with the caller; their fields are not
+        // this function's to drop.
+        if wctx.modes.get(name) == Some(&AccessMode::Mut) {
+            continue;
+        }
+        let Some(ty) = fctx.lookup_local(name) else {
+            continue;
+        };
+        if !crate::eval::image_checks::is_protocol_consuming_type(&ty) {
+            continue;
+        }
+        return Err(move_error(
+            format!(
+                "`{name}` is a protocol resource (`{}`); every path must consume, return, or \
+                 transfer it (02-language.md §3.1 / 03-hardware.md §5) — dropping one is illegal",
+                types::render_type(&ty)
+            ),
+            span,
+        ));
     }
     Ok(())
 }
@@ -1176,7 +1229,7 @@ fn walk_return<'a>(
     if wctx.is_init && e.as_ref().is_some_and(is_err_return) {
         return Ok(());
     }
-    check_exit_obligations(state, wctx, span)
+    check_exit_obligations(state, fctx, wctx, span)
 }
 
 fn walk_stmt<'a>(
@@ -1695,7 +1748,7 @@ fn check_body_exit(
             span,
         ));
     }
-    check_exit_obligations(final_state, wctx, span)
+    check_exit_obligations(final_state, fctx, wctx, span)
 }
 
 /// `pub(crate)` (item H, generics.rs): re-run verbatim over a

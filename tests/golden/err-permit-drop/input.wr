@@ -1,7 +1,7 @@
-module examples.err_prepare_block_take
+module examples.err_permit_drop
 
-# plans/M7.md item E2: `prepare_block` consumes the permit — `take` is
-# load-bearing (03-hardware.md §4).
+# plans/M7.md item E3 closes E2's honesty hole: a QueuePermit reserved
+# and then dropped is illegal (02-language.md §3.1 protocol consumption).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -13,14 +13,6 @@ struct BlkReqHeader:
     reserved: u32
     sector: u64
 
-@layout(dma, endian=little)
-struct BlkReqStatus:
-    status: u8
-
-@layout(dma, endian=little)
-struct DmaBlock:
-    kind: u64
-
 struct VirtioBlock:
     id: u32
 
@@ -28,7 +20,6 @@ enum Feature:
     Flush
 
 pool BlockControl
-pool BlockPayloads
 
 @driver
 pub struct BlkDriver:
@@ -56,26 +47,19 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    fn bad(mut self, take buffer: own[BlockPayloads] DmaBlock) -> QueueOp[own[BlockPayloads] DmaBlock]:
+    fn drop_permit(mut self) -> unit:
         permit = self.queue.reserve_proven(descriptors=3)
-        return self.queue.prepare_block(
-            permit=permit,
-            header=BlkReqHeader(kind=0, reserved=0, sector=0),
-            payload=take buffer,
-            device_writes_payload=true,
-            status=BlkReqStatus(status=0xff),
-        )
+        return unit
 
 @image
 pub fn build() -> Image:
-    img = Image(name="err-prepare-block-take", target=Target.wrela_machine_v1)
+    img = Image(name="err-permit-drop", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](
         transport=0x2000,
         capacity_sectors=16,
         required_features=[Feature.Flush],
     )
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
-    _payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=4)
     disk = img.driver(BlkDriver, device=blk)
     img.supervise(children=[disk], strategy=Restart.OneForOne,
                   intensity=RestartIntensity(max=3, within=seconds(10)))

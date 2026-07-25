@@ -1,7 +1,7 @@
-module examples.err_prepare_block_take
+module examples.err_handoff_no_transition
 
-# plans/M7.md item E2: `prepare_block` consumes the permit — `take` is
-# load-bearing (03-hardware.md §4).
+# plans/M7.md item E3 / 03-hardware.md §5: a handoff method's every path
+# must return queue.publish(...) or queue.reject(...).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -56,19 +56,24 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    fn bad(mut self, take buffer: own[BlockPayloads] DmaBlock) -> QueueOp[own[BlockPayloads] DmaBlock]:
+    pub fn submit_read(mut self, take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
         permit = self.queue.reserve_proven(descriptors=3)
-        return self.queue.prepare_block(
-            permit=permit,
+        operation = self.queue.prepare_block(
+            permit=take permit,
             header=BlkReqHeader(kind=0, reserved=0, sector=0),
             payload=take buffer,
             device_writes_payload=true,
             status=BlkReqStatus(status=0xff),
         )
+        # Storing the receipt and returning the local is not a producer
+        # transition — 03 §5 requires `return queue.publish(...)` directly.
+        r = self.queue.publish(operation=take operation)
+        return take r
 
 @image
 pub fn build() -> Image:
-    img = Image(name="err-prepare-block-take", target=Target.wrela_machine_v1)
+    img = Image(name="err-handoff-no-transition", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](
         transport=0x2000,
         capacity_sectors=16,

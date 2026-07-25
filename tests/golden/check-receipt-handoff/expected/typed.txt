@@ -6,7 +6,7 @@ Program
       Let name=img ty=Image
         Intrinsic key=Image ty=Image
           Arg label=name
-            Str text="check-reserve-proven" ty=Static[Str]
+            Str text="check-receipt-handoff" ty=Static[Str]
           Arg label=target
             EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
       Let name=blk ty=ImageDecl
@@ -55,11 +55,26 @@ Program
       Return
         Intrinsic key=Image.seal ty=Image
   Struct name=BlkDriver
-    Method name=prepare_read ret=QueueOp[own[BlockPayloads] DmaBlock]
+    Method name=submit_read ret=Receipt[own[BlockPayloads] DmaBlock]
       Receiver mode=mut ty=BlkDriver
-      Param name=buffer mode=take ty=own[BlockPayloads] DmaBlock
       Param name=lba mode=read ty=u64
+      Param name=buffer mode=take ty=own[BlockPayloads] DmaBlock
       Body
+        If
+          Binary op=>= ty=bool
+            Local name=lba ty=u64
+            Field name=capacity_sectors ty=u64
+              Local name=self ty=BlkDriver
+          Then
+            Return
+              Intrinsic key=VirtQueue.reject ty=Receipt[own[BlockPayloads] DmaBlock]
+                Receiver
+                  Field name=queue ty=VirtQueue[..8]
+                    Local name=self ty=BlkDriver
+                Arg label=payload
+                  Local name=buffer ty=own[BlockPayloads] DmaBlock
+                Arg label=error
+                  EnumConstruct enum=IoError variant=OutOfRange ty=IoError
         Let name=permit ty=QueuePermit
           Intrinsic key=VirtQueue.reserve_proven type_arg=VirtQueue[..8] ty=QueuePermit
             Receiver
@@ -91,8 +106,12 @@ Program
                 Field name=status
                   Int text=0xff ty=u8
         Return
-          Take ty=QueueOp[own[BlockPayloads] DmaBlock]
-            Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock]
+          Intrinsic key=VirtQueue.publish ty=Receipt[own[BlockPayloads] DmaBlock]
+            Receiver
+              Field name=queue ty=VirtQueue[..8]
+                Local name=self ty=BlkDriver
+            Arg label=operation
+              Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock]
     Init ret=Result[unit, BootError]
       Receiver mode=mut ty=BlkDriver
       Param name=cap mode=take ty=DeviceCap[VirtioBlock]
@@ -135,10 +154,7 @@ Program
         Assign
           Field name=capacity_sectors ty=u64
             Local name=self ty=BlkDriver
-          Try ty=u64
-            Intrinsic key=Device.read_capacity_sectors ty=Result[u64, BootError]
-              Receiver
-                Local name=negotiated ty=QueuesConfiguredDevice[VirtioBlock]
+          Int text=16 ty=u64
         Assign
           Field name=device ty=RunningDevice[VirtioBlock]
             Local name=self ty=BlkDriver

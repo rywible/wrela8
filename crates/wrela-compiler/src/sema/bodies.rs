@@ -608,9 +608,9 @@ pub(crate) fn check(
     // index `Target`/`Restart` constructions with no evaluator-side
     // special case at all. Harmless for a module that never mentions
     // either name (this field is not part of the `--stage=typed` dump).
-    for name in ["Target", "Restart", "BootError"] {
+    for name in ["Target", "Restart", "BootError", "IoError"] {
         let variants = crate::sema::prelude::builtin_enum_variants(name)
-            .expect("all three names are in the fixed builtin_enum_variants table")
+            .expect("all four names are in the fixed builtin_enum_variants table")
             .iter()
             .map(|v| v.to_string())
             .collect();
@@ -5366,9 +5366,6 @@ pub fn is_device_transport_intrinsic(key: &str) -> bool {
 /// falling into a generic "intrinsic" rejection.
 pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
     match key {
-        "VirtQueue.publish" | "VirtQueue.reject" => {
-            Some("plans/M7.md item E3 (`publish` / `reject` / `Receipt[P]`)")
-        }
         "VirtQueue.drain" | "VirtQueue.suppress_interrupts" => {
             Some("plans/M7.md item E4 / G (`drain` / `suppress_interrupts`)")
         }
@@ -5376,9 +5373,15 @@ pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
     }
 }
 
-/// Is `key` one of item E2's live queue operations?
+/// Is `key` one of item E2/E3's live queue operations?
 pub fn is_queue_op_intrinsic(key: &str) -> bool {
-    matches!(key, "VirtQueue.reserve_proven" | "VirtQueue.prepare_block")
+    matches!(
+        key,
+        "VirtQueue.reserve_proven"
+            | "VirtQueue.prepare_block"
+            | "VirtQueue.publish"
+            | "VirtQueue.reject"
+    )
 }
 
 /// A method call on a `VirtQueue[..N]` value (03-hardware.md §4).
@@ -5396,13 +5399,8 @@ fn check_virtqueue_method(
             check_virtqueue_reserve_proven(queue, args, fspan, call_span, fctx, mctx)
         }
         "prepare_block" => check_virtqueue_prepare_block(queue, args, fspan, call_span, fctx, mctx),
-        "publish" | "reject" => Err(unimplemented_at(
-            &format!(
-                "`VirtQueue.{name}(...)` — {} is",
-                is_queue_op_deferred(&format!("VirtQueue.{name}")).unwrap_or("plans/M7.md item E3")
-            ),
-            call_span,
-        )),
+        "publish" => check_virtqueue_publish(queue, args, fspan, call_span, fctx, mctx),
+        "reject" => check_virtqueue_reject(queue, args, fspan, call_span, fctx, mctx),
         "drain" | "suppress_interrupts" | "poll_sources" | "completions_pending" => {
             Err(unimplemented_at(
                 &format!("`VirtQueue.{name}(...)` — plans/M7.md item E4 / G (`{name}`) is"),
@@ -5686,9 +5684,13 @@ fn check_virtqueue_prepare_block(
             call_span,
         ));
     };
+    let payload_ty = payload.ty.clone();
     let _ = (fspan, &queue);
     Ok(TypedExpr {
-        ty: Type::Named("QueueOp".to_string(), vec![]),
+        ty: Type::Named(
+            "QueueOp".to_string(),
+            vec![types::TypeArg::Type(payload_ty)],
+        ),
         kind: TypedExprKind::Intrinsic {
             key: "VirtQueue.prepare_block".to_string(),
             receiver: Some(Box::new(queue)),
@@ -5735,6 +5737,183 @@ fn require_layout_dma(
             span,
         )),
     }
+}
+
+/// `queue.publish(operation=take ...)` — 03-hardware.md §5 / decision 15:
+/// writes the ring in normative order and yields `Receipt[P]` for the
+/// packaged payload brand.
+fn check_virtqueue_publish(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if args.len() != 1 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.publish(operation=take ...)` takes exactly one labelled argument; \
+                 found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let arg = &args[0];
+    if arg.label.as_deref() != Some("operation") {
+        return Err(type_error(
+            "`VirtQueue.publish`'s own argument is labelled `operation=` (03-hardware.md §4/§5)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Take {
+        return Err(type_error(
+            "`publish` consumes the prepared operation: write `operation=take ...` \
+             (03-hardware.md §4/§5)"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    let op = check_expr(&arg.value, None, fctx, mctx)?;
+    let payload_ty = match &op.ty {
+        Type::Named(n, targs) if n == "QueueOp" => match targs.first() {
+            Some(types::TypeArg::Type(p)) => p.clone(),
+            _ => {
+                return Err(type_error(
+                    "`publish`'s `operation=` is a `QueueOp[P]`; found a `QueueOp` with no \
+                     payload brand"
+                        .to_string(),
+                    arg.span,
+                ));
+            }
+        },
+        other => {
+            return Err(type_error(
+                format!(
+                    "`publish`'s `operation=` is a `QueueOp[P]` (03-hardware.md §4); found `{}`",
+                    types::render_type(other)
+                ),
+                arg.span,
+            ));
+        }
+    };
+    let _ = (fspan, &queue);
+    Ok(TypedExpr {
+        ty: Type::Named(
+            "Receipt".to_string(),
+            vec![types::TypeArg::Type(payload_ty)],
+        ),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.publish".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: vec![("operation".to_string(), op)],
+        },
+    })
+}
+
+/// `queue.reject(payload=take p, error=...)` — 03-hardware.md §5:
+/// pre-commit failure returns `P` via a resolved receipt.
+fn check_virtqueue_reject(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if args.len() != 2 {
+        return Err(type_error(
+            format!(
+                "`VirtQueue.reject(payload=take ..., error=...)` takes exactly two labelled \
+                 arguments; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    }
+    let mut payload = None;
+    let mut error = None;
+    for arg in args {
+        match arg.label.as_deref() {
+            Some("payload") => {
+                if payload.is_some() {
+                    return Err(type_error(
+                        "`reject`'s `payload=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Take {
+                    return Err(type_error(
+                        "`reject` returns the payload through the receipt: write \
+                         `payload=take ...` (03-hardware.md §5)"
+                            .to_string(),
+                        arg.span,
+                    ));
+                }
+                payload = Some(check_expr(&arg.value, None, fctx, mctx)?);
+            }
+            Some("error") => {
+                if error.is_some() {
+                    return Err(type_error(
+                        "`reject`'s `error=` appears twice".to_string(),
+                        arg.span,
+                    ));
+                }
+                if arg.mode != AccessMode::Read {
+                    return Err(type_error(
+                        format!(
+                            "`reject`'s `error=` is an `IoError` value, not a moved handle: \
+                             drop the `{}`",
+                            arg.mode.as_str()
+                        ),
+                        arg.span,
+                    ));
+                }
+                let expected = Type::Named("IoError".to_string(), vec![]);
+                error = Some(check_expr(&arg.value, Some(&expected), fctx, mctx)?);
+            }
+            Some(other) => {
+                return Err(type_error(
+                    format!(
+                        "`reject`'s own arguments are labelled `payload=` and `error=`; \
+                         `{other}=` names no parameter"
+                    ),
+                    arg.span,
+                ));
+            }
+            None => {
+                return Err(type_error(
+                    "`reject(...)` requires labelled arguments".to_string(),
+                    arg.span,
+                ));
+            }
+        }
+    }
+    let (Some(payload), Some(error)) = (payload, error) else {
+        return Err(type_error(
+            "`reject` needs `payload=` and `error=`".to_string(),
+            call_span,
+        ));
+    };
+    let _ = (fspan, &queue);
+    Ok(TypedExpr {
+        ty: Type::Named(
+            "Receipt".to_string(),
+            vec![types::TypeArg::Type(payload.ty.clone())],
+        ),
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.reject".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: vec![
+                ("payload".to_string(), payload),
+                ("error".to_string(), error),
+            ],
+        },
+    })
 }
 
 /// Depth bound on a `VirtQueue[..N]` type, resolving a const name through

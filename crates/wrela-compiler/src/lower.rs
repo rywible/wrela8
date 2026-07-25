@@ -2143,11 +2143,10 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         } if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) => {
             lower_untrusted_checked_le(expr, receiver, type_arg, args, b, env)
         }
-        // plans/M7.md item E2, 03-hardware.md §4 / decision 15: a proven
-        // permit is one opaque word (the descriptor count); a prepared
-        // operation is one opaque word carrying the pieces for E3's
-        // publish. Neither mutates the ring here — descriptor-table
-        // writes belong to `publish`'s normative order (decision 15).
+        // plans/M7.md item E2/E3, 03-hardware.md §4/§5 / decision 15/16:
+        // reserve/prepare package; publish emits the sealed write-order
+        // node (real DRAM stores wait for E4's pool-backed addresses);
+        // reject mints a resolved receipt without touching the ring.
         TypedExprKind::Intrinsic {
             key,
             receiver,
@@ -2187,6 +2186,44 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     let src = lower_expr(&permit.1, b, env)?;
                     let dst = b.fresh(expr.ty.clone());
                     b.emit(Inst::Copy { dst, src });
+                    let _ = receiver;
+                    Ok(dst)
+                }
+                "VirtQueue.publish" => {
+                    let op = args.iter().find(|(l, _)| l == "operation").ok_or_else(|| {
+                        LowerError::internal(
+                            "`publish` reached lowering without `operation=`".to_string(),
+                        )
+                    })?;
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`publish` reached lowering without a queue receiver".to_string(),
+                            ));
+                        }
+                    };
+                    let operation = lower_expr(&op.1, b, env)?;
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::QueuePublish {
+                        dst,
+                        queue,
+                        operation,
+                        steps: crate::virtqueue::PUBLISH_WRITE_ORDER,
+                    });
+                    Ok(dst)
+                }
+                "VirtQueue.reject" => {
+                    // Consume payload + error; mint a Receipt word (opaque).
+                    for (_, a) in args {
+                        let _ = lower_expr(a, b, env)?;
+                    }
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::ConstInt {
+                        dst,
+                        ty: Type::U64,
+                        value: 0,
+                    });
                     let _ = receiver;
                     Ok(dst)
                 }
