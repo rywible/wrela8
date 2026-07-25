@@ -181,6 +181,22 @@ pub fn enc_ldrb_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b00, 0b01, scaled_offset(byte_offset, 1), rn, rt)
 }
 
+/// `STRH Wt, [Xn, #byte_offset]` — halfword store, unsigned offset
+/// (0..8190, multiple of 2). plans/M7.md item H1: a `WriteOnly[u16]`
+/// register is the first thing in this machine that needs a 16-bit
+/// access, and 03-hardware.md §2 makes the declared width the *whole* of
+/// what picks it — a `u16` register written with a 32-bit store would
+/// clobber the neighbouring two bytes of the claim.
+pub fn enc_strh_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
+    ldr_str_imm(0b01, 0b00, scaled_offset(byte_offset, 2), rn, rt)
+}
+
+/// `LDRH Wt, [Xn, #byte_offset]` — halfword load, unsigned offset
+/// (zero-extending, like `LDRB`).
+pub fn enc_ldrh_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
+    ldr_str_imm(0b01, 0b01, scaled_offset(byte_offset, 2), rn, rt)
+}
+
 // --- Loads/stores: register pair, signed offset (LDP/STP) -----------------
 //
 // ARM ARM "LDP/STP (signed offset)": `opc[31:30] 101 0 010 L[22]
@@ -850,6 +866,19 @@ mod tests {
         assert_eq!(enc_ldr_w_imm(0, 1, 0), 0xb9400020);
         assert_eq!(enc_strb_imm(0, 1, 0), 0x39000020);
         assert_eq!(enc_ldrb_imm(0, 1, 0), 0x39400020);
+    }
+
+    /// plans/M7.md item H1: the halfword forms a `ReadOnly[u16]`/
+    /// `WriteOnly[u16]` register needs. Same `size`/`opc` table as every
+    /// form above, `size = 0b01`, scaled by 2 — hand-checked against the
+    /// ARM ARM rather than against this encoder.
+    #[test]
+    fn ldr_str_halfword_forms() {
+        assert_eq!(enc_strh_imm(0, 1, 0), 0x79000020);
+        assert_eq!(enc_ldrh_imm(0, 1, 0), 0x79400020);
+        // The scaled offset field: byte offset 0x102 is imm12 = 0x81.
+        assert_eq!(enc_strh_imm(2, 9, 0x102), 0x79020522);
+        assert_eq!(enc_ldrh_imm(2, 9, 0x102), 0x79420522);
     }
 
     #[test]

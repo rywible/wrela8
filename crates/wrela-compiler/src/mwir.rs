@@ -506,6 +506,37 @@ pub enum Inst {
         value: Option<Temp>,
     },
 
+    // --- typed MMIO (plans/M7.md item C's surface, item H1's emission) ---
+    /// `<mmio>.<register>.read()` (03-hardware.md §2). `base` holds the
+    /// `Mmio[L]` value — decision 11's one word, the claim's own guest
+    /// base address — and `offset` is the register's declared `@offset`,
+    /// already checked for width, alignment and non-overlap by
+    /// `types::check_layouts`/`check_mmio_claims`. `ty` is the register's
+    /// declared scalar and is the *whole* of what picks the load width:
+    /// there is no widening, no promotion and no inference anywhere
+    /// downstream of the declaration.
+    ///
+    /// Effectful by construction: this is a statement-level node with no
+    /// value form above it (a register selection has none — 03 §2), so
+    /// there is nothing an optimizer could hoist even if this backend had
+    /// one (`compiler.codegen.naive-locked`).
+    MmioRead {
+        dst: Temp,
+        base: Temp,
+        offset: u64,
+        ty: Type,
+    },
+    /// `<mmio>.<register>.write(v)`. Same base/offset/width discipline as
+    /// `MmioRead`; `value` is already the register's declared scalar
+    /// (`sema::bodies::check_mmio_access` hands that type to `check_expr`
+    /// as the expected type, so a mismatch never reaches here).
+    MmioWrite {
+        base: Temp,
+        offset: u64,
+        ty: Type,
+        value: Temp,
+    },
+
     /// Unconditional abandonment: `assert`'s own failure path, an
     /// explicit `panic(msg)`, and match's own defensive "no arm matched"
     /// fallthrough (present for parity with `interp::exec_stmt`'s own
@@ -1018,6 +1049,24 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         Inst::ConstUnit { dst } => format!("ConstUnit dst={dst}"),
         Inst::ConstText { dst, data } => format!("ConstText dst={dst} data={data}"),
         Inst::Copy { dst, src } => format!("Copy dst={dst} src={src}"),
+        Inst::MmioRead {
+            dst,
+            base,
+            offset,
+            ty,
+        } => format!(
+            "MmioRead dst={dst} base={base} offset={offset:#x} ty={}",
+            types::render_type(ty)
+        ),
+        Inst::MmioWrite {
+            base,
+            offset,
+            ty,
+            value,
+        } => format!(
+            "MmioWrite base={base} offset={offset:#x} ty={} value={value}",
+            types::render_type(ty)
+        ),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
         }

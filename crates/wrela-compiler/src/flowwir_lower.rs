@@ -1961,18 +1961,23 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             b.emit(FlowInst::Duration { dst, n });
             Ok(dst)
         }
-        // plans/M7.md item C: the async half of `lower.rs`'s own MMIO arm,
-        // failing closed for the identical reason and with the identical
-        // message rather than falling into the `{other:?}` catch-all below
-        // (which would print a whole typed node at a reader).
+        // plans/M7.md item H1: the async half of `lower.rs`'s own MMIO
+        // arm. The *sync* half emits, and the sync half is the whole of
+        // what this item needs: a driver's `init` is a plain `fn`
+        // (03-hardware.md §1's own worked constructor), and the async
+        // surface that reads registers is 03 §6's ISR and §7's bottom-half
+        // task, both of which plans/M7.md item G owns. Failing closed here
+        // rather than in the `{other:?}` catch-all so a reader is told
+        // which item, not shown a typed node.
         TypedExprKind::Intrinsic { key, .. }
-            if crate::sema::bodies::is_mmio_access_intrinsic(key) =>
+            if crate::sema::bodies::is_mmio_access_intrinsic(key)
+                || crate::sema::bodies::is_device_transport_intrinsic(key) =>
         {
             Err(FlowError::unimplemented(
-                "a typed MMIO register access (03-hardware.md §2): it type-checks, but no \
-                 `Mmio[L]` value exists at runtime yet — the image binding does not mint one \
-                 (`eval::image_checks`) and boot never calls a `@driver`'s `init` \
-                 (`layout::build_boot_init_calls`), so there is no base address to access. That is",
+                "a typed MMIO access or bring-up transition (03-hardware.md §2/§9) inside an \
+                 `async fn`: the synchronous path emits both (plans/M7.md item H1), and a \
+                 driver's own `init` is synchronous. The async register readers are 03 §6's ISR \
+                 and §7's bottom-half task, which are plans/M7.md item G — until then this is",
             ))
         }
         TypedExprKind::Await(_) | TypedExprKind::GroupChild(_) => Err(FlowError::unimplemented(

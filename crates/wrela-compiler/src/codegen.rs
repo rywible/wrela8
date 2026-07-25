@@ -1646,8 +1646,116 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.abort_fixed(&msg);
         }
+
+        // --- typed MMIO (plans/M7.md item C's surface, item H1's emission)
+        //
+        // The first — and at M7 the only — memory access this backend
+        // emits at an address that is neither a frame slot nor a
+        // build-time-constant runtime table: the base comes out of a
+        // temp holding an `Mmio[L]` (decision 11's one word), and the
+        // offset is the register's own declared `@offset`.
+        //
+        // **Width is the declaration's, exactly.** A `ReadOnly[u32]` is a
+        // 32-bit load and a `WriteOnly[u16]` a 16-bit store — not a
+        // uniform 64-bit slot access, which is what every *other* value in
+        // this backend gets (`mwir::size_of`'s own "every scalar occupies
+        // one 8-byte slot"). A register is not a slot: a wider access
+        // would read or clobber the neighbouring bytes of the claim, which
+        // is precisely what 03 §2's non-overlap rule exists to prevent, so
+        // a width this encoder cannot emit fails closed rather than
+        // widening.
+        //
+        // The loaded value is then spilled into `dst`'s own 8-byte slot;
+        // `LDRB`/`LDRH`/`LDR Wt` all zero-extend into the 64-bit register,
+        // which is the same representation every other unsigned scalar has
+        // here. A *signed* register type would need a sign-extending load
+        // this encoder does not have, and says so.
+        Inst::MmioRead {
+            dst,
+            base,
+            offset,
+            ty,
+        } => {
+            let width = mmio_access_width(ty, *offset)?;
+            ctx.load_slot(X_A, ctx.frame.off(*base));
+            let off = *offset as u16;
+            let (enc, mnem) = match width {
+                1 => (encode::enc_ldrb_imm(X_B, X_A, off), "ldrb"),
+                2 => (encode::enc_ldrh_imm(X_B, X_A, off), "ldrh"),
+                4 => (encode::enc_ldr_w_imm(X_B, X_A, off), "ldr"),
+                _ => (encode::enc_ldr_x_imm(X_B, X_A, off), "ldr"),
+            };
+            let rt = if width == 8 {
+                reg_name(X_B)
+            } else {
+                format!("w{X_B}")
+            };
+            ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
+            ctx.store_slot(X_B, ctx.frame.off(*dst));
+        }
+        Inst::MmioWrite {
+            base,
+            offset,
+            ty,
+            value,
+        } => {
+            let width = mmio_access_width(ty, *offset)?;
+            ctx.load_slot(X_A, ctx.frame.off(*base));
+            ctx.load_slot(X_B, ctx.frame.off(*value));
+            let off = *offset as u16;
+            let (enc, mnem) = match width {
+                1 => (encode::enc_strb_imm(X_B, X_A, off), "strb"),
+                2 => (encode::enc_strh_imm(X_B, X_A, off), "strh"),
+                4 => (encode::enc_str_w_imm(X_B, X_A, off), "str"),
+                _ => (encode::enc_str_x_imm(X_B, X_A, off), "str"),
+            };
+            let rt = if width == 8 {
+                reg_name(X_B)
+            } else {
+                format!("w{X_B}")
+            };
+            ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
+        }
     }
     Ok(())
+}
+
+/// A register's transfer width in bytes, from its declared scalar type
+/// alone (03-hardware.md §2: "The compiler and target ABI check width,
+/// alignment, non-overlap, bounds, and endianness"). Fails closed on a
+/// signed register (no sign-extending load is emitted, and silently
+/// zero-extending one would be a wrong answer, not a missing feature) and
+/// on an offset outside the unsigned-immediate encoder's scaled reach.
+fn mmio_access_width(ty: &Type, offset: u64) -> Result<u16, CodegenError> {
+    let width = match strip_wrappers(ty) {
+        Type::U8 => 1,
+        Type::U16 => 2,
+        Type::U32 => 4,
+        Type::U64 | Type::Usize => 8,
+        other => {
+            return Err(CodegenError::unimplemented(&format!(
+                "an MMIO register declared `{}`: this backend emits only the four unsigned \
+                 widths (`u8`/`u16`/`u32`/`u64`/`usize`); a signed register would need a \
+                 sign-extending load this encoder does not have",
+                crate::sema::types::render_type(&other)
+            )));
+        }
+    };
+    if offset % width as u64 != 0 {
+        return Err(CodegenError::internal(format!(
+            "an MMIO register at offset {offset:#x} is not {width}-byte aligned ( \
+             `types::check_layouts` already refuses this)"
+        )));
+    }
+    if offset / width as u64 >= 4096 {
+        return Err(CodegenError::unimplemented(&format!(
+            "an MMIO register at offset {offset:#x}: the unsigned-immediate load/store encoder \
+             reaches {} bytes at this width, and no base-plus-register addressing form is \
+             emitted yet. That offset",
+            4095 * width as u64
+        )));
+    }
+    Ok(width)
 }
 
 fn array_elem_type(base_ty: &Type) -> Result<Type, CodegenError> {

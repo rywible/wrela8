@@ -1,0 +1,154 @@
+module examples.boot_device_claim
+
+# plans/M7.md item H1's **real-boot oracle** (the A-H note: "a real HVF
+# boot as the behavioral oracle wherever the item produces guest-visible
+# behavior ... M5/M6 both proved that dump review alone misses
+# register-level bugs"), and the third of the three things
+# `hardware.mmio.volatile` asks for: a Hypervisor.framework boot in which
+# a guest-visible register read and write actually happen.
+#
+# The driver's `init` is 03-hardware.md §1's own worked constructor shape
+# and 03 §9's own bring-up opening: claim the device the image bound to
+# it, partition the claim into the two layouts it declares, then read and
+# write real registers. Every value below is hand-computed and every
+# assertion is load-bearing; what each one would catch is stated on the
+# line.
+#
+# **The window's reset value is zero, by the machine's own rule.**
+# 06-machine.md §3 step 2: the VMM "loads the image at the fixed base,
+# zeroes the declared reservations". `devregs` is a declared reservation
+# (`Section name=devregs`, emitted as zeroed image bytes), so every
+# register reads 0 until something writes it. Nothing writes this window
+# from the host side yet — that is plans/M7.md item G, which gives 03 §6's
+# `interrupt_status` its writer — so the assertions here are about *where*
+# and *how wide* the guest's own accesses land, which is exactly what the
+# register-level bugs this note is about have always been.
+#
+# **What a green transcript proves, precisely:**
+#
+#   1. Boot calls a `@driver`'s `init` at all, and passes it a real
+#      `DeviceCap[VirtioBlock]` (decision 10's second prerequisite, and
+#      decision 11's word). If the base were the zero a state-fill leaves,
+#      every access below would fault on unmapped memory and the boot
+#      would die instead of reporting `ok`.
+#   2. The claim is partitioned and both partitions address the same
+#      window: `irq_regs` and `probe_regs` come from one `claimed`.
+#   3. A store lands at its register's *declared* offset, not at base+0 —
+#      `s1` re-reads 0x60 after three stores at 0x64/0x100/0x108 and must
+#      still see 0.
+#   4. A store is exactly as wide as its register declares. `probe_write`
+#      is `WriteOnly[u32]` at 0x100 and `probe_read` is `ReadOnly[u32]` at
+#      0x104: a 64-bit store would clobber `probe_read`. `probe_write_half`
+#      is `WriteOnly[u16]` at 0x108 and `probe_read_half` is
+#      `ReadOnly[u16]` at 0x10a: a 32-bit store would clobber that one.
+#      Two widths, two neighbours, both checked.
+#
+# **The vacuity control is its own golden**, not a comment:
+# `err-boot-driver-init-runs` is this same driver with one assertion
+# inverted, and its expected output is the guest abort. Without it, every
+# assertion here would also pass on a boot that never called `init` at all
+# — which is exactly the class of wrong answer plans/M7.md item W exists
+# to close.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(mmio, endian=little)
+struct BlkProbeMmio:
+    @offset(0x100) probe_write: WriteOnly[u32]
+    @offset(0x104) probe_read: ReadOnly[u32]
+    @offset(0x108) probe_write_half: WriteOnly[u16]
+    @offset(0x10a) probe_read_half: ReadOnly[u16]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    probe_regs: Mmio[BlkProbeMmio]
+    handled_bits: u32
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        # 03 §9: reset + acknowledge + driver-claimed, consuming the
+        # capability. On this machine that is a pure authority transition
+        # (06 §3: nothing to negotiate, no status register file).
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.probe_regs = claimed.map_partition(BlkProbeMmio)
+        self.handled_bits = 0
+
+        # A real load at base+0x60, 32 bits wide.
+        s0 = self.irq_regs.interrupt_status.read()
+        assert s0 == 0, "the device register window is a zeroed declared reservation (06 §3)"
+
+        # Three real stores, at three declared offsets, at two widths.
+        self.irq_regs.interrupt_ack.write(4294967295)
+        self.probe_regs.probe_write.write(2779096485)
+        self.probe_regs.probe_write_half.write(48879)
+
+        # 0x104 is the four bytes immediately after the `u32` written at
+        # 0x100: nonzero here means the store was wider than `u32`.
+        r1 = self.probe_regs.probe_read.read()
+        assert r1 == 0, "a `WriteOnly[u32]` store at 0x100 stayed inside its own four bytes"
+
+        # 0x10a is the two bytes immediately after the `u16` written at
+        # 0x108: nonzero here means the store was wider than `u16`.
+        r2 = self.probe_regs.probe_read_half.read()
+        assert r2 == 0, "a `WriteOnly[u16]` store at 0x108 stayed inside its own two bytes"
+
+        # 0x60 after every store: nonzero means a store ignored its
+        # register's declared offset and landed at the claim's base.
+        s1 = self.irq_regs.interrupt_status.read()
+        assert s1 == 0, "every store landed at its declared offset, not at the claim's base"
+
+        self.handled_bits = s0 + r1 + s1
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks * 10 + n
+        return unit
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@test(runtime)
+async fn device_claimed_image(led: Actor[Ledger]):
+    # The driver's own `init` already ran, before this test turn exists
+    # (06 §3 step 3: "runs typed driver and actor initialization in image
+    # dependency order"). Its assertions are the oracle; this
+    # conversation is here so the image has a runtime test to report at
+    # all, and so a green line means "the boot survived the driver".
+    a = await led.mark(n=4)
+    match a:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    b = await led.mark(n=2)
+    match b:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    m = await led.read_marks()
+    match m:
+        case .Ok(v):
+            assert v == 42, "two marks in admission order, over an image whose driver claimed a device"
+        case .Err(_):
+            assert false, "read_marks rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-device-claim", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk)
+    led = img.actor(Ledger, mailbox=8)
+    img.supervise(children=[disk, led], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

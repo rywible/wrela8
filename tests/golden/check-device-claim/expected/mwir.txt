@@ -1,0 +1,64 @@
+Program
+  Fn key=BlkDriver.ack_low ret=unit temps=4 receiver=t0:read params=[t1]
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=u16
+    Temp t2 ty=Mmio[VirtioLowAckMmio]
+    Temp t3 ty=unit
+    Body
+      0000: Project dst=t2 base=t0 index=1
+      0001: MmioWrite base=t2 offset=0x100 ty=u16 value=t1
+      0002: ConstUnit dst=t3
+      0003: Return
+  Fn key=BlkDriver.init ret=unit temps=7 receiver=t0:mut params=[t1]
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=DeviceCap[VirtioBlock]
+    Temp t2 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t3 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t4 ty=Mmio[VirtioIrqMmio]
+    Temp t5 ty=Mmio[VirtioLowAckMmio]
+    Temp t6 ty=u32
+    Body
+      0000: Copy dst=t2 src=t1
+      0001: Copy dst=t3 src=t2
+      0002: Copy dst=t4 src=t3
+      0003: SetField base=t0 index=0 value=t4
+      0004: Copy dst=t5 src=t3
+      0005: SetField base=t0 index=1 value=t5
+      0006: ConstInt dst=t6 ty=u32 value=0
+      0007: SetField base=t0 index=2 value=t6
+      0008: Return
+  Fn key=BlkDriver.last_handled ret=u32 temps=2 receiver=t0:read
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=u32
+    Body
+      0000: Project dst=t1 base=t0 index=2
+      0001: Return value=t1
+      0002: Return
+  Fn key=BlkDriver.on_queue_irq ret=unit temps=11 receiver=t0:mut
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=Mmio[VirtioIrqMmio]
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=u32
+    Temp t6 ty=u32
+    Temp t7 ty=u32
+    Temp t8 ty=bool
+    Temp t9 ty=Mmio[VirtioIrqMmio]
+    Temp t10 ty=unit
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: MmioRead dst=t2 base=t1 offset=0x60 ty=u32
+      0002: Copy dst=t3 src=t2
+      0003: ConstInt dst=t4 ty=u32 value=3
+      0004: Bitwise op=& ty=u32 dst=t5 lhs=t3 rhs=t4
+      0005: Copy dst=t6 src=t5
+      0006: ConstInt dst=t7 ty=u32 value=0
+      0007: Compare op=!= ty=u32 dst=t8 lhs=t6 rhs=t7
+      0008: JumpIfFalse cond=t8 target=0014
+      0009: SetField base=t0 index=2 value=t6
+      0010: Project dst=t9 base=t0 index=0
+      0011: MmioWrite base=t9 offset=0x64 ty=u32 value=t6
+      0012: ConstUnit dst=t10
+      0013: Jump target=0014
+      0014: Return

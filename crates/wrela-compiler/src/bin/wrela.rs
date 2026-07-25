@@ -1385,11 +1385,24 @@ fn test_cmd(args: &[String]) -> ExitCode {
 
     let transcript = String::from_utf8_lossy(&out.stdout).into_owned();
     let t_lines: Vec<&str> = transcript.lines().collect();
-    let well_formed = t_lines.len() == runtime_tests.len() + 1
-        && t_lines
-            .iter()
-            .zip(runtime_tests.iter())
-            .all(|(line, name)| line.starts_with(&format!("test {name}: ")));
+    // plans/M7.md item H1: a *boot* failure is its own shape. An `assert`
+    // inside a declared actor's or driver's `init` aborts before any test
+    // line is opened (06-machine.md §3 step 3: initialization runs before
+    // the event loops), so the transcript is one `FAILED <message>` line
+    // followed by the summary and no test lines at all — image-fatal with
+    // a diagnosable line, which is exactly plans/M6.md decision 12's and
+    // plans/M7.md decision 8's story for a driver fault. Until this
+    // commit that abort branched through an unwritten continuation word
+    // and faulted the guest at `pc=0x0` instead
+    // (`layout::build_entry_driver`'s own note); recognizing the shape
+    // here is the reporting half of the same fix.
+    let boot_failed = t_lines.len() == 2 && t_lines[0].starts_with("FAILED ");
+    let well_formed = boot_failed
+        || (t_lines.len() == runtime_tests.len() + 1
+            && t_lines
+                .iter()
+                .zip(runtime_tests.iter())
+                .all(|(line, name)| line.starts_with(&format!("test {name}: "))));
     let Some((runtime_passed, runtime_failed)) =
         (if well_formed { t_lines.last() } else { None }).and_then(|l| parse_summary_line(l))
     else {

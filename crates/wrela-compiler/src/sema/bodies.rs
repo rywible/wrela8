@@ -3927,6 +3927,17 @@ fn check_call_by_field(
                         },
                     });
                 }
+                // plans/M7.md item H1, 03-hardware.md §9's bring-up chain:
+                // `VirtioBlock.claim(cap=take cap)` — the sealed
+                // transport's own entry point, spelled on the *device
+                // type* exactly as `docs/language/examples/virtio-storage.wr`
+                // spells it. Intercepted only when the struct declares no
+                // `claim` of its own, so an ordinary declaration under
+                // that name still wins and no existing program changes
+                // meaning.
+                if name == "claim" {
+                    return check_device_claim(bname, args, fspan, call_span, fctx, mctx);
+                }
                 return Err(type_error(
                     format!("type `{bname}` has no associated function `{name}`"),
                     fspan,
@@ -3989,6 +4000,24 @@ fn check_call_by_field(
     }
     let base_t = check_expr(base, None, fctx, mctx)?;
     let base_ty = unwrap_own(base_t.ty.clone());
+    // plans/M7.md item H1: a bring-up state's own operations
+    // (03-hardware.md §9). `map_partition` is live; every other transition
+    // in the chain is a named rejection rather than a silent "no method".
+    if let Type::Named(state, targs) = &base_ty {
+        if crate::eval::image_checks::is_protocol_state_type_name(state) {
+            return check_device_state_call(
+                base_t.clone(),
+                state,
+                targs,
+                name,
+                args,
+                fspan,
+                call_span,
+                fctx,
+                mctx,
+            );
+        }
+    }
     // plans/M7.md item C: an `Mmio[L]` itself has no methods — the only
     // operations 03 §2 gives it go through a *declared register*, which
     // the arm above already took. Named here rather than falling into the
@@ -4435,6 +4464,357 @@ fn register_type_text(reg: &types::MmioRegister) -> String {
 /// agree on exactly which keys are a hardware effect.
 pub fn is_mmio_access_intrinsic(key: &str) -> bool {
     matches!(key, "Mmio.read" | "Mmio.write")
+}
+
+// --- plans/M7.md item H1: 03-hardware.md §9's sealed transport ------------
+//
+// The bring-up chain, and the two of its operations this item makes real.
+//
+// ## The chain, and what a state *is*
+//
+// `Reset -> Acknowledged -> DriverClaimed -> FeaturesNegotiated ->
+// FeaturesAccepted -> QueuesConfigured -> Running`, one builtin type per
+// state (`eval::image_checks::PROTOCOL_STATE_TYPES`), each carrying the
+// device type — `RunningDevice[VirtioBlock]` is the docs' own spelling and
+// the other six follow it. Every one is a resource, which is not a
+// decoration: §9's "each fallible transition **consumes** its input state"
+// *is* the resource rule, and the only reason a transition can consume one
+// is that it is never implicitly copied.
+//
+// ## `claim`, and why it emits nothing on this target
+//
+// `VirtioBlock.claim(cap=take cap)` consumes the `DeviceCap[D]` and yields
+// `DriverClaimedDevice[D]` — the docs' own comment on the line is "reset +
+// acknowledge", i.e. the three status writes a real virtio transport needs
+// to walk `Reset -> Acknowledged -> DriverClaimed`. **This machine has no
+// status register to write.** 06-machine.md §3: "no discovery ... the VMM
+// preconfigures every device, queue, and shared-memory window the report
+// declares — device topology is a *build output*, not a probed fact", and
+// "cold boot is a design property: there is nothing to negotiate". The VMM
+// has no `MagicValue`/`DeviceID`/`Status` register file at all
+// (`wrela-vmm::devices`' module doc). So on machine v1 `claim` is a pure
+// authority transition: it carries the device's base address forward and
+// emits no access. That is a target fact, recorded, not an omission — and
+// it is exactly why the *first* MMIO this compiler ever emits is the
+// driver's own ISR partition rather than a status write.
+//
+// ## `map_partition`, and how it feeds item C's rule instead of dodging it
+//
+// `claimed.map_partition(VirtioIrqMmio)` yields `Mmio[VirtioIrqMmio]`.
+// 03 §2: "a driver **or sealed protocol** partitions its claim into
+// declared, non-overlapping layouts ... minting a layout consumes those
+// byte ranges from the claim". Item C built the *rule* over a driver's
+// declared `Mmio[L]` **fields**; this is the *operation*, so the operation
+// is constrained to that same set: `map_partition(L)` is legal only inside
+// a `@driver` that declares `Mmio[L]` in a field. A partition the no-alias
+// rule never saw therefore cannot exist, and the `devregs` window that
+// backs the claim is sized from the identical set
+// (`layout::device_register_windows`).
+//
+// ## What is deliberately not here
+//
+// `negotiate`/`start`/`read_capacity_sectors`/`take_irq`/`VirtQueue.configure`
+// are each a named rejection carrying the state they would consume, the
+// state they would produce, and what is actually missing. `negotiate` in
+// particular is *not* merely unimplemented: on this machine the accepted
+// feature set is decided before the guest runs (item F's VMM-side
+// `negotiate`, against the image's declared `required_features`), and
+// nothing carries that result into the guest — there is no declared window
+// for it and no plan item has claimed one. Failing closed says so.
+
+/// The device type an `Mmio`/state type argument names, if it names one.
+fn device_type_arg(targs: &[types::TypeArg]) -> Option<&str> {
+    match targs.first() {
+        Some(types::TypeArg::Type(Type::Named(d, _))) => Some(d.as_str()),
+        _ => None,
+    }
+}
+
+/// `<Device>.claim(cap=take cap)` (03-hardware.md §9).
+fn check_device_claim(
+    device: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`{device}.claim(cap=take cap)` takes exactly one argument, the `DeviceCap[{device}]` \
+                 the image minted; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if arg.label.as_deref() != Some("cap") {
+        return Err(type_error(
+            format!(
+                "`{device}.claim`'s own argument is labelled `cap=` (03-hardware.md §9's own \
+                 spelling: `{device}.claim(cap=take cap)`)"
+            ),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Take {
+        return Err(type_error(
+            format!(
+                "`{device}.claim` consumes the capability: write `cap=take ...` \
+                 (03-hardware.md §9 — each transition consumes its input)"
+            ),
+            arg.span,
+        ));
+    }
+    let expected = Type::Named(
+        "DeviceCap".to_string(),
+        vec![types::TypeArg::Type(Type::Named(
+            device.to_string(),
+            vec![],
+        ))],
+    );
+    let cap = check_expr(&arg.value, Some(&expected), fctx, mctx)?;
+    let cap_ty = unwrap_own(cap.ty.clone());
+    let Type::Named(cap_name, cap_targs) = &cap_ty else {
+        return Err(type_error(
+            format!(
+                "`{device}.claim`'s own `cap=` is a `DeviceCap[{device}]`; found `{}`",
+                types::render_type(&cap.ty)
+            ),
+            arg.span,
+        ));
+    };
+    if cap_name != "DeviceCap" || device_type_arg(cap_targs) != Some(device) {
+        return Err(type_error(
+            format!(
+                "`{device}.claim`'s own `cap=` is a `DeviceCap[{device}]` — authority over *this* \
+                 device (03-hardware.md §1); found `{}`",
+                types::render_type(&cap.ty)
+            ),
+            arg.span,
+        ));
+    }
+    let _ = fspan;
+    Ok(TypedExpr {
+        ty: Type::Named(
+            "DriverClaimedDevice".to_string(),
+            vec![types::TypeArg::Type(Type::Named(
+                device.to_string(),
+                vec![],
+            ))],
+        ),
+        kind: TypedExprKind::Intrinsic {
+            key: "Device.claim".to_string(),
+            receiver: None,
+            type_arg: Some(Type::Named(device.to_string(), vec![])),
+            args: vec![("cap".to_string(), cap)],
+        },
+    })
+}
+
+/// A method call on one of 03 §9's bring-up states.
+#[allow(clippy::too_many_arguments)]
+fn check_device_state_call(
+    state_expr: TypedExpr,
+    _state: &str,
+    targs: &[types::TypeArg],
+    method: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let rendered = types::render_type(&state_expr.ty);
+    let device = device_type_arg(targs).unwrap_or("?").to_string();
+    match method {
+        "map_partition" => {
+            check_map_partition(state_expr, &rendered, args, fspan, call_span, fctx, mctx)
+        }
+        // Every remaining transition of the chain, each naming the state
+        // it consumes, the state it produces, and the thing that is
+        // genuinely missing. None of these is "no method": the operation
+        // is normative, it is the *machinery under it* that does not exist.
+        "negotiate" => Err(unimplemented_at(
+            &format!(
+                "`{rendered}.negotiate(required=..., optional=...)` — 03-hardware.md §9's \
+                 `DriverClaimed -> FeaturesAccepted` transition. On this machine the accepted \
+                 feature set is decided *before* the guest runs: the VMM negotiates the image's \
+                 declared `required_features` against its device model at boot (plans/M7.md item \
+                 F) and 06-machine.md §3's own cold-boot sentence (there is nothing to negotiate) is why \
+                 there is no register handshake to run. Nothing carries that already-decided set \
+                 into the guest — no declared window holds it — so the transition",
+            ),
+            call_span,
+        )),
+        "start" => Err(unimplemented_at(
+            &format!(
+                "`{rendered}.start()` — 03-hardware.md §9's final `-> Running` transition, whose \
+                 input state (`FeaturesAcceptedDevice[{device}]`, then \
+                 `QueuesConfiguredDevice[{device}]`) nothing produces yet: `negotiate` and \
+                 `VirtQueue.configure` are the two transitions before it, and publication \
+                 requires the `RunningDevice[{device}]` it would return. That whole span",
+            ),
+            call_span,
+        )),
+        "read_capacity_sectors" => Err(unimplemented_at(
+            &format!(
+                "`{rendered}.read_capacity_sectors()` — a virtio-blk config read. The device's \
+                 capacity is an image-declared, report-carried fact on this machine \
+                 (`BlkDevice capacity_sectors=`, plans/M7.md item F's own VMM configuration), \
+                 not a register this guest can read, and nothing yet hands it to the guest. That",
+            ),
+            call_span,
+        )),
+        "take_irq" => Err(unimplemented_at(
+            &format!(
+                "`{rendered}.take_irq()` — an `IrqCap[V]` out of the claim (03-hardware.md §6). \
+                 Vector binding is plans/M7.md item G; that",
+            ),
+            call_span,
+        )),
+        other => Err(type_error(
+            format!(
+                "`{rendered}` has no operation `{other}`; 03-hardware.md §9's bring-up chain \
+                 gives a claimed device `map_partition`, `negotiate`, `read_capacity_sectors`, \
+                 `take_irq` and `start`"
+            ),
+            fspan,
+        )),
+    }
+}
+
+/// `<state>.map_partition(L)` (03-hardware.md §2/§9).
+fn check_map_partition(
+    state_expr: TypedExpr,
+    rendered: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`{rendered}.map_partition(L)` takes exactly one argument, the `@layout(mmio)` \
+                 type to map; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if let Some(label) = &arg.label {
+        return Err(type_error(
+            format!("`map_partition(L)`'s layout is positional; `{label}=` names no parameter"),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`map_partition(L)`'s argument is a *type*, not a value: drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let Expr::Name(_, layout_name) = &arg.value else {
+        return Err(type_error(
+            "`map_partition(L)`'s argument names an `@layout(mmio)` type (03-hardware.md §2), \
+             not a value"
+                .to_string(),
+            arg.span,
+        ));
+    };
+    match mctx.layouts.get(layout_name.as_str()) {
+        Some(l) if l.kind == types::LayoutKind::Mmio => {}
+        _ => {
+            return Err(type_error(
+                format!(
+                    "`map_partition({layout_name})` requires `{layout_name}` to be an \
+                     `@layout(mmio)` struct (03-hardware.md §2: a typed register layout)"
+                ),
+                arg.span,
+            ));
+        }
+    }
+    // 03 §2's partition rule, wired to item C's own check rather than
+    // restated: the layouts a `@driver` mints are exactly the ones its
+    // declared `Mmio[L]` fields name, `check_mmio_claims` proves *those*
+    // pairwise disjoint, and `layout::device_register_windows` sizes the
+    // claim's window from the same set. A `map_partition` of anything else
+    // would be a live layout no rule ever ranged over.
+    let Some(Type::Named(owner, _)) = fctx.lookup_local("self").map(unwrap_own) else {
+        return Err(type_error(
+            format!(
+                "`{rendered}.map_partition({layout_name})` partitions a `@driver`'s own claim \
+                 (03-hardware.md §2), so it is only callable from inside one"
+            ),
+            call_span,
+        ));
+    };
+    let structs: std::collections::BTreeMap<String, &types::DeclStruct> = mctx
+        .structs
+        .iter()
+        .map(|(n, s)| (n.clone(), &s.decl))
+        .collect();
+    let Some(mints) = types::mmio_mints_of(&owner, &structs) else {
+        return Err(type_error(
+            format!(
+                "`map_partition({layout_name})` partitions a `@driver`'s own claim, and \
+                 `{owner}` is not a `@driver` (03-hardware.md §2)"
+            ),
+            call_span,
+        ));
+    };
+    if !mints.iter().any(|m| m == layout_name) {
+        return Err(type_error(
+            format!(
+                "`@driver` `{owner}` maps `{layout_name}`, but declares no field of type \
+                 `Mmio[{layout_name}]`. A driver's declared `Mmio[L]` fields *are* its partition \
+                 of the claim (03-hardware.md §2), and they are what the no-alias rule and the \
+                 device's own register window are both derived from — a partition mapped outside \
+                 that set would be a live layout no rule ever saw{}",
+                if mints.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; `{owner}` declares {}",
+                        mints
+                            .iter()
+                            .map(|m| format!("`Mmio[{m}]`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            ),
+            call_span,
+        ));
+    }
+    let _ = fspan;
+    Ok(TypedExpr {
+        ty: Type::Named(
+            "Mmio".to_string(),
+            vec![types::TypeArg::Type(Type::Named(
+                layout_name.clone(),
+                vec![],
+            ))],
+        ),
+        kind: TypedExprKind::Intrinsic {
+            key: "Device.map_partition".to_string(),
+            receiver: Some(Box::new(state_expr)),
+            type_arg: Some(Type::Named(layout_name.clone(), vec![])),
+            args: Vec::new(),
+        },
+    })
+}
+
+/// Is `key` one of item H1's two sealed-transport intrinsics? Same
+/// three-consumer discipline as `is_mmio_access_intrinsic` above.
+pub fn is_device_transport_intrinsic(key: &str) -> bool {
+    matches!(key, "Device.claim" | "Device.map_partition")
 }
 
 // --- plans/M6.md item A: the actor/async surface --------------------------

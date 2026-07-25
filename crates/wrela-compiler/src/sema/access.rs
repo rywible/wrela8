@@ -1689,6 +1689,27 @@ fn check_call_by_field(
                     check_mirroring_named(&d.params, args)?;
                     return Ok(Some(d.ret.clone()));
                 }
+                // plans/M7.md item H1: `<Device>.claim(cap=take cap)`
+                // (03-hardware.md §9). `bodies` has already accepted the
+                // shape; the mirroring rule here is its declared one —
+                // `cap` is consumed, so the call site spells `take`.
+                if name == "claim" && !args.is_empty() {
+                    for a in args {
+                        check_arg(a, actx)?;
+                    }
+                    check_mirroring_named(
+                        &[types::DeclParam {
+                            mode: AccessMode::Take,
+                            name: "cap".to_string(),
+                            ty: Type::Unit,
+                        }],
+                        args,
+                    )?;
+                    return Ok(Some(Type::Named(
+                        "DriverClaimedDevice".to_string(),
+                        vec![types::TypeArg::Type(Type::Named(bname.clone(), vec![]))],
+                    )));
+                }
                 for a in args {
                     check_arg(a, actx)?;
                 }
@@ -1793,6 +1814,34 @@ fn check_call_by_field(
             return Ok(None);
         }
         if n == "Group" {
+            return Ok(None);
+        }
+        // plans/M7.md item H1: 03-hardware.md §9's bring-up states are
+        // builtin types with no declared struct behind them, exactly like
+        // `Actor[T]`/`Group` above. `bodies` has already resolved the
+        // operation and rejected everything but `map_partition`; the one
+        // fact this pass owes is the result type, so a chained
+        // `claimed.map_partition(L)` assigned into a field keeps tracking.
+        //
+        // The receiver is a plain **read**: `map_partition` hands out a
+        // partition of the claim without consuming it — 03 §9's worked
+        // `init` maps a partition and *then* calls `negotiate` on the same
+        // value, so requiring `take` here would make the docs' own driver
+        // illegal.
+        if crate::eval::image_checks::is_protocol_state_type_name(n) {
+            if name == "map_partition" {
+                if let Some(Arg {
+                    value: Expr::Name(_, layout),
+                    ..
+                }) = args.first()
+                {
+                    return Ok(Some(Type::Named(
+                        "Mmio".to_string(),
+                        vec![types::TypeArg::Type(Type::Named(layout.clone(), vec![]))],
+                    )));
+                }
+            }
+            let _ = targs;
             return Ok(None);
         }
     }

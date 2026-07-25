@@ -1,0 +1,75 @@
+module examples.check_device_claim
+
+# plans/M7.md item H1, 03-hardware.md §9's bring-up chain and §2's claim
+# partitioning — the two operations `docs/language/examples/virtio-storage.wr`
+# spells (lines 105/110) and the emitted MMIO they finally make possible.
+#
+# This file replaces `golden/err-mmio-not-lowered`, whose whole subject
+# was that none of this could reach the backend. It now does.
+#
+# What this pins, stage by stage:
+#
+#   - `--stage=check`: `claimed` is a `DriverClaimedDevice[VirtioBlock]`,
+#     produced by `VirtioBlock.claim(cap=take cap)`, and the two
+#     `map_partition` calls give the driver its two declared `Mmio[L]`
+#     fields. `cap` is *consumed* — the `take` is not decoration, it is
+#     03 §9's "each fallible transition consumes its input state" at the
+#     one transition that has an input to consume today.
+#   - `--stage=mwir`: `claim` and `map_partition` are each one `Copy`.
+#     That is the target fact, not a shortcut: 06-machine.md §3 deletes
+#     discovery and negotiation from this machine outright ("device
+#     topology is a *build output*"; "cold boot is a design property:
+#     there is nothing to negotiate"), so the status writes a real virtio
+#     transport makes during `Reset -> Acknowledged -> DriverClaimed` have
+#     no register file here to write to. The capability is carried
+#     forward; nothing is invented.
+#   - `--stage=mwir`/`--stage=asm`: `MmioRead`/`MmioWrite` carry the
+#     register's own declared offset and width, and the emitted access is
+#     `ldr w`/`str w` at 4 bytes and `ldrh w`/`strh w` at 2 — two widths
+#     in one driver, so a backend that used one fixed size cannot pass
+#     both lines.
+#
+# `hardware.mmio.no-alias` still governs which layouts may be mapped:
+# `map_partition(L)` is legal only for an `L` this driver declares an
+# `Mmio[L]` field of, so every live partition is inside the set item C's
+# rule proves pairwise disjoint — and inside the register window
+# `layout::device_register_windows` sizes from that same set.
+# `err-map-partition-unclaimed` is the rejection.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(mmio, endian=little)
+struct VirtioLowAckMmio:
+    @offset(0x100) ack_low: WriteOnly[u16]
+    @offset(0x102) echo_low: ReadOnly[u16]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    low_regs: Mmio[VirtioLowAckMmio]
+    handled_bits: u32
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.low_regs = claimed.map_partition(VirtioLowAckMmio)
+        self.handled_bits = 0
+
+    fn on_queue_irq(mut self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 3
+        if handled != 0:
+            self.handled_bits = handled
+            self.irq_regs.interrupt_ack.write(handled)
+
+    fn ack_low(read self, bits: u16):
+        self.low_regs.ack_low.write(bits)
+
+    pub fn last_handled(read self) -> u32:
+        return self.handled_bits

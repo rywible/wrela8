@@ -305,6 +305,70 @@ struct LoopCtx {
 /// associated fns/`init`, and every generic instantiation's own fn/
 /// struct-methods lowers — `program.image_fn` (if any) is skipped
 /// outright.
+/// plans/M7.md item H1: the `(layout, register)` pair an `Mmio.read`/
+/// `Mmio.write` node names — the receiver's own `Mmio[L]` type argument
+/// and the register-name `Str` leaf `sema::bodies::check_mmio_access`
+/// put in the node's first argument.
+fn mmio_access_names(
+    mmio_ty: &Type,
+    args: &[(String, TypedExpr)],
+) -> Result<(String, String), LowerError> {
+    let Type::Named(cap, targs) = &crate::sema::bodies::unwrap_own(mmio_ty.clone()) else {
+        return Err(LowerError::internal(
+            "an MMIO access whose receiver is not an `Mmio[L]`".to_string(),
+        ));
+    };
+    if cap != "Mmio" {
+        return Err(LowerError::internal(
+            "an MMIO access whose receiver is not an `Mmio[L]`".to_string(),
+        ));
+    }
+    let Some(crate::sema::types::TypeArg::Type(Type::Named(layout, _))) = targs.first() else {
+        return Err(LowerError::internal(
+            "an `Mmio[L]` whose layout argument is not a named type".to_string(),
+        ));
+    };
+    let Some((_, reg)) = args.iter().find(|(l, _)| l == "register") else {
+        return Err(LowerError::internal(
+            "an MMIO access with no register name".to_string(),
+        ));
+    };
+    let TypedExprKind::Str(name) = &reg.kind else {
+        return Err(LowerError::internal(
+            "an MMIO access whose register name is not a literal".to_string(),
+        ));
+    };
+    Ok((layout.clone(), name.clone()))
+}
+
+/// The declared `@offset` of `register` in `layout`, out of
+/// `TypedProgram::layouts` — the very table `types::check_layouts`
+/// produced and the checker read, never a second computation of it.
+fn mmio_register_offset(
+    layout: &str,
+    register: &str,
+    prog: &TypedProgram,
+) -> Result<u64, LowerError> {
+    let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
+        // Reachable only for a layout declared in a *different* module of
+        // the build closure than the driver that maps it: `check_layouts`
+        // runs per module and `TypedProgram::layouts` is this module's
+        // own. Named rather than approximated with offset 0.
+        return Err(LowerError::unimplemented(&format!(
+            "an MMIO access through `Mmio[{layout}]`, whose `@layout(mmio)` declaration lives in \
+             a different module than the driver that maps it — the exact-bytes table this \
+             lowering reads is per-module. Declaring the layout beside its driver works today; \
+             a cross-module one"
+        )));
+    };
+    match crate::sema::types::mmio_register(l, register) {
+        Some(r) => Ok(r.offset),
+        None => Err(LowerError::internal(format!(
+            "`{layout}` declares no register `{register}` (the checker already refused this)"
+        ))),
+    }
+}
+
 pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> {
     let mut lw = Lowerer {
         prog: program,
@@ -1744,15 +1808,91 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         // besides. Emitting a load/store against a base that is provably
         // the zero a state-fill left is the exact wrong answer plans/M7.md
         // item W exists to close, so this says so instead.
-        TypedExprKind::Intrinsic { key, .. }
-            if crate::sema::bodies::is_mmio_access_intrinsic(key) =>
-        {
-            Err(LowerError::unimplemented(
-                "a typed MMIO register access (03-hardware.md §2): it type-checks, but no \
-                 `Mmio[L]` value exists at runtime yet — the image binding does not mint one \
-                 (`eval::image_checks`) and boot never calls a `@driver`'s `init` \
-                 (`layout::build_boot_init_calls`), so there is no base address to access. That is",
-            ))
+        // plans/M7.md item H1 (03-hardware.md §2/§9): the sealed
+        // transport's own two operations. Both are pure *authority*
+        // transitions on this target and lower to a `Copy` of decision
+        // 11's one word — the device's own register-window base:
+        //
+        // - `claim` walks `Reset -> Acknowledged -> DriverClaimed`, which
+        //   on a real virtio transport is three status-register writes and
+        //   on machine v1 is nothing at all: 06-machine.md §3 deletes
+        //   discovery and negotiation ("device topology is a *build
+        //   output*"; "cold boot is a design property"), and the VMM has
+        //   no status register file to write to. Emitting invented writes
+        //   to a window no model reads would be worse than emitting none.
+        // - `map_partition` hands out one of the driver's declared
+        //   partitions. The partition's *offsets* live in the layout, so
+        //   the value handed out is the claim's own base, unchanged; what
+        //   makes the partitions disjoint is `check_mmio_claims`, at build
+        //   time, over the same field set this operation is restricted to.
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            args,
+            ..
+        } if crate::sema::bodies::is_device_transport_intrinsic(key) => {
+            let src = match (key.as_str(), receiver, args.first()) {
+                ("Device.claim", _, Some((_, cap))) => lower_expr(cap, b, env)?,
+                ("Device.map_partition", Some(state), _) => lower_expr(state, b, env)?,
+                _ => {
+                    return Err(LowerError::internal(format!(
+                        "sealed-transport intrinsic `{key}` reached lowering without its operand"
+                    )));
+                }
+            };
+            let dst = b.fresh(expr.ty.clone());
+            b.emit(Inst::Copy { dst, src });
+            Ok(dst)
+        }
+        // plans/M7.md item H1: a typed MMIO access, emitted at last. The
+        // base is the `Mmio[L]` receiver's own word; the offset and the
+        // width both come from the declaration, looked up in the same
+        // `check_layouts` table the checker used.
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            type_arg,
+            args,
+        } if crate::sema::bodies::is_mmio_access_intrinsic(key) => {
+            let Some(mmio) = receiver else {
+                return Err(LowerError::internal(
+                    "an MMIO access with no receiver".to_string(),
+                ));
+            };
+            let (layout_name, register) = mmio_access_names(&mmio.ty, args)?;
+            let offset = mmio_register_offset(&layout_name, &register, b.prog())?;
+            let Some(ty) = type_arg.clone() else {
+                return Err(LowerError::internal(
+                    "an MMIO access with no register type".to_string(),
+                ));
+            };
+            let base = lower_expr(mmio, b, env)?;
+            if key == "Mmio.read" {
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::MmioRead {
+                    dst,
+                    base,
+                    offset,
+                    ty,
+                });
+                Ok(dst)
+            } else {
+                let Some((_, v)) = args.iter().find(|(l, _)| l == "value") else {
+                    return Err(LowerError::internal(
+                        "an `Mmio.write` with no value argument".to_string(),
+                    ));
+                };
+                let value = lower_expr(v, b, env)?;
+                b.emit(Inst::MmioWrite {
+                    base,
+                    offset,
+                    ty,
+                    value,
+                });
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::ConstUnit { dst });
+                Ok(dst)
+            }
         }
         TypedExprKind::Intrinsic { .. } => Err(LowerError::unimplemented(
             "an `@image` builder intrinsic (reachable only inside the one `@image` fn, which is never lowered) is",

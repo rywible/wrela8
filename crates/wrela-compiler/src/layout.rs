@@ -5384,9 +5384,38 @@ fn build_entry_driver(
     // `init`-arg materialization/dependency-order walk extends). Absent
     // entirely for a sync-only image (`boot_init_start: None`) — no
     // actors, nothing to boot.
-    if let Some(boot_init) = boot_init_start {
+    //
+    // plans/M7.md item H1, **found by running**: an `assert` inside a
+    // boot-time `init` used to fault the guest at `pc=0x0` instead of
+    // reporting anything. `push_abort_tail` long-jumps through
+    // `machine_info::OFF_TEST_CONTINUATION`, and until this commit that
+    // word was written only inside the per-test loop below — so any abort
+    // *before* the first test branched to address zero. That is a live
+    // defect of item W (which is what first made boot call an `init` with
+    // arguments at all); item H1 is where it surfaced, because an abort
+    // inside a driver's `init` is this item's own vacuity control
+    // (`golden/err-boot-driver-init-runs`).
+    //
+    // The fix is the landing pad the rest of this file already uses: open
+    // a report line and point the continuation at the summary block, both
+    // *before* boot runs. On success nothing is appended to that line and
+    // the first test's own `line_begin` re-opens it at the identical
+    // position, so a green image's transcript is byte-identical; on an
+    // abort the message lands on a line of its own, `OFF_TEST_FAILED`
+    // counts it, and the image exits nonzero through the ordinary summary
+    // — 06-machine.md §3's own "typed driver and actor initialization"
+    // failing is image-fatal with a diagnosable line (plans/M6.md decision
+    // 12, plans/M7.md decision 8), never a fault at zero.
+    let boot_cont_marker = if let Some(boot_init) = boot_init_start {
+        a.bl_to(line_begin_start);
+        let marker = a.load_imm_placeholder(9);
+        a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
+        a.push(encode::enc_str_x_imm(9, 10, 0));
         a.bl_to(boot_init);
-    }
+        Some(marker)
+    } else {
+        None
+    };
 
     let ok_off = append_rodata(rodata, rodata_cursor, b"ok\n".to_vec());
     let passed_comma_off = append_rodata(rodata, rodata_cursor, b" passed, ".to_vec());
@@ -5537,7 +5566,13 @@ fn build_entry_driver(
     }
 
     // Summary line: "<passed> passed, <failed> failed\n" — one descriptor,
-    // like every test's own line above.
+    // like every test's own line above. It is also boot's own abort
+    // landing (above): an `init` that aborted has already printed and
+    // counted its failure, and lands here to report the totals and exit.
+    if let Some(marker) = boot_cont_marker {
+        let target = a.addr(harness_base);
+        a.patch_load_imm(marker, 9, target);
+    }
     a.bl_to(line_begin_start);
 
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);

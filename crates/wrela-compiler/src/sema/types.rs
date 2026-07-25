@@ -2340,11 +2340,19 @@ pub fn driver_mmio_mints(items: &[DeclItem], driver: &str) -> Option<Vec<String>
             structs.insert(s.name.clone(), s);
         }
     }
+    mmio_mints_of(driver, &structs)
+}
+
+/// The same walk over an already-built struct table — `sema::bodies` has
+/// one (`ModuleCtx::structs`) and `layout.rs` builds one from `DeclItem`s,
+/// and they must agree about which layouts a driver mints or the mint
+/// operation and the window that backs it would disagree.
+pub fn mmio_mints_of(driver: &str, structs: &BTreeMap<String, &DeclStruct>) -> Option<Vec<String>> {
     let d = structs.get(driver).filter(|d| d.is_driver)?;
     let mut out = Vec::new();
     for m in &d.members {
         if let DeclMember::Field(f) = m {
-            collect_mmio_layouts(&f.ty, &structs, &mut BTreeSet::new(), &mut out);
+            collect_mmio_layouts(&f.ty, structs, &mut BTreeSet::new(), &mut out);
         }
     }
     Some(out)

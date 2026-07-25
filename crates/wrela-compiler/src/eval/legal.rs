@@ -541,6 +541,20 @@ fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> 
                 "an MMIO register write".to_string()
             })
         }
+        // plans/M7.md item H1 (03-hardware.md §9): the sealed transport's
+        // own transitions are hardware touches for the same reason and by
+        // the same rule — a fn that claims a device, or partitions that
+        // claim, is operating the device's own bring-up protocol, whatever
+        // its result type happens to be.
+        TypedExprKind::Intrinsic { key, .. }
+            if crate::sema::bodies::is_device_transport_intrinsic(key) =>
+        {
+            Some(if key == "Device.claim" {
+                "a device claim (03-hardware.md §9's bring-up chain)".to_string()
+            } else {
+                "an MMIO claim partitioning".to_string()
+            })
+        }
         TypedExprKind::Int(_)
         | TypedExprKind::Float(_)
         | TypedExprKind::Str(_)
@@ -926,6 +940,11 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
                 // that clause's flagship instance; it is also the first
                 // one this compiler can represent at all.
                 Some("a volatile MMIO register access")
+            } else if crate::sema::bodies::is_device_transport_intrinsic(key) {
+                // plans/M7.md item H1: same sentence, same reason — a
+                // bring-up transition is a hardware effect, so it is
+                // comptime-illegal wherever an MMIO access is.
+                Some("a device bring-up transition (03-hardware.md §9)")
             } else if crate::sema::typed::is_restricted_intrinsic(key) {
                 Some("an `@image` builder intrinsic")
             } else if key == "now" {

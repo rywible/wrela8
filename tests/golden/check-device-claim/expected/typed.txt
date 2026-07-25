@@ -1,0 +1,78 @@
+Program
+  Struct name=BlkDriver
+    Method name=ack_low ret=unit
+      Receiver mode=read ty=BlkDriver
+      Param name=bits mode=read ty=u16
+      Body
+        Intrinsic key=Mmio.write type_arg=u16 ty=unit
+          Receiver
+            Field name=low_regs ty=Mmio[VirtioLowAckMmio]
+              Local name=self ty=BlkDriver
+          Arg label=register
+            Str text=ack_low ty=Static[Str]
+          Arg label=value
+            Local name=bits ty=u16
+    Method name=last_handled ret=u32
+      Receiver mode=read ty=BlkDriver
+      Body
+        Return
+          Field name=handled_bits ty=u32
+            Local name=self ty=BlkDriver
+    Method name=on_queue_irq ret=unit
+      Receiver mode=mut ty=BlkDriver
+      Body
+        Let name=status ty=u32
+          Intrinsic key=Mmio.read type_arg=u32 ty=u32
+            Receiver
+              Field name=irq_regs ty=Mmio[VirtioIrqMmio]
+                Local name=self ty=BlkDriver
+            Arg label=register
+              Str text=interrupt_status ty=Static[Str]
+        Let name=handled ty=u32
+          Binary op=& ty=u32
+            Local name=status ty=u32
+            Int text=3 ty=u32
+        If
+          Binary op=!= ty=bool
+            Local name=handled ty=u32
+            Int text=0 ty=u32
+          Then
+            Assign
+              Field name=handled_bits ty=u32
+                Local name=self ty=BlkDriver
+              Local name=handled ty=u32
+            Intrinsic key=Mmio.write type_arg=u32 ty=unit
+              Receiver
+                Field name=irq_regs ty=Mmio[VirtioIrqMmio]
+                  Local name=self ty=BlkDriver
+              Arg label=register
+                Str text=interrupt_ack ty=Static[Str]
+              Arg label=value
+                Local name=handled ty=u32
+    Init ret=unit
+      Receiver mode=mut ty=BlkDriver
+      Param name=cap mode=take ty=DeviceCap[VirtioBlock]
+      Body
+        Let name=claimed ty=DriverClaimedDevice[VirtioBlock]
+          Intrinsic key=Device.claim type_arg=VirtioBlock ty=DriverClaimedDevice[VirtioBlock]
+            Arg label=cap
+              Local name=cap ty=DeviceCap[VirtioBlock]
+        Assign
+          Field name=irq_regs ty=Mmio[VirtioIrqMmio]
+            Local name=self ty=BlkDriver
+          Intrinsic key=Device.map_partition type_arg=VirtioIrqMmio ty=Mmio[VirtioIrqMmio]
+            Receiver
+              Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
+        Assign
+          Field name=low_regs ty=Mmio[VirtioLowAckMmio]
+            Local name=self ty=BlkDriver
+          Intrinsic key=Device.map_partition type_arg=VirtioLowAckMmio ty=Mmio[VirtioLowAckMmio]
+            Receiver
+              Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
+        Assign
+          Field name=handled_bits ty=u32
+            Local name=self ty=BlkDriver
+          Int text=0 ty=u32
+  Struct name=VirtioBlock
+  Struct name=VirtioIrqMmio
+  Struct name=VirtioLowAckMmio
