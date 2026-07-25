@@ -73,6 +73,94 @@ fn print_parse_error(e: &parser::ParseError) {
     println!("error[parse]: {} at {}:{}", e.message, e.line, e.col);
 }
 
+/// One fully-checked build closure (plans/M4.md item A's single-file /
+/// whole-closure fork). Extended to `--stage=typed` / `mwir` / `flowwir` /
+/// `asm` and `wrela test` at plans/M9.md item A2 so an import-bearing
+/// module (including `from core...`) is no longer rejected by the
+/// single-module entry with a wrong-cause diagnostic.
+struct CheckedClosure {
+    /// Dotted address of the file the CLI was pointed at.
+    root: String,
+    programs: BTreeMap<String, TypedProgram>,
+    modules: BTreeMap<String, Module>,
+}
+
+/// Runs the identical single-file / whole-closure fork `dump --stage=check`
+/// already makes: no imports → `check_typed` on one module; any import →
+/// `loader::load_closure` then `check_program_typed`. On success the root
+/// module's typed program has every imported decl spliced in, so
+/// `lower`/`mwir`/`test` over `programs[root]` see the same surface a
+/// single-file prelude name used to provide.
+fn check_closure(path: &str, module: Module) -> Result<CheckedClosure, ()> {
+    if module.imports.is_empty() {
+        match sema::check_typed(&module, path) {
+            Ok(program) => {
+                let addr = module.path.join(".");
+                let mut programs = BTreeMap::new();
+                let mut modules = BTreeMap::new();
+                modules.insert(addr.clone(), module);
+                programs.insert(addr.clone(), program);
+                Ok(CheckedClosure {
+                    root: addr,
+                    programs,
+                    modules,
+                })
+            }
+            Err(e) => {
+                print_sema_error(&e);
+                Err(())
+            }
+        }
+    } else {
+        match loader::load_closure(Path::new(path)) {
+            Ok(loaded) => {
+                let paths: BTreeMap<Vec<String>, String> = loaded
+                    .modules
+                    .iter()
+                    .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                    .collect();
+                let modules_by_key: BTreeMap<Vec<String>, Module> = loaded
+                    .modules
+                    .into_iter()
+                    .map(|(k, m)| (k, m.module))
+                    .collect();
+                let root = loaded.root.join(".");
+                match sema::check_program_typed(&modules_by_key, &paths) {
+                    Ok(progs) => {
+                        let programs: BTreeMap<String, TypedProgram> =
+                            progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
+                        let modules: BTreeMap<String, Module> = modules_by_key
+                            .into_iter()
+                            .map(|(k, m)| (k.join("."), m))
+                            .collect();
+                        Ok(CheckedClosure {
+                            root,
+                            programs,
+                            modules,
+                        })
+                    }
+                    Err(e) => {
+                        print_sema_error(&e);
+                        Err(())
+                    }
+                }
+            }
+            Err(loader::LoadError::Lex(e)) => {
+                print_lex_error(&e);
+                Err(())
+            }
+            Err(loader::LoadError::Parse(e)) => {
+                print_parse_error(&e);
+                Err(())
+            }
+            Err(loader::LoadError::Build(e)) => {
+                print_sema_error(&e);
+                Err(())
+            }
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -610,9 +698,39 @@ fn dump(args: &[String]) -> ExitCode {
                 // time folds into "dump".
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) => match sema::check_typed(&module, &path) {
-                        Ok(program) => print!("{}", sema::dump_typed(&program)),
-                        Err(e) => print_sema_error(&e),
+                    // plans/M9.md item A2: same single-file/whole-closure
+                    // fork as `check` — an import-bearing module (stdlib
+                    // included) dumps every module's typed program in
+                    // BTree order, each prefixed with `Module path=`.
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => {
+                            // Single-file dumps stay byte-identical to the
+                            // pre-A2 shape (no `Module path=` prefix) —
+                            // every existing typed golden depends on it.
+                            // A multi-module closure prefixes each program
+                            // so a stdlib-defined name is visible in the
+                            // dump (golden/check-stdlib-loaded).
+                            if checked.programs.len() == 1 {
+                                print!("{}", sema::dump_typed(&checked.programs[&checked.root]));
+                            } else {
+                                let mut out = String::new();
+                                for (addr, program) in &checked.programs {
+                                    // Prefer the module's declared path
+                                    // (matches `--stage=check`'s dump) so a
+                                    // `core`-aliased stdlib file prints as
+                                    // `io_error`, not `core.io_error`.
+                                    let label = checked
+                                        .modules
+                                        .get(addr)
+                                        .map(|m| m.path.join("."))
+                                        .unwrap_or_else(|| addr.clone());
+                                    out.push_str(&format!("Module path={label}\n"));
+                                    out.push_str(&sema::dump_typed(program));
+                                }
+                                print!("{out}");
+                            }
+                        }
+                        Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
                 }
@@ -624,14 +742,15 @@ fn dump(args: &[String]) -> ExitCode {
                 dump_time = dump_start.elapsed();
             }
         },
-        // plans/M5.md item B: the same single-file entry `typed` uses
-        // (`check_typed` itself already fails closed on an import-bearing
-        // module) — lowers the checked program to `mwir::MwirProgram` and
-        // dumps it (`mwir::dump`); a lowering rejection prints in the
-        // exact same one-line `error[unimplemented]: ...` house style
-        // every other fail-closed stage already uses (`lower::LowerError`
-        // carries no location — the typed tree it walks carries none
-        // either, decision 1).
+        // plans/M5.md item B: the same single-file/whole-closure fork
+        // `check`/`typed` use — lowers the *root* module's typed program
+        // to `mwir::MwirProgram` and dumps it (`mwir::dump`). Imported
+        // decls are already spliced into the root (plans/M9.md item A2),
+        // so a stdlib enum construction lowers with no prelude table.
+        // A lowering rejection prints in the exact same one-line
+        // `error[unimplemented]: ...` house style every other fail-closed
+        // stage already uses (`lower::LowerError` carries no location —
+        // the typed tree it walks carries none either, decision 1).
         "mwir" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -639,14 +758,17 @@ fn dump(args: &[String]) -> ExitCode {
                 parse_time = parse_start.elapsed();
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) => match sema::check_typed(&module, &path) {
-                        Ok(program) => match wrela_compiler::lower::lower_program(&program) {
-                            Ok(mwir_program) => {
-                                print!("{}", wrela_compiler::mwir::dump(&mwir_program))
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => {
+                            let program = &checked.programs[&checked.root];
+                            match wrela_compiler::lower::lower_program(program) {
+                                Ok(mwir_program) => {
+                                    print!("{}", wrela_compiler::mwir::dump(&mwir_program))
+                                }
+                                Err(e) => println!("error[unimplemented]: {}", e.message),
                             }
-                            Err(e) => println!("error[unimplemented]: {}", e.message),
-                        },
-                        Err(e) => print_sema_error(&e),
+                        }
+                        Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
                 }
@@ -658,9 +780,9 @@ fn dump(args: &[String]) -> ExitCode {
                 dump_time = dump_start.elapsed();
             }
         },
-        // plans/M6.md item B: the same single-file entry `typed`/`mwir`
-        // use — `flowwir_lower::lower_program` walks the checked
-        // program's *async* fns/methods only (a sync fn never reaches
+        // plans/M6.md item B: the same single-file/whole-closure fork
+        // `typed`/`mwir` use — `flowwir_lower::lower_program` walks the
+        // root module's *async* fns/methods only (a sync fn never reaches
         // this path at all, decision 2's own hard constraint: it keeps
         // the exact M5 `typed` -> `mwir` path above) and dumps the
         // resulting state machines via `flowwir::dump`. A lowering
@@ -673,15 +795,17 @@ fn dump(args: &[String]) -> ExitCode {
                 parse_time = parse_start.elapsed();
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) => match sema::check_typed(&module, &path) {
-                        Ok(program) => match wrela_compiler::flowwir_lower::lower_program(&program)
-                        {
-                            Ok(flowwir_program) => {
-                                print!("{}", wrela_compiler::flowwir::dump(&flowwir_program))
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => {
+                            let program = &checked.programs[&checked.root];
+                            match wrela_compiler::flowwir_lower::lower_program(program) {
+                                Ok(flowwir_program) => {
+                                    print!("{}", wrela_compiler::flowwir::dump(&flowwir_program))
+                                }
+                                Err(e) => println!("error[unimplemented]: {}", e.message),
                             }
-                            Err(e) => println!("error[unimplemented]: {}", e.message),
-                        },
-                        Err(e) => print_sema_error(&e),
+                        }
+                        Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
                 }
@@ -693,29 +817,12 @@ fn dump(args: &[String]) -> ExitCode {
                 dump_time = dump_start.elapsed();
             }
         },
-        // plans/M5.md item C: the same single-file entry `mwir` uses, one
-        // stage further — `lower::lower_program` then
-        // `mwir::build_layout_ctx` (the one whole-program struct/enum
-        // field-type fact codegen needs beyond mwir itself) then
-        // `codegen::codegen_program`, dumped via `codegen::dump`. A
-        // lowering or codegen rejection prints the same one-line
-        // `error[unimplemented]: ...` house style every other fail-closed
-        // stage already uses.
-        // plans/M6.md item D: one stage further than the sync-only path
-        // above still covers — `lower::lower_program` (sync fns/methods,
-        // now skipping every `is_async` one) *and*
-        // `flowwir_lower::lower_program` (async fns/methods only) each run
-        // over the same checked program, then
-        // `codegen::codegen_program_with_async` merges both halves into
-        // one `CodegenProgram` sharing one rodata pool/dispatch-index
-        // table before `codegen::dump` renders it — an async fn's own
-        // state-machine form (dispatch header, flattened states,
-        // checkpoints) shows up in the identical dump right alongside
-        // every sync fn. `actor_method_index_tables` needs a
-        // `BTreeMap<String, Module>` the way `layout.rs`'s own multi-module
-        // build closure already does; a single-file dump has exactly one
-        // module, keyed by its own dotted path (arbitrary — never read
-        // back, just a map key).
+        // plans/M5.md item C / M6.md item D: the same single-file /
+        // whole-closure fork `mwir` uses, one stage further — lowers the
+        // root module (sync + async), builds a whole-closure LayoutCtx
+        // (`layout::merge_layout_ctx`), and dumps the merged codegen
+        // program. plans/M9.md item A2: import-bearing modules reach this
+        // path through `check_closure` rather than the single-module entry.
         "asm" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -723,63 +830,63 @@ fn dump(args: &[String]) -> ExitCode {
                 parse_time = parse_start.elapsed();
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) => match sema::check_typed(&module, &path) {
-                        Ok(program) => match wrela_compiler::lower::lower_program(&program) {
-                            Ok(mwir_program) => {
-                                match wrela_compiler::flowwir_lower::lower_program(&program) {
-                                    Ok(flow_program) => {
-                                        match wrela_compiler::mwir::build_layout_ctx(
-                                            &module,
-                                            &Default::default(),
-                                        ) {
-                                            Ok(layout) => {
-                                                let modules: BTreeMap<String, Module> =
-                                                    BTreeMap::from([(
-                                                        module.path.join("."),
-                                                        module.clone(),
-                                                    )]);
-                                                match layout::actor_method_index_tables(
-                                                    &modules, &layout,
-                                                ) {
-                                                    Ok(method_index) => {
-                                                        let group_arena_capacity =
-                                                            layout::count_with_group_sites(
-                                                                &modules,
-                                                            );
-                                                        match wrela_compiler::codegen::codegen_program_with_async(
-                                                            &mwir_program,
-                                                            &flow_program,
-                                                            &layout,
-                                                            &method_index,
-                                                            group_arena_capacity,
-                                                        ) {
-                                                            Ok(codegen_program) => print!(
-                                                                "{}",
-                                                                wrela_compiler::codegen::dump(
-                                                                    &codegen_program
-                                                                )
-                                                            ),
-                                                            Err(e) => println!(
-                                                                "error[unimplemented]: {}",
-                                                                e.message
-                                                            ),
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => {
+                            let program = &checked.programs[&checked.root];
+                            match wrela_compiler::lower::lower_program(program) {
+                                Ok(mwir_program) => {
+                                    match wrela_compiler::flowwir_lower::lower_program(program) {
+                                        Ok(flow_program) => {
+                                            match layout::merge_layout_ctx(&checked.modules) {
+                                                Ok(mut layout_ctx) => {
+                                                    layout::enrich_layout_ctx_with_instantiations(
+                                                        &mut layout_ctx,
+                                                        &checked.programs,
+                                                    );
+                                                    match layout::actor_method_index_tables(
+                                                        &checked.modules,
+                                                        &layout_ctx,
+                                                    ) {
+                                                        Ok(method_index) => {
+                                                            let group_arena_capacity =
+                                                                layout::count_with_group_sites(
+                                                                    &checked.modules,
+                                                                );
+                                                            match wrela_compiler::codegen::codegen_program_with_async(
+                                                                &mwir_program,
+                                                                &flow_program,
+                                                                &layout_ctx,
+                                                                &method_index,
+                                                                group_arena_capacity,
+                                                            ) {
+                                                                Ok(codegen_program) => print!(
+                                                                    "{}",
+                                                                    wrela_compiler::codegen::dump(
+                                                                        &codegen_program
+                                                                    )
+                                                                ),
+                                                                Err(e) => println!(
+                                                                    "error[unimplemented]: {}",
+                                                                    e.message
+                                                                ),
+                                                            }
                                                         }
+                                                        Err(e) => println!(
+                                                            "error[unimplemented]: {}",
+                                                            e.message
+                                                        ),
                                                     }
-                                                    Err(e) => println!(
-                                                        "error[unimplemented]: {}",
-                                                        e.message
-                                                    ),
                                                 }
+                                                Err(e) => print_sema_error(&e),
                                             }
-                                            Err(e) => print_sema_error(&e),
                                         }
+                                        Err(e) => println!("error[unimplemented]: {}", e.message),
                                     }
-                                    Err(e) => println!("error[unimplemented]: {}", e.message),
                                 }
+                                Err(e) => println!("error[unimplemented]: {}", e.message),
                             }
-                            Err(e) => println!("error[unimplemented]: {}", e.message),
-                        },
-                        Err(e) => print_sema_error(&e),
+                        }
+                        Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
                 }
@@ -1074,13 +1181,17 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let program = match sema::check_typed(&module, &path) {
-        Ok(p) => p,
-        Err(e) => {
-            print_sema_error(&e);
-            return ExitCode::FAILURE;
-        }
+    // plans/M9.md item A2: same single-file/whole-closure fork as
+    // `dump --stage=check` / `wrela build` — an import-bearing root
+    // (including `from core.io_error import IoError`) is checked as a
+    // closure, and tests run against the root module's typed program
+    // (imports already spliced in).
+    let checked = match check_closure(&path, module) {
+        Ok(c) => c,
+        Err(()) => return ExitCode::FAILURE,
     };
+    let program = checked.programs[&checked.root].clone();
+    let modules = checked.modules;
 
     let (comptime_report, _) = eval::run_tests(&program);
     let runtime_tests: Vec<String> = program
@@ -1123,8 +1234,6 @@ fn test_cmd(args: &[String]) -> ExitCode {
         .filter(|l| !placeholder_lines.contains(*l))
         .collect();
 
-    let mut modules: BTreeMap<String, Module> = BTreeMap::new();
-    modules.insert(module.path.join("."), module.clone());
     let layout_ctx = match layout::merge_layout_ctx(&modules) {
         Ok(c) => c,
         Err(e) => {
@@ -1149,9 +1258,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         None => eval::image::ImageGraph::default(),
     };
     if program.image_fn.is_some() {
-        let mut programs = BTreeMap::new();
-        programs.insert(module.path.join("."), program.clone());
-        if let Err(e) = eval::image_checks::check_sealed(&graph, &program, &programs) {
+        if let Err(e) = eval::image_checks::check_sealed(&graph, &program, &checked.programs) {
             print_sema_error(&e);
             return ExitCode::FAILURE;
         }
@@ -1296,9 +1403,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     };
     // plans/M7.md item E1: BlkDevice/BlkQueue from configure + pools.
     {
-        let mut programs = BTreeMap::new();
-        programs.insert(module.path.join("."), program.clone());
-        if let Err(e) = layout::attach_blk_report(&mut image_layout, &graph, &programs) {
+        if let Err(e) = layout::attach_blk_report(&mut image_layout, &graph, &checked.programs) {
             for l in &comptime_lines {
                 println!("{l}");
             }

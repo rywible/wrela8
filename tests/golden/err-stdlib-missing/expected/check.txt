@@ -1,0 +1,1 @@
+error[build]: stdlib not found: sibling `stdlib/` exists but has no `core/` directory at 3:1

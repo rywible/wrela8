@@ -30,29 +30,34 @@
 //! imported module path is `error[build]`, naming the path.
 //!
 //! **The `core` alias**: `from core.X import ...` resolves inside the
-//! toolchain's `stdlib/` tree, addressed throughout this compiler as
+//! toolchain's `stdlib/core/` tree, addressed throughout this compiler as
 //! `["core", ...]` regardless of what `X`'s own file declares (`core`
 //! is an import-side alias over that tree, not a real package segment —
-//! `stdlib/`'s own README calls the whole tree "the `core` package," so
-//! a file at `stdlib/bytes.wr` declares plain `module bytes`, agreeing
-//! with its path under `stdlib/` itself as *its* package root; the
+//! `stdlib/README.md` calls `stdlib/core/` the `core` package root, so
+//! a file at `stdlib/core/io_error.wr` declares plain `module io_error`,
+//! agreeing with its path under `stdlib/core/` as *its* package root; the
 //! `core` prefix is stripped before mapping the remaining segments onto
-//! that root). Locating `stdlib/` itself uses the dumbest deterministic
-//! rule that still lets a self-contained fixture (this repo's own
-//! project-shaped golden cases included) ship its own, in preference to
-//! the real toolchain tree: (1) a directory literally named `stdlib`
-//! sitting next to the package root (a sibling of `pkgroot`, i.e.
-//! `pkgroot.parent()/stdlib`) wins if it exists; (2) otherwise, the real
-//! toolchain `stdlib/`, baked in at compile time via this very crate's
-//! own `CARGO_MANIFEST_DIR` (`crates/wrela-compiler/../../stdlib`) —
-//! wherever the compiled `wrela` binary is actually run from. No
-//! environment variable, no search path: exactly these two candidates,
-//! in this fixed order, every time (recorded here per plans/M4.md item
-//! A's brief: "pick the dumbest deterministic rule ... record the
-//! choice in plans/M4.md's decision list"; see decision 1's sub-note
-//! there). A bare `from core import <name>` (no further segment) names
-//! a *submodule*, not a declaration — the same "more than trivial"
-//! shape `sema::imports` fails closed on (02-language.md §2's own
+//! that root). Locating `stdlib/core/` itself uses the dumbest
+//! deterministic rule that still lets a self-contained fixture (this
+//! repo's own project-shaped golden cases included) ship its own, in
+//! preference to the real toolchain tree: (1) a directory literally
+//! named `stdlib/core` sitting next to the package root (a sibling of
+//! `pkgroot`, i.e. `pkgroot.parent()/stdlib/core`) wins if it exists as
+//! a directory; (2) otherwise, the real toolchain `stdlib/core/`, baked
+//! in at compile time via this very crate's own `CARGO_MANIFEST_DIR`
+//! (`crates/wrela-compiler/../../stdlib/core`) — wherever the compiled
+//! `wrela` binary is actually run from. No environment variable, no
+//! search path: exactly these two candidates, in this fixed order, every
+//! time (recorded here per plans/M4.md item A's brief; plans/M9.md item
+//! A2 decision 78 nested the package root under `core/`). If a sibling
+//! `stdlib/` directory exists but has no `core/` subdirectory — or if
+//! the chosen candidate is not a directory at all — the loader fails
+//! closed with a named `error[build]: stdlib not found: ...` rather than
+//! falling through to a missing-module diagnostic that would hide the
+//! real cause (plans/M9.md item A2, golden/err-stdlib-missing). A bare
+//! `from core import <name>` (no further segment) names a *submodule*,
+//! not a declaration — the same "more than trivial" shape
+//! `sema::imports` fails closed on (02-language.md §2's own
 //! "`from core.bytes import Bytes` and `from core import time` are the
 //! same construct" — but `core` alone has no declaration to look inside
 //! at all, per that section, so this shape is unambiguous the moment
@@ -192,16 +197,36 @@ fn module_file_path(root: &Path, module_path: &[String]) -> PathBuf {
     p
 }
 
-/// Locates the toolchain's `stdlib/` tree — see the module doc comment
-/// above for the exact two-candidate priority this implements.
-fn core_root(pkgroot: &Path) -> PathBuf {
+/// Locates the toolchain's `stdlib/core/` tree — see the module doc
+/// comment above for the exact two-candidate priority this implements.
+/// Returns a named `error[build]` when the chosen candidate is missing
+/// (plans/M9.md item A2: golden/err-stdlib-missing).
+fn core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
     if let Some(parent) = pkgroot.parent() {
-        let sibling = parent.join("stdlib");
-        if sibling.is_dir() {
-            return sibling;
+        let sibling_stdlib = parent.join("stdlib");
+        if sibling_stdlib.is_dir() {
+            let core = sibling_stdlib.join("core");
+            if core.is_dir() {
+                return Ok(core);
+            }
+            // Sibling `stdlib/` shadows the toolchain tree, so a missing
+            // `core/` here is not "fall through to CARGO_MANIFEST_DIR" —
+            // it is the fail-closed "stdlib not found" case A2 pins.
+            return Err(build_error(
+                "stdlib not found: sibling `stdlib/` exists but has no `core/` directory"
+                    .to_string(),
+                span,
+            ));
         }
     }
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib")
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core");
+    if !toolchain.is_dir() {
+        return Err(build_error(
+            "stdlib not found: toolchain `stdlib/core/` is missing".to_string(),
+            span,
+        ));
+    }
+    Ok(toolchain)
 }
 
 /// Resolves one `from path import ...` statement's `path` to the module
@@ -209,15 +234,19 @@ fn core_root(pkgroot: &Path) -> PathBuf {
 /// that file must itself agree with. Never called for a bare `["core"]`
 /// path (the submodule-import shape) — callers filter that out first,
 /// see `load_closure`.
-fn import_target(pkgroot: &Path, import_path: &[String]) -> (Vec<String>, PathBuf, PathBuf) {
+fn import_target(
+    pkgroot: &Path,
+    import_path: &[String],
+    span: Span,
+) -> Result<(Vec<String>, PathBuf, PathBuf), LoadError> {
     if import_path[0] == "core" {
-        let root = core_root(pkgroot);
+        let root = core_root(pkgroot, span)?;
         let rest = &import_path[1..];
         let file = module_file_path(&root, rest);
-        (import_path.to_vec(), file, root)
+        Ok((import_path.to_vec(), file, root))
     } else {
         let file = module_file_path(pkgroot, import_path);
-        (import_path.to_vec(), file, pkgroot.to_path_buf())
+        Ok((import_path.to_vec(), file, pkgroot.to_path_buf()))
     }
 }
 
@@ -257,7 +286,7 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
                 // the module doc comment's own note on this shape.
                 continue;
             }
-            let (key, file, expected_root) = import_target(&pkgroot, &import.path);
+            let (key, file, expected_root) = import_target(&pkgroot, &import.path, import.span)?;
             if modules.contains_key(&key) {
                 continue;
             }
@@ -356,23 +385,25 @@ mod tests {
     }
 
     #[test]
-    fn core_root_prefers_a_sibling_stdlib_directory() {
+    fn core_root_prefers_a_sibling_stdlib_core_directory() {
         let tmp = std::env::temp_dir().join(format!(
             "wrela-loader-test-{}-{}",
             std::process::id(),
             "sibling"
         ));
         let pkgroot = tmp.join("proj/src");
-        let sibling_stdlib = tmp.join("proj/stdlib");
+        let sibling_core = tmp.join("proj/stdlib/core");
         std::fs::create_dir_all(&pkgroot).expect("create pkgroot");
-        std::fs::create_dir_all(&sibling_stdlib).expect("create sibling stdlib");
-        let root = core_root(&pkgroot);
-        assert_eq!(root, sibling_stdlib);
+        std::fs::create_dir_all(&sibling_core).expect("create sibling stdlib/core");
+        let root = core_root(&pkgroot, Span::default())
+            .ok()
+            .expect("sibling stdlib/core exists");
+        assert_eq!(root, sibling_core);
         std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
-    fn core_root_falls_back_to_the_toolchain_stdlib() {
+    fn core_root_falls_back_to_the_toolchain_stdlib_core() {
         let tmp = std::env::temp_dir().join(format!(
             "wrela-loader-test-{}-{}",
             std::process::id(),
@@ -380,11 +411,39 @@ mod tests {
         ));
         let pkgroot = tmp.join("proj/src");
         std::fs::create_dir_all(&pkgroot).expect("create pkgroot");
-        let root = core_root(&pkgroot);
+        let root = core_root(&pkgroot, Span::default())
+            .ok()
+            .expect("toolchain stdlib/core exists");
         assert_eq!(
             root,
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib")
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core")
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn core_root_rejects_a_sibling_stdlib_without_core() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wrela-loader-test-{}-{}",
+            std::process::id(),
+            "missing-core"
+        ));
+        let pkgroot = tmp.join("proj/src");
+        let sibling_stdlib = tmp.join("proj/stdlib");
+        std::fs::create_dir_all(&pkgroot).expect("create pkgroot");
+        std::fs::create_dir_all(&sibling_stdlib).expect("create empty sibling stdlib");
+        let err = core_root(&pkgroot, Span::default())
+            .err()
+            .expect("missing core");
+        match err {
+            LoadError::Build(e) => {
+                assert!(e.message.contains("stdlib not found"));
+                assert!(e.message.contains("no `core/` directory"));
+            }
+            LoadError::Lex(_) | LoadError::Parse(_) => {
+                panic!("expected Build error, got Lex/Parse")
+            }
+        }
         std::fs::remove_dir_all(&tmp).ok();
     }
 

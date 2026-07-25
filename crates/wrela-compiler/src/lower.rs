@@ -3100,11 +3100,20 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
             ))),
         },
         _ => {
-            let variants = prog.enums.get(enum_name).ok_or_else(|| {
-                LowerError::unimplemented(
-                    "constructing/matching a generic enum instantiation's variant is",
-                )
-            })?;
+            // plans/M9.md item A1b / A2: this module's own enums, else the
+            // ones it imports. Before this an *imported* enum (A2's
+            // `IoError` from `stdlib/core/io_error.wr`) fell into the
+            // "generic enum instantiation" rejection and named the wrong
+            // cause — the same defect A1b already fixed in `eval::interp`.
+            let variants = prog
+                .enums
+                .get(enum_name)
+                .or_else(|| prog.imported.enums.get(enum_name))
+                .ok_or_else(|| {
+                    LowerError::unimplemented(
+                        "constructing/matching a generic enum instantiation's variant is",
+                    )
+                })?;
             variants.iter().position(|v| v == variant).ok_or_else(|| {
                 LowerError::internal(format!("unknown variant `{enum_name}.{variant}`"))
             })

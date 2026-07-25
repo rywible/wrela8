@@ -1,5 +1,7 @@
 module examples.err_driver_message_receipt
 
+from core.io_error import IoError
+
 # **Retargeted by plans/M8.md item E (decision 33).** Item D pinned this
 # name on a build-time refusal of `Receipt[P]` in *either* direction
 # across a driver mailbox, and its diagnostic named this item as the lift.

@@ -1,5 +1,7 @@
 module examples.check_receipt_handoff
 
+from core.io_error import IoError
+
 # plans/M7.md item E3, 03-hardware.md §5: Receipt[P], handoff, publish,
 # reject. Dump oracle (E2/H2a shape): type-check + mwir pin the sealed
 # publish write order. No HVF boot — no runtime own[P] T handle exists

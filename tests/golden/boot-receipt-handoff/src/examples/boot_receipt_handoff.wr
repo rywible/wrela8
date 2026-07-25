@@ -1,5 +1,7 @@
 module examples.boot_receipt_handoff
 
+from core.io_error import IoError
+
 # plans/M8.md item E: 03-hardware.md §5's handoff calling convention,
 # **executed**. M7 decision 22 left `await receipt` typed and lowered but
 # unreachable from the flagship, because a `@driver` could not be messaged;

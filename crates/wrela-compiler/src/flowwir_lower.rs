@@ -416,9 +416,16 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
         "CallError" => crate::sema::bodies::call_error_variant_index(variant)
             .ok_or_else(|| FlowError::internal(format!("unknown CallError variant `{variant}`"))),
         _ => {
-            let variants = prog.enums.get(enum_name).ok_or_else(|| {
-                FlowError::unimplemented("matching a generic enum instantiation's variant is")
-            })?;
+            // plans/M9.md item A1b / A2: mirror `eval::interp` /
+            // `lower::variant_index` — imported enums live in
+            // `prog.imported.enums`, not `prog.enums`.
+            let variants = prog
+                .enums
+                .get(enum_name)
+                .or_else(|| prog.imported.enums.get(enum_name))
+                .ok_or_else(|| {
+                    FlowError::unimplemented("matching a generic enum instantiation's variant is")
+                })?;
             variants.iter().position(|v| v == variant).ok_or_else(|| {
                 FlowError::internal(format!("unknown variant `{enum_name}.{variant}`"))
             })

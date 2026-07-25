@@ -120,7 +120,10 @@ const HARDWARE_SURFACE: &[&str] = &[
     "QueuePermit",
     "QueueOp",
     "Receipt",
-    "IoError",
+    // plans/M9.md item A2: `IoError` moved to `stdlib/core/io_error.wr`
+    // and is imported (`from core.io_error import IoError`). Kept out of
+    // this array deliberately — a half-moved name would be two sources
+    // of truth.
     "IoCompletion",
     "CompletionOutcome",
 ];
@@ -190,10 +193,11 @@ pub fn builtin_enum_variants(name: &str) -> Option<&'static [&'static str]> {
         // at runtime (decision 14).
         "BootError" => Some(&["Failed"]),
         // plans/M7.md item E3: 03-hardware.md §5 / the reference driver's
-        // `reject(error=IoError.OutOfRange)`. One unit variant is enough
-        // for E3's dump oracles; richer taxonomy is not load-bearing
-        // until E4's completion status is inspected.
-        "IoError" => Some(&["OutOfRange"]),
+        // `reject(error=IoError.OutOfRange)`. Moved to
+        // `stdlib/core/io_error.wr` at plans/M9.md item A2 — no longer a
+        // prelude enum. `IoCompletion.status`'s Err arm still names the
+        // type as `Type::Named("IoError")` in the compiler; source that
+        // constructs `IoError.OutOfRange` imports it.
         // =================================================================
         // plans/M7.md item G, decision 18: 03-hardware.md §7's driver mode
         // const-generic vocabulary (`BlkDriver[DriverMode.Irq]`).

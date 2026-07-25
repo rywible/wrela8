@@ -1,0 +1,8 @@
+Module path=app.main
+Program
+  Fn name=sample ret=IoError
+    Body
+      Return
+        EnumConstruct enum=IoError variant=OutOfRange ty=IoError
+Module path=io_error
+Program

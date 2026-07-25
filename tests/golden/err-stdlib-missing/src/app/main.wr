@@ -1,0 +1,6 @@
+module app.main
+
+from core.io_error import IoError
+
+pub fn sample() -> IoError:
+    return IoError.OutOfRange

@@ -674,7 +674,8 @@ pub(crate) fn check(
         "Target",
         "Restart",
         "BootError",
-        "IoError",
+        // plans/M9.md item A2: `IoError` is no longer injected — it arrives
+        // through the ordinary import splice from `stdlib/core/io_error.wr`.
         "DriverMode",
         // plans/M8.md item G: 03-hardware.md §9's `CompletionOutcome`.
         // Injected for the same reason as the five above — it is what

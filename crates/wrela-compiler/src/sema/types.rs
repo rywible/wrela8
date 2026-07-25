@@ -3531,9 +3531,9 @@ fn resolve_named(
         // `QueueOp` carries its payload brand as of E3 — see the match
         // arm below.
         "QueuePermit" => Some(Type::Named(n.name.clone(), vec![])),
-        // plans/M7.md item E3: `IoError` — prelude enum for `reject`'s
-        // `error=` and (later, E4) `IoCompletion.status`.
-        "IoError" => Some(Type::Named("IoError".to_string(), vec![])),
+        // plans/M7.md item E3: `IoError` lived here as a prelude enum; at
+        // plans/M9.md item A2 it moved to `stdlib/core/io_error.wr` and
+        // resolves through the ordinary imported-type path (A1).
         // =================================================================
         // plans/M7.md item G, decision 18: prelude enums as annotation
         // types (`const MODE: DriverMode`). Same zero-arg Named shape as

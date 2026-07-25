@@ -1,6 +1,8 @@
 
 module examples.err_reclaim_pool_if_leak_two_brand
 
+from core.io_error import IoError
+
 # plans/M8.md item H attack 1 follow-up: the if-leak re-opens the original
 # pool-confused hole once two brands are in play. `if status != 0` recovers
 # BlockPayloads and stashes the OtherPayloads receipt; `else` does the

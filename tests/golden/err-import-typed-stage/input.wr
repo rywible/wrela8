@@ -1,6 +1,0 @@
-module app.main
-
-from app.util import helper
-
-pub fn run() -> i64:
-    return helper()

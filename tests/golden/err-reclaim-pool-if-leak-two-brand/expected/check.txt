@@ -1,1 +1,1 @@
-error[type]: `reclaim` on this queue has no preceding `recover` in this scope whose receipt brands a pool; write `recover` first, then `reclaim(pool=<that brand>, payload=...)` (plans/M8.md item H / 03-hardware.md §9) at 163:47
+error[type]: `reclaim` on this queue has no preceding `recover` in this scope whose receipt brands a pool; write `recover` first, then `reclaim(pool=<that brand>, payload=...)` (plans/M8.md item H / 03-hardware.md §9) at 165:47

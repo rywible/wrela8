@@ -1,1 +1,0 @@
-error[unimplemented]: imports through the single-module entry (`--stage=typed`, `wrela test`) are not checked yet at 3:1

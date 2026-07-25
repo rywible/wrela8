@@ -676,13 +676,13 @@ fn splice_imported_decls(
     // The shadowing witness for each (importer, exporter) pair, if any:
     // the first name (BTree order, so deterministic) the two modules
     // resolve to genuinely different declarations. "Different module" is
-    // not enough on its own — `bodies::check` injects the six fixed
-    // prelude enums (`Target`, `Restart`, `BootError`, `IoError`,
-    // `DriverMode`, `CompletionOutcome`) into *every* module's own
+    // not enough on its own — `bodies::check` injects the five remaining
+    // prelude enums (`Target`, `Restart`, `BootError`, `DriverMode`,
+    // `CompletionOutcome`) into *every* module's own
     // `TypedProgram::enums`, so every pair of modules in every build
-    // "declares" all six. Those are the same declaration by value, and
+    // "declares" all five. Those are the same declaration by value, and
     // the evaluator cannot tell them apart either, so value equality is
-    // the honest test.
+    // the honest test. (`IoError` left this set at plans/M9.md item A2.)
     let shadow: BTreeMap<(Vec<String>, Vec<String>), String> = {
         let same_decl = |a: &(Vec<String>, String), b: &(Vec<String>, String)| -> bool {
             if a == b {
@@ -879,4 +879,27 @@ pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::{lexer, parser};
+
+    /// plans/M9.md item A2: the CLI's `--stage=typed` now loads closures,
+    /// but the single-module `check_typed` entry itself must still fail
+    /// closed on an import — empty bindings would otherwise misreport the
+    /// import as `unknown name`. Pins `unit:check_typed_rejects_imports`.
+    #[test]
+    fn check_typed_rejects_imports() {
+        let src = "module m\n\nfrom other import X\n\npub fn f() -> u64:\n    return 1\n";
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        let err = check_typed(&module, "m.wr").err().expect("must reject");
+        assert_eq!(err.category, "unimplemented");
+        assert!(
+            err.message
+                .contains("imports through the single-module entry")
+        );
+    }
 }

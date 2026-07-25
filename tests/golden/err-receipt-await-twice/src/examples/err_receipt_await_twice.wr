@@ -1,5 +1,7 @@
 module examples.err_receipt_await_twice
 
+from core.io_error import IoError
+
 # 03-hardware.md §5: "A receipt resolves exactly once; dropping one is
 # illegal in every state." plans/M8.md item E's caller-side half of that
 # sentence: `await receipt` **consumes** the receipt, so a second `await`

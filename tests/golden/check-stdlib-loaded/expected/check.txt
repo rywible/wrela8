@@ -1,0 +1,5 @@
+Module path=app.main
+  Fn sample() -> IoError
+Module path=io_error
+  Enum IoError data
+    variant OutOfRange

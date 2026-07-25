@@ -1,0 +1,7 @@
+Program
+  Fn key=sample ret=IoError temps=1
+    Temp t0 ty=IoError
+    Body
+      0000: MakeEnum dst=t0 tag=0 payload=[]
+      0001: Return value=t0
+      0002: Return

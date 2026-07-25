@@ -6,7 +6,8 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_receipt_handoff.wr sha256=981a6869f6469937d4f5e0ec1ee7eefbf7cbe49900845ed838ca3094ba6d050d
+  Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
+  Input path=examples/boot_receipt_handoff.wr sha256=9929c4ff996066e364d14bb1e3377ecd6f9b5bab38e9b9c2e2e44729e196fd0c
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

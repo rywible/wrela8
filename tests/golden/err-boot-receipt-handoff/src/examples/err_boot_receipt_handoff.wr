@@ -1,44 +1,14 @@
-module examples.err_boot_dma_region_handoff_group
+module examples.err_boot_receipt_handoff
 
-# plans/M8.md item H attack 2: §9 says "affected regions **and** DMA slots"
-# are quarantined. A group region that holds (or whose image can cancel)
-# a live handoff/`Receipt` across reset is the constructible shape that
-# would need region quarantine. This is `boot-receipt-handoff` with one
-# `with group` opened around the receipt park — refused by name at
-# codegen, because a cancelled handoff receipt has no `CallError` channel
-# and must go to §9's recovery turn (unbuilt). That refusal is the
-# evidence the affected-region case is not constructible today.
-#
-# What runs, and why each half could not be observed any other way:
-#
-#   1. `Client` (an ordinary `@actor`) holds one DMA payload slot, stamps
-#      MAGIC into it, and hands it to the driver with
-#      `await self.disk.submit_write(...)`. That call is 03 §5's handoff:
-#      one `take p: P`, result `Receipt[P]`. Admission commit moves `P`
-#      into the message and installs the caller's endpoint in the same
-#      uninterruptible sequence (`layout::build_rt_enqueue` writes
-#      `slot.waker` and the payload words between the capacity test and the
-#      `count += 1` that commits them); the driver's own
-#      `return queue.publish(...)` transitions that pre-existing pair.
-#   2. The caller then **parks on the receipt it owns** — `c = await r` —
-#      and is woken with the completion the device produced. The park is a
-#      real suspension: `the_parked_turn_really_left_and_re_entered` reads
-#      a witness only a turn on a *different* actor could have produced,
-#      recorded between this turn's two halves.
-#   3. The buffer comes back inside the completion, is zeroed, and goes out
-#      again as a **read** of the same sector, through a second handoff and
-#      a second receipt. The word that comes back is MAGIC — a value that
-#      exists nowhere in this image except the emulated disk.
-#
-# This is deliberately **not** the bottom-half sync `claim` dual
-# (`boot-blk-roundtrip`): nothing here calls `VirtQueue.claim`, the driver
-# holds no `Option[Receipt[..]]` field, and the receipt is owned, parked on
-# and resolved by an actor that has no queue, no capability and no device.
-# The driver's `@task drain` still runs — it is what resolves the receipt —
-# but it hands the completion to a *caller's* stash, not to itself.
-#
-# Hand-computed sector word: 0xD15EA5E0C0FFEE11.
-# Vacuity twin: `err-boot-receipt-handoff` inverts the read-back assert.
+from core.io_error import IoError
+
+# **Vacuity control for `boot-receipt-handoff`.** Identical source, with
+# the read-back word asserted against a number the disk cannot hold (MAGIC
+# with its low nibble changed). Without this twin, a green
+# `boot-receipt-handoff` would also be green on a boot that admitted no
+# handoff, never parked on a receipt and never resumed — every `match` arm
+# would simply never be reached, and every `assert` inside one would go
+# unevaluated.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -260,12 +230,11 @@ pub struct Client:
         buf.word = MAGIC
         # --- handoff 1: write MAGIC to sector 0 -------------------------
         r1 = await self.disk.submit_write(lba=0, buffer=take buf)
-        # One `with group` makes the image's group arena nonempty; a handoff
-        # await in that image is the §9 affected-region shape.
-        with group(capacity=1) as g:
-            c1 = await r1
-            cleared = self.stash_and_clear(completion=take c1)
-            assert cleared == MAGIC, "the write completion returns the payload the caller lent"
+        # The caller now owns a `Receipt[own[BlockPayloads] DmaBlock]` and
+        # parks on it. Nothing else in this image can resolve it.
+        c1 = await r1
+        cleared = self.stash_and_clear(completion=take c1)
+        assert cleared == MAGIC, "the write completion returns the payload the caller lent"
         # --- a turn boundary that is not a receipt ----------------------
         # An ordinary actor call between the two halves: its reply is the
         # `Ledger`'s own running mark, which only a turn on a *different*
@@ -287,7 +256,7 @@ async fn a_caller_owned_receipt_resolves_with_the_device_word(cl: Actor[Client])
     v = await cl.round_trip()
     match v:
         case .Ok(n):
-            assert n == 0xD15EA5E0C0FFEE11, "the sector word read back through a caller-owned receipt"
+            assert n == 0xD15EA5E0C0FFEE1F, "vacuity twin: the disk holds ...EE11, so this must fail"
         case .Err(_):
             assert false, "round_trip rejected"
 
@@ -322,7 +291,7 @@ async fn the_bottom_half_is_what_resolved_them(disk: Actor[BlkDriver]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="err-boot-dma-region-handoff-group", target=Target.wrela_machine_v1)
+    img = Image(name="err-boot-receipt-handoff", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](
         transport=0x2000,
         capacity_sectors=16,

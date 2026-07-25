@@ -1,0 +1,8 @@
+# plans/M9.md item A2: the first prelude name moved into real stdlib
+# source. `IoError` is ordinary wrela data (one unit variant); declaration
+# order is load-bearing for `lower::variant_index` and
+# `matches::shape_of`, so `OutOfRange` stays first and alone.
+module io_error
+
+pub enum IoError:
+    OutOfRange
