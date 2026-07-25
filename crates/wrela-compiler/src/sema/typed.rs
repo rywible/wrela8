@@ -503,6 +503,12 @@ pub struct TypedFn {
     pub is_async: bool,
     /// plans/M7.md item G: `@task` bottom half (03-hardware.md §6).
     pub is_task: bool,
+    /// plans/M9.md item H2: `@layout_assert` (02-language.md §12.1) —
+    /// host-only, runs after layout in `eval::layout_assert`, never
+    /// guest code. `lower::lower_program` skips these the same way it
+    /// skips `@image` / `async`. Not rendered by `dump` below —
+    /// bookkeeping, same reasoning as `is_async`/`is_task`.
+    pub is_layout_assert: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

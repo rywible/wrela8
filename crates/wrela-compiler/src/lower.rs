@@ -485,6 +485,11 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
         if f.is_async {
             continue;
         }
+        // plans/M9.md item H2: `@layout_assert` is host-only (02 §12.1) —
+        // runs after layout in `eval::layout_assert`, never guest code.
+        if f.is_layout_assert {
+            continue;
+        }
         let mf = lower_fn(f, None, &mut lw)?;
         fns.insert(name.clone(), mf);
     }
@@ -497,7 +502,7 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     for (ikey, inst) in &program.instantiations {
         match inst {
             TypedInstantiation::Fn(f) => {
-                if f.is_async {
+                if f.is_async || f.is_layout_assert {
                     continue;
                 }
                 let mf = lower_fn(f, None, &mut lw)?;
@@ -521,7 +526,7 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     // `merge_mwir_programs` last-wins — that collision is already
     // disclosed there.
     for (name, f) in &program.imported.fns {
-        if f.is_async || fns.contains_key(name) {
+        if f.is_async || f.is_layout_assert || fns.contains_key(name) {
             continue;
         }
         let mf = lower_fn(f, None, &mut lw)?;
@@ -539,7 +544,7 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
         }
         match inst {
             TypedInstantiation::Fn(f) => {
-                if f.is_async {
+                if f.is_async || f.is_layout_assert {
                     continue;
                 }
                 let mf = lower_fn(f, None, &mut lw)?;

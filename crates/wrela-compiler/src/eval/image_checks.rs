@@ -3228,6 +3228,7 @@ mod tests {
                     body: vec![],
                     is_async: false,
                     is_task: false,
+                    is_layout_assert: false,
                 }),
                 ..TypedStruct::default()
             },
