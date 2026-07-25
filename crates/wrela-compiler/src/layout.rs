@@ -1853,8 +1853,8 @@ pub struct DeviceRegs {
     pub device: usize,
     pub device_type: String,
     /// The `@driver` whose `device=` binding names it (one per device:
-    /// `eval::image_checks` already refuses a second binding of the same
-    /// device, so this is not a list).
+    /// `eval::image_checks::check_device_bound_once` refuses a second
+    /// binding of the same device, so this is not a list).
     pub driver: String,
     pub base: u64,
     pub size: u64,

@@ -1,0 +1,1 @@
+error[build]: `driver#1` binds device#0, but `driver#0` already binds that same device — 03-hardware.md §1: the device itself is named once at the image binding, the single source of truth. A second binding would mint a second `DeviceCap` over a second register window for one device

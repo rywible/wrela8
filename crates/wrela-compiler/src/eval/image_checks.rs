@@ -15,22 +15,26 @@
 //! check between pool binding and init-argument matching — a pool's own
 //! declaration must be *valid* before an init argument that names its
 //! handle can mean anything, which is the same reason binding already ran
-//! before init matching): construction DAG, then pools bound-at-seal, then
-//! pool declarations, then init-argument matching, then supervision —
-//! first failure wins. Rationale: the DAG
-//! check is the most structural (it does not even need to know what a
-//! declaration *is*, only what it references) so it runs first; pool
-//! binding is the next-most-structural fact (whether a declared resource
-//! exists at all) and is a precondition for init-argument matching to
-//! mean anything (an init argument can reference a pool-backed handle);
-//! init-argument matching is the deepest per-declaration check; placement
-//! in the supervision tree is the most "external" fact (it says nothing
-//! about a declaration's own construction, only about the tree drawn over
-//! already-valid declarations), so it runs last. `img.seal()`'s own
-//! "every declaration is fully bound" (05-library.md §9) is exactly the
-//! conjunction of every check below, not a separate mechanism —
-//! `check_sealed` *is* the seal check; `image.graph.seal-fully-bound`'s
-//! own ledger clause cites the same evidence as the others.
+//! before init matching; extended again by the post-closure M7 sweep
+//! port, inserting device-bound-once before init-argument matching):
+//! construction DAG, then pools bound-at-seal, then pool declarations,
+//! then device-bound-once, then init-argument matching, then supervision
+//! — first failure wins. Rationale: the DAG check is the most structural
+//! (it does not even need to know what a declaration *is*, only what it
+//! references) so it runs first; pool binding is the next-most-structural
+//! fact (whether a declared resource exists at all) and is a precondition
+//! for init-argument matching to mean anything (an init argument can
+//! reference a pool-backed handle); device-bound-once is the mint's
+//! per-device half of 03 §1's "named once" and must hold before any
+//! `DeviceCap` is substituted; init-argument matching is the deepest
+//! per-declaration check; placement in the supervision tree is the most
+//! "external" fact (it says nothing about a declaration's own
+//! construction, only about the tree drawn over already-valid
+//! declarations), so it runs last. `img.seal()`'s own "every declaration
+//! is fully bound" (05-library.md §9) is exactly the conjunction of every
+//! check below, not a separate mechanism — `check_sealed` *is* the seal
+//! check; `image.graph.seal-fully-bound`'s own ledger clause cites the
+//! same evidence as the others.
 //!
 //! One-image (decision 6's own "zero or more than one is a named
 //! diagnostic listing every candidate") is deliberately *not* here: it is
@@ -111,6 +115,10 @@ pub fn check_sealed(
     }
     check_pools_bound(graph, &declared)?;
     check_pool_decls(graph, programs)?;
+    // Post-closure M7 sweep port: one device, one binding. Must run before
+    // `check_init_args` minting — a second binding would otherwise mint a
+    // second `DeviceCap` over a second register window for the same device.
+    check_device_bound_once(graph)?;
     check_init_args(graph, programs)?;
     check_supervision(graph)?;
     // plans/M7.md item E1, decision 14: required features vs DEVICE_FEATURES
@@ -126,6 +134,48 @@ pub fn check_sealed(
     // inferred table themselves live in `placement::place` (report/build),
     // which needs a LayoutCtx this pass does not have.
     crate::placement::check_annotations(graph).map_err(build_error)?;
+    Ok(())
+}
+
+/// 03-hardware.md §1: "The device itself is named once, at the image
+/// binding (`img.driver(BlkDriver, device=blk_device)`), the single source
+/// of truth."
+///
+/// Item A's mint check enforces the *per-driver* half (at most one
+/// `DeviceCap` parameter per binding). The *per-device* half — at most one
+/// driver binding any given device — was only claimed, in
+/// `layout::DeviceRegs`'s own comment ("`eval::image_checks` already
+/// refuses a second binding of the same device, so this is not a list").
+/// It was not enforced. Two `img.driver(..., device=blk)` declarations
+/// therefore built two `DeviceRegs` windows for `device#0` at two
+/// different bases, and boot handed each driver a different "authority
+/// over one device instance". That is a wrong answer about which bytes a
+/// device is, not a missing feature.
+///
+/// Fail-fast in construction order: the second binding that names an
+/// already-bound device is the one that reports, naming both drivers and
+/// the device.
+pub fn check_device_bound_once(graph: &ImageGraph) -> Result<(), SemaError> {
+    let mut first: BTreeMap<usize, usize> = BTreeMap::new();
+    for (i, d) in graph.drivers.iter().enumerate() {
+        let Some(Value::ImageDecl(ImageDeclRef::Device(idx))) = d
+            .args
+            .iter()
+            .find(|a| a.label == "device")
+            .map(|a| &a.value)
+        else {
+            continue;
+        };
+        if let Some(prior) = first.get(idx) {
+            return Err(build_error(format!(
+                "`driver#{i}` binds device#{idx}, but `driver#{prior}` already binds that same \
+                 device — 03-hardware.md §1: the device itself is named once at the image \
+                 binding, the single source of truth. A second binding would mint a second \
+                 `DeviceCap` over a second register window for one device"
+            )));
+        }
+        first.insert(*idx, i);
+    }
     Ok(())
 }
 
@@ -918,6 +968,48 @@ pub fn pool_backings(
              anyway).",
             devices.len()
         )));
+    }
+
+    // Sibling of the two-devices guard above. A DMA pool's `device=` names
+    // which device can reach its bytes, and the `BlkPool` mapping line
+    // still carries no device — so the VMM maps every one of them for its
+    // single device model. When this image *has* a driven device and a
+    // pool is bound to a different, driverless one, those bytes become
+    // reachable from the wrong model (item E1/E4 made the mapping real).
+    //
+    // An image with *no* driven device at all (e.g. `golden/boot-dma-pool`:
+    // pool backing under an actor conversation, deliberately no `@driver`)
+    // is a different shape: nothing configures a device model, so there
+    // is no "wrong" model to attach the window to. That case stays open.
+    let mut driven: BTreeSet<usize> = BTreeSet::new();
+    for d in &graph.drivers {
+        if let Some(Value::ImageDecl(ImageDeclRef::Device(i))) = d
+            .args
+            .iter()
+            .find(|a| a.label == "device")
+            .map(|a| &a.value)
+        {
+            driven.insert(*i);
+        }
+    }
+    if !driven.is_empty() {
+        for b in out.values() {
+            let Some(dev) = b.device else {
+                continue;
+            };
+            if !driven.contains(&dev) {
+                return Err(build_error(format!(
+                    "`img.dma_pool(name={}, device=device#{dev})` binds a device no `@driver` binds \
+                     — the report's `BlkPool name= base= size=` mapping line carries no device, and \
+                     the VMM maps every one of them for its single device model, so these bytes \
+                     would be reachable from whichever driven device the image configures \
+                     (03-hardware.md §3: all memory a device can reach originates from *its* bound \
+                     pools; plans/M7.md decision 5). Bind a `@driver` to device#{dev}, or bind this \
+                     pool to a device that already has one (real fix: plans/M8.md item H)",
+                    b.name
+                )));
+            }
+        }
     }
 
     let total: u64 = out.values().map(|b| b.bytes).fold(0, u64::saturating_add);
@@ -3257,6 +3349,35 @@ mod tests {
         let err = check_init_args(&g, &programs).expect_err("one device, one authority");
         assert!(
             err.message.contains("more than one `DeviceCap` parameter"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn one_device_is_bound_by_at_most_one_driver() {
+        // Post-closure M7 sweep port: the per-device half of §1's "named
+        // once". Two drivers on device#0 used to place two DeviceRegs
+        // windows at two bases.
+        let mut g = ImageGraph::default();
+        g.devices.push(crate::eval::image::DeviceDecl {
+            device_type: Type::Named("BlockHw".to_string(), vec![]),
+            args: vec![],
+        });
+        let wire = |ty: &str| crate::eval::image::DriverDecl {
+            actor_type: Type::Named(ty.to_string(), vec![]),
+            args: vec![decl_arg(
+                "device",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Device(0)),
+            )],
+        };
+        g.drivers.push(wire("A"));
+        g.drivers.push(wire("B"));
+        let err = check_device_bound_once(&g).expect_err("one device, one binding");
+        assert!(
+            err.message.contains("`driver#1` binds device#0")
+                && err.message.contains("`driver#0` already binds"),
             "{}",
             err.message
         );
