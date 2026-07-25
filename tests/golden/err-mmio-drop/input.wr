@@ -1,0 +1,37 @@
+module examples.err_mmio_drop
+
+# 02-language.md §3.1 / values.resource.protocol-consumption: an Mmio[L]
+# minted by map_partition and left live is a drop — illegal. The path
+# is named.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    claimed: DriverClaimedDevice[VirtioBlock]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        orphan = claimed.map_partition(VirtioIrqMmio)
+        self.claimed = take claimed
+        # `orphan` dropped here — must be error[move] naming the path.
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-mmio-drop", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(
+        children=[disk],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

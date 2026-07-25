@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_dma_shared.wr sha256=9d3217aa801485dba563581a6ecb08c4730b24d643212c0ca0da1250137b6a99
+  Input path=examples/check_dma_shared.wr sha256=2b1bdb4e7484b90a18a8f3f4d97146006c97e9086ebc7226a9f4b3d0b0e0c1f5
   Name value=dma-shared
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw

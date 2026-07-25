@@ -1242,17 +1242,28 @@ pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
 /// 02-language.md §3.1's second bullet: protocol resources whose only
 /// consumers are protocol operations — every control-flow path must
 /// explicitly consume, return, or transfer them (or cover with `defer`).
-/// plans/M7.md item E3 flips `values.resource.protocol-consumption` on
-/// this predicate for the queue/receipt surface.
+/// plans/M7.md item E3 flips `values.resource.protocol-consumption`.
 ///
-/// **Scoped to `QueuePermit` / `QueueOp` / `Receipt`.** Capabilities are
-/// named by the same §3.1 sentence, but every earlier M7 dump oracle that
-/// takes a `DeviceCap`/`IrqCap` parameter for typing alone (without a
-/// claim/consume path) would overturn if this predicate included them —
-/// decision 16 records that capability drop stays a named thin spot
-/// rather than a silent widen of every typed-only golden.
+/// **In:** `DeviceCap` / `Mmio` / `IrqCap` (capability types whose only
+/// consumers are protocol ops); every §9 bring-up state; `VirtQueue` /
+/// `QueuePermit` / `QueueOp` / `Receipt`.
+///
+/// **Out — and why that is not an exception:**
+/// - `DmaPool[P, N]`: §3.1's *first* bullet names "pool handles" as the
+///   compiler-known non-failing reclaim case. A `DmaPool` is that handle;
+///   putting it in bullet two would invent a consume-on-every-path
+///   obligation the first bullet already answers.
+/// - `DmaShared[P, L]`: permanently shared control memory (03 §3). Its
+///   field-wise ops do not consume the handle, and the language has no
+///   terminal sink for a bare `DmaShared` value (returning one is refused;
+///   `VirtQueue.configure` keeps the shared memory inside the queue).
+///   Forcing bullet two here would require a laundering holder or a
+///   vacuous drop. When a real sink exists, add the name.
 pub(crate) fn is_protocol_consuming_type_name(name: &str) -> bool {
-    matches!(name, "QueuePermit" | "QueueOp" | "Receipt")
+    matches!(
+        name,
+        "DeviceCap" | "Mmio" | "IrqCap" | "VirtQueue" | "QueuePermit" | "QueueOp" | "Receipt"
+    ) || is_protocol_state_type_name(name)
 }
 
 /// Structural form of `is_protocol_consuming_type_name` over a `Type`.

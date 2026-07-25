@@ -605,10 +605,11 @@ fn check_protocol_consumption(
         if !checked.insert(name.clone()) {
             continue;
         }
-        // Borrowed `mut` roots stay with the caller; their fields are not
-        // this function's to drop.
-        if wctx.modes.get(name) == Some(&AccessMode::Mut) {
-            continue;
+        // Borrowed roots (`read` / `mut`) stay with the caller — only an
+        // owned `take` parameter or an ordinary local can be dropped here.
+        match wctx.modes.get(name) {
+            Some(AccessMode::Read) | Some(AccessMode::Mut) => continue,
+            Some(AccessMode::Take) | None => {}
         }
         let Some(ty) = fctx.lookup_local(name) else {
             continue;
@@ -1009,6 +1010,23 @@ fn receiver_of<'e>(callee: &'e Expr, fctx: &FnCtx, wctx: &WCtx) -> Option<(&'e E
             let Type::Named(sname, _) = &base_ty else {
                 return None;
             };
+            // 03 §9 bring-up states are builtins with no DeclStruct. Their
+            // consuming transitions must still Take the receiver for
+            // protocol-consumption, or a `claimed` left after `negotiate`
+            // would falsely look live (and a partial bring-up that never
+            // stores the state would silently drop it).
+            if crate::eval::image_checks::is_protocol_state_type_name(sname) {
+                let mode = match name.as_str() {
+                    // Fallible / final transitions consume the input state
+                    // (03-hardware.md §9). `take_irq` is item G's — same
+                    // shape when it lands.
+                    "negotiate" | "start" | "take_irq" => AccessMode::Take,
+                    // Partition hand-out and capacity read keep the state.
+                    "map_partition" | "read_capacity_sectors" => AccessMode::Read,
+                    _ => AccessMode::Read,
+                };
+                return Some((base.as_ref(), mode));
+            }
             let s = wctx.mctx.structs.get(sname)?;
             let (mf, d) = s.method(name)?;
             let mode = access::resolve_receiver_mode(mf, d, sname, wctx.mctx, wctx.effects).ok()?;

@@ -1,0 +1,1 @@
+error[move]: `orphan` is a protocol resource (`Mmio[VirtioIrqMmio]`); every path must consume, return, or transfer it (02-language.md §3.1 / 03-hardware.md §5) — dropping one is illegal at 20:5

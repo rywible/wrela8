@@ -10,6 +10,7 @@ Module path=examples.check_device_claim
   Struct BlkDriver resource
     field irq_regs: Mmio[VirtioIrqMmio]
     field low_regs: Mmio[VirtioLowAckMmio]
+    field claimed: DriverClaimedDevice[VirtioBlock]
     field handled_bits: u32
     init(mut self, cap: take DeviceCap[VirtioBlock]) -> unit
     fn on_queue_irq(mut self) -> unit

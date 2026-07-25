@@ -14,6 +14,7 @@ Module path=examples.check_capabilities
     field irq_regs: Mmio[VirtioIrqMmio]
     field bundle: RegsBundle
   Struct BlkDriver resource
+    field held: DeviceCap[VirtioBlock]
     field sectors: u64
     init(mut self, cap: take DeviceCap[VirtioBlock], sectors: read u64) -> unit
     fn service(read self, vector: read IrqCap[u32], bundle: read RegsBundle) -> u64

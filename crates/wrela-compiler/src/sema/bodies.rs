@@ -2602,6 +2602,11 @@ fn type_args_eq(a: &types::TypeArg, b: &types::TypeArg) -> bool {
         (types::TypeArg::Type(x), types::TypeArg::Type(y)) => types_eq(x, y),
         (types::TypeArg::Const(x), types::TypeArg::Const(y)) => same_len_expr(x, y),
         (types::TypeArg::Bound(x), types::TypeArg::Bound(y)) => same_len_expr(x, y),
+        // plans/M7.md item D introduced `TypeArg::Pool`; equality was
+        // incomplete (Pool vs Pool fell to `false`), so `Option[DmaShared
+        // [P, L]] = None` rendered identical expected/found and still
+        // rejected. Protocol-consumption needs that assignment to work.
+        (types::TypeArg::Pool(x), types::TypeArg::Pool(y)) => x == y,
         _ => false,
     }
 }
@@ -8260,6 +8265,38 @@ mod tests {
         assert!(
             types_eq(&named_a, &named_b),
             "Ring[3] at two different spans must compare equal under types_eq"
+        );
+
+        // TypeArg::Pool (item D) must compare by name — without this,
+        // Option[DmaShared[P, L]] = None fails with identical renderings.
+        let shared_a = Type::Named(
+            "DmaShared".to_string(),
+            vec![
+                types::TypeArg::Pool("BlockControl".to_string()),
+                types::TypeArg::Type(Type::Named("RingControl".to_string(), vec![])),
+            ],
+        );
+        let shared_b = Type::Named(
+            "DmaShared".to_string(),
+            vec![
+                types::TypeArg::Pool("BlockControl".to_string()),
+                types::TypeArg::Type(Type::Named("RingControl".to_string(), vec![])),
+            ],
+        );
+        assert!(
+            types_eq(&shared_a, &shared_b),
+            "DmaShared[P, L] with equal Pool args must compare equal"
+        );
+        let shared_other = Type::Named(
+            "DmaShared".to_string(),
+            vec![
+                types::TypeArg::Pool("OtherPool".to_string()),
+                types::TypeArg::Type(Type::Named("RingControl".to_string(), vec![])),
+            ],
+        );
+        assert!(
+            !types_eq(&shared_a, &shared_other),
+            "DmaShared with distinct Pool args must not compare equal"
         );
     }
 

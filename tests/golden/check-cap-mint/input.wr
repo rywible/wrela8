@@ -31,9 +31,14 @@ struct BlockHw:
 
 @driver
 pub struct BlkDriver:
+    # Stored so the minted capability is not dropped (02-language.md §3.1
+    # protocol consumption). This golden pins minting/layout/report shape;
+    # claim/bring-up are check-device-claim / boot-device-bringup.
+    held: DeviceCap[BlockHw]
     sectors: u64
 
     init(mut self, take cap: DeviceCap[BlockHw], sectors: u64):
+        self.held = take cap
         self.sectors = sectors
 
     pub fn capacity(read self) -> u64:

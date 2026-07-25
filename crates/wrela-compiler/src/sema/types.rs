@@ -4906,9 +4906,11 @@ mod tests {
     fn an_mmio_parameter_delivering_a_field_is_not_a_second_mint() {
         check_ok(&format!(
             "{CAP_PRELUDE}@driver\npub struct D:\n\
+             \x20   held: DeviceCap[Blk]\n\
              \x20   regs: Mmio[Regs]\n\
              \x20   n: u32\n\n\
              \x20   init(mut self, take cap: DeviceCap[Blk], take regs: Mmio[Regs]):\n\
+             \x20       self.held = take cap\n\
              \x20       self.regs = take regs\n\
              \x20       self.n = 0\n"
         ));

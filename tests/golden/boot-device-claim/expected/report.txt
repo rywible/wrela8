@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_device_claim.wr sha256=df0cbc75850ceaa56b38d742ec09bb9037e9e90d8af8f74b93fcf0aa420bca2b
+  Input path=examples/boot_device_claim.wr sha256=d395c5ff2a3b8f4234d08ee8e00fc6237c1fe46507418ae67388603fe7698e55
   Name value=boot-device-claim
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -31,16 +31,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=4194304
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=3152
-  Section name=rodata base=0x40500ca0 size=759
-  Section name=abort base=0x40500f98 size=120
-  Section name=checkpoint base=0x40501010 size=104
-  Section name=rtcode base=0x40501078 size=1012
-  Section name=rtdata base=0x40501470 size=960
-  Section name=devregs base=0x40501830 size=272
+  Section name=code base=0x40500050 size=3176
+  Section name=rodata base=0x40500cb8 size=759
+  Section name=abort base=0x40500fb0 size=120
+  Section name=checkpoint base=0x40501028 size=104
+  Section name=rtcode base=0x40501090 size=1032
+  Section name=rtdata base=0x40501498 size=968
+  Section name=devregs base=0x40501860 size=272
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Turn fn=device_claimed_image frame=632
-  Driver name=BlkDriver state=24
-  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=960
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501830 size=272
+  Driver name=BlkDriver state=32
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=968
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501860 size=272
