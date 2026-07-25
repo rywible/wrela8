@@ -6921,12 +6921,28 @@ fn bench(args: &[String]) -> Result<(), String> {
 // paths) or "gap" (explicit, visible debt). This measures coverage of the
 // SPEC, not of the code.
 
-/// Does any `.rs` file under `crates/` contain `needle`? Backs the
-/// ledger's `unit:<fn name>` test references (plans/M9.md item AA): a
-/// clause may not name a unit test that does not exist. Walks the tree
-/// rather than shelling out, and fails closed — an unreadable tree
-/// yields no hits, which reports the clause as unbacked.
-fn crate_sources_contain(needle: &str) -> bool {
+/// Does any `.rs` file under `crates/` define `#[test] fn <name>(...)`?
+/// Backs the ledger's `unit:<fn name>` test references (plans/M9.md item
+/// AA): a clause may not name a unit test that does not exist.
+///
+/// **The `#[test]` attribute is required, not just the function**
+/// (plans/M9.md decision 59b). The first version of this checked only
+/// for `fn <name>(`, which meant `unit:main` — `fn main(` in this very
+/// file — satisfied a clause and counted it among the tested ones. A
+/// reference type satisfiable by a non-test lets a clause claim coverage
+/// it does not have, which is exactly what the sibling `golden/<name>`
+/// reference (a real directory under `tests/`) does not permit.
+///
+/// Deliberately not an attribute parser: it looks for a literal
+/// `#[test]` followed, past whitespace only, by `fn <name>(`. A test
+/// carrying a second attribute between the two (`#[should_panic]`) would
+/// be reported as missing — a false negative, which is the safe
+/// direction, and loud.
+///
+/// Walks the tree rather than shelling out, and fails closed — an
+/// unreadable tree yields no hits, which reports the clause as unbacked.
+fn crate_sources_have_test_fn(name: &str) -> bool {
+    let needle = format!("fn {name}(");
     fn walk(dir: &std::path::Path, needle: &str) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return false;
@@ -6941,14 +6957,17 @@ fn crate_sources_contain(needle: &str) -> bool {
                     return true;
                 }
             } else if path.extension().is_some_and(|e| e == "rs")
-                && std::fs::read_to_string(&path).is_ok_and(|s| s.contains(needle))
+                && std::fs::read_to_string(&path).is_ok_and(|s| {
+                    s.match_indices("#[test]")
+                        .any(|(i, m)| s[i + m.len()..].trim_start().starts_with(needle))
+                })
             {
                 return true;
             }
         }
         false
     }
-    walk(&root().join("crates"), needle)
+    walk(&root().join("crates"), &needle)
 }
 
 fn ledger() -> Result<(), String> {
@@ -7027,17 +7046,20 @@ fn ledger() -> Result<(), String> {
                     // locks compiler *source* against a written-down
                     // list, so it is a cargo unit test rather than a
                     // golden — there is no artifact to dump). Verified
-                    // mechanically the only way a name can be: the
-                    // function must exist under `crates/`. `cargo test`
-                    // is already the first step of `xtask check`, so a
+                    // mechanically the only way a name can be: a
+                    // `#[test]`-attributed function by that name must
+                    // exist under `crates/` (decision 59b — the
+                    // attribute is the whole point; without it any
+                    // function satisfied the reference). `cargo test` is
+                    // already the first step of `xtask check`, so a
                     // failing one cannot reach here.
                     if let Some(f) = t.strip_prefix("unit:") {
                         if f.is_empty() {
                             return Err(format!("clause `{id}`: empty unit test name"));
                         }
-                        if !crate_sources_contain(&format!("fn {f}(")) {
+                        if !crate_sources_have_test_fn(f) {
                             return Err(format!(
-                                "clause `{id}`: unit test `{f}` does not exist under crates/"
+                                "clause `{id}`: `{f}` is not a `#[test]` function under crates/"
                             ));
                         }
                         continue;
