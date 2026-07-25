@@ -5726,6 +5726,7 @@ pub fn is_queue_op_intrinsic(key: &str) -> bool {
             | "VirtQueue.suppress_interrupts"
             | "VirtQueue.claim"
             | "VirtQueue.recover"
+            | "VirtQueue.reclaim"
     )
 }
 
@@ -5760,6 +5761,7 @@ fn check_virtqueue_method(
         }
         "claim" => check_virtqueue_claim(queue, args, fspan, call_span, fctx, mctx),
         "recover" => check_virtqueue_recover(queue, args, fspan, call_span, fctx, mctx),
+        "reclaim" => check_virtqueue_reclaim(queue, args, fspan, call_span, fctx, mctx),
         "poll_sources" | "completions_pending" => Err(unimplemented_at(
             &format!("`VirtQueue.{name}(...)` — plans/M7.md item G (`{name}`) is"),
             call_span,
@@ -5768,7 +5770,7 @@ fn check_virtqueue_method(
             format!(
                 "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4/§5/§9 give \
                  `reserve_proven`, `prepare_block`, `publish`, `reject`, `drain`, \
-                 `suppress_interrupts`, `claim`, and `recover`"
+                 `suppress_interrupts`, `claim`, `recover`, and `reclaim`"
             ),
             fspan,
         )),
@@ -6583,6 +6585,137 @@ fn check_virtqueue_recover(
             args: vec![("receipt".to_string(), receipt)],
         },
     })
+}
+
+/// `queue.reclaim(pool=P, payload=T) -> own[P] T` — plans/M8.md item F /
+/// **decision 37**: 03-hardware.md §9's "affected regions and DMA slots
+/// are quarantined, per-queue reset ... or full reset establishes
+/// quiescence, and **only then is memory reclaimed**".
+///
+/// **Why two declaring arguments and no receipt.** `recover` already
+/// consumed the receipt (§5: a receipt resolves exactly once, and dropping
+/// one is illegal in every state), and with it the only value that carried
+/// the payload's brand — so the handle's type has to be *declared* here,
+/// exactly as `img.dma_pool[T](name=P, ...)` declares the same pair when
+/// the pool is created. Both arguments are bare names with no value form:
+/// `pool=` is a bound pool name (02-language.md §4) and `payload=` names
+/// the `@layout(dma)` struct the slot holds. They are resolved through the
+/// ordinary `own[P] T` resolver, so an undeclared pool and a non-`dma`
+/// payload are the same two diagnostics they are in any annotation.
+///
+/// **What the declaration cannot lie about.** The address handed back is
+/// the quarantined slot's own payload word, so the *bytes* are the
+/// abandoned buffer's whatever is written here; the declaration decides
+/// only which pool the language believes the handle belongs to. Checking
+/// that against the queue's own device is a build-time rule this item
+/// deliberately did not add — see the ledger note's thin list, and item
+/// P's decision 27 for the identical, already-recorded trade.
+fn check_virtqueue_reclaim(
+    queue: TypedExpr,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let _ = fspan;
+    let (pool, payload) = reclaim_declaration(args, call_span)?;
+    let ast_ty = ast::Type::Own(Box::new(ast::OwnType {
+        span: call_span,
+        pool: vec![pool.1.clone()],
+        inner: ast::Type::Named(NamedType {
+            span: payload.0,
+            name: payload.1.clone(),
+            args: vec![],
+        }),
+    }));
+    let ty = mctx.resolve_type(&ast_ty, &fctx.local_pools)?;
+    match mctx.layouts.get(payload.1.as_str()) {
+        Some(l) if l.kind == types::LayoutKind::Dma => {}
+        _ => {
+            return Err(type_error(
+                format!(
+                    "`reclaim`'s `payload=` must be a `@layout(dma)` struct; `{}` is not \
+                     (03-hardware.md §3: a transfer payload is `own[P] T` where `T` is \
+                     `@layout(dma)`)",
+                    payload.1
+                ),
+                payload.0,
+            ));
+        }
+    }
+    Ok(TypedExpr {
+        ty,
+        kind: TypedExprKind::Intrinsic {
+            key: "VirtQueue.reclaim".to_string(),
+            receiver: Some(Box::new(queue)),
+            type_arg: None,
+            args: Vec::new(),
+        },
+    })
+}
+
+/// The `pool=P, payload=T` pair `reclaim` declares, as two bare names.
+/// Shared by `bodies` (which resolves them) and `access` (which only needs
+/// the shape to keep a move tracked), so the two passes cannot disagree
+/// about what a well-formed `reclaim` looks like.
+pub(crate) fn reclaim_declaration(
+    args: &[Arg],
+    call_span: Span,
+) -> Result<((Span, String), (Span, String)), SemaError> {
+    let mut pool: Option<(Span, String)> = None;
+    let mut payload: Option<(Span, String)> = None;
+    for a in args {
+        let slot = match a.label.as_deref() {
+            Some("pool") => &mut pool,
+            Some("payload") => &mut payload,
+            _ => {
+                return Err(type_error(
+                    "`VirtQueue.reclaim(pool=..., payload=...)` takes exactly those two \
+                     labelled arguments (03-hardware.md §9)"
+                        .to_string(),
+                    a.span,
+                ));
+            }
+        };
+        if slot.is_some() {
+            return Err(type_error(
+                format!(
+                    "duplicate `{}=` argument",
+                    a.label.as_deref().unwrap_or("?")
+                ),
+                a.span,
+            ));
+        }
+        if a.mode != AccessMode::Read {
+            return Err(type_error(
+                "`reclaim`'s `pool=`/`payload=` are declarations, not values: they take no \
+                 access mode"
+                    .to_string(),
+                a.span,
+            ));
+        }
+        match &a.value {
+            Expr::Name(span, name) => *slot = Some((*span, name.clone())),
+            other => {
+                return Err(type_error(
+                    "`reclaim`'s `pool=`/`payload=` are bare names — a declared pool and a \
+                     `@layout(dma)` struct"
+                        .to_string(),
+                    other.span(),
+                ));
+            }
+        }
+    }
+    match (pool, payload) {
+        (Some(p), Some(t)) => Ok((p, t)),
+        _ => Err(type_error(
+            "`VirtQueue.reclaim(pool=..., payload=...)` needs both: the pool the quarantined \
+             slot belongs to and the `@layout(dma)` payload it holds (03-hardware.md §9)"
+                .to_string(),
+            call_span,
+        )),
+    }
 }
 
 /// `queue.suppress_interrupts()` — set `VIRTQ_AVAIL_F_NO_INTERRUPT` (poll builds).

@@ -173,7 +173,8 @@ pub const REQ_STATUS_SIZE: u64 = 1;
 /// header slot, one status byte.
 ///
 /// ```text
-///   [ring … | last_used 8 | current_epoch 8 | meta 64 | header 16 | status 8-pad]
+///   [ring … | last_used 8 | current_epoch 8 | quiesced 8 | quarantine_stamp 8
+///          | meta 64 | header 16 | status 8-pad]
 /// ```
 ///
 /// Decision 22: `QueueOp` / `Receipt` is the absolute address of the meta
@@ -185,7 +186,20 @@ pub const REQ_STATUS_SIZE: u64 = 1;
 /// mismatch as `CompletionFault::StaleId`.
 pub const SLOT_BOOK_LAST_USED: u64 = 0;
 pub const SLOT_BOOK_EPOCH: u64 = 8;
-pub const SLOT_BOOK_BYTES: u64 = 16;
+/// plans/M8.md item F / **decision 36**: the queue's **host-written**
+/// quiesce count. Nothing in the guest ever stores here — the VMM
+/// increments it, in place, when `RunningDevice.reset`'s trapping store to
+/// `mmio::QUIESCE_MMIO_ADDR` has actually stopped the device model using
+/// the ring. It is the one word on this machine that says "the device
+/// cannot write your buffers any more", and it is the whole gate on
+/// reclaim (03-hardware.md §9: "only then is memory reclaimed").
+pub const SLOT_BOOK_QUIESCED: u64 = 16;
+/// plans/M8.md item F / **decision 37**: the value `SLOT_BOOK_QUIESCED`
+/// held when `recover` quarantined the slot. `reclaim` refuses while the
+/// two are equal — no quiescence has happened since the quarantine — which
+/// is 03-hardware.md §9's "no reclaim precedes quiescence" as one compare.
+pub const SLOT_BOOK_QUARANTINE_STAMP: u64 = 24;
+pub const SLOT_BOOK_BYTES: u64 = 32;
 pub const SLOT_META_BYTES: u64 = 64;
 pub const SLOT_META_PAYLOAD: u64 = 0;
 pub const SLOT_META_HEADER: u64 = 8;
@@ -206,6 +220,12 @@ pub const SLOT_FLAG_INFLIGHT: u64 = 2;
 /// `flags` bit 2: drain (or reject) wrote an `IoCompletion` into the
 /// completion stash; `await receipt` may take it without parking.
 pub const SLOT_FLAG_RESOLVED: u64 = 4;
+/// `flags` bit 3: `recover` retired this slot and **quarantined** its
+/// payload (03-hardware.md §9: "affected regions and DMA slots are
+/// quarantined"). The payload word in the meta is still the abandoned
+/// buffer's address; nothing may hand it back until a quiescence event
+/// separates the quarantine from the reclaim. `reclaim` clears it.
+pub const SLOT_FLAG_QUARANTINED: u64 = 8;
 
 /// Stash for a resolved `IoCompletion[P]` (payload + status + written_len
 /// = 32 bytes under the frame ABI). Sits after the status pad so drain can
@@ -416,6 +436,57 @@ pub fn recover_outcome(
     RecoverOutcome::NotRecoverable
 }
 
+/// What `VirtQueue.reclaim` is allowed to do with the quarantined slot
+/// (plans/M8.md item F / decision 37). `codegen::emit_queue_reclaim`
+/// emits this ladder, compare for compare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReclaimGate {
+    /// Quiescence has been established since the quarantine: hand the
+    /// payload handle back.
+    Reclaim,
+    /// Nothing is quarantined on this queue — `recover` never ran, or a
+    /// previous `reclaim` already took the payload.
+    NotQuarantined,
+    /// 03-hardware.md §9's rule, refused: the device has not been
+    /// quiesced since this slot was quarantined, so it may still write
+    /// the buffer.
+    NotQuiesced,
+}
+
+impl ReclaimGate {
+    pub fn abort_message(self) -> &'static str {
+        match self {
+            // Never aborts; present so the ladder has one message table.
+            ReclaimGate::Reclaim => "",
+            ReclaimGate::NotQuarantined => {
+                "driver fault: reclaim of a slot that is not quarantined (03-hardware.md §9)"
+            }
+            ReclaimGate::NotQuiesced => {
+                "driver fault: reclaim before quiescence (03-hardware.md §9: no reclaim \
+                 precedes quiescence)"
+            }
+        }
+    }
+}
+
+/// The whole of `VirtQueue.reclaim`'s gate, as one pure function.
+///
+/// `quiesced` is the **host-written** quiesce count for this queue
+/// (`SLOT_BOOK_QUIESCED`; only `mmio::QUIESCE_MMIO_ADDR`'s handler in the
+/// VMM ever increments it) and `stamp` is the value `recover` copied into
+/// `SLOT_BOOK_QUARANTINE_STAMP` at quarantine time. They are equal exactly
+/// when no device quiescence has happened in between — which is the case
+/// 03-hardware.md §9 forbids reclaiming in.
+pub fn reclaim_gate(flags: u64, quiesced: u64, stamp: u64) -> ReclaimGate {
+    if flags & SLOT_FLAG_QUARANTINED == 0 {
+        return ReclaimGate::NotQuarantined;
+    }
+    if quiesced == stamp {
+        return ReclaimGate::NotQuiesced;
+    }
+    ReclaimGate::Reclaim
+}
+
 /// Control-pool bytes a `depth`-deep queue needs: ring + packaging.
 pub fn control_bytes_needed(depth: u16) -> Option<u64> {
     let placed = place_ring(0, depth)?;
@@ -567,6 +638,47 @@ mod tests {
             RecoverOutcome::NotRecoverable
         );
         assert_eq!(RecoverOutcome::NotRecoverable.tag(), None);
+    }
+
+    #[test]
+    fn reclaim_is_refused_until_a_quiescence_separates_it_from_the_quarantine() {
+        // 03-hardware.md §9: "only then is memory reclaimed".
+        assert_eq!(
+            reclaim_gate(SLOT_FLAG_QUARANTINED, 0, 0),
+            ReclaimGate::NotQuiesced,
+            "recover stamped the live count; nothing has quiesced since"
+        );
+        assert_eq!(
+            reclaim_gate(SLOT_FLAG_QUARANTINED, 1, 0),
+            ReclaimGate::Reclaim
+        );
+        // A slot nothing quarantined is never reclaimable, whatever the
+        // counts say — a second `reclaim` clears the flag and lands here.
+        assert_eq!(reclaim_gate(0, 9, 0), ReclaimGate::NotQuarantined);
+        assert_eq!(
+            reclaim_gate(SLOT_FLAG_RESOLVED, 9, 0),
+            ReclaimGate::NotQuarantined
+        );
+        // Each refusal is its own diagnosable name.
+        assert_ne!(
+            ReclaimGate::NotQuarantined.abort_message(),
+            ReclaimGate::NotQuiesced.abort_message()
+        );
+    }
+
+    #[test]
+    fn the_book_words_do_not_overlap_and_fit_the_book() {
+        let mut offs = [
+            SLOT_BOOK_LAST_USED,
+            SLOT_BOOK_EPOCH,
+            SLOT_BOOK_QUIESCED,
+            SLOT_BOOK_QUARANTINE_STAMP,
+        ];
+        offs.sort_unstable();
+        for w in offs.windows(2) {
+            assert_eq!(w[1] - w[0], 8, "book words are one u64 apart: {offs:?}");
+        }
+        assert_eq!(offs[offs.len() - 1] + 8, SLOT_BOOK_BYTES);
     }
 
     #[test]
