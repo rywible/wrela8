@@ -3967,37 +3967,65 @@ impl BootInitArg {
 /// `Inst::ConstChar`'s code point, and `unit` is all-zero (the same fact
 /// `build_boot_init`'s own zero-fill already rests on).
 ///
-/// Shared handle-word space for `@actor` and `@driver` identities
-/// (plans/M8.md item H attack 6). Actors occupy `0..n_actors`; drivers
-/// occupy `n_actors..n_actors+n_drivers`. That is the same actors-then-
-/// drivers order `mailbox_root_names` uses, so a messageable driver's
-/// handle word is also its mailbox-root index when every earlier driver
-/// is messageable too — and, crucially, `actor#i` and `driver#j` never
-/// share a word. Item D's decision 22 recorded the per-kind collision as
-/// "harmless only while nothing reads a handle word"; the guest *does*
-/// store and compare these words (the `u32` `decl.handle()` spelling
-/// `boot-init-args` already pins), so the spaces are one.
-fn actor_driver_handle_word(n_actors: usize, is_driver: bool, index: usize) -> u64 {
-    if is_driver {
-        (n_actors + index) as u64
-    } else {
-        index as u64
+/// Counts that define the shared image-declaration handle space
+/// (plans/M8.md item H attack 6). Derived once from the sealed graph so
+/// every consumer (`boot_init_arg_word`, `resolve_runtime_test_args`)
+/// sees the same shift.
+#[derive(Clone, Copy, Debug, Default)]
+struct HandleSpace {
+    n_actors: usize,
+    n_drivers: usize,
+}
+
+impl HandleSpace {
+    fn from_graph(graph: &ImageGraph) -> Self {
+        Self {
+            n_actors: graph.actors.len(),
+            n_drivers: graph.drivers.len(),
+        }
     }
 }
 
-/// A declaration handle (`Value::ImageDecl`) becomes its own
-/// construction-order index — actors and drivers share one space
-/// (`actor_driver_handle_word`); a device stays kind-local (it is never
-/// an `Actor[T]`). The identical number `resolve_runtime_test_args` hands
-/// a `@test(runtime)` root for an `Actor[T]` parameter. **What that
-/// number is and is not**: `codegen` still routes every `await`/`send`
-/// statically by actor type today, but the guest can store and compare
-/// the word (and the day handles become dynamic this is the one place
-/// that has to change). A pool reference is named by a string, not an
-/// index (`ImageDeclRef`'s own two recording disciplines), so it has no
-/// word at all and fails closed.
-fn boot_init_arg_word(value: &crate::eval::value::Value, n_actors: usize) -> Option<u64> {
+/// **Contract: no two distinct image declarations share a handle word,
+/// whatever their kind.** Every `ImageDeclRef` variant is named here so a
+/// fourth kind cannot quietly reuse a number — it either gets a fresh
+/// range or fails closed like a pool.
+///
+/// Layout (dumb, deterministic, actors-then-drivers-then-devices):
+/// - `Actor(i)`  → `i`
+/// - `Driver(i)` → `n_actors + i`
+/// - `Device(i)` → `n_actors + n_drivers + i`
+/// - `Pool` / `DmaPool` → no word (`None`); they are named by string, not
+///   indexed (`ImageDeclRef`'s own two recording disciplines).
+///
+/// Why one space for all three indexed kinds: `decl.handle()` erases the
+/// declaration's type into a bare `u32` (`check_image_decl_method_intrinsic`
+/// accepts it on any `ImageDecl`), so a kind-local scheme for devices is
+/// the same shape of hole item D decision 22 left for actors/drivers —
+/// found by orchestrator spot-probe after the first attack-6 fix covered
+/// only two of the three kinds.
+fn image_decl_handle_word(
+    space: HandleSpace,
+    decl: &crate::eval::image::ImageDeclRef,
+) -> Option<u64> {
     use crate::eval::image::ImageDeclRef;
+    match decl {
+        ImageDeclRef::Actor(i) => Some(*i as u64),
+        ImageDeclRef::Driver(i) => Some((space.n_actors + *i) as u64),
+        ImageDeclRef::Device(i) => Some((space.n_actors + space.n_drivers + *i) as u64),
+        ImageDeclRef::Pool(_) | ImageDeclRef::DmaPool(_) => None,
+    }
+}
+
+/// A declaration handle (`Value::ImageDecl`) becomes its word in the
+/// shared space (`image_decl_handle_word`) — the identical number
+/// `resolve_runtime_test_args` hands a `@test(runtime)` root for an
+/// `Actor[T]` parameter. **What that number is and is not**: `codegen`
+/// still routes every `await`/`send` statically by actor type today, but
+/// the guest can store and compare the word (and the day handles become
+/// dynamic this is the one place that has to change). A pool reference
+/// is named by a string, not an index, so it has no word and fails closed.
+fn boot_init_arg_word(value: &crate::eval::value::Value, space: HandleSpace) -> Option<u64> {
     use crate::eval::value::Value;
 
     Some(match value {
@@ -4012,15 +4040,12 @@ fn boot_init_arg_word(value: &crate::eval::value::Value, n_actors: usize) -> Opt
         Value::Bool(b) => u64::from(*b),
         Value::Char(c) => *c as u32 as u64,
         Value::Unit => 0,
-        Value::ImageDecl(ImageDeclRef::Device(i)) => *i as u64,
-        Value::ImageDecl(ImageDeclRef::Actor(i)) => actor_driver_handle_word(n_actors, false, *i),
-        Value::ImageDecl(ImageDeclRef::Driver(i)) => actor_driver_handle_word(n_actors, true, *i),
+        Value::ImageDecl(decl) => return image_decl_handle_word(space, decl),
         // Every remaining shape is either an aggregate (no register
         // representation: `Struct`/`Tuple`/`Array`/`Enum`/`Str`/`Bytes`),
         // a float (`codegen` has no FP/SIMD encoder subset at all —
-        // `Inst::ConstFloat` fails closed for the identical reason), a
-        // callable (`Fn`/`Closure` — not a value this machine passes), or
-        // a pool handle, which is named rather than indexed.
+        // `Inst::ConstFloat` fails closed for the identical reason), or a
+        // callable (`Fn`/`Closure` — not a value this machine passes).
         Value::F32(_)
         | Value::F64(_)
         | Value::Str(_)
@@ -4030,9 +4055,7 @@ fn boot_init_arg_word(value: &crate::eval::value::Value, n_actors: usize) -> Opt
         | Value::Struct(_)
         | Value::Enum(_, _)
         | Value::Fn(_)
-        | Value::Closure { .. }
-        | Value::ImageDecl(ImageDeclRef::Pool(_))
-        | Value::ImageDecl(ImageDeclRef::DmaPool(_)) => return None,
+        | Value::Closure { .. } => return None,
     })
 }
 
@@ -4110,17 +4133,32 @@ fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
 ///    one rule: *a field-wired argument must equal the zero the state-fill
 ///    leaves*. A value with no register representation at all is rejected
 ///    too, since this compiler cannot show it is zero either.
+/// Image-wiring labels that are never field/init arguments — the same
+/// sets `eval::image_checks::reserved_args` uses, restated here by `kind`
+/// because that helper is not `pub` and `is_reserved_actor_arg` only
+/// covers the actor half. Sharing the actor predicate for drivers would
+/// let `device=` fall through as a field wire (and, once device handles
+/// left word 0, fail closed against zero-fill — the exact break
+/// `check-driver-mode-irq`/`-poll` hit under attack 6's device half).
+fn is_reserved_wiring_arg(kind: &str, label: &str) -> bool {
+    match kind {
+        "driver" => matches!(label, "device" | "core" | "mailbox"),
+        "actor" => crate::eval::image_checks::is_reserved_actor_arg(label),
+        _ => false,
+    }
+}
+
 fn check_field_wired_args(
     kind: &str,
     name: &str,
     decl_args: &[crate::eval::image::DeclArg],
-    n_actors: usize,
+    space: HandleSpace,
 ) -> Result<(), LayoutError> {
     for a in decl_args {
-        if crate::eval::image_checks::is_reserved_actor_arg(&a.label) {
+        if is_reserved_wiring_arg(kind, &a.label) {
             continue;
         }
-        let word = boot_init_arg_word(&a.value, n_actors);
+        let word = boot_init_arg_word(&a.value, space);
         if word == Some(0) {
             continue;
         }
@@ -4265,9 +4303,9 @@ fn one_boot_init_call(
     use crate::sema::types::{Type, render_type};
 
     let name = render_type(decl_type);
-    let n_actors = graph.actors.len();
+    let space = HandleSpace::from_graph(graph);
     let Some(init) = inits.get(&name) else {
-        check_field_wired_args(kind, &name, decl_args, n_actors)?;
+        check_field_wired_args(kind, &name, decl_args, space)?;
         return Ok(None);
     };
     if init.ret != Type::Unit {
@@ -4512,7 +4550,7 @@ fn one_boot_init_call(
                 render_type(&p.ty),
             )));
         }
-        let Some(word) = boot_init_arg_word(&a.value, n_actors) else {
+        let Some(word) = boot_init_arg_word(&a.value, space) else {
             return Err(LayoutError::new(format!(
                 "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}`, but the \
                  value is {} — boot passes arguments in registers (`x1..`), and this \
@@ -7004,7 +7042,7 @@ pub fn resolve_runtime_test_args(
                 ));
             };
             let target_name = crate::sema::types::render_type(inner);
-            let n_actors = graph.actors.len();
+            let space = HandleSpace::from_graph(graph);
             let mut candidates: Vec<String> = Vec::new();
             let mut actor_index: Option<usize> = None;
             for (i, a) in graph.actors.iter().enumerate() {
@@ -7019,8 +7057,7 @@ pub fn resolve_runtime_test_args(
             // candidate — that is how the count check above stays honest —
             // but produces the named floor below rather than an index.
             // plans/M8.md item H attack 6: the handle word shares one index
-            // space with actors (`actor_driver_handle_word`), so a messageable
-            // `driver#0` is never the same word as `actor#0`.
+            // space with every other `ImageDecl` (`image_decl_handle_word`).
             let mut driver_index: Option<usize> = None;
             for (i, d) in graph.drivers.iter().enumerate() {
                 if crate::sema::types::render_type(&d.actor_type) == target_name {
@@ -7044,8 +7081,14 @@ pub fn resolve_runtime_test_args(
                 ));
             }
             let Some(idx) = actor_index
-                .map(|i| actor_driver_handle_word(n_actors, false, i))
-                .or_else(|| driver_index.map(|i| actor_driver_handle_word(n_actors, true, i)))
+                .and_then(|i| {
+                    image_decl_handle_word(space, &crate::eval::image::ImageDeclRef::Actor(i))
+                })
+                .or_else(|| {
+                    driver_index.and_then(|i| {
+                        image_decl_handle_word(space, &crate::eval::image::ImageDeclRef::Driver(i))
+                    })
+                })
             else {
                 return Err(format!(
                     "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` resolves \
@@ -9722,38 +9765,43 @@ pub struct Store:
         // i64)`), restated as an assertion rather than as a comment: a
         // negative argument must arrive sign-extended, or an `i32 -3`
         // becomes 4294967293 in the callee's 8-byte slot.
-        assert_eq!(boot_init_arg_word(&Value::U8(200), 0), Some(200));
-        assert_eq!(boot_init_arg_word(&Value::U16(40000), 0), Some(40000));
-        assert_eq!(boot_init_arg_word(&Value::U64(u64::MAX), 0), Some(u64::MAX));
+        let z = HandleSpace::default();
+        assert_eq!(boot_init_arg_word(&Value::U8(200), z), Some(200));
+        assert_eq!(boot_init_arg_word(&Value::U16(40000), z), Some(40000));
+        assert_eq!(boot_init_arg_word(&Value::U64(u64::MAX), z), Some(u64::MAX));
         assert_eq!(
-            boot_init_arg_word(&Value::I32(-3), 0),
+            boot_init_arg_word(&Value::I32(-3), z),
             Some(0xFFFF_FFFF_FFFF_FFFD)
         );
-        assert_eq!(boot_init_arg_word(&Value::I64(-1), 0), Some(u64::MAX));
-        assert_eq!(boot_init_arg_word(&Value::Bool(true), 0), Some(1));
-        assert_eq!(boot_init_arg_word(&Value::Bool(false), 0), Some(0));
-        assert_eq!(boot_init_arg_word(&Value::Char('A'), 0), Some(65));
-        assert_eq!(boot_init_arg_word(&Value::Unit, 0), Some(0));
+        assert_eq!(boot_init_arg_word(&Value::I64(-1), z), Some(u64::MAX));
+        assert_eq!(boot_init_arg_word(&Value::Bool(true), z), Some(1));
+        assert_eq!(boot_init_arg_word(&Value::Bool(false), z), Some(0));
+        assert_eq!(boot_init_arg_word(&Value::Char('A'), z), Some(65));
+        assert_eq!(boot_init_arg_word(&Value::Unit, z), Some(0));
     }
 
     #[test]
     fn a_handle_init_argument_is_its_own_construction_order_index() {
         use crate::eval::image::ImageDeclRef;
         use crate::eval::value::Value;
-        // Actors keep their construction-order index; drivers sit after
-        // every actor (plans/M8.md item H attack 6). `n_actors` is the
-        // shift — with three actors, `driver#1` is word 4, never 1.
+        // Shared space: actors, then drivers, then devices (plans/M8.md
+        // item H attack 6). With three actors and two drivers, `driver#1`
+        // is word 4 and `device#0` is word 5 — never a kind-local 0/1.
+        let space = HandleSpace {
+            n_actors: 3,
+            n_drivers: 2,
+        };
         assert_eq!(
-            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Actor(2)), 3),
+            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Actor(2)), space),
             Some(2)
         );
         assert_eq!(
-            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Driver(1)), 3),
+            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Driver(1)), space),
             Some(4)
         );
         assert_eq!(
-            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Device(0)), 3),
-            Some(0)
+            boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Device(0)), space),
+            Some(5)
         );
         // A pool is named, never indexed (`ImageDeclRef`'s own two
         // recording disciplines) — there is no word for it, so it fails
@@ -9761,7 +9809,7 @@ pub struct Store:
         assert_eq!(
             boot_init_arg_word(
                 &Value::ImageDecl(ImageDeclRef::Pool("Buffers".to_string())),
-                0
+                HandleSpace::default()
             ),
             None
         );
@@ -9774,17 +9822,76 @@ pub struct Store:
         // plans/M8.md item H attack 6: before the shared space, actor#0
         // and driver#0 both materialised as word 0 — observable through
         // the `u32` `decl.handle()` spelling (`boot-handle-index-distinct`
-        // is the HVF witness). One-line revert of
-        // `actor_driver_handle_word`'s driver arm breaks this.
-        let n_actors = 1usize;
-        let actor0 = boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Actor(0)), n_actors);
-        let driver0 = boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Driver(0)), n_actors);
+        // is the HVF witness).
+        let space = HandleSpace {
+            n_actors: 1,
+            n_drivers: 1,
+        };
+        let actor0 = boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Actor(0)), space);
+        let driver0 = boot_init_arg_word(&Value::ImageDecl(ImageDeclRef::Driver(0)), space);
         assert_eq!(actor0, Some(0));
         assert_eq!(driver0, Some(1));
         assert_ne!(actor0, driver0);
-        assert_eq!(actor_driver_handle_word(2, false, 0), 0);
-        assert_eq!(actor_driver_handle_word(2, false, 1), 1);
-        assert_eq!(actor_driver_handle_word(2, true, 0), 2);
+    }
+
+    #[test]
+    fn image_decl_handle_words_are_duplicate_free() {
+        use crate::eval::image::ImageDeclRef;
+        use std::collections::BTreeSet;
+        // Property over a mixed image: every indexed `ImageDeclRef` gets
+        // a distinct word. A fourth kind that quietly reused a number
+        // would shrink the set relative to the declaration count.
+        let space = HandleSpace {
+            n_actors: 2,
+            n_drivers: 1,
+        };
+        let decls = [
+            ImageDeclRef::Actor(0),
+            ImageDeclRef::Actor(1),
+            ImageDeclRef::Driver(0),
+            ImageDeclRef::Device(0),
+            ImageDeclRef::Device(1),
+        ];
+        let mut words = BTreeSet::new();
+        for d in &decls {
+            let w = image_decl_handle_word(space, d)
+                .unwrap_or_else(|| panic!("indexed kind {d:?} must have a handle word"));
+            assert!(
+                words.insert(w),
+                "duplicate handle word {w} for {d:?} — image_decl_handle_word's \
+                 contract is that no two distinct declarations share a word"
+            );
+        }
+        assert_eq!(words.len(), decls.len());
+        assert_eq!(
+            image_decl_handle_word(space, &ImageDeclRef::Pool("Buffers".into())),
+            None
+        );
+        assert_eq!(
+            image_decl_handle_word(space, &ImageDeclRef::DmaPool("Payloads".into())),
+            None
+        );
+        // Concrete layout for this space: actors 0..2, driver 2, devices 3..
+        assert_eq!(
+            image_decl_handle_word(space, &ImageDeclRef::Actor(0)),
+            Some(0)
+        );
+        assert_eq!(
+            image_decl_handle_word(space, &ImageDeclRef::Actor(1)),
+            Some(1)
+        );
+        assert_eq!(
+            image_decl_handle_word(space, &ImageDeclRef::Driver(0)),
+            Some(2)
+        );
+        assert_eq!(
+            image_decl_handle_word(space, &ImageDeclRef::Device(0)),
+            Some(3)
+        );
+        assert_eq!(
+            image_decl_handle_word(space, &ImageDeclRef::Device(1)),
+            Some(4)
+        );
     }
 
     #[test]
@@ -9853,21 +9960,22 @@ async fn asks_driver(d: Actor[BlkDriver]):
     #[test]
     fn an_aggregate_or_float_init_argument_has_no_word_at_all() {
         use crate::eval::value::Value;
-        assert_eq!(boot_init_arg_word(&Value::F64(1.0), 0), None);
-        assert_eq!(boot_init_arg_word(&Value::Str(b"hi".to_vec()), 0), None);
+        let z = HandleSpace::default();
+        assert_eq!(boot_init_arg_word(&Value::F64(1.0), z), None);
+        assert_eq!(boot_init_arg_word(&Value::Str(b"hi".to_vec()), z), None);
         assert_eq!(
-            boot_init_arg_word(&Value::Tuple(vec![Value::U8(1)]), 0),
+            boot_init_arg_word(&Value::Tuple(vec![Value::U8(1)]), z),
             None
         );
         assert_eq!(
-            boot_init_arg_word(&Value::Array(vec![Value::U8(1)]), 0),
+            boot_init_arg_word(&Value::Array(vec![Value::U8(1)]), z),
             None
         );
         assert_eq!(
-            boot_init_arg_word(&Value::Struct(vec![Value::U8(1)]), 0),
+            boot_init_arg_word(&Value::Struct(vec![Value::U8(1)]), z),
             None
         );
-        assert_eq!(boot_init_arg_word(&Value::Enum(0, vec![]), 0), None);
+        assert_eq!(boot_init_arg_word(&Value::Enum(0, vec![]), z), None);
     }
 
     #[test]
