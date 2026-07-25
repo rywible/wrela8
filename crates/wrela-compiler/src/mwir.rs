@@ -953,6 +953,18 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             Ok(SLOT * usize::try_from(n).map_err(|_| "Bytes length out of range".to_string())?)
         }
         Type::Bytes(None) => Err("bare (unbounded) `Bytes` has no static size".to_string()),
+        // plans/M9.md item C1: `String[..N]` is one length word plus `N`
+        // byte slots (each a SLOT, matching `Bytes[N]`'s slot-per-byte
+        // convention). Rejected alternative: dense `align8(8+N)` packing
+        // — smaller, but a second layout rule beside every other
+        // aggregate's slot-stride Project/IndexGet path.
+        Type::String(len_expr) => {
+            let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
+                "String capacity is not a literal (unsupported by the layout fn)".to_string()
+            })?;
+            let n = usize::try_from(n).map_err(|_| "String capacity out of range".to_string())?;
+            Ok(SLOT * (1 + n))
+        }
         Type::Fn(_, _) => Err("sizing a `fn` value type is not implemented yet".to_string()),
         Type::Generic(_) => {
             Err("sizing a bare generic parameter is not implemented yet".to_string())
@@ -1138,6 +1150,17 @@ mod layout_tests {
             )),
         );
         assert_eq!(size_of(&arr, &ctx), Ok(8 * 5));
+    }
+
+    /// plans/M9.md item C1: `String[..N]` is one length word + `N` byte slots.
+    #[test]
+    fn string_bound_size_is_length_word_plus_n_byte_slots() {
+        let ctx = LayoutCtx::default();
+        let s = Type::String(Box::new(crate::syntax::ast::Expr::Int(
+            crate::syntax::ast::Span::default(),
+            "8".to_string(),
+        )));
+        assert_eq!(size_of(&s, &ctx), Ok(8 * (1 + 8)));
     }
 
     #[test]

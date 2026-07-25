@@ -1468,6 +1468,7 @@ fn rekey_type(ty: &mut Type, subs: &BTreeMap<String, String>) {
             }
         }
         Type::Bytes(_)
+        | Type::String(_)
         | Type::Bool
         | Type::U8
         | Type::U16

@@ -1469,6 +1469,20 @@ fn eval_expr<'a, 'p>(
         TypedExprKind::Field(base, name) => {
             let bv = eval_expr(base, env, dstack, loop_marker, ctx)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
+            // plans/M9.md item C1: `String[..N].len` — occupied bytes.
+            if matches!(&base_ty, Type::String(_)) {
+                if name != "len" {
+                    return Err(ctx.abandon(format!(
+                        "internal error: `String[..N]` has no field `{name}`"
+                    )));
+                }
+                return match bv {
+                    Value::Str(bytes) => Ok(Value::Usize(bytes.len() as u64)),
+                    other => Err(ctx.abandon(format!(
+                        "internal error: String.len base is not a Str value ({other:?})"
+                    ))),
+                };
+            }
             let Type::Named(sname, targs) = &base_ty else {
                 return Err(ctx.abandon("internal error: field base is not a named type"));
             };
@@ -1500,6 +1514,13 @@ fn eval_expr<'a, 'p>(
                     })
                 }
                 Value::Bytes(b) => {
+                    let len = b.len();
+                    b.get(i).map(|byte| Value::U8(*byte)).ok_or_else(|| {
+                        ctx.abandon(format!("index {i} out of bounds (length {len})"))
+                    })
+                }
+                // plans/M9.md item C1: `String[..N][i]` against occupied length.
+                Value::Str(b) => {
                     let len = b.len();
                     b.get(i).map(|byte| Value::U8(*byte)).ok_or_else(|| {
                         ctx.abandon(format!("index {i} out of bounds (length {len})"))

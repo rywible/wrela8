@@ -1,0 +1,49 @@
+module examples.check_string_bound
+
+# plans/M9.md item C1. `String[..N]` — owned UTF-8 with capacity `N`
+# (02-language.md §6.2). Layout is one length word plus `N` byte slots
+# (each a machine slot, matching `Bytes[N]`'s slot-per-byte convention).
+# Value pins run through comptime digests into a u64 settle for the image
+# graph — `String[..N]` itself is not a boot-arg word.
+
+const S: String[..8] = "hi"
+
+fn occupied(s: String[..8]) -> u64:
+    return s.len.to[u64]()
+
+fn byte0(s: String[..8]) -> u64:
+    return s[0].to[u64]()
+
+fn byte1(s: String[..8]) -> u64:
+    return s[1].to[u64]()
+
+# Layout probe: a parameter typed `String[..8]` must size (9 slots).
+fn probe(s: String[..8]) -> u64:
+    return occupied(s)
+
+const L: u64 = occupied(S)
+const B0: u64 = byte0(S)
+const B1: u64 = byte1(S)
+const SETTLED: u64 = L * 1000000 + B0 * 1000 + B1
+
+@test
+pub fn t_value():
+    assert L == 2, "occupied length of \"hi\""
+    assert B0 == 104, "byte0 is 'h'"
+    assert B1 == 105, "byte1 is 'i'"
+    assert SETTLED == 2104105, "length and bytes under one settle"
+
+@actor
+pub struct Store:
+    settled: u64
+
+    init(mut self, settled: u64):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-string-bound", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=SETTLED, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

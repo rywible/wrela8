@@ -1,0 +1,6 @@
+module examples.err_string_capacity
+
+# plans/M9.md item C1: a text literal longer than `String[..N]`'s
+# capacity is a type error, not truncation.
+
+const S: String[..2] = "hello"

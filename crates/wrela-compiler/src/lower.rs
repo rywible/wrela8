@@ -1838,6 +1838,11 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         }
         TypedExprKind::Str(text) => {
             let bytes = value::decode_str(text);
+            // plans/M9.md item C1: `String[..N]` is a fixed aggregate
+            // (length word + N byte slots), not ConstText.
+            if let Type::String(n_expr) = &expr.ty {
+                return emit_string_aggregate(&bytes, n_expr, &expr.ty, b);
+            }
             let data = b.intern(bytes);
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::ConstText { dst, data });
@@ -1895,6 +1900,40 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         }
         TypedExprKind::Index(base, idx_expr) => {
             let base_temp = lower_expr(base, b, env)?;
+            let base_ty = bodies::unwrap_own(base.ty.clone());
+            // plans/M9.md item C1: `String[..N][i]` with a literal index
+            // projects slot `1+i` after a compile-time capacity check.
+            // Dynamic indices (and occupied-length runtime checks beyond
+            // the capacity) are refused by name — C1's guest pin uses
+            // literal indices only.
+            if let Type::String(n_expr) = &base_ty {
+                let cap = eval_len_expr(n_expr)?;
+                let i = match &idx_expr.kind {
+                    TypedExprKind::Int(text) => {
+                        let raw = value::parse_int_literal(text)
+                            .ok_or_else(|| LowerError::internal("invalid integer literal text"))?;
+                        usize::try_from(raw)
+                            .map_err(|_| LowerError::internal("String index out of range"))?
+                    }
+                    _ => {
+                        return Err(LowerError::unimplemented(
+                            "indexing `String[..N]` with a non-literal index is",
+                        ));
+                    }
+                };
+                if i >= cap {
+                    return Err(LowerError::internal(format!(
+                        "String index {i} out of capacity {cap}"
+                    )));
+                }
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: 1 + i,
+                });
+                return Ok(dst);
+            }
             let idx_temp = lower_expr(idx_expr, b, env)?;
             let len = eval_array_len(&base.ty)?;
             let dst = b.fresh(expr.ty.clone());
@@ -2924,7 +2963,16 @@ fn emit_const_value(v: &Value, ty: &Type, b: &mut FnBuilder) -> Result<Temp, Low
             b.emit(Inst::ConstUnit { dst });
             Ok(dst)
         }
-        Value::Str(bytes) | Value::Bytes(bytes) => {
+        Value::Str(bytes) => {
+            if let Type::String(n_expr) = ty {
+                return emit_string_aggregate(bytes, n_expr, ty, b);
+            }
+            let data = b.intern(bytes.clone());
+            let dst = b.fresh(ty.clone());
+            b.emit(Inst::ConstText { dst, data });
+            Ok(dst)
+        }
+        Value::Bytes(bytes) => {
             let data = b.intern(bytes.clone());
             let dst = b.fresh(ty.clone());
             b.emit(Inst::ConstText { dst, data });
@@ -3092,6 +3140,15 @@ fn missing_struct(prog: &TypedProgram, name: &str) -> LowerError {
 }
 
 fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<usize, LowerError> {
+    // plans/M9.md item C1: `String[..N].len` is slot 0.
+    if matches!(base_ty, Type::String(_)) {
+        return match field_name {
+            "len" => Ok(0),
+            other => Err(LowerError::internal(format!(
+                "unknown String field `{other}`"
+            ))),
+        };
+    }
     let Type::Named(sname, targs) = base_ty else {
         return Err(LowerError::internal("field base is not a `Named` type"));
     };
@@ -3111,6 +3168,44 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
         .iter()
         .position(|f| f == field_name)
         .ok_or_else(|| LowerError::internal(format!("unknown field `{field_name}`")))
+}
+
+/// Materialize a `String[..N]` value as `MakeAggregate` of
+/// `[len, b0, b1, …, b_{N-1}]` (padding unoccupied slots with 0).
+fn emit_string_aggregate(
+    bytes: &[u8],
+    n_expr: &ast::Expr,
+    ty: &Type,
+    b: &mut FnBuilder,
+) -> Result<Temp, LowerError> {
+    let n = eval_len_expr(n_expr)?;
+    if bytes.len() > n {
+        return Err(LowerError::internal(format!(
+            "String literal of {} bytes exceeds capacity {n}",
+            bytes.len()
+        )));
+    }
+    let mut elems = Vec::with_capacity(1 + n);
+    let len_t = b.fresh(Type::Usize);
+    b.emit(Inst::ConstInt {
+        dst: len_t,
+        ty: Type::Usize,
+        value: bytes.len() as i128,
+    });
+    elems.push(len_t);
+    for i in 0..n {
+        let byte_t = b.fresh(Type::U8);
+        let v = i128::from(bytes.get(i).copied().unwrap_or(0));
+        b.emit(Inst::ConstInt {
+            dst: byte_t,
+            ty: Type::U8,
+            value: v,
+        });
+        elems.push(byte_t);
+    }
+    let dst = b.fresh(ty.clone());
+    b.emit(Inst::MakeAggregate { dst, elems });
+    Ok(dst)
 }
 
 /// Byte offset of field `index` inside `base_ty` — same walk codegen's

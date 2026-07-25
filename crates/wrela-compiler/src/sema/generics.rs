@@ -89,6 +89,7 @@ fn subst_type(ty: &Type, subst: &Subst) -> Type {
         Type::Static(inner) => Type::Static(Box::new(subst_type(inner, subst))),
         Type::Bytes(Some(len)) => Type::Bytes(Some(Box::new(subst_expr(len, subst)))),
         Type::Bytes(None) => Type::Bytes(None),
+        Type::String(len) => Type::String(Box::new(subst_expr(len, subst))),
         Type::Fn(params, ret) => Type::Fn(
             params
                 .iter()

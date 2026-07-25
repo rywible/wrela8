@@ -23,7 +23,8 @@ const OPTION_RESULT: &[&str] = &["Option", "Some", "None", "Result", "Ok", "Err"
 
 /// The minimum standard surface the literal rules require
 /// (02-language.md §1.1, plans/M2.md decision 5).
-const LITERAL_SURFACE: &[&str] = &["Static", "Str", "Bytes"];
+/// `String` joined at plans/M9.md item C1 (`String[..N]`, 02 §6.2).
+const LITERAL_SURFACE: &[&str] = &["Static", "Str", "Bytes", "String"];
 
 /// The `@image` builder surface's own bare (call-by-name) prelude names
 /// (plans/M4.md item B, decision 5, 05-library.md §9): `Image` itself,

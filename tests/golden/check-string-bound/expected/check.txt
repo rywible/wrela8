@@ -1,0 +1,15 @@
+Module path=examples.check_string_bound
+  Const S: String[..8]
+  Fn occupied(s: read String[..8]) -> u64
+  Fn byte0(s: read String[..8]) -> u64
+  Fn byte1(s: read String[..8]) -> u64
+  Fn probe(s: read String[..8]) -> u64
+  Const L: u64
+  Const B0: u64
+  Const B1: u64
+  Const SETTLED: u64
+  Fn t_value() -> unit
+  Struct Store resource
+    field settled: u64
+    init(mut self, settled: read u64) -> unit
+  Fn build() -> Image

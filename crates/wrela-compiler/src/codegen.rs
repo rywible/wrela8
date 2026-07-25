@@ -607,6 +607,9 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         Type::Named(..) | Type::Tuple(_) | Type::Array(..) | Type::Option(_) | Type::Result(..) => {
             true
         }
+        // plans/M9.md item C1: length word + N byte slots — by-pointer
+        // aggregate like every other multi-slot value.
+        Type::String(_) => true,
         _ => false,
     }
 }
@@ -786,6 +789,22 @@ fn field_offset_size(
         Type::Array(elem, _) => {
             let sz = mwir::size_of(elem, layout).map_err(|e| CodegenError::unimplemented(&e))?;
             Ok((sz * index, sz))
+        }
+        // plans/M9.md item C1: slot 0 = occupied length (usize); slots
+        // 1..=N = byte payload. Each occupies one SLOT.
+        Type::String(n_expr) => {
+            let n = crate::sema::bodies::literal_array_len(n_expr).ok_or_else(|| {
+                CodegenError::unimplemented("a `String[..N]` capacity that is not a literal is")
+            })?;
+            let n = usize::try_from(n)
+                .map_err(|_| CodegenError::internal("String capacity out of range".to_string()))?;
+            if index > n {
+                return Err(CodegenError::internal(format!(
+                    "`String[..{n}]` project index {index} out of range"
+                )));
+            }
+            let _ = layout;
+            Ok((8 * index, 8))
         }
         Type::Named(name, targs) => {
             // plans/M7.md item E4: `IoCompletion[P]` is a real aggregate

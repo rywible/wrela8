@@ -80,6 +80,12 @@ pub enum Type {
     /// `Bytes[N]`, or bare `Bytes` (`None`) — legal only in parameter
     /// position (02-language.md §6.2 bound-elision).
     Bytes(Option<Box<Expr>>),
+    /// `String[..N]` — owned UTF-8 with compile-time capacity `N`
+    /// (02-language.md §6.2). Occupied length is a runtime fact ≤ `N`;
+    /// layout is one length word plus `N` byte slots (plans/M9.md item
+    /// C1). Bare `String` (bound-elided) is refused by name until a
+    /// later item grows it.
+    String(Box<Expr>),
     /// `fn(mode T, ...) -> R` (02-language.md §8.3).
     Fn(Vec<(AccessMode, Type)>, Box<Type>),
     /// A bare reference to a type generic parameter currently in scope.
@@ -3709,6 +3715,37 @@ fn resolve_bytes(n: &NamedType, param_position: bool) -> Result<Type, SemaError>
     }
 }
 
+/// `String[..N]` (02-language.md §6.2 / plans/M9.md item C1). Exact
+/// `String[N]` and bare `String` are refused by name — the `..N`
+/// spelling is the bounded-occupancy form, and bound-elision is a
+/// separate surface this item does not grow.
+fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
+    if n.args.is_empty() {
+        return Err(unimplemented_at("`String` (bound-elided) is", n.span));
+    }
+    expect_arity(n, 1)?;
+    match &n.args[0] {
+        GenericArg::Bound(e) => Ok(Type::String(Box::new(e.clone()))),
+        // `String[CAP]` (no `..`) — exact form, refused by name.
+        // Bound form `String[..CAP]` is always `GenericArg::Bound`.
+        GenericArg::Type(ast::Type::Named(_inner)) if _inner.args.is_empty() => Err(SemaError::at(
+            "type",
+            "`String[..N]` needs a bounded-occupancy argument (`..N`), not `String[N]`".to_string(),
+            n.span,
+        )),
+        GenericArg::Expr(_) => Err(SemaError::at(
+            "type",
+            "`String[..N]` needs a bounded-occupancy argument (`..N`), not `String[N]`".to_string(),
+            n.span,
+        )),
+        GenericArg::Type(_) => Err(SemaError::at(
+            "type",
+            "`String[..N]` needs a capacity bound, not a type".to_string(),
+            n.span,
+        )),
+    }
+}
+
 fn resolve_named(
     n: &NamedType,
     shapes: &BTreeMap<String, usize>,
@@ -3792,6 +3829,8 @@ fn resolve_named(
             return Ok(Type::Static(Box::new(inner)));
         }
         "Bytes" => return resolve_bytes(n, param_position),
+        // plans/M9.md item C1: `String[..N]` (02 §6.2).
+        "String" => return resolve_string(n),
         // plans/M7.md item E2/E3: `QueueOp[P]` — sealed prepared operation
         // carrying the transfer-payload brand `P` so `publish` can yield
         // `Receipt[P]`. `prepare_block` always produces the branded form.
@@ -4470,6 +4509,7 @@ pub(crate) fn resource_propagates(
         Type::Generic(_) => false,
         Type::Fn(..)
         | Type::Bytes(_)
+        | Type::String(_)
         | Type::Str
         | Type::Bool
         | Type::U8
@@ -4661,6 +4701,7 @@ pub fn render_type(ty: &Type) -> String {
         Type::Static(t) => format!("Static[{}]", render_type(t)),
         Type::Bytes(None) => "Bytes".to_string(),
         Type::Bytes(Some(n)) => format!("Bytes[{}]", printer::print_expr_bare(n)),
+        Type::String(n) => format!("String[..{}]", printer::print_expr_bare(n)),
         Type::Fn(params, ret) => {
             let ps = params
                 .iter()
@@ -4958,6 +4999,7 @@ pub(crate) fn collect_named_type_names(ty: &Type, out: &mut BTreeSet<String>) {
             }
         }
         Type::Bytes(_)
+        | Type::String(_)
         | Type::Bool
         | Type::U8
         | Type::U16
@@ -5080,6 +5122,7 @@ fn rekey_decl_type(ty: &mut Type, subs: &BTreeMap<String, String>) {
             }
         }
         Type::Bytes(_)
+        | Type::String(_)
         | Type::Bool
         | Type::U8
         | Type::U16
@@ -5150,6 +5193,7 @@ mod tests {
             ("Str", Type::Str),
             ("Bytes[N]", Type::Bytes(Some(dummy_len()))),
             ("bare Bytes", Type::Bytes(None)),
+            ("String[..N]", Type::String(dummy_len())),
             (
                 "fn(read u8) -> u8",
                 Type::Fn(vec![(AccessMode::Read, Type::U8)], Box::new(Type::U8)),

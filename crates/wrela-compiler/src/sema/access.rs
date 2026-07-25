@@ -1101,7 +1101,7 @@ fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
             }
             Ok(base_ty.map(bodies::unwrap_own).and_then(|t| match t {
                 Type::Array(elem, _) => Some(*elem),
-                Type::Bytes(_) => Some(Type::U8),
+                Type::Bytes(_) | Type::String(_) => Some(Type::U8),
                 _ => None,
             }))
         }

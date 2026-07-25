@@ -423,6 +423,15 @@ fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> FlowError {
 }
 
 fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<usize, FlowError> {
+    // plans/M9.md item C1: `String[..N].len` is slot 0.
+    if matches!(base_ty, Type::String(_)) {
+        return match field_name {
+            "len" => Ok(0),
+            other => Err(FlowError::internal(format!(
+                "unknown String field `{other}`"
+            ))),
+        };
+    }
     let Type::Named(sname, _) = base_ty else {
         return Err(FlowError::internal("field base is not a `Named` type"));
     };

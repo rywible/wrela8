@@ -2421,10 +2421,37 @@ fn synth_expr(
     match expr {
         Expr::Int(span, text) => synth_int_literal(*span, text, expected),
         Expr::Float(span, text) => synth_float_literal(*span, text, expected),
-        Expr::Str(_span, text) => Ok(TypedExpr {
-            ty: Type::Static(Box::new(Type::Str)),
-            kind: TypedExprKind::Str(text.clone()),
-        }),
+        Expr::Str(span, text) => {
+            // plans/M9.md item C1: a text literal coerced into
+            // `String[..N]` when the expected type asks for one (02 §6.2 /
+            // §1.1). Occupied byte length must fit the capacity.
+            if let Some(Type::String(n_expr)) = expected {
+                let n = literal_array_len(n_expr).ok_or_else(|| {
+                    unimplemented_at("a `String[..N]` capacity that is not a literal is", *span)
+                })?;
+                let n = u64::try_from(n).map_err(|_| {
+                    type_error("`String[..N]` capacity is out of range".to_string(), *span)
+                })?;
+                let bytes = crate::eval::value::decode_str(text);
+                if (bytes.len() as u64) > n {
+                    return Err(type_error(
+                        format!(
+                            "text literal of {} bytes exceeds `String[..{n}]` capacity",
+                            bytes.len()
+                        ),
+                        *span,
+                    ));
+                }
+                return Ok(TypedExpr {
+                    ty: Type::String(n_expr.clone()),
+                    kind: TypedExprKind::Str(text.clone()),
+                });
+            }
+            Ok(TypedExpr {
+                ty: Type::Static(Box::new(Type::Str)),
+                kind: TypedExprKind::Str(text.clone()),
+            })
+        }
         Expr::BStr(span, text) => {
             let len = bstr_byte_len(text);
             let ty = Type::Static(Box::new(Type::Bytes(Some(Box::new(Expr::Int(
@@ -2832,6 +2859,24 @@ fn check_field_expr(
             });
         }
     }
+    // plans/M9.md item C1: `String[..N].len` is the occupied byte length
+    // (slot 0 of the length-plus-N-bytes layout). Not a DeclStruct field;
+    // lower maps the name to Project index 0.
+    if matches!(&base_ty, Type::String(_)) {
+        if name == "len" {
+            return Ok(TypedExpr {
+                ty: Type::Usize,
+                kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
+            });
+        }
+        return Err(type_error(
+            format!(
+                "`{}` has field `len` only; found `{name}`",
+                types::render_type(&base_ty)
+            ),
+            span,
+        ));
+    }
     match &base_ty {
         Type::Named(sname, targs) => {
             // A generic instantiation's field (item H): substitute +
@@ -2923,6 +2968,32 @@ fn synth_index(
             })
         }
         Type::Bytes(_) => {
+            let idx_t = if is_bare_numeric_literal(&args[0]) {
+                check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?
+            } else {
+                let idx_t = check_expr(&args[0], None, fctx, mctx)?;
+                if is_untrusted_type(&idx_t.ty) {
+                    return Err(untrusted_use_error("an array index", args[0].span()));
+                }
+                if !types_eq(&idx_t.ty, &Type::Usize) {
+                    return Err(type_error(
+                        format!(
+                            "expected `usize`, found `{}`",
+                            types::render_type(&idx_t.ty)
+                        ),
+                        args[0].span(),
+                    ));
+                }
+                idx_t
+            };
+            Ok(TypedExpr {
+                ty: Type::U8,
+                kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
+            })
+        }
+        // plans/M9.md item C1: `String[..N][i]` → `u8` (bounds against
+        // occupied length at eval/lower time).
+        Type::String(_) => {
             let idx_t = if is_bare_numeric_literal(&args[0]) {
                 check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?
             } else {
@@ -3112,6 +3183,7 @@ pub(crate) fn types_eq(a: &Type, b: &Type) -> bool {
         (Type::Static(x), Type::Static(y)) => types_eq(x, y),
         (Type::Bytes(None), Type::Bytes(None)) => true,
         (Type::Bytes(Some(l1)), Type::Bytes(Some(l2))) => same_len_expr(l1, l2),
+        (Type::String(l1), Type::String(l2)) => same_len_expr(l1, l2),
         (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
             p1.len() == p2.len()
                 && p1
