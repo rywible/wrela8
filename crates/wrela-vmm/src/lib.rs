@@ -1113,6 +1113,26 @@ fn boot_image_core(
                     // wake already happened (or was never needed) — do
                     // not sleep at all, so it is never lost.
                     let already_pending = pending_word(host_ram, core) != 0;
+                    // plans/M8.md item C2, decision 31: in a cross-core
+                    // image core 0 parks with **no deadline** whenever its
+                    // own core has nothing ready, because a reply may still
+                    // be one turn away on another core. There is nothing to
+                    // sleep until, so this is the secondary cores' own park
+                    // exactly: stop being scheduled until this core's
+                    // pending word is raised. `next_core` then either finds
+                    // a runnable sibling, finds this core's own word already
+                    // raised (the recheck above, never lost), or fails the
+                    // boot closed with `no core is runnable` — which is what
+                    // replaces the guest-side `DEADLOCK_MSG` for a
+                    // cross-core image. Unreachable for a single-core image:
+                    // its entry driver only parks when a deadline is armed.
+                    if cores_declared > 1 && deadline_ns == 0 {
+                        if !already_pending && !blk_completed {
+                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            g.sched.state[core] = CoreState::Parked;
+                        }
+                        return Ok(Step::Yield);
+                    }
                     if !already_pending && !blk_completed {
                         {
                             let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());

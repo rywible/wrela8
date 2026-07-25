@@ -138,7 +138,7 @@
 //! a real, load-bearing assertion any future bug in this module's own
 //! bookkeeping would trip, not a restatement of already-true arithmetic.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codegen::{CodegenProgram, Reloc};
 use crate::encode;
@@ -953,50 +953,62 @@ fn unresolved_call_target(target: &str, graph: Option<&ImageGraph>) -> LayoutErr
     ))
 }
 
-/// plans/M8.md item C1: a `send`/`await` whose sender and target live on
-/// **different cores** is refused, by name, at build time.
+/// plans/M8.md item C2: `__rt_xsend_<src core>_<Actor>` — the cross-core
+/// send routine an `__rt_enqueue_<Actor>` call is *redirected* to when the
+/// call site's own core is not the target's. One symbol per (sending core,
+/// target mailbox root) pair, because the ring it writes is one per
+/// (sending core, target mailbox root) pair.
+fn xsend_symbol(src_core: usize, actor: &str) -> String {
+    format!("__rt_xsend_{src_core}_{actor}")
+}
+
+/// plans/M8.md item C2: which core a call site runs on. An actor method
+/// runs on its actor's core, a `@driver` method on its driver's (core 0 by
+/// shape decision 2), and anything else is a free turn — and the only free
+/// turns that run are the root turns core 0's entry driver drives.
+fn caller_core(caller_key: &str, w: &RuntimeWiring) -> usize {
+    let actor_names: Vec<String> = w.tables.actors.iter().map(|a| a.name.clone()).collect();
+    let driver_names: Vec<String> = w.tables.drivers.iter().map(|d| d.name.clone()).collect();
+    match turn_owner(caller_key, &actor_names).or_else(|| turn_owner(caller_key, &driver_names)) {
+        Some(owner) => w.placement.core_of_actor_type(owner).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// plans/M8.md item C2, the item that lifted C1's own build error: a
+/// `send`/`await` whose sender and target live on **different cores** is
+/// now *lowered*, not refused — 04-compiler.md §3's "cross-core actor
+/// edges keep identical message semantics, lowered to compiler-generated
+/// bounded SPSC rings in guest memory".
 ///
-/// 04 §3 says what such an edge must become — "cross-core actor edges keep
-/// identical message semantics, lowered to compiler-generated bounded SPSC
-/// rings in guest memory" — and item C2 is where that lowering lands. Until
-/// then codegen emits the same same-core `__rt_enqueue_X` call it always
-/// has, which writes the target's mailbox from the *sender's* core and
-/// leaves the message for a loop that will never select it. That is the
-/// silent-wrong-answer shape this project ranks worst: before this check,
-/// an actor declared `core=1` ran its turns on core 0 while the report's
-/// Placement section said `core=1`, and every tier reported success.
+/// Returns the symbol the `Reloc::Call` should resolve to: `None` keeps
+/// codegen's own `__rt_enqueue_<Actor>` (every same-core edge, every
+/// single-core image — the as-if fast path §3's last sentence preserves by
+/// name), `Some(sym)` redirects to that edge's `__rt_xsend_*`. Codegen
+/// emits exactly one symbolic call either way and never learns which it
+/// got, which is what makes the two paths' message semantics identical by
+/// construction rather than by agreement.
 ///
-/// So the arm fails closed instead, naming both cores and the item that
-/// lifts it (CLAUDE.md: "an unimplemented path errors loudly; it never
-/// approximates"). Same-core edges — every M5-M7 image, and every edge
-/// inside one core of a cross-core image — are untouched.
-///
-/// The caller's own core is its turn owner's (`turn_owner`: an actor
-/// method runs on its actor's core; a `@driver` method on its driver's;
-/// anything else is a free turn, and the only free turns that run are the
-/// root turns core 0's entry driver drives).
-fn check_cross_core_edge(
+/// Two shapes are still refused here, each named rather than approximated:
+/// an actor struct with instances on two different cores (the generated
+/// admission routine is per struct, so there is no honest core to compare
+/// against), and a cross-core target with an aggregate-reply method (see
+/// `cross_core_rings`' own refusal — the aggregate never rides the ring).
+fn resolve_cross_core_edge(
     caller_key: &str,
     target: &str,
     wiring: Option<&RuntimeWiring>,
-) -> Result<(), LayoutError> {
+) -> Result<Option<String>, LayoutError> {
     let Some(w) = wiring else {
-        return Ok(());
+        return Ok(None);
     };
     if w.placement.cores <= 1 {
-        return Ok(());
+        return Ok(None);
     }
     let Some(target_actor) = crate::codegen::rt_enqueue_actor(target) else {
-        return Ok(());
+        return Ok(None);
     };
-    let actor_names: Vec<String> = w.tables.actors.iter().map(|a| a.name.clone()).collect();
-    let driver_names: Vec<String> = w.tables.drivers.iter().map(|d| d.name.clone()).collect();
-    let caller_core = match turn_owner(caller_key, &actor_names)
-        .or_else(|| turn_owner(caller_key, &driver_names))
-    {
-        Some(owner) => w.placement.core_of_actor_type(owner).unwrap_or(0),
-        None => 0,
-    };
+    let caller = caller_core(caller_key, w);
     let Some(target_core) = w.placement.core_of_actor_type(&target_actor) else {
         // Two instances of one actor struct on two different cores: the
         // generated admission routine is keyed by struct name and cannot
@@ -1007,16 +1019,235 @@ fn check_cross_core_edge(
              give each instance its own struct, or place them on one core (plans/M8.md item C1)"
         )));
     };
-    if caller_core == target_core {
+    if caller == target_core {
+        return Ok(None);
+    }
+    let sym = xsend_symbol(caller, &target_actor);
+    Ok(Some(sym))
+}
+
+/// plans/M8.md item C2: every cross-core message edge this image's own
+/// compiled code actually contains, as `(sending core, target mailbox
+/// root)` pairs. Derived from the sealed graph's placement (04 §3: "the
+/// inputs, the inference, and the final table are published in the report
+/// and sealed into the build identity") crossed with the `Reloc::Call`
+/// sites codegen emitted — never from a heuristic, and never from the
+/// wiring graph alone, which records handles rather than message sites.
+fn cross_core_edges(
+    program: &CodegenProgram,
+    w: &RuntimeWiring,
+) -> Result<BTreeSet<(usize, String)>, LayoutError> {
+    let mut out = BTreeSet::new();
+    if w.placement.cores <= 1 {
+        return Ok(out);
+    }
+    for (key, f) in &program.fns {
+        for reloc in &f.relocs {
+            let Reloc::Call { key: target, .. } = reloc else {
+                continue;
+            };
+            if let Some(sym) = resolve_cross_core_edge(key, target, Some(w))? {
+                let actor = crate::codegen::rt_enqueue_actor(target)
+                    .expect("resolve_cross_core_edge only redirects an rt_enqueue target")
+                    .to_string();
+                debug_assert_eq!(sym, xsend_symbol(caller_core(key, w), &actor));
+                out.insert((caller_core(key, w), actor));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// plans/M8.md item C2: this image's own ring set, in the canonical order
+/// the report publishes and `place_runtime_tables` places — request lanes
+/// first, then reply lanes, each sorted by `(src, dst, actor)`.
+///
+/// **Capacity comes from the sealed graph, and an edge whose capacity
+/// cannot be derived is a build error naming the edge** (CLAUDE.md's
+/// fail-closed rule; no silent truncation and no spin-until-space):
+///
+/// - a **request** ring `s -> d` for target `A` is exactly as deep as
+///   `A`'s own declared mailbox, and carries `A`'s own mailbox slot format
+///   — the ring is a staging area in front of one mailbox, so making it a
+///   second, differently-shaped queue would have been inventing a bound
+///   nothing declared. A zero-capacity mailbox is refused by name.
+/// - a **reply** ring `d -> s` is as deep as the number of turn areas on
+///   core `s`, which is a hard bound on outstanding replies bound for `s`:
+///   a turn area holds at most one in-flight activation (non-reentrancy,
+///   04 §2) and therefore at most one outstanding `await`. That is what
+///   makes `BRK_XREPLY_RING_FULL` an unreachability guard rather than a
+///   dropped reply.
+fn cross_core_rings(
+    program: &CodegenProgram,
+    w: &RuntimeWiring,
+) -> Result<Vec<RingLayout>, LayoutError> {
+    let edges = cross_core_edges(program, w)?;
+    if edges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut requests: Vec<RingLayout> = Vec::new();
+    let mut pairs: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for (src, actor) in &edges {
+        let Some(dst) = w.placement.core_of_actor_type(actor) else {
+            return Err(LayoutError::new(format!(
+                "internal error: cross-core edge to `{actor}` has no single placed core"
+            )));
+        };
+        let Some((mailbox_capacity, slot_size)) = mailbox_root_shape(&w.tables, actor) else {
+            return Err(LayoutError::new(format!(
+                "internal error: cross-core edge to `{actor}`, which has no runtime mailbox"
+            )));
+        };
+        if mailbox_capacity == 0 {
+            return Err(LayoutError::new(format!(
+                "core {src} sends to actor `{actor}` on core {dst}, but `{actor}` declares a \
+                 mailbox capacity of 0: a cross-core edge's ring is sized from the mailbox it \
+                 feeds (04-compiler.md §3, plans/M8.md item C2), so there is no capacity to \
+                 derive — declare `mailbox=` on that `img.actor(...)`"
+            )));
+        }
+        requests.push(RingLayout {
+            src: *src,
+            dst,
+            kind: RingKind::Request,
+            actor: Some(actor.to_string()),
+            capacity: mailbox_capacity,
+            slot_size,
+        });
+        pairs.insert((*src, dst));
+    }
+    let mut replies: Vec<RingLayout> = Vec::new();
+    for (src, dst) in &pairs {
+        // The reply flows the other way: produced on `dst`, consumed on
+        // `src`, sized by the turn areas that live on `src`.
+        let capacity = reply_ring_capacity(w, *src);
+        if capacity == 0 {
+            return Err(LayoutError::new(format!(
+                "core {src} sends to core {dst}, but core {src} owns no turn area, so the reply \
+                 ring's capacity cannot be derived (plans/M8.md item C2)"
+            )));
+        }
+        replies.push(RingLayout {
+            src: *dst,
+            dst: *src,
+            kind: RingKind::Reply,
+            actor: None,
+            capacity,
+            slot_size: REPLY_SLOT_SIZE,
+        });
+    }
+    requests.sort_by(|a, b| (a.src, a.dst, &a.actor).cmp(&(b.src, b.dst, &b.actor)));
+    replies.sort_by(|a, b| (a.src, a.dst).cmp(&(b.src, b.dst)));
+    requests.extend(replies);
+    Ok(requests)
+}
+
+/// plans/M8.md item C2's two fail-closed arms — the shapes this item
+/// lowers *around* rather than through, each refused by name instead of
+/// approximated (CLAUDE.md: "an unimplemented path errors loudly; it never
+/// approximates"). Both exist only because a turn can now run on a
+/// secondary core at all; neither is reachable in a single-core image.
+///
+/// **1. An aggregate reply across a core boundary.** 04 §3 requires a
+/// cross-core edge's message semantics to be identical, and this item
+/// delivers that by routing the request and the reply *word* over rings.
+/// An aggregate reply does not travel that way: `build_rt_select_and_run`'s
+/// aggregate arm hands the callee the awaiting turn's own staging-slot
+/// address in `x8` and the callee writes the aggregate straight into that
+/// frame — a direct store into another core's memory with no ring and no
+/// ordering the compiler placed there. Under decision 11's baton that
+/// happens to work today, and **that is exactly why it is refused**: no
+/// oracle this project owns could show it broken, so shipping it would be
+/// shipping an untested claim about publish/acquire ordering. Refused per
+/// target actor rather than per method, because the ring's own slot format
+/// is per actor.
+///
+/// **2. A checkpoint inside a turn placed on a secondary core.**
+/// `__wrela_checkpoint_service` and every `codegen::FnCtx::checkpoint` test
+/// name **core 0's** pending word by a baked-in constant
+/// (`pending::core_word_addr(0)`), and the service clears that whole word.
+/// A turn running on core 1 that reached a loop back-edge would therefore
+/// service — and *clear* — core 0's pending word, silently eating the very
+/// wake this item's rings raise. Per-core checkpoint services (and the
+/// per-core deadline word they imply) are real work with their own
+/// oracles; they are not smuggled in here.
+fn reject_unlowerable_cross_core_shapes(
+    rings: &[RingLayout],
+    w: &RuntimeWiring,
+    boot: &BootCtx,
+    program: &CodegenProgram,
+) -> Result<(), LayoutError> {
+    let _ = boot;
+    if w.placement.cores <= 1 {
         return Ok(());
     }
-    Err(LayoutError::new(format!(
-        "`{caller_key}` runs on core {caller_core} and sends to actor `{target_actor}` on core \
-         {target_core}: a cross-core edge lowers to a bounded SPSC ring (04-compiler.md §3), and \
-         this image builds none — plans/M8.md item C2 is where cross-core rings land. Until then \
-         place both ends on one core (`core=` in the `@image` fn), or drop the call. Nothing here \
-         is demoted to core 0: the report's Placement section is the assignment the runtime uses"
-    )))
+    for ring in rings.iter().filter(|r| r.kind == RingKind::Request) {
+        let Some(actor) = &ring.actor else { continue };
+        let Some((_, methods)) = w.dispatch.iter().find(|(name, _)| name == actor) else {
+            continue;
+        };
+        if let Some((key, _, _)) = methods.iter().find(|(_, _, agg)| *agg) {
+            return Err(LayoutError::new(format!(
+                "core {} sends to actor `{actor}` on core {}, but `{key}` declares an aggregate \
+                 reply: an aggregate is written straight into the awaiting turn's frame through \
+                 `x8`, which does not travel the cross-core reply ring this edge lowers to \
+                 (04-compiler.md §3, plans/M8.md item C2). Place both ends on one core, or make \
+                 the reply a scalar",
+                ring.src, ring.dst
+            )));
+        }
+    }
+    for (key, f) in &program.fns {
+        if !f
+            .relocs
+            .iter()
+            .any(|r| matches!(r, Reloc::CheckpointService { .. }))
+        {
+            continue;
+        }
+        let core = caller_core(key, w);
+        if core != 0 {
+            return Err(LayoutError::new(format!(
+                "`{key}` runs on core {core} and contains a checkpoint (a loop back-edge), but \
+                 `__wrela_checkpoint_service` and every checkpoint test name core 0's own pending \
+                 word by construction — servicing one from core {core} would clear the wake a \
+                 cross-core ring raised for core 0. Place this actor on core 0, or remove the \
+                 loop; per-core checkpoint services are not part of plans/M8.md item C2"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// One mailbox root's own `(capacity, slot size)` — a declared actor's, or
+/// (plans/M8.md item D) a messageable `@driver`'s. The one lookup
+/// `cross_core_rings` needs, so a ring feeding a driver's mailbox is sized
+/// from that mailbox exactly as one feeding an actor's is.
+fn mailbox_root_shape(tables: &RuntimeTables, name: &str) -> Option<(u64, u64)> {
+    if let Some(a) = tables.actors.iter().find(|a| a.name == name) {
+        return Some((a.mailbox_capacity, a.slot_size));
+    }
+    tables
+        .drivers
+        .iter()
+        .find(|d| d.name == name)
+        .and_then(|d| d.mailbox.as_ref())
+        .map(|m| (m.capacity, m.slot_size))
+}
+
+/// How many turn areas live on `core` — every mailbox root placed there,
+/// plus (on
+/// core 0 only) every free-turn area, since 06 §3 makes boot and the root
+/// turns the entry core's. The bound `build_rt_xreply`'s own
+/// unreachability argument rests on.
+fn reply_ring_capacity(w: &RuntimeWiring, core: usize) -> u64 {
+    let actors = w.actor_cores.iter().filter(|c| **c == core).count() as u64;
+    let free = if core == 0 {
+        w.tables.free_turns.len() as u64
+    } else {
+        0
+    };
+    actors + free
 }
 
 fn patch_bl(
@@ -2199,7 +2430,7 @@ pub fn layout_program(
     let image_base = machine_layout::IMAGE_BASE;
 
     let mut wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b)?,
+        Some(b) => RuntimeWiring::derive(b, program)?,
         None => None,
     };
 
@@ -2545,7 +2776,12 @@ pub fn layout_program(
                     // `code`-section-relative) — the identical two-scheme
                     // lookup `layout_test_image` already does, and the whole
                     // reason a messaged-actor image lays out at all.
-                    check_cross_core_edge(key, target, wiring.as_ref())?;
+                    // plans/M8.md item C2: a cross-core edge resolves to its
+                    // own `__rt_xsend_*` ring producer instead of the
+                    // same-core admission routine — same ABI, same
+                    // rejection contract, one symbol swapped.
+                    let redirect = resolve_cross_core_edge(key, target, wiring.as_ref())?;
+                    let target = redirect.as_deref().unwrap_or(target.as_str());
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4
@@ -3148,6 +3384,11 @@ pub struct RuntimeTables {
     /// wires it). Always `0` in today's report-bearing corpus (no
     /// existing actor-bearing golden uses `with group` yet).
     pub group_arena_capacity: u64,
+    /// plans/M8.md item C2: this image's own cross-core SPSC rings, in
+    /// `cross_core_rings`'s canonical order. Empty for every single-core
+    /// image and for a cross-core image whose graph has no cross-core
+    /// message edge (decision 28's own "emit nothing" rule).
+    pub rings: Vec<RingLayout>,
     /// How many cores this image brings up (`placement::PlacementTable::
     /// cores` — `1` for every single-core image, `VCPUS` for a cross-core
     /// graph). plans/M8.md item C1: the scheduler's own per-core state is
@@ -3177,7 +3418,114 @@ impl RuntimeTables {
         self.total_bytes = self.total_bytes - old * per_core + new * per_core;
         self.cores = cores;
     }
+
+    /// plans/M8.md item C2: installs this image's own cross-core rings and
+    /// grows `total_bytes` by exactly their reservation. Called once, by
+    /// `RuntimeWiring::derive`, right after `stripe_for_cores` — the rings
+    /// are placed **last** in `rtdata` (after the group arena), so nothing
+    /// an existing golden pins moves for an image that has none.
+    pub fn add_cross_core_rings(&mut self, rings: Vec<RingLayout>) {
+        for r in &rings {
+            self.total_bytes += r.bytes();
+        }
+        self.rings = rings;
+    }
 }
+
+/// plans/M8.md item C2 (04-compiler.md §3: "cross-core actor edges ...
+/// lowered to compiler-generated bounded SPSC rings in guest memory").
+/// Which of the two lanes a ring is — decision 29 keeps them separate so a
+/// request lane's back-pressure can never sit in front of a reply that has
+/// nowhere else to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingKind {
+    /// `src` -> `dst`: an admitted message, waiting to be handed to
+    /// `dst`'s own `__rt_enqueue_<actor>` by `dst`'s drain.
+    Request,
+    /// `src` -> `dst`: a completed turn's reply word plus the address of
+    /// the turn record on `dst` it belongs to.
+    Reply,
+}
+
+/// One cross-core SPSC ring's own static shape. The producer is core
+/// `src` and the consumer is core `dst` — **one producer because one
+/// core**, not because one actor (decision 28): two actors on core 0 that
+/// both message the same actor on core 1 share one ring, and the baton
+/// (decision 11) plus the per-core cooperative loop mean neither can be
+/// mid-enqueue when the other starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RingLayout {
+    pub src: usize,
+    pub dst: usize,
+    pub kind: RingKind,
+    /// The target actor struct, for a `Request` ring: the ring feeds
+    /// exactly one mailbox, which is what makes its slot format identical
+    /// to that mailbox's own and its capacity derivable from the sealed
+    /// graph. `None` for a `Reply` ring (a reply is addressed to a turn
+    /// record, not to an actor).
+    pub actor: Option<String>,
+    pub capacity: u64,
+    pub slot_size: u64,
+}
+
+impl RingLayout {
+    /// `capacity * slot_size` plus the same three-word head/tail/count
+    /// bookkeeping a mailbox carries (`MAILBOX_BOOKKEEPING_SIZE`).
+    pub fn bytes(&self) -> u64 {
+        self.capacity * self.slot_size + MAILBOX_BOOKKEEPING_SIZE
+    }
+
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            RingKind::Request => "request",
+            RingKind::Reply => "reply",
+        }
+    }
+}
+
+/// A bounded ring's four placed addresses — the only thing
+/// `build_ring_enqueue` and the drain routines address. A mailbox is one
+/// of these (`ActorAddrs::mailbox`) and so is every cross-core ring, which
+/// is exactly why the cross-core producer *is* `build_rt_enqueue`'s own
+/// body rather than a second implementation of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RingAddrs {
+    pub ring: u64,
+    pub head: u64,
+    pub tail: u64,
+    pub count: u64,
+}
+
+/// A reply slot: the destination turn-record address, then the reply word.
+const REPLY_SLOT_SIZE: u64 = 16;
+
+/// plans/M8.md item C2, decision 30: the waker word a cross-core send
+/// carries has the **originating core + 1** in its top three bits, so a
+/// completing turn can tell a local waker (tag 0, every same-core send and
+/// every single-core image) from one whose turn record lives on another
+/// core. Guest-physical addresses are all below 2^31 in this machine's
+/// layout, so the top bits are free by construction; `+1` rather than the
+/// bare core index is what makes "no tag" and "from core 0" distinct.
+const WAKER_CORE_SHIFT: u8 = 61;
+const WAKER_CORE_MASK: u64 = 0b111u64 << WAKER_CORE_SHIFT;
+
+fn waker_tag(src_core: usize) -> u64 {
+    ((src_core as u64) + 1) << WAKER_CORE_SHIFT
+}
+
+/// plans/M8.md item C2: the reply ring was full. Unreachable by
+/// construction rather than by hope — a reply ring `d -> s` is sized to
+/// the number of turn areas on core `s` (`reply_ring_capacity`), each of
+/// which can have at most one outstanding `await` (non-reentrancy caps
+/// in-flight activations at one per turn area), so there can never be more
+/// undelivered replies bound for `s` than the ring holds. Same class and
+/// same treatment as `BRK_REPLY_SLOT_NO_WAKER` above.
+const BRK_XREPLY_RING_FULL: u16 = 0xACD7;
+
+/// plans/M8.md item C2: a waker carried a core tag naming a core this
+/// image never brought up. Unreachable: the tag is written by
+/// `build_rt_xsend`, one build-time constant per emitted routine.
+const BRK_XREPLY_UNKNOWN_CORE: u16 = 0xACD8;
 
 /// Per-actor ring bookkeeping beyond the ring bytes themselves: head,
 /// tail, count (3 `u64`s). Reply plumbing no longer lives here at all —
@@ -4547,7 +4895,9 @@ pub fn compute_runtime_tables(
         free_turns,
         ready_queue_capacity,
         group_arena_capacity,
-        // Single-core until placement says otherwise (`stripe_for_cores`).
+        // Single-core until placement says otherwise (`stripe_for_cores`),
+        // and ringless until `add_cross_core_rings` says otherwise.
+        rings: Vec::new(),
         cores: 1,
         total_bytes,
     }))
@@ -4652,6 +5002,27 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
                 out,
                 1,
                 &format!("Driver name={} state={}{mailbox}", d.name, d.state_size),
+            );
+        }
+        // plans/M8.md item C2: this image's own cross-core SPSC rings —
+        // 04 §3's "sealed graph" made visible, one line per ring, so a
+        // reviewer can see how many there are, which core produces into
+        // each, how deep it is, and where the capacity came from. Absent
+        // entirely for an image with no cross-core message edge.
+        for r in &tables.rings {
+            push_line(
+                out,
+                1,
+                &format!(
+                    "Ring kind={} src={} dst={} target={} cap={} slot={} bytes={}",
+                    r.kind_name(),
+                    r.src,
+                    r.dst,
+                    r.actor.as_deref().unwrap_or("-"),
+                    r.capacity,
+                    r.slot_size,
+                    r.bytes(),
+                ),
             );
         }
         push_line(
@@ -4875,6 +5246,20 @@ pub struct ActorAddrs {
     pub turn: u64,
 }
 
+impl ActorAddrs {
+    /// This actor's mailbox, as the plain bounded ring it is — the shape
+    /// `build_ring_enqueue` produces into, shared verbatim with every
+    /// cross-core ring (plans/M8.md item C2, decision 28).
+    pub fn mailbox(&self) -> RingAddrs {
+        RingAddrs {
+            ring: self.ring,
+            head: self.head,
+            tail: self.tail,
+            count: self.count,
+        }
+    }
+}
+
 /// Every runtime-table address, placed from one `base` (`rtdata_base` for
 /// a real image, a host-mmap'd stand-in for a JIT/HVF test) in the exact
 /// byte order `compute_runtime_tables::total_bytes` accounts for: each
@@ -4920,6 +5305,11 @@ pub struct RuntimePlacement {
     /// (`RuntimeTables::total_bytes`'s own byte-order doc: actors, free
     /// turns, ready-queue table, rr cursor, then the group arena).
     pub group_arena: u64,
+    /// plans/M8.md item C2: each cross-core ring's own placed addresses, in
+    /// `RuntimeTables::rings` order — placed after the group arena, so an
+    /// image with no cross-core edge places byte-for-byte what it did
+    /// before this item.
+    pub rings: Vec<RingAddrs>,
 }
 
 impl RuntimePlacement {
@@ -5019,6 +5409,28 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     }
     cursor = sched_base + (tables.cores as u64) * per_core;
     let group_arena = cursor;
+    cursor += tables.group_arena_capacity * crate::codegen::GROUP_SLOT_SIZE;
+    // plans/M8.md item C2: the cross-core rings, last. Every address above
+    // this point is unchanged for an image with none, which is what makes
+    // "a single-core image emits no ring machinery at all" a placement fact
+    // rather than a claim.
+    let mut rings = Vec::with_capacity(tables.rings.len());
+    for r in &tables.rings {
+        let ring = cursor;
+        cursor += r.capacity * r.slot_size;
+        let head = cursor;
+        cursor += 8;
+        let tail = cursor;
+        cursor += 8;
+        let count = cursor;
+        cursor += 8;
+        rings.push(RingAddrs {
+            ring,
+            head,
+            tail,
+            count,
+        });
+    }
     RuntimePlacement {
         actors,
         drivers,
@@ -5026,6 +5438,7 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         free_turns,
         rr_cursors,
         group_arena,
+        rings,
     }
 }
 
@@ -5057,6 +5470,21 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
 /// dst/src/remaining-count cursors.
 pub fn build_rt_enqueue(
     addrs: &ActorAddrs,
+    capacity: u64,
+    slot_size: u64,
+    start: usize,
+) -> Vec<u32> {
+    build_ring_enqueue(&addrs.mailbox(), capacity, slot_size, start)
+}
+
+/// `build_rt_enqueue`'s whole body, over any bounded ring — a mailbox
+/// (above) or a cross-core request ring (plans/M8.md item C2). Every word
+/// of the admission machinery is shared: a cross-core send is *the same
+/// bounded-ring insert*, into a different ring, which is what makes 04 §3's
+/// "cross-core actor edges keep identical message semantics" a structural
+/// fact here rather than a claim two implementations have to keep true.
+pub fn build_ring_enqueue(
+    addrs: &RingAddrs,
     capacity: u64,
     slot_size: u64,
     start: usize,
@@ -5125,6 +5553,147 @@ pub fn build_rt_enqueue(
     a.words[to_end] = encode::enc_b(delta as i32);
     a.push(encode::enc_ret(30));
     a.words
+}
+
+/// Raises core `core`'s own pending word (`pending::core_word_addr`), bit
+/// 0 — 06 §5's doorbell: "a shared-memory word, no trap". A plain
+/// read-modify-write is sound here for the same reason
+/// `build_checkpoint_and_vector_stub`'s own clear is: decision 11's baton
+/// means exactly one vCPU is inside `hv_vcpu_run` at any instant, so there
+/// is no concurrent writer to race. Uses `x9`/`x10`/`x11`.
+///
+/// Bit 0 rather than a ring-private vector bit is deliberate
+/// (decision 30): the pending word is a "something changed, re-derive
+/// readiness from memory" signal, and 04 §2 requires exactly that of it
+/// ("wakes are idempotent; the runtime park primitive has mask-arm-recheck
+/// semantics"). A core woken for a ring drains its rings because its loop
+/// always does, not because a bit told it to.
+fn push_raise_pending(a: &mut Asm, core: usize) {
+    a.load_imm(9, wrela_machine::pending::core_word_addr(core));
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    a.push(encode::enc_movz(11, 1, 0, true));
+    a.push(encode::enc_orr_reg(10, 10, 11, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+}
+
+/// Emits `head`/`tail` advance-and-wrap for a bounded ring: `reg` holds
+/// the current index, `addr_reg` is scratch, `cursor_addr` is the head or
+/// tail word's own address. Shared by every drain lane below so the wrap
+/// arithmetic exists once.
+fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capacity: u64) {
+    a.push(encode::enc_add_imm(reg, reg, 1, true));
+    a.load_imm(scratch, capacity);
+    a.push(encode::enc_cmp_reg(reg, scratch, true));
+    let skip_nowrap = a.skip_placeholder(); // b.lt .nowrap
+    a.push(encode::enc_movz(reg, 0, 0, true));
+    let nowrap = a.abs();
+    a.patch_cond(skip_nowrap, Cond::Lt);
+    debug_assert_eq!(nowrap, a.abs());
+    a.load_imm(scratch, cursor_addr);
+    a.push(encode::enc_str_x_imm(reg, scratch, 0));
+}
+
+/// plans/M8.md item C2: `__rt_xsend_<src>_<Actor>` — a **cross-core send**,
+/// with byte-for-byte the ABI `__rt_enqueue_<Actor>` has
+/// (`x0=method_idx, x1=args_ptr, x2=nargs_words, x3=waker -> x0` =
+/// 0 admitted / 1 rejected). That identity is the whole design: codegen
+/// emits one symbolic call for every `send`/`await` and never learns
+/// whether the edge crosses a core, so 04 §3's "cross-core actor edges keep
+/// identical message semantics" holds by construction rather than by two
+/// code paths agreeing.
+///
+/// Three steps, in order:
+///
+/// 1. **Tag the waker** with the sending core (`waker_tag`, decision 30) —
+///    skipped for `waker == 0`, a one-way `send`, which expects no reply.
+///    The tag is what lets the completing turn on the far core tell a local
+///    waker from one whose turn record lives back here.
+/// 2. **Enqueue into the request ring** — literally `build_ring_enqueue`,
+///    the same routine a mailbox admission uses, against this edge's ring.
+///    A full ring returns 1 and touches nothing, exactly as a full mailbox
+///    does (02 §9.4's `NotAdmitted`/`Rejected` path): the sender's own
+///    already-emitted rejection handling fires unchanged, and no message is
+///    ever silently dropped or truncated.
+/// 3. **Wake the owning core** — raise its pending word. Ordered *after*
+///    the enqueue, so a core woken by this store always finds the message
+///    already published.
+///
+/// The wake is skipped on rejection: nothing was published, so there is
+/// nothing to wake for.
+fn build_rt_xsend(ring_enqueue_start: usize, src_core: usize, dst_core: usize, start: usize) -> Asm {
+    let mut a = Asm::new(start);
+    a.push(encode::enc_sub_imm(31, 31, 16, true));
+    a.push(encode::enc_str_x_imm(30, 31, 0));
+
+    let skip_notag = a.skip_placeholder(); // cbz x3, .notag
+    a.load_imm(9, waker_tag(src_core));
+    a.push(encode::enc_orr_reg(3, 3, 9, true));
+    let notag = a.abs();
+    a.patch_cbz(skip_notag, 3);
+    debug_assert_eq!(notag, a.abs());
+
+    a.bl_to(ring_enqueue_start);
+    let skip_out = a.skip_placeholder(); // cbnz x0, .out (rejected)
+    push_raise_pending(&mut a, dst_core);
+    a.push(encode::enc_movz(0, 0, 0, true)); // admitted
+    let out = a.abs();
+    a.patch_cbnz(skip_out, 0);
+    debug_assert_eq!(out, a.abs());
+
+    a.push(encode::enc_ldr_x_imm(30, 31, 0));
+    a.push(encode::enc_add_imm(31, 31, 16, true));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// plans/M8.md item C2: `__rt_xreply_<src>_<dst>(x0 = destination turn-area
+/// address, x1 = reply word)` — the **reply half** of a cross-core edge.
+/// A reply is an edge in the other direction and travels the same way a
+/// request does: a bounded ring plus a wake, never a store straight into
+/// another core's turn record.
+///
+/// Its own lane, separate from the request ring (decision 29). A request
+/// ring legitimately back-pressures — a full mailbox on the far side leaves
+/// messages sitting in it — and a reply has nowhere to go back to, so
+/// sharing one ring would let a stalled request lane strand a reply. Sized
+/// so full is unreachable (`reply_ring_capacity`), with a `BRK` rather than
+/// a rejection if it ever is: there is no caller to hand a rejection to.
+///
+/// A leaf routine (no `BL`), so it clobbers no link register and needs no
+/// frame: `x9..x15` scratch, `x0`/`x1` its arguments.
+fn build_rt_xreply(addrs: &RingAddrs, capacity: u64, dst_core: usize, start: usize) -> Asm {
+    let mut a = Asm::new(start);
+
+    a.load_imm(9, addrs.count);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    a.load_imm(11, capacity);
+    a.push(encode::enc_cmp_reg(10, 11, true));
+    let skip_ok = a.skip_placeholder(); // b.lt .ok
+    a.push(encode::enc_brk(BRK_XREPLY_RING_FULL));
+    let ok = a.abs();
+    a.patch_cond(skip_ok, Cond::Lt);
+    debug_assert_eq!(ok, a.abs());
+
+    // slot = ring + tail * REPLY_SLOT_SIZE
+    a.load_imm(12, addrs.tail);
+    a.push(encode::enc_ldr_x_imm(13, 12, 0));
+    a.load_imm(14, REPLY_SLOT_SIZE);
+    a.push(encode::enc_mul(14, 13, 14, true));
+    a.load_imm(15, addrs.ring);
+    a.push(encode::enc_add_reg(15, 15, 14, true));
+    a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.turn_area = x0
+    a.push(encode::enc_str_x_imm(1, 15, 8)); // slot.reply     = x1
+
+    push_ring_advance(&mut a, 13, 12, addrs.tail, capacity);
+
+    a.load_imm(9, addrs.count);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    a.push(encode::enc_add_imm(10, 10, 1, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+
+    push_raise_pending(&mut a, dst_core);
+    a.push(encode::enc_ret(30));
+    a
 }
 
 /// `rt_select_actor() -> x0 (1 = ran one turn-slice this call, 0 = not
@@ -5197,6 +5766,7 @@ pub fn build_rt_select_and_run(
         slot_size,
         &colors,
         frame_area_size,
+        &[],
         start,
         |a, idx| a.bl_to(dispatch[idx].0),
     )
@@ -5217,6 +5787,12 @@ fn build_rt_select_and_run_symbolic(
     slot_size: u64,
     dispatch: &[(String, bool, bool)],
     frame_area_size: u64,
+    // plans/M8.md item C2: `(remote core, that core pair's own
+    // `__rt_xreply_*` start word)` for every core whose turns can hold a
+    // waker on a message admitted here. Empty for every single-core image
+    // and for every actor no other core sends to — such an actor's
+    // delivery path keeps its pre-C2 bytes exactly.
+    xreply: &[(usize, usize)],
     start: usize,
 ) -> Asm {
     let colors: Vec<(bool, bool)> = dispatch
@@ -5229,6 +5805,7 @@ fn build_rt_select_and_run_symbolic(
         slot_size,
         &colors,
         frame_area_size,
+        xreply,
         start,
         |a, idx| a.bl_call_key(&dispatch[idx].0),
     )
@@ -5259,6 +5836,10 @@ fn build_rt_select_and_run_core(
     // — the turn record plus its widest async frame. An actor with no async
     // method has exactly the record and no frame slots at all.
     frame_area_size: u64,
+    // plans/M8.md item C2: see `build_rt_select_and_run_symbolic`. Empty
+    // means "no cross-core waker can reach this actor" and emits not one
+    // extra instruction.
+    xreply: &[(usize, usize)],
     start: usize,
     mut call_dispatch: impl FnMut(&mut Asm, usize),
 ) -> Asm {
@@ -5490,12 +6071,51 @@ fn build_rt_select_and_run_core(
     a.load_imm(10, addrs.turn);
     a.push(encode::enc_ldr_x_imm(11, 10, OFF_TURN_WAKER as u16));
     let skip_no_waker = a.skip_placeholder(); // cbz x11, .no_waker
+    // plans/M8.md item C2: a waker whose top bits carry a core tag
+    // (decision 30) names a turn record on **another** core, so its reply
+    // goes back the way the request came — over that core pair's own reply
+    // ring — instead of being stored straight into a remote turn record.
+    // Emitted only for an actor that a cross-core edge can actually reach;
+    // every single-core image, and every actor no other core messages,
+    // keeps the untouched two-store delivery below, word for word.
+    let mut to_after_remote: Vec<usize> = Vec::new();
+    if !xreply.is_empty() {
+        a.push(encode::enc_lsr_imm(13, 11, WAKER_CORE_SHIFT, true));
+        let skip_local = a.skip_placeholder(); // cbz x13, .local
+        a.load_imm(12, WAKER_CORE_MASK);
+        a.push(encode::enc_bic_reg(11, 11, 12, true)); // untag
+        for (remote_core, routine) in xreply {
+            a.push(encode::enc_cmp_imm(13, (*remote_core as u16) + 1, true));
+            let skip_arm = a.skip_placeholder(); // b.ne .next_arm
+            a.push(encode::enc_mov_reg(0, 11, true)); // x0 = turn area
+            a.push(encode::enc_mov_reg(1, 9, true)); // x1 = reply
+            a.bl_to(*routine);
+            to_after_remote.push(a.skip_placeholder()); // b .after_remote
+            let next_arm = a.abs();
+            a.patch_cond(skip_arm, Cond::Ne);
+            debug_assert_eq!(next_arm, a.abs());
+        }
+        a.push(encode::enc_brk(BRK_XREPLY_UNKNOWN_CORE));
+        let local = a.abs();
+        a.patch_cbz(skip_local, 13);
+        debug_assert_eq!(local, a.abs());
+    }
     a.push(encode::enc_str_x_imm(9, 11, OFF_TURN_REPLY as u16));
     a.push(encode::enc_movz(12, 1, 0, true));
     a.push(encode::enc_str_x_imm(12, 11, OFF_TURN_RESUME_READY as u16));
     let no_waker = a.abs();
     a.patch_cbz(skip_no_waker, 11);
+    for m in &to_after_remote {
+        let this = a.start + m;
+        let delta = (no_waker as i64 - this as i64) * 4;
+        a.words[*m] = encode::enc_b(delta as i32);
+    }
     debug_assert_eq!(no_waker, a.abs());
+    if !xreply.is_empty() {
+        // The remote arm's `BL` clobbered `x10`; the turn-record stores
+        // below need it back. (No-op for every image with no remote arm.)
+        a.load_imm(10, addrs.turn);
+    }
     a.push(encode::enc_str_x_imm(31, 10, 0)); // busy = 0 (xzr)
     a.push(encode::enc_str_x_imm(31, 10, OFF_TURN_WAKER as u16)); // waker = 0 (hygiene)
     a.push(encode::enc_movz(0, 1, 0, true)); // ran a turn(-slice)
@@ -5534,6 +6154,13 @@ fn build_rt_select_and_run_core(
 fn build_rt_run_one(
     select_starts: &[usize],
     child_poll_starts: &[usize],
+    // plans/M8.md item C2: this core's own inbound-ring drain, when it has
+    // any inbound lane. Called **first**, before selection: a message that
+    // crossed a core boundary has to reach a mailbox before the FIFO order
+    // 04 §2 promises can mean anything for it. `None` for every core with
+    // no inbound ring — every core of every pre-C2 image — which emits not
+    // one extra instruction.
+    drain_start: Option<usize>,
     rr_cursor_addr: u64,
     start: usize,
 ) -> Asm {
@@ -5542,6 +6169,19 @@ fn build_rt_run_one(
     a.push(encode::enc_str_x_imm(30, 31, 0));
     let n = select_starts.len();
     let mut to_out: Vec<usize> = Vec::new();
+    if let Some(drain) = drain_start {
+        // A drain that moved anything reports progress on its own: the
+        // caller's loop comes straight back here, and the root turn's own
+        // `resume_ready` re-check (the entry driver's loop) sees a reply
+        // this drain just delivered. Bounded by ring occupancy, so this can
+        // never spin.
+        a.bl_to(drain);
+        let skip = a.skip_placeholder(); // cbz x0, .continue
+        to_out.push(a.skip_placeholder()); // b .out (x0 already holds 1)
+        let cont = a.abs();
+        a.patch_cbz(skip, 0);
+        debug_assert_eq!(cont, a.abs());
+    }
     for pass in 0..2 {
         for (i, &sel) in select_starts.iter().enumerate() {
             // Reload the cursor each arm — the BL below clobbers scratch.
@@ -5578,6 +6218,131 @@ fn build_rt_run_one(
         let delta = (out as i64 - this as i64) * 4;
         a.words[*m] = encode::enc_b(delta as i32);
     }
+    a.push(encode::enc_ldr_x_imm(30, 31, 0));
+    a.push(encode::enc_add_imm(31, 31, 16, true));
+    a.push(encode::enc_ret(30));
+    a
+}
+
+/// plans/M8.md item C2: one core's own **inbound ring drain**,
+/// `rt_drain_<core>() -> x0 (1 = something moved, 0 = both lanes were
+/// empty)`. 04 §2 puts one cooperative loop on each core "over the actors
+/// placed there"; this is the step that turns a cross-core arrival into
+/// something that loop can select, and it runs *inside* that loop rather
+/// than in any interrupt or host callback — the only thing the far core did
+/// was publish into memory and raise a word.
+///
+/// Order and shape:
+///
+/// 1. **Clear this core's own pending word first** (secondary cores only —
+///    core 0's word belongs to `__wrela_checkpoint_service`, which already
+///    clears it on the park-resume path). Clear-then-re-derive is
+///    06 §5/04 §2's mask-arm-recheck: a wake that lands *during* the drain
+///    re-raises the word, so the core does not sleep on it, and re-running
+///    the drain is idempotent because readiness is read out of memory
+///    every time.
+/// 2. **Reply lanes**, one ring per sending core: write the reply word into
+///    the destination turn record and set `resume_ready`. Both stores are
+///    to memory this core owns the scheduling of, which is the point of
+///    routing the reply through a ring at all.
+/// 3. **Request lanes**, one ring per (sending core, target mailbox root):
+///    hand each message to the *same* `__rt_enqueue_<Actor>` a same-core
+///    send would have called, with the identical register ABI. If that
+///    admission is **rejected** (the mailbox is full), the message is left
+///    in the ring and this lane stops — back-pressure, never a drop. The
+///    ring then fills, and the next sender is rejected at its own send site
+///    exactly as a full mailbox rejects today (decision 29's own rule).
+///
+/// `x2` is the whole slot's argument-word count rather than the method's
+/// own: a ring slot and the mailbox slot it feeds are the same size by
+/// construction (`cross_core_rings`), so copying the full argument area is
+/// in bounds at both ends and needs no per-method table on this path.
+fn build_rt_drain(
+    core: usize,
+    // (ring addrs, capacity, slot size, that mailbox root's own
+    // `__rt_enqueue_*` start word)
+    request_lanes: &[(RingAddrs, u64, u64, usize)],
+    // (ring addrs, capacity)
+    reply_lanes: &[(RingAddrs, u64)],
+    start: usize,
+) -> Asm {
+    use crate::codegen::{OFF_TURN_REPLY, OFF_TURN_RESUME_READY};
+    let mut a = Asm::new(start);
+    a.push(encode::enc_sub_imm(31, 31, 16, true));
+    a.push(encode::enc_str_x_imm(30, 31, 0));
+    a.push(encode::enc_str_x_imm(31, 31, 8)); // moved = 0 (xzr)
+
+    if core != 0 {
+        a.load_imm(9, wrela_machine::pending::core_word_addr(core));
+        a.push(encode::enc_str_x_imm(31, 9, 0));
+    }
+
+    for (addrs, capacity) in reply_lanes {
+        let top = a.abs();
+        a.load_imm(9, addrs.count);
+        a.push(encode::enc_ldr_x_imm(10, 9, 0));
+        let skip_empty = a.skip_placeholder(); // cbz x10, .next
+        a.load_imm(9, addrs.head);
+        a.push(encode::enc_ldr_x_imm(11, 9, 0));
+        a.load_imm(12, REPLY_SLOT_SIZE);
+        a.push(encode::enc_mul(12, 11, 12, true));
+        a.load_imm(13, addrs.ring);
+        a.push(encode::enc_add_reg(13, 13, 12, true));
+        a.push(encode::enc_ldr_x_imm(14, 13, 0)); // destination turn area
+        a.push(encode::enc_ldr_x_imm(15, 13, 8)); // reply word
+        a.push(encode::enc_str_x_imm(15, 14, OFF_TURN_REPLY as u16));
+        a.push(encode::enc_movz(16, 1, 0, true));
+        a.push(encode::enc_str_x_imm(16, 14, OFF_TURN_RESUME_READY as u16));
+        push_ring_advance(&mut a, 11, 12, addrs.head, *capacity);
+        a.load_imm(9, addrs.count);
+        a.push(encode::enc_ldr_x_imm(10, 9, 0));
+        a.push(encode::enc_sub_imm(10, 10, 1, true));
+        a.push(encode::enc_str_x_imm(10, 9, 0));
+        a.push(encode::enc_movz(16, 1, 0, true));
+        a.push(encode::enc_str_x_imm(16, 31, 8)); // moved = 1
+        a.b_to(top);
+        let next = a.abs();
+        a.patch_cbz(skip_empty, 10);
+        debug_assert_eq!(next, a.abs());
+    }
+
+    for (addrs, capacity, slot_size, enqueue_start) in request_lanes {
+        let arg_words = (slot_size - 16) / 8;
+        let top = a.abs();
+        a.load_imm(9, addrs.count);
+        a.push(encode::enc_ldr_x_imm(10, 9, 0));
+        let skip_empty = a.skip_placeholder(); // cbz x10, .next
+        a.load_imm(9, addrs.head);
+        a.push(encode::enc_ldr_x_imm(11, 9, 0));
+        a.load_imm(12, *slot_size);
+        a.push(encode::enc_mul(12, 11, 12, true));
+        a.load_imm(13, addrs.ring);
+        a.push(encode::enc_add_reg(13, 13, 12, true));
+        a.push(encode::enc_ldr_x_imm(0, 13, 0)); // method_idx
+        a.push(encode::enc_ldr_x_imm(3, 13, 8)); // waker (core-tagged)
+        a.push(encode::enc_add_imm(1, 13, 16, true)); // args_ptr
+        a.load_imm(2, arg_words);
+        a.bl_to(*enqueue_start);
+        // Rejected: the target mailbox is full. Leave the message in the
+        // ring (back-pressure) and stop this lane — never a drop.
+        let skip_full = a.skip_placeholder(); // cbnz x0, .next
+        a.load_imm(9, addrs.head);
+        a.push(encode::enc_ldr_x_imm(11, 9, 0));
+        push_ring_advance(&mut a, 11, 12, addrs.head, *capacity);
+        a.load_imm(9, addrs.count);
+        a.push(encode::enc_ldr_x_imm(10, 9, 0));
+        a.push(encode::enc_sub_imm(10, 10, 1, true));
+        a.push(encode::enc_str_x_imm(10, 9, 0));
+        a.push(encode::enc_movz(16, 1, 0, true));
+        a.push(encode::enc_str_x_imm(16, 31, 8)); // moved = 1
+        a.b_to(top);
+        let next = a.abs();
+        a.patch_cbz(skip_empty, 10);
+        a.patch_cbnz(skip_full, 0);
+        debug_assert_eq!(next, a.abs());
+    }
+
+    a.push(encode::enc_ldr_x_imm(0, 31, 8)); // x0 = moved
     a.push(encode::enc_ldr_x_imm(30, 31, 0));
     a.push(encode::enc_add_imm(31, 31, 16, true));
     a.push(encode::enc_ret(30));
@@ -5828,6 +6593,7 @@ fn build_runtime_glue_block(
     // below can tell an actor from a driver, which is the point.
     let mut roots: Vec<(&str, &ActorAddrs, u64, u64, u64)> =
         Vec::with_capacity(tables.actors.len() + tables.drivers.len());
+
     for (i, a) in tables.actors.iter().enumerate() {
         roots.push((
             a.name.as_str(),
@@ -5850,13 +6616,73 @@ fn build_runtime_glue_block(
         ));
     }
     let mut select_starts = Vec::with_capacity(roots.len());
+    let mut enqueue_starts: Vec<usize> = Vec::with_capacity(roots.len());
     let mut cursor = start;
+    // --- plans/M8.md item C2: the cross-core ring routines --------------
+    //
+    // Emitted **before** the per-actor pairs below, for one mechanical
+    // reason: a selected turn's delivery arm calls `__rt_xreply_*`, and a
+    // local `BL` needs its target's word index already fixed. An image with
+    // no cross-core edge emits nothing here at all, so every pre-C2 image's
+    // per-actor pairs still start at `start` and every pinned byte holds
+    // (decision 12's own "emits nothing" shape, kept).
+    //
+    // `xreply_by_producer[d]` = the `(remote core, routine)` list an actor
+    // placed on core `d` needs; `request_lanes[dst]` = what core `dst`'s
+    // own drain consumes.
+    let mut xreply_by_producer: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+    let mut request_lanes: BTreeMap<usize, Vec<(RingAddrs, u64, u64, String)>> = BTreeMap::new();
+    let mut reply_lanes: BTreeMap<usize, Vec<(RingAddrs, u64)>> = BTreeMap::new();
+    for (ri, ring) in tables.rings.iter().enumerate() {
+        let addrs = placement.rings[ri];
+        match ring.kind {
+            RingKind::Reply => {
+                let start_here = cursor;
+                let asm = build_rt_xreply(&addrs, ring.capacity, ring.dst, start_here);
+                cursor += asm.words.len();
+                asms.push(asm);
+                xreply_by_producer
+                    .entry(ring.src)
+                    .or_default()
+                    .push((ring.dst, start_here));
+                reply_lanes
+                    .entry(ring.dst)
+                    .or_default()
+                    .push((addrs, ring.capacity));
+            }
+            RingKind::Request => {
+                let enqueue_start = cursor;
+                let enqueue_words =
+                    build_ring_enqueue(&addrs, ring.capacity, ring.slot_size, enqueue_start);
+                cursor += enqueue_words.len();
+                asms.push(Asm {
+                    start: enqueue_start,
+                    words: enqueue_words,
+                    relocs: Vec::new(),
+                });
+                let xsend_start = cursor;
+                let asm = build_rt_xsend(enqueue_start, ring.src, ring.dst, xsend_start);
+                cursor += asm.words.len();
+                asms.push(asm);
+                let actor = ring.actor.clone().unwrap_or_default();
+                symbols.insert(xsend_symbol(ring.src, &actor), xsend_start);
+                request_lanes.entry(ring.dst).or_default().push((
+                    addrs,
+                    ring.capacity,
+                    ring.slot_size,
+                    actor,
+                ));
+            }
+        }
+    }
+
     for (i, (name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
         let (_, dispatch_keys) = &actor_dispatch[i];
 
         let enqueue_start = cursor;
         let enqueue_words = build_rt_enqueue(addrs, *capacity, *slot_size, enqueue_start);
         cursor += enqueue_words.len();
+        enqueue_starts.push(enqueue_start);
         symbols.insert(crate::codegen::rt_enqueue_symbol(name), enqueue_start);
         asms.push(Asm {
             start: enqueue_start,
@@ -5865,12 +6691,18 @@ fn build_runtime_glue_block(
         });
 
         let select_start = cursor;
+        // plans/M8.md item C2: only an actor whose own core produces
+        // replies for another core carries the remote-waker arm.
+        let empty: Vec<(usize, usize)> = Vec::new();
+        let my_core = actor_cores.get(i).copied().unwrap_or(0);
+        let xreply = xreply_by_producer.get(&my_core).unwrap_or(&empty);
         let select_asm = build_rt_select_and_run_symbolic(
             addrs,
             *capacity,
             *slot_size,
             dispatch_keys,
             *frame_size,
+            xreply,
             select_start,
         );
         cursor += select_asm.words.len();
@@ -5911,6 +6743,30 @@ fn build_runtime_glue_block(
     // free turn, and the only free turns that run are the root test turn's
     // own, which is core 0's (06 §3: boot and the root turns are the entry
     // core's). Item C2 revisits this the moment a turn can run elsewhere.
+    // plans/M8.md item C2: one inbound-ring drain per core that has any
+    // inbound lane, placed after the per-actor enqueue routines it calls.
+    let mut drain_starts: BTreeMap<usize, usize> = BTreeMap::new();
+    for core in 0..tables.cores {
+        let empty_req: Vec<(RingAddrs, u64, u64, String)> = Vec::new();
+        let empty_rep: Vec<(RingAddrs, u64)> = Vec::new();
+        let reqs = request_lanes.get(&core).unwrap_or(&empty_req);
+        let reps = reply_lanes.get(&core).unwrap_or(&empty_rep);
+        if reqs.is_empty() && reps.is_empty() {
+            continue;
+        }
+        let resolved: Vec<(RingAddrs, u64, u64, usize)> = reqs
+            .iter()
+            .filter_map(|(addrs, cap, slot, actor)| {
+                let idx = roots.iter().position(|(n, ..)| n == actor)?;
+                Some((*addrs, *cap, *slot, enqueue_starts[idx]))
+            })
+            .collect();
+        let start_here = cursor;
+        let asm = build_rt_drain(core, &resolved, reps, start_here);
+        cursor += asm.words.len();
+        drain_starts.insert(core, start_here);
+        asms.push(asm);
+    }
     let mut rt_run_one_starts = Vec::with_capacity(tables.cores);
     for core in 0..tables.cores {
         let core_selects: Vec<usize> = select_starts
@@ -5924,6 +6780,7 @@ fn build_runtime_glue_block(
         let run_one_asm = build_rt_run_one(
             &core_selects,
             core_polls,
+            drain_starts.get(&core).copied(),
             placement.rr_cursors[core],
             start_here,
         );
@@ -6336,7 +7193,15 @@ impl RuntimeWiring {
     /// `init` a build error on the path that boots and a silent no-op on
     /// the path that does not. Both paths now materialize the same
     /// arguments and fail closed on the same shapes.
-    fn derive(boot: &BootCtx) -> Result<Option<RuntimeWiring>, LayoutError> {
+    fn derive(
+        boot: &BootCtx,
+        // plans/M8.md item C2: the compiled program, for the one fact
+        // placement cannot supply — which `send`/`await` sites actually
+        // exist, and therefore which cross-core edges this image has rings
+        // for. Both image flavors pass their own, so neither can end up
+        // with a ring set the other does not have.
+        program: &CodegenProgram,
+    ) -> Result<Option<RuntimeWiring>, LayoutError> {
         let Some(mut tables) =
             compute_runtime_tables(boot.graph, boot.modules, boot.layout_ctx, boot.async_frames)
                 .map_err(LayoutError::new)?
@@ -6377,13 +7242,29 @@ impl RuntimeWiring {
                 )));
             }
         }
-        let actor_cores: Vec<usize> = (0..tables.actors.len())
+        // plans/M8.md item C2, on top of item D: one entry per **mailbox
+        // root**, in `mailbox_root_names` order — every declared actor,
+        // then every messageable `@driver`. A driver's entry is always 0:
+        // shape decision 2 keeps `@driver` on core 0 and the arm just above
+        // refuses anything else, so a messageable driver is only ever a
+        // ring *destination*, never a ring source, and 04 §3's "a
+        // `@driver`'s vectors, pools, permits, and recovery lanes live on
+        // its core" is not in tension — a ring slot carries a method index,
+        // a waker and that method's own argument words, and nothing else.
+        let mut actor_cores: Vec<usize> = (0..tables.actors.len())
             .map(|i| {
                 placement
                     .core_of(&crate::eval::image::ImageDeclRef::Actor(i))
                     .unwrap_or(0)
             })
             .collect();
+        actor_cores.extend(
+            tables
+                .drivers
+                .iter()
+                .filter(|d| d.mailbox.is_some())
+                .map(|_| 0),
+        );
         let shapes = merge_actor_pub_methods(boot.modules, boot.layout_ctx)?;
         // plans/M8.md item D: dispatch tables are per *mailbox root*, in
         // `mailbox_root_names`' order — the same order
@@ -6439,7 +7320,7 @@ impl RuntimeWiring {
         );
         let state_sizes = tables.actors.iter().map(|a| a.state_size).collect();
         let driver_state_sizes = tables.drivers.iter().map(|d| d.state_size).collect();
-        Ok(Some(RuntimeWiring {
+        let mut wiring = RuntimeWiring {
             tables,
             dispatch,
             init_calls,
@@ -6449,7 +7330,14 @@ impl RuntimeWiring {
             group_child_index: boot.group_child_index.clone(),
             actor_cores,
             placement,
-        }))
+        };
+        // plans/M8.md item C2: the ring set, last — it is derived from the
+        // finished placement plus the compiled call sites, and it grows
+        // `rtdata` by exactly its own reservation.
+        let rings = cross_core_rings(program, &wiring)?;
+        reject_unlowerable_cross_core_shapes(&rings, &wiring, boot, program)?;
+        wiring.tables.add_cross_core_rings(rings);
+        Ok(Some(wiring))
     }
 }
 
@@ -7460,6 +8348,7 @@ fn build_entry_driver(
                 .expect("an async test forces the runtime glue block into existence");
             let ddl_off =
                 deadlock_off.expect("deadlock message interned whenever async tests exist");
+            let mut continue_after_loop = false;
             let status_loop_top = a.abs();
             let skip_done = a.skip_placeholder(); // cbz x0, .done
             let drive_top = a.abs();
@@ -7495,6 +8384,33 @@ fn build_entry_driver(
                 let delta = (drive_top as i64 - this as i64) * 4;
                 a.push(encode::enc_cbnz(0, delta as i32, true));
             }
+            // plans/M8.md item C2, decision 31: in a **cross-core** image
+            // "nothing ready here" is never local evidence of deadlock —
+            // another core may be one turn away from pushing a reply onto
+            // this core's inbound ring — so core 0 parks unconditionally
+            // and the VMM's own `core N parked and no core is runnable`
+            // becomes the deadlock diagnostic (it already fails closed with
+            // a named line rather than hanging). A single-core image is
+            // untouched, down to the word: the deadline test and
+            // `DEADLOCK_MSG` arm below are exactly M6's.
+            if cores > 1 {
+                a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
+                a.load_imm(10, 0);
+                a.push(encode::enc_str_x_imm(10, 9, 0));
+                a.bl_to(checkpoint_service_word);
+                a.b_to(drive_top);
+                let reenter = a.abs();
+                a.patch_cbnz(skip_reenter, 10);
+                debug_assert_eq!(reenter, a.abs());
+                a.bl_call_key(name); // resume (the fn's own discriminant routes)
+                a.b_to(status_loop_top);
+                let done = a.abs();
+                a.patch_cbz(skip_done, 0);
+                debug_assert_eq!(done, a.abs());
+                let _ = ddl_off;
+                continue_after_loop = true;
+            }
+            if !continue_after_loop {
             // Nothing ready. plans/M6.md item E, decision 7/06 §5: park
             // iff a deadline is pending (`OFF_NEXT_DEADLINE != 0`);
             // otherwise item D's own deadlock diagnostic still applies
@@ -7540,6 +8456,7 @@ fn build_entry_driver(
             let done = a.abs();
             a.patch_cbz(skip_done, 0);
             debug_assert_eq!(done, a.abs());
+            }
         }
 
         a.load_rodata_addr_at(0, ok_off);
@@ -7836,7 +8753,7 @@ pub fn layout_test_image(
     // one copy `layout_program` uses too (that fn's own module block above
     // has the full reasoning).
     let mut wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b)?,
+        Some(b) => RuntimeWiring::derive(b, program)?,
         None => None,
     };
     // plans/M7.md item E1: intern fallible-`init` abort messages before
@@ -8282,7 +9199,10 @@ pub fn layout_test_image(
                     // collide, and why nothing enforces against it yet).
                     // The `else` arm is the audit's one genuinely
                     // user-reachable find — `unresolved_call_target`.
-                    check_cross_core_edge(key, target, wiring.as_ref())?;
+                    // plans/M8.md item C2: see `layout_program`'s twin —
+                    // a cross-core edge resolves to its own `__rt_xsend_*`.
+                    let redirect = resolve_cross_core_edge(key, target, wiring.as_ref())?;
+                    let target = redirect.as_deref().unwrap_or(target.as_str());
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4
