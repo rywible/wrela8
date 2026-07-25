@@ -1,0 +1,2 @@
+test a_quarantined_block_comes_back_after_quiescence: ok
+1 passed, 0 failed

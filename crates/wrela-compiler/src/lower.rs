@@ -2549,6 +2549,25 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     });
                     Ok(dst)
                 }
+                "VirtQueue.reclaim" => {
+                    // `pool=`/`payload=` are *declarations* read by sema —
+                    // a bound pool name and a `@layout(dma)` type name,
+                    // neither of which has a value form. The handle the
+                    // gate hands back is the quarantined slot's own
+                    // payload word, so nothing here is lowered.
+                    let queue = match receiver {
+                        Some(q) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`reclaim` reached lowering without a queue receiver".to_string(),
+                            ));
+                        }
+                    };
+                    let _ = args;
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::QueueReclaim { dst, queue });
+                    Ok(dst)
+                }
                 other => Err(LowerError::internal(format!(
                     "unknown queue-op intrinsic `{other}`"
                 ))),

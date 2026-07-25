@@ -456,6 +456,32 @@ pub mod mmio {
     /// nothing to release, and the dumbest encoding of a no-op is no
     /// instruction, which is also what keeps every M5-M7 boot byte-identical.
     pub const RELEASE_MMIO_ADDR: u64 = MMIO_BASE + 0x3000;
+
+    /// One `u64` store: **quiesce the device that owns this queue**
+    /// (plans/M8.md item F). 03-hardware.md §9 makes device quiescence the
+    /// precondition for reclaiming DMA memory — "per-queue reset (when
+    /// negotiated) or full reset establishes quiescence, and only then is
+    /// memory reclaimed" — and a guest that merely *asserts* quiescence
+    /// proves nothing: the device is the VMM, and only the VMM can say it
+    /// has stopped.
+    ///
+    /// Protocol: the guest stores the **guest address of this queue's
+    /// quiesce-count word** (`virtqueue::SLOT_BOOK_QUIESCED` inside the
+    /// queue's own control-pool book). The VMM identifies the device from
+    /// that address through the ordinary declared-window check, stops that
+    /// device's model using the ring — no chain published before this
+    /// point is ever executed, so no payload described by a pre-reset
+    /// descriptor is ever written — and only then increments the count
+    /// word in place. The count is monotone and host-written; the guest
+    /// reads it to gate a reclaim, and a reclaim whose quarantine stamp
+    /// still equals the live count is refused by name.
+    ///
+    /// A trapping store, exactly like `PARK_MMIO_ADDR`/`RELEASE_MMIO_ADDR`
+    /// and for the same reason. 06-machine.md §5 blesses this directly:
+    /// "MMIO-shaped register access exists only on setup/**reset** paths,
+    /// where a trap is fine." An image with no `RunningDevice.reset` site
+    /// emits no store at all.
+    pub const QUIESCE_MMIO_ADDR: u64 = MMIO_BASE + 0x4000;
 }
 
 /// The closed device set of machine v1 (06-machine.md §6). There is no
@@ -550,6 +576,7 @@ mod tests {
             ("exit_mmio", mmio::EXIT_MMIO_ADDR, 8),
             ("park_mmio", mmio::PARK_MMIO_ADDR, 8),
             ("release_mmio", mmio::RELEASE_MMIO_ADDR, 8),
+            ("quiesce_mmio", mmio::QUIESCE_MMIO_ADDR, 8),
         ]
     }
 

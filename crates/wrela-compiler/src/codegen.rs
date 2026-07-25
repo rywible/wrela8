@@ -1988,6 +1988,9 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         } => {
             emit_queue_recover(ctx, f, *dst, *queue, *receipt)?;
         }
+        Inst::QueueReclaim { dst, queue } => {
+            emit_queue_reclaim(ctx, f, *dst, *queue)?;
+        }
         Inst::DeviceReset { dst, device, queue } => {
             emit_device_reset(ctx, f, *dst, *device, *queue)?;
         }
@@ -2799,9 +2802,19 @@ fn emit_queue_drain(
 }
 
 /// `RunningDevice.reset(queue=mut q)` (plans/M7.md item H2b / decision 23):
-/// bump the queue's live epoch (fail closed on wrap), copy the device word
-/// through. Does not reclaim DMA or clear the used ring — a completion
-/// stamped with the prior epoch is `StaleId` on the next drain.
+/// establish quiescence with the device, then bump the queue's live epoch
+/// (fail closed on wrap) and copy the device word through. Does not
+/// reclaim DMA or clear the used ring — a completion stamped with the
+/// prior epoch is `StaleId` on the next drain.
+///
+/// **The quiesce comes first** (plans/M8.md item F / decision 36).
+/// 03-hardware.md §9 orders it that way — "reset establishes quiescence,
+/// and only then is memory reclaimed" — and the order is load-bearing
+/// rather than stylistic: the host-written quiesce count is what a later
+/// `reclaim` gates on, so it must already be true by the time any guest
+/// code can observe the new epoch. The store to `QUIESCE_MMIO_ADDR` names
+/// this queue's own count word; the VMM refuses any other address, stops
+/// its model using the ring, and only then increments the count.
 fn emit_device_reset(
     ctx: &mut FnCtx,
     f: &MwirFn,
@@ -2814,6 +2827,23 @@ fn emit_device_reset(
         CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
     })?;
     let epoch_off = placed.bytes + crate::virtqueue::SLOT_BOOK_EPOCH;
+    let quiesced_off = placed.bytes + crate::virtqueue::SLOT_BOOK_QUIESCED;
+
+    // Quiescence first: X_A = &quiesce count, stored to QUIESCE_MMIO_ADDR.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_A, quiesced_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.load_imm(X_B, wrela_machine::mmio::QUIESCE_MMIO_ADDR as i64);
+    ctx.store_ptr(X_A, X_B, 0);
+
     // X_C = pool; X_D = &current_epoch
     ctx.load_slot(X_C, ctx.frame.off(queue));
     ctx.load_imm(X_D, epoch_off as i64);
@@ -2949,11 +2979,20 @@ fn emit_queue_claim(
 /// epoch lives.
 ///
 /// No payload is produced — 03-hardware.md §9 forbids reclaiming possibly
-/// device-owned memory, so the meta's payload word is left where it is and
-/// the pool slot is retired (quarantine/reclaim is plans/M8.md item F).
+/// device-owned memory, so the meta's payload word is left where it is.
 /// Both `INFLIGHT` and `RESOLVED` are cleared afterwards, so a second
 /// resolution of the same slot meets the fail-closed abort rather than a
 /// stale answer — the runtime half of §5's "resolves exactly once".
+///
+/// plans/M8.md item F / decision 37: the slot is **quarantined** rather
+/// than merely retired. `SLOT_FLAG_QUARANTINED` goes up and the queue's
+/// live host-written quiesce count is copied into
+/// `SLOT_BOOK_QUARANTINE_STAMP`, so `reclaim` can tell "the device has
+/// been stopped since this buffer was abandoned" from "it has not".
+/// Quarantine is unconditional across all three outcomes on purpose: a
+/// `Completed` slot's descriptor did come back, but making the gate depend
+/// on the outcome would put the fail-open reading one branch away, and
+/// nothing in §9 asks for it.
 fn emit_queue_recover(
     ctx: &mut FnCtx,
     f: &MwirFn,
@@ -3067,9 +3106,169 @@ fn emit_queue_recover(
             reg_name(X_A)
         ),
     );
+    // Quarantine the payload (plans/M8.md item F): raise QUARANTINED and
+    // stamp the queue's live host-written quiesce count, which is what
+    // `reclaim` compares against. X_C still holds the control-pool base.
+    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_QUARANTINED as i64);
+    ctx.push(
+        encode::enc_orr_reg(X_B, X_B, X_A, true),
+        format!(
+            "orr {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
     ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
 
+    ctx.load_imm(
+        X_A,
+        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUIESCED) as i64,
+    );
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.load_ptr(X_A, X_A, 0);
+    ctx.load_imm(
+        X_B,
+        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUARANTINE_STAMP) as i64,
+    );
+    ctx.push(
+        encode::enc_add_reg(X_B, X_C, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_C),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_B, 0);
+
     ctx.store_slot(X_F, ctx.frame.off(dst));
+    Ok(())
+}
+
+/// `VirtQueue.reclaim(pool=P, payload=T)` (plans/M8.md item F / decision
+/// 37): 03-hardware.md §9's "and only then is memory reclaimed", as a
+/// gate and a load.
+///
+/// The queue is single-flight, so the quarantined slot is the queue's one
+/// meta record at a fixed offset from the control-pool base — no receipt
+/// is needed (and none exists: `recover` consumed it, §5's
+/// resolve-exactly-once). Three steps, in this order:
+///
+/// 1. `SLOT_FLAG_QUARANTINED` must be up. Nothing quarantined means
+///    `recover` never ran on this queue, or a previous `reclaim` already
+///    took the payload — either way there is no handle to hand back, and
+///    inventing one is precisely the aliasing bug this gate exists to
+///    prevent.
+/// 2. The queue's **host-written** quiesce count must have moved since
+///    `recover` stamped it. Equal counts mean no device quiescence has
+///    happened in between, so the buffer may still be device-owned: §9's
+///    "it never reclaims possibly device-owned memory", refused by name.
+/// 3. Only then: the payload word out of the meta record into `dst`, the
+///    quarantine flag down, and the meta's payload word cleared so the
+///    address exists in exactly one place afterwards.
+fn emit_queue_reclaim(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    queue: Temp,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let meta_off = crate::virtqueue::meta_offset(placed.bytes);
+
+    // X_C = control-pool base; X_D = the queue's one meta record.
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, meta_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+
+    // 1. quarantined?
+    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_QUARANTINED as i64);
+    ctx.push(
+        encode::enc_and_reg(X_A, X_B, X_A, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    let quarantined = ctx.emit_skip(SkipKind::Cbnz(X_A));
+    ctx.abort_fixed(crate::virtqueue::ReclaimGate::NotQuarantined.abort_message());
+    ctx.patch_skip(quarantined, SkipKind::Cbnz(X_A));
+
+    // 2. has the host quiesced the device since the quarantine?
+    ctx.load_imm(
+        X_A,
+        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUIESCED) as i64,
+    );
+    ctx.push(
+        encode::enc_add_reg(X_A, X_C, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_C),
+            reg_name(X_A)
+        ),
+    );
+    ctx.load_ptr(X_A, X_A, 0);
+    ctx.load_imm(
+        X_E,
+        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUARANTINE_STAMP) as i64,
+    );
+    ctx.push(
+        encode::enc_add_reg(X_E, X_C, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_C),
+            reg_name(X_E)
+        ),
+    );
+    ctx.load_ptr(X_E, X_E, 0);
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_E, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_E)),
+    );
+    let quiesced = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
+    ctx.abort_fixed(crate::virtqueue::ReclaimGate::NotQuiesced.abort_message());
+    ctx.patch_skip(quiesced, SkipKind::Cond(Cond::Ne));
+
+    // 3. hand the payload back, exactly once.
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
+    ctx.store_slot(X_A, ctx.frame.off(dst));
+    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_QUARANTINED as i64);
+    ctx.push(
+        encode::enc_bic_reg(X_B, X_B, X_A, true),
+        format!(
+            "bic {}, {}, {}",
+            reg_name(X_B),
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
+    );
+    ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    ctx.load_imm(X_A, 0);
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
     Ok(())
 }
 

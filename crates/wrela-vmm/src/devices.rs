@@ -412,6 +412,17 @@ pub enum BlkFault {
     /// A `Flush` carrying data descriptors (`struct virtio_blk_req` has
     /// none for `T_FLUSH`).
     FlushWithData { len: u64 },
+    /// A quiesce (`mmio::QUIESCE_MMIO_ADDR`) naming an address that is not
+    /// this queue's own quiesce-count word (plans/M8.md item F). The count
+    /// is the only evidence a driver has that the device stopped, so a
+    /// guest gating a reclaim on some *other* word is refused rather than
+    /// served — an ungated reclaim must never be reachable by naming the
+    /// wrong address.
+    QuiesceWrongWord {
+        named: u64,
+        expected: u64,
+        device: u64,
+    },
 }
 
 impl std::fmt::Display for BlkFault {
@@ -506,6 +517,16 @@ impl std::fmt::Display for BlkFault {
             BlkFault::FlushWithData { len } => {
                 write!(f, "a Flush request carries {len} byte(s) of data")
             }
+            BlkFault::QuiesceWrongWord {
+                named,
+                expected,
+                device,
+            } => write!(
+                f,
+                "a quiesce named {named:#x} as device#{device}'s quiesce-count word, but this \
+                 queue's own is {expected:#x} (03-hardware.md §9: reclaim is gated on the count \
+                 this VMM writes, so it may only ever be the queue's own)"
+            ),
         }
     }
 }
@@ -719,7 +740,14 @@ impl BlkDevice {
             return Ok(Vec::new());
         }
         mem.write_u64(q.doorbell, 0)?;
+        self.execute_available(mem)
+    }
 
+    /// Everything `avail.idx` has made available and this model has not
+    /// consumed yet, executed in `avail.ring` order. `service` is this plus
+    /// the doorbell gate; `quiesce` is this plus the stop.
+    fn execute_available(&mut self, mem: &mut GuestMem) -> Result<Vec<Completion>, BlkFault> {
+        let q = self.config.queue.clone();
         let avail_idx = mem.read_u16(q.avail + 2)?;
         let pending = avail_idx.wrapping_sub(self.last_avail_idx);
         if pending > q.size {
@@ -745,6 +773,77 @@ impl BlkDevice {
             out.push(completion);
         }
         Ok(out)
+    }
+
+    /// 03-hardware.md §9's quiescence, device side (plans/M8.md item F /
+    /// **decision 36**). Called only from `mmio::QUIESCE_MMIO_ADDR`'s
+    /// handler, which is the trapping store `RunningDevice.reset` performs
+    /// *before* it bumps the guest-side epoch.
+    ///
+    /// Quiescence is **finish, then stop**, and both halves matter:
+    ///
+    /// - *finish* — every chain the guest has made available is executed
+    ///   here, synchronously, while the vCPU sits in the trap. Note this
+    ///   ignores the doorbell: the driver is entitled to a definite answer
+    ///   about work it published, and "the doorbell had already been
+    ///   consumed" is not one. The completions come back for the caller to
+    ///   put through the recorder and the used ring exactly like an
+    ///   ordinary poll's, so a straggler still surfaces to the driver — and
+    ///   still meets the epoch check as `CompletionFault::StaleId`, which
+    ///   is what 03-hardware.md §9's "invalidates all prior receipts" is
+    ///   for (`golden/err-boot-epoch-stale`).
+    /// - *stop* — `last_avail_idx` now equals `avail.idx` and the doorbell
+    ///   is clear, so there is no descriptor this model will ever walk that
+    ///   was published before this call returned. Every write it was ever
+    ///   going to make to a pre-quiesce payload has already happened.
+    ///
+    /// **Rejected: drop the outstanding chains unexecuted**, which is what
+    /// a hardware reset does. It is a defensible reading of the same
+    /// sentence and it makes quiescence cheaper to argue, but it deletes
+    /// the only way a stale completion can reach a driver on this machine
+    /// — which is a case 03 §9 spends a clause on and M7 pinned a boot
+    /// golden for. Finishing is also strictly *stronger* for the property
+    /// this exists to establish: the device is provably done with the
+    /// buffer, rather than provably never going to start.
+    ///
+    /// Only after both halves is the monotone quiesce count incremented in
+    /// guest memory — the one word a driver may gate a reclaim on.
+    ///
+    /// The count word's address is **derived here, not taken from the
+    /// guest**: the caller passes the address the guest named and this
+    /// refuses any other, so a guest gating a reclaim on some other word
+    /// is a named fault rather than a silently ungated reclaim.
+    ///
+    /// `used_idx` is deliberately *not* reset: 03 §9's reset "does not
+    /// clear the used ring" (`codegen::emit_device_reset`'s own comment).
+    pub fn quiesce(&mut self, mem: &mut GuestMem, named: u64) -> Result<Vec<Completion>, BlkFault> {
+        let expected = self.quiesce_count_addr();
+        if named != expected {
+            return Err(BlkFault::QuiesceWrongWord {
+                named,
+                expected,
+                device: self.config.device,
+            });
+        }
+        let completions = self.execute_available(mem)?;
+        mem.write_u64(self.config.queue.doorbell, 0)?;
+        let count = mem.read_u64(expected)?.wrapping_add(1);
+        mem.write_u64(expected, count)?;
+        Ok(completions)
+    }
+
+    /// Guest address of this queue's host-written quiesce count.
+    ///
+    /// The queue's control-pool book starts immediately after the doorbell
+    /// word, and the count is its third `u64` — mirroring
+    /// `wrela_compiler::virtqueue::{SLOT_BOOK_LAST_USED, SLOT_BOOK_EPOCH,
+    /// SLOT_BOOK_QUIESCED}` byte for byte, exactly as every other number
+    /// in this file mirrors that module (`DESC_SIZE`, `avail_bytes`,
+    /// `DEVICE_FEATURES`). A disagreement is not silent: the guest names
+    /// the address it intends to gate on and `quiesce` refuses any address
+    /// but this one.
+    pub fn quiesce_count_addr(&self) -> u64 {
+        self.config.queue.doorbell + 8 + 16
     }
 
     /// Publishes one completion in the used ring and bumps `used.idx`
@@ -1410,6 +1509,96 @@ mod tests {
         assert_eq!(h.used_idx(), 0);
     }
 
+    // --- 03 §9's quiescence (plans/M8.md item F, decision 36) -----------
+
+    #[test]
+    fn a_quiesce_finishes_outstanding_work_and_bumps_the_host_written_count() {
+        let mut h = Harness::new();
+        let mut dev = h.device();
+        dev.set_disk(vec![0xAB; 16 * SECTOR_SIZE as usize]);
+        // A device-writable read, published but never polled: the model
+        // still holds it when the driver resets.
+        h.build_request(T_IN, 0, 512, true);
+        h.publish(0, 1);
+        let count_addr = dev.quiesce_count_addr();
+        let completions = {
+            let mut mem = h.mem();
+            dev.quiesce(&mut mem, count_addr)
+                .expect("a well-formed quiesce")
+        };
+        assert_eq!(completions.len(), 1, "the outstanding read was finished");
+        assert_eq!(completions[0].status, STATUS_OK);
+        assert_eq!(
+            h.get(DATA_ADDR, 4),
+            vec![0xAB; 4],
+            "the read's payload landed before the quiesce returned"
+        );
+        assert_eq!(
+            u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap()),
+            1,
+            "the host-written quiesce count is the driver's only evidence"
+        );
+        assert_eq!(
+            u64::from_le_bytes(h.get(DOORBELL_ADDR, 8).try_into().unwrap()),
+            0,
+            "the doorbell is clear afterwards"
+        );
+    }
+
+    #[test]
+    fn no_chain_published_before_a_quiesce_is_ever_executed_after_it() {
+        // The half that makes "reclaim after quiescence" sound: once the
+        // count has moved, nothing this model does later can write a
+        // buffer described by a descriptor published before it.
+        let mut h = Harness::new();
+        let mut dev = h.device();
+        dev.set_disk(vec![0xAB; 16 * SECTOR_SIZE as usize]);
+        h.build_request(T_IN, 0, 512, true);
+        h.publish(0, 1);
+        let count_addr = dev.quiesce_count_addr();
+        {
+            let mut mem = h.mem();
+            dev.quiesce(&mut mem, count_addr).expect("quiesce");
+        }
+        // Wipe the payload the driver is about to reclaim, then give the
+        // model every chance to touch it again: the ring still names the
+        // same chain, and the doorbell is rung.
+        h.put(DATA_ADDR, &[0u8; 512]);
+        h.put(DOORBELL_ADDR, &1u64.to_le_bytes());
+        assert_eq!(
+            h.run(&mut dev).expect("nothing outstanding"),
+            Vec::new(),
+            "a pre-quiesce chain is not re-executed"
+        );
+        assert_eq!(
+            h.get(DATA_ADDR, 512),
+            vec![0u8; 512],
+            "no post-quiesce write reached the reclaimed buffer"
+        );
+    }
+
+    #[test]
+    fn a_quiesce_naming_any_other_word_is_refused_by_name() {
+        let mut h = Harness::new();
+        let mut dev = h.device();
+        let count_addr = dev.quiesce_count_addr();
+        let mut mem = h.mem();
+        // One word off: still inside the declared window, still guest
+        // memory, and still not the word a reclaim may be gated on.
+        let err = dev
+            .quiesce(&mut mem, count_addr + 8)
+            .expect_err("a foreign word is refused");
+        assert!(matches!(err, BlkFault::QuiesceWrongWord { .. }), "{err:?}");
+        let text = err.to_string();
+        assert!(text.contains("quiesce-count word"), "{text}");
+        // And the count itself did not move.
+        drop(mem);
+        assert_eq!(
+            u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap()),
+            0
+        );
+    }
+
     #[test]
     fn flush_completes_ok_when_negotiated_and_unsupported_when_not() {
         let mut h = Harness::new();
@@ -1764,6 +1953,11 @@ mod tests {
             },
             BlkFault::UnalignedDataLength { len: 500 },
             BlkFault::FlushWithData { len: 512 },
+            BlkFault::QuiesceWrongWord {
+                named: 1,
+                expected: 2,
+                device: 0,
+            },
         ];
         let mut seen = std::collections::BTreeSet::new();
         for f in &faults {

@@ -661,6 +661,20 @@ pub enum Inst {
         receipt: Temp,
     },
 
+    /// `VirtQueue.reclaim(pool=P, payload=T)` (plans/M8.md item F /
+    /// decision 37, 03-hardware.md §9's "and only then is memory
+    /// reclaimed"): hand the quarantined slot's `own[P] T` handle back,
+    /// but only once the **host** has recorded a device quiescence since
+    /// `recover` quarantined it. Takes no receipt — `recover` consumed
+    /// that (§5: a receipt resolves exactly once) and the queue is
+    /// single-flight, so the quarantined slot is the queue's own meta
+    /// record. Aborts by name when nothing is quarantined, and when the
+    /// quiesce count has not moved.
+    QueueReclaim {
+        dst: Temp,
+        queue: Temp,
+    },
+
     /// `RunningDevice.reset(queue=mut q)` (plans/M7.md item H2b / decision 23,
     /// 03-hardware.md §9): full device reset on machine v1. Consumes
     /// `Running`, bumps the queue's live epoch (invalidating every prior
@@ -1327,6 +1341,9 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             receipt,
         } => {
             format!("QueueRecover dst={dst} queue={queue} receipt={receipt}")
+        }
+        Inst::QueueReclaim { dst, queue } => {
+            format!("QueueReclaim dst={dst} queue={queue}")
         }
         Inst::DeviceReset { dst, device, queue } => {
             format!("DeviceReset dst={dst} device={device} queue={queue}")

@@ -1,0 +1,464 @@
+Program
+  Fn key=BlkDriver.drain ret=unit temps=111 receiver=t0:mut
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=u32
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=bool
+    Temp t6 ty=unit
+    Temp t7 ty=u32
+    Temp t8 ty=u32
+    Temp t9 ty=bool
+    Temp t10 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t11 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t12 ty=u64
+    Temp t13 ty=u64
+    Temp t14 ty=bool
+    Temp t15 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t16 ty=unit
+    Temp t17 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t18 ty=u64
+    Temp t19 ty=u64
+    Temp t20 ty=bool
+    Temp t21 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t22 ty=bool
+    Temp t23 ty=bool
+    Temp t24 ty=VirtQueue[..8]
+    Temp t25 ty=unit
+    Temp t26 ty=VirtQueue[..8]
+    Temp t27 ty=CompletionOutcome
+    Temp t28 ty=CompletionOutcome
+    Temp t29 ty=u64
+    Temp t30 ty=u64
+    Temp t31 ty=bool
+    Temp t32 ty=u64
+    Temp t33 ty=u64
+    Temp t34 ty=bool
+    Temp t35 ty=bool
+    Temp t36 ty=u64
+    Temp t37 ty=u64
+    Temp t38 ty=bool
+    Temp t39 ty=bool
+    Temp t40 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t41 ty=RunningDevice[VirtioBlock]
+    Temp t42 ty=VirtQueue[..8]
+    Temp t43 ty=RunningDevice[VirtioBlock]
+    Temp t44 ty=VirtQueue[..8]
+    Temp t45 ty=own[BlockPayloads] DmaBlock
+    Temp t46 ty=own[BlockPayloads] DmaBlock
+    Temp t47 ty=u64
+    Temp t48 ty=u64
+    Temp t49 ty=QueuePermit
+    Temp t50 ty=QueuePermit
+    Temp t51 ty=VirtQueue[..8]
+    Temp t52 ty=u32
+    Temp t53 ty=u32
+    Temp t54 ty=u64
+    Temp t55 ty=BlkReqHeader
+    Temp t56 ty=u8
+    Temp t57 ty=BlkReqStatus
+    Temp t58 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t59 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t60 ty=VirtQueue[..8]
+    Temp t61 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t62 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t63 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t64 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t65 ty=u64
+    Temp t66 ty=u64
+    Temp t67 ty=bool
+    Temp t68 ty=u64
+    Temp t69 ty=u64
+    Temp t70 ty=bool
+    Temp t71 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t72 ty=bool
+    Temp t73 ty=bool
+    Temp t74 ty=bool
+    Temp t75 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t76 ty=u32
+    Temp t77 ty=u32
+    Temp t78 ty=u32
+    Temp t79 ty=bool
+    Temp t80 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t81 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t82 ty=u64
+    Temp t83 ty=u64
+    Temp t84 ty=bool
+    Temp t85 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t86 ty=unit
+    Temp t87 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t88 ty=u64
+    Temp t89 ty=u64
+    Temp t90 ty=bool
+    Temp t91 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t92 ty=bool
+    Temp t93 ty=bool
+    Temp t94 ty=VirtQueue[..8]
+    Temp t95 ty=unit
+    Temp t96 ty=VirtQueue[..8]
+    Temp t97 ty=IoCompletion[own[BlockPayloads] DmaBlock]
+    Temp t98 ty=IoCompletion[own[BlockPayloads] DmaBlock]
+    Temp t99 ty=own[BlockPayloads] DmaBlock
+    Temp t100 ty=own[BlockPayloads] DmaBlock
+    Temp t101 ty=u64
+    Temp t102 ty=u64
+    Temp t103 ty=bool
+    Temp t104 ty=u64
+    Temp t105 ty=u64
+    Temp t106 ty=bool
+    Temp t107 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t108 ty=u32
+    Temp t109 ty=unit
+    Temp t110 ty=unit
+    Body
+      0000: ConstInt dst=t1 ty=u32 value=0
+      0001: InterruptCellSwapAcquire dst=t2 field_off=24 width=4 value=t1
+      0002: Copy dst=t3 src=t2
+      0003: ConstInt dst=t4 ty=u32 value=0
+      0004: Compare op=== ty=u32 dst=t5 lhs=t3 rhs=t4
+      0005: JumpIfFalse cond=t5 target=0009
+      0006: ConstUnit dst=t6
+      0007: Return value=t6
+      0008: Jump target=0009
+      0009: Project dst=t7 base=t0 index=6
+      0010: ConstInt dst=t8 ty=u32 value=1
+      0011: Compare op=== ty=u32 dst=t9 lhs=t7 rhs=t8
+      0012: JumpIfFalse cond=t9 target=0116
+      0013: Project dst=t10 base=t0 index=5
+      0014: Copy dst=t11 src=t10
+      0015: EnumTag dst=t12 src=t11
+      0016: ConstInt dst=t13 ty=u64 value=0
+      0017: Compare op=== ty=u64 dst=t14 lhs=t12 rhs=t13
+      0018: JumpIfFalse cond=t14 target=0024
+      0019: MakeEnum dst=t15 tag=0 payload=[]
+      0020: SetField base=t0 index=5 value=t15
+      0021: ConstUnit dst=t16
+      0022: Return value=t16
+      0023: Jump target=0115
+      0024: EnumTag dst=t18 src=t11
+      0025: ConstInt dst=t19 ty=u64 value=1
+      0026: Compare op=== ty=u64 dst=t20 lhs=t18 rhs=t19
+      0027: EnumPayload dst=t21 src=t11 index=0
+      0028: Copy dst=t17 src=t21
+      0029: ConstBool dst=t22 value=true
+      0030: BoolAnd dst=t23 lhs=t20 rhs=t22
+      0031: JumpIfFalse cond=t23 target=0114
+      0032: Project dst=t24 base=t0 index=2
+      0033: QueueDrain queue=t24 max=8
+      0034: ConstUnit dst=t25
+      0035: Project dst=t26 base=t0 index=2
+      0036: QueueRecover dst=t27 queue=t26 receipt=t17
+      0037: Copy dst=t28 src=t27
+      0038: EnumTag dst=t29 src=t28
+      0039: ConstInt dst=t30 ty=u64 value=0
+      0040: Compare op=== ty=u64 dst=t31 lhs=t29 rhs=t30
+      0041: JumpIfFalse cond=t31 target=0043
+      0042: Jump target=0062
+      0043: EnumTag dst=t32 src=t28
+      0044: ConstInt dst=t33 ty=u64 value=1
+      0045: Compare op=== ty=u64 dst=t34 lhs=t32 rhs=t33
+      0046: JumpIfFalse cond=t34 target=0052
+      0047: ConstBool dst=t35 value=false
+      0048: JumpIfFalse cond=t35 target=0050
+      0049: Jump target=0051
+      0050: AssertFail message="the device reported status OK for the first write"
+      0051: Jump target=0062
+      0052: EnumTag dst=t36 src=t28
+      0053: ConstInt dst=t37 ty=u64 value=2
+      0054: Compare op=== ty=u64 dst=t38 lhs=t36 rhs=t37
+      0055: JumpIfFalse cond=t38 target=0061
+      0056: ConstBool dst=t39 value=false
+      0057: JumpIfFalse cond=t39 target=0059
+      0058: Jump target=0060
+      0059: AssertFail message="no reset happened before the first recover"
+      0060: Jump target=0062
+      0061: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0062: MakeEnum dst=t40 tag=0 payload=[]
+      0063: SetField base=t0 index=5 value=t40
+      0064: Project dst=t41 base=t0 index=1
+      0065: Project dst=t42 base=t0 index=2
+      0066: DeviceReset dst=t43 device=t41 queue=t42
+      0067: SetField base=t0 index=1 value=t43
+      0068: Project dst=t44 base=t0 index=2
+      0069: QueueReclaim dst=t45 queue=t44
+      0070: Copy dst=t46 src=t45
+      0071: Project dst=t47 base=t46 index=0
+      0072: SetField base=t0 index=7 value=t47
+      0073: ConstInt dst=t48 ty=u64 value=6827561215410069184
+      0074: SetField base=t46 index=0 value=t48
+      0075: ConstInt dst=t49 ty=u64 value=0
+      0076: Copy dst=t50 src=t49
+      0077: Project dst=t51 base=t0 index=2
+      0078: ConstInt dst=t52 ty=u32 value=1
+      0079: ConstInt dst=t53 ty=u32 value=0
+      0080: ConstInt dst=t54 ty=u64 value=1
+      0081: MakeAggregate dst=t55 elems=[t52,t53,t54]
+      0082: ConstInt dst=t56 ty=u8 value=255
+      0083: MakeAggregate dst=t57 elems=[t56]
+      0084: QueuePrepare dst=t58 queue=t51 permit=t50 header=t55 payload=t46 status=t57 device_writes=false payload_len=512
+      0085: Copy dst=t59 src=t58
+      0086: Project dst=t60 base=t0 index=2
+      0087: QueuePublish dst=t61 queue=t60 operation=t59 order=[write_descriptors, publish_available, notify_queue]
+      0088: Copy dst=t62 src=t61
+      0089: Project dst=t63 base=t0 index=5
+      0090: Copy dst=t64 src=t63
+      0091: EnumTag dst=t65 src=t64
+      0092: ConstInt dst=t66 ty=u64 value=0
+      0093: Compare op=== ty=u64 dst=t67 lhs=t65 rhs=t66
+      0094: JumpIfFalse cond=t67 target=0096
+      0095: Jump target=0109
+      0096: EnumTag dst=t68 src=t64
+      0097: ConstInt dst=t69 ty=u64 value=1
+      0098: Compare op=== ty=u64 dst=t70 lhs=t68 rhs=t69
+      0099: EnumPayload dst=t71 src=t64 index=0
+      0100: ConstBool dst=t72 value=true
+      0101: BoolAnd dst=t73 lhs=t70 rhs=t72
+      0102: JumpIfFalse cond=t73 target=0108
+      0103: ConstBool dst=t74 value=false
+      0104: JumpIfFalse cond=t74 target=0106
+      0105: Jump target=0107
+      0106: AssertFail message="the receipt slot is empty between phases"
+      0107: Jump target=0109
+      0108: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0109: MakeEnum dst=t75 tag=1 payload=[t62]
+      0110: SetField base=t0 index=5 value=t75
+      0111: ConstInt dst=t76 ty=u32 value=2
+      0112: SetField base=t0 index=6 value=t76
+      0113: Jump target=0115
+      0114: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0115: Jump target=0168
+      0116: Project dst=t77 base=t0 index=6
+      0117: ConstInt dst=t78 ty=u32 value=2
+      0118: Compare op=== ty=u32 dst=t79 lhs=t77 rhs=t78
+      0119: JumpIfFalse cond=t79 target=0166
+      0120: Project dst=t80 base=t0 index=5
+      0121: Copy dst=t81 src=t80
+      0122: EnumTag dst=t82 src=t81
+      0123: ConstInt dst=t83 ty=u64 value=0
+      0124: Compare op=== ty=u64 dst=t84 lhs=t82 rhs=t83
+      0125: JumpIfFalse cond=t84 target=0131
+      0126: MakeEnum dst=t85 tag=0 payload=[]
+      0127: SetField base=t0 index=5 value=t85
+      0128: ConstUnit dst=t86
+      0129: Return value=t86
+      0130: Jump target=0165
+      0131: EnumTag dst=t88 src=t81
+      0132: ConstInt dst=t89 ty=u64 value=1
+      0133: Compare op=== ty=u64 dst=t90 lhs=t88 rhs=t89
+      0134: EnumPayload dst=t91 src=t81 index=0
+      0135: Copy dst=t87 src=t91
+      0136: ConstBool dst=t92 value=true
+      0137: BoolAnd dst=t93 lhs=t90 rhs=t92
+      0138: JumpIfFalse cond=t93 target=0164
+      0139: Project dst=t94 base=t0 index=2
+      0140: QueueDrain queue=t94 max=8
+      0141: ConstUnit dst=t95
+      0142: Project dst=t96 base=t0 index=2
+      0143: QueueClaim dst=t97 queue=t96 receipt=t87
+      0144: Copy dst=t98 src=t97
+      0145: Project dst=t99 base=t98 index=0
+      0146: Copy dst=t100 src=t99
+      0147: Project dst=t101 base=t100 index=0
+      0148: ConstInt dst=t102 ty=u64 value=6827561215410069184
+      0149: Compare op=== ty=u64 dst=t103 lhs=t101 rhs=t102
+      0150: JumpIfFalse cond=t103 target=0152
+      0151: Jump target=0153
+      0152: AssertFail message="the reclaimed block carried the second write"
+      0153: Project dst=t104 base=t0 index=7
+      0154: ConstInt dst=t105 ty=u64 value=13907095861314142881
+      0155: Compare op=== ty=u64 dst=t106 lhs=t104 rhs=t105
+      0156: JumpIfFalse cond=t106 target=0158
+      0157: Jump target=0159
+      0158: AssertFail message="reclaim handed back the abandoned buffer"
+      0159: MakeEnum dst=t107 tag=0 payload=[]
+      0160: SetField base=t0 index=5 value=t107
+      0161: ConstInt dst=t108 ty=u32 value=3
+      0162: SetField base=t0 index=6 value=t108
+      0163: Jump target=0165
+      0164: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0165: Jump target=0168
+      0166: ConstUnit dst=t109
+      0167: Return value=t109
+      0168: ConstUnit dst=t110
+      0169: Return value=t110
+      0170: Return
+  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=53 receiver=t0:mut params=[t1,t2,t3]
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=DeviceCap[VirtioBlock]
+    Temp t2 ty=DmaPool[BlockControl, 512]
+    Temp t3 ty=own[BlockPayloads] DmaBlock
+    Temp t4 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t5 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t6 ty=Mmio[VirtioIrqMmio]
+    Temp t7 ty=u32
+    Temp t8 ty=InterruptCell[u32]
+    Temp t9 ty=u32
+    Temp t10 ty=u64
+    Temp t11 ty=FeaturesAcceptedDevice[VirtioBlock]
+    Temp t12 ty=Result[FeaturesAcceptedDevice[VirtioBlock], BootError]
+    Temp t13 ty=u64
+    Temp t14 ty=u64
+    Temp t15 ty=bool
+    Temp t16 ty=FeaturesAcceptedDevice[VirtioBlock]
+    Temp t17 ty=BootError
+    Temp t18 ty=Result[unit, BootError]
+    Temp t19 ty=FeaturesAcceptedDevice[VirtioBlock]
+    Temp t20 ty=VirtQueue[..8]
+    Temp t21 ty=Result[VirtQueue[..8], BootError]
+    Temp t22 ty=u64
+    Temp t23 ty=u64
+    Temp t24 ty=bool
+    Temp t25 ty=VirtQueue[..8]
+    Temp t26 ty=BootError
+    Temp t27 ty=Result[unit, BootError]
+    Temp t28 ty=IrqCap[u32]
+    Temp t29 ty=IrqCap[u32]
+    Temp t30 ty=unit
+    Temp t31 ty=unit
+    Temp t32 ty=RunningDevice[VirtioBlock]
+    Temp t33 ty=own[BlockPayloads] DmaBlock
+    Temp t34 ty=u64
+    Temp t35 ty=QueuePermit
+    Temp t36 ty=QueuePermit
+    Temp t37 ty=VirtQueue[..8]
+    Temp t38 ty=u32
+    Temp t39 ty=u32
+    Temp t40 ty=u64
+    Temp t41 ty=BlkReqHeader
+    Temp t42 ty=u8
+    Temp t43 ty=BlkReqStatus
+    Temp t44 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t45 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t46 ty=VirtQueue[..8]
+    Temp t47 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t48 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t49 ty=Option[Receipt[own[BlockPayloads] DmaBlock]]
+    Temp t50 ty=u32
+    Temp t51 ty=unit
+    Temp t52 ty=Result[unit, BootError]
+    Body
+      0000: Copy dst=t4 src=t1
+      0001: Copy dst=t5 src=t4
+      0002: Copy dst=t6 src=t5
+      0003: SetField base=t0 index=0 value=t6
+      0004: ConstInt dst=t7 ty=u32 value=0
+      0005: Copy dst=t8 src=t7
+      0006: InterruptCellStoreRelease field_off=24 width=4 value=t8
+      0007: SetField base=t0 index=3 value=t8
+      0008: ConstInt dst=t9 ty=u32 value=0
+      0009: SetField base=t0 index=6 value=t9
+      0010: ConstInt dst=t10 ty=u64 value=0
+      0011: SetField base=t0 index=7 value=t10
+      0012: Copy dst=t11 src=t5
+      0013: MakeEnum dst=t12 tag=0 payload=[t11]
+      0014: EnumTag dst=t13 src=t12
+      0015: ConstInt dst=t14 ty=u64 value=0
+      0016: Compare op=== ty=u64 dst=t15 lhs=t13 rhs=t14
+      0017: JumpIfFalse cond=t15 target=0020
+      0018: EnumPayload dst=t16 src=t12 index=0
+      0019: Jump target=0023
+      0020: EnumPayload dst=t17 src=t12 index=0
+      0021: MakeEnum dst=t18 tag=1 payload=[t17]
+      0022: Return value=t18
+      0023: Copy dst=t19 src=t16
+      0024: Copy dst=t20 src=t2
+      0025: MakeEnum dst=t21 tag=0 payload=[t20]
+      0026: EnumTag dst=t22 src=t21
+      0027: ConstInt dst=t23 ty=u64 value=0
+      0028: Compare op=== ty=u64 dst=t24 lhs=t22 rhs=t23
+      0029: JumpIfFalse cond=t24 target=0032
+      0030: EnumPayload dst=t25 src=t21 index=0
+      0031: Jump target=0035
+      0032: EnumPayload dst=t26 src=t21 index=0
+      0033: MakeEnum dst=t27 tag=1 payload=[t26]
+      0034: Return value=t27
+      0035: SetField base=t0 index=2 value=t25
+      0036: LoadIrqVector dst=t28 driver=BlkDriver
+      0037: Copy dst=t29 src=t28
+      0038: ConstUnit dst=t30
+      0039: ConstUnit dst=t31
+      0040: SetField base=t0 index=4 value=t29
+      0041: Copy dst=t32 src=t19
+      0042: SetField base=t0 index=1 value=t32
+      0043: Copy dst=t33 src=t3
+      0044: ConstInt dst=t34 ty=u64 value=13907095861314142881
+      0045: SetField base=t33 index=0 value=t34
+      0046: ConstInt dst=t35 ty=u64 value=0
+      0047: Copy dst=t36 src=t35
+      0048: Project dst=t37 base=t0 index=2
+      0049: ConstInt dst=t38 ty=u32 value=1
+      0050: ConstInt dst=t39 ty=u32 value=0
+      0051: ConstInt dst=t40 ty=u64 value=0
+      0052: MakeAggregate dst=t41 elems=[t38,t39,t40]
+      0053: ConstInt dst=t42 ty=u8 value=255
+      0054: MakeAggregate dst=t43 elems=[t42]
+      0055: QueuePrepare dst=t44 queue=t37 permit=t36 header=t41 payload=t33 status=t43 device_writes=false payload_len=512
+      0056: Copy dst=t45 src=t44
+      0057: Project dst=t46 base=t0 index=2
+      0058: QueuePublish dst=t47 queue=t46 operation=t45 order=[write_descriptors, publish_available, notify_queue]
+      0059: Copy dst=t48 src=t47
+      0060: MakeEnum dst=t49 tag=1 payload=[t48]
+      0061: SetField base=t0 index=5 value=t49
+      0062: ConstInt dst=t50 ty=u32 value=1
+      0063: SetField base=t0 index=6 value=t50
+      0064: ConstUnit dst=t51
+      0065: MakeEnum dst=t52 tag=0 payload=[t51]
+      0066: Return value=t52
+      0067: Return
+  Fn key=BlkDriver.on_queue_irq ret=unit temps=13 receiver=t0:read
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=Mmio[VirtioIrqMmio]
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=u32
+    Temp t6 ty=u32
+    Temp t7 ty=u32
+    Temp t8 ty=bool
+    Temp t9 ty=u32
+    Temp t10 ty=Mmio[VirtioIrqMmio]
+    Temp t11 ty=unit
+    Temp t12 ty=unit
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: MmioRead dst=t2 base=t1 offset=0x60 ty=u32
+      0002: Copy dst=t3 src=t2
+      0003: ConstInt dst=t4 ty=u32 value=1
+      0004: Bitwise op=& ty=u32 dst=t5 lhs=t3 rhs=t4
+      0005: Copy dst=t6 src=t5
+      0006: ConstInt dst=t7 ty=u32 value=0
+      0007: Compare op=!= ty=u32 dst=t8 lhs=t6 rhs=t7
+      0008: JumpIfFalse cond=t8 target=0016
+      0009: InterruptCellFetchOrRelease dst=t9 field_off=24 width=4 value=t6
+      0010: Project dst=t10 base=t0 index=0
+      0011: MmioWrite base=t10 offset=0x64 ty=u32 value=t6
+      0012: ConstUnit dst=t11
+      0013: Wake driver=BlkDriver
+      0014: ConstUnit dst=t12
+      0015: Jump target=0016
+      0016: Return
+  Fn key=Ledger.mark ret=unit temps=7 receiver=t0:mut params=[t1]
+    Temp t0 ty=Ledger
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=u64
+    Temp t5 ty=u64
+    Temp t6 ty=unit
+    Body
+      0000: Project dst=t2 base=t0 index=0
+      0001: ConstInt dst=t3 ty=u64 value=10
+      0002: ArithChecked op=* ty=u64 dst=t4 lhs=t2 rhs=t3 abort="arithmetic overflow in `*`"
+      0003: ArithChecked op=+ ty=u64 dst=t5 lhs=t4 rhs=t1 abort="arithmetic overflow in `+`"
+      0004: SetField base=t0 index=0 value=t5
+      0005: ConstUnit dst=t6
+      0006: Return value=t6
+      0007: Return
+  Fn key=Ledger.read_marks ret=u64 temps=2 receiver=t0:read
+    Temp t0 ty=Ledger
+    Temp t1 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Return value=t1
+      0002: Return

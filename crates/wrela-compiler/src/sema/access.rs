@@ -1975,6 +1975,28 @@ fn check_call_by_field(
                     }
                     return Ok(Some(Type::Named("CompletionOutcome".to_string(), vec![])));
                 }
+                // plans/M8.md item F: `reclaim` hands a quarantined pool
+                // slot's `own[P] T` handle back, so this pass must see a
+                // resource result or the returned handle stops being
+                // tracked as one. The brand comes straight from the call's
+                // own two declaring names — the same pair `bodies`
+                // resolves — rather than from a placeholder, because a
+                // placeholder `own` would name a pool that does not exist.
+                "reclaim" => {
+                    if !allows_mut_receiver(root_mode) {
+                        return Err(receiver_mutability_error(
+                            AccessMode::Mut,
+                            root_mode,
+                            root_name.as_deref(),
+                            fspan,
+                        ));
+                    }
+                    let (pool, payload) = bodies::reclaim_declaration(args, fspan)?;
+                    return Ok(Some(Type::Own(
+                        pool.1,
+                        Box::new(Type::Named(payload.1, vec![])),
+                    )));
+                }
                 _ => return Ok(None),
             }
         }

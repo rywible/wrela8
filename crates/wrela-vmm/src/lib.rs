@@ -1041,6 +1041,60 @@ fn boot_image_core(
                     g.released = true;
                     drop(g);
                     Ok(Step::Yield)
+                } else if ipa == mmio::QUIESCE_MMIO_ADDR {
+                    // plans/M8.md item F / decision 36, 03-hardware.md §9:
+                    // "per-queue reset (when negotiated) or full reset
+                    // establishes quiescence, and only then is memory
+                    // reclaimed". The device is this VMM, so quiescence is
+                    // a thing only this VMM can establish — the guest's
+                    // reset traps here first, and the count word it will
+                    // later gate a reclaim on is written *by the host*,
+                    // after the model has actually stopped using the ring.
+                    let Some(da) = decode_data_abort(esr) else {
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: unhandled access shape at QUIESCE_MMIO_ADDR \
+                             (esr={esr:#x})"
+                        )));
+                    };
+                    if !da.write {
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: a load from QUIESCE_MMIO_ADDR is not part of the \
+                             quiesce protocol"
+                        )));
+                    }
+                    let named = match da.reg {
+                        Some(reg) => {
+                            let mut v = 0u64;
+                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
+                            if r != HV_SUCCESS {
+                                return Err(VmmError::Hvf {
+                                    call: "hv_vcpu_get_reg",
+                                    code: r,
+                                });
+                            }
+                            v
+                        }
+                        None => 0,
+                    };
+                    {
+                        let g = &mut *lock.lock().unwrap_or_else(|e| e.into_inner());
+                        let Some(state) = g.blk.as_mut() else {
+                            return Err(VmmError::GuestFault(format!(
+                                "core {core} rang the quiesce doorbell, but this image declares \
+                                 no `blk` device to quiesce (03-hardware.md §9)"
+                            )));
+                        };
+                        let completions =
+                            state
+                                .device
+                                .quiesce(&mut state.mem, named)
+                                .map_err(|fault| {
+                                    VmmError::GuestFault(format!("virtio-blk: {fault}"))
+                                })?;
+                        commit_completions(state, &mut g.chooser, &completions, host_ram)?;
+                    }
+                    advance_pc(vcpu)?;
+                    Ok(Step::Keep)
                 } else if ipa == mmio::PARK_MMIO_ADDR {
                     // plans/M6.md item E, decision 7/06 §5: the park
                     // protocol's own doorbell (`mmio::PARK_MMIO_ADDR`'s
@@ -1632,7 +1686,6 @@ fn service_blk(
     chooser: &mut record::Chooser,
     host_ram: *mut u8,
 ) -> Result<bool, VmmError> {
-    use wrela_machine::layout as machine_layout;
     let Some(state) = blk.as_mut() else {
         return Ok(false);
     };
@@ -1640,10 +1693,27 @@ fn service_blk(
         .device
         .service(&mut state.mem)
         .map_err(|fault| VmmError::GuestFault(format!("virtio-blk: {fault}")))?;
+    commit_completions(state, chooser, &completions, host_ram)
+}
+
+/// The recorder-and-used-ring half of `service_blk`, shared verbatim with
+/// the quiesce path (plans/M8.md item F). A completion produced while
+/// establishing quiescence is an ordinary completion in every respect —
+/// same choice entry, same divergence check, same used-ring publication,
+/// same vector raise — and factoring it out is what makes that true by
+/// construction rather than by two copies agreeing.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn commit_completions(
+    state: &mut BlkState,
+    chooser: &mut record::Chooser,
+    completions: &[devices::Completion],
+    host_ram: *mut u8,
+) -> Result<bool, VmmError> {
+    use wrela_machine::layout as machine_layout;
     if completions.is_empty() {
         return Ok(false);
     }
-    for c in &completions {
+    for c in completions {
         let request = record::ChoiceRequest::DeviceCompletion {
             device: "blk".to_string(),
             queue: 0,
