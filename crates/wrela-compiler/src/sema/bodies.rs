@@ -1274,8 +1274,21 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
             assoc_fns.insert(f.name.clone(), tf);
         }
     }
+    // plans/M9.md item JJ: carry payload types so the importer's typed
+    // reachability closure can walk `Good(Payload)` the same way Decl-
+    // side already walked ModuleCtx.
+    let variant_payload_types = info
+        .variants
+        .iter()
+        .map(|v| match &v.payload {
+            DeclVariantPayload::None => Vec::new(),
+            DeclVariantPayload::Tuple(tys) => tys.clone(),
+            DeclVariantPayload::Named(fields) => fields.iter().map(|(_, t)| t.clone()).collect(),
+        })
+        .collect();
     Ok(Some(TypedEnum {
         variants: info.variants.iter().map(|v| v.name.clone()).collect(),
+        variant_payload_types,
         methods,
         assoc_fns,
     }))

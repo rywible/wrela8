@@ -3661,18 +3661,60 @@ fn import_shape_alias_owner(seed: u32, add: u32) -> ImportClosure {
     }
 }
 
+fn import_shape_enum_payload(n: u32, add: u32) -> ImportClosure {
+    // JJ: aliased enum; payload struct never imported; match binds it.
+    let expect = n.wrapping_add(add);
+    let app = format!(
+        "module app.main\n\nfrom lib.g import Res as R\nfrom lib.g import make\n\nfn drive() -> u32:\n    match make(n={n}):\n        case .Good(p):\n            return p.n + {add}\n        case .Bad:\n            return 0\n\nconst D: u32 = drive()\n\n{}",
+        import_test_fn(expect, "aliased enum unimported payload")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "g".into()],
+                "module lib.g\n\npub struct Payload:\n    n: u32\n\npub enum Res:\n    Good(Payload)\n    Bad\n\npub fn make(n: u32) -> Res:\n    return Res.Good(Payload(n=n))\n"
+                    .into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
+fn import_shape_enum_payload_generic(n: u32, add: u32) -> ImportClosure {
+    // JJ neighbour: variant payload is itself generic (`Good(Box[Payload])`).
+    let expect = n.wrapping_add(add);
+    let app = format!(
+        "module app.main\n\nfrom lib.g import Res as R\nfrom lib.g import make\n\nfn drive() -> u32:\n    match make(n={n}):\n        case .Good(b):\n            return b.v.n + {add}\n        case .Bad:\n            return 0\n\nconst D: u32 = drive()\n\n{}",
+        import_test_fn(expect, "enum payload generic Box")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "g".into()],
+                "module lib.g\n\npub struct Payload:\n    n: u32\n\npub struct Box[T]:\n    v: T\n\npub enum Res:\n    Good(Box[Payload])\n    Bad\n\npub fn make(n: u32) -> Res:\n    return Res.Good(Box[Payload](v=Payload(n=n)))\n"
+                    .into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
 fn generate_import_closure(rng: &mut Rng) -> ImportClosure {
     // Keep values in a small range so wrapping addition stays obvious and
     // assert messages stay short.
     let n = (rng.gen_range(50) as u32) + 1;
     let k = (rng.gen_range(50) as u32) + 1;
-    match rng.gen_range(6) {
+    match rng.gen_range(8) {
         0 => import_shape_comptime_construct(n, k),
         1 => import_shape_fields_and_method(n, k),
         2 => import_shape_reachable_unimported(n, k),
         3 => import_shape_alias_peer_generic(n, k),
         4 => import_shape_chain(n, k),
-        _ => import_shape_alias_owner(n, k),
+        5 => import_shape_alias_owner(n, k),
+        6 => import_shape_enum_payload(n, k),
+        _ => import_shape_enum_payload_generic(n, k),
     }
 }
 

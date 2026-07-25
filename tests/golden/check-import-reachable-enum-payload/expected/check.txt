@@ -1,0 +1,15 @@
+Module path=app.main
+  Fn drive() -> u32
+  Const D: u32
+  Fn t() -> unit
+  Struct Store resource
+    field settled: u32
+    init(mut self, settled: read u32) -> unit
+  Fn build() -> Image
+Module path=lib.g
+  Struct Payload data
+    field n: u32
+  Enum Res data
+    variant Good(Payload)
+    variant Bad
+  Fn make(n: read u32) -> Res

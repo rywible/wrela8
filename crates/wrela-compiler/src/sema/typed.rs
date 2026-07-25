@@ -557,19 +557,31 @@ pub struct TypedStruct {
 /// the methods/associated fns 02 §5 / §7.5 give every type — the same
 /// two maps a `TypedStruct` already carries. Before B2 an enum was only
 /// a `Vec<String>` of variant names and had no method surface at all.
+///
+/// `variant_payload_types` (plans/M9.md item JJ): per-variant payload
+/// types, parallel to `variants`. Empty for a unit variant; a named
+/// payload flattens to its field types in declaration order. Carried so
+/// the importer's type-universe closure can walk enum payloads the same
+/// way Decl-side `collect_named_types_from_decl_enum` already did for
+/// ModuleCtx — without this, a struct reachable only as
+/// `Good(Payload)` stayed outside `TypedProgram::imported`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedEnum {
     pub variants: Vec<String>,
+    pub variant_payload_types: Vec<Vec<Type>>,
     pub methods: BTreeMap<String, TypedFn>,
     pub assoc_fns: BTreeMap<String, TypedFn>,
 }
 
 impl TypedEnum {
     /// A TypedEnum that only records variant names (prelude enums and
-    /// the pre-B2 shape). Methods/assoc_fns start empty.
+    /// the pre-B2 shape). Methods/assoc_fns start empty; payload types
+    /// are empty per variant (unit).
     pub fn from_variants(variants: Vec<String>) -> Self {
+        let variant_payload_types = variants.iter().map(|_| Vec::new()).collect();
         Self {
             variants,
+            variant_payload_types,
             methods: BTreeMap::new(),
             assoc_fns: BTreeMap::new(),
         }
@@ -1331,6 +1343,11 @@ pub(crate) fn rekey_enum_names(e: &mut TypedEnum, subs: &BTreeMap<String, String
     if subs.is_empty() {
         return;
     }
+    for payloads in &mut e.variant_payload_types {
+        for ty in payloads {
+            rekey_type(ty, subs);
+        }
+    }
     for f in e.methods.values_mut() {
         rekey_fn(f, subs);
     }
@@ -1374,8 +1391,15 @@ pub(crate) fn collect_named_types_from_struct(s: &TypedStruct, out: &mut BTreeSe
     }
 }
 
-/// plans/M9.md item HH: every `Type::Named` in an enum's method signatures.
+/// plans/M9.md items HH / JJ: every `Type::Named` in an enum's variant
+/// payloads and method signatures. Payloads are the edge HH's Decl-side
+/// walk already covered and the typed half missed (JJ).
 pub(crate) fn collect_named_types_from_enum(e: &TypedEnum, out: &mut BTreeSet<String>) {
+    for payloads in &e.variant_payload_types {
+        for ty in payloads {
+            types::collect_named_type_names(ty, out);
+        }
+    }
     for f in e.methods.values() {
         collect_named_types_from_fn(f, out);
     }

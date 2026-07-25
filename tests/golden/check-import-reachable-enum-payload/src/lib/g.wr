@@ -1,0 +1,11 @@
+module lib.g
+
+pub struct Payload:
+    n: u32
+
+pub enum Res:
+    Good(Payload)
+    Bad
+
+pub fn make(n: u32) -> Res:
+    return Res.Good(Payload(n=n))

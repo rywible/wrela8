@@ -762,8 +762,9 @@ fn splice_imported_decls(
                     name.clone(),
                     format!(
                         "is declared in module `{}`, which module `{}` does not import; \
-                         evaluating an imported body that reaches a declaration private to \
-                         its own module is not supported yet (plans/M9.md item A1b)",
+                         evaluating an imported body that reaches a declaration present \
+                         only in that body's private helpers (not in any imported \
+                         signature) is not supported yet",
                         owner.join("."),
                         m.join(".")
                     ),
