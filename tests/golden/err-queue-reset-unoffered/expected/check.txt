@@ -1,0 +1,1 @@
+error[type]: `VirtQueue.reset` is per-queue reset, which requires the `RingReset` feature this device model does not offer (03-hardware.md §9: "per-queue reset (when negotiated)"; plans/M7.md item H2b / decision 23: machine v1 does full `RunningDevice.reset(queue=mut ...)` only — see `golden/err-device-required-unoffered`) at 51:20

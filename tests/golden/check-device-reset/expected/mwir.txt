@@ -1,0 +1,73 @@
+Program
+  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=30 receiver=t0:mut params=[t1,t2]
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=DeviceCap[VirtioBlock]
+    Temp t2 ty=DmaPool[BlockControl, 512]
+    Temp t3 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t4 ty=DriverClaimedDevice[VirtioBlock]
+    Temp t5 ty=Mmio[VirtioIrqMmio]
+    Temp t6 ty=FeaturesAcceptedDevice[VirtioBlock]
+    Temp t7 ty=Result[FeaturesAcceptedDevice[VirtioBlock], BootError]
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=bool
+    Temp t11 ty=FeaturesAcceptedDevice[VirtioBlock]
+    Temp t12 ty=BootError
+    Temp t13 ty=Result[unit, BootError]
+    Temp t14 ty=FeaturesAcceptedDevice[VirtioBlock]
+    Temp t15 ty=VirtQueue[..8]
+    Temp t16 ty=Result[VirtQueue[..8], BootError]
+    Temp t17 ty=u64
+    Temp t18 ty=u64
+    Temp t19 ty=bool
+    Temp t20 ty=VirtQueue[..8]
+    Temp t21 ty=BootError
+    Temp t22 ty=Result[unit, BootError]
+    Temp t23 ty=u64
+    Temp t24 ty=RunningDevice[VirtioBlock]
+    Temp t25 ty=RunningDevice[VirtioBlock]
+    Temp t26 ty=VirtQueue[..8]
+    Temp t27 ty=RunningDevice[VirtioBlock]
+    Temp t28 ty=unit
+    Temp t29 ty=Result[unit, BootError]
+    Body
+      0000: Copy dst=t3 src=t1
+      0001: Copy dst=t4 src=t3
+      0002: Copy dst=t5 src=t4
+      0003: SetField base=t0 index=0 value=t5
+      0004: Copy dst=t6 src=t4
+      0005: MakeEnum dst=t7 tag=0 payload=[t6]
+      0006: EnumTag dst=t8 src=t7
+      0007: ConstInt dst=t9 ty=u64 value=0
+      0008: Compare op=== ty=u64 dst=t10 lhs=t8 rhs=t9
+      0009: JumpIfFalse cond=t10 target=0012
+      0010: EnumPayload dst=t11 src=t7 index=0
+      0011: Jump target=0015
+      0012: EnumPayload dst=t12 src=t7 index=0
+      0013: MakeEnum dst=t13 tag=1 payload=[t12]
+      0014: Return value=t13
+      0015: Copy dst=t14 src=t11
+      0016: Copy dst=t15 src=t2
+      0017: MakeEnum dst=t16 tag=0 payload=[t15]
+      0018: EnumTag dst=t17 src=t16
+      0019: ConstInt dst=t18 ty=u64 value=0
+      0020: Compare op=== ty=u64 dst=t19 lhs=t17 rhs=t18
+      0021: JumpIfFalse cond=t19 target=0024
+      0022: EnumPayload dst=t20 src=t16 index=0
+      0023: Jump target=0027
+      0024: EnumPayload dst=t21 src=t16 index=0
+      0025: MakeEnum dst=t22 tag=1 payload=[t21]
+      0026: Return value=t22
+      0027: SetField base=t0 index=2 value=t20
+      0028: ConstInt dst=t23 ty=u64 value=16
+      0029: SetField base=t0 index=3 value=t23
+      0030: Copy dst=t24 src=t14
+      0031: SetField base=t0 index=1 value=t24
+      0032: Project dst=t25 base=t0 index=1
+      0033: Project dst=t26 base=t0 index=2
+      0034: DeviceReset dst=t27 device=t25 queue=t26
+      0035: SetField base=t0 index=1 value=t27
+      0036: ConstUnit dst=t28
+      0037: MakeEnum dst=t29 tag=0 payload=[t28]
+      0038: Return value=t29
+      0039: Return

@@ -1981,6 +1981,9 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         } => {
             emit_queue_claim(ctx, f, *dst, *queue, *receipt)?;
         }
+        Inst::DeviceReset { dst, device, queue } => {
+            emit_device_reset(ctx, f, *dst, *device, *queue)?;
+        }
     }
     Ok(())
 }
@@ -2140,19 +2143,23 @@ fn emit_queue_prepare(
         };
     ctx.load_imm(X_A, flags as i64);
     ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    // generation: bump (load, add 1, store); start from 1 on first use.
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_GENERATION as usize);
-    ctx.load_imm(X_B, 1);
+    // Stamp the queue's live reset epoch into the slot (plans/M7.md item H2b).
+    // X_C still holds the pool base from above.
+    ctx.load_imm(
+        X_A,
+        (placed.bytes + crate::virtqueue::SLOT_BOOK_EPOCH) as i64,
+    );
     ctx.push(
-        encode::enc_add_reg(X_A, X_A, X_B, true),
+        encode::enc_add_reg(X_A, X_C, X_A, true),
         format!(
             "add {}, {}, {}",
             reg_name(X_A),
-            reg_name(X_A),
-            reg_name(X_B)
+            reg_name(X_C),
+            reg_name(X_A)
         ),
     );
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_GENERATION as usize);
+    ctx.load_ptr(X_A, X_A, 0);
+    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_EPOCH as usize);
     // Clear waiter / reply_stage for a fresh op.
     ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
     ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
@@ -2517,7 +2524,9 @@ fn emit_queue_drain(
         format!("ldr w{}, [{}, #4]", 0, reg_name(X_F)),
     );
 
-    // --- validate id (unknown / duplicate); epoch is always 0 in rev 0.1 ---
+    // --- validate id (unknown / stale-by-epoch / duplicate) ---
+    // Order matches `virtqueue::validate_completion_id` so a reset that
+    // leaves INFLIGHT set still surfaces as StaleId, not DuplicateId.
     ctx.load_imm(X_F, crate::virtqueue::EXPECTED_HEAD as i64);
     ctx.push(
         encode::enc_cmp_reg(X_B, X_F, true),
@@ -2527,7 +2536,7 @@ fn emit_queue_drain(
     ctx.abort_fixed(crate::virtqueue::CompletionFault::UnknownId { id: 0 }.abort_message());
     ctx.patch_skip(id_ok, SkipKind::Cond(Cond::Eq));
 
-    // meta → X_D
+    // meta → X_D; live epoch → X_F; stamped slot epoch → X_A
     ctx.load_slot(X_C, ctx.frame.off(queue));
     ctx.load_imm(X_D, meta_off as i64);
     ctx.push(
@@ -2539,6 +2548,33 @@ fn emit_queue_drain(
             reg_name(X_D)
         ),
     );
+    ctx.load_imm(X_F, (book_off + crate::virtqueue::SLOT_BOOK_EPOCH) as i64);
+    ctx.push(
+        encode::enc_add_reg(X_F, X_C, X_F, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_C),
+            reg_name(X_F)
+        ),
+    );
+    ctx.load_ptr(X_F, X_F, 0); // current_epoch
+    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_EPOCH as usize);
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_F, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_F)),
+    );
+    let epoch_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
+    ctx.abort_fixed(
+        crate::virtqueue::CompletionFault::StaleId {
+            id: 0,
+            slot_epoch: 0,
+            current_epoch: 0,
+        }
+        .abort_message(),
+    );
+    ctx.patch_skip(epoch_ok, SkipKind::Cond(Cond::Eq));
+
     ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
     ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
     ctx.push(
@@ -2752,6 +2788,63 @@ fn emit_queue_drain(
     ctx.store_ptr(X_A, X_D, 0);
 
     ctx.patch_skip(done_from_empty, SkipKind::Cond(Cond::Al));
+    Ok(())
+}
+
+/// `RunningDevice.reset(queue=mut q)` (plans/M7.md item H2b / decision 23):
+/// bump the queue's live epoch (fail closed on wrap), copy the device word
+/// through. Does not reclaim DMA or clear the used ring — a completion
+/// stamped with the prior epoch is `StaleId` on the next drain.
+fn emit_device_reset(
+    ctx: &mut FnCtx,
+    f: &MwirFn,
+    dst: Temp,
+    device: Temp,
+    queue: Temp,
+) -> Result<(), CodegenError> {
+    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
+    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
+        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
+    })?;
+    let epoch_off = placed.bytes + crate::virtqueue::SLOT_BOOK_EPOCH;
+    // X_C = pool; X_D = &current_epoch
+    ctx.load_slot(X_C, ctx.frame.off(queue));
+    ctx.load_imm(X_D, epoch_off as i64);
+    ctx.push(
+        encode::enc_add_reg(X_D, X_C, X_D, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_D),
+            reg_name(X_C),
+            reg_name(X_D)
+        ),
+    );
+    ctx.load_ptr(X_A, X_D, 0);
+    // Exhaustion retires rather than wrap (03-hardware.md §4).
+    ctx.load_imm(X_B, -1);
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_B, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
+    );
+    let not_max = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
+    ctx.abort_fixed(
+        "driver fault: reset epoch exhausted (03-hardware.md §4: identities never wrap)",
+    );
+    ctx.patch_skip(not_max, SkipKind::Cond(Cond::Ne));
+    ctx.load_imm(X_B, 1);
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_A),
+            reg_name(X_A),
+            reg_name(X_B)
+        ),
+    );
+    ctx.store_ptr(X_A, X_D, 0);
+    // Running -> Running: device word is unchanged (authority-only on v1).
+    ctx.load_slot(X_A, ctx.frame.off(device));
+    ctx.store_slot(X_A, ctx.frame.off(dst));
     Ok(())
 }
 
