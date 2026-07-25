@@ -106,7 +106,7 @@ pub fn feature_bit(variant: &str) -> Option<u64> {
         "Version1" | "VERSION_1" | "VIRTIO_F_VERSION_1" => Some(F_VERSION_1),
         // Named so a required `RingReset` fails the build with a clear
         // "not offered" rather than "unknown feature" — per-queue reset
-        // is plans/M7.md item H2, and `DEVICE_FEATURES` does not include it.
+        // is plans/M7.md item H2b, and `DEVICE_FEATURES` does not include it.
         "RingReset" | "RING_RESET" => None,
         _ => None,
     }
@@ -167,26 +167,36 @@ pub const REQ_HEADER_SIZE: u64 = 16;
 pub const REQ_STATUS_SIZE: u64 = 1;
 
 /// Bytes of per-queue bookkeeping that sit in the control pool immediately
-/// after the ring (plans/M7.md item E4 / decisions 20–22). Single-flight for
-/// revision 0.1: one last_used cursor, one meta record, one header slot,
-/// one status byte.
+/// after the ring (plans/M7.md item E4 / decisions 20–22; H2b / decision 23
+/// adds the live reset epoch). Single-flight for revision 0.1: one
+/// `last_used` cursor, one live `current_epoch`, one meta record, one
+/// header slot, one status byte.
 ///
 /// ```text
-///   [ring … | last_used 8 | meta 64 | header 16 | status 8-pad]
+///   [ring … | last_used 8 | current_epoch 8 | meta 64 | header 16 | status 8-pad]
 /// ```
 ///
 /// Decision 22: `QueueOp` / `Receipt` is the absolute address of the meta
 /// record (not the descriptor head). Drain owns `last_used`; await parks
 /// the waiter turn-area and reply-stage addresses in the meta; drain
 /// writes `IoCompletion` into that stage and sets `resume_ready`.
-pub const SLOT_BOOK_BYTES: u64 = 8;
+/// Decision 23: `current_epoch` starts at 0; `RunningDevice.reset` bumps
+/// it; `prepare_block` stamps it into `SLOT_META_EPOCH`; drain rejects a
+/// mismatch as `CompletionFault::StaleId`.
+pub const SLOT_BOOK_LAST_USED: u64 = 0;
+pub const SLOT_BOOK_EPOCH: u64 = 8;
+pub const SLOT_BOOK_BYTES: u64 = 16;
 pub const SLOT_META_BYTES: u64 = 64;
 pub const SLOT_META_PAYLOAD: u64 = 0;
 pub const SLOT_META_HEADER: u64 = 8;
 pub const SLOT_META_STATUS: u64 = 16;
 pub const SLOT_META_PAYLOAD_LEN: u64 = 24;
 pub const SLOT_META_FLAGS: u64 = 32;
-pub const SLOT_META_GENERATION: u64 = 40;
+/// Stamped `current_epoch` at prepare time (03 §4's reset epoch half of
+/// "ID, slot generation, and reset epoch"). Slot-reuse generation for
+/// multi-flight is deferred with the free-list (decision 20); single-flight
+/// uses `SLOT_FLAG_INFLIGHT` for the duplicate half.
+pub const SLOT_META_EPOCH: u64 = 40;
 pub const SLOT_META_WAITER: u64 = 48;
 pub const SLOT_META_REPLY_STAGE: u64 = 56;
 /// `flags` bit 0: device writes the payload (`T_IN` / `device_writes_payload=true`).
@@ -267,7 +277,8 @@ impl CompletionFault {
 }
 
 /// Validate a device-reported used-ring id against the single-flight slot.
-/// `current_epoch` is the driver's live reset epoch (H2b; revision 0.1 is 0).
+/// `current_epoch` is the queue's live reset epoch (plans/M7.md item H2b /
+/// decision 23); a stamped `slot_epoch` from a prior epoch is `StaleId`.
 pub fn validate_completion_id(
     id: u16,
     expected_head: u16,

@@ -2146,6 +2146,29 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     b.emit(Inst::Copy { dst, src });
                     Ok(dst)
                 }
+                "Device.reset" => {
+                    let device = match receiver {
+                        Some(state) => lower_expr(state, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`Device.reset` reached lowering without a RunningDevice receiver"
+                                    .to_string(),
+                            ));
+                        }
+                    };
+                    let queue = match args.first() {
+                        Some((_, q)) => lower_expr(q, b, env)?,
+                        None => {
+                            return Err(LowerError::internal(
+                                "`Device.reset` reached lowering without a queue argument"
+                                    .to_string(),
+                            ));
+                        }
+                    };
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::DeviceReset { dst, device, queue });
+                    Ok(dst)
+                }
                 other => Err(LowerError::internal(format!(
                     "unknown sealed-transport intrinsic `{other}`"
                 ))),

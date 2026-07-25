@@ -649,6 +649,19 @@ pub enum Inst {
         receipt: Temp,
     },
 
+    /// `RunningDevice.reset(queue=mut q)` (plans/M7.md item H2b / decision 23,
+    /// 03-hardware.md §9): full device reset on machine v1. Consumes
+    /// `Running`, bumps the queue's live epoch (invalidating every prior
+    /// receipt), and yields `Running` again — claim/negotiate/start are
+    /// authority-only on this target, so re-walking them would invent a
+    /// second configure path for a queue that already exists. Per-queue
+    /// reset is a typed rejection (`VirtQueue.reset`), not this inst.
+    DeviceReset {
+        dst: Temp,
+        device: Temp,
+        queue: Temp,
+    },
+
     /// Unconditional abandonment: `assert`'s own failure path, an
     /// explicit `panic(msg)`, and match's own defensive "no arm matched"
     /// fallthrough (present for parity with `interp::exec_stmt`'s own
@@ -1292,6 +1305,9 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             receipt,
         } => {
             format!("QueueClaim dst={dst} queue={queue} receipt={receipt}")
+        }
+        Inst::DeviceReset { dst, device, queue } => {
+            format!("DeviceReset dst={dst} device={device} queue={queue}")
         }
         Inst::LoadIrqVector { dst, driver } => {
             format!("LoadIrqVector dst={dst} driver={driver}")

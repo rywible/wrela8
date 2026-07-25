@@ -1092,7 +1092,7 @@ fn receiver_of<'e>(callee: &'e Expr, fctx: &FnCtx, wctx: &WCtx) -> Option<(&'e E
                 let mode = match name.as_str() {
                     // Fallible / final transitions consume the input state
                     // (03-hardware.md §9).
-                    "negotiate" | "start" => AccessMode::Take,
+                    "negotiate" | "start" | "reset" => AccessMode::Take,
                     // Partition hand-out and capacity read keep the state.
                     "map_partition" | "read_capacity_sectors" => AccessMode::Read,
                     // `take_irq`: on `DriverClaimedDevice` it is the terminal

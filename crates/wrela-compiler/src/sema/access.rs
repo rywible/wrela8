@@ -2012,6 +2012,12 @@ fn check_call_by_field(
                             vec![types::TypeArg::Type(Type::Named(device.clone(), vec![]))],
                         )));
                     }
+                    "reset" => {
+                        return Ok(Some(Type::Named(
+                            "RunningDevice".to_string(),
+                            vec![types::TypeArg::Type(Type::Named(device.clone(), vec![]))],
+                        )));
+                    }
                     "read_capacity_sectors" => {
                         return Ok(Some(Type::Result(
                             Box::new(Type::U64),

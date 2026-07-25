@@ -1,8 +1,12 @@
 module examples.err_device_unknown_op
 
-# plans/M7.md item H1 self-audit — `claimed.reset()` — not an operation of the chain
+# plans/M7.md item H2b — `claimed.reset()` is not a bring-up op on
+# DriverClaimedDevice. Reset consumes `Running` (03-hardware.md §9);
+# calling it earlier is a typed rejection naming the required state.
 #
-# What this case would catch: a method name that is not one of §9's bring-up operations on a claimed device.
+# (Was H1's "unknown op" pin when `reset` did not exist at all; H2b made
+# `reset` real on `RunningDevice`, so this golden now pins the state
+# gate rather than an unknown-name miss.)
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -19,3 +23,8 @@ pub struct BlkDriver:
         claimed = VirtioBlock.claim(cap=take cap)
         _ = claimed.reset()
         self.regs = claimed.map_partition(VirtioIrqMmio)
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-device-unknown-op", target=Target.wrela_machine_v1)
+    return img.seal()

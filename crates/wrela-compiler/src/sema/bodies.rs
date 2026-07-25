@@ -5103,6 +5103,9 @@ fn check_device_state_call(
         "start" => check_device_start(
             state_expr, state, &device, &rendered, args, fspan, call_span,
         ),
+        "reset" => check_device_reset(
+            state_expr, state, &device, &rendered, args, fspan, call_span, fctx, mctx,
+        ),
         "read_capacity_sectors" => check_device_read_capacity(
             state_expr, state, &device, &rendered, args, fspan, call_span,
         ),
@@ -5131,7 +5134,7 @@ fn check_device_state_call(
             format!(
                 "`{rendered}` has no operation `{other}`; 03-hardware.md §9's bring-up chain \
                  gives a claimed device `map_partition`, `negotiate`, `read_capacity_sectors`, \
-                 `take_irq` and `start`"
+                 `take_irq` and `start`; `reset` consumes a `RunningDevice` (plans/M7.md item H2b)"
             ),
             fspan,
         )),
@@ -5329,6 +5332,89 @@ fn check_device_start(
     })
 }
 
+/// `running.reset(queue=mut q)` — Running -> Running with a new epoch
+/// (plans/M7.md item H2b / decision 23). Full device reset on machine v1;
+/// per-queue reset is a typed rejection on `VirtQueue.reset`.
+#[allow(clippy::too_many_arguments)]
+fn check_device_reset(
+    state_expr: TypedExpr,
+    state: &str,
+    device: &str,
+    rendered: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    if state != "RunningDevice" {
+        return Err(type_error(
+            format!(
+                "`{rendered}.reset(...)` consumes a `RunningDevice[{device}]` \
+                 (03-hardware.md §9: reset consumes `Running`, producing a new epoch); \
+                 found `{rendered}`"
+            ),
+            fspan,
+        ));
+    }
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`{rendered}.reset(queue=mut q)` takes exactly one labelled argument; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if arg.label.as_deref() != Some("queue") {
+        return Err(type_error(
+            format!(
+                "`{rendered}.reset`'s own argument is labelled `queue=` (plans/M7.md item H2b: \
+                 the epoch lives in the queue's control-pool bookkeeping)"
+            ),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Mut {
+        return Err(type_error(
+            format!(
+                "`{rendered}.reset` mutates the queue's live epoch in place: write `queue=mut ...`"
+            ),
+            arg.span,
+        ));
+    }
+    let queue = check_expr(&arg.value, None, fctx, mctx)?;
+    let queue_ty = unwrap_own(queue.ty.clone());
+    let Type::Named(qname, _) = &queue_ty else {
+        return Err(type_error(
+            format!(
+                "`{rendered}.reset`'s `queue=` is a `VirtQueue[..N]`; found `{}`",
+                types::render_type(&queue.ty)
+            ),
+            arg.span,
+        ));
+    };
+    if qname != "VirtQueue" {
+        return Err(type_error(
+            format!(
+                "`{rendered}.reset`'s `queue=` is a `VirtQueue[..N]`; found `{}`",
+                types::render_type(&queue.ty)
+            ),
+            arg.span,
+        ));
+    }
+    let _ = fspan;
+    Ok(TypedExpr {
+        ty: device_state_ty("RunningDevice", device),
+        kind: TypedExprKind::Intrinsic {
+            key: "Device.reset".to_string(),
+            receiver: Some(Box::new(state_expr)),
+            type_arg: Some(Type::Named(device.to_string(), vec![])),
+            args: vec![("queue".to_string(), queue)],
+        },
+    })
+}
+
 /// `negotiated.read_capacity_sectors()` — capacity is an image-declared,
 /// report-carried fact (`BlkDevice capacity_sectors=`). The guest call
 /// lowers to that build constant (decision recorded with decision 14);
@@ -5522,6 +5608,7 @@ pub fn is_device_transport_intrinsic(key: &str) -> bool {
             | "Device.map_partition"
             | "Device.negotiate"
             | "Device.start"
+            | "Device.reset"
             | "Device.read_capacity_sectors"
             | "Device.take_irq"
             | "VirtQueue.configure"
@@ -5572,6 +5659,14 @@ fn check_virtqueue_method(
         "publish" => check_virtqueue_publish(queue, args, fspan, call_span, fctx, mctx),
         "reject" => check_virtqueue_reject(queue, args, fspan, call_span, fctx, mctx),
         "drain" => check_virtqueue_drain(queue, args, fspan, call_span, fctx, mctx),
+        "reset" => Err(type_error(
+            "`VirtQueue.reset` is per-queue reset, which requires the `RingReset` feature \
+             this device model does not offer (03-hardware.md §9: \"per-queue reset (when \
+             negotiated)\"; plans/M7.md item H2b / decision 23: machine v1 does full \
+             `RunningDevice.reset(queue=mut ...)` only — see `golden/err-device-required-unoffered`)"
+                .to_string(),
+            fspan,
+        )),
         "suppress_interrupts" => {
             check_virtqueue_suppress_interrupts(queue, args, fspan, call_span, fctx, mctx)
         }
