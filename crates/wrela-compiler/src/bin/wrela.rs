@@ -27,7 +27,7 @@ use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 use wrela_compiler::{codegen, lower};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|flowwir|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
 
 /// Renders one `sema::SemaError` exactly the way `print_sema_error` prints
 /// it (decision 1's one-line diagnostic, or item H's one multi-line
@@ -111,6 +111,41 @@ fn main() -> ExitCode {
 /// `error[comptime]` path every other comptime failure already uses
 /// (`eval::to_sema_error`) — graph checks never run at all in that case,
 /// since there is no sealed graph to check.
+/// `wrela dump --stage=layout-types`'s own driver (plans/M7.md item B,
+/// decision 4 — the plan named the stage `layout-types` with "name TBD in
+/// item B"; it is kept, since the artifact is exactly a table of the
+/// build closure's `@layout` *types*, and nothing about the name needed
+/// improving).
+///
+/// The one input every `@layout` fact comes from is the *specialized* ast
+/// (`sema::types::check_layouts`), so this stage runs the full sema check
+/// first — a program that does not check has no layout table worth
+/// printing, and its own diagnostic is the honest dump — then re-derives
+/// the table from the same specialized module. `check_layouts` is a pure
+/// function of that module and already ran (and passed) inside the check
+/// above, so the second call cannot fail; it is still handled as a real
+/// `Err` rather than unwrapped, because "cannot fail" is a property of
+/// today's pass order and not of this call site.
+///
+/// `modules` is supplied in the caller's own deterministic order: one
+/// entry for the single-file fork, or the whole closure in `BTreeMap`
+/// key order (the same dotted-address order `--stage=check`'s own
+/// multi-module dump concatenates in).
+fn run_layout_types_stage(modules: &[(String, Module)]) {
+    let mut by_module = Vec::with_capacity(modules.len());
+    for (path, module) in modules {
+        let specialized = match sema::specialize::specialize(module) {
+            Ok(m) => m,
+            Err(e) => return print_sema_error(&e),
+        };
+        match sema::types::check_layouts(&specialized) {
+            Ok(layouts) => by_module.push((path.clone(), layouts)),
+            Err(e) => return print_sema_error(&e),
+        }
+    }
+    print!("{}", sema::types::dump_layouts(&by_module));
+}
+
 fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
     let candidates: Vec<(&String, &String)> = programs
         .iter()
@@ -240,6 +275,29 @@ fn build_report(
                                 let target = first_field_value(&text, "Target value=")
                                     .unwrap_or("")
                                     .to_string();
+                                // plans/M7.md item B: the exact-bytes
+                                // section (03-hardware.md §3's own "the
+                                // compiler reports"), appended between
+                                // `report::render`'s own sections and the
+                                // M5 memory map below — declaration facts
+                                // before emission facts. Every module in
+                                // the closure is walked in `BTreeMap` key
+                                // order, and `check_layouts` already ran
+                                // (and passed) for each of them inside the
+                                // sema check that produced `programs`, so
+                                // neither call here can fail; both are
+                                // still handled as real errors rather than
+                                // unwrapped.
+                                let mut layout_types = Vec::new();
+                                for module in modules.values() {
+                                    let specialized = sema::specialize::specialize(module)
+                                        .map_err(|e| render_sema_error(&e))?;
+                                    layout_types.extend(
+                                        sema::types::check_layouts(&specialized)
+                                            .map_err(|e| render_sema_error(&e))?,
+                                    );
+                                }
+                                report::render_exact_bytes_section(&mut text, &layout_types);
                                 let layout_ctx = layout::merge_layout_ctx(modules)
                                     .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout::try_layout_program(
@@ -462,6 +520,61 @@ fn dump(args: &[String]) -> ExitCode {
                                 .collect();
                             match sema::check_program(&modules, &paths) {
                                 Ok(()) => print!("{}", sema::dump_program(&modules)),
+                                Err(e) => print_sema_error(&e),
+                            }
+                        }
+                        Err(loader::LoadError::Lex(e)) => print_lex_error(&e),
+                        Err(loader::LoadError::Parse(e)) => print_parse_error(&e),
+                        Err(loader::LoadError::Build(e)) => print_sema_error(&e),
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        // plans/M7.md item B: the identical single-file/whole-closure fork
+        // `check` above uses (a module with no imports keeps the exact
+        // single-file path; any import loads the whole closure through the
+        // loader), one step further — every `@layout` type in the build
+        // closure, laid out and printed (`run_layout_types_stage`).
+        "layout-types" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) if module.imports.is_empty() => match sema::check(&module, &path) {
+                        Ok(()) => {
+                            run_layout_types_stage(&[(module.path.join("."), module.clone())])
+                        }
+                        Err(e) => print_sema_error(&e),
+                    },
+                    Ok(_) => match loader::load_closure(Path::new(&path)) {
+                        Ok(program) => {
+                            let paths: BTreeMap<Vec<String>, String> = program
+                                .modules
+                                .iter()
+                                .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                                .collect();
+                            let modules: BTreeMap<Vec<String>, _> = program
+                                .modules
+                                .into_iter()
+                                .map(|(k, m)| (k, m.module))
+                                .collect();
+                            match sema::check_program(&modules, &paths) {
+                                Ok(()) => {
+                                    let ordered: Vec<(String, Module)> = modules
+                                        .into_iter()
+                                        .map(|(k, m)| (k.join("."), m))
+                                        .collect();
+                                    run_layout_types_stage(&ordered);
+                                }
                                 Err(e) => print_sema_error(&e),
                             }
                         }

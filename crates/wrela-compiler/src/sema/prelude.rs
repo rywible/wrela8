@@ -51,6 +51,18 @@ const IMAGE_BUILDER: &[&str] = &["Image", "RestartIntensity", "seconds", "Target
 /// an entry here, mirroring `Duration`/`ImageDecl`'s own precedent above.
 const ACTOR_SURFACE: &[&str] = &["Actor", "group", "now", "ms"];
 
+/// The typed-MMIO register wrappers (plans/M7.md item B, 03-hardware.md
+/// §2's own worked example: `@offset(0x060) interrupt_status:
+/// ReadOnly[u32]`). Only ever legal as an `@layout(mmio)` field's type —
+/// `sema::types::check_layouts` rejects them anywhere else *inside* a
+/// layout, and their *access* rules (volatile read/write, claim
+/// partitioning) are plans/M7.md item C, which is why nothing but the
+/// name and the wrapped type exists yet. Listed here so an ordinary
+/// annotation naming one resolves at all (`symbols::resolve` runs before
+/// `types::declare`, and an unresolvable name never reaches the type
+/// resolver's own arm for these).
+const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
+
 /// Is `name` one of the fixed prelude names above?
 pub fn is_builtin(name: &str) -> bool {
     SCALARS.contains(&name)
@@ -58,6 +70,7 @@ pub fn is_builtin(name: &str) -> bool {
         || LITERAL_SURFACE.contains(&name)
         || IMAGE_BUILDER.contains(&name)
         || ACTOR_SURFACE.contains(&name)
+        || MMIO_WRAPPERS.contains(&name)
 }
 
 /// The `@image` builder surface's own fixed prelude enums (plans/M4.md

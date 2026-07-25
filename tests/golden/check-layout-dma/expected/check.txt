@@ -1,0 +1,7 @@
+Module path=examples.layout_dma
+  Struct BlkReqHeader data
+    field kind: u32
+    field reserved: u32
+    field sector: u64
+  Struct BlkReqStatus data
+    field status: u8

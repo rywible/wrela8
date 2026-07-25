@@ -1,0 +1,7 @@
+Module path=examples.layout_wire
+  Struct Inode data
+    field magic: u32
+    field size_bytes: u32
+    field start_lba: u64
+    field blocks: u32
+    field checksum: u32

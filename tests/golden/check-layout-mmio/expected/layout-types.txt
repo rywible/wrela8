@@ -1,0 +1,6 @@
+LayoutTypes v0
+  Module path=examples.layout_mmio
+    Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
+      Padding offset=0x0 size=96
+      Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
+      Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4

@@ -51,6 +51,19 @@ pub(crate) fn print_expr_bare(e: &Expr) -> String {
     print_expr(e, 0)
 }
 
+/// Bare textual rendering of one *unresolved* (ast) type, the sibling of
+/// `print_expr_bare` above (plans/M7.md item B). `sema::types`' own
+/// `render_type` renders a *resolved* `Type`, which is exactly what the
+/// `@layout` pass cannot use: it runs before name resolution (a
+/// capability type 03-hardware.md §3 forbids inside a `wire` layout does
+/// not resolve to anything at all until plans/M7.md item A mints one, and
+/// "unknown name" is the wrong diagnostic for it), so its dumps and
+/// diagnostics spell a field's declared type straight off the ast with
+/// the pretty-printer's own rules.
+pub(crate) fn print_type_bare(ty: &Type) -> String {
+    print_type(ty, 0)
+}
+
 /// Pretty-prints a bare fragment (`parse_fragment`'s result): each
 /// top-level item or statement in source order, blank-line separated.
 pub fn pretty_fragment(entries: &[FragmentEntry]) -> String {

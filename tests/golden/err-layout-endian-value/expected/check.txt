@@ -1,0 +1,1 @@
+error[type]: `@layout`'s `endian=` on struct `Record` must be `little` or `big`, found `native` (03-hardware.md §3) at 8:15

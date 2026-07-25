@@ -1,0 +1,5 @@
+Module path=examples.layout_mmio
+  Struct VirtioIrqMmio data
+    field interrupt_status: ReadOnly[u32]
+    field interrupt_ack: WriteOnly[u32]
+  Fn build() -> Image

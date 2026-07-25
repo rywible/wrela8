@@ -1,0 +1,10 @@
+module examples.err_layout_endian_value
+
+# plans/M7.md item B: the other half of the `endian=` rule — declared, but
+# not one of the two byte orders this compiler accepts. Named rather than
+# ignored: an unrecognized `endian=` would otherwise silently become
+# whichever one the compiler happened to assume.
+
+@layout(wire, endian=native)
+struct Record:
+    magic: u32

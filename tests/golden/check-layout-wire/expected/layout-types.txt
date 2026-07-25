@@ -1,0 +1,9 @@
+LayoutTypes v0
+  Module path=examples.layout_wire
+    Layout name=Inode kind=wire endian=big size=36 padding=12
+      Field name=magic type=u32 offset=0x0 size=4
+      Field name=size_bytes type=u32 offset=0x4 size=4
+      Field name=start_lba type=u64 offset=0x8 size=8
+      Field name=blocks type=u32 offset=0x10 size=4
+      Padding offset=0x14 size=12
+      Field name=checksum type=u32 offset=0x20 size=4

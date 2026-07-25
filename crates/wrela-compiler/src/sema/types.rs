@@ -653,6 +653,774 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
     Ok(())
 }
 
+// --- `@layout` exact bytes (plans/M7.md item B, 03-hardware.md §2/§3) -----
+//
+// 03-hardware.md §3, the whole rule this pass implements: "`@layout(kind,
+// ...)` is the one exact-bytes mechanism, with three kinds: `dma`
+// (device-visible memory, checked against the target ABI), `mmio`
+// (register maps, §2), and `wire` (persistent/network bytes — exact
+// encoding independent of any target, no capabilities or target-dependent
+// fields inside). For every `@layout` type the compiler reports exact
+// size, offsets, padding, and endianness, and rejects anything implicit or
+// target-dependent." plans/M7.md decision 4 fixes the shape: "reports
+// exact bytes or fails. No implicit padding, no target-dependent field,
+// no inference."
+//
+// **Pass order (decided here, plans/M7.md item B).** This runs *before*
+// `symbols::resolve`, i.e. before name resolution, unlike every other
+// check in this file. Two reasons, both load-bearing:
+//
+//   1. A `@layout` field's type is not an ordinary annotation — it is an
+//      encoding, drawn from a closed set of exact-width scalars (plus §2's
+//      `ReadOnly`/`WriteOnly` register wrappers). Nothing about it is
+//      name-resolution-dependent, so inside a `@layout` struct an
+//      unknown name is not "unknown", it is "not an exact-bytes type".
+//   2. 03 §3 forbids a capability type inside a `wire` layout by name, and
+//      no capability type exists yet (plans/M7.md item A mints them).
+//      Checked after resolution, that rule would be dead code today and
+//      would report `error[name]: unknown name \`DmaPool\`` — a diagnostic
+//      naming the wrong cause. Checked here, the rule is live now and
+//      keeps producing the better diagnostic once item A lands.
+//
+// Everything below therefore reads raw `ast` types (rendered with
+// `printer::print_type_bare`), never a resolved `types::Type`.
+//
+// **Sizes here are encoding sizes, not machine sizes.** `mwir::size_of`
+// answers "how many bytes does the machine give this value" (one 8-byte
+// slot per scalar); this answers "how many bytes does this field occupy on
+// the wire / in the register map". The two deliberately disagree, which is
+// exactly why `@layout` needs its own table rather than reusing that one.
+
+/// 03-hardware.md §3's three layout kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutKind {
+    Dma,
+    Mmio,
+    Wire,
+}
+
+impl LayoutKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LayoutKind::Dma => "dma",
+            LayoutKind::Mmio => "mmio",
+            LayoutKind::Wire => "wire",
+        }
+    }
+}
+
+/// A `@layout`'s declared byte order. Never inferred and never defaulted
+/// (plans/M7.md decision 4: "no inference") — `endian=` is required on
+/// every `@layout`, whatever its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutEndian {
+    Little,
+    Big,
+}
+
+impl LayoutEndian {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LayoutEndian::Little => "little",
+            LayoutEndian::Big => "big",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutField {
+    pub name: String,
+    /// The field's declared type, spelled exactly as source wrote it.
+    pub ty: String,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// One entry of a laid-out `@layout` type, in ascending offset order
+/// (which is also declaration order — the pass requires the two agree).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutEntry {
+    Field(LayoutField),
+    /// A *declared* hole: bytes no field covers. The only way to create
+    /// one is an explicit `@offset(...)` that skips ahead, which is why
+    /// this is reported rather than rejected — the padding a `@layout`
+    /// rejects is the padding the compiler would have to *invent*
+    /// (`implicit_padding_error`, below).
+    Padding {
+        offset: u64,
+        size: u64,
+    },
+}
+
+/// One `@layout` type, fully laid out: 03 §3's "exact size, offsets,
+/// padding, and endianness", as data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutType {
+    pub name: String,
+    pub kind: LayoutKind,
+    pub endian: LayoutEndian,
+    /// Total bytes: the end of the last field. There is no trailing
+    /// padding and no alignment round-up — a `@layout` type is exactly
+    /// the bytes its fields cover.
+    pub size: u64,
+    /// Total declared-hole bytes (the sum of every `Padding` entry).
+    pub padding: u64,
+    pub entries: Vec<LayoutEntry>,
+}
+
+/// The exact-width integer field types (03 §3's "exact bytes"). Deliberately
+/// *not* a superset:
+///
+/// - `usize`/`isize` are target-dependent by definition;
+/// - `f32`/`f64` are target-dependent too — 02-language.md §6.1 has them
+///   only "where the target enables them";
+/// - `bool`/`char` have no byte encoding pinned anywhere in the docs, so
+///   this compiler cannot report an exact one for them without inventing
+///   it.
+fn scalar_field_size(name: &str) -> Option<u64> {
+    match name {
+        "u8" | "i8" => Some(1),
+        "u16" | "i16" => Some(2),
+        "u32" | "i32" => Some(4),
+        "u64" | "i64" => Some(8),
+        _ => None,
+    }
+}
+
+/// 03-hardware.md §1's capability type list, by name. These are the types
+/// plans/M7.md item A mints; 03 §3 forbids them inside a `wire` layout
+/// explicitly, and no capability has a byte encoding on any target, so
+/// they are rejected inside every kind — with the `wire` case saying so in
+/// the doc's own words.
+const CAPABILITY_TYPES: &[&str] = &["DeviceCap", "Mmio", "IrqCap", "DmaPool"];
+
+/// 03-hardware.md §2's register wrappers.
+const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
+
+fn layout_error(message: String, span: Span) -> SemaError {
+    // Category `type` (a bad declaration shape), the same category
+    // `bodies::check_marker_attr_shape` uses for a malformed `@test`:
+    // `xtask`'s `SEMA_CATEGORIES` is a fixed set (plans/M2.md decision 1)
+    // and this item does not extend it.
+    SemaError::at("type", message, span)
+}
+
+/// The `@layout` attribute's own shape: `@layout(<kind>, endian=<order>)`.
+/// Nothing else is accepted — an unrecognized argument is a real rejection
+/// rather than a silently ignored one, because every `@layout` argument
+/// that exists changes the reported bytes.
+fn parse_layout_attr(
+    struct_name: &str,
+    attr: &Attr,
+) -> Result<(LayoutKind, LayoutEndian), SemaError> {
+    let mut kind = None;
+    let mut endian = None;
+    for (i, arg) in attr.args.iter().enumerate() {
+        match &arg.label {
+            None => {
+                if i != 0 || kind.is_some() {
+                    return Err(layout_error(
+                        format!(
+                            "`@layout` on struct `{struct_name}` takes one positional argument \
+                             (its kind); `{}` is a second one",
+                            printer::print_expr_bare(&arg.value)
+                        ),
+                        arg.span,
+                    ));
+                }
+                let Expr::Name(_, name) = &arg.value else {
+                    return Err(layout_error(
+                        format!(
+                            "`@layout`'s kind on struct `{struct_name}` must be the bare name \
+                             `dma`, `mmio`, or `wire` (03-hardware.md §3)"
+                        ),
+                        arg.span,
+                    ));
+                };
+                kind = Some(match name.as_str() {
+                    "dma" => LayoutKind::Dma,
+                    "mmio" => LayoutKind::Mmio,
+                    "wire" => LayoutKind::Wire,
+                    other => {
+                        return Err(layout_error(
+                            format!(
+                                "unknown `@layout` kind `{other}` on struct `{struct_name}`; the \
+                                 three kinds are `dma`, `mmio`, and `wire` (03-hardware.md §3)"
+                            ),
+                            arg.span,
+                        ));
+                    }
+                });
+            }
+            Some(label) if label == "endian" => {
+                if endian.is_some() {
+                    return Err(layout_error(
+                        format!("`@layout` on struct `{struct_name}` declares `endian=` twice"),
+                        arg.span,
+                    ));
+                }
+                let Expr::Name(_, name) = &arg.value else {
+                    return Err(layout_error(
+                        format!(
+                            "`@layout`'s `endian=` on struct `{struct_name}` must be the bare \
+                             name `little` or `big` (03-hardware.md §3)"
+                        ),
+                        arg.span,
+                    ));
+                };
+                endian = Some(match name.as_str() {
+                    "little" => LayoutEndian::Little,
+                    "big" => LayoutEndian::Big,
+                    other => {
+                        return Err(layout_error(
+                            format!(
+                                "`@layout`'s `endian=` on struct `{struct_name}` must be `little` \
+                                 or `big`, found `{other}` (03-hardware.md §3)"
+                            ),
+                            arg.span,
+                        ));
+                    }
+                });
+            }
+            Some(label) => {
+                return Err(layout_error(
+                    format!(
+                        "unknown `@layout` argument `{label}=` on struct `{struct_name}`; \
+                         `@layout` takes its kind plus `endian=` and nothing else — every \
+                         argument that exists changes the reported bytes (03-hardware.md §3)"
+                    ),
+                    arg.span,
+                ));
+            }
+        }
+    }
+    let Some(kind) = kind else {
+        return Err(layout_error(
+            format!(
+                "`@layout` on struct `{struct_name}` names no kind; write its kind first, one of \
+                 `dma`, `mmio`, or `wire` (03-hardware.md §3)"
+            ),
+            attr.span,
+        ));
+    };
+    let Some(endian) = endian else {
+        return Err(layout_error(
+            format!(
+                "`@layout({}, ...)` on struct `{struct_name}` declares no `endian=`; a `@layout` \
+                 type's byte order is never inferred — write `endian=little` or `endian=big` \
+                 (03-hardware.md §3)",
+                kind.as_str()
+            ),
+            attr.span,
+        ));
+    };
+    Ok((kind, endian))
+}
+
+/// `@offset(n)`'s own shape: exactly one positional integer literal. The
+/// value is decoded with `bodies::parse_int_literal` (the same decoder
+/// every other integer literal in this compiler goes through), never
+/// evaluated — a `const`-named offset is inference by another name and is
+/// rejected here.
+fn parse_offset_attr(struct_name: &str, field_name: &str, attr: &Attr) -> Result<u64, SemaError> {
+    let bad = || {
+        layout_error(
+            format!(
+                "`@offset` on field `{struct_name}.{field_name}` takes exactly one integer \
+                 literal (e.g. `@offset(0x060)`)"
+            ),
+            attr.span,
+        )
+    };
+    let [arg] = attr.args.as_slice() else {
+        return Err(bad());
+    };
+    if arg.label.is_some() {
+        return Err(bad());
+    }
+    let Expr::Int(_, text) = &arg.value else {
+        return Err(bad());
+    };
+    let value = super::bodies::parse_int_literal(text).ok_or_else(bad)?;
+    u64::try_from(value).map_err(|_| bad())
+}
+
+/// A `@layout` field's exact byte size, or the named rejection that says
+/// why it has none. `layout_names` is every `@layout` struct declared in
+/// this module, so a nested one is rejected as the scope limit it is
+/// rather than as an unsized type it is not.
+fn layout_field_size(
+    struct_name: &str,
+    field_name: &str,
+    kind: LayoutKind,
+    ty: &ast::Type,
+    layout_names: &BTreeSet<String>,
+    span: Span,
+) -> Result<u64, SemaError> {
+    let rendered = printer::print_type_bare(ty);
+    let ast::Type::Named(n) = ty else {
+        return Err(no_exact_size_error(
+            struct_name,
+            field_name,
+            &rendered,
+            kind,
+            span,
+        ));
+    };
+    if n.args.is_empty() {
+        if let Some(size) = scalar_field_size(&n.name) {
+            return Ok(size);
+        }
+        if matches!(n.name.as_str(), "usize" | "isize") {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` has a target-dependent \
+                     width; a `@layout` type's bytes are exact on every target — use a sized \
+                     integer (`u8`/`u16`/`u32`/`u64`, or their signed forms) \
+                     (03-hardware.md §3)"
+                ),
+                span,
+            ));
+        }
+        if matches!(n.name.as_str(), "f32" | "f64") {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` is target-dependent: \
+                     02-language.md §6.1 has `f32`/`f64` only \"where the target enables them\", \
+                     and a `@layout` type's bytes are exact on every target (03-hardware.md §3)"
+                ),
+                span,
+            ));
+        }
+        if layout_names.contains(&n.name) {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` nests a `@layout` type; a \
+                     nested `@layout` field is not implemented (plans/M7.md item E owns the \
+                     composite queue/DMA layouts that need it)"
+                ),
+                span,
+            ));
+        }
+    }
+    if CAPABILITY_TYPES.contains(&n.name.as_str()) {
+        return Err(match kind {
+            LayoutKind::Wire => layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` is a capability type \
+                     (03-hardware.md §1); a `wire` layout is exact bytes independent of any \
+                     target and can hold no capability (03-hardware.md §3)"
+                ),
+                span,
+            ),
+            LayoutKind::Dma | LayoutKind::Mmio => layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` is a capability type \
+                     (03-hardware.md §1); no capability has a byte encoding, so a `@layout` \
+                     type cannot hold one (03-hardware.md §3)"
+                ),
+                span,
+            ),
+        });
+    }
+    if MMIO_WRAPPERS.contains(&n.name.as_str()) {
+        if kind != LayoutKind::Mmio {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` wraps a register, but \
+                     `{struct_name}` is a `@layout({})` type; `ReadOnly`/`WriteOnly` exist only \
+                     in a register map (03-hardware.md §2)",
+                    kind.as_str()
+                ),
+                span,
+            ));
+        }
+        let inner = match n.args.as_slice() {
+            [GenericArg::Type(t)] => t,
+            _ => {
+                return Err(layout_error(
+                    format!(
+                        "field `{struct_name}.{field_name}: {rendered}` must wrap exactly one \
+                         register type (e.g. `ReadOnly[u32]`) (03-hardware.md §2)"
+                    ),
+                    span,
+                ));
+            }
+        };
+        let ast::Type::Named(i) = inner else {
+            return Err(no_exact_size_error(
+                struct_name,
+                field_name,
+                &rendered,
+                kind,
+                span,
+            ));
+        };
+        return match scalar_field_size(&i.name).filter(|_| i.args.is_empty()) {
+            Some(size) => Ok(size),
+            None => Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` wraps `{}`, which is not a \
+                     sized integer register (`u8`/`u16`/`u32`/`u64`, or their signed forms) \
+                     (03-hardware.md §2)",
+                    printer::print_type_bare(inner)
+                ),
+                span,
+            )),
+        };
+    }
+    Err(no_exact_size_error(
+        struct_name,
+        field_name,
+        &rendered,
+        kind,
+        span,
+    ))
+}
+
+fn no_exact_size_error(
+    struct_name: &str,
+    field_name: &str,
+    rendered: &str,
+    kind: LayoutKind,
+    span: Span,
+) -> SemaError {
+    let wrappers = match kind {
+        LayoutKind::Mmio => ", optionally wrapped in `ReadOnly`/`WriteOnly`",
+        LayoutKind::Dma | LayoutKind::Wire => "",
+    };
+    layout_error(
+        format!(
+            "field `{struct_name}.{field_name}: {rendered}` has no exact byte size; a `@layout` \
+             field is a sized integer (`u8`/`u16`/`u32`/`u64`, or their signed forms){wrappers} \
+             (03-hardware.md §3)"
+        ),
+        span,
+    )
+}
+
+/// Lays out one `@layout` struct, checking every rule as it goes.
+fn check_one_layout(
+    s: &StructItem,
+    attr: &Attr,
+    layout_names: &BTreeSet<String>,
+) -> Result<LayoutType, SemaError> {
+    let name = s.name.clone();
+    let (kind, endian) = parse_layout_attr(&name, attr)?;
+    if !s.generics.is_empty() {
+        return Err(layout_error(
+            format!(
+                "`@layout` struct `{name}` is generic; a `@layout` type's size and offsets are \
+                 exact and cannot depend on a generic argument (03-hardware.md §3)"
+            ),
+            s.span,
+        ));
+    }
+    let mut entries: Vec<LayoutEntry> = Vec::new();
+    let mut cursor: u64 = 0;
+    let mut padding: u64 = 0;
+    let mut last_field: Option<(String, u64, u64)> = None;
+    for m in &s.members {
+        let f = match m {
+            Member::Field(f) => f,
+            // A `@layout` type is an encoding, not behavior: its methods,
+            // constructor, and pool bindings are all surface this item
+            // does not check, so they fail closed rather than being
+            // silently accepted and silently unchecked.
+            Member::Fn(f) => {
+                return Err(layout_error(
+                    format!(
+                        "`@layout` struct `{name}` declares a method (`{}`); a `@layout` type \
+                         declares fields only (03-hardware.md §2/§3)",
+                        f.name
+                    ),
+                    f.span,
+                ));
+            }
+            Member::Init(i) => {
+                return Err(layout_error(
+                    format!(
+                        "`@layout` struct `{name}` declares an `init`; a `@layout` type declares \
+                         fields only (03-hardware.md §2/§3)"
+                    ),
+                    i.span,
+                ));
+            }
+            Member::Pool(p) => {
+                return Err(layout_error(
+                    format!(
+                        "`@layout` struct `{name}` declares a pool (`{}`); a `@layout` type \
+                         declares fields only (03-hardware.md §2/§3)",
+                        p.name
+                    ),
+                    p.span,
+                ));
+            }
+            Member::ComptimeIf(c) => {
+                return Err(layout_error(
+                    format!(
+                        "`@layout` struct `{name}` declares a `comptime if` member; a `@layout` \
+                         type's fields are exact and unconditional (03-hardware.md §3)"
+                    ),
+                    c.span,
+                ));
+            }
+        };
+        let size = layout_field_size(&name, &f.name, kind, &f.ty, layout_names, f.span)?;
+        let mut explicit: Option<u64> = None;
+        for a in &f.attrs {
+            if a.name == "offset" {
+                if explicit.is_some() {
+                    return Err(layout_error(
+                        format!("field `{name}.{}` carries more than one `@offset`", f.name),
+                        a.span,
+                    ));
+                }
+                explicit = Some(parse_offset_attr(&name, &f.name, a)?);
+            } else {
+                return Err(layout_error(
+                    format!(
+                        "unknown attribute `@{}` on field `{name}.{}`; a `@layout` field's only \
+                         attribute is `@offset(n)` (02-language.md §13)",
+                        a.name, f.name
+                    ),
+                    a.span,
+                ));
+            }
+        }
+        let offset = explicit.unwrap_or(cursor);
+        if offset < cursor {
+            let (prev_name, prev_start, prev_end) = last_field
+                .clone()
+                .unwrap_or_else(|| (String::from("<start>"), cursor, cursor));
+            // Two distinct violations share this one condition, and the
+            // diagnostic must not claim the wrong one: a field declared
+            // after `prev` may sit entirely *before* it (an ordering
+            // violation with no byte in common) or genuinely share bytes
+            // with it. Saying "overlaps" for the first case asserts a
+            // fact that is false — `earlier` at 0x0..0x4 does not touch
+            // `later` at 0x10..0x14 — and a reader who checks it loses
+            // trust in the rest of the message.
+            let overlaps = offset + size > prev_start;
+            return Err(layout_error(
+                if overlaps {
+                    format!(
+                        "field `{name}.{}` at offset {offset:#x} overlaps `{name}.{prev_name}` \
+                         ({prev_start:#x}..{prev_end:#x}); a `@layout` type's fields are declared \
+                         in ascending offset order and never overlap (03-hardware.md §2)",
+                        f.name
+                    )
+                } else {
+                    format!(
+                        "field `{name}.{}` at offset {offset:#x} is declared after \
+                         `{name}.{prev_name}` ({prev_start:#x}..{prev_end:#x}) but lies before \
+                         it; a `@layout` type's fields are declared in ascending offset order \
+                         and never overlap (03-hardware.md §2)",
+                        f.name
+                    )
+                },
+                f.span,
+            ));
+        }
+        if offset % size != 0 {
+            return Err(match explicit {
+                Some(n) => layout_error(
+                    format!(
+                        "field `{name}.{}: {}` at `@offset({n:#x})` is not {size}-byte aligned \
+                         (03-hardware.md §2)",
+                        f.name,
+                        printer::print_type_bare(&f.ty)
+                    ),
+                    f.span,
+                ),
+                None => implicit_padding_error(&name, &f.name, &f.ty, offset, size, f.span),
+            });
+        }
+        if offset > cursor {
+            let gap = offset - cursor;
+            entries.push(LayoutEntry::Padding {
+                offset: cursor,
+                size: gap,
+            });
+            padding += gap;
+        }
+        entries.push(LayoutEntry::Field(LayoutField {
+            name: f.name.clone(),
+            ty: printer::print_type_bare(&f.ty),
+            offset,
+            size,
+        }));
+        cursor = offset + size;
+        last_field = Some((f.name.clone(), offset, cursor));
+    }
+    if last_field.is_none() {
+        return Err(layout_error(
+            format!(
+                "`@layout` struct `{name}` declares no fields; a `@layout` type is an exact byte \
+                 layout and has no empty form (03-hardware.md §3)"
+            ),
+            s.span,
+        ));
+    }
+    Ok(LayoutType {
+        name,
+        kind,
+        endian,
+        size: cursor,
+        padding,
+        entries,
+    })
+}
+
+/// The implicit-padding rejection (plans/M7.md decision 4: "no implicit
+/// padding"). It fires exactly when a field with no `@offset` would land
+/// at a natural offset its own width does not divide — the one place a
+/// conventional compiler inserts padding silently. This one refuses and
+/// says how many bytes it would have had to invent.
+fn implicit_padding_error(
+    struct_name: &str,
+    field_name: &str,
+    ty: &ast::Type,
+    offset: u64,
+    size: u64,
+    span: Span,
+) -> SemaError {
+    let needed = size - (offset % size);
+    layout_error(
+        format!(
+            "field `{struct_name}.{field_name}: {}` follows the previous field at offset \
+             {offset:#x} and would need {needed} byte(s) of implicit padding to be {size}-byte \
+             aligned; a `@layout` type never pads implicitly — give `{field_name}` an explicit \
+             `@offset(...)` (03-hardware.md §3)",
+            printer::print_type_bare(ty)
+        ),
+        span,
+    )
+}
+
+/// Every `@layout` type declared in `module`, laid out and checked, in
+/// declaration order. Also rejects `@offset` on a field of a struct that
+/// is not a `@layout` at all (02-language.md §13: "`@offset(n)` — field
+/// offset inside a `@layout` declaration"), and a struct carrying two
+/// `@layout` attributes.
+///
+/// Runs before name resolution (this section's own pass-order note) and is
+/// therefore a pure function of the specialized ast — no symbol table, no
+/// resolved type, no evaluator. `sema::check_typed`/`check_program_typed`
+/// call it for its rejections; `wrela dump --stage=layout-types` and the
+/// image report's own exact-bytes section call it for its table.
+pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
+    let mut layout_names = BTreeSet::new();
+    for item in &module.items {
+        if let Item::Struct(s) = item {
+            if s.attrs.iter().any(|a| a.name == "layout") {
+                layout_names.insert(s.name.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for item in &module.items {
+        let Item::Struct(s) = item else { continue };
+        let attrs: Vec<&Attr> = s.attrs.iter().filter(|a| a.name == "layout").collect();
+        match attrs.as_slice() {
+            [] => {
+                for m in &s.members {
+                    let Member::Field(f) = m else { continue };
+                    if let Some(a) = f.attrs.iter().find(|a| a.name == "offset") {
+                        return Err(layout_error(
+                            format!(
+                                "`@offset` on field `{}.{}` outside a `@layout` declaration; \
+                                 `@offset(n)` is a field offset inside a `@layout` type \
+                                 (02-language.md §13)",
+                                s.name, f.name
+                            ),
+                            a.span,
+                        ));
+                    }
+                }
+            }
+            [attr] => out.push(check_one_layout(s, attr, &layout_names)?),
+            [_, second, ..] => {
+                return Err(layout_error(
+                    format!(
+                        "struct `{}` carries more than one `@layout` attribute; a type has one \
+                         exact byte layout or none (03-hardware.md §3)",
+                        s.name
+                    ),
+                    second.span,
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Renders one already-checked `@layout` type in the M1 dump style
+/// (`Kind key=value` lines, two-space indent per level), starting at
+/// `depth`. Shared verbatim by `wrela dump --stage=layout-types` and the
+/// image report's own exact-bytes section so the two can never drift:
+/// same facts, same spelling, different indentation.
+///
+/// Byte offsets print as hex (`offset=0x60`) and byte counts as decimal
+/// (`size=4`), the same split the report's own `Layout` section already
+/// uses for `base=`/`size=` — an offset is an address inside the map, a
+/// size is a count.
+pub fn push_layout_lines(out: &mut String, depth: usize, l: &LayoutType) {
+    push_line(
+        out,
+        depth,
+        &format!(
+            "Layout name={} kind={} endian={} size={} padding={}",
+            l.name,
+            l.kind.as_str(),
+            l.endian.as_str(),
+            l.size,
+            l.padding
+        ),
+    );
+    for e in &l.entries {
+        match e {
+            LayoutEntry::Field(f) => push_line(
+                out,
+                depth + 1,
+                &format!(
+                    "Field name={} type={} offset={:#x} size={}",
+                    f.name, f.ty, f.offset, f.size
+                ),
+            ),
+            LayoutEntry::Padding { offset, size } => push_line(
+                out,
+                depth + 1,
+                &format!("Padding offset={offset:#x} size={size}"),
+            ),
+        }
+    }
+}
+
+/// `wrela dump --stage=layout-types`'s whole artifact: one `Module
+/// path=...` block per module in the build closure that declares at least
+/// one `@layout` type, each carrying its own types in declaration order.
+/// A module with nothing to say is absent entirely (the report's own
+/// facts-only rule); a closure with no `@layout` type at all is just the
+/// version header.
+///
+/// `by_module` is supplied in the caller's own deterministic order (a
+/// `BTreeMap` walk keyed by dotted module address, or the single-file
+/// case's one entry).
+pub fn dump_layouts(by_module: &[(String, Vec<LayoutType>)]) -> String {
+    let mut out = String::from("LayoutTypes v0\n");
+    for (path, layouts) in by_module {
+        if layouts.is_empty() {
+            continue;
+        }
+        push_line(&mut out, 1, &format!("Module path={path}"));
+        for l in layouts {
+            push_layout_lines(&mut out, 2, l);
+        }
+    }
+    out
+}
+
 // --- type resolution -----------------------------------------------------
 
 fn declare_const(
@@ -1226,6 +1994,18 @@ fn resolve_named(
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named("Actor".to_string(), vec![TypeArg::Type(inner)]));
+        }
+        // `ReadOnly[T]`/`WriteOnly[T]` (plans/M7.md item B, 03-hardware.md
+        // §2): the typed-MMIO register wrappers, resolved structurally
+        // exactly like `Actor[T]` above — *where* they are legal (only an
+        // `@layout(mmio)` field) is a whole-declaration question this
+        // per-annotation resolver cannot ask, and `check_layouts` (below)
+        // already asks it before this pass ever runs. Their access rules
+        // are item C; nothing here gives them one.
+        "ReadOnly" | "WriteOnly" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named(n.name.clone(), vec![TypeArg::Type(inner)]));
         }
         _ => {}
     }
@@ -1982,6 +2762,195 @@ mod tests {
         assert!(
             !resource_propagates(&named, &mut never_resource),
             "Named delegates to the closure: a `data` answer propagates"
+        );
+    }
+
+    // --- `@layout` (plans/M7.md item B) ------------------------------------
+    //
+    // Every rule with a *source-shaped* rejection is pinned as a golden
+    // (`tests/golden/err-layout-*`) — that is the review surface. These
+    // cover the declaration-shape guards whose own golden would say
+    // nothing a reader could not predict, plus the two properties a golden
+    // structurally cannot show: that `check_layouts` is a pure function
+    // (`image.report.deterministic`'s own precondition), and that the dump
+    // grammar is exactly what this module claims it is.
+
+    fn layouts_of(src: &str) -> Result<Vec<LayoutType>, SemaError> {
+        let tokens = crate::syntax::lexer::lex(src).expect("test source lexes");
+        let module = crate::syntax::parser::parse(tokens).expect("test source parses");
+        check_layouts(&module)
+    }
+
+    const MMIO_EXAMPLE: &str = "module t\n\n\
+         @layout(mmio, endian=little)\n\
+         struct VirtioIrqMmio:\n\
+         \x20   @offset(0x060) interrupt_status: ReadOnly[u32]\n\
+         \x20   @offset(0x064) interrupt_ack: WriteOnly[u32]\n";
+
+    #[test]
+    fn the_hardware_chapter_example_lays_out_exactly() {
+        let layouts = layouts_of(MMIO_EXAMPLE).expect("03-hardware.md §2's own example");
+        assert_eq!(layouts.len(), 1);
+        let l = &layouts[0];
+        assert_eq!(l.kind, LayoutKind::Mmio);
+        assert_eq!(l.endian, LayoutEndian::Little);
+        // 0x64 + 4: the layout is exactly the bytes its fields cover, with
+        // no trailing padding and no alignment round-up.
+        assert_eq!(l.size, 0x68);
+        // The 0x60 bytes below the first field are a declared hole, not an
+        // invented one: the author wrote `@offset(0x060)`.
+        assert_eq!(l.padding, 0x60);
+        assert_eq!(
+            l.entries,
+            vec![
+                LayoutEntry::Padding {
+                    offset: 0,
+                    size: 0x60
+                },
+                LayoutEntry::Field(LayoutField {
+                    name: "interrupt_status".to_string(),
+                    ty: "ReadOnly[u32]".to_string(),
+                    offset: 0x60,
+                    size: 4,
+                }),
+                LayoutEntry::Field(LayoutField {
+                    name: "interrupt_ack".to_string(),
+                    ty: "WriteOnly[u32]".to_string(),
+                    offset: 0x64,
+                    size: 4,
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_dump_grammar_is_fixed() {
+        let layouts = layouts_of(MMIO_EXAMPLE).unwrap();
+        let text = dump_layouts(&[("t".to_string(), layouts)]);
+        assert_eq!(
+            text,
+            "LayoutTypes v0\n\
+             \x20 Module path=t\n\
+             \x20   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96\n\
+             \x20     Padding offset=0x0 size=96\n\
+             \x20     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4\n\
+             \x20     Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4\n"
+        );
+    }
+
+    #[test]
+    fn check_layouts_is_a_pure_function_of_its_module() {
+        let a = layouts_of(MMIO_EXAMPLE).unwrap();
+        let b = layouts_of(MMIO_EXAMPLE).unwrap();
+        assert_eq!(a, b);
+        // A module with no `@layout` type contributes nothing at all
+        // (facts only — never an empty placeholder block).
+        let none = layouts_of("module t\n\nstruct S:\n    n: u32\n").unwrap();
+        assert!(none.is_empty());
+        assert_eq!(dump_layouts(&[("t".to_string(), none)]), "LayoutTypes v0\n");
+    }
+
+    /// Every declaration-shape guard, by the substring that makes each
+    /// message the right one. Kept as a table because these are all one
+    /// sentence long and none of them needs a source file to be
+    /// understood.
+    #[test]
+    fn declaration_shape_guards() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "module t\n\n@layout(packed, endian=little)\nstruct S:\n    n: u32\n",
+                "unknown `@layout` kind `packed`",
+            ),
+            (
+                "module t\n\n@layout(endian=little)\nstruct S:\n    n: u32\n",
+                "names no kind",
+            ),
+            (
+                "module t\n\n@layout(dma, endian=little)\n@layout(wire, endian=big)\n\
+                 struct S:\n    n: u32\n",
+                "more than one `@layout` attribute",
+            ),
+            (
+                "module t\n\n@layout(dma, endian=little)\nstruct S[const N: usize]:\n    n: u32\n",
+                "is generic",
+            ),
+            (
+                "module t\n\n@layout(dma, endian=little)\nstruct S:\n    pool P\n",
+                "declares a pool",
+            ),
+            (
+                "module t\n\n@layout(dma, endian=little)\nstruct S:\n\
+                 \x20   n: u32\n\n    init(mut self):\n        self.n = 0\n",
+                "declares an `init`",
+            ),
+            (
+                "module t\n\n@layout(dma, endian=little)\nstruct S:\n    @offset(N) n: u32\n",
+                "takes exactly one integer literal",
+            ),
+            (
+                "module t\n\n@layout(dma, endian=little)\nstruct S:\n\
+                 \x20   @offset(0) @offset(4) n: u32\n",
+                "more than one `@offset`",
+            ),
+            (
+                "module t\n\n@layout(dma, endian=little)\nstruct S:\n    @packed n: u32\n",
+                "unknown attribute `@packed`",
+            ),
+            // The three field arms whose *sibling* arm is the one a golden
+            // pins, kept honest here rather than left as an untested
+            // branch of a tested rule: `f32`/`f64` are target-dependent on
+            // 02-language.md §6.1's own "where the target enables them"
+            // (`golden/err-layout-target-dependent` pins `usize`); a
+            // capability in a `dma`/`mmio` layout is rejected for the more
+            // basic reason than 03 §3's `wire` sentence
+            // (`golden/err-layout-wire-capability` pins that one); and a
+            // register wrapper is only ever a wrapper *of a sized integer*
+            // (`golden/err-layout-mmio-wrapper` pins the wrong-kind arm).
+            (
+                "module t\n\n@layout(wire, endian=big)\nstruct S:\n    ratio: f32\n",
+                "where the target enables them",
+            ),
+            (
+                "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    cap: DeviceCap[Blk]\n",
+                "no capability has a byte encoding",
+            ),
+            (
+                "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    r: ReadOnly[bool]\n",
+                "wraps `bool`, which is not a sized integer register",
+            ),
+            (
+                "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    r: WriteOnly[u32, u32]\n",
+                "must wrap exactly one register type",
+            ),
+        ];
+        for (src, needle) in cases {
+            let err = layouts_of(src).expect_err("must be rejected");
+            assert_eq!(err.category, "type");
+            assert!(
+                err.message.contains(needle),
+                "expected {needle:?} in {:?}",
+                err.message
+            );
+        }
+    }
+
+    /// A `@layout` struct with no fields at all. Its own case because the
+    /// parser has no empty-body form — the guard is reachable only through
+    /// a body that declares something else this pass already skipped, which
+    /// today means nothing does: it is the one rule below that is a
+    /// structural floor rather than a source-reachable rejection, and it
+    /// stays because "size zero" must never be a reportable answer.
+    #[test]
+    fn an_empty_layout_has_no_reportable_size() {
+        let src = "module t\n\n@layout(dma, endian=little)\nstruct S:\n    pass\n";
+        // The parser rejects `pass` as a struct member outright, so this
+        // asserts only that nothing accepts it silently.
+        assert!(
+            crate::syntax::lexer::lex(src)
+                .ok()
+                .and_then(|t| crate::syntax::parser::parse(t).ok())
+                .map(|m| check_layouts(&m).is_err())
+                .unwrap_or(true)
         );
     }
 }

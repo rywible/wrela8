@@ -1,0 +1,8 @@
+LayoutTypes v0
+  Module path=examples.layout_dma
+    Layout name=BlkReqHeader kind=dma endian=little size=16 padding=0
+      Field name=kind type=u32 offset=0x0 size=4
+      Field name=reserved type=u32 offset=0x4 size=4
+      Field name=sector type=u64 offset=0x8 size=8
+    Layout name=BlkReqStatus kind=dma endian=little size=1 padding=0
+      Field name=status type=u8 offset=0x0 size=1

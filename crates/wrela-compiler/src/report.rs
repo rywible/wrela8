@@ -55,7 +55,25 @@
 //!    any other labeled argument (there is no other in 05 §9's own
 //!    surface, but the renderer does not silently drop a real fact it
 //!    cannot name) falls back to an ordinary `Arg` line.
-//! 8. Registered layout asserts: **never actually rendered** — decision
+//! 8b. **The exact-bytes section** (plans/M7.md item B, 03-hardware.md §3:
+//!    "For every `@layout` type the compiler reports exact size, offsets,
+//!    padding, and endianness"): one `Layout name=... kind=... endian=...
+//!    size=... padding=...` block per `@layout` type, each carrying its own
+//!    `Field`/`Padding` lines. Rendered by `render_exact_bytes_section`
+//!    below rather than by `render` itself, for the same reason the M5
+//!    memory-map section is (`layout::render_layout_section`): the facts
+//!    come from the build closure's own ast, which a sealed `ImageGraph`
+//!    does not carry. `build_report` (`bin/wrela.rs`) calls it between the
+//!    two — the declaration facts before the emission facts.
+//!
+//!    **Population**: every `@layout` type declared in the build closure.
+//!    03 §3 says "the image reaches", and today that cannot be narrowed
+//!    further: no capability type exists yet (plans/M7.md item A mints
+//!    them), so nothing in an image can *hold* a layout, and the honest
+//!    over-approximation is "declared in the closure" rather than an
+//!    invented reachability rule. Narrowing it belongs to the item that
+//!    makes `Mmio[L]` bind a layout to a device.
+//! 9. Registered layout asserts: **never actually rendered** — decision
 //!    10's own report-boundary enforcement (`render`'s first act) fails
 //!    the whole report closed, citing the gap `image.report.layout-asserts`
 //!    (plans/M5.md item D's own reword of this diagnostic — the stdlib
@@ -493,9 +511,31 @@ pub fn render(
         }
     }
 
-    // --- 8. registered layout asserts: never reached, see module doc --------
+    // --- 8b/9. the exact-bytes section (appended by the caller) and
+    // registered layout asserts (never reached): see module doc ------------
 
     Ok(out)
+}
+
+/// Appends the exact-bytes section (module doc, section 8b) to an
+/// already-rendered report. `layouts` is every `@layout` type in the build
+/// closure, already checked and laid out by `sema::types::check_layouts`,
+/// in the caller's own deterministic order (a `BTreeMap` walk keyed by
+/// dotted module address, then declaration order inside each module).
+/// Nothing to say means nothing printed — the facts-only rule this whole
+/// module follows: a closure with no `@layout` type leaves the report
+/// byte-identical to what it was before this section existed, which is
+/// why no existing golden moved when it landed.
+///
+/// Determinism (`image.report.deterministic`): a pure function of its
+/// arguments, exactly like `render` — no I/O, no clock, no hashing, no map
+/// iteration of its own. Its *input* is deterministic for the same reason:
+/// `check_layouts` is a pure function of one specialized ast module, and
+/// the caller walks the closure in `BTreeMap` order.
+pub fn render_exact_bytes_section(out: &mut String, layouts: &[types::LayoutType]) {
+    for l in layouts {
+        types::push_layout_lines(out, 1, l);
+    }
 }
 
 // --- the digest (plans/M4.md item D, decision 9): one hardcoded,
@@ -756,6 +796,52 @@ mod tests {
         let err = render(&[], &enums, &g).expect_err("decision 10: never asserted against nothing");
         assert!(err.contains("check_limits"));
         assert!(err.contains("image.report.layout-asserts"));
+    }
+
+    /// plans/M7.md item B: the exact-bytes section is appended by the
+    /// caller (`bin/wrela.rs::build_report`), so `render`'s own determinism
+    /// test above does not reach it. This one does: same input, same bytes,
+    /// appended to whatever the report already said and nothing else.
+    /// `golden/check-layout-mmio/expected/report.txt` is the end-to-end
+    /// pin; this is the property.
+    #[test]
+    fn the_exact_bytes_section_is_a_pure_appending_function() {
+        let layout = types::LayoutType {
+            name: "VirtioIrqMmio".to_string(),
+            kind: types::LayoutKind::Mmio,
+            endian: types::LayoutEndian::Little,
+            size: 0x68,
+            padding: 0x60,
+            entries: vec![
+                types::LayoutEntry::Padding {
+                    offset: 0,
+                    size: 0x60,
+                },
+                types::LayoutEntry::Field(types::LayoutField {
+                    name: "interrupt_status".to_string(),
+                    ty: "ReadOnly[u32]".to_string(),
+                    offset: 0x60,
+                    size: 4,
+                }),
+            ],
+        };
+        let mut a = String::from("ImageReport v0\n");
+        let mut b = a.clone();
+        render_exact_bytes_section(&mut a, std::slice::from_ref(&layout));
+        render_exact_bytes_section(&mut b, std::slice::from_ref(&layout));
+        assert_eq!(a, b);
+        assert_eq!(
+            a,
+            "ImageReport v0\n\
+             \x20 Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96\n\
+             \x20   Padding offset=0x0 size=96\n\
+             \x20   Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4\n"
+        );
+        // Nothing to say means nothing printed — which is why no existing
+        // report golden moved when this section landed.
+        let mut empty = String::from("ImageReport v0\n");
+        render_exact_bytes_section(&mut empty, &[]);
+        assert_eq!(empty, "ImageReport v0\n");
     }
 
     #[test]

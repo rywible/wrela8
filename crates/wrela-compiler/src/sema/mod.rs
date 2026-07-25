@@ -177,6 +177,15 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
         ));
     }
     let specialized = specialize::specialize(module)?;
+    // plans/M7.md item B: the `@layout` exact-bytes pass runs before name
+    // resolution — see `types::check_layouts`' own section note for the
+    // two reasons (a `@layout` field's type is a closed encoding set, not
+    // an ordinary annotation; and 03-hardware.md §3's capability rule must
+    // be live before plans/M7.md item A makes a capability name
+    // resolvable at all). Its table is discarded here — `--stage=layout-types`
+    // and the image report call the same fn for it — and only its
+    // rejections matter.
+    types::check_layouts(&specialized)?;
     let symtab = symbols::collect(&specialized)?;
     symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
     let decl_items = types::declare(&specialized)?;
@@ -312,7 +321,14 @@ pub fn check_program_typed(
 ) -> Result<BTreeMap<Vec<String>, typed::TypedProgram>, SemaError> {
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
     for (key, module) in modules {
-        specialized.insert(key.clone(), specialize::specialize(module)?);
+        let s = specialize::specialize(module)?;
+        // plans/M7.md item B: the whole-closure half of the same
+        // pre-resolution `@layout` pass `check_typed` runs (see
+        // `types::check_layouts`). One module at a time — a `@layout`
+        // type is a module-local declaration, so nothing here needs the
+        // closure.
+        types::check_layouts(&s)?;
+        specialized.insert(key.clone(), s);
     }
 
     let mut symtabs: BTreeMap<Vec<String>, symbols::SymbolTable> = BTreeMap::new();

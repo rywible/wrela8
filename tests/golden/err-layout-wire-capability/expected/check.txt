@@ -1,0 +1,1 @@
+error[type]: field `Record.payloads: DmaPool[Payloads, 4096]` is a capability type (03-hardware.md §1); a `wire` layout is exact bytes independent of any target and can hold no capability (03-hardware.md §3) at 18:5

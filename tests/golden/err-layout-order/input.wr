@@ -1,0 +1,19 @@
+module examples.err_layout_order
+
+# plans/M7.md item B, 03-hardware.md §2. The sibling of
+# `err-layout-overlap`, and the reason the two are separate goldens: one
+# condition in the checker (`offset < cursor`) covers two genuinely
+# different violations, and the diagnostic must not claim the wrong one.
+#
+# Here `earlier` occupies 0x0..0x4 and `later` occupies 0x10..0x14. They
+# share no byte at all — nothing overlaps. What is wrong is only the
+# declaration *order*: 03 §2's rule is that a layout's fields are
+# declared in ascending offset order, so the bytes a reader sees going
+# down the page are the bytes the device sees going up the register
+# file. Reporting this as an overlap would assert something a reader can
+# check and find false, which is how a diagnostic loses its authority.
+
+@layout(mmio, endian=little)
+struct Regs:
+    @offset(0x010) later: u32
+    @offset(0x000) earlier: u32

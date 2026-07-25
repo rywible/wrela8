@@ -1,0 +1,11 @@
+module examples.err_layout_target_dependent
+
+# plans/M7.md item B / decision 4: "no target-dependent field".
+# `usize`'s width is the target's word size by definition, so a layout
+# containing one describes different bytes on different targets — which is
+# not an exact byte layout at all.
+
+@layout(dma, endian=little)
+struct Descriptor:
+    addr: u64
+    len: usize
