@@ -1816,6 +1816,22 @@ fn check_call_by_field(
         if n == "Group" {
             return Ok(None);
         }
+        // plans/M7.md item H2a: `Untrusted[T]` is a sealed builtin, never
+        // a declared struct. `bodies` already resolved `.checked_le`; this
+        // pass only owes the result type so a `match`/`?` chain keeps
+        // tracking. Receiver is a plain read — narrowing does not consume
+        // the wrapper's storage (the value is copied into the compare).
+        if n == "Untrusted" {
+            if name == "checked_le" {
+                if let Some(types::TypeArg::Type(inner)) = targs.first() {
+                    return Ok(Some(Type::Result(
+                        Box::new(inner.clone()),
+                        Box::new(Type::Unit),
+                    )));
+                }
+            }
+            return Ok(None);
+        }
         // plans/M7.md item H1: 03-hardware.md §9's bring-up states are
         // builtin types with no declared struct behind them, exactly like
         // `Actor[T]`/`Group` above. `bodies` has already resolved the

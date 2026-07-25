@@ -1,0 +1,8 @@
+module examples.err_untrusted_index
+
+# plans/M7.md item H2a, 03-hardware.md §8: an `Untrusted[T]` used as an
+# array index is a rejection naming `.checked_le(bound)`, never a
+# coercion to `usize`.
+
+fn bad(reported: Untrusted[usize], arr: [u32; 4]) -> u32:
+    return arr[reported]

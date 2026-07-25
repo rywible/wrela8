@@ -1,0 +1,7 @@
+module examples.err_secret_out_of_scope
+
+# plans/M7.md item H2a: one marked-value mechanism, three policies. The
+# mechanism refuses `Secret[T]` by name as out of M7's honest-scope line.
+
+fn bad(v: Secret[u64]) -> u64:
+    return 0

@@ -1,0 +1,7 @@
+module examples.err_untrusted_checked_lt
+
+# plans/M7.md item H2a: 03-hardware.md §8 spells only `.checked_le(bound)`.
+# Any other `checked_*` narrowing fails closed by name.
+
+fn bad(reported: Untrusted[usize], bound: usize) -> Result[usize, unit]:
+    return reported.checked_lt(bound)

@@ -1,0 +1,8 @@
+module examples.err_untrusted_construct
+
+# plans/M7.md item H2a, 03-hardware.md §8: `Untrusted[T]` is sealed — no
+# source-visible constructor. A device control value arrives marked; the
+# only transition out is a checked narrowing.
+
+fn bad() -> Untrusted[usize]:
+    return Untrusted(7)

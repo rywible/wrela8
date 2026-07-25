@@ -1,0 +1,1 @@
+error[type]: `IoCompletion[P]` and its `written_len` field (03-hardware.md §8's `Untrusted[T]` producer) are plans/M7.md item E4; the marked-value mechanism itself is H2a and does not invent a second producer at 10:11

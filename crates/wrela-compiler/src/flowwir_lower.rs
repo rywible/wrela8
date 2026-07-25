@@ -1980,6 +1980,17 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                  and §7's bottom-half task, which are plans/M7.md item G — until then this is",
             ))
         }
+        // plans/M7.md item H2a: narrowing is emitted on the sync path; an
+        // async body that needs one can call a sync helper. Fail closed
+        // by name rather than half-emitting through FlowWir.
+        TypedExprKind::Intrinsic { key, .. }
+            if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) =>
+        {
+            Err(FlowError::unimplemented(
+                "`Untrusted[T].checked_le` inside an `async fn`: the synchronous path emits it \
+                 (plans/M7.md item H2a); an async narrowing is",
+            ))
+        }
         TypedExprKind::Await(_) | TypedExprKind::GroupChild(_) => Err(FlowError::unimplemented(
             "an `await`/group-child nested inside a larger expression (only a direct \
              `let`/assignment/`return`/bare-statement operand is supported) is",

@@ -3361,6 +3361,60 @@ fn resolve_named(
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named(n.name.clone(), vec![TypeArg::Type(inner)]));
         }
+        // plans/M7.md item H2a, 03-hardware.md §8: one marked-value
+        // mechanism, three policies. `Untrusted[T]` is the only one M7's
+        // honest-scope line keeps IN; `Validated[F, T]` and `Secret[T]`
+        // are recognized here so the refusal is the mechanism rejecting
+        // an unimplemented policy by name, not an unknown-type miss.
+        "Untrusted" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named(
+                "Untrusted".to_string(),
+                vec![TypeArg::Type(inner)],
+            ));
+        }
+        "Validated" => {
+            // Arity is still checked so a wrong-shape spell reports that
+            // first; the policy refusal is what a well-shaped name gets.
+            let _args = expect_type_args(n, 2)?;
+            return Err(SemaError::at(
+                "type",
+                "the marked-value mechanism refuses policy `Validated[F, T]` in this milestone \
+                 — plans/M7.md's honest-scope line keeps only `Untrusted[T]` IN (03-hardware.md \
+                 §8); `Validated[F, T]` needs `FormatValidator[F, T].validate` and \
+                 `into_value(take self)` (05-library.md §6), which are out of M7"
+                    .to_string(),
+                n.span,
+            ));
+        }
+        "Secret" => {
+            let _args = expect_type_args(n, 1)?;
+            return Err(SemaError::at(
+                "type",
+                "the marked-value mechanism refuses policy `Secret[T]` in this milestone — \
+                 plans/M7.md's honest-scope line keeps only `Untrusted[T]` IN (03-hardware.md \
+                 §8); `Secret[T]` needs secret-preserving transforms and the comptime \
+                 non-serialization rule (02-language.md §12), which are out of M7"
+                    .to_string(),
+                n.span,
+            ));
+        }
+        // plans/M7.md item H2a / E4: 03-hardware.md §8's worked producer
+        // is `completion.written_len` on an `IoCompletion[P]`. Completions
+        // are item E4; naming the type here fails closed rather than
+        // inventing a stand-in producer for the marked-value mechanism.
+        "IoCompletion" => {
+            let _args = expect_type_args(n, 1)?;
+            return Err(SemaError::at(
+                "type",
+                "`IoCompletion[P]` and its `written_len` field (03-hardware.md §8's \
+                 `Untrusted[T]` producer) are plans/M7.md item E4; the marked-value \
+                 mechanism itself is H2a and does not invent a second producer"
+                    .to_string(),
+                n.span,
+            ));
+        }
         _ => {}
     }
     // 03-hardware.md §1's four capability types (plans/M7.md item A):
