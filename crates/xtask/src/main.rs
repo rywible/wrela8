@@ -147,6 +147,7 @@ use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::lower;
 use wrela_compiler::mwir;
+use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TestKind;
@@ -1825,7 +1826,12 @@ fn run_image_pipeline_once(
                     path: report::address_to_relative_path(module_addr),
                     digest: report::sha256_hex(input.as_bytes()),
                 };
-                match report::render(&[build_input], &program.enums, &graph) {
+                match report::render(
+                    &[build_input],
+                    &program.enums,
+                    &graph,
+                    &wrela_compiler::placement::PlacementTable::default(),
+                ) {
                     Ok(text) => text,
                     Err(e) => format!("error[build]: {e}\n"),
                 }
@@ -3992,7 +3998,15 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                                 digest: report::sha256_hex(&bytes),
                             });
                         }
-                        match report::render(&inputs, &program.enums, &graph) {
+                        let mut layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
+                            .map_err(|e| render_sema_error(&e))?;
+                        layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
+                        let placement =
+                            match placement::place(&graph, &modules_by_addr, &layout_ctx) {
+                                Ok(p) => p,
+                                Err(e) => return Ok((format!("error[build]: {e}\n"), None)),
+                            };
+                        match report::render(&inputs, &program.enums, &graph, &placement) {
                             Ok(mut text) => {
                                 // plans/M7.md item B disclosed this hole in its
                                 // own clause note rather than leaving it to be
@@ -4018,8 +4032,6 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                                     );
                                 }
                                 report::render_exact_bytes_section(&mut text, &layout_types);
-                                let layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
-                                    .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout::try_layout_program(
                                     &programs,
                                     &layout_ctx,

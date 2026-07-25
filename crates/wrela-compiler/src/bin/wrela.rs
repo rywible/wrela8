@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use wrela_compiler::eval;
 use wrela_compiler::layout;
 use wrela_compiler::loader;
+use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::{TestKind, TypedProgram};
@@ -267,7 +268,16 @@ fn build_report(
                                 digest: report::sha256_hex(&bytes),
                             });
                         }
-                        match report::render(&inputs, &program.enums, &graph) {
+                        // plans/M8.md item B: placement needs the same
+                        // LayoutCtx layout itself uses (state / mailbox
+                        // bytes), including generic instantiations
+                        // (`BlkDriver[DriverMode.Irq]` — decision 18).
+                        let mut layout_ctx =
+                            layout::merge_layout_ctx(modules).map_err(|e| render_sema_error(&e))?;
+                        layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+                        let placement = placement::place(&graph, modules, &layout_ctx)
+                            .map_err(|e| format!("error[build]: {e}\n"))?;
+                        match report::render(&inputs, &program.enums, &graph, &placement) {
                             Ok(mut text) => {
                                 let name = first_field_value(&text, "Name value=")
                                     .unwrap_or("")
@@ -298,8 +308,6 @@ fn build_report(
                                     );
                                 }
                                 report::render_exact_bytes_section(&mut text, &layout_types);
-                                let layout_ctx = layout::merge_layout_ctx(modules)
-                                    .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout::try_layout_program(
                                     programs,
                                     &layout_ctx,
