@@ -1,0 +1,1 @@
+error[build]: `img.device` device#0 and device#1 both declare `capacity_sectors=`/`required_features=`, but this image has no `VirtQueue.configure` site to name the blk device — 06-machine.md §6's device set is closed and machine v1 has exactly one `blk`, so an image may carry at most one device's worth of blk configuration. Drop the declaration from every device but one

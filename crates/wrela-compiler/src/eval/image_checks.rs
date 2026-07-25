@@ -333,8 +333,9 @@ fn check_blk_device_decls(
     Ok(())
 }
 
-/// plans/M8.md item P, decision 25: **blk configuration belongs to the blk
-/// device.**
+/// plans/M8.md item P, decision 25 + item H attack 3: **blk configuration
+/// belongs to the blk device**, and an image may carry at most one device's
+/// worth of it.
 ///
 /// Until item P an image could declare at most one pool-bearing device, so
 /// "the device that declares `capacity_sectors=`" and "the device whose
@@ -352,10 +353,17 @@ fn check_blk_device_decls(
 /// report's own `BlkDevice device=device#N` line can carry only that
 /// device's configuration.
 ///
-/// Silent for an image with no configure site: no device is the blk device
-/// yet, nothing consumes these arguments as a device model's
-/// configuration, and refusing on a guess is the fail-open this exists to
-/// avoid.
+/// When no configure site names the blk device, the "wrong device" arm
+/// cannot run — but two devices both declaring `capacity_sectors=` /
+/// `required_features=` is still an image carrying two devices' worth of
+/// blk configuration. The graph-wide scanners would pick the first in
+/// declaration order and silently drop the rest (`blk_capacity_sectors`
+/// returns on the first hit; `derive_blk_report` emits no `BlkDevice` line
+/// at all without a configure, so the ambiguity is invisible in the
+/// report). Item H attack 3 closes that: refuse by name regardless of
+/// whether anything configures a queue. One device declaring unused blk
+/// config with no configure remains legal — unambiguous, nothing
+/// consumes it.
 fn check_blk_config_names_the_blk_device(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
@@ -367,12 +375,42 @@ fn check_blk_config_names_the_blk_device(
             if configured.is_some() {
                 // `layout::find_virtqueue_configure` owns this rejection
                 // (machine v1 has exactly one queue); nothing to say here.
+                // Verified by building an image with two configure sites:
+                // layout refuses with its own wording
+                // ("more than one `VirtQueue.configure` call; machine v1's
+                // `blk` has exactly one queue").
                 return Ok(());
             }
             configured = Some(pool_name.as_str());
         }
     }
     let Some(pool_name) = configured else {
+        // No configure site: nothing names the blk device, so the arm
+        // below cannot run. But two devices both declaring blk config is
+        // still two devices' worth of configuration for a machine with
+        // exactly one `blk` — refuse by name (item H attack 3). A single
+        // device declaring unused capacity/features stays legal.
+        let mut config_devices: Vec<usize> = Vec::new();
+        for (di, d) in graph.devices.iter().enumerate() {
+            if d.args
+                .iter()
+                .any(|a| a.label == "capacity_sectors" || a.label == "required_features")
+            {
+                config_devices.push(di);
+            }
+        }
+        if config_devices.len() > 1 {
+            let a = config_devices[0];
+            let b = config_devices[1];
+            return Err(build_error(format!(
+                "`img.device` device#{a} and device#{b} both declare \
+                 `capacity_sectors=`/`required_features=`, but this image has no \
+                 `VirtQueue.configure` site to name the blk device — 06-machine.md §6's \
+                 device set is closed and machine v1 has exactly one `blk`, so an image \
+                 may carry at most one device's worth of blk configuration. Drop the \
+                 declaration from every device but one"
+            )));
+        }
         return Ok(());
     };
     let Some(blk_device) = backings.get(pool_name).and_then(|b| b.device) else {

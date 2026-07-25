@@ -74,35 +74,29 @@
 
 use crate::record::digest_hex;
 use wrela_machine::layout as machine_layout;
+use wrela_machine::virtio::{
+    avail_bytes as virtio_avail_bytes, desc_bytes as virtio_desc_bytes,
+    quiesce_count_addr as virtio_quiesce_count_addr, used_bytes as virtio_used_bytes,
+};
 
 // --- virtio-blk protocol constants (OASIS VIRTIO 1.2, as profiled by 06) ---
+//
+// Ring geometry, feature bits, descriptor flags, and `REQ_HEADER_SIZE` are
+// `wrela_machine::virtio` (plans/M8.md item H attack 7) — re-exported here
+// so every existing `devices::DESC_SIZE` site keeps working. What remains
+// below is VMM-only: request types, status bytes, sector size, the
+// never-offered INDIRECT flag, and this VMM's own disk ceiling.
 
-/// Descriptor table entry: `addr: u64, len: u32, flags: u16, next: u16`.
-pub const DESC_SIZE: u64 = 16;
+pub use wrela_machine::virtio::{
+    DESC_F_NEXT, DESC_F_WRITE, DESC_SIZE, DEVICE_FEATURES, F_BLK_FLUSH, F_VERSION_1,
+    REQ_HEADER_SIZE,
+};
 
-/// `VIRTQ_DESC_F_NEXT` — this descriptor continues into `next`.
-pub const DESC_F_NEXT: u16 = 1;
-/// `VIRTQ_DESC_F_WRITE` — device-writable ("write" is from the device's
-/// point of view); its absence means device-readable.
-pub const DESC_F_WRITE: u16 = 2;
 /// `VIRTQ_DESC_F_INDIRECT` — an indirect descriptor table. The
 /// corresponding feature is never offered by this device (see
 /// `DEVICE_FEATURES`), so a descriptor carrying this flag is a driver
-/// fault, not a chain to follow.
+/// fault, not a chain to follow. VMM-only: the compiler never emits one.
 pub const DESC_F_INDIRECT: u16 = 4;
-
-/// `VIRTIO_BLK_F_FLUSH` (feature bit 9) — the `Flush` request type 06 §6's
-/// own device table names explicitly.
-pub const F_BLK_FLUSH: u64 = 1 << 9;
-/// `VIRTIO_F_VERSION_1` (feature bit 32). This machine is modern-only:
-/// there is no legacy transport to fall back to (there is no transport at
-/// all — module doc above), so a driver that does not accept this bit is
-/// refused at negotiation rather than quietly served.
-pub const F_VERSION_1: u64 = 1 << 32;
-
-/// Everything this model offers. A driver may accept a subset (subject to
-/// `F_VERSION_1` being mandatory); it may never accept a bit outside it.
-pub const DEVICE_FEATURES: u64 = F_VERSION_1 | F_BLK_FLUSH;
 
 /// `VIRTIO_BLK_T_IN` — read from the device into guest memory.
 pub const T_IN: u32 = 0;
@@ -117,10 +111,6 @@ pub const STATUS_UNSUPP: u8 = 2;
 
 /// The one sector size this machine's `blk` device speaks.
 pub const SECTOR_SIZE: u64 = 512;
-
-/// `struct virtio_blk_req`'s own header: `type: u32, reserved: u32,
-/// sector: u64`.
-pub const REQ_HEADER_SIZE: u64 = 16;
 
 /// The largest in-memory disk this VMM will allocate for a declared `blk`
 /// device. The flagship guest profile is 1 GiB of DRAM (06 §2) and the
@@ -552,15 +542,15 @@ pub struct BlkQueueConfig {
 
 impl BlkQueueConfig {
     fn desc_bytes(&self) -> u64 {
-        self.size as u64 * DESC_SIZE
+        virtio_desc_bytes(self.size)
     }
     /// `flags: u16, idx: u16, ring: [u16; size]`.
     fn avail_bytes(&self) -> u64 {
-        4 + 2 * self.size as u64
+        virtio_avail_bytes(self.size)
     }
     /// `flags: u16, idx: u16, ring: [(id: u32, len: u32); size]`.
     fn used_bytes(&self) -> u64 {
-        4 + 8 * self.size as u64
+        virtio_used_bytes(self.size)
     }
 }
 
@@ -834,16 +824,13 @@ impl BlkDevice {
 
     /// Guest address of this queue's host-written quiesce count.
     ///
-    /// The queue's control-pool book starts immediately after the doorbell
-    /// word, and the count is its third `u64` — mirroring
-    /// `wrela_compiler::virtqueue::{SLOT_BOOK_LAST_USED, SLOT_BOOK_EPOCH,
-    /// SLOT_BOOK_QUIESCED}` byte for byte, exactly as every other number
-    /// in this file mirrors that module (`DESC_SIZE`, `avail_bytes`,
-    /// `DEVICE_FEATURES`). A disagreement is not silent: the guest names
-    /// the address it intends to gate on and `quiesce` refuses any address
-    /// but this one.
+    /// One formula with the compiler (`wrela_machine::virtio::quiesce_count_addr`):
+    /// the book's third `u64` after the doorbell word. Changing
+    /// `SLOT_BOOK_QUIESCED` in `wrela_machine::virtio` moves both the
+    /// guest's reclaim gate and this VMM's refusal check together —
+    /// plans/M8.md item H attack 7 closed the prior hand-mirrored `+ 8 + 16`.
     pub fn quiesce_count_addr(&self) -> u64 {
-        self.config.queue.doorbell + 8 + 16
+        virtio_quiesce_count_addr(self.config.queue.doorbell)
     }
 
     /// Publishes one completion in the used ring and bumps `used.idx`
@@ -1596,6 +1583,41 @@ mod tests {
         assert_eq!(
             u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap()),
             0
+        );
+    }
+
+    /// plans/M8.md item H attack 7: the VMM's quiesce-count address is the
+    /// machine contract's formula, not a hand-copied `doorbell + 8 + 16`.
+    /// Mutating `wrela_machine::virtio::SLOT_BOOK_QUIESCED` (or
+    /// `DOORBELL_BYTES`) moves this assertion and the guest's reclaim gate
+    /// together; a local literal here would silently drift again.
+    #[test]
+    fn quiesce_count_addr_is_the_shared_machine_formula() {
+        let h = Harness::new();
+        let dev = h.device();
+        assert_eq!(
+            dev.quiesce_count_addr(),
+            wrela_machine::virtio::quiesce_count_addr(h.cfg.queue.doorbell)
+        );
+        assert_eq!(
+            dev.quiesce_count_addr(),
+            h.cfg.queue.doorbell
+                + wrela_machine::virtio::DOORBELL_BYTES
+                + wrela_machine::virtio::SLOT_BOOK_QUIESCED
+        );
+        // Ring byte helpers the VMM uses at construction are the shared
+        // functions, not local twins of the compiler's formulas.
+        assert_eq!(
+            wrela_machine::virtio::avail_bytes(h.cfg.queue.size),
+            4 + 2 * h.cfg.queue.size as u64
+        );
+        assert_eq!(
+            wrela_machine::virtio::used_bytes(h.cfg.queue.size),
+            4 + 8 * h.cfg.queue.size as u64
+        );
+        assert_eq!(
+            wrela_machine::virtio::desc_bytes(h.cfg.queue.size),
+            h.cfg.queue.size as u64 * wrela_machine::virtio::DESC_SIZE
         );
     }
 
