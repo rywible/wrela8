@@ -1,0 +1,36 @@
+module app.main
+
+# plans/M9.md item II: reachable generic + aliased peer. Import Src under
+# an alias and wrap_box/peel_box, but not Box. Instantiation keys must
+# re-key under the alias (Box[Src] → Box[Item]) or comptime abandons with
+# internal error: struct `Box` not found (HH finding #1).
+from lib.g import Src as Item
+from lib.g import wrap_box
+from lib.g import peel_box
+
+fn drive() -> u32:
+    s = Item(n=6)
+    b = wrap_box(take s)
+    i: Item = peel_box(take b)
+    return i.n + 400
+
+const D: u32 = drive()
+
+@test
+pub fn t():
+    assert D == 406, "aliased peer + reachable generic Box"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-reachable-alias-generic", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=D, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

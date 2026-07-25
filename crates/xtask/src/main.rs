@@ -218,7 +218,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower|async] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -275,6 +275,10 @@ fn check() -> Result<(), String> {
     // plans/M7.md item Y: the async half of that same pipeline, which the
     // `lower` lane above has disclosed it never reaches since M6-D.
     fuzz_async_smoke()?;
+    // plans/M9.md item II: multi-module closures. Every other lane is
+    // single-file; four reachable `internal error:` finds this milestone
+    // all needed an import.
+    fuzz_imports_smoke()?;
     // (Historical note, kept for the record: this call was briefly and
     // deliberately absent — the lane's first exercise reproduced a real,
     // pinned `sema::bodies` finding, golden/err-mwir-if-else-scope-leak,
@@ -536,7 +540,8 @@ fn fuzz(args: &[String]) -> Result<(), String> {
                 || a == "sema"
                 || a == "eval"
                 || a == "lower"
-                || a == "async" =>
+                || a == "async"
+                || a == "imports" =>
         {
             (a.as_str(), &args[1..])
         }
@@ -573,9 +578,14 @@ fn fuzz(args: &[String]) -> Result<(), String> {
             let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_ASYNC_DEEP_SEED);
             fuzz_async(iters, seed)
         }
+        "imports" => {
+            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_IMPORTS_DEEP_ITERS);
+            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_IMPORTS_DEEP_SEED);
+            fuzz_imports(iters, seed)
+        }
         other => Err(format!(
             "fuzz: unknown target `{other}` (expected `lexer`, `parser`, `sema`, `eval`, \
-             `lower`, or `async`)"
+             `lower`, `async`, or `imports`)"
         )),
     }
 }
@@ -3487,6 +3497,315 @@ fn fuzz_async_smoke() -> Result<(), String> {
     })
 }
 
+// --- fuzz: imports (plans/M9.md item II) ---------------------------------
+//
+// Every other fuzz lane is single-file. Four reachable `internal error:`
+// finds this milestone (A1b, EE, HH, HH#1) all needed a multi-module
+// closure, so every lane's per-iteration `internal error:` check has
+// never once seen an import. This lane is the deferred multi-module
+// generator: a small fixed set of module shapes (exporter + importer,
+// aliasing importer, two-deep chain, aliased peer + reachable generic)
+// filled from the seeded RNG, run through `check_program_typed` +
+// `eval::run_tests` + `lower::lower_program`. An `"internal error: "`
+// anywhere is a bug.
+//
+// Not a general program generator. The shapes are the ones that would
+// have caught the four finds; numeric field values vary so "accepted"
+// and "correct" stay distinct under mutation of the constants.
+
+const FUZZ_IMPORTS_DEEP_ITERS: u64 = 200_000;
+const FUZZ_IMPORTS_DEEP_SEED: u64 = 1;
+const FUZZ_IMPORTS_SMOKE_SEEDS: &[u64] = &[1, 2];
+const FUZZ_IMPORTS_SMOKE_ITERS_PER_SEED: u64 = 1_000;
+
+/// One closed multi-module program: module address -> source text, plus
+/// the root module's address (the importer that runs `@test`s / lowers).
+struct ImportClosure {
+    modules: Vec<(Vec<String>, String)>,
+    root: Vec<String>,
+}
+
+/// `@test` body with a four-space indent. Built without `\` line
+/// continuation so Rust's "eat leading whitespace on the next line"
+/// rule cannot strip the indent.
+fn import_test_fn(expect: u32, msg: &str) -> String {
+    format!("@test\npub fn t():\n    assert D == {expect}, \"{msg}\"\n")
+}
+
+fn import_shape_comptime_construct(n: u32, k: u32) -> ImportClosure {
+    // A1b: comptime construction of a struct declared in another module.
+    let expect = n.wrapping_add(k);
+    let app = format!(
+        "module app.main\n\nfrom lib.g import Cell\n\nconst D: u32 = Cell(n={n}).n + {k}\n\n{}",
+        import_test_fn(expect, "imported comptime construct")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "g".into()],
+                "module lib.g\n\npub struct Cell:\n    n: u32\n".into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
+fn import_shape_fields_and_method(a: u32, b: u32) -> ImportClosure {
+    // EE: imported struct fields + method, exercised at comptime and lower.
+    let expect = a.wrapping_add(b);
+    let app = format!(
+        "module app.main\n\nfrom lib.g import Pair\n\nfn drive() -> u32:\n    return Pair(a={a}, b={b}).sum()\n\nconst D: u32 = drive()\n\n{}",
+        import_test_fn(expect, "imported fields and method")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "g".into()],
+                "module lib.g\n\npub struct Pair:\n    a: u32\n    b: u32\n\n    pub fn sum(read self) -> u32:\n        return self.a + self.b\n"
+                    .into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
+fn import_shape_reachable_unimported(seed: u32, add: u32) -> ImportClosure {
+    // HH: import only Maker; field-access a reachable-but-unimported Box.
+    let expect = seed.wrapping_add(1).wrapping_add(add);
+    let app = format!(
+        "module app.main\n\nfrom lib.g import Maker\n\nfn drive() -> u32:\n    m = Maker(seed={seed})\n    b = m.build()\n    return b.n + {add}\n\nconst D: u32 = drive()\n\n{}",
+        import_test_fn(expect, "reachable unimported Box")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "g".into()],
+                "module lib.g\n\npub struct Box:\n    n: u32\n\npub struct Maker:\n    seed: u32\n\n    pub fn build(read self) -> Box:\n        return Box(n=self.seed + 1)\n"
+                    .into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
+fn import_shape_alias_peer_generic(n: u32, add: u32) -> ImportClosure {
+    // HH#1: alias a peer type; import wrap/peel of a generic; do not
+    // import the generic itself. Instantiation keys must re-key.
+    let expect = n.wrapping_add(add);
+    let app = format!(
+        "module app.main\n\nfrom lib.g import Src as Item\nfrom lib.g import wrap_box\nfrom lib.g import peel_box\n\nfn drive() -> u32:\n    s = Item(n={n})\n    b = wrap_box(take s)\n    i: Item = peel_box(take b)\n    return i.n + {add}\n\nconst D: u32 = drive()\n\n{}",
+        import_test_fn(expect, "aliased peer + reachable generic")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "g".into()],
+                "module lib.g\n\npub struct Src:\n    n: u32\n\npub struct Box[T]:\n    v: T\n\npub fn peel_box(take b: Box[Src]) -> Src:\n    return b.v\n\npub fn wrap_box(take s: Src) -> Box[Src]:\n    return Box[Src](v=s)\n"
+                    .into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
+fn import_shape_chain(seed: u32, add: u32) -> ImportClosure {
+    // HH chain: A→B→C, only A imported.
+    let expect = seed.wrapping_add(1).wrapping_add(add);
+    let app = format!(
+        "module app.main\n\nfrom lib.a import A\n\nfn drive() -> u32:\n    a = A(seed={seed})\n    b = a.make()\n    c = b.get()\n    return c.n + {add}\n\nconst D: u32 = drive()\n\n{}",
+        import_test_fn(expect, "two-deep reachable chain")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "c".into()],
+                "module lib.c\n\npub struct C:\n    n: u32\n".into(),
+            ),
+            (
+                vec!["lib".into(), "b".into()],
+                "module lib.b\n\nfrom lib.c import C\n\npub struct B:\n    inner: C\n\n    pub fn get(read self) -> C:\n        return self.inner\n"
+                    .into(),
+            ),
+            (
+                vec!["lib".into(), "a".into()],
+                "module lib.a\n\nfrom lib.b import B\nfrom lib.c import C\n\npub struct A:\n    seed: u32\n\n    pub fn make(read self) -> B:\n        return B(inner=C(n=self.seed + 1))\n"
+                    .into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
+fn import_shape_alias_owner(seed: u32, add: u32) -> ImportClosure {
+    // HH alias-owner: `Maker as Builder`; reachable Box keeps exporter spelling.
+    let expect = seed.wrapping_add(1).wrapping_add(add);
+    let app = format!(
+        "module app.main\n\nfrom lib.g import Maker as Builder\n\nfn drive() -> u32:\n    m = Builder(seed={seed})\n    b = m.build()\n    return b.n + {add}\n\nconst D: u32 = drive()\n\n{}",
+        import_test_fn(expect, "reachable under aliased owner")
+    );
+    ImportClosure {
+        modules: vec![
+            (
+                vec!["lib".into(), "g".into()],
+                "module lib.g\n\npub struct Box:\n    n: u32\n\npub struct Maker:\n    seed: u32\n\n    pub fn build(read self) -> Box:\n        return Box(n=self.seed + 1)\n"
+                    .into(),
+            ),
+            (vec!["app".into(), "main".into()], app),
+        ],
+        root: vec!["app".into(), "main".into()],
+    }
+}
+
+fn generate_import_closure(rng: &mut Rng) -> ImportClosure {
+    // Keep values in a small range so wrapping addition stays obvious and
+    // assert messages stay short.
+    let n = (rng.gen_range(50) as u32) + 1;
+    let k = (rng.gen_range(50) as u32) + 1;
+    match rng.gen_range(6) {
+        0 => import_shape_comptime_construct(n, k),
+        1 => import_shape_fields_and_method(n, k),
+        2 => import_shape_reachable_unimported(n, k),
+        3 => import_shape_alias_peer_generic(n, k),
+        4 => import_shape_chain(n, k),
+        _ => import_shape_alias_owner(n, k),
+    }
+}
+
+fn parse_module_source(src: &str) -> Result<Module, String> {
+    let tokens = lexer::lex(src).map_err(|e| format!("lex: {}", e.message))?;
+    match parser::parse_any(tokens).map_err(|e| format!("parse: {}", e.message))? {
+        Parsed::Module(m) => Ok(m),
+        Parsed::Fragment(_) => Err("parse: expected a whole module, got a fragment".into()),
+    }
+}
+
+fn message_has_internal_error(msg: &str) -> bool {
+    msg.contains("internal error: ")
+}
+
+/// One iteration of the imports lane: build a closed multi-module
+/// program, typecheck the whole closure, run comptime tests on the root,
+/// and lower the root. Any `"internal error: "` is a finding.
+fn check_imports_invariants(closure: &ImportClosure) -> Result<(), String> {
+    let mut modules: BTreeMap<Vec<String>, Module> = BTreeMap::new();
+    let mut paths: BTreeMap<Vec<String>, String> = BTreeMap::new();
+    for (addr, src) in &closure.modules {
+        let module = parse_module_source(src)?;
+        let path = format!("{}.wr", addr.join("/"));
+        paths.insert(addr.clone(), path);
+        modules.insert(addr.clone(), module);
+    }
+
+    let programs = match sema::check_program_typed(&modules, &paths) {
+        Ok(p) => p,
+        Err(e) => {
+            if message_has_internal_error(&e.message) {
+                return Err(format!(
+                    "imports: check_program_typed reported internal error: {}",
+                    e.message
+                ));
+            }
+            // Named rejection is fine — shapes are intentionally narrow
+            // and a future language change may refuse one of them by name.
+            return Ok(());
+        }
+    };
+
+    let root = programs
+        .get(&closure.root)
+        .ok_or_else(|| "imports: root module missing from checked programs".to_string())?;
+
+    let (report, _all_ok) = eval::run_tests(root);
+    for line in report.lines() {
+        if message_has_internal_error(line) {
+            return Err(format!("imports: run_tests reported {line}"));
+        }
+        if let Some((_, verdict)) = line.split_once(": FAILED ") {
+            if message_has_internal_error(verdict) {
+                return Err(format!("imports: run_tests FAILED with {verdict}"));
+            }
+        }
+    }
+
+    match lower::lower_program(root) {
+        Ok(_) => {}
+        Err(e) => {
+            if message_has_internal_error(&e.message) {
+                return Err(format!(
+                    "imports: lower_program reported internal error: {}",
+                    e.message
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn format_import_closure(closure: &ImportClosure) -> String {
+    closure
+        .modules
+        .iter()
+        .map(|(addr, src)| format!("// {}.wr\n{src}", addr.join("/")))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn run_imports_fuzz(iters: u64, seed: u64) -> Result<(), String> {
+    let mut rng = Rng::new(seed);
+    for i in 0..iters {
+        let closure = generate_import_closure(&mut rng);
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check_imports_invariants(&closure)
+        }))
+        .unwrap_or_else(|_| Err("imports: panic in check_program_typed/run_tests/lower".into()));
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check_imports_invariants(&closure)
+        }))
+        .unwrap_or_else(|_| Err("imports: panic in check_program_typed/run_tests/lower".into()));
+        match (&first, &second) {
+            (Ok(()), Ok(())) => {}
+            (Err(a), Err(b)) if a == b => {
+                return Err(format!(
+                    "imports fuzz failure at iteration {i} (seed={seed}): {a}\n--- modules ---\n{}",
+                    format_import_closure(&closure)
+                ));
+            }
+            (Ok(()), Err(b)) | (Err(b), Ok(())) => {
+                return Err(format!(
+                    "imports fuzz nondeterminism at iteration {i} (seed={seed}): one run Ok, \
+                     other Err ({b})"
+                ));
+            }
+            (Err(a), Err(b)) => {
+                return Err(format!(
+                    "imports fuzz nondeterminism at iteration {i} (seed={seed}):\n  {a}\n  {b}"
+                ));
+            }
+        }
+    }
+    println!("fuzz imports: {iters} iteration(s) clean (seed={seed})");
+    Ok(())
+}
+
+fn fuzz_imports(iters: u64, seed: u64) -> Result<(), String> {
+    with_silenced_panic_hook(|| run_imports_fuzz(iters, seed))
+}
+
+fn fuzz_imports_smoke() -> Result<(), String> {
+    with_silenced_panic_hook(|| {
+        for &seed in FUZZ_IMPORTS_SMOKE_SEEDS {
+            run_imports_fuzz(FUZZ_IMPORTS_SMOKE_ITERS_PER_SEED, seed)?;
+        }
+        Ok(())
+    })
+}
+
 // --- golden ---------------------------------------------------------------
 //
 // Layout: tests/golden/<case>/input.wr + expected/<stage>.txt. Each
@@ -3901,6 +4220,11 @@ fn golden(update: bool) -> Result<(), String> {
         println!("golden: updated {cases} expectation(s) — review the diff before committing");
         return Ok(());
     }
+    // plans/M9.md item II: pinning `internal error:` as an expected
+    // diagnostic is itself a bug (house rule: each is a compiler bug, not
+    // an outcome). Catch it at the golden surface so a `--update` that
+    // baked one in fails the next gate run.
+    assert_no_internal_error_in_goldens(&golden_dir)?;
     if failures.is_empty() {
         println!("golden: {cases} expectation(s) ok");
         Ok(())
@@ -3909,6 +4233,49 @@ fn golden(update: bool) -> Result<(), String> {
             eprintln!("{f}\n");
         }
         Err(format!("golden: {} failure(s)", failures.len()))
+    }
+}
+
+/// plans/M9.md item II: no golden expectation may contain the
+/// `"internal error: "` prefix. Walks every `expected/*.txt` under
+/// `tests/golden/`.
+fn assert_no_internal_error_in_goldens(golden_dir: &Path) -> Result<(), String> {
+    const PREFIX: &str = "internal error: ";
+    let mut hits = Vec::new();
+    for case in golden_case_dirs(golden_dir)? {
+        let expected_dir = case.join("expected");
+        if !expected_dir.is_dir() {
+            continue;
+        }
+        let mut files: Vec<_> = std::fs::read_dir(&expected_dir)
+            .map_err(|e| format!("read {}: {e}", expected_dir.display()))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("txt"))
+            .collect();
+        files.sort();
+        for path in files {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| format!("read {}: {e}", path.display()))?;
+            if text.contains(PREFIX) {
+                hits.push(
+                    path.strip_prefix(root())
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    if hits.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "golden: {} expectation(s) contain `internal error:` (a compiler bug, never a \
+             pinned outcome — plans/M9.md item II):\n  {}",
+            hits.len(),
+            hits.join("\n  ")
+        ))
     }
 }
 
@@ -5454,10 +5821,15 @@ struct DiffEvalTally {
 /// closure keyed by dotted path (one entry for the no-imports case), the
 /// same shape `bin/wrela.rs::check_closure` / `produce_report_and_image`
 /// already build; `layout::merge_layout_ctx` needs every module's AST so
-/// an imported struct's fields size correctly.
+/// an imported struct's fields size correctly. `programs` is every
+/// module's typed tree (plans/M9.md item II): `enrich_layout_ctx_with_
+/// instantiations` needs imported instantiations under the importer's
+/// alias spelling, or a case like `Box[Item]` sizes as a lowering-skip
+/// even though `--stage=asm` (which does enrich) dumps clean.
 struct DiffEvalChecked {
     root_program: sema::typed::TypedProgram,
     modules: BTreeMap<String, Module>,
+    programs: BTreeMap<String, sema::typed::TypedProgram>,
 }
 
 /// Lex+parse+typecheck for the oracle — mirrors `bin/wrela.rs::check_closure`
@@ -5478,10 +5850,13 @@ fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> {
         let program = sema::check_typed(&module, &path_display).ok()?;
         let addr = module.path.join(".");
         let mut modules = BTreeMap::new();
-        modules.insert(addr, module);
+        modules.insert(addr.clone(), module);
+        let mut programs = BTreeMap::new();
+        programs.insert(addr, program.clone());
         return Some(DiffEvalChecked {
             root_program: program,
             modules,
+            programs,
         });
     }
     // Deliberately parallel to `produce_report_and_image` / `bin/wrela.rs::
@@ -5499,16 +5874,21 @@ fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> {
         .into_iter()
         .map(|(k, m)| (k, m.module))
         .collect();
-    let programs = sema::check_program_typed(&modules_by_key, &paths).ok()?;
+    let programs_by_key = sema::check_program_typed(&modules_by_key, &paths).ok()?;
     let root_key = loaded.root.clone();
-    let root_program = programs.get(&root_key)?.clone();
+    let root_program = programs_by_key.get(&root_key)?.clone();
     let modules: BTreeMap<String, Module> = modules_by_key
         .into_iter()
         .map(|(k, m)| (k.join("."), m))
         .collect();
+    let programs: BTreeMap<String, sema::typed::TypedProgram> = programs_by_key
+        .into_iter()
+        .map(|(k, p)| (k.join("."), p))
+        .collect();
     Some(DiffEvalChecked {
         root_program,
         modules,
+        programs,
     })
 }
 
@@ -5531,11 +5911,15 @@ fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> {
 fn build_runtime_test_image(
     program: &sema::typed::TypedProgram,
     modules: &BTreeMap<String, Module>,
+    programs: &BTreeMap<String, sema::typed::TypedProgram>,
     source: &str,
     path: &str,
     test_names: &[String],
 ) -> Result<(Vec<u8>, String), String> {
-    let layout_ctx = layout::merge_layout_ctx(modules).map_err(|e| e.message)?;
+    let mut layout_ctx = layout::merge_layout_ctx(modules).map_err(|e| e.message)?;
+    // plans/M9.md item II: fold imported instantiations under the
+    // importer's alias spelling — same call `--stage=asm` already makes.
+    layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
     let mwir_program = lower::lower_program(program).map_err(|e| e.message)?;
     // plans/M6.md item F: the same full pipeline `bin/wrela.rs::test_cmd`
     // runs, not the sync-only shortcut this fn used through item E — the
@@ -5786,6 +6170,7 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
         let (img_bytes, report_text) = match build_runtime_test_image(
             program,
             &checked.modules,
+            &checked.programs,
             &source,
             &path_display,
             &backend_names,
@@ -5966,6 +6351,7 @@ fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), String> {
     build_runtime_test_image(
         program,
         &checked.modules,
+        &checked.programs,
         &source,
         &path_display,
         &runtime_names,

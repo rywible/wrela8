@@ -3300,13 +3300,19 @@ fn install_aliased_import_layouts(
 /// instantiation into `LayoutCtx` under its rendered type spelling
 /// (`BlkDriver[DriverMode.Irq]`), so `mwir::size_of` can size a mode-
 /// specialized driver's state the same way it sizes a plain one.
+/// plans/M9.md item II: also fold `imported.instantiations` — those keys
+/// are already under the importer's alias spelling after the typed
+/// splice, so a body that constructs `Box[Item]` (peer aliased) sizes
+/// under `Box[Item]`, not only the exporter's `Box[Src]`.
 pub fn enrich_layout_ctx_with_instantiations(
     ctx: &mut LayoutCtx,
     programs: &BTreeMap<String, TypedProgram>,
 ) {
     use crate::sema::typed::TypedInstantiation;
     for typed in programs.values() {
-        for (key, inst) in &typed.instantiations {
+        let own = typed.instantiations.iter();
+        let imported = typed.imported.instantiations.iter();
+        for (key, inst) in own.chain(imported) {
             let TypedInstantiation::Struct(s) = inst else {
                 continue;
             };

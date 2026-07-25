@@ -795,11 +795,12 @@ fn splice_imported_decls(
         let fn_entry = src.fns.get(&target_name).cloned();
         let struct_entry = src.structs.get(&target_name).cloned();
         let enum_entry = src.enums.get(&target_name).cloned();
-        // The exporter's own instantiations come across wholesale, under
-        // the exporter's own canonical-key spelling: an instantiation key
-        // is `generics::canonical_key`'s text, not an importable name, so
-        // it has no local alias to be re-keyed under. Withheld under the
-        // same shadowing rule as the bodies they belong to.
+        // The exporter's own instantiations come across under the
+        // *importer-facing* canonical-key spelling (plans/M9.md item II):
+        // bodies are re-keyed under `subs`, and so are the map keys, so a
+        // `StructLiteral` typed `Box[Item]` finds `struct:Box[Item]`
+        // rather than missing the exporter's `struct:Box[Src]`. Withheld
+        // under the same shadowing rule as the bodies they belong to.
         let inst_entries = src.instantiations.clone();
         let body_bearing = const_entry.is_some()
             || fn_entry.is_some()
@@ -847,8 +848,10 @@ fn splice_imported_decls(
                 typed::rekey_enum_names(&mut e, &subs);
                 dst.imported.enums.insert(local.clone(), e);
             }
-            for (ikey, inst) in inst_entries {
-                dst.imported.instantiations.entry(ikey).or_insert(inst);
+            for (ikey, mut inst) in inst_entries {
+                typed::rekey_instantiation(&mut inst, &subs);
+                let new_key = typed::rekey_canonical_key(&ikey, &subs);
+                dst.imported.instantiations.entry(new_key).or_insert(inst);
             }
         }
     }

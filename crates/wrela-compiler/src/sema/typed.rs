@@ -722,11 +722,16 @@ pub struct ImportedDecls {
     pub structs: BTreeMap<String, TypedStruct>,
     pub enums: BTreeMap<String, TypedEnum>,
     /// The exporting module's own generic instantiations, keyed by
-    /// `generics::canonical_key`'s spelling *as the exporter spelled it*.
-    /// An importing module that instantiates an imported generic
-    /// registers its own instantiation under its own local spelling
-    /// (`generics::check` runs per module), so this map is a fallback
-    /// for an instantiation only the exporter ever built.
+    /// `generics::canonical_key`'s spelling **under the importer's
+    /// bindings** (plans/M9.md item II): the same `alias_subs_for_exporter`
+    /// map that re-keys imported bodies is applied to both the
+    /// instantiation payload and its map key, so a body that constructs
+    /// `Box[Item]` (peer `Src` aliased as `Item`) looks up
+    /// `struct:Box[Item]`, not the exporter's `struct:Box[Src]`. An
+    /// importing module that instantiates an imported generic itself
+    /// still registers under its own local spelling (`generics::check`
+    /// runs per module); this map is the fallback for an instantiation
+    /// only the exporter ever built.
     pub instantiations: BTreeMap<String, TypedInstantiation>,
     /// The fail-closed half (plans/M9.md item A1b, decision 15): every
     /// declaration name in the build closure that this module's comptime
@@ -1474,9 +1479,59 @@ fn rekey_callee(key: &mut CalleeKey, subs: &BTreeMap<String, String>) {
                 *sname = to.clone();
             }
         }
-        // Instantiation keys keep the exporter's `canonical_key` spelling
-        // (ImportedDecls::instantiations is keyed that way); do not touch.
-        CalleeKey::Fn(_) | CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => {}
+        // plans/M9.md item II: instance keys carry type-arg spellings;
+        // they must track the same substitution the instantiation map
+        // and the surrounding `Type::Named` trees already got.
+        CalleeKey::FnInstance(ikey) | CalleeKey::MethodInstance(ikey, _) => {
+            *ikey = rekey_canonical_key(ikey, subs);
+        }
+        CalleeKey::Fn(_) => {}
+    }
+}
+
+/// Rewrite a `generics::canonical_key` string under an importer's alias
+/// substitution (plans/M9.md item II). Simultaneous whole-identifier
+/// replacement — the same discipline `alias_subs_for_exporter` already
+/// uses for type trees — so an adversarial swap cannot transpose through
+/// left-to-right string rewrite order. Non-identifier bytes (`:`, `[`,
+/// `]`, `,`, spaces, digits in const args) pass through unchanged.
+pub(crate) fn rekey_canonical_key(key: &str, subs: &BTreeMap<String, String>) -> String {
+    if subs.is_empty() {
+        return key.to_string();
+    }
+    let mut out = String::with_capacity(key.len());
+    let bytes = key.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let ident = &key[start..i];
+            if let Some(to) = subs.get(ident) {
+                out.push_str(to);
+            } else {
+                out.push_str(ident);
+            }
+        } else {
+            out.push(b as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Re-key one imported instantiation's payload under `subs` (plans/M9.md
+/// item II). Paired with `rekey_canonical_key` on the map key at the
+/// splice site.
+pub(crate) fn rekey_instantiation(inst: &mut TypedInstantiation, subs: &BTreeMap<String, String>) {
+    match inst {
+        TypedInstantiation::Fn(f) => rekey_fn_names(f, subs),
+        TypedInstantiation::Struct(s) => rekey_struct_names(s, subs),
+        TypedInstantiation::Enum => {}
     }
 }
 

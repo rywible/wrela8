@@ -1,0 +1,13 @@
+module lib.g
+
+pub struct Src:
+    n: u32
+
+pub struct Box[T]:
+    v: T
+
+pub fn peel_box(take b: Box[Src]) -> Src:
+    return b.v
+
+pub fn wrap_box(take s: Src) -> Box[Src]:
+    return Box[Src](v=s)
