@@ -1,0 +1,116 @@
+module examples.err_driver_message_isr_sends
+
+# plans/M8.md item D, arm 4 of the security surface: making drivers
+# messageable must not put a mailbox inside 03-hardware.md §6's ISR effect
+# set.
+#
+# §6 is explicit about what an interrupt handler cannot do: "It cannot
+# allocate, await, block, **call another actor**, touch device-owned DMA
+# payloads, drain unbounded work, use floating point, or format." Before
+# item D a `send` at a `@driver` was refused twice over — once for the
+# site and once because no driver had a mailbox at all. Item D removes the
+# second refusal; this golden pins that the first still does the whole job
+# against a genuinely messageable target.
+#
+# `Bell` really is messageable and `Bell.ring` really is admissible —
+# `boot-driver-message` sends to exactly this shape and observes the
+# reply. What is refused is the **site**, and three independent rules
+# refuse it, in the order the compiler reaches them:
+#
+#   1. `send`/`await` require an `async fn` context, and 03 §6 requires an
+#      ISR to be "a plain `fn`" (`sema::bodies`' own ISR-shape check, and
+#      `err-task-async` for the bottom half). That is the diagnostic this
+#      golden pins, because it is the one that fires first.
+#   2. `eval::legal::check_isr_effects` refuses an `await`/`send` anywhere
+#      in an ISR's transitive callee closure.
+#   3. `check_bottom_half` refuses the same in a `@task`.
+#
+# Recorded as a layered floor rather than collapsed into one: rule 1 is a
+# *shape* rule and rules 2/3 are *effect* rules, and only the effect rules
+# survive if a future milestone ever gives an ISR-adjacent helper an async
+# color.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+
+pool BlockControl
+
+@driver
+pub struct Bell:
+    rings: u64
+
+    pub fn ring(mut self) -> unit:
+        self.rings = self.rings + 1
+        return unit
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+    bell: Actor[Bell]
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        irq = negotiated.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    fn on_queue_irq(self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.irq_regs.interrupt_ack.write(handled)
+            send self.bell.ring()
+
+@image
+pub fn build() -> Image:
+    img = Image(name="driver-message-isr-sends", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    bell = img.driver(Bell, mailbox=4)
+    d = img.driver(BlkDriver, device=blk, bell=bell)
+    img.supervise(children=[bell, d], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

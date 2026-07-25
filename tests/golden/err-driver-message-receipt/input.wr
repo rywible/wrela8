@@ -1,0 +1,119 @@
+module examples.err_driver_message_receipt
+
+# plans/M8.md item D, arm 1's one genuinely new refusal — and deliberately
+# `check-receipt-handoff`'s own source with **one** line changed:
+# `img.driver(BlkDriver, device=blk)` gains `mailbox=4`. That sibling still
+# type-checks and lowers; this one does not build. The whole delta is
+# messageability.
+#
+# Why: `sema::types::validate_fn_capability_types` refuses every sealed
+# authority in a `pub` actor/driver signature with one deliberate
+# exception, `Receipt[P]`, because 03-hardware.md §5 blesses it by name
+# ("any public synchronous `@driver` method with exactly one `take p: P`
+# parameter and result `Receipt[P]` receives the handoff calling
+# convention"). That convention is exactly what plans/M8.md item E owns:
+# admission commit installs a **caller-owned** receipt and the caller then
+# has to `await` it. Item D wires the mailbox; it does not make `await
+# receipt` executable (M7 decision 22 left it lowered but unreachable).
+#
+# So a driver that is both messageable and handoff-shaped is refused at
+# the image, by name, pointing at item E — never admitted into a mailbox
+# whose caller cannot resolve what comes back. When item E lands, this is
+# the golden that changes.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+@layout(dma, endian=little)
+struct BlkReqStatus:
+    status: u8
+
+@layout(dma, endian=little)
+struct DmaBlock:
+    # 512-byte sector payload (virtio-blk SECTOR_SIZE). Frame ABI stays
+    # two u64 slots; the @layout size is what prepare publishes as the
+    # descriptor length (plans/M7.md item E4).
+    @offset(0) word: u64
+    @offset(504) pad_end: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+
+pool BlockControl
+pool BlockPayloads
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    capacity_sectors: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        # Literal capacity — avoids `read_capacity_sectors` so `--stage=mwir`
+        # can lower this driver without an image-eval capacity fill (E1's
+        # ConstInt path). The handoff/publish surface is what this golden pins.
+        self.capacity_sectors = 16
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    # Signature-determined handoff (03 §5): one take P, result Receipt[P].
+    pub fn submit_read(mut self, lba: u64,
+                       take buffer: own[BlockPayloads] DmaBlock)
+        -> Receipt[own[BlockPayloads] DmaBlock]:
+        if lba >= self.capacity_sectors:
+            return self.queue.reject(
+                payload=take buffer,
+                error=IoError.OutOfRange,
+            )
+        permit = self.queue.reserve_proven(descriptors=3)
+        operation = self.queue.prepare_block(
+            permit=take permit,
+            header=BlkReqHeader(kind=0, reserved=0, sector=lba),
+            payload=take buffer,
+            device_writes_payload=true,
+            status=BlkReqStatus(status=0xff),
+        )
+        return self.queue.publish(operation=take operation)
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-driver-message-receipt", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    _payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=4)
+    disk = img.driver(BlkDriver, device=blk, mailbox=4)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

@@ -1,11 +1,20 @@
 module examples.err_image_driver_message
 
-# plans/M6.md item F/G follow-up, the same audit as
-# `err-image-actor-undeclared`, the other half: a `@driver` *is* an actor
-# root (02 §9.1) and an `Actor[T]` handle resolves against declared drivers
-# too, but M6 sizes mailboxes for `img.actor(...)` declarations only — so a
-# messaged driver reaches the identical unresolved-call-target site and gets
-# its own sentence rather than the (wrong) "you never declared it" advice.
+# **Retargeted by plans/M8.md item D.** Until M8 this golden pinned the
+# whole M6-D floor: nothing could message a `@driver` at all. Item D lifts
+# that floor — a driver declared `img.driver(D, mailbox=n)` owns a mailbox
+# and runs admitted messages as ordinary turns (`boot-driver-message` is
+# the boot that does it).
+#
+# What survives, and is what this golden now pins: messageability is
+# **opt-in on the declaration** (05-library.md §9). A `@driver` declared
+# with no `mailbox=` still has no ring, no admission routine and no turn
+# area, so an `await`/`send` through its `Actor[T]` handle is still a build
+# error — and the diagnostic now names the one label that fixes it instead
+# of naming a floor that no longer exists.
+#
+# The sibling `err-image-actor-undeclared` still holds the other half (an
+# `Actor[T]` handle whose `T` this image never declares at all).
 
 @driver
 pub struct Blk:

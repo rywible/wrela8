@@ -1,0 +1,1 @@
+error[build]: `@driver` `BlkDriver` is declared with `mailbox=`, but its `@task` bottom half `BlkDriver.drain` is `pub` — 03-hardware.md §6: a bottom half is woken by an ISR and drains completions, it is not a message. One turn body cannot have both entry paths; make it private

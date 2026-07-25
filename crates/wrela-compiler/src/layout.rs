@@ -909,11 +909,13 @@ fn unresolved_call_target(target: &str, graph: Option<&ImageGraph>) -> LayoutErr
         ));
     };
     // A `@driver` *is* an actor root (02 §9.1) and `resolve_runtime_test_args`
-    // already resolves an `Actor[T]` handle against `graph.drivers` too — but
-    // `compute_runtime_tables` sizes mailboxes for `graph.actors` only, so a
-    // messaged driver lands here as well. It gets its own sentence rather than
-    // the (wrong) "you never declared it" advice, in the same words
-    // `resolve_runtime_test_args` already uses for its own driver floor.
+    // already resolves an `Actor[T]` handle against `graph.drivers` too. Since
+    // plans/M8.md item D a driver gets a mailbox and an admission routine
+    // exactly when its declaration carries `mailbox=` (05-library.md §9) — so
+    // what lands here is the narrower, still-real condition: a declared
+    // `@driver` that was never made messageable. It gets its own sentence,
+    // naming the one label that fixes it, rather than the (wrong) "you never
+    // declared it" advice.
     let declared_driver = graph.is_some_and(|g| {
         g.drivers
             .iter()
@@ -922,9 +924,10 @@ fn unresolved_call_target(target: &str, graph: Option<&ImageGraph>) -> LayoutErr
     if declared_driver {
         return LayoutError::new(format!(
             "this image sends to `{actor}` (an `await` or `send` through an `Actor[{actor}]` \
-             handle), but `{actor}` is declared as a `@driver` — driver mailboxes are not \
-             wired for messaging yet (M6-D's own floor: only an `img.actor(...)` declaration \
-             gets a mailbox and admission routine)"
+             handle), but `{actor}` is declared as a `@driver` with no `mailbox=` — a driver is \
+             messageable only when its declaration says so (05-library.md §9): add \
+             `mailbox=n` to `img.driver({actor}, ...)`, or remove the call. Without one there \
+             is no mailbox to admit into and no admission routine to call"
         ));
     }
     LayoutError::new(format!(
@@ -2958,13 +2961,11 @@ pub struct ActorRuntimeLayout {
 /// report's own totals line can never disagree.
 /// One `@driver` declaration's own static sizing (plans/M7.md item H1).
 /// Deliberately *not* an `ActorRuntimeLayout`: a driver is an actor root
-/// (02 §9.1) but M6-D's floor still stands — only an `img.actor(...)`
-/// declaration gets a mailbox, a ring and an admission routine
-/// (`unresolved_call_target`'s own driver sentence), so a driver has
-/// exactly one static fact today, its state bytes. A turn area follows
-/// when item G gives a driver a `@task`; a mailbox follows when a driver
-/// is messageable. Two half-filled `ActorRuntimeLayout`s would have made
-/// both of those look already-decided.
+/// (02 §9.1) and, since plans/M8.md item D, may own a mailbox — but only
+/// when its declaration says `mailbox=` (05-library.md §9). The state
+/// bytes are unconditional; the mailbox half is `Option`, so a driver
+/// with no `mailbox=` still has exactly one static fact and no zeroed
+/// ring/slot/frame numbers pretending to be decisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverRuntimeLayout {
     pub name: String,
@@ -2977,6 +2978,25 @@ pub struct DriverRuntimeLayout {
     /// driver has a `@task`. Layout patches `Reloc::WakePending` against
     /// `driver_state_base + wake_pending_off`.
     pub wake_pending_off: Option<u64>,
+    /// plans/M8.md item D (decision 12): present exactly when this
+    /// declaration carried `mailbox=n`. The three numbers are the same
+    /// three an `ActorRuntimeLayout` carries and are computed by the same
+    /// arithmetic — a messageable driver is admitted, selected and
+    /// dispatched by the identical routines an `@actor` is
+    /// (`build_rt_enqueue` / `build_rt_select_and_run_symbolic`), never a
+    /// second path.
+    pub mailbox: Option<DriverMailbox>,
+}
+
+/// The mailbox half of a messageable `@driver` (plans/M8.md item D).
+/// Field-for-field the mailbox half of `ActorRuntimeLayout`; kept as its
+/// own struct so "has a mailbox" is one `Option`, not three sentinel
+/// zeros.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverMailbox {
+    pub capacity: u64,
+    pub slot_size: u64,
+    pub frame_size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -3087,6 +3107,16 @@ struct ActorMethodShape {
     /// frame; a scalar-reply method's arm is untouched, down to the word.
     reply_is_aggregate: bool,
     param_sizes: Vec<u64>,
+    /// plans/M8.md item D: the declared reply *type*, so the messageable-
+    /// driver check (`check_driver_message_surface`) can ask
+    /// `sema::types::sealed_authority_carried` about the type the author
+    /// wrote. `reply_is_aggregate` above cannot answer an authority
+    /// question: a `Receipt[P]` and a `u64` are both one word.
+    ret: crate::sema::types::Type,
+    /// 03-hardware.md §6's bottom half. A `@task` is woken by an ISR, not
+    /// admitted from a mailbox; a `pub` `@task` on a messageable driver
+    /// would give one turn body two entry paths (decision 14).
+    is_task: bool,
 }
 
 fn merge_actor_pub_methods(
@@ -3125,6 +3155,8 @@ fn merge_actor_pub_methods(
                     is_async: f.is_async,
                     reply_is_aggregate: crate::codegen::is_aggregate(&f.ret),
                     param_sizes,
+                    ret: f.ret.clone(),
+                    is_task: f.is_task,
                 });
             }
             out.insert(s.name, methods);
@@ -4040,6 +4072,118 @@ fn turn_owner<'k>(key: &'k str, actor_names: &[String]) -> Option<&'k str> {
         .filter(|prefix| actor_names.iter().any(|a| a == prefix))
 }
 
+/// plans/M8.md item D: the `mailbox=` capacity one declaration carries, or
+/// `None` when it carries none. One reader for both `img.actor` (where the
+/// label is required — M6 decision 3) and `img.driver` (where it is what
+/// makes the driver messageable at all — 05-library.md §9), so the two can
+/// never read the same label differently.
+fn declared_mailbox_capacity(
+    args: &[crate::eval::image::DeclArg],
+    who: &str,
+) -> Result<Option<u64>, String> {
+    let Some(arg) = args.iter().find(|a| a.label == "mailbox") else {
+        return Ok(None);
+    };
+    let capacity = value_as_u64(&arg.value).ok_or_else(|| {
+        format!("{who}'s own `mailbox=` value is not a plain non-negative integer")
+    })?;
+    Ok(Some(capacity))
+}
+
+/// Every root that owns a mailbox, in the one order every consumer walks:
+/// each declared `@actor`, then each messageable `@driver`
+/// (`graph.drivers` order). `turn_owner`, `place_runtime_tables`,
+/// `build_runtime_glue_block` and `RuntimePlacement::turn_area_for` all
+/// read this order; a second spelling of it anywhere would be a silent
+/// index skew between a turn area and the routine that writes it.
+fn mailbox_root_names(tables: &RuntimeTables) -> Vec<String> {
+    let mut out: Vec<String> = tables.actors.iter().map(|a| a.name.clone()).collect();
+    for d in &tables.drivers {
+        if d.mailbox.is_some() {
+            out.push(d.name.clone());
+        }
+    }
+    out
+}
+
+/// plans/M8.md item D, the security surface (decisions 13/14). A
+/// messageable `@driver`'s mailbox admits its `pub` methods, so those
+/// signatures are message shapes (02-language.md §9.4) and 03-hardware.md
+/// §1's "a driver may export safe actor APIs but **never raw
+/// capabilities**" is what decides which of them may exist at all.
+///
+/// Three refusals, each a separate sentence because each names a different
+/// leak:
+///
+/// 1. **A receipt across the mailbox.** No 03 §1 capability, §9 protocol
+///    state or §4 sealed queue value may appear in a parameter or reply —
+///    but that rule is *not* re-implemented here.
+///    `sema::types::validate_fn_capability_types` already refuses every
+///    one of them for every `pub` method of an actor or driver, whether or
+///    not a mailbox exists (M7 decision 3: "checked where `Actor[T]`
+///    already is ... do not build a second mechanism"), and
+///    `err-driver-message-capability` pins that it still fires on a
+///    *messageable* driver. The one shape that pass deliberately admits is
+///    `Receipt[P]`, because 03 §5 blesses it by name for the handoff
+///    convention — and a handoff needs the caller-side `await receipt`
+///    that plans/M8.md item E makes executable. So a messageable driver
+///    declaring one is refused **here**, by name, pointing at item E,
+///    rather than admitted into a mailbox whose caller cannot resolve what
+///    comes back.
+/// 2. **The wrong effect set.** A `@task` bottom half (03 §6) is woken by
+///    an ISR and drains completions; it is not a message. Declaring one
+///    `pub` on a messageable driver would give one turn body two entry
+///    paths — a wake and an admission — and the mailbox path carries none
+///    of §6's ordering.
+/// 3. **The ISR itself.** An interrupt handler bound with `irq.bind` runs
+///    in 03 §6's restricted effect set against its device's registers.
+///    Admitting one from a mailbox would run device acknowledge work as an
+///    ordinary turn, at an arbitrary time, on behalf of an arbitrary
+///    sender.
+fn check_driver_message_surface(
+    driver: &str,
+    methods: &[ActorMethodShape],
+    modules: &BTreeMap<String, Module>,
+    decl_items: &[crate::sema::types::DeclItem],
+) -> Result<(), String> {
+    let bare = driver.split('[').next().unwrap_or(driver);
+    let tasks = driver_task_method_names(modules, driver);
+    let isrs = irq_bind_handlers_in_driver(modules, bare);
+    for m in methods {
+        if let Some(found) = crate::sema::types::sealed_authority_carried(&m.ret, decl_items) {
+            return Err(format!(
+                "`@driver` `{driver}` is declared with `mailbox=`, so its `pub` method \
+                 `{driver}.{}` is a message shape — and its reply carries `{found}`, which \
+                 03-hardware.md §1 keeps inside the driver (\"a driver may export safe actor \
+                 APIs but never raw capabilities\"). `Receipt[P]` in particular is \
+                 03-hardware.md §5's handoff convention, which needs the caller-side `await \
+                 receipt` that plans/M8.md item E makes executable; item D wires the mailbox \
+                 only, so a messageable driver cannot hand one back yet",
+                m.name
+            ));
+        }
+        if m.is_task || tasks.iter().any(|t| *t == m.name) {
+            return Err(format!(
+                "`@driver` `{driver}` is declared with `mailbox=`, but its `@task` bottom half \
+                 `{driver}.{}` is `pub` — 03-hardware.md §6: a bottom half is woken by an ISR \
+                 and drains completions, it is not a message. One turn body cannot have both \
+                 entry paths; make it private",
+                m.name
+            ));
+        }
+        if isrs.iter().any(|h| *h == m.name) {
+            return Err(format!(
+                "`@driver` `{driver}` is declared with `mailbox=`, but its interrupt handler \
+                 `{driver}.{}` is `pub` — 03-hardware.md §6: an ISR runs in the restricted \
+                 interrupt effect set against its own device's registers, never as an admitted \
+                 turn on behalf of a sender. Make it private",
+                m.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The whole static-sizing pass (module doc above). `Ok(None)` when the
 /// image declares no actors AND no async fn exists — the no-placeholder
 /// rule: a fully sync image gets no `rtdata` section and no report
@@ -4060,28 +4204,32 @@ pub fn compute_runtime_tables(
         return Ok(None);
     }
     let shapes = merge_actor_pub_methods(modules, layout_ctx).map_err(|e| e.message)?;
-    let actor_names: Vec<String> = graph
+    // plans/M8.md item D: the turn-area owner set is every *mailbox* root,
+    // not every actor — a messageable driver's own `pub async fn` parks in
+    // its own turn area exactly as an actor's does, and must not be sized
+    // as a free turn.
+    let mut actor_names: Vec<String> = graph
         .actors
         .iter()
         .map(|d| crate::sema::types::render_type(&d.actor_type))
         .collect();
+    for decl in &graph.drivers {
+        let name = crate::sema::types::render_type(&decl.actor_type);
+        if declared_mailbox_capacity(&decl.args, &format!("driver `{name}`"))?.is_some() {
+            actor_names.push(name);
+        }
+    }
 
     let mut actors = Vec::with_capacity(graph.actors.len());
     for decl in &graph.actors {
         let name = crate::sema::types::render_type(&decl.actor_type);
-        let mailbox_arg = decl
-            .args
-            .iter()
-            .find(|a| a.label == "mailbox")
+        let mailbox_capacity = declared_mailbox_capacity(&decl.args, &format!("actor `{name}`"))?
             .ok_or_else(|| {
-                format!(
-                    "actor `{name}` has no declared `mailbox=` capacity (plans/M6.md decision 3: \
+            format!(
+                "actor `{name}` has no declared `mailbox=` capacity (plans/M6.md decision 3: \
                  the declared bound is the whole of M6's own mailbox-capacity story; derivation \
                  is out of scope)"
-                )
-            })?;
-        let mailbox_capacity = value_as_u64(&mailbox_arg.value).ok_or_else(|| {
-            format!("actor `{name}`'s own `mailbox=` value is not a plain non-negative integer")
+            )
         })?;
         let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
             .map_err(|e| format!("actor `{name}`'s own state: {e}"))?
@@ -4114,6 +4262,11 @@ pub fn compute_runtime_tables(
     // capability is one word.
     // plans/M7.md item G: a `@task` adds one trailing wake-pending word
     // (sticky bit; mask–arm–recheck for the ISR→bottom-half edge).
+    // plans/M8.md item D: a `mailbox=` on the declaration makes the driver
+    // messageable, and its mailbox is sized by the *identical* arithmetic
+    // an actor's is, from the identical `merge_actor_pub_methods` shapes —
+    // one mailbox story, not a driver-shaped copy of it.
+    let mut decl_items: Option<Vec<crate::sema::types::DeclItem>> = None;
     let mut drivers = Vec::with_capacity(graph.drivers.len());
     for decl in &graph.drivers {
         let name = crate::sema::types::render_type(&decl.actor_type);
@@ -4127,10 +4280,47 @@ pub fn compute_runtime_tables(
         } else {
             None
         };
+        let capacity = declared_mailbox_capacity(&decl.args, &format!("driver `{name}`"))?;
+        let mailbox = match capacity {
+            None => None,
+            Some(capacity) => {
+                let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
+                if decl_items.is_none() {
+                    // The component table `sealed_authority_carried` walks
+                    // spans modules: a plain wrapper struct declared in one
+                    // module can carry a capability into a driver method
+                    // declared in another.
+                    decl_items = Some(closure_decl_items(modules).map_err(|e| e.message)?);
+                }
+                check_driver_message_surface(
+                    &name,
+                    methods,
+                    modules,
+                    decl_items.as_deref().unwrap_or(&[]),
+                )?;
+                let max_args_bytes = methods
+                    .iter()
+                    .map(|m| m.param_sizes.iter().sum::<u64>())
+                    .max()
+                    .unwrap_or(0);
+                let max_async_frame = async_frames
+                    .iter()
+                    .filter(|(key, _)| turn_owner(key, &actor_names) == Some(name.as_str()))
+                    .map(|(_, &bytes)| bytes)
+                    .max()
+                    .unwrap_or(0);
+                Some(DriverMailbox {
+                    capacity,
+                    slot_size: 16 + max_args_bytes,
+                    frame_size: crate::codegen::TURN_RECORD_SIZE + max_async_frame,
+                })
+            }
+        };
         drivers.push(DriverRuntimeLayout {
             name,
             state_size,
             wake_pending_off,
+            mailbox,
         });
     }
 
@@ -4140,7 +4330,10 @@ pub fn compute_runtime_tables(
         .map(|(key, &bytes)| (key.clone(), crate::codegen::TURN_RECORD_SIZE + bytes))
         .collect();
 
-    let ready_queue_capacity = graph.actors.len() as u64 + 1;
+    // "actor count + 1 root" (decision 3), where "actor" is every mailbox
+    // root: a messageable driver is selected by the same round-robin tick.
+    let messageable_drivers = drivers.iter().filter(|d| d.mailbox.is_some()).count() as u64;
+    let ready_queue_capacity = graph.actors.len() as u64 + messageable_drivers + 1;
     let group_arena_capacity = count_with_group_sites(modules);
 
     let mut total_bytes = 0u64;
@@ -4152,6 +4345,9 @@ pub fn compute_runtime_tables(
     }
     for d in &drivers {
         total_bytes += d.state_size;
+        if let Some(mb) = &d.mailbox {
+            total_bytes += mb.capacity * mb.slot_size + MAILBOX_BOOKKEEPING_SIZE + mb.frame_size;
+        }
     }
     for (_, area) in &free_turns {
         total_bytes += area;
@@ -4242,14 +4438,25 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         }
         // plans/M7.md item H1: one line per declared `@driver` instance.
         // Deliberately its own line kind, not an `Actor ...` line with
-        // blanks: a driver has no mailbox, no ring and no turn area
-        // today (M6-D's floor), and printing `mailbox=0 slot=0 frame=0`
-        // would read as three decisions this milestone has not made.
+        // blanks: a driver without `mailbox=` has no ring and no turn
+        // area, and printing `mailbox=0 slot=0 frame=0` would read as
+        // three decisions the image did not make.
+        // plans/M8.md item D: a driver declared with `mailbox=` gains the
+        // same three facts, appended to its own line — so the report says
+        // which drivers are messageable and how much they cost, and a
+        // driver without a mailbox still says nothing it does not have.
         for d in &tables.drivers {
+            let mailbox = match &d.mailbox {
+                None => String::new(),
+                Some(mb) => format!(
+                    " mailbox={} slot={} frame={}",
+                    mb.capacity, mb.slot_size, mb.frame_size
+                ),
+            };
             push_line(
                 out,
                 1,
-                &format!("Driver name={} state={}", d.name, d.state_size),
+                &format!("Driver name={} state={}{mailbox}", d.name, d.state_size),
             );
         }
         push_line(
@@ -4477,9 +4684,23 @@ pub struct RuntimePlacement {
     pub actors: Vec<ActorAddrs>,
     /// plans/M7.md item H1: each declared `@driver` instance's own state
     /// address, in `RuntimeTables::drivers` order. Placed after every
-    /// actor's region and before the free-turn areas — a driver's state is
-    /// the only region it has, so there is nothing else to interleave.
+    /// actor's region and before the free-turn areas.
+    ///
+    /// plans/M8.md item D: a messageable driver's region continues past
+    /// its state with the same ring/head/tail/count/turn run an actor's
+    /// does, in the same order `RuntimeTables::total_bytes` accounts for —
+    /// `driver_mailboxes` below holds those addresses, keyed by the same
+    /// index. The `state` word here is unchanged either way, so every
+    /// pre-item-D consumer (boot state fill, `Reloc::WakePending`, the ISR
+    /// table) reads exactly what it always did.
     pub drivers: Vec<u64>,
+    /// plans/M8.md item D: `RuntimeTables::drivers` index -> that
+    /// messageable driver's own mailbox addresses. An `ActorAddrs`
+    /// deliberately, not a driver-shaped twin: it is handed straight to
+    /// `build_rt_enqueue` / `build_rt_select_and_run_symbolic`, the same
+    /// two routines every actor's mailbox is built from. Its `state` field
+    /// is the same address `drivers[i]` holds.
+    pub driver_mailboxes: BTreeMap<usize, ActorAddrs>,
     /// fn key -> free-turn area base (`RuntimeTables::free_turns` order).
     pub free_turns: BTreeMap<String, u64>,
     /// The deterministic round-robin cursor word `rt_run_one` reads/
@@ -4500,13 +4721,18 @@ impl RuntimePlacement {
     /// free-turn area. `None` only for a key the tables never sized —
     /// an internal inconsistency the caller reports loudly.
     pub fn turn_area_for(&self, key: &str, tables: &RuntimeTables) -> Option<u64> {
-        let actor_names: Vec<String> = tables.actors.iter().map(|a| a.name.clone()).collect();
-        match turn_owner(key, &actor_names) {
-            Some(actor) => tables
-                .actors
-                .iter()
-                .position(|a| a.name == actor)
-                .map(|i| self.actors[i].turn),
+        let roots = mailbox_root_names(tables);
+        match turn_owner(key, &roots) {
+            Some(root) => {
+                if let Some(i) = tables.actors.iter().position(|a| a.name == root) {
+                    return Some(self.actors[i].turn);
+                }
+                // plans/M8.md item D: a messageable driver's own `pub async
+                // fn` parks in the driver's one turn area, exactly as an
+                // actor's does (non-reentrancy is per root, not per method).
+                let di = tables.drivers.iter().position(|d| d.name == root)?;
+                self.driver_mailboxes.get(&di).map(|a| a.turn)
+            }
             None => self.free_turns.get(key).copied(),
         }
     }
@@ -4538,9 +4764,36 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         });
     }
     let mut drivers = Vec::with_capacity(tables.drivers.len());
-    for d in &tables.drivers {
-        drivers.push(cursor);
+    let mut driver_mailboxes = BTreeMap::new();
+    for (i, d) in tables.drivers.iter().enumerate() {
+        let state = cursor;
+        drivers.push(state);
         cursor += d.state_size;
+        // plans/M8.md item D: same five regions, same order, same
+        // arithmetic as the actor loop above.
+        if let Some(mb) = &d.mailbox {
+            let ring = cursor;
+            cursor += mb.capacity * mb.slot_size;
+            let head = cursor;
+            cursor += 8;
+            let tail = cursor;
+            cursor += 8;
+            let count = cursor;
+            cursor += 8;
+            let turn = cursor;
+            cursor += mb.frame_size;
+            driver_mailboxes.insert(
+                i,
+                ActorAddrs {
+                    state,
+                    ring,
+                    head,
+                    tail,
+                    count,
+                    turn,
+                },
+            );
+        }
     }
     let mut free_turns = BTreeMap::new();
     for (key, area) in &tables.free_turns {
@@ -4554,6 +4807,7 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     RuntimePlacement {
         actors,
         drivers,
+        driver_mailboxes,
         free_turns,
         rr_cursor,
         group_arena,
@@ -5278,16 +5532,45 @@ fn build_runtime_glue_block(
 ) -> RuntimeGlue {
     let mut asms = Vec::new();
     let mut symbols = BTreeMap::new();
-    let mut select_starts = Vec::with_capacity(tables.actors.len());
-    let mut cursor = start;
+    // plans/M8.md item D: one loop over every mailbox root — each declared
+    // actor, then each messageable `@driver`, in `mailbox_root_names`'
+    // order (which `actor_dispatch` is built in). A messageable driver
+    // reaches the *identical* `build_rt_enqueue` and
+    // `build_rt_select_and_run_symbolic`, so there is exactly one admission
+    // routine shape and one dispatch routine shape in the machine; nothing
+    // below can tell an actor from a driver, which is the point.
+    let mut roots: Vec<(&str, &ActorAddrs, u64, u64, u64)> =
+        Vec::with_capacity(tables.actors.len() + tables.drivers.len());
     for (i, a) in tables.actors.iter().enumerate() {
-        let addrs = &placement.actors[i];
+        roots.push((
+            a.name.as_str(),
+            &placement.actors[i],
+            a.mailbox_capacity,
+            a.slot_size,
+            a.frame_size,
+        ));
+    }
+    for (i, d) in tables.drivers.iter().enumerate() {
+        let (Some(mb), Some(addrs)) = (&d.mailbox, placement.driver_mailboxes.get(&i)) else {
+            continue;
+        };
+        roots.push((
+            d.name.as_str(),
+            addrs,
+            mb.capacity,
+            mb.slot_size,
+            mb.frame_size,
+        ));
+    }
+    let mut select_starts = Vec::with_capacity(roots.len());
+    let mut cursor = start;
+    for (i, (name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
         let (_, dispatch_keys) = &actor_dispatch[i];
 
         let enqueue_start = cursor;
-        let enqueue_words = build_rt_enqueue(addrs, a.mailbox_capacity, a.slot_size, enqueue_start);
+        let enqueue_words = build_rt_enqueue(addrs, *capacity, *slot_size, enqueue_start);
         cursor += enqueue_words.len();
-        symbols.insert(crate::codegen::rt_enqueue_symbol(&a.name), enqueue_start);
+        symbols.insert(crate::codegen::rt_enqueue_symbol(name), enqueue_start);
         asms.push(Asm {
             start: enqueue_start,
             words: enqueue_words,
@@ -5297,10 +5580,10 @@ fn build_runtime_glue_block(
         let select_start = cursor;
         let select_asm = build_rt_select_and_run_symbolic(
             addrs,
-            a.mailbox_capacity,
-            a.slot_size,
+            *capacity,
+            *slot_size,
             dispatch_keys,
-            a.frame_size,
+            *frame_size,
             select_start,
         );
         cursor += select_asm.words.len();
@@ -5392,9 +5675,18 @@ pub fn resolve_runtime_test_args(
                     actor_index = Some(i);
                 }
             }
+            // plans/M8.md item D: a `@driver` declared with `mailbox=` is a
+            // messageable actor root, so a runtime test may hold its handle
+            // like any other. A driver *without* one still resolves as a
+            // candidate — that is how the count check above stays honest —
+            // but produces the named floor below rather than an index.
+            let mut driver_index: Option<usize> = None;
             for (i, d) in graph.drivers.iter().enumerate() {
                 if crate::sema::types::render_type(&d.actor_type) == target_name {
                     candidates.push(format!("driver#{i}"));
+                    if d.args.iter().any(|a| a.label == "mailbox") {
+                        driver_index = Some(i);
+                    }
                 }
             }
             if candidates.len() != 1 {
@@ -5410,11 +5702,12 @@ pub fn resolve_runtime_test_args(
                     }
                 ));
             }
-            let Some(idx) = actor_index else {
+            let Some(idx) = actor_index.or(driver_index) else {
                 return Err(format!(
                     "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` resolves \
-                     to a driver, not an actor — driver handles are not yet wired for runtime \
-                     tests (M6-D's own floor)",
+                     to a `@driver` declared with no `mailbox=` — a driver is messageable only \
+                     when its declaration says so (05-library.md §9), so there is nothing for \
+                     this handle to call. Add `mailbox=n` to `img.driver({target_name}, ...)`",
                     p.name
                 ));
             };
@@ -5721,22 +6014,27 @@ impl RuntimeWiring {
             return Ok(None);
         };
         let shapes = merge_actor_pub_methods(boot.modules, boot.layout_ctx)?;
-        let dispatch = tables
-            .actors
-            .iter()
-            .map(|a| {
-                let methods = shapes.get(&a.name).cloned().unwrap_or_default();
+        // plans/M8.md item D: dispatch tables are per *mailbox root*, in
+        // `mailbox_root_names`' order — the same order
+        // `build_runtime_glue_block` walks. A messageable driver's methods
+        // are numbered by the identical `merge_actor_pub_methods` shapes
+        // `actor_method_index_tables` hands codegen, so an admitted method
+        // index means the same thing on both sides.
+        let dispatch = mailbox_root_names(&tables)
+            .into_iter()
+            .map(|name| {
+                let methods = shapes.get(&name).cloned().unwrap_or_default();
                 let keys = methods
                     .iter()
                     .map(|m| {
                         (
-                            format!("{}.{}", a.name, m.name),
+                            format!("{name}.{}", m.name),
                             m.is_async,
                             m.reply_is_aggregate,
                         )
                     })
                     .collect();
-                (a.name.clone(), keys)
+                (name, keys)
             })
             .collect();
         // Every rejection this pass can still make lives in here, keyed on

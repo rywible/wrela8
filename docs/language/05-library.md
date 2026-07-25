@@ -50,6 +50,18 @@ reply resolution are deterministic record/replay events.
 owned value whose error carries the moved payloads back; where admission is
 build-proven the error type is `never` and the send stands as a statement.
 
+A `@driver` is an actor root ([02 §9.1](02-language.md)) and is messageable
+exactly when its declaration carries `mailbox=n` (§9): it then owns a bounded
+mailbox and runs admitted messages as ordinary turns on its own core —
+identical to an `@actor`, with one admission, one turn, and one reply. Its
+`pub` methods are the whole exported surface and carry no authority in either
+direction: no capability, sealed queue value, protocol state, or receipt
+crosses a driver mailbox, and its interrupt handlers and `@task` bottom half
+are never admissible ([03 §1](03-hardware.md), [03 §6](03-hardware.md)).
+Device completions are not messages and keep their own path
+([03 §5](03-hardware.md)). A driver declared without `mailbox=` cannot be
+sent to at all.
+
 ## 3. `Completion` and `Receipt`
 
 `Completion[T]` is a sealed single-resolution awaitable resource: resolved
@@ -199,12 +211,14 @@ compiler-recognized intrinsics even when a package supplies their surface:
   declaration is fully bound.
 - `img.device[D](transport=..., required_features=...)` — a build contract;
   boot still verifies the real device.
-- `img.driver(A[...], device=d, ...)` / `img.actor(A, mailbox=n, ...)` —
-  actor declarations whose arguments must match `A.init` (or its literal
-  constructor) after generated capabilities and handles are substituted; an
-  optional `core=` fixes placement, otherwise it is inferred
-  ([04 §3](04-compiler.md)). `decl.handle()` installs an `Actor[A]`
-  identity as another actor's `init` dependency.
+- `img.driver(A[...], device=d, mailbox=n?, ...)` /
+  `img.actor(A, mailbox=n, ...)` — actor declarations whose arguments must
+  match `A.init` (or its literal constructor) after generated capabilities
+  and handles are substituted; an optional `core=` fixes placement,
+  otherwise it is inferred ([04 §3](04-compiler.md)). `mailbox=` is
+  required on an actor and optional on a driver, where it is what makes the
+  driver messageable (§2). `decl.handle()` installs an `Actor[A]` identity
+  as another actor's `init` dependency.
 - `img.pool[T](name=P, slots=N, max_payload=B)` and
   `img.dma_pool[T](name=P, device=d, count=N)` — bind the previously
   unbound pool name `P` exactly once, reserve exact backing, and create the

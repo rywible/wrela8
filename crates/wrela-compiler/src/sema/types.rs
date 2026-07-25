@@ -968,6 +968,19 @@ fn contains_capability(
     type_contains_capability(ty, components, &mut BTreeSet::new())
 }
 
+/// plans/M8.md item D: the sealed authority `ty` carries at any nesting
+/// (03 §1 capability, §4 sealed queue value, §9 protocol state, §5
+/// receipt), rendered — or `None`. Exactly `contains_capability` above,
+/// exported so the image-level messageable-`@driver` check
+/// (`layout::check_driver_message_surface`) asks the *identical* question
+/// with the identical wrapper/cycle-guarded reach, rather than growing a
+/// second walk that could disagree about `Option[DeviceCap]` or a plain
+/// struct with a capability field. `items` is the build closure's own
+/// `declare` output, which is where the component table comes from.
+pub fn sealed_authority_carried(ty: &Type, items: &[DeclItem]) -> Option<String> {
+    contains_capability(ty, &components_by_name(items))
+}
+
 /// 03-hardware.md §1/§2: "`Mmio[L]` — a typed register layout derived from
 /// that device", whose §2 example is `Mmio[VirtioIrqMmio]` over an
 /// `@layout(mmio)` struct. `L` must therefore name one. Structured exactly
@@ -1268,20 +1281,32 @@ fn validate_fn_capability_types(
     let Some(found) = contains_capability(ret, components) else {
         return Ok(());
     };
-    // plans/M7.md item E2: `QueuePermit` / `QueueOp` are minted by
-    // `reserve_proven` / `prepare_block` — sealed queue values, not
-    // image-bound capabilities. A function may return one; that is how
-    // the permit reaches `prepare_block` and the operation reaches
-    // `publish` (E3).
-    // plans/M7.md item E3: `Receipt[P]` is likewise minted only by
-    // `publish` / `reject` / the handoff admission commit — returning
-    // one is how a handoff method transfers the caller endpoint. Must
-    // run before the pub-method rejection below, or every handoff
-    // signature is illegally rejected as "raw capabilities".
-    if found.starts_with("QueuePermit")
-        || found.starts_with("QueueOp")
-        || found.starts_with("Receipt[")
-        || found == "Receipt"
+    // plans/M7.md item E3: `Receipt[P]` is minted only by `publish` /
+    // `reject` / the handoff admission commit — returning one is how a
+    // handoff method transfers the caller endpoint, and 03-hardware.md §5
+    // blesses that shape *by name* on a public driver method ("any public
+    // synchronous `@driver` method with exactly one `take p: P` parameter
+    // and result `Receipt[P]`"). So this arm must run before the
+    // pub-method rejection below, or every handoff signature is illegally
+    // rejected as "raw capabilities".
+    //
+    // plans/M8.md item D narrowed this list. `QueuePermit` / `QueueOp`
+    // (M7 item E2) are minted by `reserve_proven` / `prepare_block` and
+    // must reach `prepare_block` / `publish` — which is a *private*
+    // driver-internal handoff, and `is_pub_method` is exactly the gate
+    // that distinguishes the two. Whitelisting them ahead of the
+    // pub-method arm let a `pub` driver method declare a sealed queue
+    // value as its reply; harmless while no driver could be messaged, and
+    // a laundering channel the moment one can be (item D). 03 §5 names no
+    // public convention for either name, so neither gets one here: they
+    // fall through to the ordinary rules below, which permit them on a
+    // private method (`CapOwner::Plain`/`Driver`, `is_pub_method` false)
+    // and on a free helper, and refuse them as an exported reply.
+    if found.starts_with("Receipt[") || found == "Receipt" {
+        return Ok(());
+    }
+    if (found.starts_with("QueuePermit") || found.starts_with("QueueOp"))
+        && !(is_pub_method && owner != CapOwner::Plain)
     {
         return Ok(());
     }

@@ -1,0 +1,164 @@
+module examples.err_boot_driver_message
+
+# **Vacuity control for `boot-driver-message`.** Identical source, with
+# the relayed driver reply asserted against the wrong number (15 instead
+# of the image's declared 16). Without this twin, a green
+# `boot-driver-message` would also be green on a boot that admitted
+# nothing, ran no driver turn and delivered no reply — every `match` arm
+# would simply never be reached.
+#
+# The expected transcript is the guest's own abort line plus a nonzero
+# exit, exactly as `err-boot-blk-roundtrip` pins for the M7 flagship.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+const QDEPTH: usize = 8
+const SECTOR: u64 = 512
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    device: RunningDevice[VirtioBlock]
+    queue: VirtQueue[..8]
+    capacity_sectors: u64
+    pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+    drains: u64
+    bringup_done: u64
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        self.drains = 0
+        self.bringup_done = 0
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=QDEPTH,
+        )?
+        self.capacity_sectors = negotiated.read_capacity_sectors()?
+        irq = negotiated.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+        self.device = negotiated.start()
+        # Last statement of 03 §9's `Reset -> ... -> Running` chain. A
+        # message that could be *selected* before bring-up finished would
+        # observe 0 here (`root_never_reenters_bring_up`).
+        self.bringup_done = 1
+        return Ok(unit)
+
+    # 03 §6's ISR: private, restricted effect set, never admissible.
+    fn on_queue_irq(self):
+        status = self.irq_regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.irq_regs.interrupt_ack.write(handled)
+            wake(BlkDriver.drain)
+
+    # 03 §6's bottom half: private, woken not admitted.
+    @task
+    fn drain(mut self):
+        status = self.pending.swap_acquire(0)
+        if status == 0:
+            return unit
+        self.drains = self.drains + 1
+        return unit
+
+    # The exported surface: plain data in, plain data out. No capability,
+    # no sealed queue value, no receipt crosses this boundary.
+    pub fn capacity(read self) -> u64:
+        return self.capacity_sectors
+
+    pub fn sector_bytes(read self, count: u64) -> u64:
+        return count * SECTOR
+
+    pub fn ready(read self) -> u64:
+        return self.bringup_done
+
+@actor
+pub struct Storage:
+    disk: Actor[BlkDriver]
+
+    pub async fn blocks(read self) -> u64:
+        c = await self.disk.capacity()
+        match c:
+            case .Ok(n):
+                return n
+            case .Err(_):
+                return 0
+
+@test(runtime)
+async fn actor_relays_a_driver_reply(st: Actor[Storage]):
+    v = await st.blocks()
+    match v:
+        case .Ok(n):
+            assert n == 15, "vacuity twin: the real capacity is 16, so this must fail"
+        case .Err(_):
+            assert false, "relay rejected"
+
+@test(runtime)
+async fn root_messages_the_driver_directly(disk: Actor[BlkDriver]):
+    v = await disk.sector_bytes(count=3)
+    match v:
+        case .Ok(n):
+            assert n == 1536, "3 * 512 computed inside a driver turn"
+        case .Err(_):
+            assert false, "driver call rejected"
+
+@test(runtime)
+async fn root_never_reenters_bring_up(disk: Actor[BlkDriver]):
+    # 03-hardware.md §9: publication requires `Running`, and every state
+    # transition consumes its input. A driver mailbox must not become a way
+    # to re-enter a driver mid-chain — boot calls every `init` to completion
+    # before the scheduler runs a single turn, so the first admissible
+    # message already sees `Running`. Asserted, not assumed.
+    v = await disk.ready()
+    match v:
+        case .Ok(n):
+            assert n == 1, "no turn is admitted before the driver finished bring-up"
+        case .Err(_):
+            assert false, "driver call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-boot-driver-message", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    disk = img.driver(BlkDriver, device=blk, mailbox=4)
+    st = img.actor(Storage, mailbox=4, disk=disk)
+    img.supervise(children=[disk, st], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

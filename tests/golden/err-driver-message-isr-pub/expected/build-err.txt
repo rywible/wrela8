@@ -1,0 +1,1 @@
+error[build]: `@driver` `BlkDriver` is declared with `mailbox=`, but its interrupt handler `BlkDriver.on_queue_irq` is `pub` — 03-hardware.md §6: an ISR runs in the restricted interrupt effect set against its own device's registers, never as an admitted turn on behalf of a sender. Make it private

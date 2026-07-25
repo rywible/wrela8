@@ -142,6 +142,17 @@ pub fn place(
     for (i, d) in graph.drivers.iter().enumerate() {
         let type_name = types::render_type(&d.actor_type);
         let state = tables.drivers.get(i).map(|r| r.state_size).unwrap_or(0);
+        // plans/M8.md item D: a `@driver` declared with `mailbox=` owns a
+        // real ring plus bookkeeping, sized by the same arithmetic an
+        // actor's is below. 04 §3 packs on owned image + mailbox bytes, so
+        // reporting 0 here would understate a messageable driver's load and
+        // make the Placement line disagree with the Driver line.
+        let mailbox = tables
+            .drivers
+            .get(i)
+            .and_then(|r| r.mailbox.as_ref())
+            .map(|m| m.capacity * m.slot_size + MAILBOX_BOOKKEEPING)
+            .unwrap_or(0);
         let pool = pool_by_driver.get(&i).copied().unwrap_or(0);
         let explicit = read_core_arg(&d.args, &format!("driver#{i}"))?;
         let pinned = driver_is_virtio_blk(graph, d);
@@ -150,7 +161,7 @@ pub fn place(
             type_name,
             work: 0,
             bytes_state: state,
-            bytes_mailbox: 0,
+            bytes_mailbox: mailbox,
             bytes_pool: pool,
             explicit,
             pinned_virtio_blk: pinned,
