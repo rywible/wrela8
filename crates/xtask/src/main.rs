@@ -4043,7 +4043,24 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                                         Some(image_layout.blob)
                                     }
                                     Ok(None) => None,
-                                    Err(e) => return Err(format!("layout: {e}")),
+                                    // A layout error is a *rendered
+                                    // diagnostic* on the production path
+                                    // (`bin/wrela.rs`: `error[build]:
+                                    // layout: {e}`), not a harness
+                                    // malfunction — and this oracle exists
+                                    // to compare exactly what production
+                                    // produces. Returning `Err` here made
+                                    // the report-determinism lane abort
+                                    // instead of diffing the moment a
+                                    // golden first pinned a report whose
+                                    // layout legitimately fails
+                                    // (plans/M8.md item C1's own
+                                    // `err-placement-cross-core-send`) —
+                                    // found by that golden, fixed here to
+                                    // mirror `bin/wrela.rs` word for word.
+                                    Err(e) => {
+                                        return Ok((format!("error[build]: layout: {e}\n"), None));
+                                    }
                                 };
                                 Ok((text, img))
                             }

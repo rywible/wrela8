@@ -1341,6 +1341,13 @@ fn test_cmd(args: &[String]) -> ExitCode {
         ));
     }
     report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
+    // plans/M8.md item C1: the secondary cores' own entries, in the same
+    // spelling `--stage=report` uses — the VMM starts vCPU N here when the
+    // guest rings `mmio::RELEASE_MMIO_ADDR` (06 §3). Absent for a
+    // single-core image.
+    for (core, base) in &image_layout.core_entries {
+        report_text.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
+    }
     // plans/M7.md item E1: the VMM-facing Blk* lines (absent when no queue).
     layout::append_blk_vmm_lines(&mut report_text, &image_layout);
     // plans/M7.md item G: host `interrupt_status` write + vector raise,

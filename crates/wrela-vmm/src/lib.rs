@@ -67,8 +67,15 @@ pub enum VmmError {
     /// The host-side wall-clock cap (`WALL_CAP`) elapsed with the guest
     /// still running; `transcript_so_far` is whatever the console ring
     /// held at the moment of the forced exit (decision 15: "the
-    /// transcript-so-far shown", never silently discarded).
-    Timeout { transcript_so_far: Vec<u8> },
+    /// transcript-so-far shown", never silently discarded). `core` is the
+    /// vCPU that was actually inside `hv_vcpu_run` when the watchdog
+    /// force-exited every core (plans/M8.md item C1: with three cores, a
+    /// hang that does not say *which* core hung is a bug report missing
+    /// its first fact).
+    Timeout {
+        core: usize,
+        transcript_so_far: Vec<u8>,
+    },
 }
 
 impl std::fmt::Display for VmmError {
@@ -93,9 +100,13 @@ impl std::fmt::Display for VmmError {
             }
             VmmError::BadImage(msg) => write!(f, "bad image: {msg}"),
             VmmError::GuestFault(msg) => write!(f, "guest fault: {msg}"),
-            VmmError::Timeout { transcript_so_far } => write!(
+            VmmError::Timeout {
+                core,
+                transcript_so_far,
+            } => write!(
                 f,
-                "timeout after {:?}: {} byte(s) of transcript captured before the forced exit",
+                "timeout after {:?} on core {core}: {} byte(s) of transcript captured before the \
+                 forced exit",
                 WALL_CAP,
                 transcript_so_far.len()
             ),
@@ -124,6 +135,15 @@ pub struct BootOutcome {
     /// `ChoiceEntry::ClockRead` subsequence of this, now generalized.
     pub choices: Vec<record::ChoiceEntry>,
     pub exits: u64,
+    /// plans/M8.md item C1: each core's own guest-written bring-up mark
+    /// (`machine_info::OFF_CORE_MARK`), `VCPUS` of them, in core order —
+    /// `core_mark_running(n)` for a core that reached its own event loop,
+    /// `0` for one that never ran. A single-core image leaves all three at
+    /// `0` (it releases nothing and writes no mark); `check_core_marks`
+    /// has already refused any boot where a *released* core is missing its
+    /// own mark, so this field is evidence for a test to read, never a
+    /// condition a caller has to remember to check.
+    pub core_marks: Vec<u64>,
 }
 
 /// The report's own structural facts this VMM actually consumes (module
@@ -145,6 +165,12 @@ struct ParsedReport {
     /// vector to raise, applied before the vCPU runs. Empty for images
     /// that bind no ISR.
     irq_injects: Vec<IrqHostInject>,
+    /// plans/M8.md item C1: `(core, entry address)` for every **secondary**
+    /// core the image brings up, ascending and contiguous from core 1.
+    /// Empty for every single-core image — which is every image built
+    /// before this item, so their boot path is unchanged down to the
+    /// number of vCPUs this VMM creates.
+    core_entries: Vec<(usize, u64)>,
 }
 
 /// One `IrqHostInject` report line (plans/M7.md item G).
@@ -230,6 +256,7 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut blk_queue: Option<devices::BlkQueueConfig> = None;
     let mut blk_pools: Vec<devices::PoolWindow> = Vec::new();
     let mut irq_injects: Vec<IrqHostInject> = Vec::new();
+    let mut core_entries: Vec<(usize, u64)> = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
@@ -241,6 +268,23 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
             let digits = rest.trim_start_matches("0x");
             entry = u64::from_str_radix(digits, 16).ok();
+        } else if let Some(rest) = line.strip_prefix("CoreEntry ") {
+            // plans/M8.md item C1 / 06 §3: where this VMM starts vCPU N once
+            // core 0's entry rings the release doorbell. Device topology is
+            // a build output and so is the core set — nothing here is
+            // probed, defaulted, or guessed.
+            let fields = parse_report_fields("CoreEntry", rest, &["core", "base"])?;
+            let core = report_u64("CoreEntry", &fields, "core")?;
+            let base = report_u64("CoreEntry", &fields, "base")?;
+            if core == 0 || core as usize >= wrela_machine::VCPUS {
+                return Err(VmmError::MalformedReport(format!(
+                    "`CoreEntry core={core}`: secondary cores are 1..{} (06-machine.md §1: the \
+                     machine has {} vCPUs, and core 0's entry is the `Entry base=` line)",
+                    wrela_machine::VCPUS,
+                    wrela_machine::VCPUS
+                )));
+            }
+            core_entries.push((core as usize, base));
         } else if let Some(rest) = line.strip_prefix("BlkDevice ") {
             let fields = parse_report_fields(
                 "BlkDevice",
@@ -382,10 +426,25 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             })
         }
     };
+    // The secondary-core set is contiguous from core 1: an image that
+    // brings up core 2 but not core 1 would leave a core released by the
+    // guest's own count with no entry to start at, which this VMM refuses
+    // to guess an address for.
+    core_entries.sort_by_key(|(c, _)| *c);
+    for (i, (core, _)) in core_entries.iter().enumerate() {
+        if *core != i + 1 {
+            return Err(VmmError::MalformedReport(format!(
+                "`CoreEntry` lines are not contiguous from core 1 (saw core {core} where core {} \
+                 was expected)",
+                i + 1
+            )));
+        }
+    }
     Ok(ParsedReport {
         entry,
         blk,
         irq_injects,
+        core_entries,
     })
 }
 
@@ -452,7 +511,6 @@ fn boot_image_core(
     use std::ffi::c_void;
     use wrela_machine::layout as machine_layout;
     use wrela_machine::machine_info;
-    use wrela_machine::mmio;
 
     let report_text = std::fs::read_to_string(report_path)
         .map_err(|e| VmmError::Io(format!("read {}: {e}", report_path.display())))?;
@@ -555,94 +613,63 @@ fn boot_image_core(
         );
     }
 
-    // --- vCPU 0 ---------------------------------------------------------------
-    let mut vcpu: u64 = 0;
-    let mut exit_ptr: *mut HvVcpuExit = std::ptr::null_mut();
-    let r = unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, std::ptr::null_mut()) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vcpu_create",
-            code: r,
-        });
-    }
-    struct VcpuGuard(u64);
-    impl Drop for VcpuGuard {
-        fn drop(&mut self) {
-            unsafe {
-                hv_vcpu_destroy(self.0);
-            }
-        }
-    }
-    let _vcpu_guard = VcpuGuard(vcpu);
-
-    let set_reg = |reg: u32, value: u64| -> Result<(), VmmError> {
-        let r = unsafe { hv_vcpu_set_reg(vcpu, reg, value) };
-        if r == HV_SUCCESS {
-            Ok(())
-        } else {
-            Err(VmmError::Hvf {
-                call: "hv_vcpu_set_reg",
-                code: r,
+    // --- device model + boot-time injections, before any vCPU runs --------
+    // Establish the monotonic epoch before the guest's first instruction,
+    // so `now()` measures from the machine coming up rather than from
+    // whichever guest read happened to be first (`monotonic_ns`'s own doc).
+    let _ = monotonic_ns();
+    // plans/M7.md item F: the declared `blk` device model, preconfigured
+    // from the report (06 §3) before the vCPU ever runs. `None` unless the
+    // report declares one, which nothing the compiler emits does yet — so
+    // every existing image boots down exactly the path it did before.
+    let blk: Option<BlkState> = match parsed.blk {
+        None => None,
+        Some(cfg) => {
+            let pools = cfg.pools.clone();
+            let vector = cfg.vector;
+            let device = devices::BlkDevice::new(cfg).map_err(VmmError::BadImage)?;
+            let mem =
+                unsafe { devices::GuestMem::new(host_ram, pools) }.map_err(VmmError::BadImage)?;
+            // Completion-time `interrupt_status` writer: same GPA the
+            // boot-time `IrqHostInject` names, when this device owns a
+            // vector. Plans/M7.md item E4: the ISR masks bit 0 after a
+            // real used-ring completion, not only the one-shot boot inject.
+            let irq_status_gpa = vector.and_then(|v| {
+                parsed
+                    .irq_injects
+                    .iter()
+                    .find_map(|inj| (inj.vector == v).then_some(inj.base.checked_add(inj.offset)?))
+            });
+            Some(BlkState {
+                device,
+                mem,
+                irq_status_gpa,
             })
         }
     };
-    // 06 §3: "points x0 at the machine-info page ... and starts vCPU 0 at
-    // the image entry." The image's own generated runtime never actually
-    // reads x0 today (its own absolute addresses are baked in at compile
-    // time — layout.rs's own module doc), but the boot contract is
-    // satisfied regardless, for forward compatibility.
-    set_reg(hv_reg_xn(0), machine_layout::MACHINE_INFO_BASE)?;
-    set_reg(HV_REG_PC, parsed.entry)?;
-    // EL1h (`SPSel = 1`), every exception masked (`DAIF = 1111`) — the
-    // standard bare-metal AArch64 boot value, plans/M5.md decision text's
-    // own "0x3c5".
-    set_reg(HV_REG_CPSR, 0x3c5)?;
-    let r = unsafe { hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_CPACR_EL1, 0x0030_0000) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vcpu_set_sys_reg(CPACR_EL1)",
-            code: r,
-        });
-    }
-
-    // --- watchdog thread (decision 15's own host-side wall cap) --------------
-    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-    let watchdog_vcpu = vcpu;
-    let watchdog = std::thread::spawn(move || {
-        if done_rx.recv_timeout(WALL_CAP).is_err() {
-            // Either a real timeout, or the sender was dropped without a
-            // send (an early `return Err` above would drop it) — both
-            // cases force the vCPU to exit; a `hv_vcpu_run` that already
-            // returned naturally treats this as a no-op per the header's
-            // own documented "vcpu not running" behavior.
-            let mut vcpus = [watchdog_vcpu];
-            unsafe {
-                hv_vcpus_exit(vcpus.as_mut_ptr(), 1);
-            }
+    // plans/M7.md item G: write `interrupt_status` then raise the vector
+    // before the guest's first instruction. The status value is the
+    // compiler's `IRQ_HOST_STATUS_MAGIC` — a word the zeroed reservation
+    // cannot produce — so an ISR that asserts equality has proved the
+    // host write, not a vacuous zero read.
+    for inj in &parsed.irq_injects {
+        let guest = inj.base.checked_add(inj.offset).ok_or_else(|| {
+            VmmError::BadImage(format!(
+                "IrqHostInject base={:#x}+offset={:#x} overflows",
+                inj.base, inj.offset
+            ))
+        })?;
+        if guest < machine_layout::DRAM_BASE {
+            return Err(VmmError::BadImage(format!(
+                "IrqHostInject address {guest:#x} is below DRAM_BASE"
+            )));
         }
-    });
-    // Ensures `done_tx` (and therefore the watchdog thread) is always
-    // cleaned up on every exit path, including an early `return Err` deep
-    // inside the loop below — the same RAII pattern as `VmGuard`/
-    // `RamGuard`/`VcpuGuard` above.
-    struct WatchdogGuard {
-        tx: Option<std::sync::mpsc::Sender<()>>,
-        handle: Option<std::thread::JoinHandle<()>>,
-    }
-    impl Drop for WatchdogGuard {
-        fn drop(&mut self) {
-            if let Some(tx) = self.tx.take() {
-                let _ = tx.send(());
-            }
-            if let Some(h) = self.handle.take() {
-                let _ = h.join();
-            }
+        let off = (guest - machine_layout::DRAM_BASE) as usize;
+        unsafe {
+            std::ptr::copy_nonoverlapping(inj.status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
         }
+        raise_vector(host_ram, inj.vector);
     }
-    let _watchdog_guard = WatchdogGuard {
-        tx: Some(done_tx),
-        handle: Some(watchdog),
-    };
 
     // --- plans/M6.md item E's own conformance-only seam: a delayed,
     // host-side raise (module doc above) — absent (`None`) on every
@@ -691,112 +718,165 @@ fn boot_image_core(
         })
     }));
 
-    // --- the exit loop ---------------------------------------------------------
-    let clock_addr = mmio::CLOCK_MMIO_ADDR;
-    let exit_addr = mmio::EXIT_MMIO_ADDR;
-    let park_addr = mmio::PARK_MMIO_ADDR;
-    let pending_off =
-        (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
-    let deadline_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize
-        + machine_info::OFF_NEXT_DEADLINE as usize;
-    // Establish the monotonic epoch before the guest's first instruction,
-    // so `now()` measures from the machine coming up rather than from
-    // whichever guest read happened to be first (`monotonic_ns`'s own doc).
-    let _ = monotonic_ns();
-    // plans/M7.md item F: the declared `blk` device model, preconfigured
-    // from the report (06 §3) before the vCPU ever runs. `None` unless the
-    // report declares one, which nothing the compiler emits does yet — so
-    // every existing image boots down exactly the path it did before.
-    let mut blk: Option<BlkState> = match parsed.blk {
-        None => None,
-        Some(cfg) => {
-            let pools = cfg.pools.clone();
-            let vector = cfg.vector;
-            let device = devices::BlkDevice::new(cfg).map_err(VmmError::BadImage)?;
-            let mem =
-                unsafe { devices::GuestMem::new(host_ram, pools) }.map_err(VmmError::BadImage)?;
-            // Completion-time `interrupt_status` writer: same GPA the
-            // boot-time `IrqHostInject` names, when this device owns a
-            // vector. Plans/M7.md item E4: the ISR masks bit 0 after a
-            // real used-ring completion, not only the one-shot boot inject.
-            let irq_status_gpa = vector.and_then(|v| {
-                parsed
-                    .irq_injects
-                    .iter()
-                    .find_map(|inj| (inj.vector == v).then_some(inj.base.checked_add(inj.offset)?))
-            });
-            Some(BlkState {
-                device,
-                mem,
-                irq_status_gpa,
-            })
-        }
-    };
-    // plans/M7.md item G: write `interrupt_status` then raise the vector
-    // before the guest's first instruction. The status value is the
-    // compiler's `IRQ_HOST_STATUS_MAGIC` — a word the zeroed reservation
-    // cannot produce — so an ISR that asserts equality has proved the
-    // host write, not a vacuous zero read.
-    for inj in &parsed.irq_injects {
-        let guest = inj.base.checked_add(inj.offset).ok_or_else(|| {
-            VmmError::BadImage(format!(
-                "IrqHostInject base={:#x}+offset={:#x} overflows",
-                inj.base, inj.offset
-            ))
-        })?;
-        if guest < machine_layout::DRAM_BASE {
-            return Err(VmmError::BadImage(format!(
-                "IrqHostInject address {guest:#x} is below DRAM_BASE"
-            )));
-        }
-        let off = (guest - machine_layout::DRAM_BASE) as usize;
-        unsafe {
-            std::ptr::copy_nonoverlapping(inj.status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
-        }
-        raise_vector(host_ram, inj.vector);
-    }
-    let mut exits: u64 = 0;
-    let exit_code: u64;
-    // plans/M6.md item E, decision 9: the single point every
-    // nondeterministic decision this loop makes flows through.
-    let mut chooser = match replay_choices {
-        Some(log) => record::Chooser::replayer(log),
-        None => record::Chooser::recorder(),
-    };
+    // --- the three vCPUs (plans/M8.md item C1, decision 11) ----------------
+    //
+    // 06-machine.md §1 gives this machine three vCPUs, and §3 makes core 0's
+    // own entry "release the other vCPUs". Hypervisor.framework binds a vCPU
+    // to the thread that created it, so there are three host threads — but
+    // exactly one of them is inside `hv_vcpu_run` at any instant, because
+    // they pass a single **baton** whose hand-off order is a pure function of
+    // guest-visible state: which cores the guest has released, which have
+    // parked, and what their own pending words hold. Nothing in `next_core`
+    // below reads a host clock, a thread id, or an address to decide who runs
+    // next — otherwise `xtask repro` would be measuring the host's scheduler,
+    // and 06 §8's enumerable choice sequence would have quietly become an
+    // opaque interleaving trace (decision 11's own rejected alternative).
+    //
+    // The baton changes hands at exactly two guest actions, both of them
+    // things the guest itself does and a recording can therefore replay:
+    // the release doorbell (core 0 hands off to each released core in
+    // ascending order) and a park (a core with nothing ready hands off).
+    // Every other exit keeps the baton, which is why a single-core image —
+    // where cores 1 and 2 are never released and the release store is never
+    // even emitted — runs down exactly the path it ran before this item.
+    const NCORES: usize = wrela_machine::VCPUS;
 
-    loop {
-        // 06 §5: "the VMM's I/O threads poll hot doorbells on their own
-        // host cores and arm wakes when idle." There is one host thread
-        // here, so the poll happens at every vCPU exit — the dumbest
-        // correct placement, and the one that needs no shared-memory
-        // synchronization with a running vCPU at all. The *other* poll
-        // site is the park path below, which is what makes a doorbell rung
-        // immediately before a park impossible to lose.
-        service_blk(&mut blk, &mut chooser, host_ram)?;
-        let r = unsafe { hv_vcpu_run(vcpu) };
-        if r != HV_SUCCESS {
-            return Err(VmmError::Hvf {
-                call: "hv_vcpu_run",
-                code: r,
-            });
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum CoreState {
+        /// Created and register-initialized, never released by the guest.
+        Unreleased,
+        /// Eligible for the baton.
+        Runnable,
+        /// Parked at `mmio::PARK_MMIO_ADDR` with nothing of its own to run.
+        /// Runnable again only when its own pending word is nonzero — the
+        /// mask-arm-recheck discipline, read out of guest memory rather than
+        /// remembered host-side.
+        Parked,
+        /// Its loop has ended (the boot finished, faulted, or timed out).
+        Finished,
+    }
+
+    struct Sched {
+        /// Whose turn it is. Only this core may be inside `hv_vcpu_run`.
+        current: usize,
+        state: [CoreState; NCORES],
+        /// The boot is over (halt, fault, or timeout); every core returns.
+        done: bool,
+    }
+
+    struct Shared {
+        sched: Sched,
+        chooser: record::Chooser,
+        blk: Option<BlkState>,
+        exits: u64,
+        exit_code: Option<u64>,
+        /// The first failure any core reported — a boot fails closed on the
+        /// first one, it never reports a partial transcript as success.
+        error: Option<VmmError>,
+        /// Live vCPU handles, for the watchdog's own `hv_vcpus_exit`. A core
+        /// clears its own slot **under this lock, strictly before**
+        /// destroying its vCPU, so the watchdog can never force-exit a
+        /// handle that no longer exists.
+        vcpus: [u64; NCORES],
+    }
+    // Every field above is touched only by the thread currently holding the
+    // baton (or by the main thread, before any core runs and after all have
+    // finished); the `Mutex` is what publishes those writes across threads.
+    unsafe impl Send for Shared {}
+
+    /// Core `core`'s own pending-vector word, read straight out of guest
+    /// memory — the only thing that can make a parked core runnable again,
+    /// and guest-visible by construction (06 §4).
+    fn pending_word(host_ram: *const u8, core: usize) -> u64 {
+        let off =
+            (wrela_machine::pending::core_word_addr(core) - machine_layout::DRAM_BASE) as usize;
+        let mut b = [0u8; 8];
+        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
+        u64::from_le_bytes(b)
+    }
+
+    /// The baton's whole hand-off rule: the next core after `from`, in
+    /// ascending core order (wrapping, so a lone runnable core hands the
+    /// baton back to itself), that guest-visible state says can run.
+    fn next_core(sched: &mut Sched, from: usize, host_ram: *const u8) -> Option<usize> {
+        for step in 1..=NCORES {
+            let c = (from + step) % NCORES;
+            match sched.state[c] {
+                CoreState::Runnable => return Some(c),
+                CoreState::Parked if pending_word(host_ram, c) != 0 => {
+                    sched.state[c] = CoreState::Runnable;
+                    return Some(c);
+                }
+                _ => {}
+            }
         }
-        exits += 1;
+        None
+    }
+
+    /// What a handled exit asks of the baton.
+    enum Step {
+        /// Ordinary exit — this core keeps running.
+        Keep,
+        /// This core volunteers the machine (release, or a park).
+        Yield,
+        /// The guest's exit protocol: the image is done.
+        Halt(u64),
+    }
+
+    let cores_declared = 1 + parsed.core_entries.len();
+    let shared = std::sync::Mutex::new(Shared {
+        sched: Sched {
+            current: 0,
+            state: {
+                let mut s = [CoreState::Unreleased; NCORES];
+                s[0] = CoreState::Runnable;
+                s
+            },
+            done: false,
+        },
+        chooser: match replay_choices {
+            Some(log) => record::Chooser::replayer(log),
+            None => record::Chooser::recorder(),
+        },
+        blk,
+        exits: 0,
+        exit_code: None,
+        error: None,
+        vcpus: [0; NCORES],
+    });
+    let baton = std::sync::Condvar::new();
+
+    /// One vCPU exit, decoded and serviced on the core that took it. Every
+    /// diagnostic here names its core: with three of them, "unhandled
+    /// exception" without a core is a bug report missing its first fact.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_exit(
+        core: usize,
+        vcpu: u64,
+        exit_ptr: *const HvVcpuExit,
+        host_ram: *mut u8,
+        cores_declared: usize,
+        lock: &std::sync::Mutex<Shared>,
+    ) -> Result<Step, VmmError> {
+        use wrela_machine::mmio;
+        let deadline_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize
+            + wrela_machine::machine_info::OFF_NEXT_DEADLINE as usize;
         let exit = unsafe { *exit_ptr };
         match exit.reason {
             HV_EXIT_REASON_EXCEPTION => {
                 let esr = exit.exception.syndrome;
                 let ipa = exit.exception.physical_address;
-                if ipa == exit_addr {
+                if ipa == mmio::EXIT_MMIO_ADDR {
                     let Some(da) = decode_data_abort(esr) else {
                         return Err(VmmError::GuestFault(format!(
-                            "unhandled access shape at EXIT_MMIO_ADDR (esr={esr:#x})"
+                            "core {core}: unhandled access shape at EXIT_MMIO_ADDR (esr={esr:#x})"
                         )));
                     };
                     if !da.write {
-                        return Err(VmmError::GuestFault(
-                            "a load from EXIT_MMIO_ADDR is not part of the exit protocol"
-                                .to_string(),
-                        ));
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: a load from EXIT_MMIO_ADDR is not part of the exit \
+                             protocol"
+                        )));
                     }
                     let value = match da.reg {
                         Some(reg) => {
@@ -812,29 +892,31 @@ fn boot_image_core(
                         }
                         None => 0, // SRT == 31: XZR, architecturally zero.
                     };
-                    exit_code = value;
-                    break;
-                } else if ipa == clock_addr {
+                    Ok(Step::Halt(value))
+                } else if ipa == mmio::CLOCK_MMIO_ADDR {
                     let Some(da) = decode_data_abort(esr) else {
                         return Err(VmmError::GuestFault(format!(
-                            "unhandled access shape at CLOCK_MMIO_ADDR (esr={esr:#x})"
+                            "core {core}: unhandled access shape at CLOCK_MMIO_ADDR (esr={esr:#x})"
                         )));
                     };
                     if da.write {
-                        return Err(VmmError::GuestFault(
-                            "a store to CLOCK_MMIO_ADDR is not part of the clock protocol"
-                                .to_string(),
-                        ));
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: a store to CLOCK_MMIO_ADDR is not part of the clock \
+                             protocol"
+                        )));
                     }
                     // plans/M6.md item E, decision 9: the single point of
                     // choice — record produces a fresh live read, replay
                     // consumes the next logged one (never re-reading the
                     // real clock).
-                    let entry = chooser.choose_next(record::ChoiceRequest::ClockRead, || {
-                        record::ChoiceEntry::ClockRead {
-                            value: monotonic_ns(),
-                        }
-                    });
+                    let entry = {
+                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        g.chooser.choose_next(record::ChoiceRequest::ClockRead, || {
+                            record::ChoiceEntry::ClockRead {
+                                value: monotonic_ns(),
+                            }
+                        })
+                    };
                     let record::ChoiceEntry::ClockRead { value: ns } = entry else {
                         unreachable!(
                             "choose_next(ClockRead, ..) always returns a ClockRead-shaped entry \
@@ -851,25 +933,119 @@ fn boot_image_core(
                         }
                     }
                     advance_pc(vcpu)?;
-                } else if ipa == park_addr {
+                    Ok(Step::Keep)
+                } else if ipa == mmio::RELEASE_MMIO_ADDR {
+                    // plans/M8.md item C1 / 06 §3: "the entry ... releases
+                    // the other vCPUs". Everything about this store is
+                    // checked rather than assumed — a machine that starts
+                    // cores nobody asked it to start is exactly the
+                    // silent-wrong-answer this item exists to remove.
+                    let Some(da) = decode_data_abort(esr) else {
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: unhandled access shape at RELEASE_MMIO_ADDR \
+                             (esr={esr:#x})"
+                        )));
+                    };
+                    if !da.write {
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: a load from RELEASE_MMIO_ADDR is not part of the \
+                             release protocol"
+                        )));
+                    }
+                    if core != 0 {
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core} rang the release doorbell: only the boot core releases \
+                             the others (06-machine.md §3)"
+                        )));
+                    }
+                    let value = match da.reg {
+                        Some(reg) => {
+                            let mut v = 0u64;
+                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
+                            if r != HV_SUCCESS {
+                                return Err(VmmError::Hvf {
+                                    call: "hv_vcpu_get_reg",
+                                    code: r,
+                                });
+                            }
+                            v
+                        }
+                        None => 0,
+                    };
+                    if value != cores_declared as u64 {
+                        return Err(VmmError::GuestFault(format!(
+                            "core 0 released {value} core(s) but this image's report declares \
+                             {cores_declared} (one `Entry base=` plus {} `CoreEntry` line(s)) — \
+                             the image and its report disagree about the machine",
+                            cores_declared - 1
+                        )));
+                    }
+                    advance_pc(vcpu)?;
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    for c in 1..cores_declared {
+                        if g.sched.state[c] != CoreState::Unreleased {
+                            return Err(VmmError::GuestFault(format!(
+                                "core 0 rang the release doorbell twice (core {c} is already \
+                                 {:?}) — release is a one-shot boot step",
+                                g.sched.state[c]
+                            )));
+                        }
+                        g.sched.state[c] = CoreState::Runnable;
+                    }
+                    drop(g);
+                    Ok(Step::Yield)
+                } else if ipa == mmio::PARK_MMIO_ADDR {
                     // plans/M6.md item E, decision 7/06 §5: the park
                     // protocol's own doorbell (`mmio::PARK_MMIO_ADDR`'s
                     // own module doc has the whole contract).
                     let Some(da) = decode_data_abort(esr) else {
                         return Err(VmmError::GuestFault(format!(
-                            "unhandled access shape at PARK_MMIO_ADDR (esr={esr:#x})"
+                            "core {core}: unhandled access shape at PARK_MMIO_ADDR (esr={esr:#x})"
                         )));
                     };
                     if !da.write {
-                        return Err(VmmError::GuestFault(
-                            "a load from PARK_MMIO_ADDR is not part of the park protocol"
-                                .to_string(),
-                        ));
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: a load from PARK_MMIO_ADDR is not part of the park \
+                             protocol"
+                        )));
                     }
                     // Advance PC now — the guest resumes right after its
                     // own trapping store the moment this vCPU is next run,
                     // whether or not this park ends up sleeping at all.
                     advance_pc(vcpu)?;
+                    if core != 0 {
+                        // plans/M8.md item C1: a secondary core's park is a
+                        // plain "nothing of mine is ready". It never sleeps
+                        // on a deadline (`OFF_NEXT_DEADLINE` is the boot
+                        // core's own park word, and no turn can arm a
+                        // deadline on a core no message can reach yet) and
+                        // it never spins: this core stops being scheduled
+                        // until its own pending word is raised, which is
+                        // item C2's cross-core wake.
+                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        g.sched.state[core] = CoreState::Parked;
+                        drop(g);
+                        return Ok(Step::Yield);
+                    }
+                    // Core 0. A sibling that can run gets the machine
+                    // before this core considers sleeping the host thread —
+                    // sleeping while another core is ready would be the
+                    // baton deciding scheduling by host timing, which
+                    // decision 11 forbids. With no runnable sibling (every
+                    // single-core image, always) this is exactly the M6
+                    // park path, unchanged.
+                    {
+                        let g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        let sibling = (1..NCORES).any(|c| {
+                            g.sched.state[c] == CoreState::Runnable
+                                || (g.sched.state[c] == CoreState::Parked
+                                    && pending_word(host_ram, c) != 0)
+                        });
+                        if sibling {
+                            drop(g);
+                            return Ok(Step::Yield);
+                        }
+                    }
                     let deadline_ns = unsafe {
                         let mut b = [0u8; 8];
                         std::ptr::copy_nonoverlapping(
@@ -886,35 +1062,38 @@ fn boot_image_core(
                     // discipline exists to keep: a doorbell rung between
                     // the driver's last check and its park must never
                     // sleep the core that is waiting for it.
-                    let blk_completed = service_blk(&mut blk, &mut chooser, host_ram)?;
+                    let blk_completed = {
+                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        let g = &mut *g;
+                        service_blk(&mut g.blk, &mut g.chooser, host_ram)?
+                    };
                     // The mask-arm-recheck discipline's own "recheck"
                     // half (`mmio::PARK_MMIO_ADDR`'s own doc): a vector
                     // already pending at the moment of this trap means a
                     // wake already happened (or was never needed) — do
                     // not sleep at all, so it is never lost.
-                    let already_pending = unsafe {
-                        let mut b = [0u8; 8];
-                        std::ptr::copy_nonoverlapping(host_ram.add(pending_off), b.as_mut_ptr(), 8);
-                        u64::from_le_bytes(b) != 0
-                    };
+                    let already_pending = pending_word(host_ram, core) != 0;
                     if !already_pending && !blk_completed {
-                        chooser.choose_next(
-                            record::ChoiceRequest::DeadlineWake { deadline_ns },
-                            || {
-                                // The real, host-side sleep — never
-                                // invoked in replay mode (decision 9:
-                                // "sleep skipped under replay").
-                                let now = monotonic_ns();
-                                if deadline_ns > now {
-                                    std::thread::sleep(Duration::from_nanos(deadline_ns - now));
-                                }
-                                record::ChoiceEntry::DeadlineWake { deadline_ns }
-                            },
-                        );
-                        chooser
-                            .choose_next(record::ChoiceRequest::VectorRaise { vector: 0 }, || {
-                                record::ChoiceEntry::VectorRaise { vector: 0 }
-                            });
+                        {
+                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            g.chooser.choose_next(
+                                record::ChoiceRequest::DeadlineWake { deadline_ns },
+                                || {
+                                    // The real, host-side sleep — never
+                                    // invoked in replay mode (decision 9:
+                                    // "sleep skipped under replay").
+                                    let now = monotonic_ns();
+                                    if deadline_ns > now {
+                                        std::thread::sleep(Duration::from_nanos(deadline_ns - now));
+                                    }
+                                    record::ChoiceEntry::DeadlineWake { deadline_ns }
+                                },
+                            );
+                            g.chooser.choose_next(
+                                record::ChoiceRequest::VectorRaise { vector: 0 },
+                                || record::ChoiceEntry::VectorRaise { vector: 0 },
+                            );
+                        }
                         // The raise itself (06 §4: "a store-release plus
                         // a wake"): a plain host-side write into this
                         // core's own pending word. No separate wake is
@@ -922,44 +1101,370 @@ fn boot_image_core(
                         // the next loop iteration below *is* the wake.
                         raise_vector(host_ram, 0);
                     }
+                    Ok(Step::Keep)
                 } else if let Some(imm) = decode_brk(esr) {
                     let pc = read_pc(vcpu).unwrap_or(0);
-                    return Err(VmmError::GuestFault(format!(
-                        "unexpected `BRK #{imm}` (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x})"
-                    )));
+                    Err(VmmError::GuestFault(format!(
+                        "core {core}: unexpected `BRK #{imm}` (esr={esr:#x}, ipa={ipa:#x}, \
+                         pc={pc:#x})"
+                    )))
                 } else {
                     let pc = read_pc(vcpu).unwrap_or(0);
                     let note = el1_exception_note(vcpu, pc);
-                    return Err(VmmError::GuestFault(format!(
-                        "unhandled exception (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x}){note}"
-                    )));
+                    Err(VmmError::GuestFault(format!(
+                        "core {core}: unhandled exception (esr={esr:#x}, ipa={ipa:#x}, \
+                         pc={pc:#x}){note}"
+                    )))
                 }
             }
             HV_EXIT_REASON_CANCELED => {
+                // The watchdog force-exited every vCPU; whichever one was
+                // inside `hv_vcpu_run` reports the hang, and names itself —
+                // "which core hung" is the first thing a three-core hang
+                // needs to say.
                 let transcript_so_far = drain_console(host_ram);
-                return Err(VmmError::Timeout { transcript_so_far });
+                Err(VmmError::Timeout {
+                    core,
+                    transcript_so_far,
+                })
             }
-            other => {
-                return Err(VmmError::GuestFault(format!(
-                    "unexpected hv_exit_reason_t {other}"
-                )));
+            other => Err(VmmError::GuestFault(format!(
+                "core {core}: unexpected hv_exit_reason_t {other}"
+            ))),
+        }
+    }
+
+    /// One core's whole life: create nothing (its vCPU is already made on
+    /// this thread), take the baton when it is this core's turn, run, service
+    /// the exit, and hand the baton on when the guest asks it to.
+    fn run_core(
+        core: usize,
+        vcpu: u64,
+        exit_ptr: *const HvVcpuExit,
+        host_ram: *mut u8,
+        cores_declared: usize,
+        lock: &std::sync::Mutex<Shared>,
+        baton: &std::sync::Condvar,
+    ) {
+        loop {
+            {
+                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    if g.sched.done {
+                        g.sched.state[core] = CoreState::Finished;
+                        return;
+                    }
+                    if g.sched.current == core {
+                        break;
+                    }
+                    g = baton.wait(g).unwrap_or_else(|e| e.into_inner());
+                }
+                // 06 §5: "the VMM's I/O threads poll hot doorbells ... and
+                // arm wakes when idle." The device model is polled on the
+                // core that owns the device — 04 §3: "a `@driver`'s vectors,
+                // pools, permits, and recovery lanes live on its core", and
+                // plans/M8.md decision 8 pins virtio-blk to core 0.
+                if core == 0 {
+                    let s = &mut *g;
+                    if let Err(e) = service_blk(&mut s.blk, &mut s.chooser, host_ram) {
+                        s.error.get_or_insert(e);
+                        s.sched.done = true;
+                        s.sched.state[core] = CoreState::Finished;
+                        drop(g);
+                        baton.notify_all();
+                        return;
+                    }
+                }
+            }
+            let r = unsafe { hv_vcpu_run(vcpu) };
+            if r != HV_SUCCESS {
+                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                g.error.get_or_insert(VmmError::Hvf {
+                    call: "hv_vcpu_run",
+                    code: r,
+                });
+                g.sched.done = true;
+                g.sched.state[core] = CoreState::Finished;
+                drop(g);
+                baton.notify_all();
+                return;
+            }
+            {
+                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                g.exits += 1;
+            }
+            match handle_exit(core, vcpu, exit_ptr, host_ram, cores_declared, lock) {
+                Ok(Step::Keep) => {}
+                Ok(Step::Yield) => {
+                    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let g = &mut *guard;
+                    match next_core(&mut g.sched, core, host_ram) {
+                        Some(next) => g.sched.current = next,
+                        None => {
+                            // Every core is parked or finished and no
+                            // pending word can change that: nothing will
+                            // ever run again. Fail closed rather than hang
+                            // (CLAUDE.md's own rule) — a hung machine that
+                            // prints its transcript as success is the one
+                            // outcome a boot must never produce.
+                            g.error.get_or_insert(VmmError::GuestFault(format!(
+                                "core {core} parked and no core is runnable: every core is \
+                                 parked with an empty pending word, so no turn can ever run \
+                                 again (04-compiler.md §2)"
+                            )));
+                            g.sched.done = true;
+                        }
+                    }
+                    if g.sched.done {
+                        g.sched.state[core] = CoreState::Finished;
+                    }
+                    let finished = g.sched.done;
+                    drop(guard);
+                    baton.notify_all();
+                    if finished {
+                        return;
+                    }
+                }
+                Ok(Step::Halt(code)) => {
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    g.exit_code.get_or_insert(code);
+                    g.sched.done = true;
+                    g.sched.state[core] = CoreState::Finished;
+                    drop(g);
+                    baton.notify_all();
+                    return;
+                }
+                Err(e) => {
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    g.error.get_or_insert(e);
+                    g.sched.done = true;
+                    g.sched.state[core] = CoreState::Finished;
+                    drop(g);
+                    baton.notify_all();
+                    return;
+                }
             }
         }
     }
 
+    // Core `n`'s own entry address: the report's `Entry base=` for core 0,
+    // its own `CoreEntry core=n base=` line for the rest.
+    let mut core_entry = [0u64; NCORES];
+    core_entry[0] = parsed.entry;
+    for (core, base) in &parsed.core_entries {
+        core_entry[*core] = *base;
+    }
+
+    let (handles_tx, handles_rx) = std::sync::mpsc::channel::<usize>();
+    std::thread::scope(|scope| {
+        let mut threads = Vec::with_capacity(cores_declared);
+        for core in 0..cores_declared {
+            let ram = SendPtr(host_ram);
+            let tx = handles_tx.clone();
+            let shared = &shared;
+            let baton = &baton;
+            let entry = core_entry[core];
+            threads.push(scope.spawn(move || {
+                let ram = ram;
+                let SendPtr(host_ram) = ram;
+                // HVF binds a vCPU to its creating thread: create, register,
+                // run and destroy all happen right here.
+                let mut vcpu: u64 = 0;
+                let mut exit_ptr: *mut HvVcpuExit = std::ptr::null_mut();
+                let r = unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, std::ptr::null_mut()) };
+                if r != HV_SUCCESS {
+                    let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    g.error.get_or_insert(VmmError::Hvf {
+                        call: "hv_vcpu_create",
+                        code: r,
+                    });
+                    g.sched.done = true;
+                    g.sched.state[core] = CoreState::Finished;
+                    drop(g);
+                    baton.notify_all();
+                    let _ = tx.send(core);
+                    return;
+                }
+                {
+                    let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    g.vcpus[core] = vcpu;
+                }
+                let _ = tx.send(core);
+
+                // 06 §3: "points `x0` at the machine-info page ... and starts
+                // vCPU 0 at the image entry." Every core gets the identical
+                // boot register state at its own entry — there is no
+                // per-core discovery register and no MPIDR read: a core
+                // knows which core it is because the image gave it its own
+                // entry block (06 §3: "no discovery").
+                let set = |reg: u32, value: u64| -> Result<(), VmmError> {
+                    let r = unsafe { hv_vcpu_set_reg(vcpu, reg, value) };
+                    if r == HV_SUCCESS {
+                        Ok(())
+                    } else {
+                        Err(VmmError::Hvf {
+                            call: "hv_vcpu_set_reg",
+                            code: r,
+                        })
+                    }
+                };
+                let init = (|| -> Result<(), VmmError> {
+                    set(hv_reg_xn(0), machine_layout::MACHINE_INFO_BASE)?;
+                    set(HV_REG_PC, entry)?;
+                    // EL1h (`SPSel = 1`), every exception masked
+                    // (`DAIF = 1111`) — the standard bare-metal AArch64 boot
+                    // value, plans/M5.md decision text's own "0x3c5".
+                    set(HV_REG_CPSR, 0x3c5)?;
+                    let r = unsafe { hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_CPACR_EL1, 0x0030_0000) };
+                    if r != HV_SUCCESS {
+                        return Err(VmmError::Hvf {
+                            call: "hv_vcpu_set_sys_reg(CPACR_EL1)",
+                            code: r,
+                        });
+                    }
+                    Ok(())
+                })();
+                match init {
+                    Ok(()) => run_core(
+                        core,
+                        vcpu,
+                        exit_ptr,
+                        host_ram,
+                        cores_declared,
+                        shared,
+                        baton,
+                    ),
+                    Err(e) => {
+                        let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        g.error.get_or_insert(e);
+                        g.sched.done = true;
+                        g.sched.state[core] = CoreState::Finished;
+                        drop(g);
+                        baton.notify_all();
+                    }
+                }
+                // Clear this core's handle *under the lock* before
+                // destroying it, so the watchdog's own `hv_vcpus_exit` can
+                // never name a destroyed vCPU.
+                {
+                    let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    g.vcpus[core] = 0;
+                }
+                unsafe {
+                    hv_vcpu_destroy(vcpu);
+                }
+            }));
+        }
+        // Every core has registered its handle before the watchdog can name
+        // any of them.
+        for _ in 0..cores_declared {
+            let _ = handles_rx.recv();
+        }
+
+        // --- watchdog thread (decision 15's own host-side wall cap) --------
+        // With three cores, a hang on *any* of them must still terminate the
+        // boot: force-exit every live vCPU, and let whichever core was
+        // actually inside `hv_vcpu_run` report the timeout under its own
+        // number.
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let watchdog_shared = &shared;
+        let watchdog = scope.spawn(move || {
+            if done_rx.recv_timeout(WALL_CAP).is_err() {
+                let mut g = watchdog_shared.lock().unwrap_or_else(|e| e.into_inner());
+                let mut live: Vec<u64> = g.vcpus.iter().copied().filter(|v| *v != 0).collect();
+                if !live.is_empty() {
+                    unsafe {
+                        hv_vcpus_exit(live.as_mut_ptr(), live.len() as u32);
+                    }
+                }
+                g.sched.done = true;
+            }
+        });
+        for t in threads {
+            let _ = t.join();
+        }
+        let _ = done_tx.send(());
+        let _ = watchdog.join();
+    });
+    // Nothing else can hold the lock now (every core thread and the watchdog
+    // were joined inside the scope above).
+    let shared = shared.into_inner().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = shared.error {
+        return Err(e);
+    }
+    let exit_code = shared.exit_code.ok_or_else(|| {
+        VmmError::GuestFault(
+            "no core reported the guest exit protocol (`EXIT_MMIO_ADDR`) — the boot ended without \
+             the image ever halting"
+                .to_string(),
+        )
+    })?;
+    // plans/M8.md item C1: every core this image released must have
+    // executed its own entry block. The mark is guest-written (each core's
+    // entry stores `machine_info::core_mark_running(n)` into its own slot),
+    // so a core that never ran leaves a zero the zeroed reservation put
+    // there — a released-but-dead core is a machine that silently ran an
+    // image on fewer cores than it claims, which is the exact failure this
+    // item exists to make impossible.
+    check_core_marks(host_ram, cores_declared)?;
+
     // decision 12: the transcript is read from the ring pages only after the
     // guest halts.
     let transcript = drain_console(host_ram);
-    let (choices, divergences) = record::finish_chooser(chooser);
+    let core_marks = (0..NCORES)
+        .map(|c| read_core_mark(host_ram, c))
+        .collect::<Vec<u64>>();
+    let (choices, divergences) = record::finish_chooser(shared.chooser);
     Ok((
         BootOutcome {
             transcript,
             exit_code,
             choices,
-            exits,
+            exits: shared.exits,
+            core_marks,
         },
         divergences,
     ))
+}
+
+/// Core `core`'s own guest-written bring-up mark (plans/M8.md item C1,
+/// `machine_info::OFF_CORE_MARK`).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn read_core_mark(host_ram: *const u8, core: usize) -> u64 {
+    use wrela_machine::layout as machine_layout;
+    let off =
+        (wrela_machine::machine_info::core_mark_addr(core) - machine_layout::DRAM_BASE) as usize;
+    let mut b = [0u8; 8];
+    unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
+    u64::from_le_bytes(b)
+}
+
+/// plans/M8.md item C1's own acceptance check, run after every multicore
+/// boot: each of the `cores` cores this image brought up wrote its own mark,
+/// and wrote *its own* (never another core's — that would be a mis-wired
+/// `CoreEntry` address, a real and otherwise silent bug).
+///
+/// A single-core image (`cores == 1`) writes no mark at all and is not
+/// checked: it releases nothing, so there is nothing to have gone missing,
+/// and that is also what keeps every M5-M7 boot byte-identical.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn check_core_marks(host_ram: *const u8, cores: usize) -> Result<(), VmmError> {
+    use wrela_machine::machine_info;
+    if cores <= 1 {
+        return Ok(());
+    }
+    for core in 0..cores {
+        let want = machine_info::core_mark_running(core);
+        let got = read_core_mark(host_ram, core);
+        if got != want {
+            return Err(VmmError::GuestFault(format!(
+                "core {core} was released but never ran its own entry block: its bring-up mark is \
+                 {got:#x}, expected {want:#x} (06-machine.md §3: the entry releases the other \
+                 vCPUs and every core enters its own event loop)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// plans/M7.md item F: one declared `blk` device model plus the checked
@@ -2149,6 +2654,13 @@ mod tests {
             ));
         }
         report.push_str(&format!("Entry base={:#x}\n", image.entry));
+        // plans/M8.md item C1: the same `CoreEntry` lines `bin/wrela.rs`
+        // writes for `wrela test`, so a conformance image built here boots
+        // the identical way a real one does (absent for a single-core
+        // image, which is every conformance image before this item).
+        for (core, base) in &image.core_entries {
+            report.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
+        }
         (image, report)
     }
 
@@ -3598,6 +4110,211 @@ pub fn build() -> Image:
                 "{why} must be refused"
             );
         }
+    }
+
+    // --- plans/M8.md item C1: three vCPUs actually execute ----------------
+
+    /// The cross-core conformance source both C1 boot tests below use: one
+    /// actor on core 0 (messaged by the root turn), one on core 1 (reachable
+    /// by nothing until item C2's rings), and core 2 with nothing placed on
+    /// it at all — the "a core with no placed actor must still come up, find
+    /// nothing, and park" arm.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    const CROSS_CORE_SRC: &str = r#"module conformance.cross_core
+
+@actor
+pub struct Home:
+    value: u64
+
+    init(mut self):
+        self.value = 5
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Away:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn poke(read self) -> u32:
+        return self.n
+
+@test(runtime)
+async fn boots(home: Actor[Home]):
+    v = await home.get()
+    match v:
+        case .Ok(n):
+            assert n == 5, "expected 5"
+        case .Err(_):
+            assert false, "rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cross-core-conf", target=Target.wrela_machine_v1)
+    home = img.actor(Home, mailbox=4, core=0)
+    away = img.actor(Away, mailbox=2, core=1)
+    img.supervise(children=[home, away], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
+"#;
+
+    /// plans/M8.md item C1's own acceptance test, stated as the plan states
+    /// it: **three cores run**, and the evidence is guest-written.
+    ///
+    /// Every core's mark is written by that core's own entry block
+    /// (`machine_info::core_mark_addr`), so a boot where cores 1 and 2 never
+    /// executed leaves the zeroed reservation's own zeros there. The
+    /// single-core half of the assertion matters just as much: an image that
+    /// brings up one core writes **no** mark at all and releases nothing,
+    /// which is the mechanical reason every M5-M7 transcript is unchanged.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn three_cores_come_up_on_a_cross_core_image_over_hvf() {
+        let outcome = boot_source(CROSS_CORE_SRC, "c1-three-cores");
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.transcript),
+            "test boots: ok\n1 passed, 0 failed\n"
+        );
+        assert_eq!(outcome.exit_code, 0);
+        // Core 0 by the entry driver, cores 1 and 2 by their own entry
+        // blocks — each its own value, so a core running another core's
+        // block cannot pass this.
+        assert_eq!(outcome.core_marks, vec![1, 2, 3]);
+
+        // The single-core control: same shape, no `core=` anywhere, so
+        // nothing is released and no core marks itself.
+        let single = boot_source(
+            &CROSS_CORE_SRC
+                .replace(", core=0", "")
+                .replace(", core=1", ""),
+            "c1-single-core",
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&single.transcript),
+            "test boots: ok\n1 passed, 0 failed\n"
+        );
+        assert_eq!(single.core_marks, vec![0, 0, 0]);
+    }
+
+    /// The mark is `core + 1`, never a bare `1`, for one reason: a
+    /// mis-wired `CoreEntry` address would otherwise look exactly like a
+    /// correct boot. Here core 2's declared entry is pointed at core 1's
+    /// entry block — every core still runs, every core still parks, the
+    /// transcript would still have said `ok` — and the boot fails closed
+    /// naming core 2, because core 2's own mark was never written.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_miswired_core_entry_fails_the_boot_closed_over_hvf() {
+        let (image, report) = compile_test_image(CROSS_CORE_SRC);
+        let core1 = image
+            .core_entries
+            .iter()
+            .find(|(c, _)| *c == 1)
+            .expect("core 1 entry")
+            .1;
+        let core2 = image
+            .core_entries
+            .iter()
+            .find(|(c, _)| *c == 2)
+            .expect("core 2 entry")
+            .1;
+        let bad = report.replace(
+            &format!("CoreEntry core=2 base={core2:#x}"),
+            &format!("CoreEntry core=2 base={core1:#x}"),
+        );
+        assert!(bad != report, "the report rewrite must have applied");
+        let dir =
+            std::env::temp_dir().join(format!("wrela-vmm-c1-miswired-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let img_path = dir.join("test.img");
+        let report_path = dir.join("test.report.txt");
+        std::fs::write(&img_path, &image.blob).expect("write img");
+        std::fs::write(&report_path, &bad).expect("write report");
+        let err = boot_image(&report_path, &img_path).expect_err("must fail closed");
+        let _ = std::fs::remove_dir_all(&dir);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("core 2 was released but never ran its own entry block"),
+            "{msg}"
+        );
+    }
+
+    /// A guest fault on a **secondary** core names that core and fails the
+    /// boot closed — never a silent hang, never a partial transcript
+    /// reported as success. Core 1's declared entry is pointed below DRAM,
+    /// where nothing is mapped, so its very first instruction fetch aborts.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_fault_on_a_secondary_core_names_that_core_over_hvf() {
+        let (image, report) = compile_test_image(CROSS_CORE_SRC);
+        let core1 = image
+            .core_entries
+            .iter()
+            .find(|(c, _)| *c == 1)
+            .expect("core 1 entry")
+            .1;
+        let bad = report.replace(
+            &format!("CoreEntry core=1 base={core1:#x}"),
+            "CoreEntry core=1 base=0x1000",
+        );
+        assert!(bad != report, "the report rewrite must have applied");
+        let dir = std::env::temp_dir().join(format!("wrela-vmm-c1-fault-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let img_path = dir.join("test.img");
+        let report_path = dir.join("test.report.txt");
+        std::fs::write(&img_path, &image.blob).expect("write img");
+        std::fs::write(&report_path, &bad).expect("write report");
+        let err = boot_image(&report_path, &img_path).expect_err("must fail closed");
+        let _ = std::fs::remove_dir_all(&dir);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("core 1:") && msg.contains("unhandled exception"),
+            "{msg}"
+        );
+    }
+
+    /// The report is the whole configuration (06 §3), so a `CoreEntry` line
+    /// this VMM cannot honor is refused before any vCPU is created — never
+    /// defaulted, never guessed at.
+    #[test]
+    fn parse_report_rejects_malformed_core_entries() {
+        let head = format!(
+            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x40500000\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        for (why, line) in [
+            (
+                "core 0 is the `Entry base=` line",
+                "CoreEntry core=0 base=0x40500100\n",
+            ),
+            (
+                "a core outside 0..VCPUS",
+                "CoreEntry core=3 base=0x40500100\n",
+            ),
+            (
+                "a gap in the core set",
+                "CoreEntry core=2 base=0x40500100\n",
+            ),
+            ("a missing base", "CoreEntry core=1\n"),
+            (
+                "an unknown field",
+                "CoreEntry core=1 base=0x40500100 stack=0x1\n",
+            ),
+        ] {
+            let text = format!("{head}{line}");
+            assert!(
+                matches!(parse_report(&text), Err(VmmError::MalformedReport(_))),
+                "{why} must be refused"
+            );
+        }
+        // The well-formed pair parses, ascending and contiguous.
+        let ok =
+            format!("{head}CoreEntry core=2 base=0x40500200\nCoreEntry core=1 base=0x40500100\n");
+        let parsed = parse_report(&ok).expect("parses");
+        assert_eq!(parsed.core_entries, vec![(1, 0x40500100), (2, 0x40500200)]);
     }
 
     /// A report with no `Blk*` lines at all constructs no device model —
