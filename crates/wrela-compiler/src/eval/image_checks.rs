@@ -412,12 +412,30 @@ pub fn layout_alignment(l: &types::LayoutType) -> u64 {
 }
 
 /// Every `@layout` type in the build closure, by name — the union of every
-/// module's own already-checked table (`TypedProgram::layouts`). A
-/// `@layout` type name is module-local in this compiler, and nothing
-/// checks cross-module uniqueness of type names anywhere yet, so a
-/// same-spelling collision resolves last-module-wins in `BTreeMap` order:
-/// the identical, already-recorded simplification
-/// `layout::merge_layout_ctx` makes, stated rather than rediscovered.
+/// module's own already-checked table (`TypedProgram::layouts`).
+///
+/// **A same-spelling collision across modules is refused** (plans/M7.md
+/// item I's sweep). This function used to resolve one last-module-wins in
+/// `BTreeMap` order, disclosed as "the identical, already-recorded
+/// simplification `layout::merge_layout_ctx` makes". That framing
+/// understated it, because *this* table is what
+/// `img.dma_pool[T](name=P, ...)` reads to answer how many bytes a device
+/// can reach. Verified by running: module `a.main` declaring
+/// `@layout(dma) struct Ctl: tiny: u8` and binding
+/// `img.dma_pool[Ctl](name=Control, count=4)` against its own `Ctl`, plus
+/// an imported module `z.other` declaring an unrelated 24-byte `Ctl`,
+/// silently reserved 4 x 24 bytes — and with `z.other`'s `Ctl` spelled
+/// `@layout(mmio)` the build was *rejected* for a kind `a.main`'s own
+/// `Ctl` does not have and cannot see. A wrong answer about device-
+/// reachable bytes in the first case and an unactionable diagnostic in
+/// the second, both from a type name the author never wrote.
+///
+/// A real fix is cross-module type identity, which this compiler does not
+/// have anywhere (`layout::merge_layout_ctx` merges every struct and enum
+/// name the same way, and no type name resolves across a module boundary
+/// at all today, so nothing can even *name* the other module's type).
+/// Until it does, two `@layout` types with one name in one closure is a
+/// build error rather than a coin flip.
 ///
 /// `pub(crate)` so `layout::layout_program` can hand `pool_backings` the
 /// same table this pass does. It builds its own from the raw `ast::Module`
@@ -427,14 +445,27 @@ pub fn layout_alignment(l: &types::LayoutType) -> u64 {
 /// exact-bytes section.
 pub(crate) fn closure_layouts(
     programs: &BTreeMap<String, TypedProgram>,
-) -> BTreeMap<String, types::LayoutType> {
-    let mut out = BTreeMap::new();
-    for p in programs.values() {
+) -> Result<BTreeMap<String, types::LayoutType>, SemaError> {
+    let mut out: BTreeMap<String, types::LayoutType> = BTreeMap::new();
+    let mut from: BTreeMap<String, String> = BTreeMap::new();
+    for (module, p) in programs {
         for l in &p.layouts {
+            if let Some(prior) = from.get(&l.name) {
+                return Err(build_error(format!(
+                    "two modules in this build closure declare a `@layout` type named \
+                     `{}` — `{prior}` and `{module}`. A `@layout` type's identity is its \
+                     bare name here (no type name resolves across a module boundary in this \
+                     compiler), so a pool or a driver naming `{}` would silently get whichever \
+                     one this table happened to keep, and 03-hardware.md §3's exact bytes are \
+                     the bytes a device reads. Rename one of them",
+                    l.name, l.name
+                )));
+            }
+            from.insert(l.name.clone(), module.clone());
             out.insert(l.name.clone(), l.clone());
         }
     }
-    out
+    Ok(out)
 }
 
 fn pool_arg<'a>(args: &'a [DeclArg], label: &str) -> Option<&'a DeclArg> {
@@ -801,7 +832,7 @@ pub fn check_pool_decls(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
-    let backings = pool_backings(graph, &closure_layouts(programs))?;
+    let backings = pool_backings(graph, &closure_layouts(programs)?)?;
     // 02-language.md §4: "`own[Name] T` is a movable, uniquely owned
     // handle to a `T` allocated from that pool" — one pool node, one
     // payload type. For a DMA pool that sentence is also 03 §3's
@@ -1580,7 +1611,7 @@ pub fn check_init_args(
     // threaded, so this fn keeps the signature every caller and every unit
     // test already uses; `pool_backings` is a pure function of the graph
     // and the closure's layouts, so the two calls cannot disagree.
-    let backings = pool_backings(graph, &closure_layouts(programs))?;
+    let backings = pool_backings(graph, &closure_layouts(programs)?)?;
     for (i, d) in graph.drivers.iter().enumerate() {
         check_one_decl(
             &ImageDeclRef::Driver(i),
