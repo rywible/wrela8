@@ -1,0 +1,1 @@
+error[build]: `device#1` and `device#0` both declare `vector=1` — 03-hardware.md §6: exactly one handler per vector, and a vector is owned by exactly one device

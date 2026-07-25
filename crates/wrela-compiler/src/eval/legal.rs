@@ -1800,16 +1800,28 @@ fn scan_bottom_half_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
     }
 }
 
-fn scan_bottom_half_expr(e: &TypedExpr, scan: &mut BodyScan) {
+/// plans/M7.md item G self-audit: the bottom-half scanner's own reason
+/// strings, extracted so a unit test can name every arm a sync `@task`
+/// cannot currently spell from source (await/send require async; `Receipt`
+/// is not a source type yet — item E).
+fn bottom_half_expr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
     match &e.kind {
-        TypedExprKind::Await(_) => scan.note_illegal("an `await` (stays active while waiting)"),
-        TypedExprKind::Send(_) => scan.note_illegal("a `send` (call another actor)"),
-        _ => {}
+        TypedExprKind::Await(_) => Some("an `await` (stays active while waiting)"),
+        TypedExprKind::Send(_) => Some("a `send` (call another actor)"),
+        _ => None,
     }
-    if type_mentions_receipt(&e.ty) {
-        scan.note_illegal(
-            "a `Receipt`-shaped value (plans/M7.md item E — receipts and completions)",
-        );
+    .or_else(|| {
+        if type_mentions_receipt(&e.ty) {
+            Some("a `Receipt`-shaped value (plans/M7.md item E — receipts and completions)")
+        } else {
+            None
+        }
+    })
+}
+
+fn scan_bottom_half_expr(e: &TypedExpr, scan: &mut BodyScan) {
+    if let Some(reason) = bottom_half_expr_forbidden_reason(e) {
+        scan.note_illegal(reason);
     }
     match &e.kind {
         TypedExprKind::Field(b, _)
@@ -3019,7 +3031,8 @@ pub fn double(x: u64) -> u64:
     /// Arms that a sync ISR's transitive closure cannot currently reach
     /// from source (await/send/with-group require an async context; an
     /// ISR must be a plain `fn`). Named here so the exhaustive match
-    /// cannot drop them silently.
+    /// cannot drop them silently. `for` shares the loop arm with `while`
+    /// (`golden/err-isr-for` / `golden/err-isr-while`).
     #[test]
     fn isr_forbidden_reason_names_every_doc_effect() {
         use crate::sema::types::Type;
@@ -3029,6 +3042,26 @@ pub fn double(x: u64) -> u64:
                     ty: Type::Bool,
                     kind: TypedExprKind::Bool(true),
                 },
+                body: vec![],
+            }),
+            Some("a loop (drain unbounded work — loops belong in the bottom half)")
+        );
+        assert_eq!(
+            stmt_isr_forbidden_reason(&TypedStmtKind::For {
+                name: "i".into(),
+                elem_ty: Type::U64,
+                take_binding: false,
+                iter: TypedForIter::Range(
+                    TypedExpr {
+                        ty: Type::U64,
+                        kind: TypedExprKind::Int("0".into()),
+                    },
+                    TypedExpr {
+                        ty: Type::U64,
+                        kind: TypedExprKind::Int("1".into()),
+                    },
+                    false,
+                ),
                 body: vec![],
             }),
             Some("a loop (drain unbounded work — loops belong in the bottom half)")
@@ -3097,5 +3130,49 @@ pub fn double(x: u64) -> u64:
             "Receipt".into(),
             vec![crate::sema::types::TypeArg::Type(Type::U32)]
         )));
+    }
+
+    /// plans/M7.md item G self-audit: `@task` bottom-half arms that a
+    /// sync task cannot currently spell from source. `await`/`send` need
+    /// async (refused by `err-task-async` / bodies before this pass);
+    /// `Receipt` is item E's type. Same honesty standard as the ISR
+    /// `send` arm.
+    #[test]
+    fn bottom_half_forbidden_reason_names_await_send_receipt() {
+        use crate::sema::types::Type;
+        let await_expr = TypedExpr {
+            ty: Type::U64,
+            kind: TypedExprKind::Await(Box::new(TypedExpr {
+                ty: Type::U64,
+                kind: TypedExprKind::Unit,
+            })),
+        };
+        assert_eq!(
+            bottom_half_expr_forbidden_reason(&await_expr),
+            Some("an `await` (stays active while waiting)")
+        );
+        let send_expr = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Send(Box::new(TypedExpr {
+                ty: Type::Unit,
+                kind: TypedExprKind::Unit,
+            })),
+        };
+        assert_eq!(
+            bottom_half_expr_forbidden_reason(&send_expr),
+            Some("a `send` (call another actor)")
+        );
+        let receipt_ty = Type::Named(
+            "Receipt".into(),
+            vec![crate::sema::types::TypeArg::Type(Type::U32)],
+        );
+        let receipt_expr = TypedExpr {
+            ty: receipt_ty,
+            kind: TypedExprKind::Unit,
+        };
+        assert_eq!(
+            bottom_half_expr_forbidden_reason(&receipt_expr),
+            Some("a `Receipt`-shaped value (plans/M7.md item E — receipts and completions)")
+        );
     }
 }

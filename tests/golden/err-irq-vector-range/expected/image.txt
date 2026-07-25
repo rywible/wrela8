@@ -1,0 +1,1 @@
+error[build]: `device#0` declares `vector=64`, which does not fit the per-core pending word (bits 0..=63)

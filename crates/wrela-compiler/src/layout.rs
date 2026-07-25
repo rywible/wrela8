@@ -7042,6 +7042,45 @@ mod tests {
         }
     }
 
+    /// plans/M7.md item G self-audit: empty irq/wake lists keep the M6
+    /// single-vector / whole-word-clear loop byte-identical; a non-empty
+    /// list takes the multi-vector path (BIC + per-bit BL) and is longer.
+    #[test]
+    fn checkpoint_empty_irq_wake_is_byte_identical_to_m6_path() {
+        let m6 = build_checkpoint_and_vector_stub(None);
+        let empty = build_checkpoint_and_vector_stub_ex(None, &[], &[]);
+        assert_eq!(
+            m6.words, empty.words,
+            "empty irq/wake must stay byte-identical to the M6 builder"
+        );
+        assert_eq!(m6.relocs, empty.relocs);
+        let multi = build_checkpoint_and_vector_stub_ex(
+            None,
+            &[IrqVectorEntry {
+                vector: 1,
+                handler_key: "struct:BlkDriver.on_queue_irq".into(),
+                driver_state: 0x4050_0000,
+            }],
+            &[WakeDrainEntry {
+                driver_state: 0x4050_0000,
+                wake_pending_off: 24,
+                task_key: "struct:BlkDriver.drain".into(),
+            }],
+        );
+        assert!(
+            multi.words.len() > m6.words.len(),
+            "multi-vector path must emit more words than the M6 loop"
+        );
+        assert!(
+            multi
+                .words
+                .iter()
+                .any(|w| *w == encode::enc_bic_reg(10, 10, 11, true)),
+            "multi-vector path must emit BIC to clear only serviced bits"
+        );
+        assert_eq!(multi.relocs.len(), 2, "one ISR BL + one @task BL");
+    }
+
     // --- plans/M6.md item C: RuntimeTables sizing -------------------------
 
     fn parse_one_module(src: &str) -> Module {

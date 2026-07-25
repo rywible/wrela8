@@ -3054,6 +3054,18 @@ mod tests {
             "IrqCap: {}",
             err.message
         );
+        // plans/M7.md item G self-audit: an `IrqCap` init param with no
+        // `device=` on the driver binding — source-unreachable for a
+        // `@driver` that takes DeviceCap (sema demands the wiring), so
+        // named here rather than as a golden.
+        let g_no_dev = driver_graph(Some("BlockHw"), false, vec![]);
+        let err =
+            check_init_args(&g_no_dev, &programs).expect_err("IrqCap init param needs device=");
+        assert!(
+            err.message.contains("declares no `device=`"),
+            "IrqCap no-device: {}",
+            err.message
+        );
     }
 
     /// The `DmaPool[P, N]` mint's own arms (plans/M7.md item D). The three

@@ -1,0 +1,11 @@
+module examples.err_interrupt_cell_elem
+
+# plans/M7.md item G self-audit: revision 0.1 admits only InterruptCell[u32]
+# (03-hardware.md §6's worked example). Every other T fails closed by name.
+
+@driver
+pub struct D:
+    cell: InterruptCell[u64]
+
+    init(mut self):
+        self.cell = InterruptCell(0)
