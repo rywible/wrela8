@@ -18,7 +18,7 @@ Program
       0007: ConstUnit dst=t6
       0008: Jump target=0009
       0009: Return
-  Fn key=BlkDriver.init ret=unit temps=11 receiver=t0:mut params=[t1]
+  Fn key=BlkDriver.init ret=unit temps=11 receiver=t0:mut params=[t1:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]
     Temp t2 ty=DriverClaimedDevice[VirtioBlock]

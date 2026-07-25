@@ -577,7 +577,7 @@ fn lower_fn(
     for p in &f.params {
         let t = b.fresh(p.ty.clone());
         env_insert(&mut env, p.name.clone(), t);
-        params.push(t);
+        params.push((t, p.mode));
     }
     let mut defers: Vec<&TypedDeferBody> = Vec::new();
     let mut loops: Vec<LoopCtx> = Vec::new();
@@ -1342,6 +1342,22 @@ fn lower_place_write(
 
 // --- calls ----------------------------------------------------------------
 
+/// Lowers one `mut`-mode call-site operand to the place temp that will
+/// also appear in `Inst::Call::write_backs`. Only a bare local is
+/// implemented — matching `mut self`'s own restriction — because a
+/// field/index place needs a multi-level address this pass does not
+/// build (plans/M9.md item CC, decision 73). Sema already rejected
+/// non-places; this is the residual addressability boundary.
+fn lower_mut_arg_place(expr: &TypedExpr, env: &LEnv) -> Result<Temp, LowerError> {
+    let TypedExprKind::Local(name) = &expr.kind else {
+        return Err(LowerError::unimplemented(
+            "passing a `mut` argument through a nested field/index place is",
+        ));
+    };
+    env_lookup(env, name)
+        .ok_or_else(|| LowerError::internal(format!("unbound local `{name}` as `mut` argument")))
+}
+
 /// Evaluates a call's own argument slots against the callee's declared
 /// parameters exactly like `interp::bind_params`: a supplied slot
 /// lowers in the *caller's* environment; an elided (defaulted) slot's
@@ -1349,7 +1365,9 @@ fn lower_place_write(
 /// progressively-growing "callee-shaped" environment seeded with `self`
 /// (if any) and every earlier parameter's own just-lowered temp — a
 /// default may reference either, `sema::bodies::check_params_with_defaults`'s
-/// own typing order, mirrored here one stage later.
+/// own typing order, mirrored here one stage later. A `mut` parameter's
+/// supplied operand lowers through `lower_mut_arg_place` so the temp
+/// passed is the place itself (required for epilogue write-back).
 fn bind_args(
     f: &TypedFn,
     args: &[Option<TypedExpr>],
@@ -1364,7 +1382,13 @@ fn bind_args(
     let mut out = Vec::with_capacity(args.len());
     for (param, slot) in f.params.iter().zip(args.iter()) {
         let t = match slot {
+            Some(e) if param.mode == AccessMode::Mut => lower_mut_arg_place(e, caller_env)?,
             Some(e) => lower_expr(e, b, caller_env)?,
+            None if param.mode == AccessMode::Mut => {
+                return Err(LowerError::unimplemented(
+                    "writing back a `mut` parameter through a defaulted argument is",
+                ));
+            }
             None => {
                 let default = param
                     .default
@@ -1377,6 +1401,30 @@ fn bind_args(
         out.push(t);
     }
     Ok(out)
+}
+
+/// Builds `Inst::Call::write_backs`: a `Mut` receiver at args index 0
+/// (when present) plus every non-receiver `mut` parameter, args-indexed
+/// with the receiver (if any) occupying slot 0.
+fn call_write_backs(
+    f: &TypedFn,
+    receiver_temp: Option<Temp>,
+    arg_temps: &[Temp],
+) -> Vec<(usize, Temp)> {
+    let mut write_backs = Vec::new();
+    let arg0_is_receiver = receiver_temp.is_some();
+    if let Some(st) = receiver_temp {
+        if matches!(f.receiver.as_ref().map(|(m, _)| *m), Some(AccessMode::Mut)) {
+            write_backs.push((0, st));
+        }
+    }
+    for (i, param) in f.params.iter().enumerate() {
+        if param.mode == AccessMode::Mut {
+            let args_idx = if arg0_is_receiver { i + 1 } else { i };
+            write_backs.push((args_idx, arg_temps[i]));
+        }
+    }
+    write_backs
 }
 
 /// Dispatches one `Call` node (`interp::eval_call`'s own callee-key
@@ -1414,12 +1462,13 @@ fn lower_call(
             let self_temp = env_lookup(env, recv_name)
                 .ok_or_else(|| LowerError::internal(format!("unbound local `{recv_name}`")))?;
             let arg_temps = bind_args(f, args, Some(self_temp), b, env)?;
+            let write_backs = call_write_backs(f, Some(self_temp), &arg_temps);
             let mut call_args = vec![self_temp];
             call_args.extend(arg_temps);
             let dst = b.fresh(f.ret.clone());
             b.emit(Inst::Call {
                 dst,
-                self_write_back: Some(self_temp),
+                write_backs,
                 key,
                 args: call_args,
             });
@@ -1428,12 +1477,13 @@ fn lower_call(
         (Some(recv_expr), Some(AccessMode::Read | AccessMode::Take)) => {
             let recv_temp = lower_expr(recv_expr, b, env)?;
             let arg_temps = bind_args(f, args, Some(recv_temp), b, env)?;
+            let write_backs = call_write_backs(f, Some(recv_temp), &arg_temps);
             let mut call_args = vec![recv_temp];
             call_args.extend(arg_temps);
             let dst = b.fresh(f.ret.clone());
             b.emit(Inst::Call {
                 dst,
-                self_write_back: None,
+                write_backs,
                 key,
                 args: call_args,
             });
@@ -1441,10 +1491,11 @@ fn lower_call(
         }
         _ => {
             let arg_temps = bind_args(f, args, None, b, env)?;
+            let write_backs = call_write_backs(f, None, &arg_temps);
             let dst = b.fresh(f.ret.clone());
             b.emit(Inst::Call {
                 dst,
-                self_write_back: None,
+                write_backs,
                 key,
                 args: arg_temps,
             });
@@ -1476,12 +1527,13 @@ fn lower_init_call(
         .ok_or_else(|| LowerError::internal("`init` has no receiver type"))?;
     let self_temp = b.fresh(self_ty);
     let arg_temps = bind_args(f, args, Some(self_temp), b, env)?;
+    let write_backs = call_write_backs(f, Some(self_temp), &arg_temps);
     let mut call_args = vec![self_temp];
     call_args.extend(arg_temps);
     let body_dst = b.fresh(f.ret.clone());
     b.emit(Inst::Call {
         dst: body_dst,
-        self_write_back: Some(self_temp),
+        write_backs,
         key: key.to_string(),
         args: call_args,
     });
@@ -1852,7 +1904,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             let dst = b.fresh(f.ret.clone());
             b.emit(Inst::Call {
                 dst,
-                self_write_back: None,
+                write_backs: Vec::new(),
                 key: key.spelling(),
                 args: vec![lv, rv],
             });
@@ -3225,7 +3277,7 @@ pub fn use_counter() -> u64:
         )));
         assert!(use_fn.body.iter().any(|i| matches!(
             i,
-            Inst::Call { key, self_write_back: Some(_), .. } if key == "Counter.bump"
+            Inst::Call { key, write_backs, .. } if key == "Counter.bump" && !write_backs.is_empty()
         )));
     }
 

@@ -1,5 +1,5 @@
 Program
-  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=30 receiver=t0:mut params=[t1,t2]
+  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=30 receiver=t0:mut params=[t1:take,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]
     Temp t2 ty=DmaPool[BlockControl, 512]

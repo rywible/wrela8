@@ -1580,6 +1580,7 @@ doc = "02-language.md#5.1"
 status = "test"
 tests = [
   "golden/check-mut-param-writeback",
+  "golden/check-mut-param-nested",
   "golden/err-mut-param-defaulted-writeback",
 ]
 note = """02-language.md §5.1, verbatim: "Non-receiver `mut` and `take` are **mirrored at the call site**, and the operand must be an explicit place." This clause holds the *evaluation* half of that mirroring for `mut`: after a call returns, each non-receiver `mut` parameter's final value is written back into the call-site place.
@@ -1594,4 +1595,6 @@ Opened by plans/M9.md item CC (decisions 68–71 for the evaluator; backend gene
 
 **Pinned by value.** `check-mut-param-writeback` has no `@test` (deliberately — the backend is still wrong the same way, so a `@test` would make full `diff-eval` knowingly red between CC1 and CC2). Evidence is the `@image` actor args: `agg=7`, `sca=42`, `nest=9`, `field=11`, `chain=8`, `mix=9`. `mix` is the settle: `mixed(mut a, b, take c) + a` is 9 when `a` is written back to 3 and 7 when it is not, so acceptance alone cannot pass.
 
-**Backend still wrong.** `Inst::Call` still carries only `self_write_back`; non-receiver `mut` has no write-back mechanism in `lower`/`codegen`. That is why `diff-eval` never saw this defect: both tiers agreed on the wrong answer. CC2 owns the generalization."""
+**Backend still wrong.** `Inst::Call` still carries only `self_write_back`; non-receiver `mut` has no write-back mechanism in `lower`/`codegen`. That is why `diff-eval` never saw this defect: both tiers agreed on the wrong answer. CC2 owns the generalization.
+
+**CC2 (backend).** `Inst::Call::self_write_back` generalized to `write_backs: Vec<(usize, Temp)>` (args-index → place temp). `MwirFn`/`FlowWirFn` params carry `AccessMode`. Mut params (including scalars) pass by pointer; the callee epilogue writes them back through saved pointers — the same mechanism `mut self` already used. `check-mut-param-nested` carries `@test` fns; full `diff-eval` agrees on all five."""

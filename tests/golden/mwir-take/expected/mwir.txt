@@ -1,10 +1,10 @@
 Program
-  Fn key=consume ret=u64 temps=1 params=[t0]
+  Fn key=consume ret=u64 temps=1 params=[t0:take]
     Temp t0 ty=u64
     Body
       0000: Return value=t0
       0001: Return
-  Fn key=consume_box ret=u64 temps=2 params=[t0]
+  Fn key=consume_box ret=u64 temps=2 params=[t0:take]
     Temp t0 ty=Box
     Temp t1 ty=u64
     Body

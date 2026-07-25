@@ -95,7 +95,7 @@ Program
       0020: Mwir Jump target=0022
       0021: Mwir AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
       Transition Return
-  Fn key=run_both ret=u64 states=2 frame=31 lineage=[group=t0,deadline=t1] params=[t2,t3]
+  Fn key=run_both ret=u64 states=2 frame=31 lineage=[group=t0,deadline=t1] params=[t2,t3:take]
     Temp t0 ty=u64
     Temp t1 ty=u64
     Temp t2 ty=Actor[Adder]

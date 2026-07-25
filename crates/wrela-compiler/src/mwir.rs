@@ -28,7 +28,7 @@
 //!   like the typed tree itself). `receiver`/`params` name which temps
 //!   are bound at entry (`receiver` also carries the declared
 //!   `AccessMode` — `Mut` is what makes a call site expect the callee to
-//!   hand a final self value back, see `Inst::Call::self_write_back`
+//!   hand a final self value back, see `Inst::Call::write_backs`
 //!   below). `ret` is the declared return type; a plain `Type` rather
 //!   than the plan's own suggested `ret_size: usize` — a byte size is a
 //!   *layout* fact (`size_of` below), derivable from `ret` whenever
@@ -160,15 +160,18 @@ pub struct MwirProgram {
 /// `Some((self_temp, mode))` for a method/`init` (mirrors
 /// `sema::typed::TypedFn::receiver` exactly); a `Mut`-mode receiver is
 /// what makes a *call site* targeting this fn expect a written-back self
-/// value back (`Inst::Call::self_write_back`) — `init` reuses this
+/// value back (`Inst::Call::write_backs`) — `init` reuses this
 /// uniformly (`sema::bodies` already types `init`'s own receiver as
 /// `Mut`, so no separate "is this an init" flag exists here at all;
 /// `lower.rs`'s own call-site logic is what special-cases `init`'s
-/// *result*, not this shape).
+/// *result*, not this shape). Each entry of `params` carries the
+/// parameter's own declared `AccessMode` so codegen's prologue/epilogue
+/// can pass/write-back a non-receiver `mut` the same way it already
+/// handles a `mut` receiver (02-language.md §5.1 / plans/M9.md item CC).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MwirFn {
     pub receiver: Option<(Temp, crate::syntax::ast::AccessMode)>,
-    pub params: Vec<Temp>,
+    pub params: Vec<(Temp, crate::syntax::ast::AccessMode)>,
     pub ret: Type,
     /// `temp_types[t.0]` is temp `t`'s own static type; `temp_types.len()`
     /// is this fn's own temp count (the plan's own suggested `temps:
@@ -486,17 +489,19 @@ pub enum Inst {
     /// temp of the callee's own return type, even when that type is
     /// `unit`/the result is discarded (an `ExprStmt`) — one uniform shape
     /// rather than an `Option` no call site actually needs to special-
-    /// case (a discarded temp is simply never read again). `self_write_back`
-    /// is `Some(place_temp)` exactly when the callee's own receiver is
-    /// `Mut` (`MwirFn::receiver`'s own second field) *and* the call site
-    /// has a real place to write the mutated receiver back into (every
-    /// `mut self` call, and every `init` call, which `sema::bodies` types
-    /// with a `Mut` receiver uniformly — `lower.rs`'s own call-lowering
-    /// doc works through `init`'s own extra result translation, which
-    /// happens at the call site, not here).
+    /// case (a discarded temp is simply never read again). `write_backs`
+    /// lists every `(args-index, place_temp)` the callee is expected to
+    /// write back into: a `Mut` receiver (args index 0, when present)
+    /// and every non-receiver `mut` parameter whose call-site operand
+    /// is a place (02-language.md §5.1 / plans/M9.md item CC). Each
+    /// `place_temp` is the same temp that appears at `args[index]` —
+    /// codegen passes those by pointer and the callee's epilogue writes
+    /// through the saved pointer, so the call site itself does nothing
+    /// after the `BL` (the same proof that previously applied only to
+    /// `mut self`). Sorted by args-index for a deterministic dump.
     Call {
         dst: Temp,
-        self_write_back: Option<Temp>,
+        write_backs: Vec<(usize, Temp)>,
         key: String,
         args: Vec<Temp>,
     },
@@ -1208,7 +1213,17 @@ pub fn dump(program: &MwirProgram) -> String {
             let _ = write!(header, " receiver={t}:{}", mode.as_str());
         }
         if !f.params.is_empty() {
-            let ps: Vec<String> = f.params.iter().map(|t| t.to_string()).collect();
+            let ps: Vec<String> = f
+                .params
+                .iter()
+                .map(|(t, mode)| {
+                    if *mode == crate::syntax::ast::AccessMode::Read {
+                        t.to_string()
+                    } else {
+                        format!("{t}:{}", mode.as_str())
+                    }
+                })
+                .collect();
             let _ = write!(header, " params=[{}]", ps.join(","));
         }
         push_line(&mut out, 1, &header);
@@ -1520,13 +1535,17 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         }
         Inst::Call {
             dst,
-            self_write_back,
+            write_backs,
             key,
             args,
         } => {
             let mut s = format!("Call key={key} dst={dst} args=[{}]", join_temps(args));
-            if let Some(sw) = self_write_back {
-                let _ = write!(s, " self_write_back={sw}");
+            if !write_backs.is_empty() {
+                let parts: Vec<String> = write_backs
+                    .iter()
+                    .map(|(i, t)| format!("{i}:{t}"))
+                    .collect();
+                let _ = write!(s, " write_backs=[{}]", parts.join(","));
             }
             s
         }

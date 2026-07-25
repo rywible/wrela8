@@ -1,5 +1,5 @@
 Program
-  Fn key=BlkDriver.abandon ret=u64 temps=65 receiver=t0:mut params=[t1,t2,t3]
+  Fn key=BlkDriver.abandon ret=u64 temps=65 receiver=t0:mut params=[t1:take,t2:take,t3]
     Temp t0 ty=BlkDriver
     Temp t1 ty=Receipt[own[BlockPayloads] DmaBlock]
     Temp t2 ty=own[BlockPayloads] DmaBlock
@@ -150,7 +150,7 @@ Program
       0081: Project dst=t64 base=t0 index=4
       0082: Return value=t64
       0083: Return
-  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=28 receiver=t0:mut params=[t1,t2]
+  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=28 receiver=t0:mut params=[t1:take,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]
     Temp t2 ty=DmaPool[BlockControl, 512]

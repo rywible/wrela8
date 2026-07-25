@@ -1,5 +1,5 @@
 Program
-  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=27 receiver=t0:mut params=[t1,t2]
+  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=27 receiver=t0:mut params=[t1:take,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]
     Temp t2 ty=DmaPool[BlockControl, 512]
@@ -64,7 +64,7 @@ Program
       0033: MakeEnum dst=t26 tag=0 payload=[t25]
       0034: Return value=t26
       0035: Return
-  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=19 receiver=t0:mut params=[t1,t2]
+  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=19 receiver=t0:mut params=[t1,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=u64
     Temp t2 ty=own[BlockPayloads] DmaBlock

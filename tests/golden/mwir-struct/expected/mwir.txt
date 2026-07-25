@@ -47,11 +47,11 @@ Program
     Body
       0000: ConstInt dst=t1 ty=u64 value=3
       0001: ConstInt dst=t2 ty=u64 value=4
-      0002: Call key=Point.init dst=t3 args=[t0,t1,t2] self_write_back=t0
+      0002: Call key=Point.init dst=t3 args=[t0,t1,t2] write_backs=[0:t0]
       0003: Copy dst=t4 src=t0
       0004: ConstInt dst=t5 ty=u64 value=1
       0005: ConstInt dst=t6 ty=u64 value=1
-      0006: Call key=Point.shift dst=t7 args=[t4,t5,t6] self_write_back=t4
+      0006: Call key=Point.shift dst=t7 args=[t4,t5,t6] write_backs=[0:t4]
       0007: Call key=Point.sum dst=t8 args=[t4]
       0008: Return value=t8
       0009: Return

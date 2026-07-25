@@ -1,0 +1,6 @@
+test test_agg: ok
+test test_scalar: ok
+test test_nested_field: ok
+test test_chain: ok
+test test_mixed: ok
+5 passed, 0 failed

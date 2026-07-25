@@ -130,31 +130,25 @@
 //! `Return` — no post-call copy-back exists because there was never a
 //! copy to begin with.
 //!
-//! **`self_write_back`/`mut self`, worked out from first principles
-//! (mwir's own doc names the requirement, this module supplies the
-//! mechanism):** a receiver is *always* an aggregate (every struct/enum
-//! `self` has a `Type::Named`), so it is *always* passed by the same
-//! bare-pointer rule above — this holds regardless of the receiver's
-//! own declared `AccessMode`, and regardless of `Inst::Call::
-//! self_write_back`. The callee's own prologue always copies the
-//! incoming self bytes into its own local `receiver` temp slot (so its
-//! body's `Project`/`SetField` instructions operate on an ordinary
-//! local aggregate, same as any other temp); the callee's own
+//! **`write_backs` / `mut self` / non-receiver `mut`, worked out from first
+//! principles (mwir's own doc names the requirement, this module supplies
+//! the mechanism):** a `Mut` receiver is *always* an aggregate (every
+//! struct/enum `self` has a `Type::Named`), so it is *always* passed by
+//! the same bare-pointer rule above — this holds regardless of
+//! `Inst::Call::write_backs`. A non-receiver `mut` parameter
+//! (02-language.md §5.1 / plans/M9.md item CC) is passed by pointer
+//! too, even when it is a scalar: the call site puts every
+//! `write_backs` args-index in the pointer set alongside aggregates.
+//! The callee's own prologue always copies an incoming pointer
+//! argument's bytes into its own local temp slot; the callee's own
 //! *epilogue* additionally copies that local slot's *current* bytes
-//! back out through the *original* incoming pointer (saved in
-//! `self_ptr_save` at entry) — but only when `MwirFn::receiver`'s own
-//! mode is `Mut` (`init` included: `sema::bodies` already types `init`'s
-//! receiver `Mut`, mirrored uniformly, no separate "is this init" case
-//! anywhere in this module). Since the pointer the caller passed *is*
-//! the address of its own `args[0]` temp slot, this write-back lands
-//! exactly where `self_write_back`'s own field name promises, with the
-//! call site itself doing nothing special at all — **`self_write_back`
-//! is read nowhere in this module**; it is fully, automatically
-//! satisfied by the uniform bare-pointer rule plus the callee's own
-//! mode-driven epilogue, and this paragraph is that fact's proof, not
-//! an aspiration. (A `Read`/`Take` receiver's callee never runs that
-//! epilogue step, so the caller's aliasing is inert there too — no
-//! mutation ever happens through the pointer in that case.)
+//! back out through the *original* incoming pointer (saved at entry) —
+//! for a `Mut` receiver (`self_ptr_save`) and for every `Mut` parameter
+//! (`param_ptr_offs`). Since the pointer the caller passed *is* the
+//! address of its own place temp, this write-back lands exactly where
+//! `write_backs`'s own entries promise, with the call site itself doing
+//! nothing special after the `BL`. (A `Read`/`Take` argument is never
+//! in `write_backs` and never gets an epilogue write.)
 //!
 //! ## The abort contract (item E's exact obligation)
 //!
@@ -349,7 +343,7 @@
 //!   length, ...) — passed straight through as `mwir::size_of`'s own
 //!   `Err`, not re-worded.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::encode::{self, Cond};
 use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
@@ -663,6 +657,11 @@ struct Frame {
     temp_offset: Vec<usize>,
     temp_size: Vec<usize>,
     self_ptr_off: Option<usize>,
+    /// Frame offset of the saved incoming pointer for each `Mut`
+    /// non-receiver parameter, in declaration order (plans/M9.md item
+    /// CC). Empty when the fn has no `mut` params. Parallel to the
+    /// subset of `MwirFn::params` whose mode is `Mut`.
+    mut_param_ptr_offs: Vec<(Temp, usize)>,
     ret_ptr_off: Option<usize>,
     /// plans/M7.md item Z1 (decision 9b): this async fn's own **reply
     /// staging slot** — where a callee writes the aggregate reply of an
@@ -712,6 +711,13 @@ fn build_frame(
     } else {
         None
     };
+    let mut mut_param_ptr_offs = Vec::new();
+    for (p, mode) in &f.params {
+        if *mode == AccessMode::Mut {
+            mut_param_ptr_offs.push((*p, offset));
+            offset += 8;
+        }
+    }
     let ret_ptr_off = if is_aggregate(&f.ret) {
         let o = offset;
         offset += 8;
@@ -738,6 +744,7 @@ fn build_frame(
         temp_offset,
         temp_size,
         self_ptr_off,
+        mut_param_ptr_offs,
         ret_ptr_off,
         reply_stage_off,
         lr_off,
@@ -1683,16 +1690,22 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         }
         Inst::Call {
             dst,
-            self_write_back: _,
+            write_backs,
             key,
             args,
         } => {
             if args.len() > 8 {
                 return Err(CodegenError::unimplemented("more than 8 call arguments"));
             }
+            let mut by_ptr: BTreeSet<usize> = write_backs.iter().map(|(i, _)| *i).collect();
             for (i, arg) in args.iter().enumerate() {
                 let arg_ty = &f.temp_types[arg.0];
                 if is_aggregate(arg_ty) {
+                    by_ptr.insert(i);
+                }
+            }
+            for (i, arg) in args.iter().enumerate() {
+                if by_ptr.contains(&i) {
                     ctx.addr_of_slot(i as u8, ctx.frame.off(*arg));
                 } else {
                     ctx.load_slot(i as u8, ctx.frame.off(*arg));
@@ -3893,12 +3906,27 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
         }
         next_reg += 1;
     }
-    for p in &f.params {
+    let mut mut_ptr_iter = frame.mut_param_ptr_offs.iter();
+    for (p, mode) in &f.params {
         if next_reg > 8 {
             return Err(CodegenError::unimplemented("more than 8 call arguments"));
         }
         let ty = &f.temp_types[p.0];
-        if is_aggregate(ty) {
+        // Aggregates and `mut` params (even scalars) arrive as pointers
+        // (plans/M9.md item CC): copy in, and for `mut` also save the
+        // pointer for the epilogue write-back.
+        if is_aggregate(ty) || *mode == AccessMode::Mut {
+            if *mode == AccessMode::Mut {
+                let (pt, ptr_off) = mut_ptr_iter.next().ok_or_else(|| {
+                    CodegenError::internal("mut param missing from frame.mut_param_ptr_offs")
+                })?;
+                if *pt != *p {
+                    return Err(CodegenError::internal(
+                        "mut_param_ptr_offs order disagrees with MwirFn::params",
+                    ));
+                }
+                ctx.store_slot(next_reg, *ptr_off);
+            }
             let size = frame.size_of_temp(*p);
             let dst_off = frame.off(*p);
             let mut w = 0;
@@ -3912,6 +3940,11 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
         }
         next_reg += 1;
     }
+    if mut_ptr_iter.next().is_some() {
+        return Err(CodegenError::internal(
+            "frame.mut_param_ptr_offs has more entries than Mut params",
+        ));
+    }
     if let Some(ret_ptr_off) = frame.ret_ptr_off {
         ctx.store_slot(8, ret_ptr_off);
     }
@@ -3922,6 +3955,20 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
             write_back_self_skipping_interrupt_cells(f, frame, self_temp, ctx)?;
+        }
+    }
+    // Non-receiver `mut` params: copy the local slot back through the
+    // saved incoming pointer (02-language.md §5.1 / plans/M9.md item CC).
+    // No InterruptCell special-case — those cells live only on `self`.
+    for (p, ptr_off) in &frame.mut_param_ptr_offs {
+        ctx.load_slot(X_A, *ptr_off);
+        let size = frame.size_of_temp(*p);
+        let src_off = frame.off(*p);
+        let mut w = 0;
+        while w < size {
+            ctx.load_slot(X_B, src_off + w);
+            ctx.store_ptr(X_B, X_A, w);
+            w += 8;
         }
     }
     ctx.load_slot(X_LR, frame.lr_off);
@@ -4843,12 +4890,24 @@ fn emit_async_entry(
         }
         next_reg += 1;
     }
-    for p in &f.params {
+    let mut mut_ptr_iter = ctx.frame.mut_param_ptr_offs.iter();
+    for (p, mode) in &f.params {
         if next_reg > 8 {
             return Err(CodegenError::unimplemented("more than 8 call arguments"));
         }
         let ty = &f.temp_types[p.0];
-        if is_aggregate(ty) {
+        if is_aggregate(ty) || *mode == AccessMode::Mut {
+            if *mode == AccessMode::Mut {
+                let (pt, ptr_off) = mut_ptr_iter.next().ok_or_else(|| {
+                    CodegenError::internal("mut param missing from frame.mut_param_ptr_offs")
+                })?;
+                if *pt != *p {
+                    return Err(CodegenError::internal(
+                        "mut_param_ptr_offs order disagrees with MwirFn::params",
+                    ));
+                }
+                ctx.store_slot(next_reg, *ptr_off);
+            }
             let size = ctx.frame.size_of_temp(*p);
             let dst_off = ctx.frame.off(*p);
             let mut w = 0;
@@ -4861,6 +4920,11 @@ fn emit_async_entry(
             ctx.store_slot(next_reg, ctx.frame.off(*p));
         }
         next_reg += 1;
+    }
+    if mut_ptr_iter.next().is_some() {
+        return Err(CodegenError::internal(
+            "frame.mut_param_ptr_offs has more entries than Mut params",
+        ));
     }
     // plans/M7.md item Z1: an aggregate-returning async method is handed
     // its caller's destination address in `x8` (this machine's shared
@@ -4935,6 +4999,17 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
             // plans/M7.md item G, decision 17: same InterruptCell skip as
             // the sync epilogue — live cells are not frame-owned.
             write_back_self_skipping_interrupt_cells(f, ctx.frame, self_temp, ctx)?;
+        }
+    }
+    for (p, ptr_off) in &ctx.frame.mut_param_ptr_offs {
+        ctx.load_slot(X_A, *ptr_off);
+        let size = ctx.frame.size_of_temp(*p);
+        let src_off = ctx.frame.off(*p);
+        let mut w = 0;
+        while w < size {
+            ctx.load_slot(X_B, src_off + w);
+            ctx.store_ptr(X_B, X_A, w);
+            w += 8;
         }
     }
     ctx.load_imm(0, TURN_STATUS_COMPLETED as i64);
@@ -7614,7 +7689,7 @@ mod tests {
     fn frame_slots_are_assigned_in_temp_order_with_no_packing() {
         let f = MwirFn {
             receiver: None,
-            params: vec![Temp(0)],
+            params: vec![(Temp(0), AccessMode::Read)],
             ret: Type::U64,
             temp_types: vec![Type::U8, Type::U64, Type::Bool],
             body: vec![Inst::Return { value: None }],

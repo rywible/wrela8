@@ -146,7 +146,7 @@ pub struct FlowWirProgram {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlowWirFn {
     pub receiver: Option<(Temp, AccessMode)>,
-    pub params: Vec<Temp>,
+    pub params: Vec<(Temp, AccessMode)>,
     pub ret: Type,
     pub frame: FrameLayout,
     pub states: Vec<State>,
@@ -347,7 +347,17 @@ pub fn dump(program: &FlowWirProgram) -> String {
             let _ = write!(header, " receiver={t}:{}", mode.as_str());
         }
         if !f.params.is_empty() {
-            let ps: Vec<String> = f.params.iter().map(|t| t.to_string()).collect();
+            let ps: Vec<String> = f
+                .params
+                .iter()
+                .map(|(t, mode)| {
+                    if *mode == AccessMode::Read {
+                        t.to_string()
+                    } else {
+                        format!("{t}:{}", mode.as_str())
+                    }
+                })
+                .collect();
             let _ = write!(header, " params=[{}]", ps.join(","));
         }
         push_line(&mut out, 1, &header);

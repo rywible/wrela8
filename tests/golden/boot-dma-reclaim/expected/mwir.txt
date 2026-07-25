@@ -283,7 +283,7 @@ Program
       0168: ConstUnit dst=t110
       0169: Return value=t110
       0170: Return
-  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=53 receiver=t0:mut params=[t1,t2,t3]
+  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=53 receiver=t0:mut params=[t1:take,t2:take,t3:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]
     Temp t2 ty=DmaPool[BlockControl, 512]

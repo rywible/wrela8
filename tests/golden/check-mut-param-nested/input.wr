@@ -1,0 +1,127 @@
+module examples.check_mut_param_nested
+
+# plans/M9.md item CC2. 02-language.md §5.1: non-receiver `mut` is
+# mirrored at the call site. CC1 fixed the evaluator; this case carries
+# `@test` fns so `cargo xtask diff-eval` compares both tiers on the same
+# shapes. Every pinned value is chosen so a missing write-back cannot
+# land on the success number (`settle` adds the written-back place to the
+# callee's return).
+
+struct Inner:
+    x: u32
+
+struct Counter:
+    n: u32
+    nested: Inner
+
+fn bump(mut c: Counter):
+    c.n = 7
+
+fn bump_nested(mut c: Counter):
+    # One-level places only (lower refuses multi-level field chains);
+    # still mutates through the nested field of the mut param.
+    n = c.nested
+    n.x = 9
+    c.nested = n
+
+fn scalar_bump(mut x: u32):
+    x = 42
+
+fn chain(mut c: Counter):
+    bump(mut c)
+    c.n = c.n + 1
+
+fn mixed(mut a: u32, b: u32, take c: u32) -> u32:
+    a = a + b
+    return a + c
+
+@test
+pub fn test_agg():
+    c = Counter(n=0, nested=Inner(x=0))
+    bump(mut c)
+    assert c.n == 7, "aggregate mut param mirrored"
+
+@test
+pub fn test_scalar():
+    x: u32 = 0
+    scalar_bump(mut x)
+    assert x == 42, "scalar mut param mirrored"
+
+@test
+pub fn test_nested_field():
+    c = Counter(n=0, nested=Inner(x=0))
+    bump_nested(mut c)
+    assert c.nested.x == 9, "mut param mutated through a nested field"
+
+@test
+pub fn test_chain():
+    c = Counter(n=0, nested=Inner(x=0))
+    chain(mut c)
+    assert c.n == 8, "mut param passed onward to a second mut-taking callee"
+
+@test
+pub fn test_mixed():
+    a: u32 = 1
+    b: u32 = 2
+    c: u32 = 3
+    # mixed returns (1+2)+3 = 6 and writes a back as 3; without write-back
+    # the sum below is 6+1 = 7, not 9.
+    settled = mixed(mut a, b, take c) + a
+    assert settled == 9, "mut alongside read and take; settle distinguishes"
+
+# Image args pin the same numbers so mere acceptance cannot pass.
+fn drive_agg() -> u32:
+    c = Counter(n=0, nested=Inner(x=0))
+    bump(mut c)
+    return c.n
+
+fn drive_scalar() -> u32:
+    x: u32 = 0
+    scalar_bump(mut x)
+    return x
+
+fn drive_nested() -> u32:
+    c = Counter(n=0, nested=Inner(x=0))
+    bump_nested(mut c)
+    return c.nested.x
+
+fn drive_chain() -> u32:
+    c = Counter(n=0, nested=Inner(x=0))
+    chain(mut c)
+    return c.n
+
+fn drive_mixed() -> u32:
+    a: u32 = 1
+    b: u32 = 2
+    c: u32 = 3
+    return mixed(mut a, b, take c) + a
+
+const AGG_V: u32 = drive_agg()
+const SCA_V: u32 = drive_scalar()
+const NEST_V: u32 = drive_nested()
+const CHAIN_V: u32 = drive_chain()
+const MIX_V: u32 = drive_mixed()
+
+@actor
+pub struct Store:
+    agg: u32
+    sca: u32
+    nest: u32
+    chain: u32
+    mix: u32
+
+    init(mut self, agg: u32, sca: u32, nest: u32, chain: u32, mix: u32):
+        self.agg = agg
+        self.sca = sca
+        self.nest = nest
+        self.chain = chain
+        self.mix = mix
+
+@image
+pub fn build() -> Image:
+    img = Image(name="mut-param-nested", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, agg=AGG_V, sca=SCA_V, nest=NEST_V,
+                        chain=CHAIN_V, mix=MIX_V, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

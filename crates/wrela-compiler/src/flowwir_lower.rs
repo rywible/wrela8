@@ -539,7 +539,7 @@ fn lower_fn(f: &TypedFn, prog: &TypedProgram) -> Result<FlowWirFn, FlowError> {
     for p in &f.params {
         let t = b.fresh(p.ty.clone());
         env_insert(&mut env, p.name.clone(), Binding::Temp(t));
-        params.push(t);
+        params.push((t, p.mode));
     }
 
     let entry = b.new_state();
@@ -1047,7 +1047,28 @@ fn lower_aligned_args(
     let mut out = Vec::with_capacity(args.len());
     for (param, slot) in f.params.iter().zip(args.iter()) {
         let t = match slot {
+            Some(e) if param.mode == AccessMode::Mut => {
+                let TypedExprKind::Local(name) = &e.kind else {
+                    return Err(FlowError::unimplemented(
+                        "passing a `mut` argument through a nested field/index place \
+                         inside an async body is",
+                    ));
+                };
+                match env_lookup(env, name) {
+                    Some(Binding::Temp(t)) => t,
+                    _ => {
+                        return Err(FlowError::internal(format!(
+                            "unbound (or self-path) local `{name}` as `mut` argument"
+                        )));
+                    }
+                }
+            }
             Some(e) => lower_expr_flat(e, b, env)?,
+            None if param.mode == AccessMode::Mut => {
+                return Err(FlowError::unimplemented(
+                    "writing back a `mut` parameter through a defaulted argument is",
+                ));
+            }
             None => {
                 let default = param.default.as_ref().ok_or_else(|| {
                     FlowError::internal(format!(
@@ -1061,6 +1082,99 @@ fn lower_aligned_args(
         out.push(t);
     }
     Ok(out)
+}
+
+fn flow_call_write_backs(
+    f: &TypedFn,
+    receiver_temp: Option<Temp>,
+    arg_temps: &[Temp],
+) -> Vec<(usize, Temp)> {
+    let mut write_backs = Vec::new();
+    let arg0_is_receiver = receiver_temp.is_some();
+    if let Some(st) = receiver_temp {
+        if matches!(f.receiver.as_ref().map(|(m, _)| *m), Some(AccessMode::Mut)) {
+            write_backs.push((0, st));
+        }
+    }
+    for (i, param) in f.params.iter().enumerate() {
+        if param.mode == AccessMode::Mut {
+            let args_idx = if arg0_is_receiver { i + 1 } else { i };
+            write_backs.push((args_idx, arg_temps[i]));
+        }
+    }
+    write_backs
+}
+
+/// Mirrors `lower.rs::lower_call`'s receiver/write-back shape, using this
+/// file's `Binding::Temp` environment.
+fn lower_flow_call(
+    callee: &CalleeKey,
+    receiver: &Option<Box<TypedExpr>>,
+    args: &[Option<TypedExpr>],
+    _result_ty: &Type,
+    b: &mut FlowBuilder,
+    env: &mut FEnv,
+) -> Result<Temp, FlowError> {
+    let f = resolve_callee_fn(b.prog, callee)?;
+    let key = callee.spelling();
+    let mode = f.receiver.as_ref().map(|(m, _)| *m);
+    match (receiver, mode) {
+        (Some(recv_expr), Some(AccessMode::Mut)) => {
+            let TypedExprKind::Local(recv_name) = &recv_expr.kind else {
+                return Err(FlowError::unimplemented(
+                    "calling a `mut self` method through a nested field/index receiver \
+                     inside an async body is",
+                ));
+            };
+            let self_temp = match env_lookup(env, recv_name) {
+                Some(Binding::Temp(t)) => t,
+                _ => {
+                    return Err(FlowError::internal(format!(
+                        "unbound (or self-path) local `{recv_name}` as mut receiver"
+                    )));
+                }
+            };
+            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let write_backs = flow_call_write_backs(f, Some(self_temp), &arg_temps);
+            let mut call_args = vec![self_temp];
+            call_args.extend(arg_temps);
+            let dst = b.fresh(f.ret.clone());
+            b.emit_mwir(Inst::Call {
+                dst,
+                write_backs,
+                key,
+                args: call_args,
+            });
+            Ok(dst)
+        }
+        (Some(recv_expr), Some(AccessMode::Read | AccessMode::Take)) => {
+            let recv_temp = lower_expr_flat(recv_expr, b, env)?;
+            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let write_backs = flow_call_write_backs(f, Some(recv_temp), &arg_temps);
+            let mut call_args = vec![recv_temp];
+            call_args.extend(arg_temps);
+            let dst = b.fresh(f.ret.clone());
+            b.emit_mwir(Inst::Call {
+                dst,
+                write_backs,
+                key,
+                args: call_args,
+            });
+            Ok(dst)
+        }
+        _ => {
+            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let write_backs = flow_call_write_backs(f, None, &arg_temps);
+            let dst = b.fresh(f.ret.clone());
+            b.emit_mwir(Inst::Call {
+                dst,
+                write_backs,
+                key,
+                args: arg_temps,
+            });
+            Ok(dst)
+        }
+    }
 }
 
 /// `g.start(callee, args...)` (02-language.md §9.5) — `args` here is
@@ -2134,73 +2248,6 @@ fn lower_flow_const_value(
 /// Sync-helper / in-process call from an async body (plans/M7.md item E4).
 /// Mirrors `lower.rs::lower_call`'s receiver/write-back shape, using this
 /// file's `Binding::Temp` environment.
-fn lower_flow_call(
-    callee: &CalleeKey,
-    receiver: &Option<Box<TypedExpr>>,
-    args: &[Option<TypedExpr>],
-    _result_ty: &Type,
-    b: &mut FlowBuilder,
-    env: &mut FEnv,
-) -> Result<Temp, FlowError> {
-    let f = resolve_callee_fn(b.prog, callee)?;
-    let key = callee.spelling();
-    let mode = f.receiver.as_ref().map(|(m, _)| *m);
-    match (receiver, mode) {
-        (Some(recv_expr), Some(AccessMode::Mut)) => {
-            let TypedExprKind::Local(recv_name) = &recv_expr.kind else {
-                return Err(FlowError::unimplemented(
-                    "calling a `mut self` method through a nested field/index receiver \
-                     inside an async body is",
-                ));
-            };
-            let self_temp = match env_lookup(env, recv_name) {
-                Some(Binding::Temp(t)) => t,
-                _ => {
-                    return Err(FlowError::internal(format!(
-                        "unbound (or self-path) local `{recv_name}` as mut receiver"
-                    )));
-                }
-            };
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
-            let mut call_args = vec![self_temp];
-            call_args.extend(arg_temps);
-            let dst = b.fresh(f.ret.clone());
-            b.emit_mwir(Inst::Call {
-                dst,
-                self_write_back: Some(self_temp),
-                key,
-                args: call_args,
-            });
-            Ok(dst)
-        }
-        (Some(recv_expr), Some(AccessMode::Read | AccessMode::Take)) => {
-            let recv_temp = lower_expr_flat(recv_expr, b, env)?;
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
-            let mut call_args = vec![recv_temp];
-            call_args.extend(arg_temps);
-            let dst = b.fresh(f.ret.clone());
-            b.emit_mwir(Inst::Call {
-                dst,
-                self_write_back: None,
-                key,
-                args: call_args,
-            });
-            Ok(dst)
-        }
-        _ => {
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
-            let dst = b.fresh(f.ret.clone());
-            b.emit_mwir(Inst::Call {
-                dst,
-                self_write_back: None,
-                key,
-                args: arg_temps,
-            });
-            Ok(dst)
-        }
-    }
-}
-
 fn lower_flow_queue_op(
     key: &str,
     receiver: &Option<Box<TypedExpr>>,

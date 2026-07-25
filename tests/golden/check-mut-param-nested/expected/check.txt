@@ -1,0 +1,34 @@
+Module path=examples.check_mut_param_nested
+  Struct Inner data
+    field x: u32
+  Struct Counter data
+    field n: u32
+    field nested: Inner
+  Fn bump(c: mut Counter) -> unit
+  Fn bump_nested(c: mut Counter) -> unit
+  Fn scalar_bump(x: mut u32) -> unit
+  Fn chain(c: mut Counter) -> unit
+  Fn mixed(a: mut u32, b: read u32, c: take u32) -> u32
+  Fn test_agg() -> unit
+  Fn test_scalar() -> unit
+  Fn test_nested_field() -> unit
+  Fn test_chain() -> unit
+  Fn test_mixed() -> unit
+  Fn drive_agg() -> u32
+  Fn drive_scalar() -> u32
+  Fn drive_nested() -> u32
+  Fn drive_chain() -> u32
+  Fn drive_mixed() -> u32
+  Const AGG_V: u32
+  Const SCA_V: u32
+  Const NEST_V: u32
+  Const CHAIN_V: u32
+  Const MIX_V: u32
+  Struct Store resource
+    field agg: u32
+    field sca: u32
+    field nest: u32
+    field chain: u32
+    field mix: u32
+    init(mut self, agg: read u32, sca: read u32, nest: read u32, chain: read u32, mix: read u32) -> unit
+  Fn build() -> Image
