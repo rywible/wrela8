@@ -7,57 +7,88 @@
 # a slower CI box). If the corpus grows enormously and legitimately needs
 # more time, re-measure and re-lock deliberately, in its own commit, citing
 # why — never widen this file to make a regression quietly pass.
+#
+# METHODOLOGY CHANGE, 2026-07-25 (GOAL.md, "the compiler-lane locks are
+# losing resolution"). The three `[compiler]` lanes time a *corpus*, and
+# they used to lock the whole-corpus absolute median. That dilutes on
+# every added golden: `check_golden_median_us` had already been re-locked
+# 40000 -> 400000 while the corpus grew 25 -> 154 entries, and by today's
+# 361 entries the measured median sat at 122ms against a 400ms lock — so a
+# per-entry regression of nearly 3x could have landed without tripping
+# anything. Those three keys are now **microseconds per entry**, which is
+# corpus-size invariant: adding goldens does not move the number at all,
+# and a lane that gets 2x slower per entry trips the lock whatever the
+# corpus size. The lane's own absolute min/median/max is still printed
+# every run, so nothing about the measurement became less visible.
+#
+# `[build]` and `[guest]` keep absolute locks on purpose: each times one
+# fixed workload (the example appliance; one `boot-hello` boot), so there
+# is no corpus to divide by and nothing to dilute.
 
 [compiler]
-# `cargo xtask bench compiler`: median wall time (microseconds) for one
-# full pass — lex, then parse where the corpus rules call for it — over
-# every doc/example corpus entry plus every tests/golden/*/input.wr (58
-# entries as of this lock). Measured median on the locking machine, across
-# several runs of 15 timed iterations each: ~5.5-5.7ms (5500-5700us). This
-# threshold is 10x that, rounded up to a clean number — loose on purpose,
-# so it catches an algorithmic blowup (e.g. an accidental O(n^2)) and never
-# a false alarm from ordinary machine noise.
-full_corpus_median_us = 60000
+# `cargo xtask bench compiler`: median wall time **per corpus entry**
+# (microseconds) for one full pass — lex, then parse where the corpus
+# rules call for it — over every doc/example corpus entry plus every
+# tests/golden/*/input.wr (421 entries as of this lock; the count is no
+# longer load-bearing, which is the point of the change).
+#
+# Before/after for the methodology change: the old lock was
+# `full_corpus_median_us = 60000`, set at 58 entries against a measured
+# ~5.5-5.7ms whole-corpus median. Re-measured today at 421 entries:
+# whole-corpus median 38.0-41.2ms, i.e. **90-97us/entry** (the low end
+# quiet, the high end with four agent worktrees compiling concurrently).
+# This threshold is 10x the quiet measurement, rounded up to a clean
+# number — same rationale as before, loose on purpose so it catches an
+# algorithmic blowup (an accidental O(n^2)) and never machine noise.
+full_corpus_per_entry_us = 1000
 
 # `cargo xtask bench compiler`'s check lane (plans/M2.md item I): median
-# wall time (microseconds) for one full pass of lex+parse+`sema::check`
-# over every tests/golden/*/input.wr that lexes and parses (both
-# sema-success and sema-error outcomes are timed and counted; the golden
-# inputs that are themselves lex/parse errors are excluded — see
-# `bench_check_entries` in crates/xtask/src/main.rs; 154 entries as of
-# this re-lock). Re-measured and re-locked at plans/M6.md item A
-# (2026-07-24): the corpus's own legitimate growth across every milestone
-# since the original 25-entry lock (now 154 check-lane entries — this
-# item alone added 14: five `check-actor-*`/`check-group`/`check-deadline`/
-# `check-await-self-path` accept goldens plus nine `err-*` async/actor
-# rejection cases) pushed the debug-build median right to the edge of the
-# old 40000us lock on this machine (several runs measured 39200-40400us,
-# occasionally tripping it — ordinary corpus-size growth, not an
-# algorithmic blowup: `cargo xtask bench compiler` itself, release-mode,
-# stays comfortably under 13000us for the identical corpus). Per this
-# file's own header ("if the corpus grows enormously and legitimately
-# needs more time, re-measure and re-lock deliberately, in its own
-# commit, citing why"): re-measured median on this machine, several runs
-# of 15 timed iterations each: ~39.2-40.3ms (39200-40300us). This
-# threshold is 10x that, rounded up to a clean number — same rationale as
-# full_corpus_median_us above.
-check_golden_median_us = 400000
+# wall time **per entry** (microseconds) for one full pass of
+# lex+parse+`sema::check` over every tests/golden/*/input.wr that lexes
+# and parses (both sema-success and sema-error outcomes are timed and
+# counted; the golden inputs that are themselves lex/parse errors are
+# excluded — see `bench_check_entries` in crates/xtask/src/main.rs; 361
+# entries as of this lock).
+#
+# This is the lane that motivated the methodology change at the top of
+# this file. Its absolute lock was set at 40000 (25 entries), re-locked to
+# 400000 at plans/M6.md item A (154 entries), and by today's 361 entries
+# the measured whole-corpus median was 121.7-138.9ms — a third of the lock,
+# with the slack bought entirely by corpus growth rather than by the code
+# getting faster. Per-entry today: **337us quiet, 384us with four agent
+# worktrees compiling concurrently**. This threshold is 10x the quiet
+# measurement, rounded up to a clean number.
+#
+# Honest caveat: per-entry is corpus-*size* invariant, not corpus-*content*
+# invariant. This lane's own history shows both halves — from the M6-A
+# re-lock (154 entries, ~40ms) to today (361 entries, ~122ms) the absolute
+# median moved 3x while per-entry moved 260us -> 337us, about 30%, because
+# the goldens added since are individually heavier (actor/hardware images,
+# not const-and-assert files). So a corpus that grows in *weight* still
+# drifts this number, and a drift that large again is worth reading as a
+# question rather than as noise. What it can no longer do is hide a real
+# per-entry regression behind a bigger denominator.
+check_golden_per_entry_us = 4000
 
 # `cargo xtask bench compiler`'s eval lane (plans/M3.md item F): median
-# wall time (microseconds) for one full pass of lex+parse+
+# wall time **per entry** (microseconds) for one full pass of lex+parse+
 # `sema::check_typed`+`eval::run_tests` over every test-bearing golden
-# (the `check-tests-*` cases with a pinned `expected/test.txt` — 3 entries
-# as of this lock — see `bench_eval_entries` in
-# crates/xtask/src/main.rs). Measured median on the locking machine,
-# across several runs of 15 timed iterations each: ~10.0-10.4ms
-# (10000-10400us) — most of that cost is `check-tests-program`'s own
-# iterative `fib`/`gcd` loops and `check-tests-arith`'s boundary-arithmetic
-# suite, both running well inside their 20_000-step quota
-# (comptime.eval.quotas) but still real evaluator work, unlike the check
-# lane's mostly-static const/assert-only golden mix. This threshold is
-# 10x that, rounded up to a clean number — same rationale as
-# full_corpus_median_us/check_golden_median_us above.
-eval_tests_median_us = 120000
+# (the goldens with a pinned `expected/test.txt` — 37 entries as of this
+# lock — see `bench_eval_entries` in crates/xtask/src/main.rs). Most of
+# the cost is real evaluator work — `check-tests-program`'s iterative
+# `fib`/`gcd` loops and `check-tests-arith`'s boundary-arithmetic suite,
+# both well inside their 20_000-step quota (comptime.eval.quotas) —
+# unlike the check lane's mostly-static const/assert-only golden mix,
+# which is why this lane's per-entry number is an order of magnitude
+# larger and why it keeps its own key.
+#
+# Before/after for the methodology change: the old lock was
+# `eval_tests_median_us = 120000`, set at 3 entries against a measured
+# ~10.0-10.4ms whole-corpus median. Re-measured today at 37 entries:
+# whole-corpus median 67.7-83.4ms, i.e. **1829us/entry quiet, 2253us/entry
+# with four agent worktrees compiling concurrently**. This threshold is
+# 10x the quiet measurement, rounded up to a clean number.
+eval_tests_per_entry_us = 20000
 
 [build]
 # `cargo xtask bench build` (plans/M4.md item E): median wall time
