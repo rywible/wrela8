@@ -3107,11 +3107,14 @@ struct ActorMethodShape {
     /// frame; a scalar-reply method's arm is untouched, down to the word.
     reply_is_aggregate: bool,
     param_sizes: Vec<u64>,
-    /// plans/M8.md item D: the declared reply *type*, so the messageable-
-    /// driver check (`check_driver_message_surface`) can ask
-    /// `sema::types::sealed_authority_carried` about the type the author
-    /// wrote. `reply_is_aggregate` above cannot answer an authority
-    /// question: a `Receipt[P]` and a `u64` are both one word.
+    /// plans/M8.md item D: the message shape itself — every parameter's
+    /// declared type plus the declared reply — so the messageable-driver
+    /// check (`check_driver_message_surface`) can ask
+    /// `sema::types::driver_message_forbidden_carried` about the exact
+    /// types the author wrote. Sizes cannot answer an authority question:
+    /// a `Receipt[P]`, an `InterruptCell[u32]` and a `u64` are all one
+    /// word.
+    param_types: Vec<crate::sema::types::Type>,
     ret: crate::sema::types::Type,
     /// 03-hardware.md §6's bottom half. A `@task` is woken by an ISR, not
     /// admitted from a mailbox; a `pub` `@task` on a messageable driver
@@ -3141,6 +3144,7 @@ fn merge_actor_pub_methods(
                     continue;
                 }
                 let mut param_sizes = Vec::with_capacity(f.params.len());
+                let mut param_types = Vec::with_capacity(f.params.len());
                 for p in &f.params {
                     let size = mwir::size_of(&p.ty, layout_ctx).map_err(|e| {
                         LayoutError::new(format!(
@@ -3149,12 +3153,14 @@ fn merge_actor_pub_methods(
                         ))
                     })?;
                     param_sizes.push(size as u64);
+                    param_types.push(p.ty.clone());
                 }
                 methods.push(ActorMethodShape {
                     name: f.name.clone(),
                     is_async: f.is_async,
                     reply_is_aggregate: crate::codegen::is_aggregate(&f.ret),
                     param_sizes,
+                    param_types,
                     ret: f.ret.clone(),
                     is_task: f.is_task,
                 });
@@ -4115,21 +4121,32 @@ fn mailbox_root_names(tables: &RuntimeTables) -> Vec<String> {
 /// Three refusals, each a separate sentence because each names a different
 /// leak:
 ///
-/// 1. **A receipt across the mailbox.** No 03 §1 capability, §9 protocol
-///    state or §4 sealed queue value may appear in a parameter or reply —
-///    but that rule is *not* re-implemented here.
-///    `sema::types::validate_fn_capability_types` already refuses every
-///    one of them for every `pub` method of an actor or driver, whether or
-///    not a mailbox exists (M7 decision 3: "checked where `Actor[T]`
-///    already is ... do not build a second mechanism"), and
+/// 1. **Nothing sealed crosses the mailbox, in either direction.** No 03
+///    §1 capability, §9 protocol state or §4 sealed queue value may appear
+///    in a parameter or reply — and *that* rule is not re-implemented
+///    here: `sema::types::validate_fn_capability_types` already refuses
+///    every one of them for every `pub` method of an actor or driver,
+///    whether or not a mailbox exists (M7 decision 3: "checked where
+///    `Actor[T]` already is ... do not build a second mechanism"), and
 ///    `err-driver-message-capability` pins that it still fires on a
-///    *messageable* driver. The one shape that pass deliberately admits is
-///    `Receipt[P]`, because 03 §5 blesses it by name for the handoff
-///    convention — and a handoff needs the caller-side `await receipt`
-///    that plans/M8.md item E makes executable. So a messageable driver
-///    declaring one is refused **here**, by name, pointing at item E,
-///    rather than admitted into a mailbox whose caller cannot resolve what
-///    comes back.
+///    *messageable* driver. What this pass adds is the two names that pass
+///    lets through, each for its own good reason:
+///
+///    - **`Receipt[P]`**, which 03 §5 blesses by name for the handoff
+///      convention — and a handoff needs the caller-side `await receipt`
+///      that plans/M8.md item E makes executable. Refused here, by name,
+///      pointing at item E, rather than admitted into a mailbox whose
+///      caller cannot resolve what comes back.
+///    - **`InterruptCell[T]`** (decision 16), which is not sealed
+///      authority at all (M7 decision 17: source-constructible, an
+///      `@actor` may hold one) and so is invisible to the containment
+///      rules — but which 03 §6 calls "the **sole** ISR/ordinary-code
+///      channel". A cell in a message is a second channel between
+///      different principals, carrying the interrupt-status word's value
+///      to a sender that owns none of §6's ordering.
+///
+///    Both directions are checked, because for `InterruptCell` both are
+///    reachable: the parameter arm is live precisely where sema's is not.
 /// 2. **The wrong effect set.** A `@task` bottom half (03 §6) is woken by
 ///    an ISR and drains completions; it is not a message. Declaring one
 ///    `pub` on a messageable driver would give one turn body two entry
@@ -4140,6 +4157,26 @@ fn mailbox_root_names(tables: &RuntimeTables) -> Vec<String> {
 ///    Admitting one from a mailbox would run device acknowledge work as an
 ///    ordinary turn, at an arbitrary time, on behalf of an arbitrary
 ///    sender.
+/// The reason clause both directions of `check_driver_message_surface`
+/// append, keyed on which name was found. One writer, so a parameter and a
+/// reply carrying the same type can never be told two different stories.
+fn why_forbidden_across_a_driver_mailbox(found: &str) -> &'static str {
+    if found.starts_with("InterruptCell") {
+        // 03-hardware.md §6, quoted rather than paraphrased on "sole",
+        // because that word is the whole argument.
+        return ". 03-hardware.md §6: `InterruptCell[T]` is \"the sole ISR/ordinary-code \
+                channel\", interrupt-atomic with respect to every vector that may touch the \
+                cell — a channel between this driver's ISR and this driver's own ordinary code. \
+                A mailbox is a different channel between different principals, and a cell that \
+                crosses it is a second, unordered one. Export the value the cell holds, not the \
+                cell";
+    }
+    ", which 03-hardware.md §1 keeps inside the driver (\"a driver may export safe actor APIs \
+     but never raw capabilities\"). `Receipt[P]` in particular is 03-hardware.md §5's handoff \
+     convention, which needs the caller-side `await receipt` that plans/M8.md item E makes \
+     executable; item D wires the mailbox only, so a messageable driver cannot hand one back yet"
+}
+
 fn check_driver_message_surface(
     driver: &str,
     methods: &[ActorMethodShape],
@@ -4150,16 +4187,27 @@ fn check_driver_message_surface(
     let tasks = driver_task_method_names(modules, driver);
     let isrs = irq_bind_handlers_in_driver(modules, bare);
     for m in methods {
-        if let Some(found) = crate::sema::types::sealed_authority_carried(&m.ret, decl_items) {
+        for (i, ty) in m.param_types.iter().enumerate() {
+            let Some(found) = crate::sema::types::driver_message_forbidden_carried(ty, decl_items)
+            else {
+                continue;
+            };
             return Err(format!(
                 "`@driver` `{driver}` is declared with `mailbox=`, so its `pub` method \
-                 `{driver}.{}` is a message shape — and its reply carries `{found}`, which \
-                 03-hardware.md §1 keeps inside the driver (\"a driver may export safe actor \
-                 APIs but never raw capabilities\"). `Receipt[P]` in particular is \
-                 03-hardware.md §5's handoff convention, which needs the caller-side `await \
-                 receipt` that plans/M8.md item E makes executable; item D wires the mailbox \
-                 only, so a messageable driver cannot hand one back yet",
-                m.name
+                 `{driver}.{}` is a message shape — and parameter #{} carries `{found}`{}",
+                m.name,
+                i + 1,
+                why_forbidden_across_a_driver_mailbox(&found)
+            ));
+        }
+        if let Some(found) =
+            crate::sema::types::driver_message_forbidden_carried(&m.ret, decl_items)
+        {
+            return Err(format!(
+                "`@driver` `{driver}` is declared with `mailbox=`, so its `pub` method \
+                 `{driver}.{}` is a message shape — and its reply carries `{found}`{}",
+                m.name,
+                why_forbidden_across_a_driver_mailbox(&found)
             ));
         }
         if m.is_task || tasks.iter().any(|t| *t == m.name) {

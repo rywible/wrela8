@@ -55,9 +55,10 @@ exactly when its declaration carries `mailbox=n` (§9): it then owns a bounded
 mailbox and runs admitted messages as ordinary turns on its own core —
 identical to an `@actor`, with one admission, one turn, and one reply. Its
 `pub` methods are the whole exported surface and carry no authority in either
-direction: no capability, sealed queue value, protocol state, or receipt
-crosses a driver mailbox, and its interrupt handlers and `@task` bottom half
-are never admissible ([03 §1](03-hardware.md), [03 §6](03-hardware.md)).
+direction: no capability, sealed queue value, protocol state, receipt, or
+interrupt cell crosses a driver mailbox, and its interrupt handlers and
+`@task` bottom half are never admissible ([03 §1](03-hardware.md),
+[03 §6](03-hardware.md)).
 Device completions are not messages and keep their own path
 ([03 §5](03-hardware.md)). A driver declared without `mailbox=` cannot be
 sent to at all.
