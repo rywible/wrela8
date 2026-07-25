@@ -5404,7 +5404,8 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
 
 /// This oracle's own running tally, printed as the final summary line
 /// (`diff-eval: <N> test(s) agree across <C> case(s), <S1>
-/// lowering-skips, <S2> exhaustive-skips`).
+/// lowering-skips, <S2> exhaustive-skips, <S3> quota-skips, <S4>
+/// import-skips`).
 #[derive(Default)]
 struct DiffEvalTally {
     agree: usize,
@@ -5430,28 +5431,76 @@ struct DiffEvalTally {
     /// contains the fixed substring `"quota exceeded"` is excluded from
     /// the image entirely and counted here instead of compiled/booted.
     quota_skips: usize,
+    /// plans/M9.md item EE: a multi-module case that typechecks but whose
+    /// import closure this oracle genuinely cannot build into a guest
+    /// image (fail closed by name). Before EE every import-bearing case
+    /// was a *silent* `continue` with no tally entry — so the summary
+    /// line overstated the oracle's scope. Handled cases (the preferred
+    /// half of EE) never increment this; only a named residual does.
+    import_skips: usize,
 }
 
-/// Lex+parse+typecheck a single-module program — mirrors `wrela test`'s
-/// own scope exactly (`sema::check_typed`'s own "imports through the
-/// single-module entry ... are [unimplemented]" refusal, `bin/
-/// wrela.rs::test_cmd` never attempts `loader::load_closure` either).
-/// `None` for anything out of this oracle's scope: a lex/parse/sema
+/// One typechecked program ready for the oracle — either a single-module
+/// file or the root of a loaded import closure. `modules` is the whole
+/// closure keyed by dotted path (one entry for the no-imports case), the
+/// same shape `bin/wrela.rs::check_closure` / `produce_report_and_image`
+/// already build; `layout::merge_layout_ctx` needs every module's AST so
+/// an imported struct's fields size correctly.
+struct DiffEvalChecked {
+    root_program: sema::typed::TypedProgram,
+    modules: BTreeMap<String, Module>,
+}
+
+/// Lex+parse+typecheck for the oracle — mirrors `bin/wrela.rs::check_closure`
+/// (and `produce_report_and_image`'s own parallel copy of the same fork):
+/// no imports → `sema::check_typed`; any import → `loader::load_closure` +
+/// `sema::check_program_typed`. `None` only for a lex/parse/sema/load
 /// failure (an `err-*` golden — an expected rejection, never a bug this
-/// oracle should report on) or a program with imports (multi-module, out
-/// of `wrela test`'s own scope) — never treated as a plumbing `Err`,
-/// since both are ordinary, expected exclusions.
-fn typecheck_single_module(
-    source: &str,
-    path: &str,
-) -> Option<(Module, sema::typed::TypedProgram)> {
-    let tokens = lexer::lex(source).ok()?;
+/// oracle should report on). plans/M9.md item EE: before this, imports
+/// returned `None` silently and the caller `continue`d with no tally —
+/// that was the defect; multi-module cases with comptime `@test`s now
+/// reach the comparison.
+fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> {
+    let source = std::fs::read_to_string(target).ok()?;
+    let path_display = target.display().to_string();
+    let tokens = lexer::lex(&source).ok()?;
     let module = parser::parse(tokens).ok()?;
-    if !module.imports.is_empty() {
-        return None;
+    if module.imports.is_empty() {
+        let program = sema::check_typed(&module, &path_display).ok()?;
+        let addr = module.path.join(".");
+        let mut modules = BTreeMap::new();
+        modules.insert(addr, module);
+        return Some(DiffEvalChecked {
+            root_program: program,
+            modules,
+        });
     }
-    let program = sema::check_typed(&module, path).ok()?;
-    Some((module, program))
+    // Deliberately parallel to `produce_report_and_image` / `bin/wrela.rs::
+    // check_closure` — those driver internals are not a library surface
+    // this crate can call into (same disclosed convention those call
+    // sites already document).
+    let loaded = loader::load_closure(target).ok()?;
+    let paths: BTreeMap<Vec<String>, String> = loaded
+        .modules
+        .iter()
+        .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+        .collect();
+    let modules_by_key: BTreeMap<Vec<String>, Module> = loaded
+        .modules
+        .into_iter()
+        .map(|(k, m)| (k, m.module))
+        .collect();
+    let programs = sema::check_program_typed(&modules_by_key, &paths).ok()?;
+    let root_key = loaded.root.clone();
+    let root_program = programs.get(&root_key)?.clone();
+    let modules: BTreeMap<String, Module> = modules_by_key
+        .into_iter()
+        .map(|(k, m)| (k.join("."), m))
+        .collect();
+    Some(DiffEvalChecked {
+        root_program,
+        modules,
+    })
 }
 
 /// Builds a runtime-test image out of `test_names` (in the order given —
@@ -5463,16 +5512,21 @@ fn typecheck_single_module(
 /// deliberately parallel copy — the identical "own small, deliberately
 /// parallel copy" reasoning `produce_report_and_image`'s own doc comment
 /// already gives for `report-determinism`, one call chain later.
+///
+/// `modules` is the whole build closure (plans/M9.md item EE): an
+/// imported struct's field layout lives in the *exporting* module's AST,
+/// so `layout::merge_layout_ctx` must see every module, not just the
+/// root. Lowering the root alone is enough for the code itself —
+/// `lower::lower_program` emits imported fns/methods under the local
+/// spelling (item EE decision 90).
 fn build_runtime_test_image(
-    module: &Module,
     program: &sema::typed::TypedProgram,
+    modules: &BTreeMap<String, Module>,
     source: &str,
     path: &str,
     test_names: &[String],
 ) -> Result<(Vec<u8>, String), String> {
-    let mut modules: BTreeMap<String, Module> = BTreeMap::new();
-    modules.insert(module.path.join("."), module.clone());
-    let layout_ctx = layout::merge_layout_ctx(&modules).map_err(|e| e.message)?;
+    let layout_ctx = layout::merge_layout_ctx(modules).map_err(|e| e.message)?;
     let mwir_program = lower::lower_program(program).map_err(|e| e.message)?;
     // plans/M6.md item F: the same full pipeline `bin/wrela.rs::test_cmd`
     // runs, not the sync-only shortcut this fn used through item E — the
@@ -5496,10 +5550,10 @@ fn build_runtime_test_image(
         None => wrela_compiler::eval::image::ImageGraph::default(),
     };
     let method_index =
-        layout::actor_method_index_tables(&modules, &layout_ctx).map_err(|e| e.message)?;
+        layout::actor_method_index_tables(modules, &layout_ctx).map_err(|e| e.message)?;
     let test_args =
         layout::resolve_runtime_test_args(program, test_names, &graph).map_err(|e| e)?;
-    let group_arena_capacity = layout::count_with_group_sites(&modules);
+    let group_arena_capacity = layout::count_with_group_sites(modules);
     let codegen_program = codegen::codegen_program_with_async(
         &mwir_program,
         &flow_program,
@@ -5519,7 +5573,7 @@ fn build_runtime_test_image(
         codegen::compute_group_child_indices(&flow_program).map_err(|e| e.message)?;
     let boot = layout::BootCtx {
         graph: &graph,
-        modules: &modules,
+        modules,
         layout_ctx: &layout_ctx,
         async_frames: &async_frames,
         group_child_index: &group_child_index,
@@ -5651,9 +5705,10 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
         let source = std::fs::read_to_string(&target)
             .map_err(|e| format!("read {}: {e}", target.display()))?;
         let path_display = target.display().to_string();
-        let Some((module, program)) = typecheck_single_module(&source, &path_display) else {
-            continue; // out of scope: lex/parse/sema error, or multi-module
+        let Some(checked) = typecheck_for_diff_eval(&target) else {
+            continue; // out of scope: lex/parse/sema/load error (err-* goldens)
         };
+        let program = &checked.root_program;
         if program.tests.is_empty() {
             continue; // fully out of scope: no @test fn of any kind
         }
@@ -5684,7 +5739,7 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
         // and, later, as the comparison oracle itself — one call covers
         // both, exactly the shape `wrela test`'s own comptime tier
         // already produces.
-        let (eval_report, _) = eval::run_tests(&program);
+        let (eval_report, _) = eval::run_tests(program);
         let eval_line_for = |test_name: &str| -> Option<&str> {
             let prefix = format!("test {test_name}: ");
             eval_report.lines().find(|l| l.starts_with(&prefix))
@@ -5720,8 +5775,8 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
         }
 
         let (img_bytes, report_text) = match build_runtime_test_image(
-            &module,
-            &program,
+            program,
+            &checked.modules,
             &source,
             &path_display,
             &backend_names,
@@ -5807,12 +5862,13 @@ fn diff_eval() -> Result<(), String> {
     let tally = diff_eval_over_cases(&vmm, None)?;
     println!(
         "diff-eval: {} test(s) agree across {} case(s), {} lowering-skips, {} exhaustive-skips, \
-         {} quota-skips",
+         {} quota-skips, {} import-skips",
         tally.agree,
         tally.cases_agreed,
         tally.lowering_skips,
         tally.exhaustive_skips,
-        tally.quota_skips
+        tally.quota_skips,
+        tally.import_skips
     );
     Ok(())
 }
@@ -5836,12 +5892,13 @@ fn diff_eval_smoke() -> Result<(), String> {
     let tally = diff_eval_over_cases(&vmm, Some(&DIFF_EVAL_SMOKE_CASES))?;
     println!(
         "diff-eval (smoke): {} test(s) agree across {} case(s), {} lowering-skips, {} \
-         exhaustive-skips, {} quota-skips",
+         exhaustive-skips, {} quota-skips, {} import-skips",
         tally.agree,
         tally.cases_agreed,
         tally.lowering_skips,
         tally.exhaustive_skips,
-        tally.quota_skips
+        tally.quota_skips,
+        tally.import_skips
     );
     Ok(())
 }
@@ -5883,8 +5940,9 @@ fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), String> {
     let source =
         std::fs::read_to_string(&target).map_err(|e| format!("read {}: {e}", target.display()))?;
     let path_display = target.display().to_string();
-    let (module, program) = typecheck_single_module(&source, &path_display)
+    let checked = typecheck_for_diff_eval(&target)
         .ok_or_else(|| format!("tests/golden/{case_name} failed to typecheck"))?;
+    let program = &checked.root_program;
     let runtime_names: Vec<String> = program
         .tests
         .iter()
@@ -5896,7 +5954,13 @@ fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), String> {
             "tests/golden/{case_name} declares no @test(runtime) fns"
         ));
     }
-    build_runtime_test_image(&module, &program, &source, &path_display, &runtime_names)
+    build_runtime_test_image(
+        program,
+        &checked.modules,
+        &source,
+        &path_display,
+        &runtime_names,
+    )
 }
 
 fn bench_guest_lane() -> Result<(), String> {
