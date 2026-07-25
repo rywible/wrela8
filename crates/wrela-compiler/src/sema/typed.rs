@@ -1348,6 +1348,49 @@ pub(crate) fn rekey_const_names(c: &mut TypedConst, subs: &BTreeMap<String, Stri
     rekey_expr(&mut c.value, subs);
 }
 
+/// plans/M9.md item HH: every `Type::Named` spelling in a typed struct's
+/// fields and method/assoc/init *signatures*. Body construction names
+/// that also appear in a return/param type are covered; a type that
+/// appears *only* inside a body with no signature mention is the same
+/// hole A1b recorded for private helpers and stays named-unresolvable.
+pub(crate) fn collect_named_types_from_struct(s: &TypedStruct, out: &mut BTreeSet<String>) {
+    out.insert(s.name.clone());
+    for ty in s.field_types.values() {
+        types::collect_named_type_names(ty, out);
+    }
+    for f in s.methods.values() {
+        collect_named_types_from_fn(f, out);
+    }
+    for f in s.assoc_fns.values() {
+        collect_named_types_from_fn(f, out);
+    }
+    if let Some(f) = &s.init {
+        collect_named_types_from_fn(f, out);
+    }
+}
+
+/// plans/M9.md item HH: every `Type::Named` in an enum's method signatures.
+pub(crate) fn collect_named_types_from_enum(e: &TypedEnum, out: &mut BTreeSet<String>) {
+    for f in e.methods.values() {
+        collect_named_types_from_fn(f, out);
+    }
+    for f in e.assoc_fns.values() {
+        collect_named_types_from_fn(f, out);
+    }
+}
+
+/// plans/M9.md item HH: every `Type::Named` in a fn signature (receiver,
+/// params, return).
+pub(crate) fn collect_named_types_from_fn(f: &TypedFn, out: &mut BTreeSet<String>) {
+    if let Some((_, ty)) = &f.receiver {
+        types::collect_named_type_names(ty, out);
+    }
+    for p in &f.params {
+        types::collect_named_type_names(&p.ty, out);
+    }
+    types::collect_named_type_names(&f.ret, out);
+}
+
 fn rekey_fn(f: &mut TypedFn, subs: &BTreeMap<String, String>) {
     if subs.is_empty() {
         return;

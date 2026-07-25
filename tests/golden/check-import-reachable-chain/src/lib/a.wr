@@ -1,0 +1,9 @@
+module lib.a
+
+from lib.b import B
+
+pub struct A:
+    seed: u32
+
+    pub fn make(read self) -> B:
+        return B(seed=self.seed)

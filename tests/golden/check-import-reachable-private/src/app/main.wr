@@ -1,0 +1,31 @@
+module app.main
+
+# plans/M9.md item HH: using a value of a reachable non-pub type is
+# allowed; *spelling*/importing it is still refused (err-import-type-not-pub).
+from lib.g import Maker
+
+fn drive() -> u32:
+    m = Maker(seed=4)
+    b = m.build()
+    return b.n + 300
+
+const D: u32 = drive()
+
+@test
+pub fn t():
+    assert D == 305, "value of non-pub reachable type"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-reachable-private", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=D, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

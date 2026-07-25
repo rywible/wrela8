@@ -1,0 +1,31 @@
+module app.main
+
+# plans/M9.md item HH: only A imported; A.make -> B; B.get -> C.
+from lib.a import A
+
+fn drive() -> u32:
+    a = A(seed=5)
+    b = a.make()
+    c = b.get()
+    return c.n + 200
+
+const D: u32 = drive()
+
+@test
+pub fn t():
+    assert D == 215, "chain A->B->C with only A imported"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-reachable-chain", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=D, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

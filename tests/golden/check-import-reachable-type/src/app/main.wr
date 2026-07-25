@@ -1,0 +1,33 @@
+module app.main
+
+# plans/M9.md item HH: import only Maker, not Box. Maker.build returns
+# Box; field access on that value must see Box's shape. Before HH:
+# error[type]: type `Box` has no field `n` — false about the program.
+
+from lib.g import Maker
+
+fn drive() -> u32:
+    m = Maker(seed=4)
+    b = m.build()
+    return b.n + 300
+
+const D: u32 = drive()
+
+@test
+pub fn t():
+    assert D == 305, "reachable Box field without importing Box"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-reachable-type", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=D, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

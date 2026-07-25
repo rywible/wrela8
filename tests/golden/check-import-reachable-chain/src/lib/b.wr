@@ -1,0 +1,9 @@
+module lib.b
+
+from lib.c import C
+
+pub struct B:
+    seed: u32
+
+    pub fn get(read self) -> C:
+        return C(n=self.seed + 10)

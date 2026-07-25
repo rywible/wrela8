@@ -1,0 +1,10 @@
+module lib.g
+
+pub struct Box:
+    n: u32
+
+pub struct Maker:
+    seed: u32
+
+    pub fn build(read self) -> Box:
+        return Box(n=self.seed + 1)

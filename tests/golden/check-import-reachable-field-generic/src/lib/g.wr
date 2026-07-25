@@ -1,0 +1,19 @@
+module lib.g
+
+pub struct Cell:
+    n: u32
+
+pub struct Box[T]:
+    v: T
+
+pub struct Holder:
+    cell: Cell
+
+pub struct Maker:
+    seed: u32
+
+    pub fn hold(read self) -> Holder:
+        return Holder(cell=Cell(n=self.seed + 2))
+
+    pub fn wrap(read self) -> Box[Cell]:
+        return Box[Cell](v=Cell(n=self.seed + 3))

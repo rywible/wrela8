@@ -1,0 +1,4 @@
+module lib.c
+
+pub struct C:
+    n: u32

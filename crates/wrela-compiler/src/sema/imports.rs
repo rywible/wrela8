@@ -301,3 +301,28 @@ pub fn resolve_imports(
     }
     Ok(bindings)
 }
+
+// --- plans/M9.md item HH: import type-universe reachability --------------
+//
+// The importer's type universe is the explicitly imported names **plus**
+// every type reachable through those declarations' signatures (and, at
+// the ModuleCtx / TypedProgram splices, the finished decl bodies those
+// signatures name). A binding is still required to *spell* a name
+// (02 §2); reachability closes the universe for *using a value* whose
+// type the importer never wrote. A reachable type that is not `pub` is
+// still refused *by name* at `resolve_imports`
+// (golden/err-import-type-not-pub) — privacy governs the import act, not
+// inference over a value a pub API already handed across.
+
+pub(crate) fn lookup_origin_type_name<'a>(
+    tname: &str,
+    origin: &[String],
+    importer_bindings: &ImportBindings,
+) -> String {
+    for (local, b) in importer_bindings {
+        if local.as_str() == tname && b.target_module.as_slice() == origin {
+            return b.target_name.clone();
+        }
+    }
+    tname.to_string()
+}

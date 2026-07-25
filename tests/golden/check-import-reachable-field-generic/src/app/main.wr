@@ -1,0 +1,32 @@
+module app.main
+
+# plans/M9.md item HH: reachable type as exporter field (Holder.cell: Cell)
+# and as generic argument (Box[Cell]), with only Maker imported.
+from lib.g import Maker
+
+fn drive() -> u32:
+    m = Maker(seed=10)
+    h = m.hold()
+    b = m.wrap()
+    return h.cell.n * 1000 + b.v.n
+
+const D: u32 = drive()
+
+@test
+pub fn t():
+    assert D == 12013, "reachable as field (12) and generic arg (13)"
+
+@actor
+pub struct Store:
+    settled: u32
+
+    init(mut self, settled: u32):
+        self.settled = settled
+
+@image
+pub fn build() -> Image:
+    img = Image(name="import-reachable-fg", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, settled=D, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

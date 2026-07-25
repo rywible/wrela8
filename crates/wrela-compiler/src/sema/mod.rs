@@ -548,6 +548,16 @@ pub fn check_program_typed(
         }
     }
 
+    // plans/M9.md item HH: after the explicit-import splice, close each
+    // importer's ModuleCtx over every type reachable through those
+    // declarations (pub and non-pub). Field/method lookup on a value the
+    // importer already holds needs the DeclStruct present; without this,
+    // `b.n` on a `Box` returned by an imported `Maker.build` reports the
+    // false diagnostic `type \`Box\` has no field \`n\``. Decision 13
+    // stands: these entries live only in the importer's lookup tables,
+    // never merged into the exporter's declaration emission set.
+    close_mctx_type_reachability(&mut mctxs, &bindings);
+
     let mut programs: BTreeMap<Vec<String>, typed::TypedProgram> = BTreeMap::new();
     for (key, module) in &specialized {
         let decl_items = &decl_items_map[key];
@@ -843,12 +853,248 @@ fn splice_imported_decls(
         }
     }
 
+    // plans/M9.md item HH: close the typed import tables the same way
+    // `close_mctx_type_reachability` closed ModuleCtx — so comptime
+    // construction of a reachable-but-unimported type (GG finding #3's
+    // `internal error: struct \`Box\` not found`) resolves.
+    close_typed_type_reachability(programs, bindings);
+
     // Finally the closure-wide "declared elsewhere" notes, under every
-    // name the withheld entries above did not already claim.
+    // name the withheld entries above did not already claim — but only
+    // for names the reachability closure did not install (plans/M9.md
+    // item HH). A reachable type is present in `imported.structs`/
+    // `enums`; leaving it in `unresolvable` would make eval prefer the
+    // miss note over the real declaration (`abandon_missing`).
     for (key, notes) in unresolvable {
         let dst = programs.get_mut(&key).expect("key is a key of programs");
         for (name, note) in notes {
+            if dst.imported.structs.contains_key(&name)
+                || dst.imported.enums.contains_key(&name)
+                || dst.imported.fns.contains_key(&name)
+                || dst.imported.consts.contains_key(&name)
+                || dst.structs.contains_key(&name)
+                || dst.enums.contains_key(&name)
+                || dst.fns.contains_key(&name)
+                || dst.consts.contains_key(&name)
+            {
+                continue;
+            }
             dst.imported.unresolvable.entry(name).or_insert(note);
+        }
+    }
+}
+
+/// plans/M9.md item HH: close each importer's `ModuleCtx` over types
+/// reachable from its already-spliced import bindings. Seeded by the
+/// explicit splice above; walks signatures and copies missing
+/// struct/enum entries from the **defining** module's finished mctx
+/// (not merely the module that re-exported the name — a two-module-deep
+/// chain `A→B→C` with only `A` imported must still find `C` in `B`'s
+/// module). Pub and non-pub alike — §2's privacy gate is the *import*
+/// of a non-pub name, not inference over a value the importer already
+/// holds.
+fn close_mctx_type_reachability(
+    mctxs: &mut BTreeMap<Vec<String>, bodies::ModuleCtx>,
+    bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
+) {
+    let empty = imports::ImportBindings::new();
+    let module_keys: Vec<Vec<String>> = mctxs.keys().cloned().collect();
+    for importer in &module_keys {
+        let own_bindings = bindings.get(importer).unwrap_or(&empty);
+        // local name in importer -> module whose *own* (or further
+        // imported) mctx holds the declaration we walk next.
+        let mut origins: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut queue: Vec<String> = Vec::new();
+        for (local, b) in own_bindings {
+            origins.insert(local.clone(), b.target_module.clone());
+            queue.push(local.clone());
+        }
+        let mut visited: BTreeSet<String> = queue.iter().cloned().collect();
+        while let Some(name) = queue.pop() {
+            let Some(origin) = origins.get(&name).cloned() else {
+                continue;
+            };
+            let mut mentioned = BTreeSet::new();
+            {
+                let dst = &mctxs[importer];
+                if let Some(s) = dst.structs.get(&name) {
+                    types::collect_named_types_from_decl_struct(&s.decl, &mut mentioned);
+                } else if let Some(e) = dst.enums.get(&name) {
+                    types::collect_named_types_from_decl_enum(&e.decl, &mut mentioned);
+                } else if let Some(f) = dst.fns.get(&name) {
+                    types::collect_named_types_from_decl_fn(&f.decl, &mut mentioned);
+                } else if let Some(ty) = dst.consts.get(&name) {
+                    types::collect_named_type_names(ty, &mut mentioned);
+                }
+            }
+            for tname in mentioned {
+                if mctxs[importer].structs.contains_key(&tname)
+                    || mctxs[importer].enums.contains_key(&tname)
+                {
+                    continue;
+                }
+                if !visited.insert(tname.clone()) {
+                    continue;
+                }
+                let origin_bindings = bindings.get(&origin).unwrap_or(&empty);
+                let lookup = imports::lookup_origin_type_name(&tname, &origin, own_bindings);
+                // Prefer the origin module's own table; if the name is
+                // only there via *its* imports, chase the defining module
+                // so a peer return type declared one hop further still
+                // resolves (A→B→C with only A imported).
+                let def_module = origin_bindings
+                    .get(&lookup)
+                    .map(|b| b.target_module.clone())
+                    .unwrap_or_else(|| origin.clone());
+                let def_name = origin_bindings
+                    .get(&lookup)
+                    .map(|b| b.target_name.clone())
+                    .unwrap_or_else(|| lookup.clone());
+                let (struct_entry, enum_entry) = {
+                    let src = &mctxs[&def_module];
+                    (
+                        src.structs.get(&def_name).cloned(),
+                        src.enums.get(&def_name).cloned(),
+                    )
+                };
+                let subs = imports::alias_subs_for_exporter(own_bindings, &def_module);
+                let dst = mctxs.get_mut(importer).expect("importer is a key");
+                if let Some(mut s) = struct_entry {
+                    types::rekey_decl_struct_names(&mut s.decl, &subs);
+                    if s.decl.name != tname {
+                        let mut name_sub = BTreeMap::new();
+                        name_sub.insert(s.decl.name.clone(), tname.clone());
+                        types::rekey_decl_struct_names(&mut s.decl, &name_sub);
+                    }
+                    dst.shapes.insert(tname.clone(), s.decl.generics.len());
+                    dst.structs.insert(tname.clone(), s);
+                    origins.insert(tname.clone(), def_module);
+                    queue.push(tname);
+                } else if let Some(mut e) = enum_entry {
+                    types::rekey_decl_enum_names(&mut e.decl, &subs);
+                    if e.decl.name != tname {
+                        let mut name_sub = BTreeMap::new();
+                        name_sub.insert(e.decl.name.clone(), tname.clone());
+                        types::rekey_decl_enum_names(&mut e.decl, &name_sub);
+                    }
+                    dst.shapes.insert(tname.clone(), e.decl.generics.len());
+                    dst.enums.insert(tname.clone(), e);
+                    origins.insert(tname.clone(), def_module);
+                    queue.push(tname);
+                }
+            }
+        }
+    }
+}
+
+/// plans/M9.md item HH: same reachability closure for `TypedProgram::
+/// imported`, so comptime eval and lower find a reachable-but-unimported
+/// struct instead of `internal error: struct \`X\` not found`. Runs
+/// inside `splice_imported_decls` after the explicit-binding loop. Same
+/// defining-module chase as `close_mctx_type_reachability`.
+fn close_typed_type_reachability(
+    programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
+    bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
+) {
+    let empty = imports::ImportBindings::new();
+    let module_keys: Vec<Vec<String>> = programs.keys().cloned().collect();
+    for importer in &module_keys {
+        let own_bindings = bindings.get(importer).unwrap_or(&empty);
+        let mut origins: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut queue: Vec<String> = Vec::new();
+        for (local, b) in own_bindings {
+            origins.insert(local.clone(), b.target_module.clone());
+            queue.push(local.clone());
+        }
+        let mut visited: BTreeSet<String> = queue.iter().cloned().collect();
+        while let Some(name) = queue.pop() {
+            let Some(origin) = origins.get(&name).cloned() else {
+                continue;
+            };
+            let mut mentioned = BTreeSet::new();
+            {
+                let dst = &programs[importer];
+                if let Some(s) = dst
+                    .imported
+                    .structs
+                    .get(&name)
+                    .or_else(|| dst.structs.get(&name))
+                {
+                    typed::collect_named_types_from_struct(s, &mut mentioned);
+                } else if let Some(e) = dst
+                    .imported
+                    .enums
+                    .get(&name)
+                    .or_else(|| dst.enums.get(&name))
+                {
+                    typed::collect_named_types_from_enum(e, &mut mentioned);
+                } else if let Some(f) = dst.imported.fns.get(&name).or_else(|| dst.fns.get(&name)) {
+                    typed::collect_named_types_from_fn(f, &mut mentioned);
+                } else if let Some(c) = dst
+                    .imported
+                    .consts
+                    .get(&name)
+                    .or_else(|| dst.consts.get(&name))
+                {
+                    types::collect_named_type_names(&c.ty, &mut mentioned);
+                }
+            }
+            for tname in mentioned {
+                let dst_has = {
+                    let dst = &programs[importer];
+                    dst.structs.contains_key(&tname)
+                        || dst.enums.contains_key(&tname)
+                        || dst.imported.structs.contains_key(&tname)
+                        || dst.imported.enums.contains_key(&tname)
+                };
+                if dst_has {
+                    continue;
+                }
+                if !visited.insert(tname.clone()) {
+                    continue;
+                }
+                let origin_bindings = bindings.get(&origin).unwrap_or(&empty);
+                let lookup = imports::lookup_origin_type_name(&tname, &origin, own_bindings);
+                let def_module = origin_bindings
+                    .get(&lookup)
+                    .map(|b| b.target_module.clone())
+                    .unwrap_or_else(|| origin.clone());
+                let def_name = origin_bindings
+                    .get(&lookup)
+                    .map(|b| b.target_name.clone())
+                    .unwrap_or_else(|| lookup.clone());
+                let (struct_entry, enum_entry) = {
+                    let src = &programs[&def_module];
+                    (
+                        src.structs
+                            .get(&def_name)
+                            .or_else(|| src.imported.structs.get(&def_name))
+                            .cloned(),
+                        src.enums
+                            .get(&def_name)
+                            .or_else(|| src.imported.enums.get(&def_name))
+                            .cloned(),
+                    )
+                };
+                let subs = imports::alias_subs_for_exporter(own_bindings, &def_module);
+                let dst = programs.get_mut(importer).expect("importer is a key");
+                if let Some(mut s) = struct_entry {
+                    typed::rekey_struct_names(&mut s, &subs);
+                    if s.name != tname {
+                        let mut name_sub = BTreeMap::new();
+                        name_sub.insert(s.name.clone(), tname.clone());
+                        typed::rekey_struct_names(&mut s, &name_sub);
+                    }
+                    dst.imported.structs.insert(tname.clone(), s);
+                    origins.insert(tname.clone(), def_module);
+                    queue.push(tname);
+                } else if let Some(mut e) = enum_entry {
+                    typed::rekey_enum_names(&mut e, &subs);
+                    dst.imported.enums.insert(tname.clone(), e);
+                    origins.insert(tname.clone(), def_module);
+                    queue.push(tname);
+                }
+            }
         }
     }
 }

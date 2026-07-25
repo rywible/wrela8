@@ -4927,6 +4927,117 @@ pub(crate) fn rekey_decl_fn_names(f: &mut DeclFn, subs: &BTreeMap<String, String
     }
 }
 
+/// Collect every `Type::Named` spelling reachable from `ty`, including
+/// nested generic type arguments (plans/M9.md item HH).
+pub(crate) fn collect_named_type_names(ty: &Type, out: &mut BTreeSet<String>) {
+    match ty {
+        Type::Array(elem, _) => collect_named_type_names(elem, out),
+        Type::Tuple(elems) => {
+            for e in elems {
+                collect_named_type_names(e, out);
+            }
+        }
+        Type::Option(inner) => collect_named_type_names(inner, out),
+        Type::Result(ok, err) => {
+            collect_named_type_names(ok, out);
+            collect_named_type_names(err, out);
+        }
+        Type::Own(_, inner) | Type::Static(inner) => collect_named_type_names(inner, out),
+        Type::Fn(params, ret) => {
+            for (_, p) in params {
+                collect_named_type_names(p, out);
+            }
+            collect_named_type_names(ret, out);
+        }
+        Type::Named(name, targs) => {
+            out.insert(name.clone());
+            for a in targs {
+                if let TypeArg::Type(t) = a {
+                    collect_named_type_names(t, out);
+                }
+            }
+        }
+        Type::Bytes(_)
+        | Type::Bool
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::Usize
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::Isize
+        | Type::F32
+        | Type::F64
+        | Type::Char
+        | Type::Unit
+        | Type::Never
+        | Type::Str
+        | Type::Generic(_) => {}
+    }
+}
+
+/// Every named type in a resolved fn signature (params, return,
+/// const-generic types). The receiver is always `Self` and is not
+/// carried as a `Type` on `DeclReceiver`.
+pub(crate) fn collect_named_types_from_decl_fn(f: &DeclFn, out: &mut BTreeSet<String>) {
+    for p in &f.params {
+        collect_named_type_names(&p.ty, out);
+    }
+    collect_named_type_names(&f.ret, out);
+    for g in &f.generics {
+        if let DeclGenericKind::Const(ty) = &g.kind {
+            collect_named_type_names(ty, out);
+        }
+    }
+}
+
+/// Every named type in a resolved struct declaration (fields + method
+/// signatures). Method *bodies* are a separate AST walk at the splice.
+pub(crate) fn collect_named_types_from_decl_struct(s: &DeclStruct, out: &mut BTreeSet<String>) {
+    for m in &s.members {
+        match m {
+            DeclMember::Field(f) => collect_named_type_names(&f.ty, out),
+            DeclMember::Fn(f) | DeclMember::Init(f) => collect_named_types_from_decl_fn(f, out),
+            DeclMember::Pool(_) => {}
+        }
+    }
+    for (ty, _) in &s.component_types {
+        collect_named_type_names(ty, out);
+    }
+}
+
+/// Every named type in a resolved enum declaration (variant payloads +
+/// method signatures).
+pub(crate) fn collect_named_types_from_decl_enum(e: &DeclEnum, out: &mut BTreeSet<String>) {
+    for v in &e.variants {
+        match &v.payload {
+            DeclVariantPayload::None => {}
+            DeclVariantPayload::Tuple(tys) => {
+                for ty in tys {
+                    collect_named_type_names(ty, out);
+                }
+            }
+            DeclVariantPayload::Named(fields) => {
+                for (_, ty) in fields {
+                    collect_named_type_names(ty, out);
+                }
+            }
+        }
+    }
+    for m in &e.members {
+        match m {
+            DeclMember::Fn(f) | DeclMember::Init(f) => collect_named_types_from_decl_fn(f, out),
+            DeclMember::Field(_) | DeclMember::Pool(_) => {}
+        }
+    }
+    for (ty, _) in &e.component_types {
+        collect_named_type_names(ty, out);
+    }
+}
+
 /// Re-key every `Type::Named` whose spelling is a key of `subs`, in one
 /// simultaneous pass. Shared by the DeclStruct splice (DD/GG) and
 /// `layout::merge_layout_ctx`'s aliased-import install (FF/GG).
