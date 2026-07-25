@@ -1,0 +1,1 @@
+error[build]: `driver#0` binds device#0 (declared `BlockHw`) to `BlkDriver`, but `BlkDriver.init` takes `cap: DeviceCap[NicHw]` — a `DeviceCap[D]` is minted from the device this binding names, and `NicHw` is not `BlockHw` (03-hardware.md §1)

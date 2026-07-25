@@ -491,12 +491,131 @@ fn find_constructor(programs: &BTreeMap<String, TypedProgram>, struct_name: &str
     )
 }
 
+/// 03-hardware.md §1's minting sentence, made mechanical (plans/M7.md
+/// item A): "unforgeable resource values minted while the image binds a
+/// declared device to a `@driver` ... The device itself is named once, at
+/// the image binding (`img.driver(BlkDriver, device=blk_device)`), the
+/// single source of truth."
+///
+/// This is the *typed* half of the mint, and it is the whole half item A
+/// ships. It decides whether a declared capability `init` parameter has a
+/// real minting source in this image, and what that source is — but it
+/// produces no runtime value, because there is nothing yet to produce:
+/// `layout::build_boot_init_calls` walks `graph.actors` only, so a driver's
+/// `init` is never called at boot at all (M6-D's own floor, unchanged
+/// here). The parameter's *provenance* is checked; its *bytes* are items
+/// D and E.
+///
+/// Only `DeviceCap[D]` has a mint today, and it is exactly §1's sentence:
+/// the declaration's own `device=` argument, whose declared device type
+/// must be `D`. The other three name the item that mints them and fail
+/// closed, because each needs machinery that does not exist — `Mmio[L]`
+/// needs a claim to partition (item C), `IrqCap[V]` needs a vector bound
+/// from the image graph (item G), `DmaPool[P, N]` needs a real pool (item
+/// D, and `img.dma_pool` itself still fails the whole build closed).
+fn check_capability_substitution(
+    decl_ref: &ImageDeclRef,
+    struct_name: &str,
+    param_name: &str,
+    param_ty: &Type,
+    cap_name: &str,
+    kind: DeclKind,
+    args: &[DeclArg],
+    graph: &ImageGraph,
+    device_caps_seen: &mut usize,
+) -> Result<(), SemaError> {
+    let rendered = types::render_type(param_ty);
+    // An `img.actor(...)` declaration has no `device=` at all (it is not
+    // one of its reserved labels — a `device=` there is rejected as an
+    // unknown argument), so no capability parameter of one can ever have a
+    // minting source. Sema already rejects an `@actor` *declaring* such a
+    // parameter (`hardware.capabilities.unforgeable`); this is the arm for
+    // the shape sema cannot see, an `img.actor(...)` naming a struct that
+    // is not an `@actor` at all.
+    if matches!(kind, DeclKind::Actor) {
+        return Err(build_error(format!(
+            "`{}` wires `{struct_name}` as an actor, but `{struct_name}.init` takes `{param_name}: \
+             {rendered}` — a capability is minted only where the image binds a declared device to \
+             a `@driver` (03-hardware.md §1), and `img.actor(...)` binds no device",
+            decl_ref.render()
+        )));
+    }
+    if cap_name != "DeviceCap" {
+        let owner = match cap_name {
+            "Mmio" => "plans/M7.md item C (a driver partitions its claim into declared layouts)",
+            "IrqCap" => "plans/M7.md item G (a vector is bound from the image graph)",
+            _ => "plans/M7.md item D (a declared DMA pool is real memory)",
+        };
+        return Err(build_error(format!(
+            "`{}` binds a device to `{struct_name}`, but `{struct_name}.init` takes `{param_name}: \
+             {rendered}` and nothing mints a `{cap_name}` yet — that is {owner}. Failing closed \
+             rather than substituting an unminted capability",
+            decl_ref.render()
+        )));
+    }
+    *device_caps_seen += 1;
+    if *device_caps_seen > 1 {
+        return Err(build_error(format!(
+            "`{}` binds one device to `{struct_name}`, but `{struct_name}.init` takes more than \
+             one `DeviceCap` parameter (`{param_name}: {rendered}` is the second) — \
+             03-hardware.md §1: a `DeviceCap[D]` is authority over *one* device instance, and the \
+             device is named once at the image binding",
+            decl_ref.render()
+        )));
+    }
+    let Some(device_arg) = args.iter().find(|a| a.label == "device") else {
+        return Err(build_error(format!(
+            "`{}` declares no `device=`, but `{struct_name}.init` takes `{param_name}: {rendered}` \
+             — 03-hardware.md §1: a capability is minted while the image binds a declared device \
+             to a `@driver`, and the device is named once, at the image binding, the single \
+             source of truth",
+            decl_ref.render()
+        )));
+    };
+    let Value::ImageDecl(ImageDeclRef::Device(idx)) = &device_arg.value else {
+        return Err(build_error(format!(
+            "`{}` passes a `device=` that is not a declared device, so `{struct_name}.init`'s own \
+             `{param_name}: {rendered}` has nothing to be minted from (03-hardware.md §1)",
+            decl_ref.render()
+        )));
+    };
+    let Some(device) = graph.devices.get(*idx) else {
+        return Err(build_error(format!(
+            "`{}` passes a `device=` naming device#{idx}, which this image does not declare",
+            decl_ref.render()
+        )));
+    };
+    // `D` must be the bound device's own declared type: §1's "the single
+    // source of truth" is only true if the two agree, and a `DeviceCap[A]`
+    // minted from a device declared `img.device[B](...)` would be
+    // authority over a device this image never bound.
+    let bound = types::render_type(&device.device_type);
+    let declared = match param_ty {
+        Type::Named(_, targs) => match targs.first() {
+            Some(crate::sema::types::TypeArg::Type(t)) => types::render_type(t),
+            _ => bound.clone(), // arity is guaranteed by `sema::types`
+        },
+        _ => bound.clone(),
+    };
+    if declared != bound {
+        return Err(build_error(format!(
+            "`{}` binds device#{idx} (declared `{bound}`) to `{struct_name}`, but \
+             `{struct_name}.init` takes `{param_name}: {rendered}` — a `DeviceCap[D]` is minted \
+             from the device this binding names, and `{declared}` is not `{bound}` \
+             (03-hardware.md §1)",
+            decl_ref.render()
+        )));
+    }
+    Ok(())
+}
+
 fn check_one_decl(
     decl_ref: &ImageDeclRef,
     actor_type: &Type,
     args: &[DeclArg],
     kind: DeclKind,
     programs: &BTreeMap<String, TypedProgram>,
+    graph: &ImageGraph,
 ) -> Result<(), SemaError> {
     let Type::Named(struct_name, _) = actor_type else {
         return Ok(()); // defensive: only ever a bare struct name reaches here
@@ -568,12 +687,32 @@ fn check_one_decl(
     let Constructor::Init(params) = &ctor else {
         return Ok(());
     };
+    let mut device_caps_seen = 0usize;
     for (name, ty) in params {
         if satisfied.contains(name) {
             continue;
         }
         if let Type::Named(tn, _) = ty {
-            if is_capability_type_name(tn) || is_handle_type_name(tn) {
+            // plans/M7.md item A: what was a bare name-recognition
+            // "accepted, substituted by the declaration's own device
+            // wiring" is now a real check against the wiring it names —
+            // 03-hardware.md §1's mint, typed. `is_handle_type_name`
+            // keeps its old behavior unchanged (plans/M4.md decision 7).
+            if is_capability_type_name(tn) {
+                check_capability_substitution(
+                    decl_ref,
+                    struct_name,
+                    name,
+                    ty,
+                    tn,
+                    kind,
+                    args,
+                    graph,
+                    &mut device_caps_seen,
+                )?;
+                continue;
+            }
+            if is_handle_type_name(tn) {
                 continue;
             }
         }
@@ -600,6 +739,7 @@ pub fn check_init_args(
             &d.args,
             DeclKind::Driver,
             programs,
+            graph,
         )?;
     }
     for (i, d) in graph.actors.iter().enumerate() {
@@ -609,6 +749,7 @@ pub fn check_init_args(
             &d.args,
             DeclKind::Actor,
             programs,
+            graph,
         )?;
     }
     Ok(())
@@ -877,27 +1018,160 @@ mod tests {
         assert!(check_init_args(&g, &programs).is_ok());
     }
 
-    #[test]
-    fn a_capability_typed_init_param_is_satisfied_by_name_with_no_argument() {
-        // Unrepresentable from real source today (this module's own doc
-        // comment: `DeviceCap[...]` never resolves as a type annotation) —
-        // exercised here on a hand-built `TypedParam` only.
-        let program = program_with_init(
-            "Blk",
-            vec![TypedParam {
-                mode: AccessMode::Read,
-                name: "cap".to_string(),
-                ty: Type::Named("DeviceCap".to_string(), vec![]),
-                default: None,
-            }],
-        );
-        let programs = programs_map(program);
+    // --- the mint (plans/M7.md item A, 03-hardware.md §1) ----------------
+    //
+    // What was, before item A, a bare name-recognition — "a parameter
+    // whose declared type is named `DeviceCap`/`DmaPool`/`Mmio`/`IrqCap`
+    // is satisfied by the declaration's own device wiring" (plans/M4.md
+    // decision 7), accepted with *no argument and no wiring at all* — is
+    // now a real check against the wiring it names. The old test asserted
+    // exactly that acceptance and is replaced, not deleted, by the table
+    // below: same shape, real rule.
+    //
+    // These stay unit tests rather than becoming goldens for the arms a
+    // golden cannot reach: `check_init_args` runs on a *sealed* graph, and
+    // the driver-shaped rejections that can be spelled in source are
+    // goldens (`golden/err-cap-mint-no-device`,
+    // `golden/err-cap-mint-device-mismatch`, `golden/err-cap-mint-unminted`),
+    // while the second-`DeviceCap` and non-device-`device=` arms need a
+    // graph shape no `@image` fn can currently produce.
+
+    fn cap_param(name: &str, cap: &str, arg: &str) -> TypedParam {
+        TypedParam {
+            mode: AccessMode::Read,
+            name: name.to_string(),
+            ty: Type::Named(
+                cap.to_string(),
+                vec![crate::sema::types::TypeArg::Type(Type::Named(
+                    arg.to_string(),
+                    vec![],
+                ))],
+            ),
+            default: None,
+        }
+    }
+
+    /// One driver graph: a device of type `device_type` (if any), and a
+    /// driver wired with `device=` (if `wired`) plus `params` on its init.
+    fn driver_graph(device_type: Option<&str>, wired: bool, params: Vec<TypedParam>) -> ImageGraph {
         let mut g = ImageGraph::default();
+        if let Some(d) = device_type {
+            g.devices.push(crate::eval::image::DeviceDecl {
+                device_type: Type::Named(d.to_string(), vec![]),
+                args: vec![],
+            });
+        }
+        let _ = &params;
+        let args = if wired {
+            vec![decl_arg(
+                "device",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Device(0)),
+            )]
+        } else {
+            vec![]
+        };
         g.drivers.push(crate::eval::image::DriverDecl {
             actor_type: Type::Named("Blk".to_string(), vec![]),
+            args,
+        });
+        g
+    }
+
+    #[test]
+    fn a_device_cap_is_minted_by_the_binding_that_names_its_device() {
+        let programs = programs_map(program_with_init(
+            "Blk",
+            vec![cap_param("cap", "DeviceCap", "BlockHw")],
+        ));
+        let g = driver_graph(Some("BlockHw"), true, vec![]);
+        assert!(
+            check_init_args(&g, &programs).is_ok(),
+            "a `DeviceCap[BlockHw]` bound to an `img.device[BlockHw]` is 03 §1's own mint"
+        );
+    }
+
+    #[test]
+    fn a_device_cap_with_no_device_binding_has_nothing_to_be_minted_from() {
+        let programs = programs_map(program_with_init(
+            "Blk",
+            vec![cap_param("cap", "DeviceCap", "BlockHw")],
+        ));
+        let g = driver_graph(Some("BlockHw"), false, vec![]);
+        let err = check_init_args(&g, &programs).expect_err("no `device=` means no mint");
+        assert!(
+            err.message.contains("declares no `device=`"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_device_cap_must_name_the_bound_device_type() {
+        let programs = programs_map(program_with_init(
+            "Blk",
+            vec![cap_param("cap", "DeviceCap", "NicHw")],
+        ));
+        let g = driver_graph(Some("BlockHw"), true, vec![]);
+        let err = check_init_args(&g, &programs).expect_err("`D` must be the bound device's type");
+        assert!(
+            err.message.contains("`NicHw` is not `BlockHw`"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn one_binding_mints_at_most_one_device_cap() {
+        let programs = programs_map(program_with_init(
+            "Blk",
+            vec![
+                cap_param("cap", "DeviceCap", "BlockHw"),
+                cap_param("cap2", "DeviceCap", "BlockHw"),
+            ],
+        ));
+        let g = driver_graph(Some("BlockHw"), true, vec![]);
+        let err = check_init_args(&g, &programs).expect_err("one device, one authority");
+        assert!(
+            err.message.contains("more than one `DeviceCap` parameter"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn the_three_unminted_capabilities_each_name_the_item_that_mints_them() {
+        for (cap, owner) in [
+            ("Mmio", "item C"),
+            ("IrqCap", "item G"),
+            ("DmaPool", "item D"),
+        ] {
+            let programs =
+                programs_map(program_with_init("Blk", vec![cap_param("c", cap, "Thing")]));
+            let g = driver_graph(Some("BlockHw"), true, vec![]);
+            let err = check_init_args(&g, &programs)
+                .expect_err("nothing mints an Mmio/IrqCap/DmaPool yet");
+            assert!(err.message.contains(owner), "{cap}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn an_actor_binding_mints_no_capability_at_all() {
+        let programs = programs_map(program_with_init(
+            "Store",
+            vec![cap_param("cap", "DeviceCap", "BlockHw")],
+        ));
+        let mut g = ImageGraph::default();
+        g.actors.push(crate::eval::image::ActorDecl {
+            actor_type: Type::Named("Store".to_string(), vec![]),
             args: vec![],
         });
-        assert!(check_init_args(&g, &programs).is_ok());
+        let err = check_init_args(&g, &programs).expect_err("`img.actor` binds no device");
+        assert!(
+            err.message.contains("`img.actor(...)` binds no device"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

@@ -1,0 +1,1 @@
+error[build]: `driver#0` declares no `device=`, but `BlkDriver.init` takes `cap: DeviceCap[BlockHw]` — 03-hardware.md §1: a capability is minted while the image binds a declared device to a `@driver`, and the device is named once, at the image binding, the single source of truth

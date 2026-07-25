@@ -1,0 +1,1 @@
+error[build]: `driver#0` binds a device to `BlkDriver`, but `BlkDriver.init` takes `regs: Mmio[VirtioIrqMmio]` and nothing mints a `Mmio` yet — that is plans/M7.md item C (a driver partitions its claim into declared layouts). Failing closed rather than substituting an unminted capability
