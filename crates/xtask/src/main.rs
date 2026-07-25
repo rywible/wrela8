@@ -3993,6 +3993,30 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                         }
                         match report::render(&inputs, &program.enums, &graph) {
                             Ok(mut text) => {
+                                // plans/M7.md item B disclosed this hole in its
+                                // own clause note rather than leaving it to be
+                                // found: `bin/wrela.rs` appends the exact-bytes
+                                // section here (declaration facts before the
+                                // memory map), and this oracle did not — so
+                                // `repro`/`report_determinism` were comparing a
+                                // report text with the section missing, and a
+                                // nondeterminism *inside* it could not have been
+                                // caught by the lane whose whole job is catching
+                                // nondeterminism. Mirrors the production path
+                                // exactly; `check_layouts` already ran and passed
+                                // for each module inside the sema check that
+                                // produced `programs`, so neither call can fail
+                                // here, and both are still handled as real errors.
+                                let mut layout_types = Vec::new();
+                                for module in modules_by_addr.values() {
+                                    let specialized = sema::specialize::specialize(module)
+                                        .map_err(|e| render_sema_error(&e))?;
+                                    layout_types.extend(
+                                        sema::types::check_layouts(&specialized)
+                                            .map_err(|e| render_sema_error(&e))?,
+                                    );
+                                }
+                                report::render_exact_bytes_section(&mut text, &layout_types);
                                 let layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
                                     .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout::try_layout_program(
