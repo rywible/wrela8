@@ -1,0 +1,29 @@
+module examples.err_with_pool_unimplemented
+
+# plans/M8.md item R, decision 12. 02-language.md §10: "`with` opens the
+# two intrinsic suspend-safe scopes — `group` (§9.5) and scoped `pool`
+# (§4)". Only `group` is implemented; the scoped-pool half must therefore
+# fail closed **by name**, in the `unimplemented` category, so a reader
+# learns the construct exists and is not built yet.
+#
+# It did not, before this case: `sema::symbols::resolve` runs before
+# `sema::bodies::check_with` and had no prelude entry for `pool`, so the
+# language's own second intrinsic scope was reported as
+# `error[name]: unknown name `pool`` — a typo diagnostic for a construct
+# the lexer keywords (`syntax::lexer::KEYWORDS`) and the parser has a
+# dedicated expression arm for. `check_with`'s fail-closed rejection was
+# already written and was unreachable.
+#
+# This is also the concrete reason `values.regions.two-binding-disciplines`
+# is still a gap: 04-compiler.md §3's own comparison — "A scoped pool is a
+# named, typed window over the same region machinery a group gets
+# implicitly — not a group with a budget" — cannot be written as one pair
+# of same-shaped goldens (`with group(...)` beside `with pool(...)`) while
+# this line is an error. See golden/check-regions-two-disciplines for how
+# far the asymmetry can be pinned today.
+
+async fn compose() -> u64:
+    total: u64 = 0
+    with pool(capacity=256) as frame:
+        total = total + 1
+    return total

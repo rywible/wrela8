@@ -57,7 +57,19 @@ const IMAGE_BUILDER: &[&str] = &[
 /// synthesized by the compiler (await/send composition, `with group`'s
 /// own binder, `now`/`seconds`'s own return type) — so none of them need
 /// an entry here, mirroring `Duration`/`ImageDecl`'s own precedent above.
-const ACTOR_SURFACE: &[&str] = &["Actor", "group", "now", "ms"];
+///
+/// `pool` joins `group` for exactly the same reason, and for no other
+/// (plans/M8.md item R, decision 12): 02-language.md §10 names **two**
+/// intrinsic `with` scopes, and `symbols::resolve` runs before
+/// `sema::bodies::check_with` ever sees the constructor — so without an
+/// entry here the scoped-pool half of the language's own two-construct
+/// region model reported `error[name]: unknown name \`pool\`` (a typo
+/// diagnostic for an intrinsic the parser has a dedicated arm for,
+/// `syntax::parser`'s own `pool(...)` keyword case) instead of the
+/// fail-closed `error[unimplemented]` `check_with` already had written
+/// and could never reach. Being in scope is not being constructible: the
+/// name resolves so the honest rejection can name it.
+const ACTOR_SURFACE: &[&str] = &["Actor", "group", "pool", "now", "ms"];
 
 /// The typed-MMIO register wrappers (plans/M7.md item B, 03-hardware.md
 /// §2's own worked example: `@offset(0x060) interrupt_status:

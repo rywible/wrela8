@@ -8214,6 +8214,19 @@ fn scan_group_starts_expr<'a>(e: &'a Expr, gname: &str, out: &mut Vec<&'a [Arg]>
 /// §10). The scoped `pool` form of `with` (02-language.md §10's other
 /// intrinsic scope) stays fail-closed — the M6 honest-scope line only
 /// lifts `group`.
+///
+/// plans/M8.md item R, decision 12: the two rejections below are told
+/// apart by name. `with pool` is the language's *other* intrinsic scope,
+/// unimplemented — `error[unimplemented]`, the fail-closed category, and
+/// the only reason 04-compiler.md §3's own group-vs-pool comparison
+/// cannot be written as one pair of same-shaped goldens today. Any other
+/// constructor is not a `with` form at all (02 §10: "There are no other
+/// `with` forms and no user-declared scope protocols") — a permanent
+/// `error[type]`, never a fail-closed one, so no reader is left waiting
+/// for a milestone that will never come. Before this split, every
+/// non-`group` constructor was blamed on `with pool` by name, which was a
+/// wrong answer for `with anything_else(...)`; `pool` itself never
+/// reached here at all (`sema::prelude::ACTOR_SURFACE`'s own note).
 fn check_with(w: &WithStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let Expr::Call(ctor, _cspan, cargs) = &w.expr else {
         return Err(unimplemented_at("`with` is", w.span));
@@ -8221,8 +8234,19 @@ fn check_with(w: &WithStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedS
     let Expr::Name(_, ctor_name) = ctor.as_ref() else {
         return Err(unimplemented_at("`with` is", w.span));
     };
-    if ctor_name != "group" {
+    if ctor_name == "pool" {
         return Err(unimplemented_at("`with pool` (scoped pools) is", w.span));
+    }
+    if ctor_name != "group" {
+        return Err(type_error(
+            format!(
+                "`with {ctor_name}(...)` is not a `with` form: `with` opens exactly two \
+                 intrinsic suspend-safe scopes, `group` and scoped `pool`, and there are no \
+                 others (02-language.md §10 — an acquire/release API is an ordinary function \
+                 used with `defer`, or a closure-taking function)"
+            ),
+            w.span,
+        ));
     }
     if !fctx.in_async {
         return Err(actor_error(

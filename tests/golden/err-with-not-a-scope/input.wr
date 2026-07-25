@@ -1,0 +1,25 @@
+module examples.err_with_not_a_scope
+
+# plans/M8.md item R, decision 12. 02-language.md §10, verbatim: "There
+# are no other `with` forms and no user-declared scope protocols:
+# acquisition-and-release APIs are ordinary functions used with `defer`,
+# or closure-taking functions (§8.3) when the API wants to guarantee the
+# release itself."
+#
+# So a `with` over anything that is not `group` or `pool` is a permanent
+# `type` error, never a fail-closed `unimplemented` one — nobody should be
+# left waiting for a milestone that is never coming. Before item R the
+# whole non-`group` space was blamed on `with pool` by name ("`with pool`
+# (scoped pools) is not checked yet"), which was a wrong answer for every
+# constructor except the one it named; `pool` itself never reached that
+# arm at all (golden/err-with-pool-unimplemented).
+#
+# `Image` is the constructor here only because it is a prelude name that
+# resolves: an unresolvable one is caught earlier, by name resolution,
+# which is correct and unchanged.
+
+async fn hold() -> u64:
+    total: u64 = 0
+    with Image(capacity=4) as scope:
+        total = total + 1
+    return total
