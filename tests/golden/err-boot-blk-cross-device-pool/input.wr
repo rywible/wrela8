@@ -28,6 +28,22 @@ module examples.err_boot_blk_cross_device_pool
 # Mutation that proves it is not vacuous: drop the `w.device != self.device`
 # arm from `window_offset` and this boot goes green — the descriptor is
 # then admitted and device#0 reads and writes device#1's pool.
+#
+# **What must stay true when `expected/test.txt` is regenerated.** That
+# line carries an absolute guest address, which any change to actor or
+# driver state sizes will move — the address is incidental. The oracle is
+# the three named facts around it, and all three must survive:
+#
+#   1. the pool named is `BlockPayloads` (the *payload* pool, the one this
+#      image rebound to device#1) — not `BlockControl`, which stays on
+#      device#0 and would mean the ring, not the descriptor, was refused;
+#   2. `bound to device#1`; and
+#   3. `this access is device#0's`.
+#
+# A regenerated line reporting `OutsidePool` ("no declared pool window
+# contains this range") instead is **not** this oracle: it would mean the
+# window stopped being declared at all, and the cross-device refusal went
+# untested while the boot still failed. Re-derive rather than accept.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
