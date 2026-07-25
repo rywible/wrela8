@@ -1119,7 +1119,7 @@ fn check_one_layout(
     let mut entries: Vec<LayoutEntry> = Vec::new();
     let mut cursor: u64 = 0;
     let mut padding: u64 = 0;
-    let mut last_field: Option<(String, u64)> = None;
+    let mut last_field: Option<(String, u64, u64)> = None;
     for m in &s.members {
         let f = match m {
             Member::Field(f) => f,
@@ -1190,16 +1190,35 @@ fn check_one_layout(
         }
         let offset = explicit.unwrap_or(cursor);
         if offset < cursor {
-            let (prev_name, prev_end) = last_field
+            let (prev_name, prev_start, prev_end) = last_field
                 .clone()
-                .unwrap_or_else(|| (String::from("<start>"), cursor));
+                .unwrap_or_else(|| (String::from("<start>"), cursor, cursor));
+            // Two distinct violations share this one condition, and the
+            // diagnostic must not claim the wrong one: a field declared
+            // after `prev` may sit entirely *before* it (an ordering
+            // violation with no byte in common) or genuinely share bytes
+            // with it. Saying "overlaps" for the first case asserts a
+            // fact that is false — `earlier` at 0x0..0x4 does not touch
+            // `later` at 0x10..0x14 — and a reader who checks it loses
+            // trust in the rest of the message.
+            let overlaps = offset + size > prev_start;
             return Err(layout_error(
-                format!(
-                    "field `{name}.{}` at offset {offset:#x} overlaps `{name}.{prev_name}`, \
-                     which ends at {prev_end:#x}; a `@layout` type's fields are declared in \
-                     ascending offset order and never overlap (03-hardware.md §2)",
-                    f.name
-                ),
+                if overlaps {
+                    format!(
+                        "field `{name}.{}` at offset {offset:#x} overlaps `{name}.{prev_name}` \
+                         ({prev_start:#x}..{prev_end:#x}); a `@layout` type's fields are declared \
+                         in ascending offset order and never overlap (03-hardware.md §2)",
+                        f.name
+                    )
+                } else {
+                    format!(
+                        "field `{name}.{}` at offset {offset:#x} is declared after \
+                         `{name}.{prev_name}` ({prev_start:#x}..{prev_end:#x}) but lies before \
+                         it; a `@layout` type's fields are declared in ascending offset order \
+                         and never overlap (03-hardware.md §2)",
+                        f.name
+                    )
+                },
                 f.span,
             ));
         }
@@ -1232,7 +1251,7 @@ fn check_one_layout(
             size,
         }));
         cursor = offset + size;
-        last_field = Some((f.name.clone(), cursor));
+        last_field = Some((f.name.clone(), offset, cursor));
     }
     if last_field.is_none() {
         return Err(layout_error(
