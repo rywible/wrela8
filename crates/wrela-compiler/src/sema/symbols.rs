@@ -585,9 +585,12 @@ impl<'a> Resolver<'a> {
             | Expr::Char(..)
             | Expr::Bool(..)
             | Expr::Unit(..) => Ok(()),
-            // Interpolation contents are raw, unparsed text in this AST
-            // (plans/M1.md item D); nothing to resolve until item C.
-            Expr::FStr(_) => Ok(()),
+            // plans/M9.md item D: interpolation interiors are ordinary
+            // expressions (desugared to `.format()` + `String` concat).
+            Expr::FStr(f) => {
+                let desugared = crate::sema::fstring::desugar_fstring(f)?;
+                self.resolve_expr(&desugared)
+            }
             Expr::Name(span, name) => self.resolve_name(name, *span),
             // The name after `.` needs the base's type to know whether
             // it is a field or a method (item B); only the base resolves

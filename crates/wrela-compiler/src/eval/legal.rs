@@ -2503,6 +2503,14 @@ fn is_plain_self_field_channel(target: &TypedExpr) -> bool {
     !crate::sema::bodies::is_interrupt_cell_type(&target.ty)
 }
 
+fn is_format_method_callee(callee: &crate::sema::typed::CalleeKey) -> bool {
+    match callee {
+        crate::sema::typed::CalleeKey::Method(_, m)
+        | crate::sema::typed::CalleeKey::MethodInstance(_, m) => m == "format",
+        _ => false,
+    }
+}
+
 fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
     // Do **not** blanket-reject every expression whose type is float or
     // DMA-shaped: passing `None` into a helper that takes
@@ -2524,6 +2532,13 @@ fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
         }
         TypedExprKind::Await(_) => Some("an `await`"),
         TypedExprKind::Send(_) => Some("a `send` (call another actor)"),
+        // plans/M9.md item D / 03-hardware.md §6: ISR cannot format.
+        // F-strings desugar to `.format()` (+ String concat), so this
+        // one arm covers both `f"..."` interpolation and a bare
+        // `.format()` call.
+        TypedExprKind::Call { callee, .. } if is_format_method_callee(callee) => {
+            Some("formatting (f-string / Format)")
+        }
         TypedExprKind::Intrinsic { key, .. } => {
             if crate::sema::bodies::is_mmio_access_intrinsic(key) {
                 None
@@ -3149,6 +3164,24 @@ pub fn double(x: u64) -> u64:
         assert_eq!(
             expr_isr_forbidden_reason(&float_expr),
             Some("floating point")
+        );
+        let format_expr = TypedExpr {
+            ty: Type::String(Box::new(crate::syntax::ast::Expr::Int(
+                Span::default(),
+                "10".into(),
+            ))),
+            kind: TypedExprKind::Call {
+                callee: crate::sema::typed::CalleeKey::Method("u32".into(), "format".into()),
+                receiver: Some(Box::new(TypedExpr {
+                    ty: Type::U32,
+                    kind: TypedExprKind::Int("1".into()),
+                })),
+                args: vec![],
+            },
+        };
+        assert_eq!(
+            expr_isr_forbidden_reason(&format_expr),
+            Some("formatting (f-string / Format)")
         );
         // plans/M7.md item G: wake is on the ISR allowlist (site check is
         // separate); Receipt-shaped work is named for item E even before

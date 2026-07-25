@@ -932,8 +932,15 @@ fn walk_expr<'a>(
         | Expr::BStr(..)
         | Expr::Char(..)
         | Expr::Bool(..)
-        | Expr::Unit(_)
-        | Expr::FStr(_) => Ok(()),
+        | Expr::Unit(_) => Ok(()),
+        // plans/M9.md item D: desugar is an owned temporary, so it cannot
+        // share the defer-stack's AST lifetime. Walk moves/reads on that
+        // tree through a lifetime-decoupled helper (f-string desugar has
+        // no `defer` of its own).
+        Expr::FStr(f) => {
+            let desugared = crate::sema::fstring::desugar_fstring(f)?;
+            walk_ephemeral_expr(&desugared, state, fctx, wctx)
+        }
         Expr::Name(span, name) => {
             if fctx.lookup_local(name).is_some() {
                 check_readable(&StoragePath::root(name.clone()), state, wctx, *span)
@@ -1117,6 +1124,119 @@ fn walk_closure<'a>(
     }
     fctx.pop_scope();
     Ok(())
+}
+
+/// Flow walk over an owned/temporary expression tree (f-string desugar)
+/// that cannot borrow into `DStack`'s AST lifetime. Covers the shapes
+/// desugar produces (`Str` / `.format()` call / `+`) plus ordinary
+/// interpolation operands (`Name` / field / take / call / binary).
+fn walk_ephemeral_expr(
+    expr: &Expr,
+    state: &mut StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx,
+) -> Result<(), SemaError> {
+    match expr {
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Str(..)
+        | Expr::BStr(..)
+        | Expr::Char(..)
+        | Expr::Bool(..)
+        | Expr::Unit(_) => Ok(()),
+        Expr::Name(span, name) => {
+            if fctx.lookup_local(name).is_some() {
+                check_readable(&StoragePath::root(name.clone()), state, wctx, *span)
+            } else {
+                Ok(())
+            }
+        }
+        Expr::Field(base, _, _) => walk_ephemeral_expr(base, state, fctx, wctx),
+        Expr::Index(base, _, args) => {
+            walk_ephemeral_expr(base, state, fctx, wctx)?;
+            for a in args {
+                walk_ephemeral_expr(a, state, fctx, wctx)?;
+            }
+            Ok(())
+        }
+        Expr::Call(callee, _, args) => {
+            walk_ephemeral_expr(callee, state, fctx, wctx)?;
+            for a in args {
+                ephemeral_operand(&a.value, a.mode, a.span, state, fctx, wctx)?;
+            }
+            Ok(())
+        }
+        Expr::Unary(span, UnaryOp::Take, inner) => {
+            ephemeral_operand(inner, AccessMode::Take, *span, state, fctx, wctx)
+        }
+        Expr::Unary(_, _, inner) | Expr::Try(_, inner) | Expr::Not(_, inner) => {
+            walk_ephemeral_expr(inner, state, fctx, wctx)
+        }
+        Expr::Binary(_, _, l, r)
+        | Expr::And(_, l, r)
+        | Expr::Or(_, l, r)
+        | Expr::Range(_, l, r, _) => {
+            walk_ephemeral_expr(l, state, fctx, wctx)?;
+            walk_ephemeral_expr(r, state, fctx, wctx)
+        }
+        Expr::DotVariant(_, _, args) => {
+            for a in args {
+                ephemeral_operand(&a.value, a.mode, a.span, state, fctx, wctx)?;
+            }
+            Ok(())
+        }
+        Expr::Tuple(_, items) | Expr::List(_, items) => {
+            for i in items {
+                walk_ephemeral_expr(i, state, fctx, wctx)?;
+            }
+            Ok(())
+        }
+        Expr::Closure(c) => match &c.body {
+            ClosureBody::Expr(e) => walk_ephemeral_expr(e, state, fctx, wctx),
+            ClosureBody::Suite(stmts) => {
+                for s in stmts {
+                    // Suite-form closures inside an f-string are exotic;
+                    // walk expression-shaped statements only.
+                    if let Stmt::Expr(_, e) | Stmt::Return(_, Some(e)) = s {
+                        walk_ephemeral_expr(e, state, fctx, wctx)?;
+                    }
+                }
+                Ok(())
+            }
+        },
+        Expr::Send(_, inner) => walk_ephemeral_expr(inner, state, fctx, wctx),
+        Expr::FStr(f) => {
+            let desugared = crate::sema::fstring::desugar_fstring(f)?;
+            walk_ephemeral_expr(&desugared, state, fctx, wctx)
+        }
+        Expr::Is(_, scrutinee, _) => walk_ephemeral_expr(scrutinee, state, fctx, wctx),
+    }
+}
+
+fn ephemeral_operand(
+    expr: &Expr,
+    mode: AccessMode,
+    span: Span,
+    state: &mut StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx,
+) -> Result<(), SemaError> {
+    match mode {
+        AccessMode::Take => {
+            let Some(path) = as_path(expr, fctx, wctx.mctx) else {
+                return walk_ephemeral_expr(expr, state, fctx, wctx);
+            };
+            check_takeable(&path, state, wctx, span)?;
+            set_state(&path, state, PathState::Moved);
+            Ok(())
+        }
+        AccessMode::Mut | AccessMode::Read => {
+            if let Some(path) = as_path(expr, fctx, wctx.mctx) {
+                check_readable(&path, state, wctx, span)?;
+            }
+            walk_ephemeral_expr(expr, state, fctx, wctx)
+        }
+    }
 }
 
 // --- calls: receiver + argument-list exclusivity + move/storing dispatch --

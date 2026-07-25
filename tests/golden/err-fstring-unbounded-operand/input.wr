@@ -1,0 +1,10 @@
+module examples.err_fstring_unbounded_operand
+
+# plans/M9.md item D / 02 §1.1: unbounded formatting (no Format /
+# max_formatted_len) is a build error.
+
+pub struct Blob:
+    n: u32
+
+const B: Blob = Blob(n=1)
+const S: String[..32] = f"x={B}"

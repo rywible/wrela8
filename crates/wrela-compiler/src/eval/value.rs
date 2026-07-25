@@ -496,9 +496,9 @@ pub fn eval_to_scalar(target: &Type, v: &Value) -> Result<Value, String> {
 
 // --- literal text decoding (str/bstr/char) --------------------------------
 
-/// Decodes a plain string literal's raw token text (`"..."`, quotes
-/// included, never a prefix — an f-string never reaches a typed `Str`
-/// node, sema's own fail-closed rule) into its UTF-8 bytes.
+/// Decodes a plain string literal's raw token text (`"..."` quotes
+/// included). F-string literal pieces are re-encoded into this form by
+/// `sema::fstring::desugar_fstring` before they reach a typed `Str` node.
 pub fn decode_str(text: &str) -> Vec<u8> {
     let inner = &text[1..text.len() - 1];
     decode_escapes(inner, false)

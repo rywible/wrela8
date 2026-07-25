@@ -788,8 +788,23 @@ note = "`comptime assert` (plans/M3.md item D, decision 8: \"`comptime assert` e
 [[clause]]
 id = "comptime.fstring.bounds"
 doc = "02-language.md#12"
-status = "gap"
-note = "f-string bound computation (the comptime evaluation that sizes an f-string's `String[..N]` result) needs the Format contract **and** f-string lowering. plans/M9.md item C2 landed the Format contract (`library.format.contract`); this gap stays until item D wires `f\"...\"` to sum each operand's `max_formatted_len` into `String[..N]`. Until then every f-string still fails closed in sema (`error[unimplemented]: f-strings are not checked yet`)."
+status = "test"
+tests = [
+  "golden/check-fstring-bounds",
+  "golden/err-fstring-unbounded-operand",
+  "golden/err-fstring-secret",
+  "golden/err-fstring-no-widen",
+  "golden/err-fstring-in-isr",
+]
+note = """02-language.md §1.1 / 05-library.md §6: `f\"...\"` type-checks every interpolation and sums literal bytes plus each operand's `max_formatted_len` into `String[..N]`. plans/M9.md item D (decisions 260–264).
+
+**Desugar (decision 261).** `f\"...\"` becomes a left-fold of `String` concat over literal pieces and `expr.format()` — C2's Format + concat surface. Empty-spec only; nonempty `{expr:spec}` refuses. `{{`/`}}` already unescaped by the parser into literal braces.
+
+**Exact capacity (decision 260).** `String[..N]` does not widen to `String[..M]` for `M > N`. Rejected: capacity-widening coercion (would need a layout copy and undo C2's exact Format bounds).
+
+**Refusals.** No Format → f-string operand of type T has no Format (unbounded / no max_formatted_len; 05-library.md §6) (`err-fstring-unbounded-operand`, `err-fstring-secret` against a no-Format type until item G lands Secret[T]). ISR formatting → uses formatting (f-string / Format) (`err-fstring-in-isr`). Assert messages stay text-literal-only.
+
+**Pinned.** `check-fstring-bounds`: `f\"n={42} ok={false}\"` settle `13110061` (value `n=42 ok=false`), braces `9123108`, `label(7)` → `4105100`, bound `21`; mwir `label` emits `FormatScalar` + `StringConcat` (guest tier, not comptime-only)."""
 
 [[clause]]
 id = "comptime.eval.no-panics"

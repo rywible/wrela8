@@ -970,10 +970,13 @@ fn walk_expr(e: &Expr, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<(), SemaErr
         | Expr::Str(..)
         | Expr::BStr(..)
         | Expr::Char(..)
-        | Expr::FStr(_)
         | Expr::Bool(..)
         | Expr::Unit(_)
         | Expr::Name(..) => Ok(()),
+        Expr::FStr(f) => {
+            let desugared = crate::sema::fstring::desugar_fstring(f)?;
+            walk_expr(&desugared, fctx, mctx)
+        }
         Expr::Field(base, _, _) => walk_expr(base, fctx, mctx),
         Expr::Index(base, _, args) => {
             walk_expr(base, fctx, mctx)?;

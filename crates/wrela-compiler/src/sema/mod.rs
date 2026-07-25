@@ -23,6 +23,8 @@
 pub mod access;
 pub mod bodies;
 pub mod flow;
+/// plans/M9.md item D: f-string desugar onto Format + `String` concat.
+pub mod fstring;
 pub mod generics;
 pub mod handoff;
 pub mod imports;

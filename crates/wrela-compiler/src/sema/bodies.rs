@@ -4,8 +4,9 @@
 //! §8), call checking (arity, labels), enum literals and leading-dot
 //! inference, pattern typing, `is`, closures as structural `fn` types,
 //! `?`, `assert`, `defer`. Also where the fail-closed set (decision 7)
-//! beyond imports lands: `comptime if`/`comptime assert`, f-strings,
-//! `await`/`send`/`with` (group/pool), `@image` bodies.
+//! beyond imports lands: `comptime if`/`comptime assert`, f-strings
+//! (item D: desugar onto Format + `String` concat), `await`/`send`/
+//! `with` (group/pool), `@image` bodies.
 //!
 //! Shape (decision 4): no unification, no constraint solver — every
 //! expression is either checked against an expected type the grammar
@@ -1941,7 +1942,9 @@ fn check_comptime_assert(
     let message = match message {
         Some(msg) => match msg {
             Expr::Str(..) => Some(check_expr(msg, None, fctx, mctx)?),
-            Expr::FStr(_) => return Err(unimplemented_at("f-strings are", msg.span())),
+            // F-strings type as `String[..N]` (item D); assert messages
+            // stay literal-only so lower can bake a fixed `AssertFail`
+            // payload.
             other => {
                 return Err(type_error(
                     "comptime assert message must be a text literal".to_string(),
@@ -2099,7 +2102,9 @@ fn check_assert(
     let message = match &a.message {
         Some(msg) => match msg {
             Expr::Str(..) => Some(check_expr(msg, None, fctx, mctx)?),
-            Expr::FStr(_) => return Err(unimplemented_at("f-strings are", msg.span())),
+            // F-strings type as `String[..N]` (item D); assert messages
+            // stay literal-only so lower can bake a fixed `AssertFail`
+            // payload.
             other => {
                 return Err(type_error(
                     "assert message must be a text literal".to_string(),
@@ -2771,7 +2776,7 @@ fn synth_expr(
             ty: Type::Char,
             kind: TypedExprKind::Char(text.clone()),
         }),
-        Expr::FStr(f) => Err(unimplemented_at("f-strings are", f.span)),
+        Expr::FStr(f) => check_fstr(f, fctx, mctx),
         Expr::Bool(_span, v) => Ok(TypedExpr {
             ty: Type::Bool,
             kind: TypedExprKind::Bool(*v),
@@ -3764,6 +3769,61 @@ fn coerce_text_literal_to_string(te: TypedExpr, span: Span) -> Result<TypedExpr,
         }
         _ => Ok(te),
     }
+}
+
+/// plans/M9.md item D: `f"..."` → Format + `String` concat, type
+/// `String[..N]` with `N` the sum of literal bytes and each operand's
+/// `max_formatted_len`.
+fn check_fstr(
+    f: &crate::syntax::ast::FStringLit,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let desugared = crate::sema::fstring::desugar_fstring(f)?;
+    let te = match check_expr(&desugared, None, fctx, mctx) {
+        Ok(te) => te,
+        Err(e) => return Err(rewrite_fstring_format_error(e)),
+    };
+    match &te.ty {
+        Type::String(_) => Ok(te),
+        Type::Static(inner) if matches!(inner.as_ref(), Type::Str) => {
+            coerce_text_literal_to_string(te, f.span)
+        }
+        other => Err(type_error(
+            format!(
+                "f-string must produce `String[..N]`, found `{}`",
+                types::render_type(other)
+            ),
+            f.span,
+        )),
+    }
+}
+
+/// Map a bare "no method `format`" onto the f-string wording (unbounded
+/// operand / no Format). `Secret` by type name keeps 05 §6's sentence.
+fn rewrite_fstring_format_error(e: SemaError) -> SemaError {
+    if let Some((ty, method)) = &e.missing_method {
+        if method == "format" {
+            if ty == "Secret" {
+                return types::secret_has_no_format(Span {
+                    line: e.line,
+                    col: e.col,
+                });
+            }
+            return SemaError::at(
+                "type",
+                format!(
+                    "f-string operand of type `{ty}` has no Format \
+                     (unbounded / no max_formatted_len; 05-library.md §6)"
+                ),
+                Span {
+                    line: e.line,
+                    col: e.col,
+                },
+            );
+        }
+    }
+    e
 }
 
 /// Checks two operands that must share one type (a binary operator's

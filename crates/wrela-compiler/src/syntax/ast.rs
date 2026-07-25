@@ -511,9 +511,10 @@ pub struct ClosureExpr {
     pub body: ClosureBody,
 }
 
-/// One segment of an interpolated string literal. `Interp` deliberately
-/// keeps the interior expression as raw, unparsed text (plans/M1.md item D,
-/// area 3): parsing it recursively is left to a later milestone.
+/// One segment of an interpolated string literal. `Interp` keeps the
+/// interior as raw text at parse time; `sema::fstring::desugar_fstring`
+/// (plans/M9.md item D) parses it and rewrites the f-string onto
+/// `.format()` + `String` concat before typing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FStringPart {
     Literal(Span, String),

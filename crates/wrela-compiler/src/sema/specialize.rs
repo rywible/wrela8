@@ -291,8 +291,12 @@ fn collect_names_in_expr(e: &Expr, out: &mut BTreeSet<String>) {
         | Expr::BStr(..)
         | Expr::Char(..)
         | Expr::Bool(..)
-        | Expr::Unit(..)
-        | Expr::FStr(_) => {}
+        | Expr::Unit(..) => {}
+        Expr::FStr(f) => {
+            if let Ok(desugared) = crate::sema::fstring::desugar_fstring(f) {
+                collect_names_in_expr(&desugared, out);
+            }
+        }
         Expr::Field(base, _, _) => collect_names_in_expr(base, out),
         Expr::Index(base, _, args) => {
             collect_names_in_expr(base, out);

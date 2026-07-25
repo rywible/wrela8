@@ -1,0 +1,23 @@
+Module path=examples.check_fstring_bounds
+  Const X: u32
+  Const Y: bool
+  Fn dig21(s: read String[..21]) -> u64
+  Const MIXED: u64
+  Fn dig9(s: read String[..9]) -> u64
+  Const BRACES: u64
+  Fn label(n: read u32) -> String[..13]
+  Fn dig13(s: read String[..13]) -> u64
+  Const LABEL: u64
+  Fn bound_of(s: read String[..21]) -> u64
+  Const BOUND: u64
+  Fn t_mixed() -> unit
+  Fn t_braces() -> unit
+  Fn t_label() -> unit
+  Fn t_bound() -> unit
+  Struct Store resource
+    field mixed: u64
+    field braces: u64
+    field label: u64
+    field bound: u64
+    init(mut self, mixed: read u64, braces: read u64, label: read u64, bound: read u64) -> unit
+  Fn build() -> Image

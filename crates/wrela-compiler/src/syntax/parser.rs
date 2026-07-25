@@ -108,6 +108,25 @@ pub fn parse_any(tokens: Vec<Token>) -> Result<Parsed, ParseError> {
     }
 }
 
+/// Parses a single expression from a token stream that ends at `Eof`
+/// (plans/M9.md item D: f-string interpolation interiors). Trailing
+/// NEWLINE tokens the lexer inserts at EOF are skipped; anything else
+/// after the expression is a parse error.
+pub fn parse_expr(tokens: Vec<Token>) -> Result<Expr, ParseError> {
+    let mut p = Parser::new(tokens);
+    let expr = p.parse_or()?;
+    while p.at_kind(TokenKind::Newline) {
+        p.bump();
+    }
+    if !p.at_kind(TokenKind::Eof) {
+        return Err(p.error_here(format!(
+            "unexpected token after f-string interpolation expression: `{}`",
+            p.peek_display()
+        )));
+    }
+    Ok(expr)
+}
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,

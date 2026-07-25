@@ -1,0 +1,5 @@
+test t_mixed: ok
+test t_braces: ok
+test t_label: ok
+test t_bound: ok
+4 passed, 0 failed

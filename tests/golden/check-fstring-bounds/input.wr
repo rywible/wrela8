@@ -1,0 +1,72 @@
+module examples.check_fstring_bounds
+
+# plans/M9.md item D. f-strings sum Format bounds into String[..N]
+# (02 §1.1 / 05 §6). Value pins (bytes + length), not mere compilation.
+# Guest tier: `label` lowers to FormatScalar + StringConcat (mwir).
+
+const X: u32 = 42
+const Y: bool = false
+
+# f"n={X} ok={Y}" bound = 2+10+4+5 = 21; value "n=42 ok=false" (13 bytes).
+fn dig21(s: String[..21]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+const MIXED: u64 = dig21(f"n={X} ok={Y}")
+
+# f"{{literal}}" → "{literal}" bound 9.
+fn dig9(s: String[..9]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+const BRACES: u64 = dig9(f"{{literal}}")
+
+# Guest-reachable f-string: lowered fn body (not comptime-only).
+fn label(n: u32) -> String[..13]:
+    return f"id={n}"
+
+fn dig13(s: String[..13]) -> u64:
+    return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
+
+const LABEL: u64 = dig13(label(7))
+
+fn bound_of(s: String[..21]) -> u64:
+    return 21
+
+const BOUND: u64 = bound_of(f"n={X} ok={Y}")
+
+@test
+pub fn t_mixed():
+    assert MIXED == 13110061, "n=42 ok=false"
+
+@test
+pub fn t_braces():
+    assert BRACES == 9123108, "{literal}"
+
+@test
+pub fn t_label():
+    assert LABEL == 4105100, "id=7"
+
+@test
+pub fn t_bound():
+    assert BOUND == 21, "summed Format bounds"
+
+@actor
+pub struct Store:
+    mixed: u64
+    braces: u64
+    label: u64
+    bound: u64
+
+    init(mut self, mixed: u64, braces: u64, label: u64, bound: u64):
+        self.mixed = mixed
+        self.braces = braces
+        self.label = label
+        self.bound = bound
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-fstring-bounds", target=Target.wrela_machine_v1)
+    storage = img.actor(Store, mixed=MIXED, braces=BRACES, label=LABEL,
+                        bound=BOUND, mailbox=4)
+    img.supervise(children=[storage], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

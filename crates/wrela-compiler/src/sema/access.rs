@@ -470,10 +470,14 @@ fn scan_expr_self(
         | Expr::Str(..)
         | Expr::BStr(..)
         | Expr::Char(..)
-        | Expr::FStr(_)
         | Expr::Bool(..)
         | Expr::Unit(_)
         | Expr::Name(..) => {}
+        Expr::FStr(f) => {
+            if let Ok(desugared) = crate::sema::fstring::desugar_fstring(f) {
+                scan_expr_self(&desugared, sname, mctx, effects, acc);
+            }
+        }
     }
 }
 
@@ -1089,9 +1093,13 @@ fn check_expr(expr: &Expr, actx: &mut ACtx) -> Result<Option<Type>, SemaError> {
         | Expr::Str(..)
         | Expr::BStr(..)
         | Expr::Char(..)
-        | Expr::FStr(_)
         | Expr::Bool(..)
         | Expr::Unit(_) => Ok(None),
+        Expr::FStr(f) => {
+            let desugared = crate::sema::fstring::desugar_fstring(f)?;
+            check_expr(&desugared, actx)?;
+            Ok(None)
+        }
         Expr::Name(_, name) => Ok(name_ty(name, actx)),
         Expr::Field(base, _span, name) => check_field(base, name, actx),
         Expr::Index(base, _span, args) => {
