@@ -197,6 +197,65 @@ pub fn enc_ldrh_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b01, 0b01, scaled_offset(byte_offset, 2), rn, rt)
 }
 
+// --- plans/M7.md item G: load-acquire / store-release / exclusive RMW -----
+//
+// ARM ARM "Load-Acquire/Store-Release" and "Load-Acquire Exclusive /
+// Store-Release Exclusive" (no offset — the address is `[Xn]` only).
+// Ground truth is `as -arch arm64` on macOS (same method the module doc
+// names for every other encoder): every constant below is the assembled
+// word, not re-derived by hand a second time.
+//
+// `InterruptCell[T]` (03-hardware.md §6) emits these for the ISR/ordinary
+// channel. Single-word load/store use LDAR/STLR; RMW (`swap_acquire`,
+// `fetch_or_release`) uses LDAXR/STLXR with a retry loop — see the
+// ledger note on `hardware.interrupt-cell` for why exclusives are needed
+// under checkpoint-only delivery and why the retry terminates.
+
+/// `LDAR Wt, [Xn]` — 32-bit load-acquire. `as`: `ldar w0, [x1]` = `0x88dffc20`.
+pub fn enc_ldar_w(rt: u8, rn: u8) -> u32 {
+    0x88dffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLR Wt, [Xn]` — 32-bit store-release. `as`: `stlr w0, [x1]` = `0x889ffc20`.
+pub fn enc_stlr_w(rt: u8, rn: u8) -> u32 {
+    0x889ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `LDAXR Wt, [Xn]` — 32-bit load-acquire exclusive.
+/// `as`: `ldaxr w0, [x1]` = `0x885ffc20`.
+pub fn enc_ldaxr_w(rt: u8, rn: u8) -> u32 {
+    0x885ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLXR Ws, Wt, [Xn]` — 32-bit store-release exclusive; `rs` receives 0
+/// on success and 1 on failure (ARM ARM). `as`: `stlxr w2, w0, [x1]` =
+/// `0x8802fc20`.
+pub fn enc_stlxr_w(rs: u8, rt: u8, rn: u8) -> u32 {
+    0x8800fc00 | (reg(rs) << 16) | (reg(rn) << 5) | reg(rt)
+}
+
+/// `LDAR Xt, [Xn]` — 64-bit load-acquire. `as`: `ldar x0, [x1]` = `0xc8dffc20`.
+pub fn enc_ldar_x(rt: u8, rn: u8) -> u32 {
+    0xc8dffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLR Xt, [Xn]` — 64-bit store-release. `as`: `stlr x0, [x1]` = `0xc89ffc20`.
+pub fn enc_stlr_x(rt: u8, rn: u8) -> u32 {
+    0xc89ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `LDAXR Xt, [Xn]` — 64-bit load-acquire exclusive.
+/// `as`: `ldaxr x0, [x1]` = `0xc85ffc20`.
+pub fn enc_ldaxr_x(rt: u8, rn: u8) -> u32 {
+    0xc85ffc00 | (reg(rn) << 5) | reg(rt)
+}
+
+/// `STLXR Ws, Xt, [Xn]` — 64-bit data, 32-bit status in `rs`.
+/// `as`: `stlxr w2, x0, [x1]` = `0xc802fc20`.
+pub fn enc_stlxr_x(rs: u8, rt: u8, rn: u8) -> u32 {
+    0xc800fc00 | (reg(rs) << 16) | (reg(rn) << 5) | reg(rt)
+}
+
 // --- Loads/stores: register pair, signed offset (LDP/STP) -----------------
 //
 // ARM ARM "LDP/STP (signed offset)": `opc[31:30] 101 0 010 L[22]
@@ -866,6 +925,27 @@ mod tests {
         assert_eq!(enc_ldr_w_imm(0, 1, 0), 0xb9400020);
         assert_eq!(enc_strb_imm(0, 1, 0), 0x39000020);
         assert_eq!(enc_ldrb_imm(0, 1, 0), 0x39400020);
+    }
+
+    /// plans/M7.md item G: every InterruptCell encoder word, pinned against
+    /// `as -arch arm64` on macOS (see the module-level block above the
+    /// encoders). A second register triple confirms the Rn/Rt/Rs fields.
+    #[test]
+    fn interrupt_cell_acquire_release_and_exclusive_forms() {
+        // W forms — `InterruptCell[u32]`'s path.
+        assert_eq!(enc_ldar_w(0, 1), 0x88dffc20);
+        assert_eq!(enc_stlr_w(0, 1), 0x889ffc20);
+        assert_eq!(enc_ldaxr_w(0, 1), 0x885ffc20);
+        assert_eq!(enc_stlxr_w(2, 0, 1), 0x8802fc20);
+        assert_eq!(enc_ldar_w(3, 4), 0x88dffc83);
+        assert_eq!(enc_stlr_w(3, 4), 0x889ffc83);
+        assert_eq!(enc_ldaxr_w(3, 4), 0x885ffc83);
+        assert_eq!(enc_stlxr_w(5, 3, 4), 0x8805fc83);
+        // X forms — kept for the 64-bit cell path; same assembler oracle.
+        assert_eq!(enc_ldar_x(0, 1), 0xc8dffc20);
+        assert_eq!(enc_stlr_x(0, 1), 0xc89ffc20);
+        assert_eq!(enc_ldaxr_x(0, 1), 0xc85ffc20);
+        assert_eq!(enc_stlxr_x(2, 0, 1), 0xc802fc20);
     }
 
     /// plans/M7.md item H1: the halfword forms a `ReadOnly[u16]`/

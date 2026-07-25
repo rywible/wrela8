@@ -547,6 +547,41 @@ pub enum Inst {
         dst: Temp,
         driver: String,
     },
+    // --- plans/M7.md item G, decision 13: InterruptCell[T] (03 §6) --------
+    //
+    // Every op addresses the **live** driver-state word at
+    // `self_ptr + field_off` (prologue's saved receiver pointer), never
+    // the frame copy of `self`. A checkpoint can fire mid-turn; an ISR
+    // that RMW'd only the frame would be stomped by a `mut self`
+    // epilogue write-back. `field_off` is the byte offset of the cell
+    // field inside the receiver aggregate (same layout `field_offset_size`
+    // uses). `width` is 4 for `InterruptCell[u32]` (W forms).
+    /// `load_acquire()` — LDAR from the live cell.
+    InterruptCellLoadAcquire {
+        dst: Temp,
+        field_off: usize,
+        width: u8,
+    },
+    /// `store_release(v)` / construction assign — STLR to the live cell.
+    InterruptCellStoreRelease {
+        field_off: usize,
+        width: u8,
+        value: Temp,
+    },
+    /// `swap_acquire(v)` — LDAXR/STLXR retry; returns the previous value.
+    InterruptCellSwapAcquire {
+        dst: Temp,
+        field_off: usize,
+        width: u8,
+        value: Temp,
+    },
+    /// `fetch_or_release(v)` — LDAXR/ORR/STLXR retry; returns the previous value.
+    InterruptCellFetchOrRelease {
+        dst: Temp,
+        field_off: usize,
+        width: u8,
+        value: Temp,
+    },
 
     /// Unconditional abandonment: `assert`'s own failure path, an
     /// explicit `panic(msg)`, and match's own defensive "no arm matched"
@@ -841,7 +876,17 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         Type::Named(name, _targs)
             if matches!(
                 name.as_str(),
-                "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
+                "Actor"
+                    | "Group"
+                    | "Instant"
+                    | "Duration"
+                    | "Admission"
+                    | "Peer"
+                    | "Rejected"
+                    // plans/M7.md item G, decision 13: one 64-bit word in
+                    // driver state (the cell's value; ops address the live
+                    // word at `self_ptr + field_off`, never a side table).
+                    | "InterruptCell"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             // `Actor[T]`/`Rejected[T]` (if ever instantiated) carry their
@@ -1081,6 +1126,32 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         Inst::LoadIrqVector { dst, driver } => {
             format!("LoadIrqVector dst={dst} driver={driver}")
         }
+        Inst::InterruptCellLoadAcquire {
+            dst,
+            field_off,
+            width,
+        } => format!("InterruptCellLoadAcquire dst={dst} field_off={field_off} width={width}"),
+        Inst::InterruptCellStoreRelease {
+            field_off,
+            width,
+            value,
+        } => format!("InterruptCellStoreRelease field_off={field_off} width={width} value={value}"),
+        Inst::InterruptCellSwapAcquire {
+            dst,
+            field_off,
+            width,
+            value,
+        } => format!(
+            "InterruptCellSwapAcquire dst={dst} field_off={field_off} width={width} value={value}"
+        ),
+        Inst::InterruptCellFetchOrRelease {
+            dst,
+            field_off,
+            width,
+            value,
+        } => format!(
+            "InterruptCellFetchOrRelease dst={dst} field_off={field_off} width={width} value={value}"
+        ),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
         }

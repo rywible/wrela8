@@ -3361,6 +3361,18 @@ fn resolve_named(
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named(n.name.clone(), vec![TypeArg::Type(inner)]));
         }
+        // plans/M7.md item G, decision 13: `InterruptCell[T]` — 03 §6's
+        // sole ISR/ordinary-code channel. `T` is structurally resolved
+        // here; which `T` is legal (`u32` today) is asked at the
+        // constructor / method site in `bodies`, not here.
+        "InterruptCell" => {
+            let args = expect_type_args(n, 1)?;
+            let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named(
+                "InterruptCell".to_string(),
+                vec![TypeArg::Type(inner)],
+            ));
+        }
         _ => {}
     }
     // 03-hardware.md §1's four capability types (plans/M7.md item A):

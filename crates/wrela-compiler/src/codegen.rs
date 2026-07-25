@@ -576,7 +576,16 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         Type::Named(name, _)
             if matches!(
                 name.as_str(),
-                "Actor" | "Group" | "Instant" | "Duration" | "Admission" | "Peer" | "Rejected"
+                "Actor"
+                    | "Group"
+                    | "Instant"
+                    | "Duration"
+                    | "Admission"
+                    | "Peer"
+                    | "Rejected"
+                    // plans/M7.md item G, decision 13: one word, passed by
+                    // value like every other builtin pseudo-type.
+                    | "InterruptCell"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             false
@@ -1715,6 +1724,89 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             });
             ctx.store_slot(X_A, ctx.frame.off(*dst));
         }
+        // plans/M7.md item G, decision 13: live-cell ops through self_ptr.
+        Inst::InterruptCellLoadAcquire {
+            dst,
+            field_off,
+            width,
+        } => {
+            emit_interrupt_cell_addr(ctx, *field_off)?;
+            match *width {
+                4 => {
+                    ctx.push(
+                        encode::enc_ldar_w(X_B, X_A),
+                        format!("ldar w{}, [{}]", X_B, reg_name(X_A)),
+                    );
+                }
+                8 => {
+                    ctx.push(
+                        encode::enc_ldar_x(X_B, X_A),
+                        format!("ldar {}, [{}]", reg_name(X_B), reg_name(X_A)),
+                    );
+                }
+                w => {
+                    return Err(CodegenError::internal(format!(
+                        "InterruptCellLoadAcquire width {w}"
+                    )));
+                }
+            }
+            ctx.store_slot(X_B, ctx.frame.off(*dst));
+        }
+        Inst::InterruptCellStoreRelease {
+            field_off,
+            width,
+            value,
+        } => {
+            emit_interrupt_cell_addr(ctx, *field_off)?;
+            ctx.load_slot(X_B, ctx.frame.off(*value));
+            match *width {
+                4 => {
+                    ctx.push(
+                        encode::enc_stlr_w(X_B, X_A),
+                        format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
+                    );
+                }
+                8 => {
+                    ctx.push(
+                        encode::enc_stlr_x(X_B, X_A),
+                        format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
+                    );
+                }
+                w => {
+                    return Err(CodegenError::internal(format!(
+                        "InterruptCellStoreRelease width {w}"
+                    )));
+                }
+            }
+        }
+        Inst::InterruptCellSwapAcquire {
+            dst,
+            field_off,
+            width,
+            value,
+        } => {
+            let value_off = ctx.frame.off(*value);
+            let dst_off = ctx.frame.off(*dst);
+            emit_interrupt_cell_rmw(ctx, *field_off, *width, value_off, InterruptCellRmw::Swap)?;
+            ctx.store_slot(X_C, dst_off); // old value left in X_C
+        }
+        Inst::InterruptCellFetchOrRelease {
+            dst,
+            field_off,
+            width,
+            value,
+        } => {
+            let value_off = ctx.frame.off(*value);
+            let dst_off = ctx.frame.off(*dst);
+            emit_interrupt_cell_rmw(
+                ctx,
+                *field_off,
+                *width,
+                value_off,
+                InterruptCellRmw::FetchOr,
+            )?;
+            ctx.store_slot(X_C, dst_off);
+        }
         Inst::MmioWrite {
             base,
             offset,
@@ -2293,18 +2385,7 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
 fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
-            let self_ptr_off = frame
-                .self_ptr_off
-                .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
-            ctx.load_slot(X_A, self_ptr_off);
-            let size = frame.size_of_temp(self_temp);
-            let src_off = frame.off(self_temp);
-            let mut w = 0;
-            while w < size {
-                ctx.load_slot(X_B, src_off + w);
-                ctx.store_ptr(X_B, X_A, w);
-                w += 8;
-            }
+            write_back_self_skipping_interrupt_cells(f, frame, self_temp, ctx)?;
         }
     }
     ctx.load_slot(X_LR, frame.lr_off);
@@ -2313,6 +2394,181 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
         format!("add sp, sp, #{}", frame.size),
     );
     ctx.push(encode::enc_ret(X_LR), "ret".to_string());
+    Ok(())
+}
+
+// --- plans/M7.md item G, decision 13: InterruptCell live-cell addressing ---
+
+enum InterruptCellRmw {
+    Swap,
+    FetchOr,
+}
+
+/// `X_A = self_ptr + field_off`. Requires a receiver (self_ptr_save).
+fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), CodegenError> {
+    let self_ptr_off = ctx.frame.self_ptr_off.ok_or_else(|| {
+        CodegenError::internal("InterruptCell op needs a receiver (self_ptr slot)")
+    })?;
+    ctx.load_slot(X_A, self_ptr_off);
+    if field_off != 0 {
+        if field_off > 4095 {
+            return Err(CodegenError::unimplemented(
+                "InterruptCell field_off above add-immediate range",
+            ));
+        }
+        ctx.push(
+            encode::enc_add_imm(X_A, X_A, field_off as u16, true),
+            format!("add {}, {}, #{field_off}", reg_name(X_A), reg_name(X_A)),
+        );
+    }
+    Ok(())
+}
+
+/// Exclusive RMW loop. Leaves the previous cell value in `X_C`.
+///
+/// **No checkpoint inside the loop** — a compiler-emitted checkpoint
+/// between LDAXR and STLXR would be the only same-core observer that
+/// could clear the exclusive monitor under 06 §4's delivery rule, and
+/// would also let an ISR mutate the cell mid-RMW. Termination: STLXR
+/// fails only when the monitor was cleared; with single-core, no nesting
+/// (03 §6 rev 0.1), and no checkpoint in this sequence, no conflicting
+/// observer exists, so a failed STLXR is at most a spurious local clear
+/// and the next iteration succeeds. See ledger `hardware.interrupt-cell`.
+fn emit_interrupt_cell_rmw(
+    ctx: &mut FnCtx,
+    field_off: usize,
+    width: u8,
+    value_off: usize,
+    kind: InterruptCellRmw,
+) -> Result<(), CodegenError> {
+    emit_interrupt_cell_addr(ctx, field_off)?;
+    ctx.load_slot(X_B, value_off);
+    let loop_word = ctx.words.len();
+    match width {
+        4 => {
+            ctx.push(
+                encode::enc_ldaxr_w(X_C, X_A),
+                format!("ldaxr w{}, [{}]", X_C, reg_name(X_A)),
+            );
+            match kind {
+                InterruptCellRmw::Swap => {
+                    ctx.push(
+                        encode::enc_stlxr_w(X_E, X_B, X_A),
+                        format!("stlxr w{}, w{}, [{}]", X_E, X_B, reg_name(X_A)),
+                    );
+                }
+                InterruptCellRmw::FetchOr => {
+                    ctx.push(
+                        encode::enc_orr_reg(X_D, X_C, X_B, false),
+                        format!("orr w{}, w{}, w{}", X_D, X_C, X_B),
+                    );
+                    ctx.push(
+                        encode::enc_stlxr_w(X_E, X_D, X_A),
+                        format!("stlxr w{}, w{}, [{}]", X_E, X_D, reg_name(X_A)),
+                    );
+                }
+            }
+        }
+        8 => {
+            ctx.push(
+                encode::enc_ldaxr_x(X_C, X_A),
+                format!("ldaxr {}, [{}]", reg_name(X_C), reg_name(X_A)),
+            );
+            match kind {
+                InterruptCellRmw::Swap => {
+                    ctx.push(
+                        encode::enc_stlxr_x(X_E, X_B, X_A),
+                        format!("stlxr w{}, {}, [{}]", X_E, reg_name(X_B), reg_name(X_A)),
+                    );
+                }
+                InterruptCellRmw::FetchOr => {
+                    ctx.push(
+                        encode::enc_orr_reg(X_D, X_C, X_B, true),
+                        format!(
+                            "orr {}, {}, {}",
+                            reg_name(X_D),
+                            reg_name(X_C),
+                            reg_name(X_B)
+                        ),
+                    );
+                    ctx.push(
+                        encode::enc_stlxr_x(X_E, X_D, X_A),
+                        format!("stlxr w{}, {}, [{}]", X_E, reg_name(X_D), reg_name(X_A)),
+                    );
+                }
+            }
+        }
+        w => {
+            return Err(CodegenError::internal(format!(
+                "InterruptCell RMW width {w}"
+            )));
+        }
+    }
+    // cbnz status, loop — status is W in X_E; use 32-bit form.
+    let here = ctx.words.len();
+    let byte_off = (loop_word as i32 - here as i32) * 4;
+    ctx.push(
+        encode::enc_cbnz(X_E, byte_off, false),
+        format!("cbnz w{}, #{byte_off}", X_E),
+    );
+    Ok(())
+}
+
+/// `mut self` write-back that leaves `InterruptCell` fields alone — the
+/// live word is authoritative (ISR/ordinary ops already STLR'd it).
+/// Writing the frame copy back would stomp an ISR update that landed at a
+/// checkpoint during this turn.
+fn write_back_self_skipping_interrupt_cells(
+    f: &MwirFn,
+    frame: &Frame,
+    self_temp: Temp,
+    ctx: &mut FnCtx,
+) -> Result<(), CodegenError> {
+    let self_ptr_off = frame
+        .self_ptr_off
+        .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
+    ctx.load_slot(X_A, self_ptr_off);
+    let self_ty = &f.temp_types[self_temp.0];
+    let Type::Named(name, targs) = strip_wrappers(self_ty) else {
+        // Non-named receiver: fall back to whole-aggregate write-back.
+        let size = frame.size_of_temp(self_temp);
+        let src_off = frame.off(self_temp);
+        let mut w = 0;
+        while w < size {
+            ctx.load_slot(X_B, src_off + w);
+            ctx.store_ptr(X_B, X_A, w);
+            w += 8;
+        }
+        return Ok(());
+    };
+    if !targs.is_empty() {
+        return Err(CodegenError::unimplemented(
+            "mut-self write-back for an instantiated generic receiver",
+        ));
+    }
+    let fields = ctx
+        .layout
+        .structs
+        .get(name)
+        .ok_or_else(|| CodegenError::internal(format!("unknown struct `{name}`")))?;
+    let src_base = frame.off(self_temp);
+    let mut off = 0usize;
+    for field_ty in fields {
+        let sz =
+            mwir::size_of(field_ty, ctx.layout).map_err(|e| CodegenError::unimplemented(&e))?;
+        if !matches!(
+            strip_wrappers(field_ty),
+            Type::Named(n, _) if n == "InterruptCell"
+        ) {
+            let mut w = 0;
+            while w < sz {
+                ctx.load_slot(X_B, src_base + off + w);
+                ctx.store_ptr(X_B, X_A, off + w);
+                w += 8;
+            }
+        }
+        off += sz;
+    }
     Ok(())
 }
 
@@ -3134,19 +3390,9 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     }
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
-            let self_ptr_off = ctx
-                .frame
-                .self_ptr_off
-                .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
-            ctx.load_slot(X_A, self_ptr_off);
-            let size = ctx.frame.size_of_temp(self_temp);
-            let src_off = ctx.frame.off(self_temp);
-            let mut w = 0;
-            while w < size {
-                ctx.load_slot(X_B, src_off + w);
-                ctx.store_ptr(X_B, X_A, w);
-                w += 8;
-            }
+            // plans/M7.md item G, decision 13: same InterruptCell skip as
+            // the sync epilogue — live cells are not frame-owned.
+            write_back_self_skipping_interrupt_cells(f, ctx.frame, self_temp, ctx)?;
         }
     }
     ctx.load_imm(0, TURN_STATUS_COMPLETED as i64);

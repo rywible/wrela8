@@ -1,0 +1,40 @@
+module examples.err_isr_plain_field
+
+# plans/M7.md item G, decision 13: 03-hardware.md §6 — "A plain field is
+# not a communication channel." An ISR that assigns `self.flag` must be
+# refused; the channel is `InterruptCell[T]`.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+    flag: u32
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        self.flag = 0
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+
+    fn on_queue_irq(self):
+        self.flag = 1
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-isr-plain-field", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

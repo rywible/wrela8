@@ -1864,6 +1864,21 @@ fn check_call_by_field(
             }
             return Ok(Some(Type::Unit));
         }
+        // plans/M7.md item G, decision 13: `InterruptCell[T]` methods —
+        // load/swap/fetch_or return `T`; store_release returns unit.
+        if n == "InterruptCell" {
+            for a in args {
+                check_arg(a, actx)?;
+            }
+            let elem = match targs.first() {
+                Some(types::TypeArg::Type(inner)) => inner.clone(),
+                _ => Type::U32,
+            };
+            return Ok(Some(match name {
+                "store_release" => Type::Unit,
+                _ => elem,
+            }));
+        }
     }
     let Type::Named(sname, _targs) = &base_ty else {
         return Err(unimplemented_at(

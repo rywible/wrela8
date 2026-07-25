@@ -3841,6 +3841,11 @@ fn check_call_by_name(
                 },
             })
         }
+        // plans/M7.md item G, decision 13: `InterruptCell(0)` — the one
+        // source-visible constructor 03 §6's worked example spells
+        // (`self.pending = InterruptCell(0)`). Not a capability: the
+        // forgery arm below must not catch it.
+        "InterruptCell" => check_interrupt_cell_new(args, expected, call_span, fctx, mctx),
         _ => {
             // 03-hardware.md §1 (plans/M7.md item A): a bare
             // `DeviceCap(...)` reaches here (the name resolves — it is a
@@ -4047,6 +4052,13 @@ fn check_call_by_field(
     if let Type::Named(cap, _) = &base_ty {
         if cap == "IrqCap" {
             return check_irq_cap_call(base_t, name, args, fspan, call_span, fctx, mctx);
+        }
+    }
+    // plans/M7.md item G, decision 13: `InterruptCell[T]`'s acquire/release
+    // ops (03-hardware.md §6).
+    if let Type::Named(cell, _) = &base_ty {
+        if cell == "InterruptCell" {
+            return check_interrupt_cell_call(base_t, name, args, fspan, call_span, fctx, mctx);
         }
     }
     // Plans/M6.md item A (02-language.md §9.4/§9.5): a bare (non-`await`/
@@ -4872,6 +4884,23 @@ pub fn is_irq_cap_intrinsic(key: &str) -> bool {
     matches!(key, "IrqCap.bind" | "IrqCap.unmask")
 }
 
+/// plans/M7.md item G, decision 13: `InterruptCell[T]` ops + constructor.
+pub fn is_interrupt_cell_intrinsic(key: &str) -> bool {
+    matches!(
+        key,
+        "InterruptCell.new"
+            | "InterruptCell.load_acquire"
+            | "InterruptCell.store_release"
+            | "InterruptCell.swap_acquire"
+            | "InterruptCell.fetch_or_release"
+    )
+}
+
+/// Is `ty` an `InterruptCell[_]`?
+pub fn is_interrupt_cell_type(ty: &Type) -> bool {
+    matches!(unwrap_own(ty.clone()), Type::Named(n, _) if n == "InterruptCell")
+}
+
 // --- plans/M7.md item G: IrqCap.bind / IrqCap.unmask (03-hardware.md §6) ---
 //
 // "An interrupt handler is a plain `fn` bound to a vector at image/driver
@@ -5107,6 +5136,190 @@ fn irq_handler_fnref(
             method.to_string(),
         )),
     })
+}
+
+// --- plans/M7.md item G, decision 13: InterruptCell[T] (03-hardware.md §6) ---
+//
+// Sole ISR/ordinary-code channel. Constructor `InterruptCell(v)`; methods
+// `load_acquire` / `store_release` / `swap_acquire` / `fetch_or_release`.
+// Revision 0.1 admits only `T = u32` (the worked example's cell); every
+// other `T` fails closed by name rather than inventing a width.
+
+fn interrupt_cell_elem_ty(cell_ty: &Type, span: Span) -> Result<&Type, SemaError> {
+    match cell_ty {
+        Type::Named(n, targs) if n == "InterruptCell" => match targs.first() {
+            Some(types::TypeArg::Type(inner)) => Ok(inner),
+            _ => Err(type_error(
+                "`InterruptCell` is missing its element type".to_string(),
+                span,
+            )),
+        },
+        _ => Err(type_error(
+            format!(
+                "expected an `InterruptCell[T]`, found `{}`",
+                types::render_type(cell_ty)
+            ),
+            span,
+        )),
+    }
+}
+
+fn require_interrupt_cell_u32(elem: &Type, span: Span) -> Result<(), SemaError> {
+    if matches!(elem, Type::U32) {
+        return Ok(());
+    }
+    Err(type_error(
+        format!(
+            "`InterruptCell[{}]` is not supported yet — revision 0.1 admits only \
+             `InterruptCell[u32]` (03-hardware.md §6's worked example; plans/M7.md item G)",
+            types::render_type(elem)
+        ),
+        span,
+    ))
+}
+
+fn check_interrupt_cell_new(
+    args: &[Arg],
+    expected: Option<&Type>,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let [arg] = args else {
+        return Err(type_error(
+            format!(
+                "`InterruptCell(value)` takes exactly one argument; found {}",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    if let Some(label) = &arg.label {
+        return Err(type_error(
+            format!(
+                "`InterruptCell(value)`'s argument is positional; `{label}=` names no parameter"
+            ),
+            arg.span,
+        ));
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(type_error(
+            format!(
+                "`InterruptCell(value)` takes a plain value; drop the `{}`",
+                arg.mode.as_str()
+            ),
+            arg.span,
+        ));
+    }
+    let elem_expected = match expected {
+        Some(Type::Named(n, targs)) if n == "InterruptCell" => match targs.first() {
+            Some(types::TypeArg::Type(inner)) => Some(inner.clone()),
+            _ => None,
+        },
+        _ => Some(Type::U32),
+    };
+    let value = check_expr(&arg.value, elem_expected.as_ref(), fctx, mctx)?;
+    require_interrupt_cell_u32(&value.ty, arg.span)?;
+    let ty = Type::Named(
+        "InterruptCell".to_string(),
+        vec![types::TypeArg::Type(value.ty.clone())],
+    );
+    Ok(TypedExpr {
+        ty,
+        kind: TypedExprKind::Intrinsic {
+            key: "InterruptCell.new".to_string(),
+            receiver: None,
+            type_arg: None,
+            args: vec![("value".to_string(), value)],
+        },
+    })
+}
+
+fn check_interrupt_cell_call(
+    cell: TypedExpr,
+    method: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let rendered = types::render_type(&cell.ty);
+    let elem = interrupt_cell_elem_ty(&cell.ty, fspan)?;
+    require_interrupt_cell_u32(elem, fspan)?;
+    let elem_ty = elem.clone();
+    match method {
+        "load_acquire" => {
+            if !args.is_empty() {
+                return Err(type_error(
+                    format!(
+                        "`{rendered}.load_acquire()` takes no arguments; found {}",
+                        args.len()
+                    ),
+                    call_span,
+                ));
+            }
+            Ok(TypedExpr {
+                ty: elem_ty,
+                kind: TypedExprKind::Intrinsic {
+                    key: "InterruptCell.load_acquire".to_string(),
+                    receiver: Some(Box::new(cell)),
+                    type_arg: None,
+                    args: Vec::new(),
+                },
+            })
+        }
+        "store_release" | "swap_acquire" | "fetch_or_release" => {
+            let [arg] = args else {
+                return Err(type_error(
+                    format!(
+                        "`{rendered}.{method}(value)` takes exactly one argument; found {}",
+                        args.len()
+                    ),
+                    call_span,
+                ));
+            };
+            if let Some(label) = &arg.label {
+                return Err(type_error(
+                    format!(
+                        "`{method}(value)`'s argument is positional; `{label}=` names no parameter"
+                    ),
+                    arg.span,
+                ));
+            }
+            if arg.mode != AccessMode::Read {
+                return Err(type_error(
+                    format!(
+                        "`{method}(value)` takes a plain value; drop the `{}`",
+                        arg.mode.as_str()
+                    ),
+                    arg.span,
+                ));
+            }
+            let value = check_expr(&arg.value, Some(&elem_ty), fctx, mctx)?;
+            let ret_ty = if method == "store_release" {
+                Type::Unit
+            } else {
+                elem_ty
+            };
+            Ok(TypedExpr {
+                ty: ret_ty,
+                kind: TypedExprKind::Intrinsic {
+                    key: format!("InterruptCell.{method}"),
+                    receiver: Some(Box::new(cell)),
+                    type_arg: None,
+                    args: vec![("value".to_string(), value)],
+                },
+            })
+        }
+        other => Err(type_error(
+            format!(
+                "`{rendered}` has no method `{other}`; 03-hardware.md §6 gives an `InterruptCell` \
+                 `load_acquire()`, `store_release(v)`, `swap_acquire(v)`, and `fetch_or_release(v)`"
+            ),
+            fspan,
+        )),
+    }
 }
 
 // --- plans/M6.md item A: the actor/async surface --------------------------

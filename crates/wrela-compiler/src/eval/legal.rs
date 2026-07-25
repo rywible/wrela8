@@ -1856,8 +1856,17 @@ fn stmt_isr_forbidden_reason(kind: &TypedStmtKind) -> Option<&'static str> {
         }
         TypedStmtKind::WithGroup { .. } => Some("a `with group` (call another actor / block)"),
         TypedStmtKind::BareSend { .. } => Some("a bare `send` (call another actor)"),
+        // plans/M7.md item G, decision 13: 03 §6 — "A plain field is not a
+        // communication channel." Assigning `self.<non-cell>` from an ISR
+        // is exactly that misuse; `InterruptCell` assign is the channel.
+        TypedStmtKind::Assign { target, .. } => {
+            if is_plain_self_field_channel(target) {
+                Some("a plain field as an ISR channel (03-hardware.md §6: use `InterruptCell[T]`)")
+            } else {
+                None
+            }
+        }
         TypedStmtKind::Let { .. }
-        | TypedStmtKind::Assign { .. }
         | TypedStmtKind::Return(_)
         | TypedStmtKind::Break
         | TypedStmtKind::Continue
@@ -1869,6 +1878,20 @@ fn stmt_isr_forbidden_reason(kind: &TypedStmtKind) -> Option<&'static str> {
         | TypedStmtKind::Defer(_)
         | TypedStmtKind::ExprStmt(_) => None,
     }
+}
+
+/// `self.<field> = ...` where the field is not an `InterruptCell[T]`.
+fn is_plain_self_field_channel(target: &TypedExpr) -> bool {
+    let TypedExprKind::Field(base, _) = &target.kind else {
+        return false;
+    };
+    let TypedExprKind::Local(name) = &base.kind else {
+        return false;
+    };
+    if name != "self" {
+        return false;
+    }
+    !crate::sema::bodies::is_interrupt_cell_type(&target.ty)
 }
 
 fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
@@ -1894,6 +1917,9 @@ fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
         TypedExprKind::Send(_) => Some("a `send` (call another actor)"),
         TypedExprKind::Intrinsic { key, .. } => {
             if crate::sema::bodies::is_mmio_access_intrinsic(key) {
+                None
+            } else if crate::sema::bodies::is_interrupt_cell_intrinsic(key) {
+                // plans/M7.md item G, decision 13: on the allowed list.
                 None
             } else if crate::sema::bodies::is_device_transport_intrinsic(key) {
                 Some("a device bring-up transition (not in the ISR effect set)")

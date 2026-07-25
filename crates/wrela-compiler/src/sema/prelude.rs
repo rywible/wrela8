@@ -63,6 +63,13 @@ const ACTOR_SURFACE: &[&str] = &["Actor", "group", "now", "ms"];
 /// resolver's own arm for these).
 const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
 
+/// plans/M7.md item G: 03-hardware.md §6's ISR/ordinary channel. Prelude
+/// so an annotation resolves with no import (the worked example's
+/// `from runtime.interrupt import InterruptCell` is aspirational — this
+/// machine has no stdlib module for it yet, and the type is a builtin
+/// like `Actor[T]`, not a capability).
+const INTERRUPT_CELL: &[&str] = &["InterruptCell"];
+
 /// Is `name` one of the fixed prelude names above?
 ///
 /// The one entry with no array of its own here: 03-hardware.md §1's four
@@ -82,6 +89,7 @@ pub fn is_builtin(name: &str) -> bool {
         || IMAGE_BUILDER.contains(&name)
         || ACTOR_SURFACE.contains(&name)
         || MMIO_WRAPPERS.contains(&name)
+        || INTERRUPT_CELL.contains(&name)
         || crate::eval::image_checks::is_sealed_authority_type_name(name)
 }
 

@@ -1,0 +1,49 @@
+module examples.check_interrupt_cell
+
+# plans/M7.md item G, decision 13: `InterruptCell[u32]` as the ISR/ordinary
+# channel — construct, `fetch_or_release` in the ISR, `swap_acquire` in the
+# bottom half. Dump oracle for the surface; the HVF transcript that raises
+# a vector and observes the level signal is a later commit of this item.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+    irq: IrqCap[u32]
+    pending: InterruptCell[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        irq.unmask()
+        self.irq = take irq
+
+    fn on_queue_irq(self):
+        status = self.regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.regs.interrupt_ack.write(handled)
+
+    fn drain(mut self):
+        status = self.pending.swap_acquire(0)
+        assert status == 0, "empty"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-interrupt-cell", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000, vector=1)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
