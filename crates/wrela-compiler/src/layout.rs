@@ -242,9 +242,17 @@ pub struct BlkQueueReport {
 }
 
 /// The closed virtio-blk device configuration emitted into the report
-/// (`BlkDevice capacity_sectors= features=` / optional `vector=`).
+/// (`BlkDevice device= capacity_sectors= features=` / optional `vector=`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlkReport {
+    /// plans/M8.md item P: **which** declared device this configuration is
+    /// for — the device of the pool the single `VirtQueue.configure` site
+    /// consumes, which is 03-hardware.md §1's own "the device is named
+    /// once, at the image binding" read back out of the graph. Every
+    /// device-facing fact on this struct is read from *that* device's
+    /// arguments, never from "whichever device declared one first": with
+    /// two devices in an image those are different answers.
+    pub device: usize,
     pub capacity_sectors: u64,
     pub features: u64,
     /// Device-owned pending-word bit (`1..=63`). `None` is 03 §7's poll
@@ -1695,12 +1703,16 @@ pub fn derive_blk_report(
             "`VirtQueue.configure` consumes pool `{pool_name}`, which has no placed backing"
         )));
     };
-    if pool.backing.device.is_none() {
+    // plans/M8.md item P: the blk device *is* the device of the pool the
+    // ring lives in. Nothing else in the image names it, and every
+    // device-facing fact below is read from this index rather than from a
+    // scan over all devices — with two declared devices those differ.
+    let Some(blk_device) = pool.backing.device else {
         return Err(LayoutError::new(format!(
             "`VirtQueue.configure` consumes pool `{pool_name}`, which is not device-reachable \
              (`img.dma_pool(..., device=...)`); decision 5: only DMA pools are device-reachable"
         )));
-    }
+    };
     let Some(placed) = crate::virtqueue::place_ring(pool.base, depth) else {
         return Err(LayoutError::new(format!(
             "`VirtQueue.configure`'s depth={depth} is not a nonzero power of two"
@@ -1723,6 +1735,14 @@ pub fn derive_blk_report(
             pool_bytes = pool.backing.bytes,
         )));
     }
+    // plans/M8.md item P, decision 25: with two declared devices, "the
+    // device that declares `capacity_sectors=`" and "the device the ring
+    // lives in" stop being the same question. That they are still one
+    // question is enforced at declaration time —
+    // `image_checks::check_blk_config_names_the_blk_device` — which is why
+    // the two graph-wide scans below stay the single derivation of each
+    // fact rather than growing a device-scoped twin that could disagree
+    // with the lowerer's own reading.
     let capacity = crate::eval::image_checks::blk_capacity_sectors(graph).ok_or_else(|| {
         LayoutError::new(
             "this image configures a virtio-blk queue but declares no `capacity_sectors=` on \
@@ -1734,9 +1754,10 @@ pub fn derive_blk_report(
         .map_err(|e| LayoutError::new(e.message))?;
     let vector = graph
         .devices
-        .iter()
-        .find_map(|d| crate::eval::image_checks::device_vector(&d.args));
+        .get(blk_device)
+        .and_then(|d| crate::eval::image_checks::device_vector(&d.args));
     Ok(Some(BlkReport {
+        device: blk_device,
         capacity_sectors: capacity,
         features,
         vector,
@@ -1765,7 +1786,8 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
         return;
     };
     out.push_str(&format!(
-        "BlkDevice capacity_sectors={} features={:#x}{}\n",
+        "BlkDevice device=device#{} capacity_sectors={} features={:#x}{}\n",
+        blk.device,
         blk.capacity_sectors,
         blk.features,
         match blk.vector {
@@ -1782,12 +1804,17 @@ pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
     // full `--stage=report` `BlkPool` set (decision 5: the VMM maps exactly
     // these windows). Emitting only the queue's control pool left payload
     // DMA unmapped and failed the flagship write at the first descriptor.
+    //
+    // plans/M8.md item P: each line carries the device it is bound to, and
+    // the set is still *every* device-reachable pool, not just this
+    // device's — the VMM needs to know a window exists in order to refuse
+    // it to a device that does not own it.
     for p in &layout.pools {
-        if p.backing.device.is_none() {
+        let Some(dev) = p.backing.device else {
             continue;
-        }
+        };
         out.push_str(&format!(
-            "BlkPool name={} base={:#x} size={:#x}\n",
+            "BlkPool name={} device=device#{dev} base={:#x} size={:#x}\n",
             p.backing.name, p.base, p.backing.bytes
         ));
     }
@@ -4317,17 +4344,23 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
     //   declared facts about every bound pool, device-reachable or not
     //   (`PoolBacking`'s own doc comment derives each one). It is a
     //   report fact; nothing consumes it as configuration.
-    // - `BlkPool name= base= size=` is the *mapping* line, and it exists
-    //   for device-reachable pools only. It is the exact format
-    //   `wrela-vmm`'s own `parse_report` already reads (plans/M7.md item
-    //   F), and the list of them is the whole of what that VMM maps for
-    //   its device model — decision 5's security property, in the
-    //   artifact rather than in a comment: a pool with no `device=` never
-    //   produces one, so no device can reach it. The line still carries
-    //   no device field; `pool_backings` fails closed on two pool-bearing
-    //   devices and on a pool bound to a driverless device when another
-    //   device is driven (`golden/err-pool-two-devices` /
-    //   `err-pool-driverless-device`). Real fix: plans/M8.md item H.
+    // - `BlkPool name= device= base= size=` is the *mapping* line, and it
+    //   exists for device-reachable pools only. It is the exact format
+    //   `wrela-vmm`'s own `parse_report` reads (plans/M7.md item F,
+    //   plans/M8.md item P), and the list of them is the whole of what
+    //   that VMM maps — decision 5's security property, in the artifact
+    //   rather than in a comment: a pool with no `device=` never produces
+    //   one, so no device can reach it.
+    //
+    //   plans/M8.md item P made the line carry **its own device**, which
+    //   is what the property needed all along: 03-hardware.md §3's "all
+    //   memory a device can reach originates from *its* bound pools" is
+    //   per-device, and until this landed the VMM handed every window to
+    //   its one device model. The set emitted here is still every
+    //   device-reachable pool in the image, not just the modelled
+    //   device's — the VMM must know a window exists in order to refuse
+    //   it to a device that does not own it, which is exactly what
+    //   `golden/err-boot-blk-cross-device-pool` proves at boot.
     //
     // An image that declares a device-reachable pool but no queue is not
     // bootable yet, by design: `parse_report` refuses a `BlkPool` line
@@ -4350,14 +4383,14 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         push_line(out, 1, &line);
     }
     for p in &layout.pools {
-        if p.backing.device.is_none() {
+        let Some(dev) = p.backing.device else {
             continue;
-        }
+        };
         push_line(
             out,
             1,
             &format!(
-                "BlkPool name={} base={:#x} size={:#x}",
+                "BlkPool name={} device=device#{dev} base={:#x} size={:#x}",
                 p.backing.name, p.base, p.backing.bytes
             ),
         );
@@ -4370,7 +4403,8 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             out,
             1,
             &format!(
-                "BlkDevice capacity_sectors={} features={:#x}{}",
+                "BlkDevice device=device#{} capacity_sectors={} features={:#x}{}",
+                blk.device,
                 blk.capacity_sectors,
                 blk.features,
                 match blk.vector {
@@ -8611,10 +8645,12 @@ fn two():
     }
 
     /// The report line the VMM actually consumes (plans/M7.md item F's
-    /// `parse_report` learned `BlkPool name= base= size=`): exactly one
-    /// per *device-reachable* pool, and none at all for a pool no device
-    /// can reach. This is the artifact half of decision 5 — the list of
-    /// `BlkPool` lines is the whole of what the VMM maps.
+    /// `parse_report` learned `BlkPool name= base= size=`; plans/M8.md
+    /// item P added `device=`): exactly one per *device-reachable* pool,
+    /// and none at all for a pool no device can reach. This is the
+    /// artifact half of decision 5 — the list of `BlkPool` lines is the
+    /// whole of what the VMM maps, and each one names the single device
+    /// that may reach it.
     #[test]
     fn only_device_reachable_pools_become_blkpool_windows() {
         let layout = ImageLayout {
@@ -8647,7 +8683,10 @@ fn two():
             .map(str::trim)
             .filter(|l| l.starts_with("BlkPool "))
             .collect();
-        assert_eq!(blk, vec!["BlkPool name=Control base=0x2000 size=0x10"]);
+        assert_eq!(
+            blk,
+            vec!["BlkPool name=Control device=device#0 base=0x2000 size=0x10"]
+        );
         // Both pools still get their own accounting line (03 §3's five
         // declared facts), device-reachable or not.
         assert_eq!(

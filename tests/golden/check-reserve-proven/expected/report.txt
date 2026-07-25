@@ -55,8 +55,8 @@ ImageReport v0
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500738 size=104
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405007a0 size=512 align=8 coherency=coherent device=device#0
   Pool name=BlockPayloads kind=dma payload=DmaBlock slots=4 slot_bytes=512 base=0x405009a0 size=2048 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl base=0x405007a0 size=0x200
-  BlkPool name=BlockPayloads base=0x405009a0 size=0x800
-  BlkDevice capacity_sectors=16 features=0x100000200
+  BlkPool name=BlockControl device=device#0 base=0x405007a0 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x405009a0 size=0x800
+  BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=8 desc=0x405007a0 avail=0x40500820 used=0x40500838 doorbell=0x40500880
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

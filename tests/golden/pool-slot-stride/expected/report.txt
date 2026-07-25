@@ -44,5 +44,5 @@ ImageReport v0
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40500220 size=8
   Pool name=Control kind=dma payload=Odd slots=4 slot_bytes=9 base=0x40500228 size=36 align=8 coherency=coherent device=device#0
   Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x4050024c size=1 align=1 coherency=coherent device=device#0
-  BlkPool name=Control base=0x40500228 size=0x24
-  BlkPool name=Scratch base=0x4050024c size=0x1
+  BlkPool name=Control device=device#0 base=0x40500228 size=0x24
+  BlkPool name=Scratch device=device#0 base=0x4050024c size=0x1

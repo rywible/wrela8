@@ -48,4 +48,4 @@ ImageReport v0
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1616
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40501f50 size=128 align=8 coherency=coherent device=device#0
   Pool name=Scratch kind=image payload=u32 slots=4 slot_bytes=64 base=0x40501fd0 size=256 align=8 coherency=coherent device=none
-  BlkPool name=BlockControl base=0x40501f50 size=0x80
+  BlkPool name=BlockControl device=device#0 base=0x40501f50 size=0x80

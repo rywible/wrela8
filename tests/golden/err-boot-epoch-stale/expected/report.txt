@@ -64,8 +64,8 @@ ImageReport v0
   IrqHostInject base=0x40501ea8 offset=0x60 status=0xa501 vector=1
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40501f10 size=512 align=8 coherency=coherent device=device#0
   Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40502110 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl base=0x40501f10 size=0x200
-  BlkPool name=BlockPayloads base=0x40502110 size=0x200
-  BlkDevice capacity_sectors=16 features=0x100000200 vector=1
+  BlkPool name=BlockControl device=device#0 base=0x40501f10 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x40502110 size=0x200
+  BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x40501f10 avail=0x40501f90 used=0x40501fa8 doorbell=0x40501ff0
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

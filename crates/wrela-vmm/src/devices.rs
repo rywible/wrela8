@@ -137,14 +137,24 @@ pub const MAX_DISK_BYTES: u64 = 64 << 20;
 /// plans/M7.md decision 5: "the VMM maps exactly the declared pools and
 /// nothing else" — on the flagship there is no IOMMU, so this list *is*
 /// the mapping, and `GuestMem` below is what enforces it.
+///
+/// plans/M8.md item P: a window is bound to **one** device, named by the
+/// report's own `BlkPool name= device=device#N base= size=` line.
+/// 03-hardware.md §3 is per-device — "all memory a device can reach
+/// originates from *its* bound pools" — so a window without its device is
+/// not a statement this VMM can enforce.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolWindow {
     pub name: String,
+    /// Declared-device index (`device#N` in the report), the sole device
+    /// this window is reachable from.
+    pub device: u64,
     pub base: u64,
     pub size: u64,
 }
 
-/// Guest DRAM, reachable only through the declared pool windows.
+/// Guest DRAM as **one device** may reach it: every declared pool window
+/// in the image, plus the identity of the device doing the reaching.
 ///
 /// Holds a raw pointer into `boot_image_core`'s own `alloc_zeroed` DRAM
 /// reservation (exactly like `crate::drain_console`, and for the same
@@ -152,9 +162,22 @@ pub struct PoolWindow {
 /// reservation, so it never has to reason about aliasing it with the
 /// vCPU's own view). Every accessor below goes through `window_offset`,
 /// which is the single enforcement point for decision 5.
+///
+/// **Why `windows` is every window and not just this device's**
+/// (plans/M8.md item P, decision 26). Filtering the list at construction
+/// would make the same accesses succeed and fail, but it would make the
+/// device check *vacuous* — there would be nothing in the list to refuse,
+/// and no mutation of this file could be caught by a boot. Carrying the
+/// whole declared set and refusing on `w.device != self.device` is what
+/// makes `golden/err-boot-blk-cross-device-pool` a real negative: the
+/// window it names is present, placed, and mapped for its own device, and
+/// this device still cannot touch a byte of it.
 pub struct GuestMem {
     base: *mut u8,
     windows: Vec<PoolWindow>,
+    /// The device whose view this is; `window_offset` admits only windows
+    /// bound to it.
+    device: u64,
 }
 
 impl GuestMem {
@@ -164,12 +187,19 @@ impl GuestMem {
     /// disjoint from every other window (a duplicated or overlapping pool
     /// declaration is a configuration bug, and a silent overlap would
     /// quietly widen exactly the boundary this type exists to keep
-    /// narrow).
+    /// narrow). Disjointness is checked across *all* windows regardless of
+    /// device: two pools are two placed regions of one image, and two
+    /// devices sharing bytes is the shape this whole item exists to make
+    /// impossible.
     ///
     /// # Safety
     /// `base` must be valid for reads and writes of `DRAM_SIZE` bytes for
     /// as long as this `GuestMem` lives.
-    pub unsafe fn new(base: *mut u8, windows: Vec<PoolWindow>) -> Result<GuestMem, String> {
+    pub unsafe fn new(
+        base: *mut u8,
+        windows: Vec<PoolWindow>,
+        device: u64,
+    ) -> Result<GuestMem, String> {
         for (i, w) in windows.iter().enumerate() {
             if w.size == 0 {
                 return Err(format!("pool `{}` declares a zero-byte window", w.name));
@@ -199,13 +229,23 @@ impl GuestMem {
                 }
             }
         }
-        Ok(GuestMem { base, windows })
+        Ok(GuestMem {
+            base,
+            windows,
+            device,
+        })
     }
 
     /// THE enforcement point (module doc above): the host-side byte offset
-    /// of `[addr, addr+len)`, or `BlkFault::OutsidePool` if that range is
-    /// not wholly inside one declared pool window. Nothing in this file
-    /// converts a guest address to a host offset any other way.
+    /// of `[addr, addr+len)`, or a fault if that range is not wholly
+    /// inside one pool window **bound to this device**. Nothing in this
+    /// file converts a guest address to a host offset any other way.
+    ///
+    /// The two refusals are named apart on purpose (plans/M8.md item P): a
+    /// range in no window at all is an ordinary out-of-bounds descriptor,
+    /// while a range inside *another device's* window is 03-hardware.md
+    /// §3's own rule being enforced, and a post-mortem that cannot tell
+    /// them apart cannot tell a broken driver from a broken image.
     fn window_offset(&self, addr: u64, len: u64) -> Result<usize, BlkFault> {
         let end = addr.checked_add(len).ok_or(BlkFault::OutsidePool {
             addr,
@@ -214,6 +254,15 @@ impl GuestMem {
         })?;
         for w in &self.windows {
             if addr >= w.base && end <= w.base + w.size {
+                if w.device != self.device {
+                    return Err(BlkFault::ForeignPool {
+                        addr,
+                        len,
+                        pool: w.name.clone(),
+                        owner: w.device,
+                        device: self.device,
+                    });
+                }
                 return Ok((addr - machine_layout::DRAM_BASE) as usize);
             }
         }
@@ -271,16 +320,20 @@ impl GuestMem {
     }
 }
 
-/// `true` if `[addr, addr+len)` lies wholly inside one of `windows` — the
-/// same containment rule `GuestMem::window_offset` enforces at access
-/// time, reused by `BlkDevice::new` to reject a *configuration* whose ring
-/// or doorbell does not live in a declared pool before any boot happens.
-fn window_contains(windows: &[PoolWindow], addr: u64, len: u64) -> bool {
+/// `true` if `[addr, addr+len)` lies wholly inside one of `windows` that
+/// is bound to `device` — the same containment rule
+/// `GuestMem::window_offset` enforces at access time, reused by
+/// `BlkDevice::new` to reject a *configuration* whose ring or doorbell
+/// does not live in one of this device's own declared pools before any
+/// boot happens (plans/M8.md item P: the device half is not optional here
+/// either — a ring in another device's pool is a config this model must
+/// refuse, not one it would fault on later).
+fn window_contains(windows: &[PoolWindow], device: u64, addr: u64, len: u64) -> bool {
     match addr.checked_add(len) {
         None => false,
         Some(end) => windows
             .iter()
-            .any(|w| addr >= w.base && end <= w.base + w.size),
+            .any(|w| w.device == device && addr >= w.base && end <= w.base + w.size),
     }
 }
 
@@ -300,6 +353,22 @@ pub enum BlkFault {
         addr: u64,
         len: u64,
         why: &'static str,
+    },
+    /// A guest range that *is* inside a declared pool window — just not
+    /// one bound to the device making the access (plans/M8.md item P).
+    /// 03-hardware.md §3: "all memory a device can reach originates from
+    /// *its* bound pools". Named apart from `OutsidePool` because it is a
+    /// different finding: the bytes are real, placed, device-reachable
+    /// memory, and this device still has no authority over them.
+    ForeignPool {
+        addr: u64,
+        len: u64,
+        /// The pool that does contain the range.
+        pool: String,
+        /// The device that pool is bound to.
+        owner: u64,
+        /// The device attempting the access.
+        device: u64,
     },
     /// `avail.idx` advanced by more than the queue is deep: the driver
     /// published more entries than can exist, or the index is stale/
@@ -352,6 +421,19 @@ impl std::fmt::Display for BlkFault {
                 f,
                 "guest range [{addr:#x}, +{len}) is not device-reachable: {why} \
                  (plans/M7.md decision 5: the device model may touch declared pool pages only)"
+            ),
+            BlkFault::ForeignPool {
+                addr,
+                len,
+                pool,
+                owner,
+                device,
+            } => write!(
+                f,
+                "guest range [{addr:#x}, +{len}) lies in pool `{pool}`, which is bound to \
+                 device#{owner}, but this access is device#{device}'s \
+                 (03-hardware.md §3: all memory a device can reach originates from *its* bound \
+                 pools)"
             ),
             BlkFault::AvailIndexJump {
                 last,
@@ -464,6 +546,10 @@ impl BlkQueueConfig {
 /// The whole configuration of one declared `blk` device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlkConfig {
+    /// plans/M8.md item P: which declared device this model *is*
+    /// (`BlkDevice device=device#N`). It is the identity every pool window
+    /// is matched against, so it is configuration, not decoration.
+    pub device: u64,
     pub capacity_sectors: u64,
     /// The feature bits the image declares (03 §9: "The image declares
     /// required features ...; boot still negotiates the real device") —
@@ -476,6 +562,10 @@ pub struct BlkConfig {
     /// used ring alone is the completion signal.
     pub vector: Option<u64>,
     pub queue: BlkQueueConfig,
+    /// **Every** declared pool window in the image, not only this
+    /// device's — `GuestMem`'s own doc comment says why the whole set is
+    /// carried. `BlkDevice::new` filters on `device` when it checks its
+    /// own ring.
     pub pools: Vec<PoolWindow>,
 }
 
@@ -578,11 +668,13 @@ impl BlkDevice {
             ("used ring", q.used, q.used_bytes()),
             ("doorbell word", q.doorbell, 8),
         ] {
-            if !window_contains(&config.pools, addr, len) {
+            if !window_contains(&config.pools, config.device, addr, len) {
                 return Err(format!(
-                    "the blk {what} at [{addr:#x}, +{len}) is not inside any declared pool window \
-                     (plans/M7.md decision 5: shared control memory lives in a declared pool, and \
-                     the model may reach nothing else)"
+                    "the blk {what} at [{addr:#x}, +{len}) is not inside a pool window bound to \
+                     device#{} (plans/M7.md decision 5: shared control memory lives in a declared \
+                     pool, and the model may reach nothing else; plans/M8.md item P: the pool must \
+                     be one of *this* device's — 03-hardware.md §3)",
+                    config.device
                 ));
             }
         }
@@ -913,6 +1005,9 @@ mod tests {
     const POOL_BASE: u64 = machine_layout::DRAM_BASE + 0x10_0000;
     const POOL_SIZE: u64 = 0x10_0000;
     const QUEUE_SIZE: u16 = 8;
+    /// The declared device index every window and every model in this
+    /// harness belongs to (plans/M8.md item P).
+    const HARNESS_DEVICE: u64 = 0;
 
     const DESC_ADDR: u64 = POOL_BASE;
     const AVAIL_ADDR: u64 = POOL_BASE + 0x400;
@@ -925,6 +1020,7 @@ mod tests {
     impl Harness {
         fn new() -> Harness {
             let cfg = BlkConfig {
+                device: HARNESS_DEVICE,
                 capacity_sectors: 16,
                 features: DEVICE_FEATURES,
                 vector: None,
@@ -937,6 +1033,7 @@ mod tests {
                 },
                 pools: vec![PoolWindow {
                     name: "BlockControl".to_string(),
+                    device: HARNESS_DEVICE,
                     base: POOL_BASE,
                     size: POOL_SIZE,
                 }],
@@ -948,8 +1045,14 @@ mod tests {
         }
 
         fn mem(&mut self) -> GuestMem {
-            unsafe { GuestMem::new(self.ram.as_mut_ptr(), self.cfg.pools.clone()) }
-                .expect("windows")
+            unsafe {
+                GuestMem::new(
+                    self.ram.as_mut_ptr(),
+                    self.cfg.pools.clone(),
+                    HARNESS_DEVICE,
+                )
+            }
+            .expect("windows")
         }
 
         fn device(&self) -> BlkDevice {
@@ -1068,6 +1171,11 @@ mod tests {
         assert!(BlkDevice::new(h.cfg.clone()).is_err());
     }
 
+    /// The last case is plans/M8.md item P's own: a ring placed inside a
+    /// window that *is* declared and *is* device-reachable, just by
+    /// another device. Before the `device=` field existed that
+    /// configuration was accepted, because containment alone was the whole
+    /// rule.
     #[test]
     fn a_ring_outside_every_declared_pool_is_refused_before_any_boot() {
         for mangle in [
@@ -1075,13 +1183,78 @@ mod tests {
             |c: &mut BlkConfig| c.queue.avail = POOL_BASE + POOL_SIZE,
             |c: &mut BlkConfig| c.queue.used = POOL_BASE + POOL_SIZE - 4,
             |c: &mut BlkConfig| c.queue.doorbell = POOL_BASE - 8,
+            |c: &mut BlkConfig| {
+                c.pools.push(PoolWindow {
+                    name: "Foreign".to_string(),
+                    device: HARNESS_DEVICE + 1,
+                    base: POOL_BASE + POOL_SIZE,
+                    size: 0x1000,
+                });
+                c.queue.doorbell = POOL_BASE + POOL_SIZE;
+            },
         ] {
             let h = Harness::new();
             let mut cfg = h.cfg.clone();
             mangle(&mut cfg);
-            let err = BlkDevice::new(cfg).expect_err("outside the declared pool");
-            assert!(err.contains("declared pool window"), "{err}");
+            let err = BlkDevice::new(cfg).expect_err("outside this device's declared pools");
+            assert!(err.contains("pool window bound to device#0"), "{err}");
         }
+    }
+
+    /// plans/M8.md item P's enforcement point, at unit granularity: two
+    /// declared windows, one per device, one `GuestMem` per device — each
+    /// admits its own and refuses the other **by name**, and the refusal is
+    /// distinguishable from an address in no window at all.
+    #[test]
+    fn a_window_bound_to_another_device_is_refused_by_name() {
+        let mut h = Harness::new();
+        const FOREIGN_BASE: u64 = POOL_BASE + POOL_SIZE;
+        const FOREIGN_SIZE: u64 = 0x1000;
+        h.ram.resize(
+            (FOREIGN_BASE + FOREIGN_SIZE - machine_layout::DRAM_BASE) as usize,
+            0,
+        );
+        let windows = vec![
+            h.cfg.pools[0].clone(),
+            PoolWindow {
+                name: "Foreign".to_string(),
+                device: HARNESS_DEVICE + 1,
+                base: FOREIGN_BASE,
+                size: FOREIGN_SIZE,
+            },
+        ];
+        let mine = unsafe {
+            GuestMem::new(h.ram.as_mut_ptr(), windows.clone(), HARNESS_DEVICE).expect("windows")
+        };
+        assert!(mine.window_offset(POOL_BASE, 8).is_ok());
+        assert!(matches!(
+            mine.window_offset(FOREIGN_BASE, 8),
+            Err(BlkFault::ForeignPool {
+                owner: 1,
+                device: 0,
+                ..
+            })
+        ));
+        // The symmetric half, which no boot can reach today because this
+        // machine models exactly one device: device#1's own view admits
+        // device#1's window and refuses device#0's.
+        let theirs = unsafe {
+            GuestMem::new(h.ram.as_mut_ptr(), windows, HARNESS_DEVICE + 1).expect("windows")
+        };
+        assert!(theirs.window_offset(FOREIGN_BASE, 8).is_ok());
+        assert!(matches!(
+            theirs.window_offset(POOL_BASE, 8),
+            Err(BlkFault::ForeignPool {
+                owner: 0,
+                device: 1,
+                ..
+            })
+        ));
+        // An address in no window at all stays the *other* finding.
+        assert!(matches!(
+            mine.window_offset(machine_layout::DRAM_BASE, 8),
+            Err(BlkFault::OutsidePool { .. })
+        ));
     }
 
     #[test]
@@ -1106,11 +1279,17 @@ mod tests {
         let mut h = Harness::new();
         h.cfg.pools.push(PoolWindow {
             name: "Second".to_string(),
+            // Deliberately a *different* device: disjointness is a fact
+            // about placed bytes, not about reachability, so two devices
+            // sharing a byte is refused exactly like one device would be
+            // (plans/M8.md item P).
+            device: HARNESS_DEVICE + 1,
             base: POOL_BASE + 0x1000,
             size: 0x1000,
         });
         let pools = h.cfg.pools.clone();
-        let err = unsafe { GuestMem::new(h.ram.as_mut_ptr(), pools) }.expect_err("overlap");
+        let err = unsafe { GuestMem::new(h.ram.as_mut_ptr(), pools, HARNESS_DEVICE) }
+            .expect_err("overlap");
         assert!(err.contains("overlapping"), "{err}");
 
         let err = unsafe {
@@ -1118,9 +1297,11 @@ mod tests {
                 h.ram.as_mut_ptr(),
                 vec![PoolWindow {
                     name: "BelowDram".to_string(),
+                    device: HARNESS_DEVICE,
                     base: 0x1000,
                     size: 0x1000,
                 }],
+                HARNESS_DEVICE,
             )
         }
         .expect_err("below DRAM");
@@ -1531,6 +1712,7 @@ mod tests {
         // used ring.
         cfg.pools = vec![PoolWindow {
             name: "TooSmall".to_string(),
+            device: HARNESS_DEVICE,
             base: POOL_BASE,
             size: 0x600,
         }];
@@ -1547,6 +1729,13 @@ mod tests {
                 addr: 1,
                 len: 2,
                 why: "x",
+            },
+            BlkFault::ForeignPool {
+                addr: 1,
+                len: 2,
+                pool: "Other".to_string(),
+                owner: 1,
+                device: 0,
             },
             BlkFault::AvailIndexJump {
                 last: 0,

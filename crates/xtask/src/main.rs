@@ -4877,9 +4877,9 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
          Input path=<xtask blk conformance> digest=deadbeef\n\
          Section name=entry base={:#x} size={}\n\
          Entry base={:#x}\n\
-         BlkDevice capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
+         BlkDevice device=device#0 capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
          BlkQueue index=0 size={QUEUE_SIZE} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n\
-         BlkPool name=BlockControl base={:#x} size={:#x}\n",
+         BlkPool name=BlockControl device=device#0 base={:#x} size={:#x}\n",
         wrela_machine::MACHINE_REVISION_STR,
         machine_layout::IMAGE_BASE,
         img.len(),
