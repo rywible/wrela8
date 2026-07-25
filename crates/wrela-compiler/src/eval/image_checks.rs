@@ -918,27 +918,25 @@ pub fn pool_backings(
         );
     }
 
-    // plans/M7.md item I's sweep. Decision 5's security property is
-    // per-*device* ("the VMM maps exactly the declared pools and nothing
-    // else ... the device model can reach declared pool pages and no
-    // other guest memory, enforced by what the VMM maps"), but the
-    // `BlkPool name= base= size=` line that carries a window to the VMM
-    // has **no device field at all**: `wrela-vmm`'s own `parse_report`
-    // collects every one of them into a single `Vec<PoolWindow>` and
-    // hands the whole list to its one `BlkDevice`. So an image declaring
-    // `img.dma_pool(..., device=a)` alongside `img.dma_pool(..., device=b)`
-    // renders two windows that the *one* device model treats as equally
-    // reachable — pool `b`'s bytes reachable from device `a`.
+    // Post-closure M7 sweep (and its earlier item-I sibling). Decision 5's
+    // security property is per-*device* ("the VMM maps exactly the declared
+    // pools and nothing else ... the device model can reach declared pool
+    // pages and no other guest memory, enforced by what the VMM maps"),
+    // but the `BlkPool name= base= size=` line that carries a window to
+    // the VMM has **no device field at all**: `wrela-vmm`'s own
+    // `parse_report` collects every one of them into a single
+    // `Vec<PoolWindow>` and hands the whole list to its one `BlkDevice`.
+    // So an image declaring `img.dma_pool(..., device=a)` alongside
+    // `img.dma_pool(..., device=b)` renders two windows that the *one*
+    // device model treats as equally reachable — pool `b`'s bytes
+    // reachable from device `a`.
     //
-    // Unreachable at a boot today, and only because a second thing is
-    // missing: `parse_report` also refuses a `BlkPool` line with no
-    // `BlkDevice`/`BlkQueue` to bind it to, and those are plans/M7.md item
-    // E's to emit. The fail-open was being held shut by a *different*
-    // absent feature, which is exactly the shape a sweep exists to find
-    // before that feature lands. The real fix is a report-format change
-    // (a device on the mapping line, and a VMM that binds windows per
-    // device) and belongs to whoever emits those two lines anyway; until
-    // then this fails closed and names them.
+    // Item E1/E4 made those lines real and the VMM maps every
+    // device-reachable pool, so the fail-open is no longer latent. The
+    // real fix is a report-format change (`device=` on `BlkPool` /
+    // `BlkDevice`, and a VMM that binds windows per device) — owned by
+    // plans/M8.md item H until that lands or is re-homed. Until then
+    // this fails closed and names that item.
     //
     // Checked here, in the one derivation the checker, the placer and the
     // report all read (this section's own doc comment), rather than in
@@ -964,8 +962,7 @@ pub fn pool_backings(
              reachable from one device would be reachable from another (03-hardware.md §3: all \
              memory a device can reach originates from *its* bound pools; plans/M7.md decision \
              5). Failing closed until the report can say which device a window belongs to \
-             (plans/M7.md item E, which owns the `BlkDevice`/`BlkQueue` lines that format needs \
-             anyway).",
+             (plans/M8.md item H: `device=` on `BlkPool`/`BlkDevice` and per-device VMM binding).",
             devices.len()
         )));
     }
@@ -2867,6 +2864,44 @@ mod tests {
         let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 4)])]);
         let err = pool_backings(&g, &layouts).expect_err("device#7 does not exist");
         assert!(err.message.contains("does not declare"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_dma_pool_on_a_driverless_device_is_rejected() {
+        // Post-closure M7 sweep port: BlkPool has no device field, so a
+        // pool on a device no driver binds would be mapped for whichever
+        // BlkDevice the driven device configures.
+        let mut g = ImageGraph::default();
+        g.devices.push(crate::eval::image::DeviceDecl {
+            device_type: Type::Named("BlockHw".to_string(), vec![]),
+            args: vec![],
+        });
+        g.devices.push(crate::eval::image::DeviceDecl {
+            device_type: Type::Named("OtherHw".to_string(), vec![]),
+            args: vec![],
+        });
+        g.drivers.push(crate::eval::image::DriverDecl {
+            actor_type: Type::Named("Blk".to_string(), vec![]),
+            args: vec![handle_arg("device", ImageDeclRef::Device(0))],
+        });
+        g.dma_pools.insert(
+            "Control".to_string(),
+            crate::eval::image::PoolDecl {
+                payload_type: Type::Named("Hdr".to_string(), vec![]),
+                args: vec![
+                    handle_arg("device", ImageDeclRef::Device(1)),
+                    decl_arg("count", Type::I64, Value::I64(2)),
+                ],
+            },
+        );
+        let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 8)])]);
+        let err = pool_backings(&g, &layouts).expect_err("driverless device");
+        assert!(
+            err.message.contains("binds a device no `@driver` binds")
+                && err.message.contains("device#1"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

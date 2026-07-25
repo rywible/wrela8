@@ -1,9 +1,9 @@
 module examples.err_pool_two_devices
 
-# plans/M7.md item I (the adversarial sweep), decision 5's security
-# property: "the VMM maps exactly the declared pools and nothing else ...
-# the device model can reach declared pool pages and no other guest
-# memory, enforced by what the VMM maps."
+# Post-closure M7 sweep / item I sibling, decision 5's security property:
+# "the VMM maps exactly the declared pools and nothing else ... the
+# device model can reach declared pool pages and no other guest memory,
+# enforced by what the VMM maps."
 #
 # That property is per-**device**, and the artifact could not express it.
 # `render_layout_section` emits one `BlkPool name= base= size=` line per
@@ -13,17 +13,11 @@ module examples.err_pool_two_devices
 # both windows happily: `ControlB` is declared reachable from `other`
 # alone, and the blk device model would have reached it.
 #
-# Reachable at a boot? Not today, and only because a *second* thing is
-# missing: `parse_report` refuses a `BlkPool` line with no
-# `BlkDevice`/`BlkQueue` to bind it to, and those are plans/M7.md item E's
-# to emit. So the fail-open was latent — which is exactly the kind this
-# sweep exists to find, since item E would have landed on top of it.
-#
-# The real fix is a report-format change (a device on the mapping line,
-# and a VMM that binds windows per device), and it belongs to whoever
-# emits `BlkDevice`/`BlkQueue` anyway. Until then this fails closed and
-# names them, rather than shipping a report whose security property holds
-# only by accident of what has not landed yet.
+# Item E1/E4 made those lines real — the fail-open is no longer latent.
+# The real fix is a report-format change (`device=` on `BlkPool` /
+# `BlkDevice`, and a VMM that binds windows per device), owned by
+# plans/M8.md item H until that lands or is re-homed. Until then this
+# fails closed and names that item.
 #
 # The accepting sibling is `golden/check-dma-pool`: two pools, one device
 # — one of them not device-reachable at all, which is the case that has
