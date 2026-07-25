@@ -183,12 +183,20 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     // an ordinary annotation; and 03-hardware.md §3's capability rule must
     // be live before plans/M7.md item A makes a capability name
     // resolvable at all). Its table is discarded here — `--stage=layout-types`
-    // and the image report call the same fn for it — and only its
-    // rejections matter.
-    types::check_layouts(&specialized)?;
+    // and the image report call the same fn for it — and its table is
+    // what plans/M7.md item C's claim-partitioning check reads below.
+    let layouts = types::check_layouts(&specialized)?;
     let symtab = symbols::collect(&specialized)?;
     symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
     let decl_items = types::declare(&specialized)?;
+    // plans/M7.md item C, 03-hardware.md §2: "Minting a layout consumes
+    // those byte ranges from the claim; two live layouts can never alias a
+    // register." Runs here because it needs both halves — `declare`'s
+    // resolved field types and `@driver` facts, and `check_layouts`' own
+    // byte table — and before any body is typed, so an aliasing partition
+    // is rejected at the declaration that created it rather than at
+    // whichever access happened to be checked first.
+    types::check_mmio_claims(&specialized, &decl_items, &layouts)?;
     let mctx = bodies::build_module_ctx(&specialized, &decl_items);
     let mut program = bodies::check(&specialized, &decl_items, &mctx)?;
     access::check(&specialized, &decl_items, &mctx)?;
@@ -332,6 +340,7 @@ pub fn check_program_typed(
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<BTreeMap<Vec<String>, typed::TypedProgram>, SemaError> {
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
+    let mut layouts: BTreeMap<Vec<String>, Vec<types::LayoutType>> = BTreeMap::new();
     for (key, module) in modules {
         let s = specialize::specialize(module)?;
         // plans/M7.md item B: the whole-closure half of the same
@@ -339,7 +348,7 @@ pub fn check_program_typed(
         // `types::check_layouts`). One module at a time — a `@layout`
         // type is a module-local declaration, so nothing here needs the
         // closure.
-        types::check_layouts(&s)?;
+        layouts.insert(key.clone(), types::check_layouts(&s)?);
         specialized.insert(key.clone(), s);
     }
 
@@ -369,6 +378,14 @@ pub fn check_program_typed(
     for (key, module) in &specialized {
         symbols::resolve(module, &symtabs[key], &bindings[key])?;
         let decl_items = types::declare(module)?;
+        // plans/M7.md item C: the whole-closure half of the claim
+        // partitioning check, per module for the same reason
+        // `check_layouts` above is — an `Mmio[L]`'s own `L` must be a
+        // `@layout(mmio)` struct declared in the *same* module
+        // (`types::validate_capability_args` checks that against
+        // `declare`'s own module-local table), so a driver's partition
+        // never spans the closure.
+        types::check_mmio_claims(module, &decl_items, &layouts[key])?;
         let mctx = bodies::build_module_ctx(module, &decl_items);
         decl_items_map.insert(key.clone(), decl_items);
         mctxs.insert(key.clone(), mctx);

@@ -523,6 +523,24 @@ fn capability_in_type(ty: &crate::sema::types::Type, authority: &Authority) -> O
 fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> {
     let by_type = capability_in_type(&e.ty, authority).map(|found| format!("a `{found}` value"));
     match &e.kind {
+        // plans/M7.md item C (03-hardware.md §2): the first *operation*
+        // arm this match has ever had — an MMIO register read or write is
+        // a hardware touch in its own right, not merely a fn that happens
+        // to name a capability-typed value. The distinction is real even
+        // though today's two rules overlap: the access's own type is the
+        // register's scalar (`u32`), so `by_type` says nothing about it,
+        // and it is the *receiver* one level down that carries the
+        // `Mmio[L]`. Answering here means the diagnostic names what the fn
+        // did ("an MMIO register read") rather than what it held.
+        TypedExprKind::Intrinsic { key, .. }
+            if crate::sema::bodies::is_mmio_access_intrinsic(key) =>
+        {
+            Some(if key == "Mmio.read" {
+                "an MMIO register read".to_string()
+            } else {
+                "an MMIO register write".to_string()
+            })
+        }
         TypedExprKind::Int(_)
         | TypedExprKind::Float(_)
         | TypedExprKind::Str(_)
@@ -900,7 +918,15 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
         // ordinary prelude helpers (excluded from the restricted set),
         // so they fall through to `None`, legal everywhere.
         TypedExprKind::Intrinsic { key, .. } => {
-            if crate::sema::typed::is_restricted_intrinsic(key) {
+            if crate::sema::bodies::is_mmio_access_intrinsic(key) {
+                // plans/M7.md item C: 02-language.md §12's own sentence —
+                // "comptime-callable when its transitive closure is
+                // deterministic and free of I/O, async/actor operations,
+                // and **hardware effects**". A volatile MMIO access is
+                // that clause's flagship instance; it is also the first
+                // one this compiler can represent at all.
+                Some("a volatile MMIO register access")
+            } else if crate::sema::typed::is_restricted_intrinsic(key) {
                 Some("an `@image` builder intrinsic")
             } else if key == "now" {
                 // Plans/M6.md item A, decision 11: `now()` is
@@ -1599,5 +1625,88 @@ pub fn double(x: u64) -> u64:
              \x20   return 1\n";
         let err = provenance(src).expect_err("an actor confers no authority");
         assert!(err.starts_with("`holds` touches hardware state"), "{err}");
+    }
+
+    // --- typed MMIO access (plans/M7.md item C, 03-hardware.md §2) -------
+
+    const MMIO_PRELUDE: &str = "module t\n\n\
+         @layout(mmio, endian=little)\n\
+         struct Regs:\n\
+         \x20   @offset(0x000) status: ReadOnly[u32]\n\n";
+
+    /// The *operation* arm of `expr_hardware_reason`, distinguished from
+    /// the type arm it would otherwise hide behind. `Bundle.peek` has no
+    /// capability *parameter* at all — its receiver is deliberately not
+    /// consulted (`note_touch`) — so the only thing that can mark it is
+    /// its body, and the reason names what it did rather than what it
+    /// held. Without this arm the same fn is still rejected (the receiver
+    /// field's own `Mmio[Regs]` type marks it one level down), which is
+    /// exactly why the *reason text* is what this asserts.
+    #[test]
+    fn an_mmio_access_is_a_hardware_touch_named_by_its_operation() {
+        let read = format!(
+            "{MMIO_PRELUDE}struct Bundle:\n\
+             \x20   regs: Mmio[Regs]\n\n\
+             \x20   fn peek(read self) -> u32:\n\
+             \x20       return self.regs.status.read()\n\n\
+             @driver\npub struct D:\n    n: u64\n"
+        );
+        let err = provenance(&read).expect_err("no driver reaches `Bundle.peek`");
+        assert!(
+            err.starts_with("`Bundle.peek` touches hardware state (an MMIO register read)"),
+            "{err}"
+        );
+
+        let write = format!(
+            "{MMIO_PRELUDE}@layout(mmio, endian=little)\n\
+             struct Ack:\n\
+             \x20   @offset(0x010) ack: WriteOnly[u32]\n\n\
+             struct Bundle:\n\
+             \x20   regs: Mmio[Ack]\n\n\
+             \x20   fn poke(read self):\n\
+             \x20       self.regs.ack.write(1)\n\n\
+             @driver\npub struct D:\n    n: u64\n"
+        );
+        let err = provenance(&write).expect_err("no driver reaches `Bundle.poke`");
+        assert!(
+            err.starts_with("`Bundle.poke` touches hardware state (an MMIO register write)"),
+            "{err}"
+        );
+    }
+
+    /// The comptime-legality arm (02-language.md §12: "free of I/O ...
+    /// and hardware effects"). Asserted against `classify` directly, and
+    /// deliberately so: **no source program can reach `require_legal`
+    /// with one of these today**, because reaching an MMIO access from a
+    /// `const`/`comptime assert`/`@test` needs an `Mmio[L]` *value*, and
+    /// nothing in the language produces one (`hardware.capabilities
+    /// .unforgeable`). The arm still has to exist — it is what stops the
+    /// access from silently becoming comptime-callable the day a
+    /// capability can be constructed — so this pins the verdict at the
+    /// only layer that can hold it, rather than pretending a golden
+    /// covers it. Recorded honestly in `hardware.mmio.typed-access`.
+    #[test]
+    fn an_mmio_access_is_comptime_illegal() {
+        let program = typed_program(&format!(
+            "{MMIO_PRELUDE}@driver\npub struct D:\n\
+             \x20   regs: Mmio[Regs]\n\n\
+             \x20   fn peek(read self) -> u32:\n\
+             \x20       return self.regs.status.read()\n\n\
+             \x20   fn peek_twice(read self) -> u32:\n\
+             \x20       return self.peek() + self.peek()\n"
+        ));
+        let legality = classify(&program);
+        assert_eq!(
+            legality.verdict("D.peek"),
+            Verdict::Illegal {
+                path: vec!["D.peek".to_string()],
+                reason: "a volatile MMIO register access".to_string(),
+            }
+        );
+        // ...and it propagates, like every other illegal operation.
+        assert!(matches!(
+            legality.verdict("D.peek_twice"),
+            Verdict::Illegal { .. }
+        ));
     }
 }

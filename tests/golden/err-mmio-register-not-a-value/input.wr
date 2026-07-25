@@ -1,0 +1,25 @@
+module examples.err_mmio_register_not_a_value
+
+# plans/M7.md item C, 03-hardware.md §2: "MMIO access is volatile and
+# effectful." A register is therefore an *access*, never a value — it
+# cannot be bound to a local, copied, passed, stored or returned, because
+# every one of those would be a load whose position in the program the
+# source did not write.
+#
+# This is also the whole of what volatility means in this compiler today,
+# stated as a rejection rather than as a claim about an optimizer: the
+# only way to spell a register read is `.read()`, so a read exists exactly
+# where the source wrote one.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+
+    fn hoist(read self) -> u32:
+        reg = self.irq_regs.interrupt_status
+        return 0

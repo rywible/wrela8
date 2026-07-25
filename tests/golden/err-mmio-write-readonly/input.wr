@@ -1,0 +1,19 @@
+module examples.err_mmio_write_readonly
+
+# plans/M7.md item C, 03-hardware.md §2: the mirror of
+# `golden/err-mmio-read-writeonly`. `interrupt_status` is declared
+# `ReadOnly[u32]`, so writing it does not exist — and it is exactly the
+# register 03 §6's ISR reads, which is what makes the direction rule
+# load-bearing rather than decorative.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+
+    fn clear_status(read self):
+        self.irq_regs.interrupt_status.write(0)

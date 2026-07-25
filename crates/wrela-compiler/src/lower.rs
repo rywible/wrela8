@@ -1733,6 +1733,27 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             // is never read.
             Ok(b.fresh(expr.ty.clone()))
         }
+        // plans/M7.md item C (03-hardware.md §2): a typed MMIO register
+        // access type-checks in full, and stops here — deliberately, and
+        // not as a shortcut. **No `Mmio[L]` value can exist at runtime
+        // today**: `eval::image_checks::check_capability_substitution`
+        // rejects an `Mmio[L]` `init` parameter outright ("nothing mints a
+        // `Mmio` yet"), and `layout::build_boot_init_calls` walks
+        // `graph.actors` only — a `@driver`'s `init` is never called at
+        // boot at all — and fails closed on every capability parameter
+        // besides. Emitting a load/store against a base that is provably
+        // the zero a state-fill left is the exact wrong answer plans/M7.md
+        // item W exists to close, so this says so instead.
+        TypedExprKind::Intrinsic { key, .. }
+            if crate::sema::bodies::is_mmio_access_intrinsic(key) =>
+        {
+            Err(LowerError::unimplemented(
+                "a typed MMIO register access (03-hardware.md §2): it type-checks, but no \
+                 `Mmio[L]` value exists at runtime yet — the image binding does not mint one \
+                 (`eval::image_checks`) and boot never calls a `@driver`'s `init` \
+                 (`layout::build_boot_init_calls`), so there is no base address to access. That is",
+            ))
+        }
         TypedExprKind::Intrinsic { .. } => Err(LowerError::unimplemented(
             "an `@image` builder intrinsic (reachable only inside the one `@image` fn, which is never lowered) is",
         )),

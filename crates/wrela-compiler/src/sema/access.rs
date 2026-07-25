@@ -1649,6 +1649,28 @@ fn check_struct_construction(
     Ok(Some(self_ty))
 }
 
+/// The result type of an already-`bodies`-accepted MMIO register access:
+/// `read()` yields the register's declared scalar, `write(v)` yields
+/// `unit`. Best-effort like the rest of this pass — an unknown layout or
+/// register simply stops the chain (`None`) rather than inventing a type,
+/// and cannot be reached at all through a program `bodies` accepted.
+fn mmio_access_result(
+    targs: &[types::TypeArg],
+    register: &str,
+    op: &str,
+    actx: &ACtx,
+) -> Option<Type> {
+    if op == "write" {
+        return Some(Type::Unit);
+    }
+    let types::TypeArg::Type(Type::Named(layout_name, _)) = targs.first()? else {
+        return None;
+    };
+    let layout = actx.mctx.layouts.get(layout_name.as_str())?;
+    let reg = types::mmio_register(layout, register)?;
+    bodies::scalar_type_by_name(&reg.scalar)
+}
+
 fn check_call_by_field(
     base: &Expr,
     fspan: Span,
@@ -1681,6 +1703,40 @@ fn check_call_by_field(
                 }
                 return Ok(None);
             }
+        }
+    }
+    // plans/M7.md item C (03-hardware.md §2): a typed MMIO register access
+    // — `<mmio>.<register>.read()` / `.write(v)`. Mirrors
+    // `bodies::check_call_by_field`'s own interception exactly: the
+    // receiver is a *register selection*, which has no value form, so the
+    // general path below would (correctly, for anything else) fail closed
+    // on an untyped base. `bodies` has already accepted this call by the
+    // time this pass runs, so the only work left here is the universal
+    // per-argument checks and handing back the result type for chaining.
+    //
+    // **Receiver mutability is deliberately not required.** `write(v)`
+    // changes the *device*, not the wrela value: an `Mmio[L]` is authority,
+    // and 03 §6's own ISR (`fn on_queue_irq(self)`, which both reads
+    // `interrupt_status` and writes `interrupt_ack`) declares a plain
+    // `self`. Requiring `mut self` would make the one worked example in
+    // the docs illegal.
+    if let Expr::Field(inner, _, register) = base {
+        let saved = actx.locals.clone();
+        let inner_ty = check_expr(inner, actx)
+            .ok()
+            .flatten()
+            .map(bodies::unwrap_own);
+        match inner_ty {
+            Some(Type::Named(ref cap, ref targs)) if cap == "Mmio" => {
+                for a in args {
+                    check_arg(a, actx)?;
+                }
+                return Ok(mmio_access_result(targs, register, name, actx));
+            }
+            // Anything else: restore and fall through to the ordinary
+            // path, which re-checks `base` whole and reports whatever it
+            // would have reported.
+            _ => actx.locals = saved,
         }
     }
     // General field/method access: `base`'s own type decides. `base` is

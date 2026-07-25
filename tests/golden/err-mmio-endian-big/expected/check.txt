@@ -1,0 +1,1 @@
+error[unimplemented]: an access to `VirtioIrqMmio.interrupt_status: ReadOnly[u32]`, whose `@layout(mmio, endian=big)` disagrees with this target's little-endian ABI (06-machine.md §2) and would need a byte swap that is not emitted, is not checked yet at 26:51

@@ -2,10 +2,12 @@ Module path=examples.check_capabilities
   Struct VirtioIrqMmio data
     field interrupt_status: ReadOnly[u32]
     field interrupt_ack: WriteOnly[u32]
+  Struct VirtioConfigMmio data
+    field config_generation: ReadOnly[u32]
   Struct VirtioBlock data
     field id: u32
   Struct RegsBundle resource
-    field regs: Mmio[VirtioIrqMmio]
+    field regs: Mmio[VirtioConfigMmio]
     field tag: u64
     fn tag_of(read self) -> u64
   Struct IrqPartition resource

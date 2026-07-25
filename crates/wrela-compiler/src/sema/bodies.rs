@@ -210,6 +210,14 @@ pub(crate) struct ModuleCtx {
     pub(crate) enums: BTreeMap<String, types::DeclEnum>,
     pub(crate) fns: BTreeMap<String, FnInfo>,
     pub(crate) consts: BTreeMap<String, Type>,
+    /// Every `@layout` type this module declares, by name (plans/M7.md
+    /// item C): `check_mmio_access` needs a register's declared direction,
+    /// width and offset, and `types::check_layouts` is the one pass that
+    /// computes them. Not spliced across an import, deliberately — an
+    /// `Mmio[L]`'s own `L` must be an `@layout(mmio)` struct declared in
+    /// the same module (`types::validate_capability_args`), so a layout
+    /// from another module can never be reached through one.
+    pub(crate) layouts: BTreeMap<String, types::LayoutType>,
     /// Every module-level `const`'s own initializer expression, by name
     /// (item H, generics.rs): a const generic argument may spell a bare
     /// `const` name (decision 4), so evaluating it needs the *value*, not
@@ -311,6 +319,23 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
         }
     }
 
+    // plans/M7.md item C: `check_layouts` is a pure function of the
+    // already-specialized module and has *already run and succeeded* by
+    // the time any caller in the real pipeline reaches here
+    // (`sema::check_typed`/`check_program_typed` both call it first,
+    // deliberately, before name resolution). Recomputing it is cheaper and
+    // far less invasive than threading the table through every
+    // `build_module_ctx` call site; `unwrap_or_default` covers the one
+    // caller that builds a ctx outside that order (`specialize`'s own
+    // const skeleton), where the worst it can do is lose a register — an
+    // access then gets the ordinary named "declares no register"
+    // rejection, never a silent accept.
+    let layouts = types::check_layouts(module)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| (l.name.clone(), l))
+        .collect();
+
     ModuleCtx {
         shapes,
         module_pools,
@@ -319,6 +344,7 @@ pub(crate) fn build_module_ctx(module: &Module, decl_items: &[types::DeclItem]) 
         fns,
         consts,
         const_values,
+        layouts,
         generics_queue: RefCell::new(BTreeMap::new()),
         current_chain: RefCell::new(Vec::new()),
     }
@@ -2225,6 +2251,17 @@ fn check_field_expr(
     }
     let base_t = check_expr(base, None, fctx, mctx)?;
     let base_ty = unwrap_own(base_t.ty.clone());
+    // plans/M7.md item C (03-hardware.md §2): a register selected out of
+    // an `Mmio[L]` is not a value. It has no representation, cannot be
+    // bound to a local, passed, stored or returned — the only two things
+    // that exist are `.read()` and `.write(v)`, handled one level up in
+    // `check_call_by_field`. Reaching *here* with an `Mmio[L]` base means
+    // the source wrote a bare selection, so this is where that is named.
+    if let Type::Named(cap, targs) = &base_ty {
+        if cap == "Mmio" {
+            return Err(mmio_bare_selection_error(targs, name, span, mctx));
+        }
+    }
     match &base_ty {
         Type::Named(sname, targs) => {
             // A generic instantiation's field (item H): substitute +
@@ -3914,8 +3951,59 @@ fn check_call_by_field(
             }
         }
     }
+    // plans/M7.md item C (03-hardware.md §2): typed MMIO access. The whole
+    // legal shape is `<mmio>.<register>.read()` / `.write(v)`, which
+    // arrives here as a call whose *receiver* is a field expression over
+    // an `Mmio[L]` — 03 §2's own worked example
+    // (`self.irq_regs.interrupt_status.read()`), and the docs' own
+    // aspirational driver (`docs/language/examples/virtio-storage.wr`,
+    // lines 145/149) spelled identically. Intercepted before the receiver
+    // is typed as an ordinary value, because a register selection has no
+    // value form at all (`check_field_expr`'s own `Mmio` arm above says
+    // so). A base whose inner expression is not an `Mmio[L]` — or does not
+    // type at all — falls straight through to the ordinary path below,
+    // which re-checks it and reports whatever it would have reported.
+    if let Expr::Field(inner, _, register) = base {
+        if let Ok(mmio) = check_expr(inner, None, fctx, mctx) {
+            if let Type::Named(cap, targs) = &unwrap_own(mmio.ty.clone()) {
+                if cap == "Mmio" {
+                    return check_mmio_access(
+                        mmio.clone(),
+                        targs,
+                        register,
+                        name,
+                        args,
+                        fspan,
+                        call_span,
+                        fctx,
+                        mctx,
+                    );
+                }
+            }
+        }
+    }
     let base_t = check_expr(base, None, fctx, mctx)?;
     let base_ty = unwrap_own(base_t.ty.clone());
+    // plans/M7.md item C: an `Mmio[L]` itself has no methods — the only
+    // operations 03 §2 gives it go through a *declared register*, which
+    // the arm above already took. Named here rather than falling into the
+    // generic "type `Mmio` has no method" (which would then try to
+    // instantiate `Mmio` as a generic struct and report something else
+    // entirely).
+    if let Type::Named(cap, targs) = &base_ty {
+        if cap == "Mmio" {
+            return Err(type_error(
+                format!(
+                    "`{}` has no method `{name}`; a typed register map is used only through a \
+                     declared register — `<mmio>.<register>.read()` or \
+                     `<mmio>.<register>.write(v)` (03-hardware.md §2){}",
+                    types::render_type(&base_ty),
+                    mmio_register_hint(targs, mctx),
+                ),
+                fspan,
+            ));
+        }
+    }
     // Plans/M6.md item A (02-language.md §9.4/§9.5): a bare (non-`await`/
     // `send`) call through an `Actor[T]` handle names a message method —
     // the language gives that no synchronous meaning, so it is rejected
@@ -4017,6 +4105,331 @@ fn check_call_by_field(
             ))
         }
     }
+}
+
+// --- plans/M7.md item C: typed MMIO access (03-hardware.md §2) ------------
+//
+// "Raw integer-address MMIO does not exist in the safe language." The only
+// two operations that exist are a *declared* register's read and write:
+//
+//     status = self.irq_regs.interrupt_status.read()
+//     self.irq_regs.interrupt_ack.write(handled)
+//
+// Everything about the access comes from the declaration and nothing from
+// the call site:
+//
+// - **Direction** is the register's own `ReadOnly[T]`/`WriteOnly[T]`
+//   wrapper. Reading a `WriteOnly` and writing a `ReadOnly` are two
+//   distinct named rejections; a register declared with no wrapper at all
+//   has no direction and neither operation exists on it (a third named
+//   rejection, not a permissive default).
+// - **Width** is `T` — `read()`'s result type and `write(v)`'s argument
+//   type *are* the declared register type, so a `u32` register cannot be
+//   read into a `u64` or written from a `u16` without the ordinary
+//   `.to[T]()` conversion the language already requires. The compiler
+//   never widens or truncates a register access silently.
+// - **Offset/alignment/bounds** are `check_layouts`' already-checked table
+//   (`hardware.layout.exact-bytes`): a register access can only ever name
+//   an entry of that table, so there is no second bounds rule here.
+// - **Endianness** is the layout's declared `endian=`, checked against the
+//   target ABI (03 §2: "The compiler and target ABI check ... and
+//   endianness"). This machine is little-endian A76 (06-machine.md §2), so
+//   a `@layout(mmio, endian=big)` access needs a byte swap this compiler
+//   does not emit, and fails closed rather than reading the wrong bytes.
+//
+// ## The node, and why it is an `Intrinsic`
+//
+// `TypedExprKind::Intrinsic { key: "Mmio.read" | "Mmio.write" }`, the same
+// vehicle `now`/`ms`/`Group.start`/the whole `@image` builder surface
+// already use for an operation with no declared parameter list to align
+// against. `receiver` is the `Mmio[L]` expression, `type_arg` is the
+// register's declared scalar `T`, and `args` carries the register's own
+// name (a `Str` leaf — it names a declared entry, not a value) plus, for a
+// write, the value. `eval::legal` gains an arm for both keys in *both* of
+// its scans: a hardware touch for provenance (03 §1) and a comptime-
+// illegal operation for legality (02-language.md §12: "free of I/O ... and
+// hardware effects").
+//
+// ## What does not exist yet, and exactly why
+//
+// **Nothing lowers.** `lower.rs` fails closed on both keys, by name, and
+// that is the honest state rather than a shortcut: **no `Mmio[L]` value
+// can exist at runtime today**, so any code emitted for one of these would
+// read or write a fixed offset from whatever a zero-initialized field
+// happens to hold. Two independent blockers, both outside this item's
+// files, both verified by running the compiler rather than by reading it:
+//
+//   1. `eval::image_checks::check_capability_substitution` rejects an
+//      `Mmio[L]` `init` parameter outright ("nothing mints a `Mmio` yet").
+//      That is the mint, and it is the one arm that has to change.
+//   2. Even with it changed, `layout::build_boot_init_calls` walks
+//      `graph.actors` only — a `@driver`'s `init` is never called at boot
+//      at all — and it fails closed on *every* capability parameter
+//      besides. So no capability of any kind has bytes at boot today,
+//      `DeviceCap[D]` included.
+//
+// Emitting a load/store against a provably-zero base is the exact shape of
+// wrong answer plans/M7.md item W was written to close (an image that
+// booted, asserted, and reported success against a field that was never
+// materialized). So the access type-checks in full and the backend says
+// so; when the mint lands, the fail-closed arm is what has to be replaced.
+
+/// The register-name hint appended to an `Mmio[L]` diagnostic: what this
+/// layout actually declares. Empty when the layout cannot be found at all
+/// (which `validate_capability_args` has already made impossible for a
+/// type that reached body checking — belt and braces, never a panic).
+fn mmio_register_hint(targs: &[types::TypeArg], mctx: &ModuleCtx) -> String {
+    let Some(layout) = mmio_layout_of(targs, mctx) else {
+        return String::new();
+    };
+    let names = types::mmio_register_names(layout);
+    if names.is_empty() {
+        return String::new();
+    }
+    format!(
+        "; `{}` declares {}",
+        layout.name,
+        names
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// The `@layout(mmio)` table entry an `Mmio[L]`'s own type arguments name.
+fn mmio_layout_of<'a>(
+    targs: &[types::TypeArg],
+    mctx: &'a ModuleCtx,
+) -> Option<&'a types::LayoutType> {
+    match targs.first() {
+        Some(types::TypeArg::Type(Type::Named(l, _))) => mctx.layouts.get(l.as_str()),
+        _ => None,
+    }
+}
+
+/// `check_field_expr`'s own `Mmio[L]` rejection: a bare register selection
+/// (`m.status` with no `.read()`/`.write(v)` after it), or a name that is
+/// not a declared register at all. Two different mistakes, two different
+/// messages — a reader who mistyped a register name should not be told
+/// their register is not a value.
+fn mmio_bare_selection_error(
+    targs: &[types::TypeArg],
+    name: &str,
+    span: Span,
+    mctx: &ModuleCtx,
+) -> SemaError {
+    let layout = mmio_layout_of(targs, mctx);
+    let known = layout.is_some_and(|l| types::mmio_register(l, name).is_some());
+    if !known {
+        return type_error(
+            format!(
+                "`{}` declares no register `{name}`{}",
+                layout
+                    .map(|l| l.name.clone())
+                    .unwrap_or_else(|| "this `@layout(mmio)` type".to_string()),
+                mmio_register_hint(targs, mctx),
+            ),
+            span,
+        );
+    }
+    type_error(
+        format!(
+            "register `{}.{name}` is not a value; an MMIO register exists only as an access — \
+             write `.read()` or `.write(v)` (03-hardware.md §2)",
+            layout.map(|l| l.name.as_str()).unwrap_or("?"),
+        ),
+        span,
+    )
+}
+
+/// One `<mmio>.<register>.read()` / `.write(v)` (03-hardware.md §2).
+#[allow(clippy::too_many_arguments)]
+fn check_mmio_access(
+    mmio: TypedExpr,
+    targs: &[types::TypeArg],
+    register: &str,
+    op: &str,
+    args: &[Arg],
+    fspan: Span,
+    call_span: Span,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let Some(layout) = mmio_layout_of(targs, mctx) else {
+        // Unreachable through a checked program: `Mmio[L]` does not
+        // resolve at all unless `L` is an `@layout(mmio)` struct of this
+        // module (`types::validate_capability_args`). Named, not panicked.
+        return Err(type_error(
+            format!(
+                "`{}`'s layout is not a declared `@layout(mmio)` type (03-hardware.md §2)",
+                types::render_type(&mmio.ty)
+            ),
+            fspan,
+        ));
+    };
+    let Some(reg) = types::mmio_register(layout, register) else {
+        return Err(type_error(
+            format!(
+                "`{}` declares no register `{register}`{}",
+                layout.name,
+                mmio_register_hint(targs, mctx)
+            ),
+            fspan,
+        ));
+    };
+    if !matches!(op, "read" | "write") {
+        return Err(type_error(
+            format!(
+                "register `{}.{register}` has no operation `{op}`; a declared MMIO register is \
+                 read with `.read()` or written with `.write(v)` (03-hardware.md §2)",
+                layout.name
+            ),
+            fspan,
+        ));
+    }
+
+    // Direction, from the declaration alone.
+    let declared = format!("{}.{register}: {}", layout.name, register_type_text(&reg));
+    match (reg.direction, op) {
+        (Some(types::MmioDirection::ReadOnly), "read")
+        | (Some(types::MmioDirection::WriteOnly), "write") => {}
+        (Some(types::MmioDirection::WriteOnly), _) => {
+            return Err(type_error(
+                format!(
+                    "register `{declared}` is write-only and cannot be read (03-hardware.md §2: a \
+                     register's declared direction governs its access)"
+                ),
+                call_span,
+            ));
+        }
+        (Some(types::MmioDirection::ReadOnly), _) => {
+            return Err(type_error(
+                format!(
+                    "register `{declared}` is read-only and cannot be written (03-hardware.md §2: \
+                     a register's declared direction governs its access)"
+                ),
+                call_span,
+            ));
+        }
+        (None, _) => {
+            return Err(type_error(
+                format!(
+                    "register `{declared}` declares no direction, so it has neither a `read()` \
+                     nor a `write(v)`; a register map's fields are `ReadOnly[T]` or `WriteOnly[T]` \
+                     (03-hardware.md §2)"
+                ),
+                call_span,
+            ));
+        }
+    }
+
+    // Endianness, against the target ABI (03 §2: "The compiler and target
+    // ABI check width, alignment, non-overlap, bounds, and endianness").
+    if layout.endian != types::LayoutEndian::Little {
+        return Err(unimplemented_at(
+            &format!(
+                "an access to `{declared}`, whose `@layout(mmio, endian={})` disagrees with this \
+                 target's little-endian ABI (06-machine.md §2) and would need a byte swap that is \
+                 not emitted, is",
+                layout.endian.as_str()
+            ),
+            call_span,
+        ));
+    }
+
+    // Width: the register's declared scalar *is* the operation's type.
+    let Some(scalar) = scalar_type_by_name(&reg.scalar) else {
+        return Err(type_error(
+            format!("register `{declared}` has no scalar register type (03-hardware.md §2)"),
+            fspan,
+        ));
+    };
+
+    let mut intrinsic_args = vec![(
+        "register".to_string(),
+        TypedExpr {
+            ty: Type::Static(Box::new(Type::Str)),
+            kind: TypedExprKind::Str(register.to_string()),
+        },
+    )];
+    let ty = match op {
+        "read" => {
+            if !args.is_empty() {
+                return Err(type_error(
+                    format!("`{}.{register}.read()` takes no arguments", layout.name),
+                    call_span,
+                ));
+            }
+            scalar.clone()
+        }
+        _ => {
+            let [arg] = args else {
+                return Err(type_error(
+                    format!(
+                        "`{}.{register}.write(v)` takes exactly one argument, the {} value to \
+                         write; found {}",
+                        layout.name,
+                        types::render_type(&scalar),
+                        args.len()
+                    ),
+                    call_span,
+                ));
+            };
+            if let Some(label) = &arg.label {
+                return Err(type_error(
+                    format!(
+                        "`{}.{register}.write(v)`'s value is positional; `{label}=` names no \
+                         parameter",
+                        layout.name
+                    ),
+                    arg.span,
+                ));
+            }
+            // The register's declared width governs the write, by the one
+            // mechanism every declared parameter position in this compiler
+            // already uses: the scalar is handed to `check_expr` as the
+            // *expected* type. An integer literal therefore takes the
+            // register's own width (`ack: WriteOnly[u16]` accepts
+            // `.write(7)` as a `u16`), and anything else gets the ordinary
+            // `expected `u32`, found `u64`` rejection from inside
+            // `check_expr` — including a `never` (`panic(...)`). A second,
+            // post-hoc `types_eq` guard was written here first and then
+            // deleted: no expression reaches it, because `check_expr` with
+            // an expected type has already rejected every mismatch.
+            let value = check_expr(&arg.value, Some(&scalar), fctx, mctx)?;
+            intrinsic_args.push(("value".to_string(), value));
+            Type::Unit
+        }
+    };
+
+    Ok(TypedExpr {
+        ty,
+        kind: TypedExprKind::Intrinsic {
+            key: format!("Mmio.{op}"),
+            receiver: Some(Box::new(mmio)),
+            type_arg: Some(scalar),
+            args: intrinsic_args,
+        },
+    })
+}
+
+/// A register's declared type as source wrote it (`ReadOnly[u32]`, or a
+/// bare `u32` for a field with no direction) — the diagnostics quote the
+/// declaration, never a reconstruction of it.
+fn register_type_text(reg: &types::MmioRegister) -> String {
+    match reg.direction {
+        Some(d) => format!("{}[{}]", d.wrapper(), reg.scalar),
+        None => reg.scalar.clone(),
+    }
+}
+
+/// Is `key` one of plans/M7.md item C's two MMIO access intrinsics? One
+/// list, read by `eval::legal` (twice: provenance and comptime legality)
+/// and by `lower.rs`'s own fail-closed arm — three consumers that must
+/// agree on exactly which keys are a hardware effect.
+pub fn is_mmio_access_intrinsic(key: &str) -> bool {
+    matches!(key, "Mmio.read" | "Mmio.write")
 }
 
 // --- plans/M6.md item A: the actor/async surface --------------------------

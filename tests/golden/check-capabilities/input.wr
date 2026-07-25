@@ -48,6 +48,16 @@ struct VirtioIrqMmio:
     @offset(0x060) interrupt_status: ReadOnly[u32]
     @offset(0x064) interrupt_ack: WriteOnly[u32]
 
+# A second, disjoint partition of the same claim (plans/M7.md item C,
+# 03-hardware.md §2: "two live layouts can never alias a register").
+# `IrqPartition` below mints both — one directly, one through a wrapper
+# struct — and is accepted precisely because their byte ranges do not
+# meet. `golden/err-mmio-alias` is this same driver with the two layouts
+# moved on top of each other.
+@layout(mmio, endian=little)
+struct VirtioConfigMmio:
+    @offset(0x100) config_generation: ReadOnly[u32]
+
 # The device type `DeviceCap[D]` names. 06-machine.md §6's closed device
 # set ships with the stdlib and does not exist yet, so this stands in for
 # it as an ordinary declared struct — exactly as `golden/appliance`'s own
@@ -59,7 +69,7 @@ struct VirtioBlock:
 # not every struct), a resource by composition, and the shape the
 # containment walk must see through.
 struct RegsBundle:
-    regs: Mmio[VirtioIrqMmio]
+    regs: Mmio[VirtioConfigMmio]
     tag: u64
 
     # Provenance's body arm: no parameter here names a capability, but
@@ -69,7 +79,11 @@ struct RegsBundle:
     fn tag_of(read self) -> u64:
         return self.tag
 
-# 03 §1's own field shape: the driver "maps only what its ISR needs".
+# 03 §1's own field shape: the driver "maps only what its ISR needs" —
+# and 03 §2's claim partitioning, accepted: two live layouts, one held
+# directly and one reached through a plain wrapper struct, consuming
+# disjoint byte ranges (0x60..0x68 and 0x100..0x104) of this driver's one
+# claim (plans/M7.md item C, `hardware.mmio.no-alias`).
 @driver
 pub struct IrqPartition:
     irq_regs: Mmio[VirtioIrqMmio]

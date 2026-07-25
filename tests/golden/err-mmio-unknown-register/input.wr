@@ -1,0 +1,19 @@
+module examples.err_mmio_unknown_register
+
+# plans/M7.md item C, 03-hardware.md §2: "Raw integer-address MMIO does
+# not exist in the safe language." A register access names a *declared*
+# entry of the layout and nothing else — there is no fallback to an
+# offset, an address, or a nearby name. The diagnostic lists what the
+# layout does declare, since that is the whole set available.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+
+    fn read_config(read self) -> u32:
+        return self.irq_regs.config_generation.read()

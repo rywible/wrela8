@@ -1,0 +1,20 @@
+module examples.err_mmio_undirected_register
+
+# plans/M7.md item C, 03-hardware.md §2: `@layout(mmio)` accepts a bare
+# sized integer field (item B's exact-bytes rule is about *bytes*, and a
+# register map may need to describe bytes it never touches), but such a
+# field has no declared direction — so it has neither a `read()` nor a
+# `write(v)`. Neither operation is invented by default: the direction is
+# what 03 §2 says governs the access, and a field that declares none has
+# no access at all.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: u32
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+
+    fn poll(read self) -> u32:
+        return self.irq_regs.interrupt_status.read()

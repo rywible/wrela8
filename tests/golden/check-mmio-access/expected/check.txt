@@ -1,0 +1,17 @@
+Module path=examples.check_mmio_access
+  Const INT_VRING: u32
+  Const INT_CONFIG: u32
+  Struct VirtioIrqMmio data
+    field interrupt_status: ReadOnly[u32]
+    field interrupt_ack: WriteOnly[u32]
+  Struct VirtioLowAckMmio data
+    field ack_low: WriteOnly[u16]
+  Struct VirtioBlock data
+    field id: u32
+  Struct BlkDriver resource
+    field irq_regs: Mmio[VirtioIrqMmio]
+    field low_regs: Mmio[VirtioLowAckMmio]
+    field handled_bits: u32
+    fn on_queue_irq(mut self) -> unit
+    fn ack_low(read self, bits: read u16) -> unit
+    fn last_handled(read self) -> u32

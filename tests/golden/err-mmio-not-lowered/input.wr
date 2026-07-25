@@ -1,0 +1,34 @@
+module examples.err_mmio_not_lowered
+
+# plans/M7.md item C's honest boundary, pinned rather than described: a
+# typed MMIO access type-checks in full (`golden/check-mmio-access`) and
+# then stops at the backend, by name.
+#
+# The reason is not that lowering is hard. It is that **no `Mmio[L]` value
+# exists at runtime yet**, so there is no base address to access, and any
+# emitted load/store would run against whatever a zero-filled field
+# happens to hold. Two independent blockers, both outside item C:
+#
+#   1. `eval::image_checks::check_capability_substitution` rejects an
+#      `Mmio[L]` `init` parameter outright ("nothing mints a `Mmio` yet").
+#      That is the mint.
+#   2. `layout::build_boot_init_calls` walks `graph.actors` only — a
+#      `@driver`'s `init` is never called at boot at all — and fails
+#      closed on every capability parameter besides. So no capability of
+#      any kind has bytes at boot today, `DeviceCap[D]` included.
+#
+# plans/M7.md item W is why this is a rejection instead of emitted code:
+# an image that booted, asserted and reported success against a field
+# that was never materialized is a wrong answer, not a missing feature.
+# When the mint lands, this expectation is what has to change.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+
+    fn poll(read self) -> u32:
+        return self.irq_regs.interrupt_status.read()

@@ -1967,6 +1967,354 @@ pub fn dump_layouts(by_module: &[(String, Vec<LayoutType>)]) -> String {
     out
 }
 
+// --- typed MMIO: registers + claim partitioning (plans/M7.md item C) ------
+//
+// 03-hardware.md §2, the two sentences this section owns: "A driver or
+// sealed protocol partitions its claim into declared, non-overlapping
+// layouts ... Minting a layout consumes those byte ranges from the claim;
+// two live layouts can never alias a register."
+//
+// ## Where a claim lives, and what consumes from it
+//
+// A claim is **a device's register map, reached through the `DeviceCap[D]`
+// the image binding mints** — 03 §1: "The device itself is named once, at
+// the image binding (`img.driver(BlkDriver, device=blk_device)`), the
+// single source of truth." A driver has at most one `DeviceCap`
+// (`eval::image_checks::check_capability_substitution` enforces that
+// already), so **a driver has exactly one claim**, and the claim needs no
+// representation of its own beyond the driver that owns it: what a claim
+// *is* comes from the image, what a claim is *partitioned into* comes from
+// the driver's own declaration. That split is the whole design.
+//
+// The partition is the driver's own declared `Mmio[L]`-typed **fields** —
+// those, and nothing else, are what the driver holds *live*
+// (03 §2's own word). A driver holding `irq_regs: Mmio[VirtioIrqMmio]`
+// has minted `VirtioIrqMmio`'s byte ranges out of its claim; a second
+// field minting a layout that shares a byte with the first is exactly
+// "two live layouts alias a register", and is rejected here naming both
+// (`hardware.mmio.no-alias`).
+//
+// An `Mmio[L]` **parameter** is deliberately *not* a mint: it is how an
+// already-minted layout is delivered to the driver's `init` or lent to a
+// helper fn. Reading it as a second mint would make the one shape 03 §1's
+// own worked example needs — an `init` parameter assigned to the field of
+// the same layout type — self-aliasing, which is nonsense. Provenance
+// (`eval::legal::check_provenance`) is what governs *who* may hold a lent
+// layout; this rule governs *what* the owning driver may partition.
+//
+// ## What a mint consumes: fields, not extent
+//
+// A layout consumes exactly its declared **field** ranges, never its
+// declared holes. 03 §2's own worked example is the argument: its 0x60
+// bytes of leading padding "belong to the sealed transport's own
+// partition, not to this layout" (`golden/check-layout-mmio`'s own words,
+// written at item B before any of this existed) — and §2's very next
+// sentence says the sealed transport protocol owns exactly that
+// initialization/queue/status/config partition. Consuming the hole would
+// make the driver's ISR partition and the transport's partition collide by
+// construction, which is the opposite of what the paragraph describes.
+//
+// ## The boundaries, named rather than discovered later
+//
+// - **Two drivers bound to one device.** Whether that is legal at all is
+//   an image-graph question (`img.driver(A, device=d)` twice), and the
+//   graph checks live in `eval::image_checks`, not here. This pass is
+//   per-driver and says so: it cannot see the graph, so it cannot see two
+//   drivers sharing a claim. Owned by whoever makes `Mmio[L]` mintable at
+//   the binding (`check_capability_substitution`'s own `Mmio` arm, still
+//   failing closed by name today — see `check_mmio_access` in
+//   `sema::bodies` for the whole blocked-mint story).
+// - **A plain struct holding an `Mmio[L]`, held by no driver.** It mints
+//   nothing, because nothing gives it a claim; provenance already rejects
+//   any fn that touches it without a driver's authority.
+
+/// A register's declared direction — 03-hardware.md §2's `ReadOnly[T]` /
+/// `WriteOnly[T]`. `None` (an `@layout(mmio)` field written as a bare
+/// scalar) is not a third direction: it is a register with *no* declared
+/// direction, and `sema::bodies` rejects both operations on one by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioDirection {
+    ReadOnly,
+    WriteOnly,
+}
+
+impl MmioDirection {
+    pub fn wrapper(self) -> &'static str {
+        match self {
+            MmioDirection::ReadOnly => "ReadOnly",
+            MmioDirection::WriteOnly => "WriteOnly",
+        }
+    }
+}
+
+/// One declared register of an `@layout(mmio)` type, in the shape an
+/// access needs: its direction, the exact-width scalar it carries, and the
+/// bytes it occupies in the claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmioRegister {
+    pub name: String,
+    pub direction: Option<MmioDirection>,
+    /// The wrapped scalar's own name (`"u32"`), exactly as source wrote
+    /// it — `bodies::scalar_type_by_name` turns it back into a `Type`.
+    pub scalar: String,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// Splits a `@layout(mmio)` field's declared type text into its direction
+/// and the scalar it wraps.
+///
+/// This reads back the source spelling `check_one_layout` already stored
+/// (`LayoutField::ty`, `printer::print_type_bare`'s own output) rather
+/// than `LayoutField` growing a structured field, for one concrete
+/// reason: `LayoutType`/`LayoutField` are constructed literally outside
+/// this file (`report.rs`'s own exact-bytes determinism test), so a new
+/// field is not a local change. The parse is total over exactly the three
+/// shapes `layout_field_size` can accept for an `mmio` field —
+/// `ReadOnly[<scalar>]`, `WriteOnly[<scalar>]`, `<scalar>` — and
+/// `mmio_registers_are_read_back_from_the_checked_layout` below asserts it
+/// against `check_layouts`' own output, not against hand-written strings.
+fn split_register_type(rendered: &str) -> (Option<MmioDirection>, &str) {
+    for (prefix, dir) in [
+        ("ReadOnly[", MmioDirection::ReadOnly),
+        ("WriteOnly[", MmioDirection::WriteOnly),
+    ] {
+        if let Some(rest) = rendered.strip_prefix(prefix) {
+            if let Some(inner) = rest.strip_suffix(']') {
+                return (Some(dir), inner);
+            }
+        }
+    }
+    (None, rendered)
+}
+
+/// `layout`'s declared register named `name`, or `None` if it declares no
+/// such register. Declared holes are never registers — a `@offset` that
+/// skips bytes names nothing.
+pub fn mmio_register(layout: &LayoutType, name: &str) -> Option<MmioRegister> {
+    layout.entries.iter().find_map(|e| match e {
+        LayoutEntry::Field(f) if f.name == name => {
+            let (direction, scalar) = split_register_type(&f.ty);
+            Some(MmioRegister {
+                name: f.name.clone(),
+                direction,
+                scalar: scalar.to_string(),
+                offset: f.offset,
+                size: f.size,
+            })
+        }
+        _ => None,
+    })
+}
+
+/// Every register `layout` declares, in ascending offset order — the
+/// diagnostic surface for "this layout declares no register `x`".
+pub fn mmio_register_names(layout: &LayoutType) -> Vec<String> {
+    layout
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            LayoutEntry::Field(f) => Some(f.name.clone()),
+            LayoutEntry::Padding { .. } => None,
+        })
+        .collect()
+}
+
+/// One `Mmio[L]` mint found on a driver: which field carries it, that
+/// field's own declared type (which is *not* always `Mmio[L]` — a plain
+/// wrapper struct reaches one too), and which layout it named.
+struct Mint {
+    field: String,
+    field_ty: String,
+    layout: String,
+    span: Span,
+}
+
+/// Collects every `Mmio[L]` a driver field's declared type carries, at any
+/// nesting — including through a plain wrapper struct, which is the same
+/// reach `type_contains_capability` already gives the containment rules
+/// (one walk's shape, two questions). Order is the type's own structural
+/// order, so the diagnostic is deterministic.
+fn collect_mmio_layouts(
+    ty: &Type,
+    structs: &BTreeMap<String, &DeclStruct>,
+    seen: &mut BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    match ty {
+        Type::Named(name, targs) if name == "Mmio" => {
+            if let Some(TypeArg::Type(Type::Named(layout, _))) = targs.first() {
+                out.push(layout.clone());
+            }
+        }
+        Type::Array(elem, _) => collect_mmio_layouts(elem, structs, seen, out),
+        Type::Tuple(elems) => {
+            for e in elems {
+                collect_mmio_layouts(e, structs, seen, out);
+            }
+        }
+        Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
+            collect_mmio_layouts(inner, structs, seen, out)
+        }
+        Type::Result(ok, err) => {
+            collect_mmio_layouts(ok, structs, seen, out);
+            collect_mmio_layouts(err, structs, seen, out);
+        }
+        Type::Fn(params, ret) => {
+            for (_, t) in params {
+                collect_mmio_layouts(t, structs, seen, out);
+            }
+            collect_mmio_layouts(ret, structs, seen, out);
+        }
+        Type::Named(name, targs) => {
+            if seen.insert(name.clone()) {
+                if let Some(s) = structs.get(name.as_str()) {
+                    for (t, _) in &s.component_types {
+                        collect_mmio_layouts(t, structs, seen, out);
+                    }
+                }
+            }
+            for a in targs {
+                if let TypeArg::Type(t) = a {
+                    collect_mmio_layouts(t, structs, seen, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The byte ranges `layout` consumes from a claim: one `(start, end)` per
+/// declared register, ascending. Declared holes consume nothing (this
+/// section's own "fields, not extent" note).
+fn consumed_ranges(layout: &LayoutType) -> Vec<(u64, u64, String)> {
+    layout
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            LayoutEntry::Field(f) => Some((f.offset, f.offset + f.size, f.name.clone())),
+            LayoutEntry::Padding { .. } => None,
+        })
+        .collect()
+}
+
+/// 03-hardware.md §2's claim-partitioning sentence, checked
+/// (`hardware.mmio.no-alias`): for every `@driver`, the layouts its own
+/// fields mint must consume disjoint byte ranges from its one claim.
+///
+/// Runs after `declare` (it needs resolved field types and the
+/// `@driver`/struct-composition facts `DeclStruct` carries) and takes
+/// `check_layouts`' already-checked table, so every layout named here is
+/// known well-formed. Fail-fast in declaration order, like every other
+/// check in this file: the first conflicting *pair* wins, and the
+/// diagnostic names both mints, both layouts, both registers and the
+/// exact overlapping bytes — 03 §2 is a rule about a pair, so a message
+/// naming one half of one would be unactionable.
+pub fn check_mmio_claims(
+    module: &Module,
+    items: &[DeclItem],
+    layouts: &[LayoutType],
+) -> Result<(), SemaError> {
+    let mut structs: BTreeMap<String, &DeclStruct> = BTreeMap::new();
+    for item in items {
+        if let DeclItem::Struct(s) = item {
+            structs.insert(s.name.clone(), s);
+        }
+    }
+    let by_name: BTreeMap<&str, &LayoutType> =
+        layouts.iter().map(|l| (l.name.as_str(), l)).collect();
+
+    // Field spans live only on the ast (a `DeclField` carries none), so
+    // the two are walked together exactly like `validate_capability_types`
+    // above does — same filtered zip, same 1:1 guarantee from `declare`.
+    let ast_items: Vec<&Item> = module
+        .items
+        .iter()
+        .filter(|i| !matches!(i, Item::ComptimeIf(_)))
+        .collect();
+    for (ai, di) in ast_items.iter().zip(items.iter()) {
+        let (Item::Struct(s), DeclItem::Struct(d)) = (ai, di) else {
+            continue;
+        };
+        if !d.is_driver {
+            continue;
+        }
+        let ast_fields: Vec<&ast::FieldItem> = s
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                Member::Field(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        let decl_fields: Vec<&DeclField> = d
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                DeclMember::Field(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+
+        let mut mints: Vec<Mint> = Vec::new();
+        for (af, df) in ast_fields.iter().zip(decl_fields.iter()) {
+            let mut found = Vec::new();
+            collect_mmio_layouts(&df.ty, &structs, &mut BTreeSet::new(), &mut found);
+            for layout in found {
+                mints.push(Mint {
+                    field: df.name.clone(),
+                    field_ty: render_type(&df.ty),
+                    layout,
+                    span: af.span,
+                });
+            }
+        }
+
+        for (i, mint) in mints.iter().enumerate() {
+            let Some(l) = by_name.get(mint.layout.as_str()) else {
+                continue; // not an `@layout(mmio)` type: `validate_capability_types` owns that
+            };
+            for prior in &mints[..i] {
+                let Some(pl) = by_name.get(prior.layout.as_str()) else {
+                    continue;
+                };
+                for (start, end, reg) in consumed_ranges(l) {
+                    for (pstart, pend, preg) in consumed_ranges(pl) {
+                        if start < pend && pstart < end {
+                            let lo = start.max(pstart);
+                            let hi = end.min(pend);
+                            return Err(layout_error(
+                                format!(
+                                    "`@driver` `{}` mints two live MMIO layouts that alias the \
+                                     same register: field `{}: {}` mints `{}`, claiming `{}.{}` \
+                                     ({start:#x}..{end:#x}), and field `{}: {}` already mints \
+                                     `{}`, claiming `{}.{}` ({pstart:#x}..{pend:#x}) — they share \
+                                     bytes {lo:#x}..{hi:#x}. Minting a layout consumes those byte \
+                                     ranges from the claim; two live layouts can never alias a \
+                                     register (03-hardware.md §2)",
+                                    d.name,
+                                    mint.field,
+                                    mint.field_ty,
+                                    mint.layout,
+                                    mint.layout,
+                                    reg,
+                                    prior.field,
+                                    prior.field_ty,
+                                    prior.layout,
+                                    prior.layout,
+                                    preg,
+                                ),
+                                mint.span,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // --- type resolution -----------------------------------------------------
 
 fn declare_const(
@@ -3778,6 +4126,88 @@ mod tests {
             err.message.contains("cannot hold a capability in a field"),
             "{:?}",
             err.message
+        );
+    }
+
+    // --- typed MMIO (plans/M7.md item C, 03-hardware.md §2) -------------
+    //
+    // Every source-shaped rejection is a golden (`tests/golden/err-mmio-*`)
+    // — that is the review surface, same discipline as `@layout` above.
+    // These cover the two things a golden structurally cannot: that the
+    // register table is read back out of `check_layouts`' own product
+    // rather than out of hand-written text, and the *accepting* half of
+    // the claim rule whose acceptance a golden shows only implicitly.
+
+    #[test]
+    fn mmio_registers_are_read_back_from_the_checked_layout() {
+        let layouts = layouts_of(MMIO_EXAMPLE).expect("03-hardware.md §2's own example");
+        let l = &layouts[0];
+
+        let status = mmio_register(l, "interrupt_status").expect("a declared register");
+        assert_eq!(status.direction, Some(MmioDirection::ReadOnly));
+        assert_eq!(status.scalar, "u32");
+        assert_eq!((status.offset, status.size), (0x60, 4));
+
+        let ack = mmio_register(l, "interrupt_ack").expect("a declared register");
+        assert_eq!(ack.direction, Some(MmioDirection::WriteOnly));
+        assert_eq!(ack.scalar, "u32");
+        assert_eq!((ack.offset, ack.size), (0x64, 4));
+
+        assert_eq!(mmio_register(l, "nope"), None);
+        assert_eq!(
+            mmio_register_names(l),
+            vec!["interrupt_status".to_string(), "interrupt_ack".to_string()]
+        );
+
+        // An `mmio` field with no wrapper has no direction — not a third
+        // direction, and not a default. `golden/err-mmio-undirected-register`
+        // is what a source author sees; this is the table entry behind it.
+        let bare = layouts_of(
+            "module t\n\n@layout(mmio, endian=little)\nstruct S:\n\
+             \x20   @offset(0x000) plain: u16\n",
+        )
+        .expect("a bare mmio field is a legal `@layout`");
+        let reg = mmio_register(&bare[0], "plain").expect("a declared register");
+        assert_eq!(reg.direction, None);
+        assert_eq!(reg.scalar, "u16");
+    }
+
+    /// The claim rule's accepting half, and the one shape 03-hardware.md
+    /// §1's own worked example needs: a driver whose `init` takes
+    /// `take regs: Mmio[L]` *and* whose field holds `Mmio[L]` mints that
+    /// layout exactly once. Reading the parameter as a second mint would
+    /// make §1's constructor self-aliasing, which is why a parameter is
+    /// deliberately not a mint (this section's own note).
+    #[test]
+    fn an_mmio_parameter_delivering_a_field_is_not_a_second_mint() {
+        check_ok(&format!(
+            "{CAP_PRELUDE}@driver\npub struct D:\n\
+             \x20   regs: Mmio[Regs]\n\
+             \x20   n: u32\n\n\
+             \x20   init(mut self, take cap: DeviceCap[Blk], take regs: Mmio[Regs]):\n\
+             \x20       self.regs = take regs\n\
+             \x20       self.n = 0\n"
+        ));
+    }
+
+    /// A layout consumes its declared *registers*, never its declared
+    /// holes. Two layouts whose holes cover each other's registers are
+    /// disjoint partitions of one claim — which is exactly 03 §2's own
+    /// worked example (an ISR partition at 0x60 alongside the sealed
+    /// transport's partition below it).
+    #[test]
+    fn a_declared_hole_consumes_nothing_from_the_claim() {
+        check_ok(
+            "module t\n\n\
+             @layout(mmio, endian=little)\n\
+             struct Irq:\n\
+             \x20   @offset(0x060) status: ReadOnly[u32]\n\n\
+             @layout(mmio, endian=little)\n\
+             struct Transport:\n\
+             \x20   @offset(0x000) device_status: WriteOnly[u32]\n\n\
+             @driver\npub struct D:\n\
+             \x20   irq: Mmio[Irq]\n\
+             \x20   transport: Mmio[Transport]\n",
         );
     }
 }

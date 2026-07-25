@@ -1961,6 +1961,20 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             b.emit(FlowInst::Duration { dst, n });
             Ok(dst)
         }
+        // plans/M7.md item C: the async half of `lower.rs`'s own MMIO arm,
+        // failing closed for the identical reason and with the identical
+        // message rather than falling into the `{other:?}` catch-all below
+        // (which would print a whole typed node at a reader).
+        TypedExprKind::Intrinsic { key, .. }
+            if crate::sema::bodies::is_mmio_access_intrinsic(key) =>
+        {
+            Err(FlowError::unimplemented(
+                "a typed MMIO register access (03-hardware.md §2): it type-checks, but no \
+                 `Mmio[L]` value exists at runtime yet — the image binding does not mint one \
+                 (`eval::image_checks`) and boot never calls a `@driver`'s `init` \
+                 (`layout::build_boot_init_calls`), so there is no base address to access. That is",
+            ))
+        }
         TypedExprKind::Await(_) | TypedExprKind::GroupChild(_) => Err(FlowError::unimplemented(
             "an `await`/group-child nested inside a larger expression (only a direct \
              `let`/assignment/`return`/bare-statement operand is supported) is",

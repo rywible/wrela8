@@ -1,0 +1,1 @@
+error[unimplemented]: lowering a typed MMIO register access (03-hardware.md §2): it type-checks, but no `Mmio[L]` value exists at runtime yet — the image binding does not mint one (`eval::image_checks`) and boot never calls a `@driver`'s `init` (`layout::build_boot_init_calls`), so there is no base address to access. That is not implemented yet
