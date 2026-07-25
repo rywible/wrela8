@@ -1,2 +1,2 @@
-FAILED driver init returned Err(BootError)
+FAILED BlkDriver.init returned Err
 0 passed, 1 failed

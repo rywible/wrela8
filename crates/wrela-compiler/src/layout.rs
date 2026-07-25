@@ -1568,11 +1568,10 @@ pub fn layout_program(
 ) -> Result<ImageLayout, LayoutError> {
     let image_base = machine_layout::IMAGE_BASE;
 
-    let wiring: Option<RuntimeWiring> = match &boot {
+    let mut wiring: Option<RuntimeWiring> = match &boot {
         Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
-    let runtime: Option<&RuntimeTables> = wiring.as_ref().map(|w| &w.tables);
 
     let entry_words = build_entry_stub();
 
@@ -1585,11 +1584,19 @@ pub fn layout_program(
         }
     }
 
-    let rodata_bytes: Vec<u8> = program
-        .rodata
+    // plans/M7.md item E1: fallible-`init` abort messages are interned
+    // into the same rodata pool an `assert` failure's text already uses,
+    // once, before either `build_runtime_block` pass.
+    let mut rodata_entries: Vec<Vec<u8>> = program.rodata.clone();
+    let mut rodata_cursor: usize = rodata_entries.iter().map(Vec::len).sum();
+    if let Some(w) = wiring.as_mut() {
+        intern_fallible_init_abort_messages(w, &mut rodata_entries, &mut rodata_cursor);
+    }
+    let rodata_bytes: Vec<u8> = rodata_entries
         .iter()
         .flat_map(|entry| entry.iter().copied())
         .collect();
+    let runtime: Option<&RuntimeTables> = wiring.as_ref().map(|w| &w.tables);
 
     let abort_fixed_words = build_abort_stub(EXIT_CODE_ABORT_FIXED);
     let abort_val_words = build_abort_stub(EXIT_CODE_ABORT_VAL);
@@ -1635,6 +1642,7 @@ pub fn layout_program(
                 &sizing_device_regs,
                 &sizing_pools,
                 0,
+                None, // AbortFixed reloc — abort lives in another section
             )
         })
         .transpose()?;
@@ -1830,7 +1838,7 @@ pub fn layout_program(
     // the identical shape the checkpoint block above uses.
     let runtime_block = match (&wiring, &placement) {
         (Some(w), Some(pl)) => {
-            let real = build_runtime_block(w, pl, &device_regs, &pools, 0)?;
+            let real = build_runtime_block(w, pl, &device_regs, &pools, 0, None)?;
             if real.words.len() != rtcode_words_len {
                 return Err(LayoutError::new(
                     "internal error: the runtime block's own word count changed between its \
@@ -1961,23 +1969,23 @@ pub fn layout_program(
         }
     }
 
-    // The `rtcode` section's own relocations: `Reloc::Call` only — every
-    // `rt_select_and_run` dispatch chain entry (a `pub` method's real
-    // compiled body or state machine) and every boot-init `init` call.
-    // `build_runtime_block` emits no other kind, and any other kind
-    // appearing here would be a real internal inconsistency, so it is
-    // rejected rather than guessed at.
+    // The `rtcode` section's own relocations: `Reloc::Call` (dispatch +
+    // boot-init `init` calls), and — plans/M7.md item E1 — `Reloc::Rodata`
+    // + `Reloc::AbortFixed` on a fallible `init`'s `Err` path (the same
+    // `__wrela_abort` contract an `assert` failure inside `init` already
+    // uses from the `code` section). Any other kind appearing here would
+    // be a real internal inconsistency, so it is rejected rather than
+    // guessed at.
     //
-    // Internal-error audit: both guards below are unreachable from any
-    // source program. The kind guard is structural (this block is assembled
-    // by two named builders in this file, neither of which can emit those
-    // relocs). The "never codegen'd" guard's own targets are a declared
-    // actor's `pub` method keys and its zero-argument `init` key, all read
+    // Internal-error audit: the "never codegen'd" Call guard's own targets
+    // are a declared actor's `pub` method keys and its `init` key, all read
     // out of the same module set `lower`/`codegen` compiled — and a method
     // that fails to lower stops the whole attempt one layer up, at
     // `try_layout_program`'s "all or nothing" rule, long before here. It is
     // the *undeclared*-actor direction that was reachable, and that is the
-    // `Reloc::Call` case handled by `unresolved_call_target` above.
+    // `Reloc::Call` case handled by `unresolved_call_target` above. The
+    // AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase rejection is
+    // structural — `build_boot_init` emits none of those.
     let mut rtcode_words: Vec<u32> = runtime_block
         .as_ref()
         .map(|b| b.words.clone())
@@ -1995,15 +2003,31 @@ pub fn layout_program(
                     let target_addr = code_base + (target_base as u64) * 4;
                     patch_bl(&mut rtcode_words, *word, this_addr, target_addr)?;
                 }
-                Reloc::Rodata { .. }
-                | Reloc::AbortFixed { .. }
-                | Reloc::AbortVal { .. }
+                Reloc::Rodata {
+                    word_adrp,
+                    byte_offset,
+                } => {
+                    let rb = rodata_base.ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a runtime-block Reloc::Rodata exists but the rodata \
+                             section is empty",
+                        )
+                    })?;
+                    let this_addr = rc + (*word_adrp as u64) * 4;
+                    let target_addr = rb + *byte_offset as u64;
+                    patch_adrp_add(&mut rtcode_words, *word_adrp, this_addr, target_addr)?;
+                }
+                Reloc::AbortFixed { word } => {
+                    let this_addr = rc + (*word as u64) * 4;
+                    patch_bl(&mut rtcode_words, *word, this_addr, abort_fixed_base)?;
+                }
+                Reloc::AbortVal { .. }
                 | Reloc::CheckpointService { .. }
                 | Reloc::TurnFrameAddr { .. }
                 | Reloc::GroupArenaBase { .. } => {
                     return Err(LayoutError::new(
-                        "internal error: the runtime block itself must never emit a Rodata/\
-                         AbortFixed/AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase reloc",
+                        "internal error: the runtime block itself must never emit an \
+                         AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase reloc",
                     ));
                 }
             }
@@ -2581,6 +2605,12 @@ struct BootInitCall {
     /// `Result[unit, BootError]` — boot must arm `x8` with a reply slot
     /// and abort on `Err`.
     fallible: bool,
+    /// When `fallible`: `(rodata_byte_offset, len)` of the abort message
+    /// `"{key} returned Err"`, interned once before either assembly pass
+    /// so the sizing and real-address builds agree on every word. `None`
+    /// until `intern_fallible_init_abort_messages` runs (and forever for
+    /// an infallible `init`).
+    err_msg: Option<(usize, usize)>,
 }
 
 /// One materialized `init` argument word — or the promise of one whose
@@ -3109,7 +3139,40 @@ fn one_boot_init_call(
                 if matches!(ok.as_ref(), Type::Unit)
                     && matches!(err.as_ref(), Type::Named(n, _) if n == "BootError")
         ),
+        err_msg: None,
     }))
+}
+
+/// Intern one abort message per fallible `init` into `rodata`, recording
+/// the offset/len on the call. Must run **once** before either of
+/// `build_runtime_block`'s two assembly passes, so both see the same
+/// offsets and emit the same word count.
+///
+/// Message shape matches an `assert` failure inside `init`: the harness
+/// `__wrela_abort` prepends `FAILED `, so the interned text is just
+/// `"{Actor}.init returned Err"` — the `@driver`/`@actor` struct name is
+/// already in `BootInitCall::key`. The concrete `BootError` variant is
+/// not recovered (would need a second formatting path over the reply
+/// slot); named in the plan's Done prose rather than pretended.
+fn intern_fallible_init_abort_messages(
+    wiring: &mut RuntimeWiring,
+    rodata: &mut Vec<Vec<u8>>,
+    rodata_cursor: &mut usize,
+) {
+    for call in wiring
+        .init_calls
+        .iter_mut()
+        .chain(wiring.driver_init_calls.iter_mut())
+        .flatten()
+    {
+        if !call.fallible || call.err_msg.is_some() {
+            continue;
+        }
+        let bytes = format!("{} returned Err", call.key).into_bytes();
+        let len = bytes.len();
+        let off = append_rodata(rodata, rodata_cursor, bytes);
+        call.err_msg = Some((off, len));
+    }
 }
 
 /// plans/M6.md item D: `(actor name) -> (method name) -> its own 0-based
@@ -4605,6 +4668,15 @@ pub fn resolve_runtime_test_args(
 /// derivation. Item W's own doc comment on `ActorInit` records what this
 /// used to be (a zero-argument-only call, and a rejection for everything
 /// else) and why it is not that any more.
+/// `abort_fixed_local`: when `Some(abs_word)`, a fallible `init`'s `Err`
+/// path `bl_to`s that harness-local `__wrela_abort` (the test image —
+/// same section, absolute word index already known). When `None`, the
+/// path emits `Reloc::AbortFixed` instead (the ordinary `layout_program`
+/// image, whose abort lives in a different section). Either way the
+/// guest loads the interned message into `x0`/`x1` first; the test
+/// harness abort prints it, and the build-path stub ignores it and
+/// exits — the same contract an `assert` failure inside `init` already
+/// has on each flavor.
 #[allow(clippy::too_many_arguments)]
 fn build_boot_init(
     actor_addrs: &[ActorAddrs],
@@ -4616,6 +4688,7 @@ fn build_boot_init(
     device_regs: &[DeviceRegs],
     pools: &[PoolPlacement],
     start: usize,
+    abort_fixed_local: Option<usize>,
 ) -> Result<Asm, LayoutError> {
     let mut a = Asm::new(start);
     // Called via `bl_to` from `build_entry_driver` and itself calls out
@@ -4674,19 +4747,38 @@ fn build_boot_init(
         // `Result[unit, BootError]` through `x8` (this machine's aggregate
         // return pointer). Stage 16 bytes on the stack, point `x8` at them,
         // call, then check the tag — `Err` is image-fatal with a
-        // diagnosable line (plans/M6.md decision 12 / plans/M7.md decision 8).
+        // diagnosable line through the **same** `__wrela_abort` path an
+        // `assert` failure inside `init` already uses (plans/M6.md
+        // decision 12 / plans/M7.md decision 8; H1 arms
+        // `OFF_TEST_CONTINUATION` before boot so the landing pad works).
         if call.fallible {
+            let (msg_off, msg_len) = call.err_msg.ok_or_else(|| {
+                LayoutError::new(format!(
+                    "internal error: fallible `{}` has no interned abort message — \
+                     `intern_fallible_init_abort_messages` must run before assembly",
+                    call.key
+                ))
+            })?;
             a.push(encode::enc_sub_imm(31, 31, 16, true)); // reply slot
             a.push(encode::enc_add_imm(8, 31, 0, true)); // mov x8, sp
             a.bl_call_key(&call.key);
             // Load tag from [sp]; RESULT_OK == 0.
             a.push(encode::enc_ldr_x_imm(9, 31, 0));
             a.push(encode::enc_add_imm(31, 31, 16, true)); // drop reply slot
-            // cbz x9, ok — skip the BRK when tag == 0.
+            // cbz x9, ok — skip the abort when tag == 0.
             let ok_fixup = a.skip_placeholder();
-            // On Err: BRK with a recognizable immediate so a fallible-init
-            // Err is never silent (plans/M6.md decision 12).
-            a.push(encode::enc_brk(0xE1)); // E1 = item E1
+            // On Err: guest emits its own FAILED line via `__wrela_abort`
+            // (never a host-invented transcript). Message names which
+            // `init` failed; the BootError variant is not recovered.
+            a.load_rodata_addr_at(0, msg_off);
+            a.load_imm(1, msg_len as u64);
+            if let Some(abort_abs) = abort_fixed_local {
+                a.bl_to(abort_abs);
+            } else {
+                let w = a.abs();
+                a.push(encode::enc_bl(0));
+                a.relocs.push(Reloc::AbortFixed { word: w });
+            }
             a.patch_cbz(ok_fixup, 9);
         } else {
             a.bl_call_key(&call.key);
@@ -4864,6 +4956,7 @@ fn build_runtime_block(
     device_regs: &[DeviceRegs],
     pools: &[PoolPlacement],
     start: usize,
+    abort_fixed_local: Option<usize>,
 ) -> Result<RuntimeBlock, LayoutError> {
     let glue = build_runtime_glue_block(
         &wiring.tables,
@@ -4889,6 +4982,7 @@ fn build_runtime_block(
         device_regs,
         pools,
         boot_init_start,
+        abort_fixed_local,
     )?;
     words.extend(boot_init.words.iter().copied());
     relocs.extend(boot_init.relocs.iter().cloned());
@@ -6177,10 +6271,16 @@ pub fn layout_test_image(
     // behavior, byte-identical. Derived by `RuntimeWiring::derive`, the
     // one copy `layout_program` uses too (that fn's own module block above
     // has the full reasoning).
-    let wiring: Option<RuntimeWiring> = match &boot {
+    let mut wiring: Option<RuntimeWiring> = match &boot {
         Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
+    // plans/M7.md item E1: intern fallible-`init` abort messages before
+    // either runtime-block assembly pass (same pool as the shared
+    // `FAILED `/newline literals above).
+    if let Some(w) = wiring.as_mut() {
+        intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
+    }
     let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());
 
     let ring_append_asm = build_ring_append(&addrs, 0);
@@ -6267,6 +6367,7 @@ pub fn layout_test_image(
                 &sizing_device_regs,
                 &sizing_pools,
                 glue_start,
+                Some(abort_fixed_start),
             )
         })
         .transpose()?;
@@ -6412,8 +6513,14 @@ pub fn layout_test_image(
                     harness_words[checkpoint_start + i] = *word;
                 }
             }
-            let real_block =
-                build_runtime_block(w, &placement, &device_regs, &early_pools, glue_start)?;
+            let real_block = build_runtime_block(
+                w,
+                &placement,
+                &device_regs,
+                &early_pools,
+                glue_start,
+                Some(abort_fixed_start),
+            )?;
             if real_block.words.len() != runtime_words_len {
                 return Err(LayoutError::new(
                     "internal error: the runtime block's own word count changed between its \
@@ -7228,10 +7335,12 @@ pub struct Store:
                 key: "A.init".to_string(),
                 args: vec![BootInitArg::Word(7)],
                 fallible: false,
+                err_msg: None,
             }),
             None,
         ];
-        let asm = build_boot_init(&addrs, &[], &[8, 8], &[], &calls, &[], &[], &[], 0).unwrap();
+        let asm =
+            build_boot_init(&addrs, &[], &[8, 8], &[], &calls, &[], &[], &[], 0, None).unwrap();
         let bl_word = asm.relocs.iter().find_map(|r| match r {
             Reloc::Call { word, key } if key == "A.init" => Some(*word),
             _ => None,

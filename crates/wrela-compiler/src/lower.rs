@@ -1929,7 +1929,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             ..
         } if crate::sema::bodies::is_device_transport_intrinsic(key) => {
             // plans/M7.md item E1: negotiate/start/configure are pure
-            // authority transitions on this machine (decision 12: the
+            // authority transitions on this machine (decision 14: the
             // accepted feature set is a build-time fact; capacity is a
             // build constant). Each lowers to a Copy of the receiver's
             // word, or — for read_capacity — a ConstInt filled in at the

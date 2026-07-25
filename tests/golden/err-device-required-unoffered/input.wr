@@ -1,6 +1,6 @@
 module examples.err_device_required_unoffered
 
-# plans/M7.md item E1 / decision 12: an unofferable `required_features=`
+# plans/M7.md item E1 / decision 14: an unofferable `required_features=`
 # entry fails the *build*, naming the feature and both sides' sets —
 # never at runtime, and never silently narrowed. `RingReset` is a real
 # enum variant (and item H2's eventual surface) that `DEVICE_FEATURES`

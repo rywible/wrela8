@@ -4661,7 +4661,7 @@ fn check_device_state_call(
         "map_partition" => {
             check_map_partition(state_expr, &rendered, args, fspan, call_span, fctx, mctx)
         }
-        // plans/M7.md item E1, decision 12: `negotiate` is a **build-time**
+        // plans/M7.md item E1, decision 14: `negotiate` is a **build-time**
         // fact. Both sides (the image's `required_features`, and
         // `virtqueue::DEVICE_FEATURES`) are build outputs; an unofferable
         // required feature fails the *build*, and the guest's call is a
@@ -4712,7 +4712,7 @@ fn device_state_ty(state: &str, device: &str) -> Type {
 }
 
 /// `claimed.negotiate(required=..., optional=...)` — DriverClaimed ->
-/// FeaturesAccepted (Result). plans/M7.md decision 12.
+/// FeaturesAccepted (Result). plans/M7.md decision 14.
 #[allow(clippy::too_many_arguments)]
 fn check_device_negotiate(
     state_expr: TypedExpr,
@@ -4890,7 +4890,7 @@ fn check_device_start(
 
 /// `negotiated.read_capacity_sectors()` — capacity is an image-declared,
 /// report-carried fact (`BlkDevice capacity_sectors=`). The guest call
-/// lowers to that build constant (decision recorded with decision 12);
+/// lowers to that build constant (decision recorded with decision 14);
 /// there is no config register to read on this machine.
 fn check_device_read_capacity(
     state_expr: TypedExpr,

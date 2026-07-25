@@ -2,8 +2,9 @@ module examples.err_boot_device_bringup
 
 # plans/M7.md item E1 vacuity control for `boot-device-bringup`: the same
 # driver with `init` returning `Err(BootError.Failed)`. Expected output is
-# the guest abort — without it, every assertion in the accept golden would
-# also pass on a boot that never called `init` at all.
+# the guest's own abort line through `__wrela_abort` (same path as an
+# `assert` failure inside `init`) — without it, every assertion in the
+# accept golden would also pass on a boot that never called `init` at all.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

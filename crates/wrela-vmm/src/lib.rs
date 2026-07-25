@@ -846,67 +846,12 @@ fn boot_image_core(
                         raise_vector(host_ram, 0);
                     }
                 } else if let Some(imm) = decode_brk(esr) {
-                    // plans/M7.md item E1: a fallible `@driver`/`@actor`
-                    // `init` returning `Err(BootError)` ends in `BRK #0xE1`
-                    // (`layout::build_boot_init`). That is image-fatal with
-                    // a diagnosable line (plans/M6.md decision 12 /
-                    // plans/M7.md decision 8) — the same shape an `assert`
-                    // failure inside `init` already produces — rather than
-                    // a raw guest fault. The shared `boot_init` fragment
-                    // has no harness abort helper (it is also used by the
-                    // non-test `layout_program` path), so the VMM turns
-                    // this one BRK into the FAILED transcript.
-                    if imm == 0xE1 {
-                        let mut transcript = drain_console(host_ram);
-                        if !transcript.is_empty() && !transcript.ends_with(b"\n") {
-                            transcript.push(b'\n');
-                        }
-                        transcript.extend_from_slice(
-                            b"FAILED driver init returned Err(BootError)\n0 passed, 1 failed\n",
-                        );
-                        let (choices, divergences) = record::finish_chooser(chooser);
-                        return Ok((
-                            BootOutcome {
-                                transcript,
-                                exit_code: 1,
-                                choices,
-                                exits,
-                            },
-                            divergences,
-                        ));
-                    }
                     let pc = read_pc(vcpu).unwrap_or(0);
                     return Err(VmmError::GuestFault(format!(
                         "unexpected `BRK #{imm}` (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x})"
                     )));
                 } else {
                     let pc = read_pc(vcpu).unwrap_or(0);
-                    // plans/M7.md item E1: `BRK #0xE1` from a fallible
-                    // `init`'s Err path is taken as an EL1 sync exception
-                    // (no vector table), so the exit we see here is the
-                    // secondary instruction abort at VBAR+0x200. Recover
-                    // the original BRK from ESR_EL1 and turn it into the
-                    // FAILED transcript — the same diagnosable shape an
-                    // `assert` failure inside `init` already produces.
-                    if let Some(0xE1) = el1_original_brk_imm(vcpu, pc) {
-                        let mut transcript = drain_console(host_ram);
-                        if !transcript.is_empty() && !transcript.ends_with(b"\n") {
-                            transcript.push(b'\n');
-                        }
-                        transcript.extend_from_slice(
-                            b"FAILED driver init returned Err(BootError)\n0 passed, 1 failed\n",
-                        );
-                        let (choices, divergences) = record::finish_chooser(chooser);
-                        return Ok((
-                            BootOutcome {
-                                transcript,
-                                exit_code: 1,
-                                choices,
-                                exits,
-                            },
-                            divergences,
-                        ));
-                    }
                     let note = el1_exception_note(vcpu, pc);
                     return Err(VmmError::GuestFault(format!(
                         "unhandled exception (esr={esr:#x}, ipa={ipa:#x}, pc={pc:#x}){note}"
@@ -1135,26 +1080,6 @@ fn el1_exception_note(vcpu: u64, pc: u64) -> String {
         note.push_str(&format!(" FAR_EL1={v:#x}"));
     }
     note
-}
-
-/// When `pc` is a VBAR_EL1 vector slot, returns the original EL1 BRK's
-/// immediate from `ESR_EL1`, if that is what the guest took. Used by
-/// plans/M7.md item E1 to recognize a fallible-init `Err` (`BRK #0xE1`)
-/// after it bounced off the absent vector table.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn el1_original_brk_imm(vcpu: u64, pc: u64) -> Option<u16> {
-    use hv::*;
-    let sys = |reg: u16| -> Option<u64> {
-        let mut v = 0u64;
-        let r = unsafe { hv_vcpu_get_sys_reg(vcpu, reg, &mut v) };
-        if r == HV_SUCCESS { Some(v) } else { None }
-    };
-    let vbar = sys(HV_SYS_REG_VBAR_EL1)?;
-    if pc < vbar || pc >= vbar + 0x800 || (pc - vbar) % 0x80 != 0 {
-        return None;
-    }
-    let esr1 = sys(HV_SYS_REG_ESR_EL1)?;
-    decode_brk(esr1)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

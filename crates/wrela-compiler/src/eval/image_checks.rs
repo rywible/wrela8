@@ -113,7 +113,7 @@ pub fn check_sealed(
     check_pool_decls(graph, programs)?;
     check_init_args(graph, programs)?;
     check_supervision(graph)?;
-    // plans/M7.md item E1, decision 12: required features vs DEVICE_FEATURES
+    // plans/M7.md item E1, decision 14: required features vs DEVICE_FEATURES
     // is a *build* error; capacity_sectors is the build constant
     // `read_capacity_sectors` lowers to.
     check_blk_device_decls(graph, programs)?;
@@ -160,7 +160,7 @@ pub fn blk_accepted_features(
     Ok(crate::virtqueue::F_VERSION_1)
 }
 
-/// plans/M7.md item E1 / decision 12: every `img.device`'s
+/// plans/M7.md item E1 / decision 14: every `img.device`'s
 /// `required_features=` must be offerable by `virtqueue::DEVICE_FEATURES`,
 /// and `capacity_sectors=` (when present) must be a positive integer
 /// under the VMM's disk ceiling.

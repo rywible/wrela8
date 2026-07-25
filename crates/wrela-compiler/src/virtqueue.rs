@@ -112,7 +112,7 @@ pub fn feature_bit(variant: &str) -> Option<u64> {
     }
 }
 
-/// Build-time negotiation (plans/M7.md decision 12): the image's declared
+/// Build-time negotiation (plans/M7.md decision 14): the image's declared
 /// required feature *variant names* against `DEVICE_FEATURES`. Always
 /// includes `F_VERSION_1`. Returns the accepted mask, or names the bits
 /// that were refused.
@@ -125,7 +125,7 @@ pub fn accepted_features(required_variant_names: &[&str]) -> Result<u64, String>
                 return Err(format!(
                     "the image requires virtio-blk feature `{name}`, which this device model \
                      does not offer (offered: {DEVICE_FEATURES:#x} = VIRTIO_F_VERSION_1 | \
-                     VIRTIO_BLK_F_FLUSH; `{name}` is not in that set — plans/M7.md decision 12: \
+                     VIRTIO_BLK_F_FLUSH; `{name}` is not in that set — plans/M7.md decision 14: \
                      an unofferable required feature is a *build* error)"
                 ));
             }

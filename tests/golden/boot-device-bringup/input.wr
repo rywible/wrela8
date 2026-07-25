@@ -14,7 +14,7 @@ module examples.boot_device_bringup
 #   1. Boot calls a fallible `@driver` `init` returning `Result[unit, BootError]`
 #      and the Ok path continues into the runtime test.
 #   2. `negotiate` / `configure` / `read_capacity_sectors` / `start` are real
-#      authority transitions (decision 12: negotiate is a build-time fact;
+#      authority transitions (decision 14: negotiate is a build-time fact;
 #      capacity is the image-declared constant).
 #   3. The VMM parsed `BlkDevice`/`BlkQueue`/`BlkPool` from *this* image's
 #      report (otherwise `BlkDevice::new` would refuse the boot).

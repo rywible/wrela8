@@ -117,7 +117,7 @@ pub fn builtin_enum_variants(name: &str) -> Option<&'static [&'static str]> {
         // (and enough for a vacuity control that returns `Err` from `init`);
         // richer taxonomy is not load-bearing at E1 because every live
         // transition on this machine is a build-time fact that cannot fail
-        // at runtime (decision 12).
+        // at runtime (decision 14).
         "BootError" => Some(&["Failed"]),
         _ => None,
     }

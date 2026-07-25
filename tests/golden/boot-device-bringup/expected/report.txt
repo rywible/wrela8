@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_device_bringup.wr sha256=d3a1239502ad656a94b3b68c52718842fbe869c8a7853852abd27d56c4cb6ddd
+  Input path=examples/boot_device_bringup.wr sha256=2c6fbc0ec28558ce58ac89358a9a9fb62680d5e34591805f4f8a393f81864d76
   Name value=boot-device-bringup
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -35,21 +35,21 @@ ImageReport v0
   Section name=stacks base=0x40010000 size=4194304
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=2976
-  Section name=rodata base=0x40500bf0 size=464
-  Section name=abort base=0x40500dc0 size=120
-  Section name=checkpoint base=0x40500e38 size=104
-  Section name=rtcode base=0x40500ea0 size=1072
-  Section name=rtdata base=0x405012d0 size=968
-  Section name=devregs base=0x40501698 size=104
-  Section name=pooldata base=0x40501700 size=512
+  Section name=rodata base=0x40500bf0 size=491
+  Section name=abort base=0x40500ddc size=120
+  Section name=checkpoint base=0x40500e54 size=104
+  Section name=rtcode base=0x40500ebc size=1096
+  Section name=rtdata base=0x40501308 size=968
+  Section name=devregs base=0x405016d0 size=104
+  Section name=pooldata base=0x40501738 size=512
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Turn fn=bringup_reached_running frame=632
   Driver name=BlkDriver state=32
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=968
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501698 size=104
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40501700 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl base=0x40501700 size=0x200
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405016d0 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40501738 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl base=0x40501738 size=0x200
   BlkDevice capacity_sectors=16 features=0x100000200
-  BlkQueue index=0 size=8 desc=0x40501700 avail=0x40501780 used=0x40501798 doorbell=0x405017e0
+  BlkQueue index=0 size=8 desc=0x40501738 avail=0x405017b8 used=0x405017d0 doorbell=0x40501818
   BlkAccounting descriptors_per_op=3 queue_depth=8
