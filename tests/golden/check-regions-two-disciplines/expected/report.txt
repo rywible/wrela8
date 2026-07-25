@@ -1,0 +1,36 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/check_regions_two_disciplines.wr sha256=cff5c7516eba5277b4e2550571daf85576ac7f33e84b02f45e7d7d9e7e8f517d
+  Name value=check-regions-two-disciplines
+  Target value=Target.wrela_machine_v1
+  Actor index=0 type=Adder
+    Mailbox value=4
+  Pool name=Parts type=u32
+    Arg label=slots value=4
+    Arg label=max_payload value=8
+  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
+    Child value=actor#0
+  Placement id=actor#0 type=Adder core=0 source=inferred work=0 work_source=unproved bytes=128 bytes_state=8 bytes_mailbox=120 bytes_pool=0
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=4540
+  Section name=rodata base=0x40501210 size=323
+  Section name=abort base=0x40501354 size=120
+  Section name=checkpoint base=0x405013cc size=904
+  Section name=rtcode base=0x40501754 size=1444
+  Section name=rtdata base=0x40501cf8 size=1336
+  Section name=pooldata base=0x40502230 size=32
+  Entry base=0x40500000
+  Actor name=Adder mailbox=4 slot=24 frame=56 state=8
+  Turn fn=child_a frame=296
+  Turn fn=child_b frame=296
+  Turn fn=run_both frame=440
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=1336
+  Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8 base=0x40502230 size=32 align=8 coherency=coherent device=none
