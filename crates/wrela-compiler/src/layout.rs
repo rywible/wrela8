@@ -1853,8 +1853,8 @@ pub struct DeviceRegs {
     pub device: usize,
     pub device_type: String,
     /// The `@driver` whose `device=` binding names it (one per device:
-    /// `eval::image_checks` already refuses a second binding of the same
-    /// device, so this is not a list).
+    /// `eval::image_checks::check_device_bound_once` refuses a second
+    /// binding of the same device, so this is not a list).
     pub driver: String,
     pub base: u64,
     pub size: u64,
@@ -4323,13 +4323,18 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
     //   F), and the list of them is the whole of what that VMM maps for
     //   its device model — decision 5's security property, in the
     //   artifact rather than in a comment: a pool with no `device=` never
-    //   produces one, so no device can reach it.
+    //   produces one, so no device can reach it. The line still carries
+    //   no device field; `pool_backings` fails closed on two pool-bearing
+    //   devices and on a pool bound to a driverless device when another
+    //   device is driven (`golden/err-pool-two-devices` /
+    //   `err-pool-driverless-device`). Real fix: plans/M8.md item H.
     //
     // An image that declares a device-reachable pool but no queue is not
     // bootable yet, by design: `parse_report` refuses a `BlkPool` line
-    // with no `BlkDevice`/`BlkQueue` to bind it to, and those two lines
-    // are plans/M7.md item E's to emit. Fail-closed and named, rather
-    // than a window mapped for a device model that was never configured.
+    // with no `BlkDevice`/`BlkQueue` to bind it to (those lines come from
+    // item E1 when a configure site exists). Fail-closed and named,
+    // rather than a window mapped for a device model that was never
+    // configured.
     for p in &layout.pools {
         let b = &p.backing;
         let kind = if b.is_dma { "dma" } else { "image" };

@@ -15,22 +15,26 @@
 //! check between pool binding and init-argument matching — a pool's own
 //! declaration must be *valid* before an init argument that names its
 //! handle can mean anything, which is the same reason binding already ran
-//! before init matching): construction DAG, then pools bound-at-seal, then
-//! pool declarations, then init-argument matching, then supervision —
-//! first failure wins. Rationale: the DAG
-//! check is the most structural (it does not even need to know what a
-//! declaration *is*, only what it references) so it runs first; pool
-//! binding is the next-most-structural fact (whether a declared resource
-//! exists at all) and is a precondition for init-argument matching to
-//! mean anything (an init argument can reference a pool-backed handle);
-//! init-argument matching is the deepest per-declaration check; placement
-//! in the supervision tree is the most "external" fact (it says nothing
-//! about a declaration's own construction, only about the tree drawn over
-//! already-valid declarations), so it runs last. `img.seal()`'s own
-//! "every declaration is fully bound" (05-library.md §9) is exactly the
-//! conjunction of every check below, not a separate mechanism —
-//! `check_sealed` *is* the seal check; `image.graph.seal-fully-bound`'s
-//! own ledger clause cites the same evidence as the others.
+//! before init matching; extended again by the post-closure M7 sweep
+//! port, inserting device-bound-once before init-argument matching):
+//! construction DAG, then pools bound-at-seal, then pool declarations,
+//! then device-bound-once, then init-argument matching, then supervision
+//! — first failure wins. Rationale: the DAG check is the most structural
+//! (it does not even need to know what a declaration *is*, only what it
+//! references) so it runs first; pool binding is the next-most-structural
+//! fact (whether a declared resource exists at all) and is a precondition
+//! for init-argument matching to mean anything (an init argument can
+//! reference a pool-backed handle); device-bound-once is the mint's
+//! per-device half of 03 §1's "named once" and must hold before any
+//! `DeviceCap` is substituted; init-argument matching is the deepest
+//! per-declaration check; placement in the supervision tree is the most
+//! "external" fact (it says nothing about a declaration's own
+//! construction, only about the tree drawn over already-valid
+//! declarations), so it runs last. `img.seal()`'s own "every declaration
+//! is fully bound" (05-library.md §9) is exactly the conjunction of every
+//! check below, not a separate mechanism — `check_sealed` *is* the seal
+//! check; `image.graph.seal-fully-bound`'s own ledger clause cites the
+//! same evidence as the others.
 //!
 //! One-image (decision 6's own "zero or more than one is a named
 //! diagnostic listing every candidate") is deliberately *not* here: it is
@@ -111,6 +115,10 @@ pub fn check_sealed(
     }
     check_pools_bound(graph, &declared)?;
     check_pool_decls(graph, programs)?;
+    // Post-closure M7 sweep port: one device, one binding. Must run before
+    // `check_init_args` minting — a second binding would otherwise mint a
+    // second `DeviceCap` over a second register window for the same device.
+    check_device_bound_once(graph)?;
     check_init_args(graph, programs)?;
     check_supervision(graph)?;
     // plans/M7.md item E1, decision 14: required features vs DEVICE_FEATURES
@@ -126,6 +134,48 @@ pub fn check_sealed(
     // inferred table themselves live in `placement::place` (report/build),
     // which needs a LayoutCtx this pass does not have.
     crate::placement::check_annotations(graph).map_err(build_error)?;
+    Ok(())
+}
+
+/// 03-hardware.md §1: "The device itself is named once, at the image
+/// binding (`img.driver(BlkDriver, device=blk_device)`), the single source
+/// of truth."
+///
+/// Item A's mint check enforces the *per-driver* half (at most one
+/// `DeviceCap` parameter per binding). The *per-device* half — at most one
+/// driver binding any given device — was only claimed, in
+/// `layout::DeviceRegs`'s own comment ("`eval::image_checks` already
+/// refuses a second binding of the same device, so this is not a list").
+/// It was not enforced. Two `img.driver(..., device=blk)` declarations
+/// therefore built two `DeviceRegs` windows for `device#0` at two
+/// different bases, and boot handed each driver a different "authority
+/// over one device instance". That is a wrong answer about which bytes a
+/// device is, not a missing feature.
+///
+/// Fail-fast in construction order: the second binding that names an
+/// already-bound device is the one that reports, naming both drivers and
+/// the device.
+pub fn check_device_bound_once(graph: &ImageGraph) -> Result<(), SemaError> {
+    let mut first: BTreeMap<usize, usize> = BTreeMap::new();
+    for (i, d) in graph.drivers.iter().enumerate() {
+        let Some(Value::ImageDecl(ImageDeclRef::Device(idx))) = d
+            .args
+            .iter()
+            .find(|a| a.label == "device")
+            .map(|a| &a.value)
+        else {
+            continue;
+        };
+        if let Some(prior) = first.get(idx) {
+            return Err(build_error(format!(
+                "`driver#{i}` binds device#{idx}, but `driver#{prior}` already binds that same \
+                 device — 03-hardware.md §1: the device itself is named once at the image \
+                 binding, the single source of truth. A second binding would mint a second \
+                 `DeviceCap` over a second register window for one device"
+            )));
+        }
+        first.insert(*idx, i);
+    }
     Ok(())
 }
 
@@ -868,27 +918,25 @@ pub fn pool_backings(
         );
     }
 
-    // plans/M7.md item I's sweep. Decision 5's security property is
-    // per-*device* ("the VMM maps exactly the declared pools and nothing
-    // else ... the device model can reach declared pool pages and no
-    // other guest memory, enforced by what the VMM maps"), but the
-    // `BlkPool name= base= size=` line that carries a window to the VMM
-    // has **no device field at all**: `wrela-vmm`'s own `parse_report`
-    // collects every one of them into a single `Vec<PoolWindow>` and
-    // hands the whole list to its one `BlkDevice`. So an image declaring
-    // `img.dma_pool(..., device=a)` alongside `img.dma_pool(..., device=b)`
-    // renders two windows that the *one* device model treats as equally
-    // reachable — pool `b`'s bytes reachable from device `a`.
+    // Post-closure M7 sweep (and its earlier item-I sibling). Decision 5's
+    // security property is per-*device* ("the VMM maps exactly the declared
+    // pools and nothing else ... the device model can reach declared pool
+    // pages and no other guest memory, enforced by what the VMM maps"),
+    // but the `BlkPool name= base= size=` line that carries a window to
+    // the VMM has **no device field at all**: `wrela-vmm`'s own
+    // `parse_report` collects every one of them into a single
+    // `Vec<PoolWindow>` and hands the whole list to its one `BlkDevice`.
+    // So an image declaring `img.dma_pool(..., device=a)` alongside
+    // `img.dma_pool(..., device=b)` renders two windows that the *one*
+    // device model treats as equally reachable — pool `b`'s bytes
+    // reachable from device `a`.
     //
-    // Unreachable at a boot today, and only because a second thing is
-    // missing: `parse_report` also refuses a `BlkPool` line with no
-    // `BlkDevice`/`BlkQueue` to bind it to, and those are plans/M7.md item
-    // E's to emit. The fail-open was being held shut by a *different*
-    // absent feature, which is exactly the shape a sweep exists to find
-    // before that feature lands. The real fix is a report-format change
-    // (a device on the mapping line, and a VMM that binds windows per
-    // device) and belongs to whoever emits those two lines anyway; until
-    // then this fails closed and names them.
+    // Item E1/E4 made those lines real and the VMM maps every
+    // device-reachable pool, so the fail-open is no longer latent. The
+    // real fix is a report-format change (`device=` on `BlkPool` /
+    // `BlkDevice`, and a VMM that binds windows per device) — owned by
+    // plans/M8.md item H until that lands or is re-homed. Until then
+    // this fails closed and names that item.
     //
     // Checked here, in the one derivation the checker, the placer and the
     // report all read (this section's own doc comment), rather than in
@@ -914,10 +962,51 @@ pub fn pool_backings(
              reachable from one device would be reachable from another (03-hardware.md §3: all \
              memory a device can reach originates from *its* bound pools; plans/M7.md decision \
              5). Failing closed until the report can say which device a window belongs to \
-             (plans/M7.md item E, which owns the `BlkDevice`/`BlkQueue` lines that format needs \
-             anyway).",
+             (plans/M8.md item H: `device=` on `BlkPool`/`BlkDevice` and per-device VMM binding).",
             devices.len()
         )));
+    }
+
+    // Sibling of the two-devices guard above. A DMA pool's `device=` names
+    // which device can reach its bytes, and the `BlkPool` mapping line
+    // still carries no device — so the VMM maps every one of them for its
+    // single device model. When this image *has* a driven device and a
+    // pool is bound to a different, driverless one, those bytes become
+    // reachable from the wrong model (item E1/E4 made the mapping real).
+    //
+    // An image with *no* driven device at all (e.g. `golden/boot-dma-pool`:
+    // pool backing under an actor conversation, deliberately no `@driver`)
+    // is a different shape: nothing configures a device model, so there
+    // is no "wrong" model to attach the window to. That case stays open.
+    let mut driven: BTreeSet<usize> = BTreeSet::new();
+    for d in &graph.drivers {
+        if let Some(Value::ImageDecl(ImageDeclRef::Device(i))) = d
+            .args
+            .iter()
+            .find(|a| a.label == "device")
+            .map(|a| &a.value)
+        {
+            driven.insert(*i);
+        }
+    }
+    if !driven.is_empty() {
+        for b in out.values() {
+            let Some(dev) = b.device else {
+                continue;
+            };
+            if !driven.contains(&dev) {
+                return Err(build_error(format!(
+                    "`img.dma_pool(name={}, device=device#{dev})` binds a device no `@driver` binds \
+                     — the report's `BlkPool name= base= size=` mapping line carries no device, and \
+                     the VMM maps every one of them for its single device model, so these bytes \
+                     would be reachable from whichever driven device the image configures \
+                     (03-hardware.md §3: all memory a device can reach originates from *its* bound \
+                     pools; plans/M7.md decision 5). Bind a `@driver` to device#{dev}, or bind this \
+                     pool to a device that already has one (real fix: plans/M8.md item H)",
+                    b.name
+                )));
+            }
+        }
     }
 
     let total: u64 = out.values().map(|b| b.bytes).fold(0, u64::saturating_add);
@@ -2778,6 +2867,44 @@ mod tests {
     }
 
     #[test]
+    fn a_dma_pool_on_a_driverless_device_is_rejected() {
+        // Post-closure M7 sweep port: BlkPool has no device field, so a
+        // pool on a device no driver binds would be mapped for whichever
+        // BlkDevice the driven device configures.
+        let mut g = ImageGraph::default();
+        g.devices.push(crate::eval::image::DeviceDecl {
+            device_type: Type::Named("BlockHw".to_string(), vec![]),
+            args: vec![],
+        });
+        g.devices.push(crate::eval::image::DeviceDecl {
+            device_type: Type::Named("OtherHw".to_string(), vec![]),
+            args: vec![],
+        });
+        g.drivers.push(crate::eval::image::DriverDecl {
+            actor_type: Type::Named("Blk".to_string(), vec![]),
+            args: vec![handle_arg("device", ImageDeclRef::Device(0))],
+        });
+        g.dma_pools.insert(
+            "Control".to_string(),
+            crate::eval::image::PoolDecl {
+                payload_type: Type::Named("Hdr".to_string(), vec![]),
+                args: vec![
+                    handle_arg("device", ImageDeclRef::Device(1)),
+                    decl_arg("count", Type::I64, Value::I64(2)),
+                ],
+            },
+        );
+        let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 8)])]);
+        let err = pool_backings(&g, &layouts).expect_err("driverless device");
+        assert!(
+            err.message.contains("binds a device no `@driver` binds")
+                && err.message.contains("device#1"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
     fn a_pool_argument_this_intrinsic_does_not_define_is_rejected() {
         let g = dma_pool_graph(
             true,
@@ -3257,6 +3384,35 @@ mod tests {
         let err = check_init_args(&g, &programs).expect_err("one device, one authority");
         assert!(
             err.message.contains("more than one `DeviceCap` parameter"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn one_device_is_bound_by_at_most_one_driver() {
+        // Post-closure M7 sweep port: the per-device half of §1's "named
+        // once". Two drivers on device#0 used to place two DeviceRegs
+        // windows at two bases.
+        let mut g = ImageGraph::default();
+        g.devices.push(crate::eval::image::DeviceDecl {
+            device_type: Type::Named("BlockHw".to_string(), vec![]),
+            args: vec![],
+        });
+        let wire = |ty: &str| crate::eval::image::DriverDecl {
+            actor_type: Type::Named(ty.to_string(), vec![]),
+            args: vec![decl_arg(
+                "device",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Device(0)),
+            )],
+        };
+        g.drivers.push(wire("A"));
+        g.drivers.push(wire("B"));
+        let err = check_device_bound_once(&g).expect_err("one device, one binding");
+        assert!(
+            err.message.contains("`driver#1` binds device#0")
+                && err.message.contains("`driver#0` already binds"),
             "{}",
             err.message
         );

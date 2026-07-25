@@ -1,0 +1,53 @@
+module examples.err_pool_driverless_device
+
+# Post-closure M7 sweep port (orphaned m7-sweep-2 / 0a34f2f) — sibling of
+# `golden/err-pool-two-devices`.
+#
+# Decision 5's security property is per-device, and the `BlkPool name=
+# base= size=` mapping line still carries no device: the VMM maps every
+# one of them for its single device model. The two-devices guard catches
+# pools on *two* devices. This catches the other fail-open: a pool bound
+# to a device that *no* `@driver` binds at all.
+#
+# Before the guard, this image rendered `Pool name=Control ...
+# device=device#1` (correct accounting) *and* `BlkPool name=Control
+# base=... size=0x10` (a mapping window). device#1 has no driver;
+# device#0 does. Item E1/E4 made those bytes reachable from the wrong
+# model. Fail closed rather than leave the mapping open. (An image with
+# *no* `@driver` at all — `golden/boot-dma-pool` — is a different shape
+# and stays open.) Real fix: plans/M8.md item H.
+#
+# The accepting sibling is `golden/check-dma-pool`: the pool's `device=`
+# names the device that *is* bound.
+
+@layout(dma, endian=little)
+struct Hdr:
+    sector: u64
+
+struct BlockHw:
+    id: u32
+
+struct OtherHw:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    held: DeviceCap[BlockHw]
+    x: u32
+
+    init(mut self, take cap: DeviceCap[BlockHw]):
+        self.held = take cap
+        self.x = 0
+
+pool Control
+
+@image
+pub fn build() -> Image:
+    img = Image(name="pool-driverless", target=Target.wrela_machine_v1)
+    blk = img.device[BlockHw](transport=0x2000)
+    other = img.device[OtherHw](transport=0x3000)
+    d = img.driver(BlkDriver, device=blk)
+    p = img.dma_pool[Hdr](name=Control, device=other, count=2)
+    img.supervise(children=[d], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

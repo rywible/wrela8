@@ -10,6 +10,12 @@ module examples.err_dma_pool_mint_wrong_device
 # be authority over memory its own device cannot reach, and (worse, under
 # plans/M7.md decision 5) a window the VMM maps for the wrong device
 # model.
+#
+# A second driver on `nic` so the pool's device is driven — otherwise the
+# post-closure driverless-device guard rejects the pool before this mint
+# check can name the mismatch. The mismatch itself is unchanged:
+# BlkDriver is still bound to `blk` while `BlockControl` is reachable
+# from `nic`.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:
@@ -35,13 +41,24 @@ pub struct BlkDriver:
     pub fn capacity(read self) -> u64:
         return self.sectors
 
+# Keeps `nic` driven so pool_backings does not fire first.
+@driver
+pub struct NicDriver:
+    held: DeviceCap[NicHw]
+    x: u32
+
+    init(mut self, take cap: DeviceCap[NicHw]):
+        self.held = take cap
+        self.x = 0
+
 @image
 pub fn build() -> Image:
     img = Image(name="x", target=Target.wrela_machine_v1)
     blk = img.device[BlockHw](transport=0x2000)
     nic = img.device[NicHw](transport=0x3000)
     disk = img.driver(BlkDriver, device=blk)
+    net = img.driver(NicDriver, device=nic)
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=nic, count=4)
-    img.supervise(children=[disk], strategy=Restart.OneForOne,
+    img.supervise(children=[disk, net], strategy=Restart.OneForOne,
                   intensity=RestartIntensity(max=3, within=seconds(10)))
     return img.seal()
