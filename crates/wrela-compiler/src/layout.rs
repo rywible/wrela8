@@ -630,15 +630,17 @@ pub struct WakeDrainEntry {
 pub struct GroupServiceCtx {
     pub arena_base: u64,
     pub arena_capacity: u64,
-    /// Every turn area in the image (each actor's, then each free async
-    /// fn's) — the set the delivery half scans to find suspended turns
-    /// whose own ambient group has just been cancelled. Each entry is that
-    /// turn's build-time `(address, TurnId)` pair: the scan still addresses
-    /// the turn record absolutely, but plans/M10.md item 0c2 made
+    /// Every turn area in the image (each actor's, then each messageable
+    /// driver's, then each free async fn's — `place_runtime_tables` order)
+    /// — the set the delivery half scans to find suspended turns whose own
+    /// ambient group has just been cancelled. Each entry is that turn's
+    /// build-time `(address, TurnId)` pair: the scan still addresses the
+    /// turn record absolutely, but plans/M10.md item 0c2 made
     /// `OFF_GROUP_OWNER_TURN` a `TurnId`, so the owner test compares the id
     /// rather than the address. Both come from the same
     /// `RuntimePlacement::turn_addr` expression, so they can never name
-    /// different bytes.
+    /// different bytes. plans/M10.md item G / decision 671: omitting
+    /// messageable-driver turns was the pre-G defect.
     pub turn_areas: Vec<(u64, TurnId)>,
 }
 
@@ -662,6 +664,11 @@ pub struct CheckpointBlock {
 /// word count depends on.
 fn group_service_shape(runtime: Option<&RuntimeTables>) -> Option<GroupServiceCtx> {
     let tables = runtime.filter(|t| t.group_arena_capacity > 0)?;
+    // plans/M10.md item G / decision 671: same owner set as
+    // `place_runtime_tables` — actors, then messageable drivers, then free
+    // turns. Word count depends only on the length.
+    let n_driver_turns = tables.drivers.iter().filter(|d| d.mailbox.is_some()).count();
+    let n = tables.actors.len() + n_driver_turns + tables.free_turns.len();
     Some(GroupServiceCtx {
         arena_base: 0,
         arena_capacity: tables.group_arena_capacity,
@@ -670,13 +677,14 @@ fn group_service_shape(runtime: Option<&RuntimeTables>) -> Option<GroupServiceCt
         // is a fixed four words). `TurnId::from_index(0)` is a stand-in
         // for exactly that reason — the real ids arrive with
         // `group_service_ctx` below.
-        turn_areas: vec![(0, TurnId::from_index(0)); tables.actors.len() + tables.free_turns.len()],
+        turn_areas: vec![(0, TurnId::from_index(0)); n],
     })
 }
 
 /// The real service context, once `rtdata` is placed: every turn area in
-/// the image (each actor's, then each free async fn's — `place_runtime_tables`'s
-/// own byte order) plus the group arena's own base.
+/// the image (each actor's, then each messageable driver's, then each free
+/// async fn's — `place_runtime_tables`'s own byte order) plus the group
+/// arena's own base.
 fn group_service_ctx(
     placement: &RuntimePlacement,
     tables: &RuntimeTables,
@@ -684,19 +692,30 @@ fn group_service_ctx(
     if tables.group_arena_capacity == 0 {
         return None;
     }
-    // An actor's `TurnId` is its `tables.actors` index (`turn_id_for`'s own
-    // positional rule); a free turn's is the one `place_runtime_tables`
-    // recorded in `turn_ids` under the same key `free_turns` uses. Order is
-    // kept identical to the shape pass's, and to what this scan emitted
-    // before item 0c2 — a reordering is behaviourally inert (each unrolled
-    // arm is self-contained) but would make the golden `rtcode` diff
-    // unreadable.
+    // plans/M10.md item G / decision 671: an actor's `TurnId` is its
+    // `tables.actors` index; a messageable driver's is `actors.len()` plus
+    // its rank among messageable drivers; a free turn's is the one
+    // `place_runtime_tables` recorded in `turn_ids`. Order matches the
+    // turn array (and the shape pass's length). Omitting drivers was the
+    // pre-G defect: a messageable driver's parked turn was never
+    // force-resumed by the deadline delivery scan.
     let mut turn_areas: Vec<(u64, TurnId)> = placement
         .actors
         .iter()
         .enumerate()
         .map(|(i, a)| (a.turn, TurnId::from_index(i)))
         .collect();
+    let mut next_turn = tables.actors.len();
+    for (i, d) in tables.drivers.iter().enumerate() {
+        if d.mailbox.is_none() {
+            continue;
+        }
+        let Some(addrs) = placement.driver_mailboxes.get(&i) else {
+            continue;
+        };
+        turn_areas.push((addrs.turn, TurnId::from_index(next_turn)));
+        next_turn += 1;
+    }
     for (key, &addr) in &placement.free_turns {
         let Some(&id) = placement.turn_ids.get(key) else {
             // `place_runtime_tables` fills `free_turns` and `turn_ids` from
@@ -9768,6 +9787,69 @@ pub struct Store:
                 + tables.ready_queue_capacity * 8
                 + 8; // rr cursor
         assert_eq!(tables.total_bytes, expect_total);
+    }
+
+    /// plans/M10.md item G / decision 671: `group_service_ctx` must name
+    /// every turn `place_runtime_tables` laid down — actors, then
+    /// messageable drivers, then free turns. Pre-G omitted drivers, so a
+    /// messageable driver's parked turn was invisible to the deadline
+    /// delivery scan. Fails first against that omission.
+    #[test]
+    fn group_service_ctx_includes_messageable_driver_turns() {
+        let tables = RuntimeTables {
+            actors: vec![ActorRuntimeLayout {
+                name: "A".to_string(),
+                state_size: 8,
+                mailbox_capacity: 2,
+                slot_size: 16,
+                frame_size: 64,
+            }],
+            drivers: vec![
+                DriverRuntimeLayout {
+                    name: "Msg".to_string(),
+                    state_size: 8,
+                    wake_pending_off: None,
+                    mailbox: Some(DriverMailbox {
+                        capacity: 2,
+                        slot_size: 16,
+                        frame_size: 64,
+                    }),
+                },
+                DriverRuntimeLayout {
+                    name: "Silent".to_string(),
+                    state_size: 8,
+                    wake_pending_off: None,
+                    mailbox: None,
+                },
+            ],
+            free_turns: vec![("f".to_string(), 64)],
+            n_turns: 3, // actor + messageable driver + free; Silent has none
+            turn_stride: 64,
+            group_arena_capacity: 1,
+            ready_queue_capacity: 3,
+            ..RuntimeTables::default()
+        };
+        let base = 0x4000u64;
+        let p = place_runtime_tables(base, &tables);
+        let ctx = group_service_ctx(&p, &tables).expect("group arena present");
+        assert_eq!(
+            ctx.turn_areas.len(),
+            3,
+            "actors + messageable drivers + free turns"
+        );
+        assert_eq!(ctx.turn_areas[0].0, p.actors[0].turn);
+        assert_eq!(ctx.turn_areas[0].1, TurnId::from_index(0));
+        let driver = p.driver_mailboxes.get(&0).expect("messageable driver placed");
+        assert_eq!(ctx.turn_areas[1].0, driver.turn);
+        assert_eq!(ctx.turn_areas[1].1, TurnId::from_index(1));
+        assert_eq!(ctx.turn_areas[2].0, p.free_turns["f"]);
+        assert_eq!(ctx.turn_areas[2].1, TurnId::from_index(2));
+        let shape = group_service_shape(Some(&tables)).expect("shape");
+        assert_eq!(
+            shape.turn_areas.len(),
+            ctx.turn_areas.len(),
+            "shape length must match real ctx (word-count contract)"
+        );
     }
 
     /// plans/M10.md item 0b (decision 554): the turn array is one

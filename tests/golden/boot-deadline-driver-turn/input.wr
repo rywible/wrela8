@@ -1,0 +1,86 @@
+module examples.boot_deadline_driver_turn
+
+# plans/M10.md item G: pin the pre-G `group_service_ctx` defect — the
+# deadline delivery scan walked actors + free turns and **omitted
+# messageable-driver turn areas**. Item 0 made the omission visible (the
+# turn array enumerates driver turns); this golden makes it fail the
+# gate until the scan's `turn_areas` list matches that array.
+#
+# Behaviour mirrors `boot-deadline-cancel` (a free `g.start` child parks
+# on `Counter.bump` inside a zero-budget group). The image also declares
+# a `mailbox=` `@driver`, so `RT.turns` is `[Counter, Stub, worker,
+# root…]`. Without the fix the checkpoint block's unrolled delivery arms
+# skip `Stub`'s turn — `expected/report.txt`'s checkpoint size is the
+# oracle that fails first. With the fix the scan names every turn, the
+# report matches, and the child still cancels at the first checkpoint
+# (`Counter.n == 1`).
+
+struct Hw:
+    id: u32
+
+enum Feature:
+    Flush
+
+@actor
+pub struct Counter:
+    n: u64
+
+    pub fn bump(mut self) -> u64:
+        self.n = self.n + 1
+        return self.n
+
+    pub fn total(read self) -> u64:
+        return self.n
+
+# Messageable so it owns a turn area in `RT.turns`. Idle during the test;
+# its presence alone widens the deadline delivery scan.
+@driver
+pub struct Stub:
+    n: u64
+
+    init(mut self):
+        self.n = 0
+
+    pub fn note(mut self) -> unit:
+        self.n = self.n + 1
+        return unit
+
+async fn worker(c: Actor[Counter]) -> u64:
+    i: u64 = 0
+    while i < 8:
+        r = await c.bump()
+        match r:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        i = i + 1
+    return i
+
+@test(runtime)
+async fn deadline_cancels_with_driver_turn_in_scan(c: Actor[Counter], _s: Actor[Stub]):
+    with group(capacity=1, deadline=now() + ms(0)) as g:
+        g.start(worker, c=c)
+        results = await g.join_all()
+        for r in results:
+            match r:
+                case .Ok(_):
+                    assert false, "the child must not complete: its group expired"
+                case .Err(_):
+                    pass
+    n = await c.total()
+    match n:
+        case .Ok(v):
+            assert v == 1, "cancellation landed at the child's first checkpoint past the deadline"
+        case .Err(_):
+            assert false, "total rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-deadline-driver-turn", target=Target.wrela_machine_v1)
+    hw = img.device[Hw](transport=0x1000, required_features=[Feature.Flush])
+    c = img.actor(Counter, mailbox=8)
+    s = img.driver(Stub, device=hw, mailbox=4)
+    img.supervise(children=[c, s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
