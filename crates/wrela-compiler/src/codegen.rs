@@ -10038,6 +10038,12 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
         emit_rt_run_one(&spec).code.len()
     };
     let _ = _drained;
+    // M10 E4 / decision 623: REF one child at index 0.
+    let poll = RtChildPollSpec {
+        callee_key: "Child.run".into(),
+        child_index: 0,
+    };
+    out.insert("emit_rt_child_poll", emit_rt_child_poll(&poll).code.len());
     out
 }
 

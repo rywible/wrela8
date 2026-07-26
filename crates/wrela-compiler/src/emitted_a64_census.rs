@@ -58,22 +58,16 @@
 //! recomputed by the measure functions every test run — not hand-typed
 //! forever and forgotten.
 //!
-//! ## Churn note (item E4)
-//!
-//! A concurrent agent owns E4 and will delete `build_rt_run_one` and
-//! `build_group_child_poll`. They are in this census as they exist on
-//! this branch; E4's delete commit must bump the locked counts down.
-//! That is the ratchet working as designed.
-//!
 //! ## Categories
 //!
 //! Each entry is exactly one of:
 //! - **floor** — justified against ROADMAP's three categories plus this
 //!   plan's category 4 (decision 650): pre-SP; must-clobber-no-register;
 //!   no expression form (`brk`/…); stored code address jumped to
-//! - **image_static** — specialization sanctioned by decisions 613 / 620
+//! - **image_static** — specialization sanctioned by decisions 613 / 620 /
+//!   623 (`emit_rt_enqueue`, `emit_rt_run_one`, `emit_rt_child_poll`)
 //! - **not_yet_migrated** — owned by a named remaining item (F, F2, G, H,
-//!   I, K, or E4's pending delete)
+//!   I, K)
 //! - **unclassified** — could not be confidently placed; still counted
 
 /// One locked hand-emitter. `words` is the live length under REF.
@@ -148,6 +142,14 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::ImageStatic,
         note: "decision 620; per-core specialized scheduler tick",
     },
+    // REF: one child at index 0. E4 deleted hand-asm `build_group_child_poll`.
+    EmitterEntry {
+        name: "emit_rt_child_poll",
+        file: "codegen.rs",
+        words: 75,
+        category: Category::ImageStatic,
+        note: "decision 623; per-site specialized group-child poll",
+    },
     // --- not yet migrated ------------------------------------------------
     // Checkpoint block at REF (empty group/irq/wake). Includes the 5-word
     // save/restore (floor cat2) plus the M6 pending loop; deadline scan /
@@ -210,14 +212,6 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::NotYetMigrated,
         note: "F (via build_rt_select_and_run_core); REF one sync method",
     },
-    // E4 will delete this (and build_group_child_poll). Bump down then.
-    EmitterEntry {
-        name: "build_rt_run_one",
-        file: "layout.rs",
-        words: 46,
-        category: Category::NotYetMigrated,
-        note: "E4 pending delete (hand-asm twin of emit_rt_run_one)",
-    },
     EmitterEntry {
         name: "build_rt_drain",
         file: "layout.rs",
@@ -231,13 +225,6 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         words: 26,
         category: Category::NotYetMigrated,
         note: "F2; contains 5 floor-cat1 SP-install words",
-    },
-    EmitterEntry {
-        name: "build_group_child_poll",
-        file: "layout.rs",
-        words: 70,
-        category: Category::NotYetMigrated,
-        note: "E4 pending delete",
     },
     EmitterEntry {
         name: "build_boot_init",
@@ -310,16 +297,16 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 101; // 55 + 46
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 176; // 55 + 46 + 75
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 824;
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 708; // was 824; E4 deleted 46+70
 
 pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 989; // 41 + 101 + 824 + 23
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 948; // 41 + 176 + 708 + 23
 
 #[cfg(test)]
 mod tests {
@@ -589,8 +576,9 @@ mod tests {
                 candidates.contains_key(key),
                 "census entry `{key}` no longer scans as an encode::enc_ \
                  emitter — remove it from EMITTED_A64_ENTRIES in the same \
-                 commit (E4's delete of build_rt_run_one / \
-                 build_group_child_poll is the expected case)"
+                 commit that removes a hand-asm twin after its specialized \
+                 replacement is proven (E4 deleted build_rt_run_one / \
+                 build_group_child_poll)"
             );
         }
         for key in wrappers.keys() {

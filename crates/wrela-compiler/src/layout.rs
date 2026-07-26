@@ -10332,13 +10332,8 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         )
         .len(),
     );
-    insert(
-        &mut out,
-        "build_rt_run_one",
-        build_rt_run_one(&[0], &[], None, 0x4050_4000, 0)
-            .words
-            .len(),
-    );
+    // M10 E4 deleted `build_rt_run_one` / `build_group_child_poll`; their
+    // specialized twins live in codegen's specialization census.
     insert(
         &mut out,
         "build_rt_drain",
@@ -10357,21 +10352,6 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         &mut out,
         "build_secondary_core_entry",
         build_secondary_core_entry(1, 0).words.len(),
-    );
-    insert(
-        &mut out,
-        "build_group_child_poll",
-        build_group_child_poll(
-            TURNS_BASE,
-            "Child.run",
-            0x4050_3000,
-            0,
-            TURNS_BASE,
-            LOG2_STRIDE,
-            0,
-        )
-        .words
-        .len(),
     );
     insert(
         &mut out,
