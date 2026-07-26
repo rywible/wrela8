@@ -1,0 +1,1 @@
+error[type]: field `TurnTable.turns`'s array length is `Other`, which is not a module-level `const` visible here; an array field's length is an integer literal or the name of a module-level `const` — a name a `comptime if` removed, a local, or a type is not one (03-hardware.md §3.1, plans/M10.md item A2b) at 26:5

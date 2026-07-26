@@ -1792,6 +1792,16 @@ pub enum LayoutEntry {
 
 /// One `@layout` type, fully laid out: 03 §3's "exact size, offsets,
 /// padding, and endianness", as data.
+///
+/// **Or not yet laid out.** Since plans/M10.md item A2b a `runtime` layout
+/// whose array length is a `const` name (03 §3.1's own `[TurnArea;
+/// N_TURNS]`) leaves `check_layouts` *deferred*: `size` is `None`, `padding`
+/// is 0 and `entries` is empty, because the early pass evaluates nothing and
+/// therefore has no offsets to report. `complete_layouts` fills all three in
+/// after const evaluation. `None` is the whole point of the `Option`: every
+/// consumer that needs a byte count must refuse it by name (`require_size`)
+/// rather than read a plausible-looking 0 — a zero-byte `@layout` is exactly
+/// the fail-open 03 §3 exists to prevent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutType {
     pub name: String,
@@ -1799,11 +1809,45 @@ pub struct LayoutType {
     pub endian: LayoutEndian,
     /// Total bytes: the end of the last field. There is no trailing
     /// padding and no alignment round-up — a `@layout` type is exactly
-    /// the bytes its fields cover.
-    pub size: u64,
+    /// the bytes its fields cover. `None` while this layout's sizing is
+    /// deferred (see the type's own note).
+    pub size: Option<u64>,
     /// Total declared-hole bytes (the sum of every `Padding` entry).
     pub padding: u64,
     pub entries: Vec<LayoutEntry>,
+}
+
+impl LayoutType {
+    /// This layout's total bytes, or the named fail-closed rejection that
+    /// says it has none yet (plans/M10.md item A2b, requirement 4: "a
+    /// deferred layout that never got completed must not silently report a
+    /// wrong or absent size"). `context` names the consumer, so a reader
+    /// learns which pass reached an uncompleted layout, not merely that one
+    /// did.
+    ///
+    /// Location-free (`omit_location`): the failure is a pass-order fact
+    /// about a whole layout, not a fact about one source position, and a
+    /// `0:0` would be a worse answer than none.
+    pub fn require_size(&self, context: &str) -> Result<u64, SemaError> {
+        match self.size {
+            Some(size) => Ok(size),
+            None => Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`@layout` type `{}` has no computed size at {context}: its array length is a \
+                     `const` name, so `sema::types::check_layouts` deferred its sizing and \
+                     `complete_layouts` (which resolves the length after const evaluation) never \
+                     ran on it (03-hardware.md §3.1, plans/M10.md item A2b)",
+                    self.name
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            }),
+        }
+    }
 }
 
 /// The exact-width integer field types (03 §3's "exact bytes"). Deliberately
@@ -2032,29 +2076,61 @@ const MAX_LAYOUT_NEST_DEPTH: usize = 16;
 /// orders of magnitude above any table 03 §3.1 describes.
 const MAX_LAYOUT_NEST_EXPANSIONS: u32 = 1024;
 
+/// The largest number of bytes one `@layout` type may cover.
+///
+/// A fail-closed floor, exactly like the two nesting bounds above, and it
+/// exists for the same reason: since plans/M10.md item A2b an array length
+/// can be a `const`, so a one-line edit to a `const` turns a four-element
+/// table into a `2^40`-element one, and every number downstream of a
+/// `@layout` size (a DMA pool's backing bytes, a placed table's extent) is a
+/// real allocation. The flagship machine is 1 GiB in total
+/// (ROADMAP.md/06-machine.md), so a *single* exact-bytes declaration
+/// claiming more than 16 MiB is a mistake in the declaration and not a
+/// table; refused by name rather than reported as a size nothing can hold.
+/// Raise it in the item that has an image needing more — never silently.
+const MAX_LAYOUT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The array lengths the *completion* pass resolved: `const` name -> value,
+/// already checked to be a positive integer (`collect_length_consts`). The
+/// early pass carries `None` here and defers instead — decision 580's purity
+/// (it runs before name resolution and evaluates nothing) is unchanged, and
+/// this table is the whole difference between the two passes.
+type LengthConsts = BTreeMap<String, u64>;
+
 /// The nesting recursion's whole state: the chain of layout structs
 /// currently being laid out, outermost first (cycle detector and depth
 /// counter), and the remaining expansion budget. One per top-level
 /// `@layout` — `check_one_layout` builds it fresh, so no layout's budget is
 /// spent by its siblings.
-struct NestCtx {
+struct NestCtx<'a> {
     stack: Vec<String>,
     budget: u32,
+    /// `None` in the early pass (`check_layouts`): a `const`-named array
+    /// length has no value here and the layout is deferred. `Some(table)` in
+    /// the later pass (`complete_layouts`): every length resolves or is a
+    /// named rejection.
+    lens: Option<&'a LengthConsts>,
 }
 
 /// A `@layout` field's exact bytes, or the named rejection that says why it
 /// has none. `decls` is every `@layout` struct declared in this module, so
 /// a nested one is sized (03 §3.1's `runtime` allowance) or rejected as the
 /// scope limit it is, rather than as an unsized type it is not.
+///
+/// `Ok(None)` is the third outcome plans/M10.md item A2b adds: **deferred** —
+/// this field is (or nests) an array whose length is a `const` name, which
+/// the early pass may not evaluate. Every *other* rule about the field has
+/// already been checked when this returns; only its byte count is unknown,
+/// and `complete_layouts` is what supplies it.
 fn layout_field_bytes(
     struct_name: &str,
     field_name: &str,
     kind: LayoutKind,
     ty: &ast::Type,
     decls: &LayoutDecls,
-    nest: &mut NestCtx,
+    nest: &mut NestCtx<'_>,
     span: Span,
-) -> Result<FieldBytes, SemaError> {
+) -> Result<Option<FieldBytes>, SemaError> {
     let rendered = printer::print_type_bare(ty);
     if let ast::Type::Array(a) = ty {
         return array_field_bytes(
@@ -2079,7 +2155,7 @@ fn layout_field_bytes(
     };
     if n.args.is_empty() {
         if let Some(size) = scalar_field_size(&n.name) {
-            return Ok(FieldBytes::scalar(size));
+            return Ok(Some(FieldBytes::scalar(size)));
         }
         if matches!(n.name.as_str(), "usize" | "isize") {
             return Err(layout_error(
@@ -2197,7 +2273,7 @@ fn layout_field_bytes(
             ));
         };
         return match scalar_field_size(&i.name).filter(|_| i.args.is_empty()) {
-            Some(size) => Ok(FieldBytes::scalar(size)),
+            Some(size) => Ok(Some(FieldBytes::scalar(size))),
             None => Err(layout_error(
                 format!(
                     "field `{struct_name}.{field_name}: {rendered}` wraps `{}`, which is not a \
@@ -2223,6 +2299,11 @@ fn layout_field_bytes(
 /// Size is `N * size_of(T)` — no stride rounding, no trailing padding — and
 /// the array's alignment is its element's, because that is the alignment
 /// every element needs and an array adds no requirement of its own.
+///
+/// The element's own rules are checked whether or not the length is known
+/// (plans/M10.md item A2b requirement 1: the early pass still checks
+/// *shape*), so `[usize; N_TURNS]` is refused before name resolution exactly
+/// as `[usize; 4]` is. Only the multiplication waits.
 #[allow(clippy::too_many_arguments)]
 fn array_field_bytes(
     struct_name: &str,
@@ -2231,9 +2312,9 @@ fn array_field_bytes(
     a: &ast::ArrayType,
     rendered: &str,
     decls: &LayoutDecls,
-    nest: &mut NestCtx,
+    nest: &mut NestCtx<'_>,
     span: Span,
-) -> Result<FieldBytes, SemaError> {
+) -> Result<Option<FieldBytes>, SemaError> {
     if kind != LayoutKind::Runtime {
         // The allowance is 03 §3.1's, and it is stated as belonging to the
         // fourth kind alone: "It adds one allowance the other three kinds
@@ -2251,12 +2332,12 @@ fn array_field_bytes(
             span,
         ));
     }
-    let len = array_field_len(struct_name, field_name, rendered, &a.len, span)?;
+    let len = array_field_len(struct_name, field_name, rendered, &a.len, nest, span)?;
     let elem_rendered = printer::print_type_bare(&a.elem);
     let elem = match &a.elem {
-        ast::Type::Named(n) if n.args.is_empty() && scalar_field_size(&n.name).is_some() => {
-            FieldBytes::scalar(scalar_field_size(&n.name).expect("just matched"))
-        }
+        ast::Type::Named(n) if n.args.is_empty() && scalar_field_size(&n.name).is_some() => Some(
+            FieldBytes::scalar(scalar_field_size(&n.name).expect("just matched")),
+        ),
         ast::Type::Named(n) if n.args.is_empty() && decls.contains_key(&n.name) => {
             let nested = decls[&n.name];
             nested_field_bytes(
@@ -2292,6 +2373,11 @@ fn array_field_bytes(
             ));
         }
     };
+    // The element itself is deferred (it nests a table whose own array
+    // length is a `const` name), so this field is too. Every rule about the
+    // element that does not need its byte count has already run inside
+    // `nested_field_bytes` — kind, capability, cycle, depth, budget.
+    let Some(elem) = elem else { return Ok(None) };
     // An array is elements back to back at stride `size_of(T)`. If that
     // stride is not a multiple of `T`'s own alignment, element 1 onwards
     // land misaligned, and the only fix is padding between elements — the
@@ -2310,6 +2396,9 @@ fn array_field_bytes(
             span,
         ));
     }
+    // The length is a `const` name and this is the early pass: defer. The
+    // element's rules above have all been checked already.
+    let Some(len) = len else { return Ok(None) };
     let size = len.checked_mul(elem.size).ok_or_else(|| {
         layout_error(
             format!(
@@ -2321,36 +2410,77 @@ fn array_field_bytes(
             span,
         )
     })?;
-    Ok(FieldBytes {
+    Ok(Some(FieldBytes {
         size,
         align: elem.align,
-    })
+    }))
 }
 
-/// An array field's length: **an integer literal, and nothing else**
-/// (decision 580).
+/// An array field's length: **an integer literal, or the name of a
+/// module-level `const`** (03-hardware.md §3.1; plans/M10.md decisions 580
+/// and 581, item A2b).
 ///
-/// This is `parse_offset_attr`'s rule, for the same reason and in the same
-/// words: `check_layouts` runs before name resolution and evaluates
-/// nothing, so a `const`-named length is inference by another name. 03
-/// §3.1's own example spells `[TurnArea; N_TURNS]` and is therefore *not
-/// yet* accepted — the rejection below names it, so the gap is visible in
-/// the diagnostic rather than discovered by a reader of the doc.
+/// Two passes read this one function, and the difference between them is
+/// `nest.lens`:
+///
+/// - `None` — the early pass (`check_layouts`), which runs before name
+///   resolution and evaluates nothing. A literal is decoded here; a `const`
+///   name **defers** (`Ok(None)`), and the layout is completed later. It is
+///   not resolved here, and no second name resolver is built to try:
+///   decision 580's rejected alternative (ii) stands in full.
+/// - `Some(table)` — the later pass (`complete_layouts`), which runs after
+///   const evaluation with every needed `const` already evaluated by the one
+///   real evaluator. A name resolves out of the table or is a named
+///   rejection; nothing defers twice.
+///
+/// **`@offset(n)` does not move** (`parse_offset_attr`): decision 580's
+/// reasoning applies to it unchanged, and only lengths are what M10's
+/// per-image tables need. An offset the compiler must evaluate is still
+/// inference by another name.
+///
+/// Anything that is neither a literal nor a bare name — arithmetic in the
+/// length position, a field access, a call — is a named rejection in both
+/// passes. A `const` whose own *initializer* is arithmetic works fine
+/// (`const N = BASE * 2`): that is the evaluator's job, and it does it.
 fn array_field_len(
     struct_name: &str,
     field_name: &str,
     rendered: &str,
     len: &Expr,
+    nest: &NestCtx<'_>,
     span: Span,
-) -> Result<u64, SemaError> {
+) -> Result<Option<u64>, SemaError> {
+    if let Expr::Name(_, name) = len {
+        let Some(lens) = nest.lens else {
+            // The early pass: defer, do not evaluate, do not guess.
+            return Ok(None);
+        };
+        // `collect_length_consts` put every name this module's `@layout`
+        // structs mention into the table, or failed closed naming the one it
+        // could not. A miss here is therefore a producer disagreement, and
+        // it is reported as the rule it is rather than as an `internal
+        // error:` (which is a bug by house rule, CLAUDE.md).
+        let Some(value) = lens.get(name) else {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` has length `{name}`, which \
+                     this module's own `const`s do not define; an array field's length is an \
+                     integer literal or the name of a module-level `const` (03-hardware.md §3.1)"
+                ),
+                span,
+            ));
+        };
+        return Ok(Some(*value));
+    }
     let Expr::Int(_, text) = len else {
         return Err(layout_error(
             format!(
-                "field `{struct_name}.{field_name}: {rendered}` has a length that is not an \
-                 integer literal; a `@layout` type's size and offsets are checked before name \
-                 resolution and nothing in them is evaluated, so an array field's length is a \
-                 literal — a `const`-named length is inference by another name, the same rule \
-                 `@offset(n)` already states (03-hardware.md §3, plans/M10.md decision 580)"
+                "field `{struct_name}.{field_name}: {rendered}` has a length that is neither an \
+                 integer literal nor the name of a module-level `const`; an array field's length \
+                 is one of those two and nothing else — a length this compiler would have to \
+                 type-check an expression to learn is inference by another name, the same rule \
+                 `@offset(n)` already states (03-hardware.md §3.1, plans/M10.md decisions 580, \
+                 581)"
             ),
             span,
         ));
@@ -2379,7 +2509,7 @@ fn array_field_len(
             span,
         ));
     }
-    Ok(value)
+    Ok(Some(value))
 }
 
 /// A field whose type is another `@layout` struct declared in this module.
@@ -2399,9 +2529,9 @@ fn nested_field_bytes(
     nested: &StructItem,
     rendered: &str,
     decls: &LayoutDecls,
-    nest: &mut NestCtx,
+    nest: &mut NestCtx<'_>,
     span: Span,
-) -> Result<FieldBytes, SemaError> {
+) -> Result<Option<FieldBytes>, SemaError> {
     if kind != LayoutKind::Runtime {
         return Err(match declared_layout_kind(&nested.attrs) {
             Some(LayoutKind::Runtime) => {
@@ -2484,10 +2614,13 @@ fn nested_field_bytes(
             span,
         ));
     }
-    Ok(FieldBytes {
-        size: inner.size,
-        align,
-    })
+    // The nested table's own sizing may itself be deferred (its array length
+    // is a `const` name); then so is this field's. The kind check above has
+    // already run, so the *rules* are checked either way.
+    match inner.size {
+        Some(size) => Ok(Some(FieldBytes { size, align })),
+        None => Ok(None),
+    }
 }
 
 /// The nesting rule's cross-kind half, in one place so both directions read
@@ -2553,10 +2686,12 @@ fn check_one_layout(
     s: &StructItem,
     attr: &Attr,
     decls: &LayoutDecls,
+    lens: Option<&LengthConsts>,
 ) -> Result<LayoutType, SemaError> {
     let mut nest = NestCtx {
         stack: Vec::new(),
         budget: MAX_LAYOUT_NEST_EXPANSIONS,
+        lens,
     };
     lay_out_struct(s, attr, decls, &mut nest).map(|(l, _align)| l)
 }
@@ -2570,7 +2705,7 @@ fn lay_out_struct(
     s: &StructItem,
     attr: &Attr,
     decls: &LayoutDecls,
-    nest: &mut NestCtx,
+    nest: &mut NestCtx<'_>,
 ) -> Result<(LayoutType, u64), SemaError> {
     let name = s.name.clone();
     let (kind, endian) = parse_layout_attr(&name, attr)?;
@@ -2583,31 +2718,50 @@ fn lay_out_struct(
             s.span,
         ));
     }
-    let mut entries: Vec<LayoutEntry> = Vec::new();
-    let mut cursor: u64 = 0;
-    let mut padding: u64 = 0;
-    let mut align: u64 = 1;
-    let mut last_field: Option<(String, u64, u64)> = None;
+    let mut walk = Walk::default();
     nest.stack.push(name.clone());
-    let laid = lay_out_fields(
-        s,
-        &name,
-        kind,
-        decls,
-        nest,
-        &mut entries,
-        &mut cursor,
-        &mut padding,
-        &mut align,
-        &mut last_field,
-    );
+    let laid = lay_out_fields(s, &name, kind, decls, nest, &mut walk);
     nest.stack.pop();
     laid?;
-    if last_field.is_none() {
+    if !walk.saw_field {
         return Err(layout_error(
             format!(
                 "`@layout` struct `{name}` declares no fields; a `@layout` type is an exact byte \
                  layout and has no empty form (03-hardware.md §3)"
+            ),
+            s.span,
+        ));
+    }
+    if walk.deferred {
+        // plans/M10.md item A2b: at least one array length is a `const`
+        // name, so this layout has no offsets and no size *yet*. Reported as
+        // the absence it is — `size: None`, no entries — never as a zero.
+        // `complete_layouts` produces the real thing.
+        return Ok((
+            LayoutType {
+                name,
+                kind,
+                endian,
+                size: None,
+                padding: 0,
+                entries: Vec::new(),
+            },
+            1,
+        ));
+    }
+    // Every size-dependent rule below this line runs only on a layout whose
+    // sizes are all real: the total-bytes bound here, and overlap/alignment
+    // inside `lay_out_fields`. On a deferred layout they run in
+    // `complete_layouts` instead, on the completed table (item A2b
+    // requirement 2) — they are never skipped, only postponed.
+    if walk.cursor > MAX_LAYOUT_BYTES {
+        return Err(layout_error(
+            format!(
+                "`@layout` struct `{name}` covers {} bytes, more than the {MAX_LAYOUT_BYTES} this \
+                 compiler will lay out in one declaration; the machine has 1 GiB in total, so a \
+                 single exact-bytes declaration this large is a mistake in the declaration rather \
+                 than a table (03-hardware.md §3)",
+                walk.cursor
             ),
             s.span,
         ));
@@ -2617,30 +2771,63 @@ fn lay_out_struct(
             name,
             kind,
             endian,
-            size: cursor,
-            padding,
-            entries,
+            size: Some(walk.cursor),
+            padding: walk.padding,
+            entries: walk.entries,
         },
-        align,
+        walk.align,
     ))
+}
+
+/// One `lay_out_struct` call's running state, in one struct so the field
+/// walk takes one `&mut` rather than six.
+struct Walk {
+    entries: Vec<LayoutEntry>,
+    cursor: u64,
+    padding: u64,
+    /// The widest alignment among the fields — a *nested* field's own
+    /// requirement (`nested_field_bytes`); a top-level layout's alignment is
+    /// nothing 03 §3 reports.
+    align: u64,
+    /// `(name, start, end)` of the previous field, for the overlap-vs-order
+    /// diagnostic split.
+    last_field: Option<(String, u64, u64)>,
+    /// Any field at all was declared (the empty-layout guard). Distinct from
+    /// `last_field`, which a deferred field does not set — a layout whose
+    /// only field is deferred still declares a field.
+    saw_field: bool,
+    /// plans/M10.md item A2b: some field's byte count is not known yet, so
+    /// this whole layout's sizing is deferred to `complete_layouts`. Once
+    /// set, the offset arithmetic stops (there is nothing true to compute)
+    /// while the per-field rule checks continue.
+    deferred: bool,
+}
+
+impl Default for Walk {
+    fn default() -> Self {
+        Walk {
+            entries: Vec::new(),
+            cursor: 0,
+            padding: 0,
+            align: 1,
+            last_field: None,
+            saw_field: false,
+            deferred: false,
+        }
+    }
 }
 
 /// `lay_out_struct`'s field walk, split out only so `nest.stack` is popped
 /// on every exit path — including the rejections, of which there are
-/// a dozen. Every `&mut` argument is `lay_out_struct`'s own local; nothing
-/// here is shared with a sibling layout.
-#[allow(clippy::too_many_arguments)]
+/// a dozen. `walk` is `lay_out_struct`'s own local; nothing here is shared
+/// with a sibling layout.
 fn lay_out_fields(
     s: &StructItem,
     name: &str,
     kind: LayoutKind,
     decls: &LayoutDecls,
-    nest: &mut NestCtx,
-    entries: &mut Vec<LayoutEntry>,
-    cursor: &mut u64,
-    padding: &mut u64,
-    struct_align: &mut u64,
-    last_field: &mut Option<(String, u64, u64)>,
+    nest: &mut NestCtx<'_>,
+    walk: &mut Walk,
 ) -> Result<(), SemaError> {
     for m in &s.members {
         let f = match m {
@@ -2688,9 +2875,12 @@ fn lay_out_fields(
                 ));
             }
         };
-        let FieldBytes { size, align } =
-            layout_field_bytes(name, &f.name, kind, &f.ty, decls, nest, f.span)?;
-        *struct_align = (*struct_align).max(align);
+        walk.saw_field = true;
+        let bytes = layout_field_bytes(name, &f.name, kind, &f.ty, decls, nest, f.span)?;
+        // The field-attribute rules are *shape*, not size — one `@offset`,
+        // an integer-literal argument, no other attribute — so they run on
+        // every field, including a deferred one (item A2b requirement 1: the
+        // early pass keeps checking everything it can check).
         let mut explicit: Option<u64> = None;
         for a in &f.attrs {
             if a.name == "offset" {
@@ -2712,7 +2902,20 @@ fn lay_out_fields(
                 ));
             }
         }
-        let offset = explicit.unwrap_or(*cursor);
+        // plans/M10.md item A2b: this field's byte count is a `const` name
+        // the early pass may not evaluate, so no offset after it is
+        // computable. Every rule that does not need a byte count has already
+        // run; the ones that do — overlap, alignment, total size — run in
+        // `complete_layouts` on the completed table.
+        let Some(FieldBytes { size, align }) = bytes else {
+            walk.deferred = true;
+            continue;
+        };
+        if walk.deferred {
+            continue;
+        }
+        walk.align = walk.align.max(align);
+        let offset = explicit.unwrap_or(walk.cursor);
         // plans/M7.md item I's sweep: `@offset(n)` accepts any `n` a
         // `u64` holds, and the two additions below (`offset + size`, and
         // the `cursor` advance) both overflowed on one. In a debug build
@@ -2736,10 +2939,11 @@ fn lay_out_fields(
                 f.span,
             )
         })?;
-        if offset < *cursor {
-            let (prev_name, prev_start, prev_end) = last_field
+        if offset < walk.cursor {
+            let (prev_name, prev_start, prev_end) = walk
+                .last_field
                 .clone()
-                .unwrap_or_else(|| (String::from("<start>"), *cursor, *cursor));
+                .unwrap_or_else(|| (String::from("<start>"), walk.cursor, walk.cursor));
             // Two distinct violations share this one condition, and the
             // diagnostic must not claim the wrong one: a field declared
             // after `prev` may sit entirely *before* it (an ordering
@@ -2790,22 +2994,22 @@ fn lay_out_fields(
                 None => implicit_padding_error(name, &f.name, &f.ty, offset, align, f.span),
             });
         }
-        if offset > *cursor {
-            let gap = offset - *cursor;
-            entries.push(LayoutEntry::Padding {
-                offset: *cursor,
+        if offset > walk.cursor {
+            let gap = offset - walk.cursor;
+            walk.entries.push(LayoutEntry::Padding {
+                offset: walk.cursor,
                 size: gap,
             });
-            *padding += gap;
+            walk.padding += gap;
         }
-        entries.push(LayoutEntry::Field(LayoutField {
+        walk.entries.push(LayoutEntry::Field(LayoutField {
             name: f.name.clone(),
             ty: printer::print_type_bare(&f.ty),
             offset,
             size,
         }));
-        *cursor = field_end;
-        *last_field = Some((f.name.clone(), offset, *cursor));
+        walk.cursor = field_end;
+        walk.last_field = Some((f.name.clone(), offset, walk.cursor));
     }
     Ok(())
 }
@@ -2935,6 +3139,13 @@ fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
 /// It also runs `check_placed_attrs` first: `@placed` is a §3.1
 /// layout-class attribute and this is the only whole-module pass that owns
 /// 03 §3.
+///
+/// **A `runtime` layout whose array length is a `const` name comes back
+/// deferred** (`size: None`), not rejected — plans/M10.md item A2b. Decision
+/// 580's purity is untouched: this pass still evaluates nothing and still
+/// resolves no name. [`complete_layouts`] finishes the job after const
+/// evaluation, and every consumer of a byte count refuses an uncompleted
+/// layout by name ([`LayoutType::require_size`]).
 pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
     check_placed_attrs(module)?;
     // Every struct carrying a `@layout` at all, well-formed or not — the
@@ -2972,7 +3183,7 @@ pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
                     }
                 }
             }
-            [attr] => out.push(check_one_layout(s, attr, &decls)?),
+            [attr] => out.push(check_one_layout(s, attr, &decls, None)?),
             [_, second, ..] => {
                 return Err(layout_error(
                     format!(
@@ -2988,6 +3199,158 @@ pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
     Ok(out)
 }
 
+/// The **later layout-completion pass** (plans/M10.md item A2b, decision
+/// 581): resolves the `const` array lengths `check_layouts` deferred and
+/// finishes those layouts' sizing.
+///
+/// **Where it runs, and why there.** After `eval::check_comptime`, i.e. after
+/// every `const` in `program` has been type-checked by `bodies::check` and
+/// evaluated by the one real evaluator — the earliest point at which a length
+/// can be resolved *without* building a second name resolver, which is the
+/// alternative decision 580 rejected. It cannot run earlier: `program.consts`
+/// does not exist before `bodies::check`, and evaluating a `const` needs the
+/// typed program. It must not run later than the first consumer of a byte
+/// count, so the pipeline calls it immediately after the comptime pass and
+/// before anything reads `TypedProgram::layouts`.
+///
+/// **What it re-checks.** Everything, on the completed table: it re-lays the
+/// deferred structs out through the same `lay_out_struct` the early pass
+/// uses, with `nest.lens` supplied, so overlap, ordering, alignment, implicit
+/// padding, the nesting bounds and the total-size bound all apply to the real
+/// numbers (item A2b requirement 2). Nothing is checked in a weaker form
+/// because it was deferred; it is checked later, not less.
+///
+/// A no-op — not even a walk of the module — when no layout deferred, which
+/// is every program that does not use a `const` length.
+pub fn complete_layouts(
+    module: &Module,
+    program: &crate::sema::typed::TypedProgram,
+    layouts: &mut [LayoutType],
+) -> Result<(), SemaError> {
+    if layouts.iter().all(|l| l.size.is_some()) {
+        return Ok(());
+    }
+    let mut decls: LayoutDecls = BTreeMap::new();
+    for item in &module.items {
+        if let Item::Struct(s) = item {
+            if s.attrs.iter().any(|a| a.name == "layout") {
+                decls.insert(s.name.clone(), s);
+            }
+        }
+    }
+    let lens = collect_length_consts(&decls, program)?;
+    for l in layouts.iter_mut() {
+        if l.size.is_some() {
+            continue;
+        }
+        let Some(s) = decls.get(&l.name) else {
+            // A deferred layout whose declaration is not in the module handed
+            // to this pass: there is nothing here to complete it from, so it
+            // fails closed rather than travelling on with no size
+            // (requirement 4). `require_size` always errors on a deferred
+            // layout, which is what makes this the whole rejection.
+            return Err(l
+                .require_size("layout completion")
+                .expect_err("a deferred layout has no size, so `require_size` rejects"));
+        };
+        let attr = s
+            .attrs
+            .iter()
+            .find(|a| a.name == "layout")
+            .expect("`decls` holds only structs carrying `@layout`");
+        let completed = check_one_layout(s, attr, &decls, Some(&lens))?;
+        // The completed layout must actually be complete: with `lens`
+        // supplied nothing may defer twice, and a `None` here would be this
+        // pass silently failing to do the one thing it exists for.
+        completed.require_size("the end of layout completion")?;
+        *l = completed;
+    }
+    Ok(())
+}
+
+/// Every `const` name an array length in `decls` mentions, evaluated once,
+/// checked to be a length a `@layout` field can have.
+///
+/// Evaluation goes through `eval::interp::eval_const` — the same evaluator a
+/// plain module-level `const` already runs through, so a length that depends
+/// on another `const` (`const N = BASE * 2`) works for free, and a `const`
+/// that `specialize` removed with its `comptime if` branch is simply not in
+/// `program.consts` and is refused by name below. There is no second
+/// resolver anywhere in this file: this reads the one real table.
+///
+/// Four fail-closed rejections, each named: not a `const` of this module; not
+/// an integer; zero; negative. Zero is illegal for the same reason a literal
+/// `0` length is (a `@layout` field covers at least one byte), and negative
+/// for the more basic one that a byte count is not signed. A huge but legal
+/// value is *not* rejected here — it is rejected by `MAX_LAYOUT_BYTES` once
+/// multiplied out, where the number in the diagnostic is the one that is
+/// actually too big.
+fn collect_length_consts(
+    decls: &LayoutDecls,
+    program: &crate::sema::typed::TypedProgram,
+) -> Result<LengthConsts, SemaError> {
+    let mut out: LengthConsts = BTreeMap::new();
+    for s in decls.values() {
+        for m in &s.members {
+            let Member::Field(f) = m else { continue };
+            let ast::Type::Array(a) = &f.ty else { continue };
+            let Expr::Name(_, name) = &a.len else {
+                continue;
+            };
+            if out.contains_key(name) {
+                continue;
+            }
+            let where_ = format!("field `{}.{}`'s array length", s.name, f.name);
+            if !program.consts.contains_key(name) {
+                return Err(layout_error(
+                    format!(
+                        "{where_} is `{name}`, which is not a module-level `const` visible here; \
+                         an array field's length is an integer literal or the name of a \
+                         module-level `const` — a name a `comptime if` removed, a local, or a \
+                         type is not one (03-hardware.md §3.1, plans/M10.md item A2b)"
+                    ),
+                    f.span,
+                ));
+            }
+            let value = crate::eval::interp::eval_const(program, name).map_err(|e| {
+                layout_error(
+                    format!("{where_} `{name}` does not evaluate: {}", e.message),
+                    f.span,
+                )
+            })?;
+            let Some(n) = crate::eval::value::as_i128(&value) else {
+                return Err(layout_error(
+                    format!(
+                        "{where_} is `{name}`, whose value is not an integer; an array field's \
+                         length is a count of elements (03-hardware.md §3.1)"
+                    ),
+                    f.span,
+                ));
+            };
+            if n <= 0 {
+                return Err(layout_error(
+                    format!(
+                        "{where_} is `{name}`, whose value is {n}; a `@layout` field covers at \
+                         least one byte, so an array length is one or more (03-hardware.md §3.1)"
+                    ),
+                    f.span,
+                ));
+            }
+            let n = u64::try_from(n).map_err(|_| {
+                layout_error(
+                    format!(
+                        "{where_} is `{name}`, whose value {n} is not a byte count this compiler \
+                         can use (03-hardware.md §3.1)"
+                    ),
+                    f.span,
+                )
+            })?;
+            out.insert(name.clone(), n);
+        }
+    }
+    Ok(out)
+}
+
 /// Renders one already-checked `@layout` type in the M1 dump style
 /// (`Kind key=value` lines, two-space indent per level), starting at
 /// `depth`. Shared verbatim by `wrela dump --stage=layout-types` and the
@@ -2998,16 +3361,21 @@ pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
 /// (`size=4`), the same split the report's own `Layout` section already
 /// uses for `base=`/`size=` — an offset is an address inside the map, a
 /// size is a count.
-pub fn push_layout_lines(out: &mut String, depth: usize, l: &LayoutType) {
+///
+/// `Err` for an **uncompleted** layout (plans/M10.md item A2b requirement 4):
+/// a deferred layout that reached a dump or the image report is a pass-order
+/// bug, and it fails closed here rather than printing `size=0` — the exact
+/// zero-byte lie 03 §3's own rules exist to prevent.
+pub fn push_layout_lines(out: &mut String, depth: usize, l: &LayoutType) -> Result<(), SemaError> {
+    let size = l.require_size("the `@layout` table dump")?;
     push_line(
         out,
         depth,
         &format!(
-            "Layout name={} kind={} endian={} size={} padding={}",
+            "Layout name={} kind={} endian={} size={size} padding={}",
             l.name,
             l.kind.as_str(),
             l.endian.as_str(),
-            l.size,
             l.padding
         ),
     );
@@ -3028,6 +3396,7 @@ pub fn push_layout_lines(out: &mut String, depth: usize, l: &LayoutType) {
             ),
         }
     }
+    Ok(())
 }
 
 /// `wrela dump --stage=layout-types`'s whole artifact: one `Module
@@ -3040,7 +3409,7 @@ pub fn push_layout_lines(out: &mut String, depth: usize, l: &LayoutType) {
 /// `by_module` is supplied in the caller's own deterministic order (a
 /// `BTreeMap` walk keyed by dotted module address, or the single-file
 /// case's one entry).
-pub fn dump_layouts(by_module: &[(String, Vec<LayoutType>)]) -> String {
+pub fn dump_layouts(by_module: &[(String, Vec<LayoutType>)]) -> Result<String, SemaError> {
     let mut out = String::from("LayoutTypes v0\n");
     for (path, layouts) in by_module {
         if layouts.is_empty() {
@@ -3048,10 +3417,10 @@ pub fn dump_layouts(by_module: &[(String, Vec<LayoutType>)]) -> String {
         }
         push_line(&mut out, 1, &format!("Module path={path}"));
         for l in layouts {
-            push_layout_lines(&mut out, 2, l);
+            push_layout_lines(&mut out, 2, l)?;
         }
     }
-    out
+    Ok(out)
 }
 
 // --- typed MMIO: registers + claim partitioning (plans/M7.md item C) ------
@@ -6385,6 +6754,124 @@ mod tests {
         check_layouts(&module)
     }
 
+    /// The whole pipeline, so the *later* layout-completion pass runs
+    /// (plans/M10.md item A2b): `check_layouts` alone would only ever defer.
+    fn completed_layouts_of(src: &str) -> Result<Vec<LayoutType>, SemaError> {
+        let tokens = crate::syntax::lexer::lex(src).expect("test source lexes");
+        let module = crate::syntax::parser::parse(tokens).expect("test source parses");
+        crate::sema::check_typed(&module, "t.wr").map(|p| p.layouts)
+    }
+
+    /// The early pass leaves a `const`-named length **deferred** — no size, no
+    /// entries — rather than rejecting it (as item A2 did) or guessing at it.
+    /// This is the property decision 581 turns on, and no golden can show it:
+    /// by the time any artifact is printed, the layout has been completed.
+    #[test]
+    fn a_const_length_defers_in_the_early_pass_and_completes_in_the_later_one() {
+        let src = "module t\n\nconst N: u32 = 4\n\n\
+                   @layout(runtime, endian=little)\nstruct T:\n\
+                   \x20   rr_cursor: u64\n    turns: [u32; N]\n";
+        let early = layouts_of(src).expect("the early pass defers, it does not reject");
+        assert_eq!(early.len(), 1);
+        assert_eq!(early[0].size, None, "deferred, not zero");
+        assert!(early[0].entries.is_empty(), "no offsets are known yet");
+        assert_eq!(early[0].padding, 0);
+        // And the same declaration, completed: 8 + 4 * 4.
+        let done = completed_layouts_of(src).expect("the later pass completes it");
+        assert_eq!(done[0].size, Some(24));
+        assert_eq!(done[0].entries.len(), 2);
+    }
+
+    /// A length that depends on another `const` works, because resolution goes
+    /// through the one real evaluator rather than a second scanner that would
+    /// have to reimplement arithmetic (decision 580's rejected alternative
+    /// (ii)).
+    #[test]
+    fn a_const_length_may_depend_on_another_const() {
+        let done = completed_layouts_of(
+            "module t\n\nconst BASE: u32 = 2\nconst N: u32 = BASE * 3\n\n\
+             @layout(runtime, endian=little)\nstruct T:\n    turns: [u32; N]\n",
+        )
+        .expect("arithmetic in the `const`'s own initializer is the evaluator's job");
+        assert_eq!(done[0].size, Some(24));
+    }
+
+    /// The completion pass's own rejections, by the substring that makes each
+    /// message the right one. The two with a source-shaped story of their own
+    /// are goldens (`err-layout-runtime-len-not-const`,
+    /// `err-layout-runtime-len-zero`, `err-layout-runtime-len-too-big`); these
+    /// are the neighbours that would say nothing extra as a golden.
+    #[test]
+    fn const_length_guards() {
+        let cases: &[(&str, &str)] = &[
+            // Negative: the same rule zero gets — a `@layout` field covers at
+            // least one byte — and worth its own case because a signed `const`
+            // reaches the pass as a perfectly valid `i32`.
+            (
+                "module t\n\nconst N: i32 = -3\n\n@layout(runtime, endian=little)\n\
+                 struct T:\n    turns: [u32; N]\n",
+                "whose value is -3",
+            ),
+            // Not an integer at all: a length is a count of elements.
+            (
+                "module t\n\nconst N: bool = true\n\n@layout(runtime, endian=little)\n\
+                 struct T:\n    turns: [u32; N]\n",
+                "whose value is not an integer",
+            ),
+            // A `const` the unselected `comptime if` branch declared does not
+            // exist after `specialize`, so the *real* name resolver refuses it
+            // first — which is exactly why this pass reads the real const
+            // table instead of scanning `module.items` for `const` itself.
+            (
+                "module t\n\nconst DEBUG: bool = false\n\ncomptime if DEBUG:\n\
+                 \x20   const N: u32 = 3\ncomptime else:\n    const M: u32 = 9\n\n\
+                 @layout(runtime, endian=little)\nstruct T:\n    turns: [u32; N]\n",
+                "unknown name `N`",
+            ),
+        ];
+        for (src, needle) in cases {
+            let err = completed_layouts_of(src).expect_err("must be rejected");
+            assert!(
+                err.message.contains(needle),
+                "expected {needle:?} in {:?}",
+                err.message
+            );
+        }
+    }
+
+    /// Requirement 4 of plans/M10.md item A2b: an uncompleted layout that
+    /// reaches an artifact is a fail-closed rejection, never a `size=0` line.
+    /// Unreachable from source — every pipeline entry completes the table
+    /// first — so it is asserted directly on the renderers, which is the only
+    /// place the guard can be observed.
+    #[test]
+    fn an_uncompleted_layout_never_reports_a_size() {
+        let deferred = LayoutType {
+            name: "TurnTable".to_string(),
+            kind: LayoutKind::Runtime,
+            endian: LayoutEndian::Little,
+            size: None,
+            padding: 0,
+            entries: Vec::new(),
+        };
+        let mut out = String::new();
+        let err = push_layout_lines(&mut out, 0, &deferred).expect_err("must refuse");
+        assert_eq!(err.category, "type");
+        assert!(err.message.contains("has no computed size"), "{err:?}");
+        assert!(
+            err.omit_location,
+            "a pass-order fact has no source position"
+        );
+        assert!(
+            out.is_empty(),
+            "nothing is printed for a layout with no size"
+        );
+        assert!(dump_layouts(&[("t".to_string(), vec![deferred.clone()])]).is_err());
+        // And the same guard on the byte count itself, which is what
+        // `img.dma_pool`'s backing and every other consumer asks through.
+        assert!(deferred.require_size("a test").is_err());
+    }
+
     const MMIO_EXAMPLE: &str = "module t\n\n\
          @layout(mmio, endian=little)\n\
          struct VirtioIrqMmio:\n\
@@ -6400,7 +6887,7 @@ mod tests {
         assert_eq!(l.endian, LayoutEndian::Little);
         // 0x64 + 4: the layout is exactly the bytes its fields cover, with
         // no trailing padding and no alignment round-up.
-        assert_eq!(l.size, 0x68);
+        assert_eq!(l.size, Some(0x68));
         // The 0x60 bytes below the first field are a declared hole, not an
         // invented one: the author wrote `@offset(0x060)`.
         assert_eq!(l.padding, 0x60);
@@ -6430,7 +6917,7 @@ mod tests {
     #[test]
     fn the_dump_grammar_is_fixed() {
         let layouts = layouts_of(MMIO_EXAMPLE).unwrap();
-        let text = dump_layouts(&[("t".to_string(), layouts)]);
+        let text = dump_layouts(&[("t".to_string(), layouts)]).expect("every layout is complete");
         assert_eq!(
             text,
             "LayoutTypes v0\n\
@@ -6451,7 +6938,10 @@ mod tests {
         // (facts only — never an empty placeholder block).
         let none = layouts_of("module t\n\nstruct S:\n    n: u32\n").unwrap();
         assert!(none.is_empty());
-        assert_eq!(dump_layouts(&[("t".to_string(), none)]), "LayoutTypes v0\n");
+        assert_eq!(
+            dump_layouts(&[("t".to_string(), none)]).expect("nothing to dump"),
+            "LayoutTypes v0\n"
+        );
     }
 
     /// Every declaration-shape guard, by the substring that makes each
@@ -6555,12 +7045,14 @@ mod tests {
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [[u32; 2]; 2]\n",
                 "which is not an array field's element type",
             ),
-            // A negative length is not an integer literal (it parses as a
-            // unary expression), so it lands on the same decision-580
-            // rejection `golden/err-layout-runtime-const-len` pins.
+            // A negative length is neither an integer literal (it parses as a
+            // unary expression) nor a bare `const` name, so plans/M10.md item
+            // A2b's widened rule still refuses it — and refuses it *early*,
+            // in the pass that evaluates nothing, rather than deferring an
+            // expression it would have to type-check to read.
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [u32; -1]\n",
-                "has a length that is not an integer literal",
+                "neither an integer literal nor the name of a module-level `const`",
             ),
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [u32; 0]\n",
@@ -6700,7 +7192,7 @@ mod tests {
         // aligned to 32 would have needed 24 invented bytes at offset 0x8,
         // and a 40-byte struct field aligned to 40 would have needed more
         // still.
-        assert_eq!(table.size, 48);
+        assert_eq!(table.size, Some(48));
         assert_eq!(table.padding, 0);
         assert_eq!(
             table.entries,

@@ -5716,16 +5716,29 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                                 // for each module inside the sema check that
                                 // produced `programs`, so neither call can fail
                                 // here, and both are still handled as real errors.
+                                // plans/M10.md item A2b: including the later
+                                // completion pass, for the same reason — an
+                                // oracle that skipped it would compare a
+                                // report whose `const`-length layouts are
+                                // missing their sizes.
                                 let mut layout_types = Vec::new();
-                                for module in modules_by_addr.values() {
+                                for (key, module) in &modules_by_addr {
                                     let specialized = sema::specialize::specialize(module)
                                         .map_err(|e| render_sema_error(&e))?;
-                                    layout_types.extend(
-                                        sema::types::check_layouts(&specialized)
-                                            .map_err(|e| render_sema_error(&e))?,
-                                    );
+                                    let mut layouts = sema::types::check_layouts(&specialized)
+                                        .map_err(|e| render_sema_error(&e))?;
+                                    if let Some(p) = programs.get(key) {
+                                        sema::types::complete_layouts(
+                                            &specialized,
+                                            p,
+                                            &mut layouts,
+                                        )
+                                        .map_err(|e| render_sema_error(&e))?;
+                                    }
+                                    layout_types.extend(layouts);
                                 }
-                                report::render_exact_bytes_section(&mut text, &layout_types);
+                                report::render_exact_bytes_section(&mut text, &layout_types)
+                                    .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout::try_layout_program(
                                     &programs,
                                     &layout_ctx,

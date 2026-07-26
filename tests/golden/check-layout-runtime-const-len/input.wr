@@ -1,0 +1,46 @@
+module examples.layout_runtime_const_len
+
+# plans/M10.md item A2b, decision 581: **this is 03-hardware.md §3.1's own
+# example, verbatim** — minus the `@placed static` half, which needs a
+# `static` declaration this revision of the language does not have — and it
+# now *compiles*. Item A2 pinned this same file as a rejection
+# (`golden/err-layout-runtime-const-len`, decision 580: an array length was an
+# integer literal and nothing else); this case is that file, renamed and
+# flipped, because the compiler agreeing with the doc is the item's whole
+# point.
+#
+# How the length is resolved, and where:
+#
+# - `sema::types::check_layouts` still runs *before name resolution* and still
+#   evaluates nothing. Meeting `[TurnArea; N_TURNS]` it **defers**
+#   `TurnTable`: it checks every rule that does not need a byte count (kind,
+#   `endian=`, the element type, `@offset` shape, the nesting and cycle rules)
+#   and reports no size at all rather than a wrong one. Decision 580's
+#   reasoning is intact — no second name resolver exists in that pass.
+# - `sema::types::complete_layouts` runs after `eval::check_comptime`, when
+#   `N_TURNS` has been type-checked and evaluated by the one real evaluator,
+#   and re-lays `TurnTable` out with the length known. Every size-dependent
+#   rule — overlap, ordering, alignment, implicit padding, total bytes — is
+#   applied there, to the completed table.
+#
+# `@offset(n)` did **not** move with it: it is still an integer literal, for
+# decision 580's own reason. Only lengths moved, because only lengths are what
+# M10's per-image tables (`n_turns`, `reply_ring_capacity`) need.
+#
+# The reported bytes are the ones `golden/check-layout-runtime` pins for the
+# literal `4`: `turns` is 32 bytes at 0x8, because an array's alignment is its
+# element's (4), not its own size.
+
+const N_TURNS: u32 = 4
+
+
+@layout(runtime, endian=little)
+struct TurnArea:
+    state: u32
+    waiter: u32
+
+
+@layout(runtime, endian=little)
+struct TurnTable:
+    rr_cursor: u64
+    turns: [TurnArea; N_TURNS]

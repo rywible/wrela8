@@ -1,0 +1,1 @@
+error[type]: `@layout` struct `TurnTable` covers 8796093022216 bytes, more than the 16777216 this compiler will lay out in one declaration; the machine has 1 GiB in total, so a single exact-bytes declaration this large is a mistake in the declaration rather than a table (03-hardware.md §3) at 20:1

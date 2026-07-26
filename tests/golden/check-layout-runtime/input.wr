@@ -5,7 +5,10 @@ module examples.layout_runtime
 # the field types it is *defined* in terms of existed; this case is the
 # shape §3.1's own example spells, with the one difference item A2 could
 # not close — the array length is a literal, not the `const N_TURNS` the
-# doc writes (decision 580, pinned by `err-layout-runtime-const-len`).
+# doc writes (decision 580). Item A2b closed it, and
+# `golden/check-layout-runtime-const-len` is §3.1's own spelling compiling;
+# this case stays as the literal-length pin, which is the shape that must
+# keep working with no `const` and no second pass involved at all.
 #
 # What the reported bytes show, and why each number is the only correct one:
 #

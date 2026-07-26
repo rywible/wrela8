@@ -1011,11 +1011,19 @@ pub fn pool_backings(
         }
         let device = pool_device(name, &d.args, graph)?;
         let slots = pool_count(name, "img.dma_pool", &d.args, "count")?;
-        let bytes = slots.checked_mul(l.size).ok_or_else(|| {
+        // plans/M10.md item A2b: a layout whose sizing is still deferred has
+        // no byte count, and a pool's backing is exactly a byte count times a
+        // slot count — so this asks for the size by name and fails closed if
+        // there is none, rather than reading a 0 and reserving nothing. (A
+        // `dma` layout cannot defer today: only a `runtime` layout may have
+        // an array field at all, and this arm already refused every other
+        // kind above. The guard is here because "cannot" is a property of
+        // today's rules, not of this call site.)
+        let slot_bytes = l.require_size(&format!("`img.dma_pool[{payload}]`'s backing"))?;
+        let bytes = slots.checked_mul(slot_bytes).ok_or_else(|| {
             build_error(format!(
-                "`img.dma_pool(name={name}, count={slots})` of a {}-byte `{payload}` reserves more \
-                 than a `u64` of backing",
-                l.size
+                "`img.dma_pool(name={name}, count={slots})` of a {slot_bytes}-byte `{payload}` \
+                 reserves more than a `u64` of backing"
             ))
         })?;
         out.insert(
@@ -1025,7 +1033,7 @@ pub fn pool_backings(
                 is_dma: true,
                 payload,
                 slots,
-                slot_bytes: l.size,
+                slot_bytes,
                 bytes,
                 align: layout_alignment(l),
                 device: Some(device),
@@ -2782,7 +2790,7 @@ mod tests {
             name: name.to_string(),
             kind: types::LayoutKind::Dma,
             endian: types::LayoutEndian::Little,
-            size: at,
+            size: Some(at),
             padding: 0,
             entries,
         }
@@ -3120,7 +3128,7 @@ mod tests {
             name: "Hdr".to_string(),
             kind: types::LayoutKind::Dma,
             endian: types::LayoutEndian::Little,
-            size: 1 << 62,
+            size: Some(1 << 62),
             padding: 0,
             entries: vec![],
         }]);

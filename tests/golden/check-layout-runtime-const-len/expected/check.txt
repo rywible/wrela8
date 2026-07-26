@@ -1,0 +1,8 @@
+Module path=examples.layout_runtime_const_len
+  Const N_TURNS: u32
+  Struct TurnArea data
+    field state: u32
+    field waiter: u32
+  Struct TurnTable data
+    field rr_cursor: u64
+    field turns: [TurnArea; N_TURNS]

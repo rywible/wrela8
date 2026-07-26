@@ -1981,7 +1981,10 @@ doc = "03-hardware.md#3.1"
 status = "test"
 tests = [
   "golden/check-layout-runtime",
-  "golden/err-layout-runtime-const-len",
+  "golden/check-layout-runtime-const-len",
+  "golden/err-layout-runtime-len-not-const",
+  "golden/err-layout-runtime-len-zero",
+  "golden/err-layout-runtime-len-too-big",
   "golden/err-layout-runtime-cycle",
   "golden/err-layout-runtime-nests-dma",
   "golden/err-layout-array-not-runtime",
@@ -1999,7 +2002,82 @@ note = """03-hardware.md §3 names **four** layout kinds, not three: `dma`, `mmi
 - **`usize` is still rejected in every kind, including this one** (decision 563: `rr_cursor` is `u64`). No `runtime` exemption was added and none is needed — one target-dependent layout class would break the property `@layout` exists for. `golden/err-layout-target-dependent` still pins the scalar case; the array-element case is in `declaration_shape_guards`.
 - **§3.1's two closing clauses are now *reachable*, and pinned.** "Not device-visible" was enforced only by the blanket refusal of the whole kind; `Mmio[L]`/`DmaShared[P, L]`/`img.dma_pool[T]` have always demanded `@layout(mmio)`/`@layout(dma)`, so a `runtime` type named there is refused by rules that already existed (`golden/err-layout-runtime-device-visible`). "Carries no capability" likewise had an unreachable arm; `golden/err-layout-runtime-capability` reaches it *through the recursion* (the offending field is in the nested table, and the nesting table is declared first).
 
-**Missing (deliberately, decision 580): a `const` array length.** 03 §3.1's own example spells `turns: [TurnArea; N_TURNS]`, and that is **refused** — `golden/err-layout-runtime-const-len` is that example verbatim. `check_layouts` runs before name resolution (`sema/mod.rs`) and evaluates nothing; `parse_offset_attr` already refuses a `const`-named offset as "inference by another name", and an array length is the same question. Accepting `N_TURNS` needs either a second, narrower name resolver that can disagree with the real one, or moving the pass after resolution — and the pass's doc block gives two reasons it runs early. So the length is an integer literal, the rejection names the tension, and §3.1's example is aspirational until a later item lands it. **03 §3.1's prose was not amended to say so**, because both `xtask/src/corpus_sema_context.rs` and `corpus_sema_census.rs` key doc blocks by `(path, start_line)` and four keyed 03-hardware.md blocks sit below §3.1 (plans/M10.md **item A3** is exactly this hazard); the gap is recorded in `plans/REVIEW-QUEUE.md` instead.
+**Shipped (plans/M10.md item A2b, decision 581): a `const` array length, via
+a second pass.** 03 §3.1's own example spells `turns: [TurnArea; N_TURNS]`, and
+item A2 **refused** it (decision 580: `check_layouts` runs before name
+resolution and evaluates nothing, so a `const`-named length was inference by
+another name — the same rule `@offset(n)` states). That bound blocked the
+milestone's central mechanism: M10's tables are sized per image (`n_turns`,
+`reply_ring_capacity`), so a literal length cannot spell one, and by
+ground-truth rule 1 a docs-versus-code disagreement means the code is wrong.
+Item A2b lifts it **without touching the early pass's purity**, which is what
+decision 581 chose over the two alternatives decision 580 had already rejected:
+
+- `sema::types::check_layouts` still runs before name resolution and still
+  evaluates nothing. Meeting a `const`-named length it **defers**: the layout
+  comes back with `size: None`, no entries and no padding, having checked every
+  rule that does not need a byte count — kind, `endian=`, the element type
+  (`[usize; N]` is refused there, exactly as `[usize; 4]` is), `@offset` shape
+  and count, the field-attribute rule, the nesting/kind rules, cycles, and the
+  depth and expansion bounds. `golden/err-layout-wire-capability` therefore
+  keeps its better diagnostic, which is one of the two stated reasons the pass
+  runs early; verified, its expectation is byte-identical.
+- `sema::types::complete_layouts` runs after `eval::check_comptime` — the
+  earliest point at which a `const` has a value, and before anything reads
+  `TypedProgram::layouts` — and re-lays every deferred struct out through the
+  *same* `lay_out_struct`, with the resolved lengths supplied. So every
+  size-dependent rule (overlap, ordering, alignment, implicit padding, total
+  bytes) applies to the completed table: postponed, never weakened. Both sema
+  entries call it (single module and whole closure), as do `wrela dump
+  --stage=layout-types`, `bin/wrela.rs`'s report and `xtask`'s determinism
+  oracle, so the dump and the report show the completed sizes.
+- **Resolution reads the one real const table**, `TypedProgram::consts`,
+  through `eval::interp::eval_const` — the evaluator a plain module-level
+  `const` already runs through. There is still no second name resolver
+  anywhere in this pass, which is what makes decision 580's rejected
+  alternative (ii) stay rejected. Consequences, each tested: a length that
+  depends on another `const` (`const N = BASE * 3`) works, because the
+  evaluator evaluates it; a length naming a `const` that `specialize` removed
+  with its unselected `comptime if` branch is `error[name]: unknown name`, from
+  the real resolver, before this pass runs, while the *selected* branch's
+  `const` works normally.
+- **`@offset(n)` did not move**, deliberately: decision 580's reasoning holds
+  for it unchanged, and only lengths are what the tables need. Do not "finish
+  the job".
+- **Four fail-closed rejections**, each a named `error[type]`: a length that is
+  a name resolving to something that is not a module-level `const`
+  (`golden/err-layout-runtime-len-not-const`); a `const` whose value is zero
+  (`golden/err-layout-runtime-len-zero` — zero is **illegal**, the same answer
+  a literal `0` already got, since a zero-byte field is the fail-open 03 §3
+  exists to prevent) or negative (same rule, unit-tested) or not an integer
+  (unit-tested); and a length that is neither a literal nor a bare name —
+  arithmetic in the length position, a field access, a call — which is refused
+  in *both* passes rather than deferred into an expression the pass would have
+  to type-check (`declaration_shape_guards`' `[u32; -1]` case, which parses as
+  a unary expression).
+- **A new bound, in the same commit: `MAX_LAYOUT_BYTES` = 16 MiB** on one
+  `@layout` type's total size (`golden/err-layout-runtime-len-too-big`, a
+  `2^40`-element table). Needed *because* lengths can now arrive from a
+  `const`: `2^43` bytes fits a `u64` fine, so nothing else would have caught
+  it, and every number downstream of a `@layout` size is a real allocation on
+  a 1 GiB machine. A fail-closed floor, like the two nesting bounds; raise it
+  in the item that has an image needing more.
+- **An uncompleted layout cannot report a size.** `LayoutType::size` is
+  `Option<u64>`, so the deferred state is unrepresentable-as-a-number rather
+  than a plausible `0`, and `LayoutType::require_size` is the named rejection
+  every consumer of a byte count goes through — the `layout-types` dump, the
+  report's exact-bytes section, and `img.dma_pool`'s backing computation
+  (`push_layout_lines_refuses_an_uncompleted_layout`,
+  `the_report_refuses_an_uncompleted_layout`). Requirement 4 of the item, and
+  the reason the type changed rather than a flag being added beside it.
+
+**03 §3.1's prose gained one sentence** (its `@layout(runtime)` paragraph): an
+array's length "is an integer literal or the name of a module-level `const`
+whose comptime value is one or more", and `@offset(n)` stays a literal. Item
+A2 could not make that edit — the corpus-sema tables keyed doc blocks by line
+number then, so inserting a sentence detached later blocks' preambles; item A3
+re-keyed them by content, and `cargo xtask corpus` is clean across this edit.
+`plans/REVIEW-QUEUE.md` carries the line.
 
 **Also missing:** `@placed` and module-level `static`, i.e. the *other* half of §3.1 — `hardware.layout.placed-static` / `hardware.layout.placed-verified`, both still `gap`. A `runtime` layout can be declared and reported; nothing places one yet."""
 
