@@ -8641,16 +8641,16 @@ fn build_runtime_block(
 //    check is what makes the bound provably *safe* to rely on, not the
 //    bigger number alone.
 //
-// `__wrela_ring_append`'s own over-capacity behavior changed too: rather
-// than silently clamping the write (the old, disclosed simplification),
-// it now `BRK`s — a defensive, should-be-unreachable internal-error guard
-// (`BRK_LINE_APPEND_OVERFLOW`/`BRK_LINE_COMMIT_OVERFLOW`, below): once
-// `check_transcript_bound` has passed, no line the generated driver ever
-// composes can exceed either bound, so hitting either `BRK` in practice
-// means the static check and the actual generated code have drifted
-// apart — a real bug in this module, not a reachable guest condition,
-// exactly the same "internal error" framing `layout_program`'s own
-// `Reloc` resolution failures already use elsewhere in this file.
+// `__wrela_ring_append` / `__wrela_line_commit` overflow used to `BRK`
+// (`BRK_LINE_APPEND_OVERFLOW`/`BRK_LINE_COMMIT_OVERFLOW`). M10 B2–B5
+// migrated those routines to force-rooted wrela and dissolved the BRKs
+// into **status returns** (plans/M10.md decision 592) — not into
+// ordinary array-bounds checks that would re-enter the abort/console
+// path (decision 590). Once `check_transcript_bound` has passed, no
+// line the generated driver ever composes can exceed either bound; a
+// nonzero status from the compiled routines means the static check and
+// the generated code have drifted — a real bug in this module, not a
+// reachable guest condition.
 //
 // **Disclosed simplification of the split-ring contract (unchanged by
 // this fix)**: this producer never reorders or skips a descriptor index,
@@ -8678,8 +8678,13 @@ struct HarnessAddrs {
     /// `machine_info::` field base — production: `machine_layout::MACHINE_INFO_BASE`.
     info_base: u64,
     /// `console::RING_BASE` (descriptor table + avail ring + doorbell).
+    /// Retained after M10 B5 so this bundle still names the full console
+    /// map; only `info_base` is still read by hand-asm abort/entry (console
+    /// routines live in force-rooted wrela).
+    #[allow(dead_code)]
     ring_base: u64,
     /// `console::DATA_BASE` (the byte buffers descriptors point into).
+    #[allow(dead_code)]
     data_base: u64,
     /// `mmio::EXIT_MMIO_ADDR` — only the entry driver's own summary/halt
     /// tail uses this (never `ring_write`/`fmt_dec`/the abort stubs);
@@ -8705,16 +8710,17 @@ impl HarnessAddrs {
 /// around mwir's own per-instruction two-pass sizing scheme; this module's
 /// code is never generated from mwir at all, just written directly, one
 /// fixed shape per fn) but the same spirit: `start` is this fragment's own
-/// absolute word index within the eventual combined "entry" section (all
-/// of `__wrela_ring_write`/`__wrela_fmt_dec`/`__wrela_abort`/
-/// `__wrela_abort_val`/the entry driver are assembled into *one* combined
-/// word list, in that fixed order, module doc above), so every local call/
-/// branch between them is a directly computed `BL`/`B`/`B.cond` — no
-/// `Reloc` needed for anything that stays inside this one section. Only a
-/// `Reloc::Call` (an `@test(runtime)` fn, elsewhere in the `code` section)
-/// or `Reloc::Rodata` (a literal string, elsewhere in the `rodata` section)
-/// crosses out of it, and those reuse the exact same `Reloc` variants/
-/// resolution already proven by item D.
+/// absolute word index within the eventual combined "entry" section
+/// (`__wrela_abort` / `__wrela_abort_val` / checkpoint stubs / optional
+/// runtime glue / the entry driver — console begin/append/commit/fmt_dec
+/// live in `code` as force-rooted wrela since M10 B2–B5). All of those
+/// fragments are assembled into *one* combined word list, in that fixed
+/// order, so every local call/branch between them is a directly computed
+/// `BL`/`B`/`B.cond` — no `Reloc` needed for anything that stays inside
+/// this one section. Only a `Reloc::Call` (an `@test(runtime)` fn,
+/// elsewhere in the `code` section) or `Reloc::Rodata` (a literal string,
+/// elsewhere in the `rodata` section) crosses out of it, and those reuse
+/// the exact same `Reloc` variants/resolution already proven by item D.
 struct Asm {
     start: usize,
     words: Vec<u32>,
@@ -8936,262 +8942,6 @@ fn append_rodata(rodata: &mut Vec<Vec<u8>>, cursor: &mut usize, bytes: Vec<u8>) 
     off
 }
 
-/// BRK immediate operands for the two "should be unreachable" internal-
-/// error guards below (module doc's own "M5-G adversarial-sweep find/fix"
-/// section) — distinct only so a post-mortem guest memory/register dump
-/// can tell the two apart at a glance, exactly like `EXIT_CODE_*` above.
-pub const BRK_LINE_APPEND_OVERFLOW: u16 = 0xB0A0;
-pub const BRK_LINE_COMMIT_OVERFLOW: u16 = 0xB0A1;
-
-/// `__wrela_line_begin()`. Snapshots the current data-bump cursor
-/// (`machine_info::OFF_RING_DATA_BUMP`) into `machine_info::
-/// OFF_LINE_START` — the anchor `__wrela_line_commit` (below) later reads
-/// back to know where the line-in-progress started. Called once, right
-/// before the first `__wrela_ring_append` of a new report line (module
-/// doc's own "one descriptor per LINE" section).
-///
-/// Register use: `x9` = `OFF_RING_DATA_BUMP`'s address; `x10` = its
-/// value; `x11` = `OFF_LINE_START`'s address.
-fn build_line_begin(addrs: &HarnessAddrs, start: usize) -> Asm {
-    let mut a = Asm::new(start);
-    let data_bump_addr = addrs.info_base + mi::OFF_RING_DATA_BUMP;
-    let line_start_addr = addrs.info_base + mi::OFF_LINE_START;
-
-    a.load_imm(9, data_bump_addr);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = data_bump
-    a.load_imm(11, line_start_addr);
-    a.push(encode::enc_str_x_imm(10, 11, 0));
-    a.push(encode::enc_ret(30));
-    a
-}
-
-/// `__wrela_ring_append(x0=src_ptr, x1=len)`. Copies `len` bytes from
-/// `src_ptr` into the next free bytes of `console::DATA_SIZE`, advancing
-/// the data-bump cursor — **no descriptor is published and no doorbell is
-/// rung here** (module doc's own "one descriptor per LINE" section):
-/// that is `__wrela_line_commit`'s (below) job alone, once, after every
-/// piece of a line has been appended. An ordinary leaf `RET`, like the
-/// old combined routine this replaces.
-///
-/// Unlike the pre-fix `__wrela_ring_write` this replaces, an over-long
-/// append is never silently clamped: `check_transcript_bound` (this
-/// file, called before `layout_test_image` ever assembles a single
-/// instruction) has already proven no line the generated driver composes
-/// can exceed `console::DATA_SIZE`, so overflowing here means that proof
-/// and this code have drifted apart — a real internal bug, not a
-/// reachable guest condition — and this guard `BRK`s rather than
-/// approximating (module doc's own "should be unreachable" framing).
-///
-/// Register use (leaf fn, owns every register it touches): `x9`/`x10` =
-/// the data-bump address/value (both intact, untouched by the copy loop,
-/// through to the final store); `x11` = remaining capacity, then the
-/// destination base address; `x12` = the destination byte address
-/// (`data_base + old data_bump`); `x13`/`x14`/`x15` = the copy loop's
-/// src/dst cursors and remaining count (`x1`, the original `len`, is
-/// never itself clobbered by the loop, so it is read again unchanged for
-/// the final `data_bump += len`); `x16` = the copy loop's one-byte
-/// transfer register.
-fn build_ring_append(addrs: &HarnessAddrs, start: usize) -> Asm {
-    let mut a = Asm::new(start);
-    let data_bump_addr = addrs.info_base + mi::OFF_RING_DATA_BUMP;
-
-    a.load_imm(9, data_bump_addr);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = data_bump (old)
-    a.load_imm(11, console::DATA_SIZE);
-    a.push(encode::enc_sub_reg(11, 11, 10, true)); // x11 = remaining
-    a.push(encode::enc_cmp_reg(1, 11, true)); // len vs remaining
-    let skip_ok = a.skip_placeholder(); // b.le .ok
-    a.push(encode::enc_brk(BRK_LINE_APPEND_OVERFLOW));
-    a.patch_cond(skip_ok, Cond::Le);
-    // .ok:
-    a.load_imm(11, addrs.data_base);
-    a.push(encode::enc_add_reg(12, 11, 10, true)); // x12 = dst = data_base + data_bump
-    a.push(encode::enc_mov_reg(13, 0, true)); // x13 = src cursor
-    a.push(encode::enc_mov_reg(14, 12, true)); // x14 = dst cursor
-    a.push(encode::enc_mov_reg(15, 1, true)); // x15 = remaining count
-    let loop_top = a.abs();
-    let skip_loop = a.skip_placeholder(); // cbz x15, .done
-    a.push(encode::enc_ldrb_imm(16, 13, 0));
-    a.push(encode::enc_strb_imm(16, 14, 0));
-    a.push(encode::enc_add_imm(13, 13, 1, true));
-    a.push(encode::enc_add_imm(14, 14, 1, true));
-    a.push(encode::enc_sub_imm(15, 15, 1, true));
-    a.b_to(loop_top);
-    a.patch_cbz(skip_loop, 15);
-    // .done: data_bump += len (x1 is the untouched original len; x9/x10
-    // are still the address/old-value from the very top of this fn).
-    a.push(encode::enc_add_reg(10, 10, 1, true)); // x10 = old data_bump + len
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-    a.push(encode::enc_ret(30));
-    a
-}
-
-/// `__wrela_line_commit()`. Publishes exactly **one** descriptor spanning
-/// `[console::DATA_BASE + OFF_LINE_START, console::DATA_BASE +
-/// OFF_RING_DATA_BUMP)` — the whole line `__wrela_line_begin`/one-or-more
-/// `__wrela_ring_append` calls just composed — bumps `avail.idx`, rings
-/// the doorbell, and returns. The direct replacement for the pre-fix
-/// `__wrela_ring_write`'s own per-call descriptor-publish half; called
-/// once per finished report line (module doc's own "one descriptor per
-/// LINE" section), never once per piece.
-///
-/// The over-capacity guard (`console::QUEUE_SIZE` descriptor slots
-/// already spent) is the commit-side twin of `__wrela_ring_append`'s own:
-/// `check_transcript_bound` already proved `runtime_tests.len() + 1`
-/// (every test's own line, plus the summary) never exceeds
-/// `console::QUEUE_SIZE`, so this is the same "should be unreachable"
-/// internal-error `BRK`, never a silent no-op.
-///
-/// Register use: `x9`/`x10` = the desc-bump address/value; `x11`/`x12` =
-/// the line-start address/value; `x13`/`x14` = the data-bump address/
-/// value (the line's own end); `x15` = the computed line length; `x16` =
-/// the line's own start *address* (`data_base + line_start`), then
-/// reused as a zero source; `x17` = the descriptor-table byte offset
-/// scratch; `x18` = the descriptor-entry/avail/doorbell address scratch,
-/// reloaded fresh for each of the three (module's own established style:
-/// reloading a small constant via `load_imm` is simpler than threading a
-/// value through, CLAUDE.md's "prefer obvious").
-fn build_line_commit(addrs: &HarnessAddrs, start: usize) -> Asm {
-    let mut a = Asm::new(start);
-    let desc_bump_addr = addrs.info_base + mi::OFF_RING_DESC_BUMP;
-    let data_bump_addr = addrs.info_base + mi::OFF_RING_DATA_BUMP;
-    let line_start_addr = addrs.info_base + mi::OFF_LINE_START;
-
-    a.load_imm(9, desc_bump_addr);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = desc_bump
-    a.push(encode::enc_cmp_imm(10, console::QUEUE_SIZE as u16, true));
-    let skip_ok = a.skip_placeholder(); // b.lt .ok
-    a.push(encode::enc_brk(BRK_LINE_COMMIT_OVERFLOW));
-    a.patch_cond(skip_ok, Cond::Lt);
-    // .ok:
-    a.load_imm(11, line_start_addr);
-    a.push(encode::enc_ldr_x_imm(12, 11, 0)); // x12 = line_start
-    a.load_imm(13, data_bump_addr);
-    a.push(encode::enc_ldr_x_imm(14, 13, 0)); // x14 = data_bump (line end)
-    a.push(encode::enc_sub_reg(15, 14, 12, true)); // x15 = len = end - start
-    a.load_imm(16, addrs.data_base);
-    a.push(encode::enc_add_reg(16, 16, 12, true)); // x16 = line start addr
-    a.load_imm(17, console::DESC_ENTRY_SIZE);
-    a.push(encode::enc_mul(17, 10, 17, true)); // x17 = desc_bump * 16
-    a.load_imm(18, addrs.ring_base + console::DESC_TABLE_OFFSET);
-    a.push(encode::enc_add_reg(18, 18, 17, true)); // x18 = desc entry addr
-    a.push(encode::enc_str_x_imm(16, 18, 0)); // desc.addr = line start addr
-    a.push(encode::enc_str_w_imm(15, 18, 8)); // desc.len = line len
-    a.push(encode::enc_mov_reg(9, 31, true)); // x9 = 0 (from xzr)
-    a.push(encode::enc_str_w_imm(9, 18, 12)); // desc.flags/next = 0
-    // avail.idx = desc_bump + 1 (avail.ring[] is never populated — module
-    // doc's own disclosed simplification, unchanged by this fix).
-    a.push(encode::enc_add_imm(10, 10, 1, true)); // x10 = desc_bump + 1
-    a.push(encode::enc_lsl_imm(9, 10, 16, true)); // x9 = idx << 16 (flags=0)
-    a.load_imm(18, addrs.ring_base + console::AVAIL_OFFSET);
-    a.push(encode::enc_str_w_imm(9, 18, 0));
-    a.load_imm(18, desc_bump_addr);
-    a.push(encode::enc_str_x_imm(10, 18, 0));
-    // ring the doorbell: store nonzero (module doc: a shared-memory
-    // doorbell, never a trap — 06 §5).
-    a.load_imm(18, addrs.ring_base + console::DOORBELL_OFFSET);
-    a.load_imm(9, 1);
-    a.push(encode::enc_str_x_imm(9, 18, 0));
-    a.push(encode::enc_ret(30));
-    a
-}
-
-/// `__wrela_fmt_dec(x0=value, x1=is_signed) -> x0=len`. Renders `value`'s
-/// decimal digits (as a signed 64-bit interpretation when `is_signed !=
-/// 0`, else unsigned) as ASCII text into the fixed scratch buffer
-/// `machine_info::OFF_TEST_LINE_BUF` and returns the byte length written —
-/// used both by the summary line's pass/fail counts and by
-/// `__wrela_abort_val`'s own runtime-value interpolation (module doc
-/// above). A leading `-` is written first when the value is negative and
-/// `is_signed != 0`; the magnitude (computed via `SUB xzr, x9` — correct
-/// even for `i64::MIN`, whose negation wraps back to the exact unsigned
-/// bit pattern of its own magnitude, `2^63`, module doc's own canonical-
-/// slot reasoning mirrored here) is then converted digit-by-digit,
-/// least-significant first, into the buffer past any sign byte, and
-/// reversed in place once the digit count is known.
-///
-/// Register use (leaf fn, no calls, owns every register it touches):
-/// `x9` = the magnitude accumulator (then the reversal loop's second
-/// swap temp, once no longer needed); `x10` = `is_signed`, then the neg
-/// flag; `x11` = the buffer's fixed base address; `x13` = the write
-/// pointer; `x14` = the digits' own start pointer (past any sign byte),
-/// remembered for the final in-place reversal; `x15` = digit count;
-/// `x16` = the divisor constant `10`, then the reversal loop's `lo`
-/// pointer; `x17` = the loop's quotient, then the reversal loop's `hi`
-/// pointer; `x18` = the loop's remainder/digit byte, then the reversal
-/// loop's first swap temp.
-fn build_fmt_dec(addrs: &HarnessAddrs, start: usize) -> Asm {
-    let mut a = Asm::new(start);
-    let buf_addr = addrs.info_base + mi::OFF_TEST_LINE_BUF;
-
-    a.push(encode::enc_mov_reg(9, 0, true)); // x9 = value
-    a.push(encode::enc_mov_reg(10, 1, true)); // x10 = is_signed
-    a.load_imm(11, buf_addr); // x11 = buffer base
-    a.push(encode::enc_movz(12, 0, 0, true)); // x12 = 0 (neg flag)
-    let skip_negcheck = a.skip_placeholder(); // cbz x10, .notneg
-    a.push(encode::enc_cmp_imm(9, 0, true));
-    let skip_notneg2 = a.skip_placeholder(); // b.ge .notneg
-    a.push(encode::enc_movz(12, 1, 0, true)); // neg flag = 1
-    a.push(encode::enc_sub_reg(9, 31, 9, true)); // x9 = 0 - x9 (magnitude)
-    let notneg = a.abs();
-    a.patch_cbz(skip_negcheck, 10);
-    a.patch_cond(skip_notneg2, Cond::Ge);
-    debug_assert_eq!(notneg, a.abs(), "no code between the two forward targets");
-
-    a.push(encode::enc_mov_reg(13, 11, true)); // x13 = write pointer
-    let skip_nosign = a.skip_placeholder(); // cbz x12, .nosign
-    a.push(encode::enc_movz(14, 45, 0, true)); // '-'
-    a.push(encode::enc_strb_imm(14, 13, 0));
-    a.push(encode::enc_add_imm(13, 13, 1, true));
-    a.patch_cbz(skip_nosign, 12);
-    // .nosign:
-    a.push(encode::enc_mov_reg(14, 13, true)); // x14 = digits start
-    a.push(encode::enc_movz(15, 0, 0, true)); // x15 = digit count
-    a.load_imm(16, 10); // x16 = divisor
-    let skip_zero = a.skip_placeholder(); // cbnz x9, .loop
-    a.push(encode::enc_movz(17, 48, 0, true)); // '0'
-    a.push(encode::enc_strb_imm(17, 13, 0));
-    a.push(encode::enc_add_imm(13, 13, 1, true));
-    a.push(encode::enc_add_imm(15, 15, 1, true));
-    let skip_digits_done_1 = a.skip_placeholder(); // b .digits_done
-    let loop_top = a.abs();
-    a.patch_cbnz(skip_zero, 9);
-    let skip_loop_end = a.skip_placeholder(); // cbz x9, .digits_done
-    a.push(encode::enc_udiv(17, 9, 16, true)); // x17 = x9 / 10
-    a.push(encode::enc_msub(18, 17, 16, 9, true)); // x18 = x9 - x17*10
-    a.push(encode::enc_add_imm(18, 18, 48, true)); // ascii digit
-    a.push(encode::enc_strb_imm(18, 13, 0));
-    a.push(encode::enc_add_imm(13, 13, 1, true));
-    a.push(encode::enc_add_imm(15, 15, 1, true));
-    a.push(encode::enc_mov_reg(9, 17, true)); // x9 = quotient
-    a.b_to(loop_top);
-    let digits_done = a.abs();
-    a.patch_cbz(skip_loop_end, 9);
-    // Both "digit count is zero" and "loop exhausted" paths land here.
-    let this = a.start + skip_digits_done_1;
-    let delta = (digits_done as i64 - this as i64) * 4;
-    a.words[skip_digits_done_1] = encode::enc_b(delta as i32);
-    // .digits_done: reverse [x14 .. x14+x15) in place.
-    a.push(encode::enc_mov_reg(16, 14, true)); // x16 = lo
-    a.push(encode::enc_add_reg(17, 14, 15, true)); // x17 = hi = x14+x15
-    a.push(encode::enc_sub_imm(17, 17, 1, true));
-    let rev_top = a.abs();
-    a.push(encode::enc_cmp_reg(16, 17, true));
-    let skip_rev_done = a.skip_placeholder(); // b.ge .rev_done
-    a.push(encode::enc_ldrb_imm(18, 16, 0));
-    a.push(encode::enc_ldrb_imm(9, 17, 0));
-    a.push(encode::enc_strb_imm(9, 16, 0));
-    a.push(encode::enc_strb_imm(18, 17, 0));
-    a.push(encode::enc_add_imm(16, 16, 1, true));
-    a.push(encode::enc_sub_imm(17, 17, 1, true));
-    a.b_to(rev_top);
-    a.patch_cond(skip_rev_done, Cond::Ge);
-    // .rev_done: len = write_ptr(x13) - base(x11).
-    a.push(encode::enc_sub_reg(0, 13, 11, true));
-    a.push(encode::enc_ret(30));
-    a
-}
-
 /// The shared tail every abort body ends in: clear the re-entrancy latch
 /// (plans/M10.md item B1 / decision 591), increment
 /// `machine_info::OFF_TEST_FAILED` and long-jump to the landing pad's own
@@ -9231,14 +8981,11 @@ fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
 fn build_abort_fixed(
     addrs: &HarnessAddrs,
     start: usize,
-    append_start: usize,
-    commit_start: usize,
     failed_word_off: usize,
     newline_off: usize,
 ) -> Asm {
-    // M10 B4: callers use compiled `__wrela_console_append_*` via
-    // `bl_call_key`; hand-asm `build_ring_append` stays until B5.
-    let _ = append_start;
+    // M10 B5: console append/commit live only as force-rooted wrela
+    // (`bl_call_key`); hand-asm builders deleted.
     let mut a = Asm::new(start);
     // Latch check before any SP work — re-entry must not touch the stack.
     a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
@@ -9262,8 +9009,6 @@ fn build_abort_fixed(
     a.bl_console_append_bytes(1);
 
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
-    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
-    let _ = commit_start;
     a.bl_call_key("__wrela_line_commit");
     a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
@@ -9284,14 +9029,10 @@ fn build_abort_fixed(
 fn build_abort_val(
     addrs: &HarnessAddrs,
     start: usize,
-    append_start: usize,
-    commit_start: usize,
-    fmt_dec_start: usize,
     failed_word_off: usize,
     newline_off: usize,
 ) -> Asm {
-    // M10 B4: see build_abort_fixed — hand-asm append kept until B5.
-    let _ = append_start;
+    // M10 B5: fmt_dec / console append / commit are force-rooted wrela only.
     let mut a = Asm::new(start);
     a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
     a.push(encode::enc_ldr_x_imm(10, 9, 0));
@@ -9313,10 +9054,7 @@ fn build_abort_val(
 
     a.push(encode::enc_ldr_x_imm(0, 31, 16));
     a.push(encode::enc_ldr_x_imm(1, 31, 24));
-    // M10 B3: wrela `__wrela_fmt_dec` (hand-asm retained until B5).
-    let _ = fmt_dec_start;
     a.bl_call_key("__wrela_fmt_dec"); // x0 = len, written into OFF_TEST_LINE_BUF
-    // M10 B4: append goes through compiled `__wrela_console_append_line_buf`.
     a.bl_console_append_line_buf();
 
     a.push(encode::enc_ldr_x_imm(0, 31, 32));
@@ -9327,8 +9065,6 @@ fn build_abort_val(
     a.bl_console_append_bytes(1);
 
     a.push(encode::enc_add_imm(31, 31, 48, true));
-    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
-    let _ = commit_start;
     a.bl_call_key("__wrela_line_commit");
     a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
@@ -9358,10 +9094,6 @@ fn build_entry_driver(
     addrs: &HarnessAddrs,
     start: usize,
     harness_base: u64,
-    line_begin_start: usize,
-    append_start: usize,
-    commit_start: usize,
-    fmt_dec_start: usize,
     abort_fixed_start: usize,
     runtime_tests: &[String],
     // The park-and-resume additions: which tests are async (compiled
@@ -9392,9 +9124,8 @@ fn build_entry_driver(
     // whole of what keeps every M5-M7 boot byte-identical.
     cores: usize,
 ) -> Asm {
-    // M10 B4: append goes through compiled `__wrela_console_append_*`;
-    // hand-asm `build_ring_append` stays until B5.
-    let _ = append_start;
+    // M10 B5: line_begin / append / commit / fmt_dec are force-rooted
+    // wrela via `bl_call_key` only; hand-asm builders deleted.
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
 
@@ -9483,8 +9214,6 @@ fn build_entry_driver(
     // failing is image-fatal with a diagnosable line (plans/M6.md decision
     // 12, plans/M7.md decision 8), never a fault at zero.
     let boot_cont_marker = if let Some(boot_init) = boot_init_start {
-        // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
-        let _ = line_begin_start;
         a.bl_call_key("__wrela_line_begin");
         let marker = a.load_imm_placeholder(9);
         a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
@@ -9504,8 +9233,7 @@ fn build_entry_driver(
         let prefix_len = prefix_bytes.len() as u64;
         let prefix_off = append_rodata(rodata, rodata_cursor, prefix_bytes);
 
-        // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
-        let _ = line_begin_start;
+        // M10 B2+: force-rooted `__wrela_line_begin`.
         a.bl_call_key("__wrela_line_begin");
 
         a.load_rodata_addr_at(0, prefix_off);
@@ -9661,8 +9389,6 @@ fn build_entry_driver(
         a.load_rodata_addr_at(0, ok_off);
         a.bl_console_append_bytes(3);
 
-        // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
-        let _ = commit_start;
         a.bl_call_key("__wrela_line_commit");
 
         a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
@@ -9682,15 +9408,11 @@ fn build_entry_driver(
         let target = a.addr(harness_base);
         a.patch_load_imm(marker, 9, target);
     }
-    // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
-    let _ = line_begin_start;
     a.bl_call_key("__wrela_line_begin");
 
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
     a.push(encode::enc_movz(1, 0, 0, true));
-    // M10 B3 + B4: fmt_dec then append_line_buf (x0 = len).
-    let _ = fmt_dec_start;
     a.bl_call_key("__wrela_fmt_dec");
     a.bl_console_append_line_buf();
 
@@ -9700,15 +9422,12 @@ fn build_entry_driver(
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
     a.push(encode::enc_movz(1, 0, 0, true));
-    // M10 B3 + B4
     a.bl_call_key("__wrela_fmt_dec");
     a.bl_console_append_line_buf();
 
     a.load_rodata_addr_at(0, failed_tail_off);
     a.bl_console_append_bytes(8);
 
-    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
-    let _ = commit_start;
     a.bl_call_key("__wrela_line_commit");
 
     // Exit code: 0 if failed==0, else 1 — stored plainly then via the
@@ -9849,10 +9568,10 @@ pub fn check_transcript_bound(
 
 /// Places a codegen'd test-image program into the machine's fixed
 /// contract, per module doc above: **one** combined "entry" section
-/// (`__wrela_ring_append`, `__wrela_line_begin`, `__wrela_line_commit`,
-/// `__wrela_fmt_dec`, `__wrela_abort`, `__wrela_abort_val`, the entry
-/// driver, in that fixed order — the order every internal local branch/
-/// call above assumes), then `code` (every codegen'd fn, `@test(runtime)`
+/// (`__wrela_abort`, `__wrela_abort_val`, checkpoint stubs, optional
+/// runtime glue, then the entry driver — console line_begin/append/
+/// commit/fmt_dec live in `code` as force-rooted wrela, called via
+/// `bl_call_key`), then `code` (every codegen'd fn, `@test(runtime)`
 /// fns included — they are ordinary fns to `codegen.rs`, called by name
 /// like any other), then `rodata` (`program.rodata`'s own already-interned
 /// entries, followed by every harness literal this fn appends —
@@ -10059,33 +9778,16 @@ pub fn layout_test_image(
     }
     let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());
 
-    let ring_append_asm = build_ring_append(&addrs, 0);
-    let ring_append_start = 0usize;
-    let line_begin_start = ring_append_start + ring_append_asm.words.len();
-    let line_begin_asm = build_line_begin(&addrs, line_begin_start);
-    let line_commit_start = line_begin_start + line_begin_asm.words.len();
-    let line_commit_asm = build_line_commit(&addrs, line_commit_start);
-    let fmt_dec_start = line_commit_start + line_commit_asm.words.len();
-    let fmt_dec_asm = build_fmt_dec(&addrs, fmt_dec_start);
-    let abort_fixed_start = fmt_dec_start + fmt_dec_asm.words.len();
+    let abort_fixed_start = 0usize;
     let abort_fixed_asm = build_abort_fixed(
         &addrs,
         abort_fixed_start,
-        ring_append_start,
-        line_commit_start,
         failed_word_off,
         abort_newline_off,
     );
     let abort_val_start = abort_fixed_start + abort_fixed_asm.words.len();
-    let abort_val_asm = build_abort_val(
-        &addrs,
-        abort_val_start,
-        ring_append_start,
-        line_commit_start,
-        fmt_dec_start,
-        failed_word_off,
-        abort_newline_off,
-    );
+    let abort_val_asm =
+        build_abort_val(&addrs, abort_val_start, failed_word_off, abort_newline_off);
     // plans/M6.md item E: `__wrela_checkpoint_service` + its own
     // `__wrela_vector0_service` sibling, the exact same real routine pair
     // `layout_program`'s own `build_checkpoint_and_vector_stub` builds for
@@ -10181,10 +9883,6 @@ pub fn layout_test_image(
         &addrs,
         entry_start,
         image_base,
-        line_begin_start,
-        ring_append_start,
-        line_commit_start,
-        fmt_dec_start,
         abort_fixed_start,
         runtime_tests,
         async_tests,
@@ -10200,15 +9898,7 @@ pub fn layout_test_image(
 
     let mut harness_words: Vec<u32> = Vec::new();
     let mut harness_relocs: Vec<Reloc> = Vec::new();
-    for asm in [
-        ring_append_asm,
-        line_begin_asm,
-        line_commit_asm,
-        fmt_dec_asm,
-        abort_fixed_asm,
-        abort_val_asm,
-        checkpoint_asm,
-    ] {
+    for asm in [abort_fixed_asm, abort_val_asm, checkpoint_asm] {
         debug_assert_eq!(asm.start, harness_words.len());
         harness_relocs.extend(asm.relocs);
         harness_words.extend(asm.words);
@@ -12219,20 +11909,21 @@ fn two():
 }
 
 // ===========================================================================
-// Item E's own oracle for the hand-assembled harness routines above: real
-// execution, on this machine's own aarch64 CPU (every development/check
-// host this project targets is either Apple Silicon or aarch64 Linux —
-// CLAUDE.md's own machine — so this is never a cross-architecture
-// emulation trick). No assembler exists to cross-check these bytes
-// against (decision 5), so instead of hand-verifying each encoding by eye
-// the way `encode.rs`'s own unit tests do for single instructions, this
-// writes the generated words into an executable page and calls them as
-// an ordinary `extern "C" fn` — the *behavior* is the oracle, exactly the
-// same principle decision 5 already states for the VMM/`diff-eval` at the
+// Item E's own oracle for the remaining hand-assembled harness routines
+// above (abort path — M10 item C migrates those; console fmt/append/
+// begin/commit are force-rooted wrela since B2–B5): real execution, on
+// this machine's own aarch64 CPU (every development/check host this
+// project targets is either Apple Silicon or aarch64 Linux — CLAUDE.md's
+// own machine — so this is never a cross-architecture emulation trick).
+// No assembler exists to cross-check these bytes against (decision 5), so
+// instead of hand-verifying each encoding by eye the way `encode.rs`'s
+// own unit tests do for single instructions, this writes the generated
+// words into an executable page and calls them as an ordinary
+// `extern "C" fn` — the *behavior* is the oracle, exactly the same
+// principle decision 5 already states for the VMM/`diff-eval` at the
 // whole-image level, applied here one level down, to routines that touch
-// no machine-specific absolute address at all (`fmt_dec`) or that touch
-// only a host-mmap'd stand-in region (`ring_write`, via `HarnessAddrs`'s
-// own test-vs-production split, module doc above) — never the real,
+// only a host-mmap'd stand-in region (`HarnessAddrs`'s own
+// test-vs-production split, module doc above) — never the real,
 // unmapped-in-a-test-process `wrela_machine` constants.
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 mod harness_jit {
@@ -12291,22 +11982,8 @@ mod harness_jit {
             }
         }
 
-        /// Calls this page as `extern "C" fn(u64, u64) -> u64` — exactly
-        /// the shape every harness routine below has (two integer args,
-        /// one integer return, AAPCS64's own leaf-call convention, which
-        /// is also this internal ABI's convention for these fns, module
-        /// doc above): the host CPU's own C calling convention puts the
-        /// arguments in `x0`/`x1` and reads the result from `x0`, so an
-        /// ordinary Rust `extern "C"` call through a function pointer
-        /// genuinely exercises the exact same register-level contract the
-        /// generated code was written against.
-        fn call2(&self, a0: u64, a1: u64) -> u64 {
-            let f: extern "C" fn(u64, u64) -> u64 = unsafe { std::mem::transmute(self.ptr) };
-            f(a0, a1)
-        }
-
-        /// The `_at` family: identical shape to `call2` above, but
-        /// entering at `byte_offset` into this same page instead of its
+        /// The `_at` family: identical shape to a two-arg AAPCS64 leaf call,
+        /// but entering at `byte_offset` into this same page instead of its
         /// very first byte — plans/M6.md item C's own tests combine
         /// several fragments (stand-in "actor method" bodies,
         /// `rt_enqueue`, `rt_select_and_run`) into one JIT'd page, exactly
@@ -12399,16 +12076,6 @@ mod harness_jit {
             unsafe { std::ptr::read_unaligned(self.ptr.add(off as usize) as *const u64) }
         }
 
-        fn read_u32(&self, off: u64) -> u32 {
-            assert!((off as usize) + 4 <= self.len);
-            unsafe { std::ptr::read_unaligned(self.ptr.add(off as usize) as *const u32) }
-        }
-
-        fn read_bytes(&self, off: u64, n: usize) -> Vec<u8> {
-            assert!((off as usize) + n <= self.len);
-            unsafe { std::slice::from_raw_parts(self.ptr.add(off as usize), n).to_vec() }
-        }
-
         /// Plans/M6.md item C: pre-seeding a ring's `count`/`head`/`tail`
         /// (ring-full/FIFO-order test setup) needs writes, not just reads
         /// — every M5-era harness test only ever *reads* `HostRam` after
@@ -12428,84 +12095,6 @@ mod harness_jit {
         }
     }
 
-    fn words_of(asm: &Asm) -> Vec<u32> {
-        asm.words.clone()
-    }
-
-    // --- __wrela_fmt_dec ---------------------------------------------------
-    //
-    // No machine address at all beyond the scratch buffer — a plain
-    // `HostRam` page stands in for `machine_info::OFF_TEST_LINE_BUF`
-    // directly (the fn's own `HarnessAddrs::info_base` field), no offset
-    // math needed since `mi::OFF_TEST_LINE_BUF` is folded in by
-    // `build_fmt_dec` itself, exactly as production does it.
-
-    fn fmt_dec_call(value: i64, is_signed: bool) -> (u64, String) {
-        let ram = HostRam::new(4096);
-        // Offset the fake info_base backward so `info_base +
-        // OFF_TEST_LINE_BUF` still lands inside the mmap'd page (a real
-        // guest address would too, by construction — this just avoids
-        // needing a second page).
-        let addrs = HarnessAddrs {
-            info_base: ram.base(),
-            ring_base: ram.base(),
-            data_base: ram.base(),
-            exit_mmio_addr: 0,
-        };
-        let asm = build_fmt_dec(&addrs, 0);
-        assert!(asm.relocs.is_empty(), "fmt_dec must need no Reloc");
-        let page = ExecPage::new(&words_of(&asm));
-        let len = page.call2(value as u64, if is_signed { 1 } else { 0 });
-        let bytes = ram.read_bytes(mi::OFF_TEST_LINE_BUF, len as usize);
-        (len, String::from_utf8(bytes).expect("ascii digits"))
-    }
-
-    #[test]
-    fn fmt_dec_zero() {
-        assert_eq!(fmt_dec_call(0, false), (1, "0".to_string()));
-        assert_eq!(fmt_dec_call(0, true), (1, "0".to_string()));
-    }
-
-    #[test]
-    fn fmt_dec_positive_unsigned() {
-        assert_eq!(fmt_dec_call(1, false), (1, "1".to_string()));
-        assert_eq!(fmt_dec_call(42, false), (2, "42".to_string()));
-        assert_eq!(fmt_dec_call(12345, false), (5, "12345".to_string()));
-    }
-
-    #[test]
-    fn fmt_dec_u64_max() {
-        let (len, s) = fmt_dec_call(u64::MAX as i64, false);
-        assert_eq!(s, u64::MAX.to_string());
-        assert_eq!(len as usize, s.len());
-    }
-
-    #[test]
-    fn fmt_dec_negative_signed() {
-        assert_eq!(fmt_dec_call(-5, true), (2, "-5".to_string()));
-        assert_eq!(fmt_dec_call(-123456, true), (7, "-123456".to_string()));
-    }
-
-    #[test]
-    fn fmt_dec_i64_min_signed() {
-        // The one value whose negation overflows a 64-bit register — the
-        // canonical-slot trick (module doc) must still render the exact
-        // magnitude via unsigned wraparound.
-        let (len, s) = fmt_dec_call(i64::MIN, true);
-        assert_eq!(s, i64::MIN.to_string());
-        assert_eq!(len as usize, s.len());
-    }
-
-    #[test]
-    fn fmt_dec_negative_value_but_unsigned_flag_renders_as_huge_unsigned() {
-        // `is_signed=false` on a bit pattern that looks negative as i64
-        // must render its full *unsigned* magnitude — exactly the
-        // canonical-slot invariant `codegen.rs` documents (an unsigned
-        // register's value is never reinterpreted as signed).
-        let (_len, s) = fmt_dec_call(-1i64, false);
-        assert_eq!(s, u64::MAX.to_string());
-    }
-
     /// plans/M10.md item B1 / decision 591: a second entry into
     /// `__wrela_abort` with the latch already set skips printing and
     /// lands at the shared halt/continuation tail. First entry sets the
@@ -12520,11 +12109,12 @@ mod harness_jit {
             exit_mmio_addr: 0,
         };
         // Combined page: [ret stub][abort_fixed][landing ret]
-        // append/commit are the same 1-word `ret` at word 0; abort starts
-        // at word 1; continuation lands at the final `ret`.
+        // Console append/commit are force-rooted wrela (not on this page);
+        // re-entry never reaches them. Abort starts at word 1; continuation
+        // lands at the final `ret`.
         let ret = encode::enc_ret(30);
         let abort_start = 1usize;
-        let abort = build_abort_fixed(&addrs, abort_start, 0, 0, 0, 0);
+        let abort = build_abort_fixed(&addrs, abort_start, 0, 0);
         // Rodata relocs for FAILED/newline are unresolved here — re-entry
         // never reaches them. First entry would need real rodata; we only
         // exercise the latch-set path's early exit.
@@ -12555,155 +12145,7 @@ mod harness_jit {
         );
     }
 
-    // --- __wrela_line_begin / __wrela_ring_append / __wrela_line_commit ----
-    //
-    // The M5-G fix's own three-way split of the old combined
-    // `__wrela_ring_write` (module doc's "one descriptor per LINE"
-    // section): a shared `HostRam` stand-in for info/ring/data (one
-    // combined page region, exactly like the pre-fix tests below used),
-    // with one small helper per routine so a test can freely interleave
-    // `line_begin`/`ring_append`*/`line_commit` calls the same way the
-    // generated entry driver/abort bodies do.
-
-    struct LineHarness {
-        ram: HostRam,
-        addrs: HarnessAddrs,
-    }
-
-    impl LineHarness {
-        fn new() -> LineHarness {
-            // `console::RING_SIZE` is 2 pages now (`QUEUE_SIZE` grew to
-            // 256, `wrela-machine`'s own module doc has the geometry
-            // story) — the ring region needs 2 host pages here too, not
-            // 1, or `console::AVAIL_OFFSET` (4096, since the 256-entry
-            // desc table alone is exactly one page) lands past this
-            // stand-in's own "ring" region and into "data", exactly the
-            // aliasing bug this comment is recording so it is never
-            // reintroduced.
-            let ram = HostRam::new(4096 * 8);
-            let addrs = HarnessAddrs {
-                info_base: ram.base(),
-                ring_base: ram.base() + 4096,
-                data_base: ram.base() + 4096 * 3,
-                exit_mmio_addr: 0,
-            };
-            LineHarness { ram, addrs }
-        }
-
-        fn line_begin(&self) {
-            let asm = build_line_begin(&self.addrs, 0);
-            assert!(asm.relocs.is_empty(), "line_begin must need no Reloc");
-            ExecPage::new(&words_of(&asm)).call2(0, 0);
-        }
-
-        fn ring_append(&self, src: &[u8]) {
-            let asm = build_ring_append(&self.addrs, 0);
-            assert!(asm.relocs.is_empty(), "ring_append must need no Reloc");
-            let page = ExecPage::new(&words_of(&asm));
-            // src lives in its own host buffer so the call passes a real
-            // pointer distinct from the fake "guest RAM" page.
-            let src_ram = HostRam::new(src.len().max(1));
-            unsafe {
-                std::ptr::copy_nonoverlapping(src.as_ptr(), src_ram.ptr, src.len());
-            }
-            page.call2(src_ram.base(), src.len() as u64);
-        }
-
-        fn line_commit(&self) {
-            let asm = build_line_commit(&self.addrs, 0);
-            assert!(asm.relocs.is_empty(), "line_commit must need no Reloc");
-            ExecPage::new(&words_of(&asm)).call2(0, 0);
-        }
-    }
-
-    // Offsets relative to `ram.base()` — `info_base`/`ring_base`/
-    // `data_base` are `ram.base() + 0`/`+ 4096`/`+ 4096*3` (`LineHarness::new`
-    // above; the ring region is 2 pages, matching `console::RING_SIZE`).
-    const INFO: u64 = 0;
-    const RING: u64 = 4096;
-    const DATA: u64 = 4096 * 3;
-
-    #[test]
-    fn one_line_from_several_appends_publishes_exactly_one_descriptor() {
-        let h = LineHarness::new();
-        h.line_begin();
-        h.ring_append(b"test foo: ");
-        h.ring_append(b"ok");
-        h.ring_append(b"\n");
-        h.line_commit();
-
-        // Exactly one descriptor and one data-bump advance for the whole
-        // line, no matter how many `ring_append` calls composed it — the
-        // fix's own central invariant.
-        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DESC_BUMP), 1);
-        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DATA_BUMP), 13);
-
-        let desc_addr = h.ram.read_u64(RING + console::DESC_TABLE_OFFSET);
-        assert_eq!(desc_addr, h.ram.base() + DATA);
-        assert_eq!(
-            h.ram.read_u32(RING + console::DESC_TABLE_OFFSET + 8),
-            13,
-            "desc.len covers the whole composed line, not one append"
-        );
-        assert_eq!(h.ram.read_u32(RING + console::AVAIL_OFFSET), 1u32 << 16);
-        assert_eq!(h.ram.read_u64(RING + console::DOORBELL_OFFSET), 1);
-        assert_eq!(h.ram.read_bytes(DATA, 13), b"test foo: ok\n".to_vec());
-    }
-
-    #[test]
-    fn a_second_line_gets_the_next_descriptor_and_continues_the_data_cursor() {
-        let h = LineHarness::new();
-        h.line_begin();
-        h.ring_append(b"hello\n");
-        h.line_commit();
-
-        h.line_begin();
-        h.ring_append(b"world");
-        h.ring_append(b"!\n");
-        h.line_commit();
-
-        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DESC_BUMP), 2);
-        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DATA_BUMP), 6 + 7);
-
-        let desc0_addr = h.ram.read_u64(RING + console::DESC_TABLE_OFFSET);
-        let desc1_addr = h
-            .ram
-            .read_u64(RING + console::DESC_TABLE_OFFSET + console::DESC_ENTRY_SIZE);
-        assert_eq!(desc0_addr, h.ram.base() + DATA);
-        assert_eq!(desc1_addr, h.ram.base() + DATA + 6);
-        assert_eq!(
-            h.ram
-                .read_u32(RING + console::DESC_TABLE_OFFSET + console::DESC_ENTRY_SIZE + 8),
-            7,
-            "second desc.len"
-        );
-        assert_eq!(h.ram.read_bytes(DATA, 6), b"hello\n".to_vec());
-        assert_eq!(h.ram.read_bytes(DATA + 6, 7), b"world!\n".to_vec());
-        assert_eq!(h.ram.read_u32(RING + console::AVAIL_OFFSET), 2u32 << 16);
-    }
-
-    #[test]
-    fn many_lines_can_exceed_the_old_16_descriptor_bound() {
-        // The M5-G bug's exact shape, at the routine level: the old
-        // combined `__wrela_ring_write` spent a descriptor per *call*, so
-        // 16 short lines already exhausted `console::QUEUE_SIZE` when it
-        // was 16. Composing each line from a `line_begin`/`ring_append`/
-        // `line_commit` triple, one descriptor per line, comfortably
-        // clears the old bound (proving the fix, not just the new
-        // `QUEUE_SIZE`, is what makes this work: 20 > the *old* 16).
-        let h = LineHarness::new();
-        for i in 0..20u8 {
-            h.line_begin();
-            h.ring_append(&[b'A' + i]);
-            h.line_commit();
-        }
-        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DESC_BUMP), 20);
-        assert_eq!(h.ram.read_u64(INFO + mi::OFF_RING_DATA_BUMP), 20);
-        for i in 0..20u8 {
-            assert_eq!(h.ram.read_bytes(DATA + i as u64, 1), vec![b'A' + i]);
-        }
-    }
-
+    // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
     // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
     //
     // Stand-in "actor method" bodies (hand-assembled, the identical ABI a

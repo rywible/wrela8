@@ -78,11 +78,11 @@ pub fn __wrela_line_commit() -> u64:
     return 0
 
 # M10 B3: `__wrela_fmt_dec` — dumb digit render into OFF_TEST_LINE_BUF.
-# Hand-asm stays until B5; callers switch to `bl_call_key`. Digit extract
-# and reverse are fully unrolled call sequences (decision 597): a `while`
-# back-edge would splice `__wrela_checkpoint_service` onto console
-# formatting. Named u8 fields avoid index bounds-check aborts; helpers
-# keep the div/mod cold paths from being cloned twenty times.
+# Sole copy after B5 deleted the hand-asm twin. Digit extract and reverse
+# are fully unrolled call sequences (decision 597): a `while` back-edge
+# would splice `__wrela_checkpoint_service` onto console formatting.
+# Named u8 fields avoid index bounds-check aborts; helpers keep the
+# div/mod cold paths from being cloned twenty times.
 
 @layout(runtime, endian=little)
 struct TestLineBuf:
