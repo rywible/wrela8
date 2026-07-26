@@ -28,18 +28,18 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=3008
-  Section name=rodata base=0x40500c10 size=597
-  Section name=abort base=0x40500e68 size=120
-  Section name=checkpoint base=0x40500ee0 size=336
-  Section name=rtcode base=0x40501030 size=1016
-  Section name=rtdata base=0x40501428 size=2336
-  Section name=devregs base=0x40501d48 size=104
+  Section name=code base=0x40500050 size=3092
+  Section name=rodata base=0x40500c68 size=597
+  Section name=abort base=0x40500ec0 size=120
+  Section name=checkpoint base=0x40500f38 size=336
+  Section name=rtcode base=0x40501088 size=1056
+  Section name=rtdata base=0x405014a8 size=2336
+  Section name=devregs base=0x40501dc8 size=104
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Turn fn=irq_delivered frame=616
   Driver name=BlkDriver state=40
   Turns count=2 stride=1024 bytes=2048
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2336
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501d48 size=104
-  IrqHostInject base=0x40501d48 offset=0x60 status=0xa501 vector=1
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501dc8 size=104
+  IrqHostInject base=0x40501dc8 offset=0x60 status=0xa501 vector=1
