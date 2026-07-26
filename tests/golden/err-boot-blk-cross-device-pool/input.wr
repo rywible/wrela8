@@ -30,15 +30,24 @@ module examples.err_boot_blk_cross_device_pool
 # then admitted and device#0 reads and writes device#1's pool.
 #
 # **What must stay true when `expected/test.txt` is regenerated.** That
-# line carries an absolute guest address, which any change to actor or
-# driver state sizes will move — the address is incidental. The oracle is
-# the three named facts around it, and all three must survive:
+# line used to carry an absolute guest address, which any change to actor
+# or driver state sizes moved — so this one transcript was a hostage to
+# every layout change, and the address said nothing the image report did
+# not already say. plans/M10.md decision 700 replaced it with the
+# **pool-relative offset**, which is stable under layout change and is the
+# fact that actually localizes the access. Here the driver's only payload
+# is the pool's only slot, so the offset is `0x0`: the refused range is
+# the whole of `BlockPayloads`. The oracle is the three named facts, and
+# all three must survive:
 #
 #   1. the pool named is `BlockPayloads` (the *payload* pool, the one this
 #      image rebound to device#1) — not `BlockControl`, which stays on
 #      device#0 and would mean the ring, not the descriptor, was refused;
 #   2. `bound to device#1`; and
 #   3. `this access is device#0's`.
+#
+# A regenerated line whose offset is no longer `0x0` means the descriptor
+# stopped addressing the base of the pool — re-derive rather than accept.
 #
 # A regenerated line reporting `OutsidePool` ("no declared pool window
 # contains this range") instead is **not** this oracle: it would mean the

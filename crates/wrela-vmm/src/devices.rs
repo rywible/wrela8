@@ -246,7 +246,7 @@ impl GuestMem {
             if addr >= w.base && end <= w.base + w.size {
                 if w.device != self.device {
                     return Err(BlkFault::ForeignPool {
-                        addr,
+                        offset: addr - w.base,
                         len,
                         pool: w.name.clone(),
                         owner: w.device,
@@ -351,7 +351,14 @@ pub enum BlkFault {
     /// different finding: the bytes are real, placed, device-reachable
     /// memory, and this device still has no authority over them.
     ForeignPool {
-        addr: u64,
+        /// Where the range starts *within* the pool that contains it, not
+        /// the absolute guest address (plans/M10.md decision 700). The
+        /// absolute address says nothing the image report does not
+        /// already say, and quoting it in a transcript makes that
+        /// transcript a hostage to every layout change that moves a
+        /// section ahead of `pooldata`; the pool-relative offset is both
+        /// stable and the fact that localizes the bug.
+        offset: u64,
         len: u64,
         /// The pool that does contain the range.
         pool: String,
@@ -424,14 +431,14 @@ impl std::fmt::Display for BlkFault {
                  (plans/M7.md decision 5: the device model may touch declared pool pages only)"
             ),
             BlkFault::ForeignPool {
-                addr,
+                offset,
                 len,
                 pool,
                 owner,
                 device,
             } => write!(
                 f,
-                "guest range [{addr:#x}, +{len}) lies in pool `{pool}`, which is bound to \
+                "guest range [offset {offset:#x}, +{len}) lies in pool `{pool}`, which is bound to \
                  device#{owner}, but this access is device#{device}'s \
                  (03-hardware.md §3: all memory a device can reach originates from *its* bound \
                  pools)"
@@ -1321,6 +1328,13 @@ mod tests {
                 ..
             })
         ));
+        // The reported position is *pool-relative*, never the absolute
+        // guest address (decision 700): eight bytes into the foreign
+        // window reads back as offset 8, whatever `FOREIGN_BASE` is.
+        assert!(matches!(
+            mine.window_offset(FOREIGN_BASE + 8, 8),
+            Err(BlkFault::ForeignPool { offset: 8, .. })
+        ));
         // The symmetric half, which no boot can reach today because this
         // machine models exactly one device: device#1's own view admits
         // device#1's window and refuses device#0's.
@@ -2056,7 +2070,7 @@ mod tests {
                 why: "x",
             },
             BlkFault::ForeignPool {
-                addr: 1,
+                offset: 1,
                 len: 2,
                 pool: "Other".to_string(),
                 owner: 1,
