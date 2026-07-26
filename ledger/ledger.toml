@@ -1653,6 +1653,12 @@ Holes found by mutation-testing the guard itself, and closed:
 **plans/M9.md item F3**: `Array.map_take` / `Array.try_map_take` added to EXCEPTIONS (05 §7 sealed methods on builtin `[T; N]`)."""
 
 [[clause]]
+id = "library.time.instant-opaque"
+doc = "05-library.md#5"
+status = "gap"
+note = "05 §5 calls `Instant` \"an opaque monotonic point\" whose only source is the sealed, recorded/replayed `now()` effect, and `stdlib/core/time.wr`'s own header says the same (\"Instant is opaque — fields private to this module — only this module and the `now()` intrinsic mint it\"). Neither claim is enforced: `Instant.nanos` is not `pub`, but struct field visibility does not exist. `FieldItem.is_pub` is parsed and pretty-printed and then dropped — `DeclField` carries only `{ name, ty }`, and no sema pass reads a *field's* `is_pub` (the `.is_pub` reads elsewhere are all fn/method/declaration ones). So `from core.time import Instant` followed by `Instant(nanos=999999)` mints a fabricated instant from any module, which defeats both the monotonicity item E golden-pinned (`boot-instant-monotonic`) and the point of routing every real clock read through a recorded `ClockRead`.\n\nplans/M9.md item OO (decisions 430–436) measured the cost of closing this and **stopped deliberately** rather than migrate: cross-module use of non-`pub` fields is pervasive in the multi-module corpus (44 constructions + 30 reads across 27 golden packages; 26 distinct fields would need `pub`; only 12 fields tree-wide are spelled `pub` today). That pervasiveness is *not* evidence the language intends public fields — the fixtures were written against a compiler that never checked, so they record what was permitted, not what was meant — but the enforcement rule itself is not in the normative text: 02 §2 says only \"Declarations are module-private unless `pub`\" and never mentions fields. Enforcing now would put the compiler ahead of the docs, which inverts ground-truth rule 1, so the proposed sentence is parked on `plans/REVIEW-QUEUE.md` for human review and this stays an explicit gap until that lands. Flips to `test` when field visibility is enforced and a golden shows a fabricated `Instant` refused from outside `core.time`."
+
+[[clause]]
 id = "library.time"
 doc = "05-library.md#5"
 status = "test"
