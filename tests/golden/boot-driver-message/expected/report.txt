@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_driver_message.wr sha256=8ef966def12344169efcdf5f1c9beabddef7b0b676ed5523e85a13c180b78411
-  Input path=<generated> sha256=a19c714050ed9758ba41042441345d6bcf145f5bea0db38870166a1e48b0a4af
+  Input path=<generated> sha256=532d3c01a17b9adf327409e8567d9ea9ccea260aad8af9c7829210144a7b8b51
   Name value=boot-driver-message
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -69,10 +69,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=25952
-  Section name=rodata base=0x405065b0 size=782
-  Section name=abort base=0x405068c0 size=120
-  Section name=checkpoint base=0x40506938 size=336
+  Section name=code base=0x40500050 size=44096
+  Section name=rodata base=0x4050ac90 size=782
+  Section name=abort base=0x4050afa0 size=120
+  Section name=checkpoint base=0x4050b018 size=336
   Section name=rtdata base=0x40510000 size=4048
   Section name=devregs base=0x40510fd0 size=104
   Section name=pooldata base=0x40511038 size=512
@@ -80,9 +80,25 @@ ImageReport v0
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
-  PlacedStatic name=GROUPS type=GroupArena addr=0x40510010 size=96
+  PlacedStatic name=GROUPS type=GroupArena addr=0x4054fda0 size=96
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
+  PlacedStatic name=RING0_CTL type=RingCtl addr=0x4054fe20 size=24
+  PlacedStatic name=RING0_DATA type=Ring0Data addr=0x4054fe00 size=8
+  PlacedStatic name=RING1_CTL type=RingCtl addr=0x4054fe60 size=24
+  PlacedStatic name=RING1_DATA type=Ring1Data addr=0x4054fe40 size=8
+  PlacedStatic name=RING2_CTL type=RingCtl addr=0x4054fea0 size=24
+  PlacedStatic name=RING2_DATA type=Ring2Data addr=0x4054fe80 size=8
+  PlacedStatic name=RING3_CTL type=RingCtl addr=0x4054fee0 size=24
+  PlacedStatic name=RING3_DATA type=Ring3Data addr=0x4054fec0 size=8
+  PlacedStatic name=RING4_CTL type=RingCtl addr=0x4054ff20 size=24
+  PlacedStatic name=RING4_DATA type=Ring4Data addr=0x4054ff00 size=8
+  PlacedStatic name=RING5_CTL type=RingCtl addr=0x4054ff60 size=24
+  PlacedStatic name=RING5_DATA type=Ring5Data addr=0x4054ff40 size=8
+  PlacedStatic name=RING6_CTL type=RingCtl addr=0x4054ffa0 size=24
+  PlacedStatic name=RING6_DATA type=Ring6Data addr=0x4054ff80 size=8
+  PlacedStatic name=RING7_CTL type=RingCtl addr=0x4054ffe0 size=24
+  PlacedStatic name=RING7_DATA type=Ring7Data addr=0x4054ffc0 size=8
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
   PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21

@@ -3,27 +3,72 @@
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
 
-# plans/M11.md item D / E / F: import the generated facts module.
+# plans/M11.md item D / E / F / G: import the generated facts module.
 # Batch-1 injects a stub `core.__image_runtime` (decision 780); live images
 # replace it with `rtconfig::generate_with` before force-rooting runtime keys.
-# Fixed stub pools (decision 791) are always imported so spliced match
+# Fixed stub pools (decision 791 / 802) are always imported so spliced match
 # ladders can Call them (sema forbids reaching non-imported helpers).
 from core.__image_runtime import (
     N_CORES,
     N_TURNS,
     N_TURNS_LEN,
     N_CHILD_SITES,
+    N_RINGS,
+    NO_EDGE,
     GROUP_ARENA_CAPACITY,
     GROUP_SLOTS,
     RT,
     GROUPS,
     SCHED,
+    RING0_CTL,
+    RING1_CTL,
+    RING2_CTL,
+    RING3_CTL,
+    RING4_CTL,
+    RING5_CTL,
+    RING6_CTL,
+    RING7_CTL,
+    RING0_DATA,
+    RING1_DATA,
+    RING2_DATA,
+    RING3_DATA,
+    RING4_DATA,
+    RING5_DATA,
+    RING6_DATA,
+    RING7_DATA,
+    RING0_WORDS,
+    RING1_WORDS,
+    RING2_WORDS,
+    RING3_WORDS,
+    RING4_WORDS,
+    RING5_WORDS,
+    RING6_WORDS,
+    RING7_WORDS,
     __wrela_select_count,
     __wrela_try_select,
-    __wrela_try_drain,
     __wrela_resume_child,
     __wrela_child_turn_index,
     __wrela_child_slot,
+    __wrela_ring_capacity,
+    __wrela_ring_slot_words,
+    __wrela_ring_dst_core,
+    __wrela_ring_src_core,
+    __wrela_ring_target_handle,
+    __wrela_ring_get_head,
+    __wrela_ring_set_head,
+    __wrela_ring_get_tail,
+    __wrela_ring_set_tail,
+    __wrela_ring_get_count,
+    __wrela_ring_set_count,
+    __wrela_ring_load_word,
+    __wrela_ring_store_word,
+    __wrela_xsend_edge,
+    __wrela_xreply_edge,
+    __wrela_drain_reply_count,
+    __wrela_drain_reply_edge,
+    __wrela_drain_request_count,
+    __wrela_drain_request_edge,
+    __wrela_try_enqueue,
     __select_0,
     __select_1,
     __select_2,
@@ -56,9 +101,6 @@ from core.__image_runtime import (
     __select_29,
     __select_30,
     __select_31,
-    __drain_0,
-    __drain_1,
-    __drain_2,
     __resume_0,
     __resume_1,
     __resume_2,
@@ -75,6 +117,38 @@ from core.__image_runtime import (
     __resume_13,
     __resume_14,
     __resume_15,
+    __enqueue_0,
+    __enqueue_1,
+    __enqueue_2,
+    __enqueue_3,
+    __enqueue_4,
+    __enqueue_5,
+    __enqueue_6,
+    __enqueue_7,
+    __enqueue_8,
+    __enqueue_9,
+    __enqueue_10,
+    __enqueue_11,
+    __enqueue_12,
+    __enqueue_13,
+    __enqueue_14,
+    __enqueue_15,
+    __enqueue_16,
+    __enqueue_17,
+    __enqueue_18,
+    __enqueue_19,
+    __enqueue_20,
+    __enqueue_21,
+    __enqueue_22,
+    __enqueue_23,
+    __enqueue_24,
+    __enqueue_25,
+    __enqueue_26,
+    __enqueue_27,
+    __enqueue_28,
+    __enqueue_29,
+    __enqueue_30,
+    __enqueue_31,
 )
 
 # M10 B2: machine pages the console formatter speaks to (decision 593).
@@ -524,3 +598,188 @@ pub fn __wrela_child_poll(site: usize) -> u64:
             wi: usize = (waiter.to[u64]() -% 1).to[usize]()
             RT.turns[wi].resume_ready = 1
     return 1
+
+# ---------------------------------------------------------------------------
+# M11 item G: rt_xsend / rt_xreply / rt_drain (decisions 800–805). Generic
+# @budget algorithms over ring accessors + handle-identity ladders. Call
+# sites BL fixed trampolines `__wrela_xsend_N` / `__wrela_xreply_N`; run_one
+# drains via `__wrela_try_drain` → `__wrela_rt_drain`. Helpers are inlined
+# so force-root reachability does not need a second closure pass.
+# ---------------------------------------------------------------------------
+
+# Cross-core request publish. ABI matches former emit_rt_xsend / rt_enqueue.
+pub fn __wrela_rt_xsend(edge: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    if edge >= N_RINGS:
+        return 1
+    if edge == NO_EDGE:
+        return 1
+    cap = __wrela_ring_capacity(edge)
+    count = __wrela_ring_get_count(edge)
+    if count >= cap:
+        return 1
+    src = __wrela_ring_src_core(edge)
+    wc = waker_core
+    if waker_turn != 0:
+        wc = (src +% 1).to[u64]()
+    slot_words = __wrela_ring_slot_words(edge)
+    tail = __wrela_ring_get_tail(edge)
+    base = (tail *% slot_words.to[u64]()).to[usize]()
+    __wrela_ring_store_word(edge, base, method)
+    packed = waker_turn | (wc << 32)
+    __wrela_ring_store_word(edge, base +% 1, packed)
+    if slot_words >= 3:
+        __wrela_ring_store_word(edge, base +% 2, arg0)
+    if slot_words >= 4:
+        __wrela_ring_store_word(edge, base +% 3, arg1)
+    t = tail +% 1
+    if t >= cap:
+        t = 0
+    __wrela_ring_set_tail(edge, t)
+    __wrela_ring_set_count(edge, count +% 1)
+    dst = __wrela_ring_dst_core(edge)
+    PENDING.words[dst] = PENDING.words[dst] | 1
+    return 0
+
+# Cross-core reply publish. Leaf ABI: x0=turn_and_tag, x1=reply.
+pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
+    if edge >= N_RINGS:
+        return
+    if edge == NO_EDGE:
+        return
+    cap = __wrela_ring_capacity(edge)
+    count = __wrela_ring_get_count(edge)
+    if count >= cap:
+        # Unreachable by construction (reply_ring_capacity); fail closed.
+        MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+        return
+    # Reply slots are always 2 u64 words (decision 665).
+    tail = __wrela_ring_get_tail(edge)
+    base = (tail *% 2).to[usize]()
+    __wrela_ring_store_word(edge, base, turn_and_tag)
+    __wrela_ring_store_word(edge, base +% 1, reply)
+    t = tail +% 1
+    if t >= cap:
+        t = 0
+    __wrela_ring_set_tail(edge, t)
+    __wrela_ring_set_count(edge, count +% 1)
+    dst = __wrela_ring_dst_core(edge)
+    PENDING.words[dst] = PENDING.words[dst] | 1
+    return
+
+# Inbound drain for one core: reply lanes first, then request → enqueue.
+pub fn __wrela_rt_drain(core: usize) -> u64:
+    moved: u64 = 0
+    if core != 0:
+        PENDING.words[core] = 0
+    n_rep = __wrela_drain_reply_count(core)
+    ri: usize = 0
+    @budget(bound=8)
+    while ri < n_rep:
+        edge = __wrela_drain_reply_edge(core, ri)
+        @budget(bound=256)
+        while __wrela_ring_get_count(edge) != 0:
+            head = __wrela_ring_get_head(edge)
+            base = (head *% 2).to[usize]()
+            turn_and_tag = __wrela_ring_load_word(edge, base)
+            reply = __wrela_ring_load_word(edge, base +% 1)
+            tag = turn_and_tag >> 32
+            tid = turn_and_tag & 4294967295
+            ti: usize = (tid -% 1).to[usize]()
+            RT.turns[ti].reply_tag = tag
+            RT.turns[ti].reply = reply
+            RT.turns[ti].resume_ready = 1
+            h = head +% 1
+            cap = __wrela_ring_capacity(edge)
+            if h >= cap:
+                h = 0
+            __wrela_ring_set_head(edge, h)
+            c = __wrela_ring_get_count(edge)
+            __wrela_ring_set_count(edge, c -% 1)
+            moved = 1
+        ri = ri +% 1
+    n_req = __wrela_drain_request_count(core)
+    qi: usize = 0
+    @budget(bound=8)
+    while qi < n_req:
+        edge = __wrela_drain_request_edge(core, qi)
+        @budget(bound=256)
+        while __wrela_ring_get_count(edge) != 0:
+            slot_words = __wrela_ring_slot_words(edge)
+            head = __wrela_ring_get_head(edge)
+            base = (head *% slot_words.to[u64]()).to[usize]()
+            method = __wrela_ring_load_word(edge, base)
+            packed = __wrela_ring_load_word(edge, base +% 1)
+            wt = packed & 4294967295
+            wc = packed >> 32
+            arg0: u64 = 0
+            arg1: u64 = 0
+            if slot_words >= 3:
+                arg0 = __wrela_ring_load_word(edge, base +% 2)
+            if slot_words >= 4:
+                arg1 = __wrela_ring_load_word(edge, base +% 3)
+            handle = __wrela_ring_target_handle(edge)
+            rejected = __wrela_try_enqueue(handle, method, arg0, arg1, wt, wc)
+            if rejected != 0:
+                # Mailbox full — leave the ring slot; try again next tick.
+                return moved
+            h = head +% 1
+            cap = __wrela_ring_capacity(edge)
+            if h >= cap:
+                h = 0
+            __wrela_ring_set_head(edge, h)
+            c = __wrela_ring_get_count(edge)
+            __wrela_ring_set_count(edge, c -% 1)
+            moved = 1
+        qi = qi +% 1
+    return moved
+
+# run_one entry: skip the ImageStatic drain body (deleted — decision 805).
+pub fn __wrela_try_drain(core: usize) -> u64:
+    n = __wrela_drain_reply_count(core) +% __wrela_drain_request_count(core)
+    if n == 0:
+        return 0
+    return __wrela_rt_drain(core)
+
+# Fixed trampoline pools (decision 802): layout remaps `rt_xsend` /
+# `rt_xreply` Call keys onto these; each bakes its edge index.
+pub fn __wrela_xsend_0(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(0, method, arg0, arg1, waker_turn, waker_core)
+pub fn __wrela_xsend_1(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(1, method, arg0, arg1, waker_turn, waker_core)
+pub fn __wrela_xsend_2(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(2, method, arg0, arg1, waker_turn, waker_core)
+pub fn __wrela_xsend_3(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(3, method, arg0, arg1, waker_turn, waker_core)
+pub fn __wrela_xsend_4(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(4, method, arg0, arg1, waker_turn, waker_core)
+pub fn __wrela_xsend_5(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(5, method, arg0, arg1, waker_turn, waker_core)
+pub fn __wrela_xsend_6(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(6, method, arg0, arg1, waker_turn, waker_core)
+pub fn __wrela_xsend_7(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_xsend(7, method, arg0, arg1, waker_turn, waker_core)
+
+pub fn __wrela_xreply_0(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(0, turn_and_tag, reply)
+    return
+pub fn __wrela_xreply_1(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(1, turn_and_tag, reply)
+    return
+pub fn __wrela_xreply_2(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(2, turn_and_tag, reply)
+    return
+pub fn __wrela_xreply_3(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(3, turn_and_tag, reply)
+    return
+pub fn __wrela_xreply_4(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(4, turn_and_tag, reply)
+    return
+pub fn __wrela_xreply_5(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(5, turn_and_tag, reply)
+    return
+pub fn __wrela_xreply_6(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(6, turn_and_tag, reply)
+    return
+pub fn __wrela_xreply_7(turn_and_tag: u64, reply: u64):
+    __wrela_rt_xreply(7, turn_and_tag, reply)
+    return

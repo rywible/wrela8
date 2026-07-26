@@ -602,14 +602,18 @@ fn unresolved_call_target(target: &str, graph: Option<&ImageGraph>) -> LayoutErr
     ))
 }
 
-/// plans/M8.md item C2 / M10 F2: `rt_xsend <src> <Actor>` — specialized
-/// body in `code` (decision 633). One symbol per (sending core, target
-/// mailbox root) pair.
-fn xsend_symbol(src_core: usize, actor: &str) -> String {
-    crate::codegen::rt_xsend_symbol(src_core, actor)
+/// plans/M8.md item C2 / M10 F2 / M11 G: `rt_xsend` redirect became a
+/// fixed trampoline `__wrela_xsend_<edge>` (decision 804) whose body is
+/// generic wrela over ring facts. One symbol per request-ring edge index.
+fn xsend_trampoline(edge: usize) -> String {
+    format!("__wrela_xsend_{edge}")
 }
 
-/// plans/M8.md item C2: which core a call site runs on. An actor method
+fn xreply_trampoline(edge: usize) -> String {
+    format!("__wrela_xreply_{edge}")
+}
+
+/// plans/M8.md item C2 / M10 F2: which core a call site runs on. An actor method
 /// runs on its actor's core, a `@driver` method on its driver's (core 0 by
 /// shape decision 2), and anything else is a free turn — and the only free
 /// turns that run are the root turns core 0's entry driver drives.
@@ -693,7 +697,14 @@ fn resolve_cross_core_edge(
     // Only source fns' Calls are candidates for the cross-core redirect;
     // hand-asm drain never hit this path (glue `bl_call_key`, not
     // `Reloc::Call` through `program.fns`).
-    if crate::codegen::symbol_is_synthetic(caller_key) {
+    // M11 G: generic `__wrela_rt_drain` / `__wrela_try_enqueue` are the
+    // same shape — not space-bearing, but must not redirect either.
+    if crate::codegen::symbol_is_synthetic(caller_key)
+        || caller_key.starts_with("__wrela_")
+        || caller_key.starts_with("__enqueue_")
+        || caller_key.starts_with("__select_")
+        || caller_key.starts_with("__resume_")
+    {
         return Ok(None);
     }
     let Some(target_actor) = crate::codegen::rt_enqueue_actor(target) else {
@@ -713,8 +724,62 @@ fn resolve_cross_core_edge(
     if caller == target_core {
         return Ok(None);
     }
-    let sym = xsend_symbol(caller, &target_actor);
-    Ok(Some(sym))
+    // M11 G (decision 804): trampoline `__wrela_xsend_<edge>` when rings
+    // are already installed; during `cross_core_edges` / `cross_core_rings`
+    // the ring set is still empty — return a stable sentinel so edge
+    // discovery still works, and the Call-patch path (after
+    // `add_cross_core_rings`) re-resolves to the real trampoline.
+    let edge = w.tables.rings.iter().enumerate().find_map(|(i, r)| {
+        if r.kind == RingKind::Request
+            && r.src == caller
+            && r.actor.as_deref() == Some(target_actor)
+        {
+            Some(i)
+        } else {
+            None
+        }
+    });
+    match edge {
+        Some(edge) => {
+            if edge >= crate::rtconfig::RING_POOL_COUNT {
+                return Err(LayoutError::new(format!(
+                    "image needs request-ring edge {edge}; trampoline pool is {} (plans/M11.md decision 802)",
+                    crate::rtconfig::RING_POOL_COUNT
+                )));
+            }
+            Ok(Some(xsend_trampoline(edge)))
+        }
+        None => {
+            // Pre-ring-install discovery, or a missing ring after install.
+            if w.tables.rings.is_empty() {
+                Ok(Some(format!(
+                    "__wrela_xsend_pending {caller} {target_actor}"
+                )))
+            } else {
+                Err(LayoutError::new(format!(
+                    "internal error: cross-core edge {caller} -> `{target_actor}` has no request ring"
+                )))
+            }
+        }
+    }
+}
+
+/// M11 G (decision 804): `rt_xreply src->dst` Call keys resolve to
+/// `__wrela_xreply_<edge>` trampolines. Returns `None` when `target` is
+/// not an xreply symbol.
+fn resolve_xreply_edge(target: &str, w: &RuntimeWiring) -> Option<String> {
+    let (src, dst) = crate::codegen::rt_xreply_cores(target)?;
+    let edge = w.tables.rings.iter().enumerate().find_map(|(i, r)| {
+        if r.kind == RingKind::Reply && r.src == src && r.dst == dst {
+            Some(i)
+        } else {
+            None
+        }
+    })?;
+    if edge >= crate::rtconfig::RING_POOL_COUNT {
+        return None;
+    }
+    Some(xreply_trampoline(edge))
 }
 
 /// plans/M8.md item C2: every cross-core message edge this image's own
@@ -741,7 +806,10 @@ fn cross_core_edges(
                 let actor = crate::codegen::rt_enqueue_actor(target)
                     .expect("resolve_cross_core_edge only redirects an rt_enqueue target")
                     .to_string();
-                debug_assert_eq!(sym, xsend_symbol(caller_core(key, w), &actor));
+                debug_assert!(
+                    sym.starts_with("__wrela_xsend_"),
+                    "cross-core redirect must be an xsend trampoline, got {sym}"
+                );
                 out.insert((caller_core(key, w), actor));
             }
         }
@@ -2736,12 +2804,14 @@ pub fn layout_program(
                     // `code`-section-relative) — the identical two-scheme
                     // lookup `layout_test_image` already does, and the whole
                     // reason a messaged-actor image lays out at all.
-                    // plans/M8.md item C2: a cross-core edge resolves to its
-                    // own `__rt_xsend_*` ring producer instead of the
-                    // same-core admission routine — same ABI, same
-                    // rejection contract, one symbol swapped.
+                    // plans/M8.md item C2 / M11 G: a cross-core enqueue
+                    // resolves to `__wrela_xsend_<edge>`; an `rt_xreply`
+                    // Call resolves to `__wrela_xreply_<edge>` (decision 804).
                     let redirect = resolve_cross_core_edge(key, target, wiring.as_ref())?;
-                    let target = redirect.as_deref().unwrap_or(target.as_str());
+                    let xreply = wiring.as_ref().and_then(|w| resolve_xreply_edge(target, w));
+                    let target_owned: String =
+                        redirect.or(xreply).unwrap_or_else(|| target.clone());
+                    let target = target_owned.as_str();
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4
@@ -3692,6 +3762,13 @@ pub struct RuntimeTables {
     /// M11 F: `(callee_key, child_index, turn_index)` per `g.start` site,
     /// in `BTreeMap` key order.
     pub child_sites: Vec<(String, usize, usize)>,
+    /// M11 G (decision 801): image handle word per request ring (parallel
+    /// to `rings`); 0 / unused for reply rings.
+    pub ring_target_handles: Vec<u64>,
+    /// M11 G: mailbox-root handle words in root order (enqueue stubs).
+    pub enqueue_handles: Vec<u64>,
+    /// M11 G: mailbox-root names parallel to `enqueue_handles`.
+    pub enqueue_actors: Vec<String>,
 }
 
 impl RuntimeTables {
@@ -6403,8 +6480,9 @@ impl RuntimeWiring {
     }
 }
 
-/// Fill `RuntimeTables::{select_by_core,drain_by_core,child_sites}` from
-/// the finished wiring (plans/M11.md item F / decision 790).
+/// Fill `RuntimeTables::{select_by_core,drain_by_core,child_sites,
+/// ring_target_handles,enqueue_handles,enqueue_actors}` from the finished
+/// wiring (plans/M11.md item F / decision 790; item G / decision 801).
 fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
     let roots = mailbox_root_names(&wiring.tables);
     let mut select_by_core: Vec<Vec<String>> = vec![Vec::new(); wiring.tables.cores];
@@ -6439,9 +6517,43 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
         };
         child_sites.push((callee_key.clone(), child_index, actor_n + msg_drivers + pos));
     }
+    // Handle space: actors then drivers then devices (image_decl_handle_word).
+    // Mailbox roots are actors then messageable drivers — handle word for
+    // actor i is i; for messageable driver at drivers[j] it is actor_n + j.
+    let mut enqueue_handles = Vec::new();
+    let mut enqueue_actors = Vec::new();
+    for (i, a) in wiring.tables.actors.iter().enumerate() {
+        enqueue_handles.push(i as u64);
+        enqueue_actors.push(a.name.clone());
+    }
+    for (j, d) in wiring.tables.drivers.iter().enumerate() {
+        if d.mailbox.is_some() {
+            enqueue_handles.push((actor_n + j) as u64);
+            enqueue_actors.push(d.name.clone());
+        }
+    }
+    let mut ring_target_handles = Vec::with_capacity(wiring.tables.rings.len());
+    for r in &wiring.tables.rings {
+        match r.kind {
+            RingKind::Request => {
+                let actor = r.actor.as_deref().unwrap_or("");
+                let h = enqueue_actors
+                    .iter()
+                    .zip(enqueue_handles.iter())
+                    .find(|(n, _)| *n == actor)
+                    .map(|(_, h)| *h)
+                    .unwrap_or(0);
+                ring_target_handles.push(h);
+            }
+            RingKind::Reply => ring_target_handles.push(0),
+        }
+    }
     wiring.tables.select_by_core = select_by_core;
     wiring.tables.drain_by_core = drain_by_core;
     wiring.tables.child_sites = child_sites;
+    wiring.tables.ring_target_handles = ring_target_handles;
+    wiring.tables.enqueue_handles = enqueue_handles;
+    wiring.tables.enqueue_actors = enqueue_actors;
 }
 
 pub struct BootCtx<'a> {

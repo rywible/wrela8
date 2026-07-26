@@ -15,8 +15,11 @@ pub const RTDATA_BYTES: usize = 1792
 pub const N_CHILD_SITES: usize = 0
 pub const N_SELECT_STUBS: usize = 2
 pub const SELECT_STUB_COUNT: usize = 32
-pub const DRAIN_STUB_COUNT: usize = 3
 pub const RESUME_STUB_COUNT: usize = 16
+pub const N_RINGS: usize = 0
+pub const RING_POOL_COUNT: usize = 8
+pub const ENQUEUE_STUB_COUNT: usize = 32
+pub const NO_EDGE: usize = 255
 
 @layout(runtime, endian=little)
 struct TurnArea:
@@ -24,6 +27,7 @@ struct TurnArea:
     suspended: u64
     resume_ready: u64
     reply: u64
+    @offset(0x38) reply_tag: u64
     @offset(0x40) ambient_group: u64
     @offset(0x1ff) _tail: u8
 
@@ -65,8 +69,102 @@ pub static SCHED: SchedStripe
 struct GroupArena:
     slots: [GroupSlot; GROUP_SLOTS]
 
-@placed(0x40510700)
+@placed(0x4054fda0)
 pub static GROUPS: GroupArena
+
+@layout(runtime, endian=little)
+struct RingCtl:
+    head: u64
+    tail: u64
+    count: u64
+
+pub const RING0_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring0Data:
+    words: [u64; RING0_WORDS]
+
+@placed(0x4054fe00)
+pub static RING0_DATA: Ring0Data
+
+@placed(0x4054fe20)
+pub static RING0_CTL: RingCtl
+
+pub const RING1_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring1Data:
+    words: [u64; RING1_WORDS]
+
+@placed(0x4054fe40)
+pub static RING1_DATA: Ring1Data
+
+@placed(0x4054fe60)
+pub static RING1_CTL: RingCtl
+
+pub const RING2_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring2Data:
+    words: [u64; RING2_WORDS]
+
+@placed(0x4054fe80)
+pub static RING2_DATA: Ring2Data
+
+@placed(0x4054fea0)
+pub static RING2_CTL: RingCtl
+
+pub const RING3_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring3Data:
+    words: [u64; RING3_WORDS]
+
+@placed(0x4054fec0)
+pub static RING3_DATA: Ring3Data
+
+@placed(0x4054fee0)
+pub static RING3_CTL: RingCtl
+
+pub const RING4_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring4Data:
+    words: [u64; RING4_WORDS]
+
+@placed(0x4054ff00)
+pub static RING4_DATA: Ring4Data
+
+@placed(0x4054ff20)
+pub static RING4_CTL: RingCtl
+
+pub const RING5_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring5Data:
+    words: [u64; RING5_WORDS]
+
+@placed(0x4054ff40)
+pub static RING5_DATA: Ring5Data
+
+@placed(0x4054ff60)
+pub static RING5_CTL: RingCtl
+
+pub const RING6_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring6Data:
+    words: [u64; RING6_WORDS]
+
+@placed(0x4054ff80)
+pub static RING6_DATA: Ring6Data
+
+@placed(0x4054ffa0)
+pub static RING6_CTL: RingCtl
+
+pub const RING7_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Ring7Data:
+    words: [u64; RING7_WORDS]
+
+@placed(0x4054ffc0)
+pub static RING7_DATA: Ring7Data
+
+@placed(0x4054ffe0)
+pub static RING7_CTL: RingCtl
 
 pub fn __select_0() -> u64:
     return 0
@@ -164,15 +262,6 @@ pub fn __select_30() -> u64:
 pub fn __select_31() -> u64:
     return 0
 
-pub fn __drain_0() -> u64:
-    return 0
-
-pub fn __drain_1() -> u64:
-    return 0
-
-pub fn __drain_2() -> u64:
-    return 0
-
 pub fn __resume_0() -> u64:
     return 0
 
@@ -221,6 +310,102 @@ pub fn __resume_14() -> u64:
 pub fn __resume_15() -> u64:
     return 0
 
+pub fn __enqueue_0(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_1(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_2(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_3(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_4(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_5(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_6(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_7(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_8(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_9(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_10(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_11(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_12(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_13(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_14(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_15(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_16(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_17(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_18(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_19(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_20(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_21(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_22(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_23(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_24(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_25(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_26(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_27(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_28(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_29(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_30(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
+pub fn __enqueue_31(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return 0
+
 pub fn __wrela_select_count(core: usize) -> usize:
     match core:
         case 0:
@@ -251,17 +436,6 @@ pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
         case _:
             return 0
 
-pub fn __wrela_try_drain(core: usize) -> u64:
-    match core:
-        case 0:
-            return 0
-        case 1:
-            return 0
-        case 2:
-            return 0
-        case _:
-            return 0
-
 pub fn __wrela_resume_child(site: usize) -> u64:
     match site:
         case _:
@@ -276,3 +450,296 @@ pub fn __wrela_child_slot(site: usize) -> usize:
     match site:
         case _:
             return 0
+
+pub fn __wrela_ring_capacity(edge: usize) -> u64:
+    match edge:
+        case _:
+            return 0
+
+pub fn __wrela_ring_slot_words(edge: usize) -> usize:
+    match edge:
+        case _:
+            return 0
+
+pub fn __wrela_ring_dst_core(edge: usize) -> usize:
+    match edge:
+        case _:
+            return 0
+
+pub fn __wrela_ring_src_core(edge: usize) -> usize:
+    match edge:
+        case _:
+            return 0
+
+pub fn __wrela_ring_kind(edge: usize) -> usize:
+    match edge:
+        case _:
+            return 0
+
+pub fn __wrela_ring_target_handle(edge: usize) -> usize:
+    match edge:
+        case _:
+            return 0
+
+pub fn __wrela_ring_get_head(edge: usize) -> u64:
+    match edge:
+        case 0:
+            return RING0_CTL.head
+        case 1:
+            return RING1_CTL.head
+        case 2:
+            return RING2_CTL.head
+        case 3:
+            return RING3_CTL.head
+        case 4:
+            return RING4_CTL.head
+        case 5:
+            return RING5_CTL.head
+        case 6:
+            return RING6_CTL.head
+        case 7:
+            return RING7_CTL.head
+        case _:
+            return 0
+
+pub fn __wrela_ring_set_head(edge: usize, v: u64):
+    match edge:
+        case 0:
+            RING0_CTL.head = v
+            return
+        case 1:
+            RING1_CTL.head = v
+            return
+        case 2:
+            RING2_CTL.head = v
+            return
+        case 3:
+            RING3_CTL.head = v
+            return
+        case 4:
+            RING4_CTL.head = v
+            return
+        case 5:
+            RING5_CTL.head = v
+            return
+        case 6:
+            RING6_CTL.head = v
+            return
+        case 7:
+            RING7_CTL.head = v
+            return
+        case _:
+            return
+
+pub fn __wrela_ring_get_tail(edge: usize) -> u64:
+    match edge:
+        case 0:
+            return RING0_CTL.tail
+        case 1:
+            return RING1_CTL.tail
+        case 2:
+            return RING2_CTL.tail
+        case 3:
+            return RING3_CTL.tail
+        case 4:
+            return RING4_CTL.tail
+        case 5:
+            return RING5_CTL.tail
+        case 6:
+            return RING6_CTL.tail
+        case 7:
+            return RING7_CTL.tail
+        case _:
+            return 0
+
+pub fn __wrela_ring_set_tail(edge: usize, v: u64):
+    match edge:
+        case 0:
+            RING0_CTL.tail = v
+            return
+        case 1:
+            RING1_CTL.tail = v
+            return
+        case 2:
+            RING2_CTL.tail = v
+            return
+        case 3:
+            RING3_CTL.tail = v
+            return
+        case 4:
+            RING4_CTL.tail = v
+            return
+        case 5:
+            RING5_CTL.tail = v
+            return
+        case 6:
+            RING6_CTL.tail = v
+            return
+        case 7:
+            RING7_CTL.tail = v
+            return
+        case _:
+            return
+
+pub fn __wrela_ring_get_count(edge: usize) -> u64:
+    match edge:
+        case 0:
+            return RING0_CTL.count
+        case 1:
+            return RING1_CTL.count
+        case 2:
+            return RING2_CTL.count
+        case 3:
+            return RING3_CTL.count
+        case 4:
+            return RING4_CTL.count
+        case 5:
+            return RING5_CTL.count
+        case 6:
+            return RING6_CTL.count
+        case 7:
+            return RING7_CTL.count
+        case _:
+            return 0
+
+pub fn __wrela_ring_set_count(edge: usize, v: u64):
+    match edge:
+        case 0:
+            RING0_CTL.count = v
+            return
+        case 1:
+            RING1_CTL.count = v
+            return
+        case 2:
+            RING2_CTL.count = v
+            return
+        case 3:
+            RING3_CTL.count = v
+            return
+        case 4:
+            RING4_CTL.count = v
+            return
+        case 5:
+            RING5_CTL.count = v
+            return
+        case 6:
+            RING6_CTL.count = v
+            return
+        case 7:
+            RING7_CTL.count = v
+            return
+        case _:
+            return
+
+pub fn __wrela_ring_load_word(edge: usize, wi: usize) -> u64:
+    match edge:
+        case 0:
+            return RING0_DATA.words[wi]
+        case 1:
+            return RING1_DATA.words[wi]
+        case 2:
+            return RING2_DATA.words[wi]
+        case 3:
+            return RING3_DATA.words[wi]
+        case 4:
+            return RING4_DATA.words[wi]
+        case 5:
+            return RING5_DATA.words[wi]
+        case 6:
+            return RING6_DATA.words[wi]
+        case 7:
+            return RING7_DATA.words[wi]
+        case _:
+            return 0
+
+pub fn __wrela_ring_store_word(edge: usize, wi: usize, v: u64):
+    match edge:
+        case 0:
+            RING0_DATA.words[wi] = v
+            return
+        case 1:
+            RING1_DATA.words[wi] = v
+            return
+        case 2:
+            RING2_DATA.words[wi] = v
+            return
+        case 3:
+            RING3_DATA.words[wi] = v
+            return
+        case 4:
+            RING4_DATA.words[wi] = v
+            return
+        case 5:
+            RING5_DATA.words[wi] = v
+            return
+        case 6:
+            RING6_DATA.words[wi] = v
+            return
+        case 7:
+            RING7_DATA.words[wi] = v
+            return
+        case _:
+            return
+
+pub fn __wrela_xsend_edge(handle: usize, src_core: usize) -> usize:
+    match src_core:
+        case _:
+            return 255
+
+pub fn __wrela_xreply_edge(src_core: usize, dst_core: usize) -> usize:
+    match src_core:
+        case _:
+            return 255
+
+pub fn __wrela_drain_reply_count(core: usize) -> usize:
+    match core:
+        case 0:
+            return 0
+        case 1:
+            return 0
+        case 2:
+            return 0
+        case _:
+            return 0
+
+pub fn __wrela_drain_reply_edge(core: usize, slot: usize) -> usize:
+    match core:
+        case 0:
+            return 255
+        case 1:
+            return 255
+        case 2:
+            return 255
+        case _:
+            return 255
+
+pub fn __wrela_drain_request_count(core: usize) -> usize:
+    match core:
+        case 0:
+            return 0
+        case 1:
+            return 0
+        case 2:
+            return 0
+        case _:
+            return 0
+
+pub fn __wrela_drain_request_edge(core: usize, slot: usize) -> usize:
+    match core:
+        case 0:
+            return 255
+        case 1:
+            return 255
+        case 2:
+            return 255
+        case _:
+            return 255
+
+pub fn __wrela_try_enqueue(handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    match handle:
+        case 0:
+            return __enqueue_0(method, arg0, arg1, waker_turn, waker_core)
+        case 1:
+            return __enqueue_1(method, arg0, arg1, waker_turn, waker_core)
+        case _:
+            return 1
