@@ -1,0 +1,52 @@
+module examples.check_list_backend
+
+# plans/M9.md item MM: List[T, N] mutating methods lower in guest code
+# (nested `self.data[i] = ...` place assign). Pins mwir/asm of push/len.
+
+from core.list import List, ListFull
+
+@actor
+pub struct Store:
+    n: usize
+
+    init(mut self):
+        self.n = 0
+
+    pub fn fill(mut self) -> usize:
+        xs = List[u64, 2]()
+        a: u64 = 1
+        b: u64 = 2
+        match xs.push(take a):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                return 0
+        match xs.push(take b):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                return 0
+        c: u64 = 3
+        match xs.push(take c):
+            case .Err(.ListFull):
+                pass
+            case .Ok(_):
+                return 0
+        return xs.len()
+
+@test(runtime)
+async fn guest_list(store: Actor[Store]):
+    v = await store.fill()
+    match v:
+        case .Ok(n):
+            assert n == 2, "list filled to N"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-list-backend", target=Target.wrela_machine_v1)
+    s = img.actor(Store, mailbox=4)
+    img.supervise(children=[s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

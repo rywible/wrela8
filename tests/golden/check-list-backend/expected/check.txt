@@ -1,0 +1,24 @@
+Module path=list
+  Enum ListFull data
+    variant ListFull
+  Struct List[T, const N: usize] data
+    field len: usize
+    field data: [Option[T]; N]
+    init(mut self) -> unit
+    fn len(read self) -> usize
+    fn is_empty(read self) -> bool
+    fn is_full(read self) -> bool
+    fn push(mut self, x: take T) -> Result[unit, ListFull]
+    fn pop(mut self) -> Option[T]
+    fn get_value(read self, index: read usize) -> Option[T]
+    fn lend(read self, index: read usize, body: read fn(read T) -> unit) -> bool
+    fn lend_mut(mut self, index: read usize, body: read fn(mut T) -> unit) -> bool
+    fn each(read self, body: read fn(read T) -> unit) -> unit
+    fn each_mut(mut self, body: read fn(mut T) -> unit) -> unit
+Module path=examples.check_list_backend
+  Struct Store resource
+    field n: usize
+    init(mut self) -> unit
+    fn fill(mut self) -> usize
+  AsyncFn guest_list(store: read Actor[Store]) -> unit
+  Fn build() -> Image

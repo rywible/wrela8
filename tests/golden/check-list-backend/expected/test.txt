@@ -1,0 +1,2 @@
+test guest_list: ok
+1 passed, 0 failed

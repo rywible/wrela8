@@ -1,12 +1,11 @@
 module examples.check_slotmap_backend
 
-# plans/M9.md item F2: SlotMap used from an @actor so the type is in the
-# guest type universe. Method bodies that assign `self.data[i]` cannot
-# lower today (`nested field/index chain` unimplemented) — so this golden
-# pins `--stage=check` (and the image graph), not mwir/asm. Comptime key
-# discipline is check-slotmap-key-discipline.
+# plans/M9.md item MM (was F2 reachability-only): SlotMap mutating methods
+# lower in guest code after nested place assignment. Pins check/image plus
+# mwir/asm of insert/contains. Comptime key discipline remains
+# check-slotmap-key-discipline.
 
-from core.slotmap import SlotMap, Key
+from core.slotmap import SlotMap, Key, SlotMapFull
 
 @actor
 pub struct Store:
@@ -15,11 +14,25 @@ pub struct Store:
     init(mut self, map_id: u64):
         self.map_id = map_id
 
-    # Type-level reachability only — does not call SlotMap methods (lower
-    # cannot yet assign through `self.field[i]` inside monomorphized
-    # methods).
-    pub fn id(read self) -> u64:
-        return self.map_id
+    pub fn insert_one(mut self) -> u64:
+        m = SlotMap[u64, 2](map_id=self.map_id)
+        x: u64 = 10
+        match m.insert(take x):
+            case .Ok(k):
+                if m.contains(k):
+                    return 1
+                return 0
+            case .Err(_):
+                return 0
+
+@test(runtime)
+async fn guest_slotmap(store: Actor[Store]):
+    v = await store.insert_one()
+    match v:
+        case .Ok(n):
+            assert n == 1, "insert+contains"
+        case .Err(_):
+            assert false, "call rejected"
 
 @image
 pub fn build() -> Image:

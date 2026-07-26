@@ -3901,6 +3901,16 @@ fn merge_actor_pub_methods(
             .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
         for item in items {
             let DeclItem::Struct(s) = item else { continue };
+            // plans/M9.md item MM: only `@actor`/`@driver` structs own
+            // message shapes. A generic stdlib type (`List[T, N]`,
+            // `SlotMap[T, N]`) is not an actor — sizing its template
+            // methods hits bare type parameters and must not run here.
+            if !s.is_actor {
+                continue;
+            }
+            if !s.generics.is_empty() {
+                continue;
+            }
             let mut methods = Vec::new();
             for m in &s.members {
                 let DeclMember::Fn(f) = m else { continue };

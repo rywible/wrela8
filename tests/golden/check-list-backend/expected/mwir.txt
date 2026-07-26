@@ -1,0 +1,197 @@
+Program
+  Fn key=Store.fill ret=usize temps=55 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=List[u64, 2]
+    Temp t2 ty=unit
+    Temp t3 ty=List[u64, 2]
+    Temp t4 ty=u64
+    Temp t5 ty=u64
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=Result[unit, ListFull]
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=bool
+    Temp t12 ty=unit
+    Temp t13 ty=bool
+    Temp t14 ty=bool
+    Temp t15 ty=u64
+    Temp t16 ty=u64
+    Temp t17 ty=bool
+    Temp t18 ty=ListFull
+    Temp t19 ty=bool
+    Temp t20 ty=bool
+    Temp t21 ty=usize
+    Temp t22 ty=Result[unit, ListFull]
+    Temp t23 ty=u64
+    Temp t24 ty=u64
+    Temp t25 ty=bool
+    Temp t26 ty=unit
+    Temp t27 ty=bool
+    Temp t28 ty=bool
+    Temp t29 ty=u64
+    Temp t30 ty=u64
+    Temp t31 ty=bool
+    Temp t32 ty=ListFull
+    Temp t33 ty=bool
+    Temp t34 ty=bool
+    Temp t35 ty=usize
+    Temp t36 ty=u64
+    Temp t37 ty=u64
+    Temp t38 ty=Result[unit, ListFull]
+    Temp t39 ty=u64
+    Temp t40 ty=u64
+    Temp t41 ty=bool
+    Temp t42 ty=ListFull
+    Temp t43 ty=u64
+    Temp t44 ty=u64
+    Temp t45 ty=bool
+    Temp t46 ty=bool
+    Temp t47 ty=u64
+    Temp t48 ty=u64
+    Temp t49 ty=bool
+    Temp t50 ty=unit
+    Temp t51 ty=bool
+    Temp t52 ty=bool
+    Temp t53 ty=usize
+    Temp t54 ty=usize
+    Body
+      0000: Call key=struct:List[u64, 2].init dst=t2 args=[t1] write_backs=[0:t1]
+      0001: Copy dst=t3 src=t1
+      0002: ConstInt dst=t4 ty=u64 value=1
+      0003: Copy dst=t5 src=t4
+      0004: ConstInt dst=t6 ty=u64 value=2
+      0005: Copy dst=t7 src=t6
+      0006: Call key=struct:List[u64, 2].push dst=t8 args=[t3,t5] write_backs=[0:t3]
+      0007: EnumTag dst=t9 src=t8
+      0008: ConstInt dst=t10 ty=u64 value=0
+      0009: Compare op=== ty=u64 dst=t11 lhs=t9 rhs=t10
+      0010: EnumPayload dst=t12 src=t8 index=0
+      0011: ConstBool dst=t13 value=true
+      0012: BoolAnd dst=t14 lhs=t11 rhs=t13
+      0013: JumpIfFalse cond=t14 target=0015
+      0014: Jump target=0026
+      0015: EnumTag dst=t15 src=t8
+      0016: ConstInt dst=t16 ty=u64 value=1
+      0017: Compare op=== ty=u64 dst=t17 lhs=t15 rhs=t16
+      0018: EnumPayload dst=t18 src=t8 index=0
+      0019: ConstBool dst=t19 value=true
+      0020: BoolAnd dst=t20 lhs=t17 rhs=t19
+      0021: JumpIfFalse cond=t20 target=0025
+      0022: ConstInt dst=t21 ty=usize value=0
+      0023: Return value=t21
+      0024: Jump target=0026
+      0025: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0026: Call key=struct:List[u64, 2].push dst=t22 args=[t3,t7] write_backs=[0:t3]
+      0027: EnumTag dst=t23 src=t22
+      0028: ConstInt dst=t24 ty=u64 value=0
+      0029: Compare op=== ty=u64 dst=t25 lhs=t23 rhs=t24
+      0030: EnumPayload dst=t26 src=t22 index=0
+      0031: ConstBool dst=t27 value=true
+      0032: BoolAnd dst=t28 lhs=t25 rhs=t27
+      0033: JumpIfFalse cond=t28 target=0035
+      0034: Jump target=0046
+      0035: EnumTag dst=t29 src=t22
+      0036: ConstInt dst=t30 ty=u64 value=1
+      0037: Compare op=== ty=u64 dst=t31 lhs=t29 rhs=t30
+      0038: EnumPayload dst=t32 src=t22 index=0
+      0039: ConstBool dst=t33 value=true
+      0040: BoolAnd dst=t34 lhs=t31 rhs=t33
+      0041: JumpIfFalse cond=t34 target=0045
+      0042: ConstInt dst=t35 ty=usize value=0
+      0043: Return value=t35
+      0044: Jump target=0046
+      0045: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0046: ConstInt dst=t36 ty=u64 value=3
+      0047: Copy dst=t37 src=t36
+      0048: Call key=struct:List[u64, 2].push dst=t38 args=[t3,t37] write_backs=[0:t3]
+      0049: EnumTag dst=t39 src=t38
+      0050: ConstInt dst=t40 ty=u64 value=1
+      0051: Compare op=== ty=u64 dst=t41 lhs=t39 rhs=t40
+      0052: EnumPayload dst=t42 src=t38 index=0
+      0053: EnumTag dst=t43 src=t42
+      0054: ConstInt dst=t44 ty=u64 value=0
+      0055: Compare op=== ty=u64 dst=t45 lhs=t43 rhs=t44
+      0056: BoolAnd dst=t46 lhs=t41 rhs=t45
+      0057: JumpIfFalse cond=t46 target=0059
+      0058: Jump target=0070
+      0059: EnumTag dst=t47 src=t38
+      0060: ConstInt dst=t48 ty=u64 value=0
+      0061: Compare op=== ty=u64 dst=t49 lhs=t47 rhs=t48
+      0062: EnumPayload dst=t50 src=t38 index=0
+      0063: ConstBool dst=t51 value=true
+      0064: BoolAnd dst=t52 lhs=t49 rhs=t51
+      0065: JumpIfFalse cond=t52 target=0069
+      0066: ConstInt dst=t53 ty=usize value=0
+      0067: Return value=t53
+      0068: Jump target=0070
+      0069: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0070: Call key=struct:List[u64, 2].len dst=t54 args=[t3]
+      0071: Return value=t54
+      0072: Return
+  Fn key=Store.init ret=unit temps=2 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=usize
+    Body
+      0000: ConstInt dst=t1 ty=usize value=0
+      0001: SetField base=t0 index=0 value=t1
+      0002: Return
+  Fn key=struct:List[u64, 2].init ret=unit temps=5 receiver=t0:mut
+    Temp t0 ty=List[u64, 2]
+    Temp t1 ty=usize
+    Temp t2 ty=Option[u64]
+    Temp t3 ty=Option[u64]
+    Temp t4 ty=[Option[u64]; 2]
+    Body
+      0000: ConstInt dst=t1 ty=usize value=0
+      0001: SetField base=t0 index=0 value=t1
+      0002: MakeEnum dst=t2 tag=0 payload=[]
+      0003: MakeEnum dst=t3 tag=0 payload=[]
+      0004: MakeAggregate dst=t4 elems=[t2,t3]
+      0005: SetField base=t0 index=1 value=t4
+      0006: Return
+  Fn key=struct:List[u64, 2].len ret=usize temps=2 receiver=t0:read
+    Temp t0 ty=List[u64, 2]
+    Temp t1 ty=usize
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Return value=t1
+      0002: Return
+  Fn key=struct:List[u64, 2].push ret=Result[unit, ListFull] temps=15 receiver=t0:mut params=[t1:take]
+    Temp t0 ty=List[u64, 2]
+    Temp t1 ty=u64
+    Temp t2 ty=usize
+    Temp t3 ty=usize
+    Temp t4 ty=bool
+    Temp t5 ty=ListFull
+    Temp t6 ty=Result[unit, ListFull]
+    Temp t7 ty=Option[u64]
+    Temp t8 ty=[Option[u64]; 2]
+    Temp t9 ty=usize
+    Temp t10 ty=usize
+    Temp t11 ty=usize
+    Temp t12 ty=usize
+    Temp t13 ty=unit
+    Temp t14 ty=Result[unit, ListFull]
+    Body
+      0000: Project dst=t2 base=t0 index=0
+      0001: ConstInt dst=t3 ty=usize value=2
+      0002: Compare op=>= ty=usize dst=t4 lhs=t2 rhs=t3
+      0003: JumpIfFalse cond=t4 target=0008
+      0004: MakeEnum dst=t5 tag=0 payload=[]
+      0005: MakeEnum dst=t6 tag=1 payload=[t5]
+      0006: Return value=t6
+      0007: Jump target=0008
+      0008: MakeEnum dst=t7 tag=1 payload=[t1]
+      0009: Project dst=t8 base=t0 index=1
+      0010: Project dst=t9 base=t0 index=0
+      0011: IndexSet base=t8 index=t9 value=t7 len=2
+      0012: SetField base=t0 index=1 value=t8
+      0013: Project dst=t10 base=t0 index=0
+      0014: ConstInt dst=t11 ty=usize value=1
+      0015: ArithChecked op=+ ty=usize dst=t12 lhs=t10 rhs=t11 abort="arithmetic overflow in `+`"
+      0016: SetField base=t0 index=0 value=t12
+      0017: ConstUnit dst=t13
+      0018: MakeEnum dst=t14 tag=0 payload=[t13]
+      0019: Return value=t14
+      0020: Return

@@ -1280,13 +1280,18 @@ fn test_cmd(args: &[String]) -> ExitCode {
         .filter(|l| !placeholder_lines.contains(*l))
         .collect();
 
-    let layout_ctx = match layout::merge_layout_ctx(&modules) {
+    let mut layout_ctx = match layout::merge_layout_ctx(&modules) {
         Ok(c) => c,
         Err(e) => {
             print_sema_error(&e);
             return ExitCode::FAILURE;
         }
     };
+    // plans/M9.md item MM: same enrich dump `--stage=asm` already does —
+    // without it, codegen for a guest that uses an imported generic
+    // (`List[u64, 2]`, `SlotMap[u64, 2]`) fails closed on sizing.
+    layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &checked.programs);
+    let layout_ctx = layout_ctx;
     // The real `ImageGraph`, if this file declares an `@image` (plans/M6.md
     // item D). Evaluated *before* lower so plans/M7.md item E1 can stamp
     // `capacity_sectors=` onto the TypedProgram `read_capacity_sectors`

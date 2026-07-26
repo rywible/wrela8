@@ -1,0 +1,11 @@
+Module path=examples.check_nested_place_assign
+  Struct Holder data
+    field data: [u64; 4]
+    fn set(mut self, i: read usize, v: read u64) -> unit
+    fn get(read self, i: read usize) -> u64
+  Struct Store resource
+    field h: Holder
+    init(mut self) -> unit
+    fn poke(mut self) -> u64
+  AsyncFn guest_nested(store: read Actor[Store]) -> unit
+  Fn build() -> Image

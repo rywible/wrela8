@@ -227,6 +227,62 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         &["conditional_use"],
     ),
     (
+        "check-list-backend/expected/asm.txt",
+        &[
+            "Store.fill",
+            "Store.init",
+            "guest_list",
+            "struct:List[u64, 2].init",
+            "struct:List[u64, 2].len",
+            "struct:List[u64, 2].push",
+        ],
+    ),
+    (
+        "check-list-backend/expected/mwir.txt",
+        &[
+            "Store.fill",
+            "Store.init",
+            "struct:List[u64, 2].init",
+            "struct:List[u64, 2].len",
+            "struct:List[u64, 2].push",
+        ],
+    ),
+    (
+        "check-map-take-backend/expected/asm.txt",
+        &[
+            "Store.init",
+            "Store.map_ok",
+            "Store.try_err",
+            "bump",
+            "double",
+            "guest_map",
+        ],
+    ),
+    (
+        "check-map-take-backend/expected/mwir.txt",
+        &[
+            "Store.init",
+            "Store.map_ok",
+            "Store.try_err",
+            "bump",
+            "double",
+        ],
+    ),
+    (
+        "check-nested-place-assign/expected/asm.txt",
+        &[
+            "Holder.get",
+            "Holder.set",
+            "Store.init",
+            "Store.poke",
+            "guest_nested",
+        ],
+    ),
+    (
+        "check-nested-place-assign/expected/mwir.txt",
+        &["Holder.get", "Holder.set", "Store.init", "Store.poke"],
+    ),
+    (
         "check-import-alias-deriving-format/expected/asm.txt",
         &["Label.format", "digest", "guest_alias_format"],
     ),
@@ -354,6 +410,27 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         "check-receipt-handoff/expected/mwir.txt",
         &["BlkDriver.init", "BlkDriver.submit_read"],
     ),
+    (
+        "check-slotmap-backend/expected/asm.txt",
+        &[
+            "Store.init",
+            "Store.insert_one",
+            "guest_slotmap",
+            "struct:SlotMap[u64, 2].contains",
+            "struct:SlotMap[u64, 2].init",
+            "struct:SlotMap[u64, 2].insert",
+        ],
+    ),
+    (
+        "check-slotmap-backend/expected/mwir.txt",
+        &[
+            "Store.init",
+            "Store.insert_one",
+            "struct:SlotMap[u64, 2].contains",
+            "struct:SlotMap[u64, 2].init",
+            "struct:SlotMap[u64, 2].insert",
+        ],
+    ),
     ("check-stdlib-loaded/expected/mwir.txt", &["sample"]),
     (
         "check-string-bound/expected/mwir.txt",
@@ -409,7 +486,16 @@ mod tests {
         let mut out = BTreeSet::new();
         for line in text.lines() {
             if let Some(rest) = line.trim_start().strip_prefix("Fn key=") {
-                let key = rest.split_whitespace().next().unwrap_or("");
+                // Keys may contain spaces (`struct:List[u64, 2].push`);
+                // the dump always follows the key with ` ret=` (mwir) or
+                // ` frame=` (asm).
+                let key = if let Some(i) = rest.find(" ret=") {
+                    &rest[..i]
+                } else if let Some(i) = rest.find(" frame=") {
+                    &rest[..i]
+                } else {
+                    rest.split_whitespace().next().unwrap_or("")
+                };
                 if !key.is_empty() {
                     out.insert(key.to_string());
                 }

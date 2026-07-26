@@ -1302,6 +1302,86 @@ fn close_typed_type_reachability(
                 }
             }
         }
+        // plans/M9.md item MM: generic templates splice with empty method
+        // tables; monomorphized method signatures / bodies (and names
+        // like `SlotMapFull` inside `Result[Key, SlotMapFull]` /
+        // `EnumConstruct`) live only on instantiations. Install any
+        // still-missing names those bodies mention so lower's
+        // `variant_index` agrees with the evaluator.
+        let mut from_inst = BTreeSet::new();
+        {
+            let dst = &programs[importer];
+            for inst in dst
+                .instantiations
+                .values()
+                .chain(dst.imported.instantiations.values())
+            {
+                match inst {
+                    typed::TypedInstantiation::Struct(s) => {
+                        typed::collect_named_types_from_struct(s, &mut from_inst);
+                    }
+                    typed::TypedInstantiation::Fn(f) => {
+                        typed::collect_named_types_from_fn(f, &mut from_inst);
+                    }
+                    typed::TypedInstantiation::Enum => {}
+                }
+            }
+        }
+        for tname in from_inst {
+            let dst_has = {
+                let dst = &programs[importer];
+                dst.structs.contains_key(&tname)
+                    || dst.enums.contains_key(&tname)
+                    || dst.imported.structs.contains_key(&tname)
+                    || dst.imported.enums.contains_key(&tname)
+            };
+            if dst_has {
+                continue;
+            }
+            let mut struct_entry = None;
+            let mut enum_entry = None;
+            let mut def_module = None;
+            for (mod_key, src) in programs.iter() {
+                if mod_key == importer {
+                    continue;
+                }
+                if let Some(s) = src
+                    .structs
+                    .get(&tname)
+                    .or_else(|| src.imported.structs.get(&tname))
+                {
+                    struct_entry = Some(s.clone());
+                    def_module = Some(mod_key.clone());
+                    break;
+                }
+                if let Some(e) = src
+                    .enums
+                    .get(&tname)
+                    .or_else(|| src.imported.enums.get(&tname))
+                {
+                    enum_entry = Some(e.clone());
+                    def_module = Some(mod_key.clone());
+                    break;
+                }
+            }
+            let Some(def_module) = def_module else {
+                continue;
+            };
+            let subs = imports::alias_subs_for_exporter(own_bindings, &def_module);
+            let dst = programs.get_mut(importer).expect("importer is a key");
+            if let Some(mut s) = struct_entry {
+                typed::rekey_struct_names(&mut s, &subs);
+                if s.name != tname {
+                    let mut name_sub = BTreeMap::new();
+                    name_sub.insert(s.name.clone(), tname.clone());
+                    typed::rekey_struct_names(&mut s, &name_sub);
+                }
+                dst.imported.structs.insert(tname, s);
+            } else if let Some(mut e) = enum_entry {
+                typed::rekey_enum_names(&mut e, &subs);
+                dst.imported.enums.insert(tname, e);
+            }
+        }
     }
 }
 

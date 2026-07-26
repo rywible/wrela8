@@ -27,5 +27,6 @@ Module path=examples.check_slotmap_backend
   Struct Store resource
     field map_id: u64
     init(mut self, map_id: read u64) -> unit
-    fn id(read self) -> u64
+    fn insert_one(mut self) -> u64
+  AsyncFn guest_slotmap(store: read Actor[Store]) -> unit
   Fn build() -> Image

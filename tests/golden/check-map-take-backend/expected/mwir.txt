@@ -1,0 +1,187 @@
+Program
+  Fn key=Store.init ret=unit temps=2 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=usize
+    Body
+      0000: ConstInt dst=t1 ty=usize value=0
+      0001: SetField base=t0 index=0 value=t1
+      0002: Return
+  Fn key=Store.map_ok ret=u64 temps=18 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=[u64; 2]
+    Temp t4 ty=[u64; 2]
+    Temp t5 ty=usize
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=usize
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=[u64; 2]
+    Temp t12 ty=[u64; 2]
+    Temp t13 ty=usize
+    Temp t14 ty=u64
+    Temp t15 ty=usize
+    Temp t16 ty=u64
+    Temp t17 ty=u64
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=4
+      0001: ConstInt dst=t2 ty=u64 value=5
+      0002: MakeAggregate dst=t3 elems=[t1,t2]
+      0003: Copy dst=t4 src=t3
+      0004: ConstInt dst=t5 ty=usize value=0
+      0005: IndexGet dst=t6 base=t4 index=t5 len=2
+      0006: Call key=double dst=t7 args=[t6]
+      0007: ConstInt dst=t8 ty=usize value=1
+      0008: IndexGet dst=t9 base=t4 index=t8 len=2
+      0009: Call key=double dst=t10 args=[t9]
+      0010: MakeAggregate dst=t11 elems=[t7,t10]
+      0011: Copy dst=t12 src=t11
+      0012: ConstInt dst=t13 ty=usize value=0
+      0013: IndexGet dst=t14 base=t12 index=t13 len=2
+      0014: ConstInt dst=t15 ty=usize value=1
+      0015: IndexGet dst=t16 base=t12 index=t15 len=2
+      0016: ArithChecked op=+ ty=u64 dst=t17 lhs=t14 rhs=t16 abort="arithmetic overflow in `+`"
+      0017: Return value=t17
+      0018: Return
+  Fn key=Store.try_err ret=u64 temps=46 receiver=t0:mut
+    Temp t0 ty=Store
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=[u64; 3]
+    Temp t5 ty=[u64; 3]
+    Temp t6 ty=Result[[u64; 3], u64]
+    Temp t7 ty=usize
+    Temp t8 ty=u64
+    Temp t9 ty=Result[u64, u64]
+    Temp t10 ty=u64
+    Temp t11 ty=u64
+    Temp t12 ty=bool
+    Temp t13 ty=u64
+    Temp t14 ty=usize
+    Temp t15 ty=u64
+    Temp t16 ty=Result[u64, u64]
+    Temp t17 ty=u64
+    Temp t18 ty=u64
+    Temp t19 ty=bool
+    Temp t20 ty=u64
+    Temp t21 ty=usize
+    Temp t22 ty=u64
+    Temp t23 ty=Result[u64, u64]
+    Temp t24 ty=u64
+    Temp t25 ty=u64
+    Temp t26 ty=bool
+    Temp t27 ty=u64
+    Temp t28 ty=[u64; 3]
+    Temp t29 ty=u64
+    Temp t30 ty=u64
+    Temp t31 ty=u64
+    Temp t32 ty=u64
+    Temp t33 ty=u64
+    Temp t34 ty=u64
+    Temp t35 ty=bool
+    Temp t36 ty=u64
+    Temp t37 ty=bool
+    Temp t38 ty=bool
+    Temp t39 ty=u64
+    Temp t40 ty=u64
+    Temp t41 ty=bool
+    Temp t42 ty=[u64; 3]
+    Temp t43 ty=bool
+    Temp t44 ty=bool
+    Temp t45 ty=u64
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=1
+      0001: ConstInt dst=t2 ty=u64 value=2
+      0002: ConstInt dst=t3 ty=u64 value=3
+      0003: MakeAggregate dst=t4 elems=[t1,t2,t3]
+      0004: Copy dst=t5 src=t4
+      0005: ConstInt dst=t7 ty=usize value=0
+      0006: IndexGet dst=t8 base=t5 index=t7 len=3
+      0007: Call key=bump dst=t9 args=[t8]
+      0008: EnumTag dst=t10 src=t9
+      0009: ConstInt dst=t11 ty=u64 value=0
+      0010: Compare op=== ty=u64 dst=t12 lhs=t10 rhs=t11
+      0011: JumpIfFalse cond=t12 target=0032
+      0012: EnumPayload dst=t13 src=t9 index=0
+      0013: ConstInt dst=t14 ty=usize value=1
+      0014: IndexGet dst=t15 base=t5 index=t14 len=3
+      0015: Call key=bump dst=t16 args=[t15]
+      0016: EnumTag dst=t17 src=t16
+      0017: ConstInt dst=t18 ty=u64 value=0
+      0018: Compare op=== ty=u64 dst=t19 lhs=t17 rhs=t18
+      0019: JumpIfFalse cond=t19 target=0035
+      0020: EnumPayload dst=t20 src=t16 index=0
+      0021: ConstInt dst=t21 ty=usize value=2
+      0022: IndexGet dst=t22 base=t5 index=t21 len=3
+      0023: Call key=bump dst=t23 args=[t22]
+      0024: EnumTag dst=t24 src=t23
+      0025: ConstInt dst=t25 ty=u64 value=0
+      0026: Compare op=== ty=u64 dst=t26 lhs=t24 rhs=t25
+      0027: JumpIfFalse cond=t26 target=0038
+      0028: EnumPayload dst=t27 src=t23 index=0
+      0029: MakeAggregate dst=t28 elems=[t13,t20,t27]
+      0030: MakeEnum dst=t6 tag=0 payload=[t28]
+      0031: Jump target=0041
+      0032: EnumPayload dst=t29 src=t9 index=0
+      0033: MakeEnum dst=t6 tag=1 payload=[t29]
+      0034: Jump target=0041
+      0035: EnumPayload dst=t30 src=t16 index=0
+      0036: MakeEnum dst=t6 tag=1 payload=[t30]
+      0037: Jump target=0041
+      0038: EnumPayload dst=t31 src=t23 index=0
+      0039: MakeEnum dst=t6 tag=1 payload=[t31]
+      0040: Jump target=0041
+      0041: EnumTag dst=t33 src=t6
+      0042: ConstInt dst=t34 ty=u64 value=1
+      0043: Compare op=== ty=u64 dst=t35 lhs=t33 rhs=t34
+      0044: EnumPayload dst=t36 src=t6 index=0
+      0045: Copy dst=t32 src=t36
+      0046: ConstBool dst=t37 value=true
+      0047: BoolAnd dst=t38 lhs=t35 rhs=t37
+      0048: JumpIfFalse cond=t38 target=0051
+      0049: Return value=t32
+      0050: Jump target=0062
+      0051: EnumTag dst=t39 src=t6
+      0052: ConstInt dst=t40 ty=u64 value=0
+      0053: Compare op=== ty=u64 dst=t41 lhs=t39 rhs=t40
+      0054: EnumPayload dst=t42 src=t6 index=0
+      0055: ConstBool dst=t43 value=true
+      0056: BoolAnd dst=t44 lhs=t41 rhs=t43
+      0057: JumpIfFalse cond=t44 target=0061
+      0058: ConstInt dst=t45 ty=u64 value=0
+      0059: Return value=t45
+      0060: Jump target=0062
+      0061: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0062: Return
+  Fn key=bump ret=Result[u64, u64] temps=7 params=[t0:take]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=bool
+    Temp t3 ty=Result[u64, u64]
+    Temp t4 ty=u64
+    Temp t5 ty=u64
+    Temp t6 ty=Result[u64, u64]
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=2
+      0001: Compare op=== ty=u64 dst=t2 lhs=t0 rhs=t1
+      0002: JumpIfFalse cond=t2 target=0006
+      0003: MakeEnum dst=t3 tag=1 payload=[t0]
+      0004: Return value=t3
+      0005: Jump target=0006
+      0006: ConstInt dst=t4 ty=u64 value=10
+      0007: ArithChecked op=* ty=u64 dst=t5 lhs=t0 rhs=t4 abort="arithmetic overflow in `*`"
+      0008: MakeEnum dst=t6 tag=0 payload=[t5]
+      0009: Return value=t6
+      0010: Return
+  Fn key=double ret=u64 temps=3 params=[t0:take]
+    Temp t0 ty=u64
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Body
+      0000: ConstInt dst=t1 ty=u64 value=2
+      0001: ArithChecked op=* ty=u64 dst=t2 lhs=t0 rhs=t1 abort="arithmetic overflow in `*`"
+      0002: Return value=t2
+      0003: Return

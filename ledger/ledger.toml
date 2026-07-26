@@ -1839,17 +1839,20 @@ tests = [
   "golden/check-try-map-take-unwind",
   "golden/err-each-suspends",
   "golden/check-slotmap-backend",
+  "golden/check-list-backend",
+  "golden/check-map-take-backend",
+  "golden/check-nested-place-assign",
 ]
-note = """05-library.md §7: bounded collections and array whole-consumption. plans/M9.md item F (decisions 340–349), split F1/F2/F3.
+note = """05-library.md §7: bounded collections and array whole-consumption. plans/M9.md item F (decisions 340–349), closed for guest lowering by item MM (decisions 390–396).
 
 **Representation (F2, C1 precedent).** `List[T, const N]` is ordinary stdlib source (`stdlib/core/list.wr`) with `{ len, data: [Option[T]; N] }` — same occupancy shape as `String[..N]`, one word-slot per element, no dense packing. Occupancy spelling `List[T, ..N]` is `TypeArg::Bound` accepted for a `const` parameter (decision 341). `SlotMap[T, const N]` (`stdlib/core/slotmap.wr`) is `{ map_id, len, generations, occupied, retired, data }`; `Key` is a module-level data struct `(map_id, index, generation: u8)`.
 
 **Key discipline (the safety property).** Lookups validate all three key fields so foreign and stale keys miss instead of aliasing. `golden/check-slotmap-key-discipline` is the property suite over adversarial shapes: foreign `map_id`, stale-after-remove (then reinsert with advanced generation), in-range index with wrong generation, fabricated keys (wrong map_id / OOB index / empty slot index), and `GenerationExhausted` after 256 lives on `N=1` (generation is `u8`; remove never wraps — retires at 255). `golden/err-slotmap-stale-key` pins the stale-miss oracle under the plan's `err-*` name (dynamic assert, not a compile error).
 
-**Array map_take (F3).** Sealed intrinsics `Array.map_take` / `Array.try_map_take` (EXCEPTIONS, closed-surface clause). On `Err`, eval drops constructed outputs and remaining inputs (`eval_array_map_take`); `golden/check-try-map-take-unwind` pins Err payload `2` after a prior Ok mapper step, and a subsequent fresh `map_take` (no abandoned evaluator). Guest lowering of both is refused by name.
+**Array map_take (F3 / MM).** Sealed intrinsics `Array.map_take` / `Array.try_map_take` (EXCEPTIONS, closed-surface clause). On `Err`, eval drops constructed outputs and remaining inputs (`eval_array_map_take`); `golden/check-try-map-take-unwind` pins Err payload `2` after a prior Ok mapper step, and a subsequent fresh `map_take` (no abandoned evaluator). Guest lowering unrolls the fixed-N walk (`lower_array_map_take`); `golden/check-map-take-backend` pins mwir/asm + runtime.
 
 **Lent iteration cannot suspend (F1 decision 344).** Closures scanned for `await`; `golden/err-each-suspends` pins `error[type]: a closure cannot contain \\`await\\``.
 
-**Backend vs comptime.** `check-slotmap-key-discipline`, `err-slotmap-stale-key`, `check-list-bounded`, `check-try-map-take-unwind` are comptime `@test` / eval. `check-slotmap-backend` is guest-reachable (`@actor` + `@image`) and pins check/image that the SlotMap module loads into the closure — not method asm (nested field/index assign lower gap, decision 348). `err-each-suspends` is a check-stage diagnostic.
+**Backend (MM).** Nested field/index assignment and nested `mut self` / `mut` arg places lower via RMW (`Project`/`IndexGet` out, `SetField`/`IndexSet`, write back). `golden/check-nested-place-assign`, `golden/check-list-backend`, `golden/check-slotmap-backend` pin method asm. `diff-eval` agrees on the List/SlotMap/`map_take` cases (no longer lowering-skipped).
 
-**Refused by name (not approximated).** Free/method type params beyond the struct's (`get[R]`) — JJ; nested `SlotMap.Key` path; `reserve`/`resolve` (M10); guest lower of collection methods assigning `self.field[i]`; guest lower of `Array.map_take`/`try_map_take`."""
+**Refused by name (not approximated).** Free/method type params beyond the struct's (`get[R]`) — JJ; nested `SlotMap.Key` path; `reserve`/`resolve` (M10); `InterruptCell` assign through a nested field chain (live STLR only knows bare `self.<cell>`); `List.lend`/`each` CallValue (closure/fn-value call); nested `mut` as an awaited/`send` actor-call argument."""

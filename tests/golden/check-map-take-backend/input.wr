@@ -1,0 +1,54 @@
+module examples.check_map_take_backend
+
+# plans/M9.md item MM: Array.map_take / try_map_take lower in guest code.
+
+fn double(take x: u64) -> u64:
+    return x * 2
+
+fn bump(take x: u64) -> Result[u64, u64]:
+    if x == 2:
+        return Err(x)
+    return Ok(x * 10)
+
+@actor
+pub struct Store:
+    n: usize
+
+    init(mut self):
+        self.n = 0
+
+    pub fn map_ok(mut self) -> u64:
+        ys: [u64; 2] = [4, 5]
+        zs = ys.map_take(double)
+        return zs[0] + zs[1]
+
+    pub fn try_err(mut self) -> u64:
+        xs: [u64; 3] = [1, 2, 3]
+        match xs.try_map_take(bump):
+            case .Err(code):
+                return code
+            case .Ok(_):
+                return 0
+
+@test(runtime)
+async fn guest_map(store: Actor[Store]):
+    a = await store.map_ok()
+    match a:
+        case .Ok(n):
+            assert n == 18, "map_take"
+        case .Err(_):
+            assert false, "map rejected"
+    b = await store.try_err()
+    match b:
+        case .Ok(n):
+            assert n == 2, "try_map_take err"
+        case .Err(_):
+            assert false, "try rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-map-take-backend", target=Target.wrela_machine_v1)
+    s = img.actor(Store, mailbox=4)
+    img.supervise(children=[s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

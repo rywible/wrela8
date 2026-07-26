@@ -1,0 +1,10 @@
+Module path=examples.check_map_take_backend
+  Fn double(x: take u64) -> u64
+  Fn bump(x: take u64) -> Result[u64, u64]
+  Struct Store resource
+    field n: usize
+    init(mut self) -> unit
+    fn map_ok(mut self) -> u64
+    fn try_err(mut self) -> u64
+  AsyncFn guest_map(store: read Actor[Store]) -> unit
+  Fn build() -> Image
