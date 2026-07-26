@@ -472,11 +472,33 @@ pub enum Reloc {
     /// `movz`: the two-pass sizing this module and `layout.rs` both run
     /// depends on a reloc's width being independent of its value.
     ///
-    /// Codegen only ever *stores* or *compares* a `TurnId`; it never
-    /// dereferences one (only `layout.rs`'s hand-assembled routines do,
-    /// through `push_turn_addr_from_id`), which is why no `TurnsBase`
-    /// companion reloc is needed.
+    /// plans/M10.md item 0c3 found the one exception to that rule: a
+    /// virtqueue **drain** reads back the `TurnId` a `SLOT_META_WAITER` /
+    /// `SLOT_META_REPLY_STAGE` carries and must address the turn it names,
+    /// so `TurnsBase`/`TurnStride` below exist for exactly that site.
+    /// Everywhere else codegen only *stores* or *compares* a `TurnId`.
     TurnIdImm { word: usize, key: String },
+    /// plans/M10.md item 0c3: the four-word `load_imm` starting at `word`
+    /// materializes `RuntimePlacement::turns_base` — the base of the one
+    /// contiguous `RT.turns` array, and so of `rtdata` itself. One
+    /// whole-program constant, exactly like `GroupArenaBase` below (no
+    /// `key`: there is one array).
+    ///
+    /// Needed only because the drain's two slot-meta readers
+    /// (`emit_queue_drain`) live in `codegen.rs` while the stride is a
+    /// layout-pass fact — `layout.rs`'s own hand-assembled derefs get both
+    /// numbers as plain build-time parameters and need no reloc at all.
+    TurnsBase { word: usize },
+    /// plans/M10.md item 0c3: the four-word `load_imm` starting at `word`
+    /// materializes `RuntimeTables::turn_stride`, the uniform power-of-two
+    /// element size of the `RT.turns` array. Paired with `TurnsBase` above
+    /// to make `turn_addr(id) = turns_base + (id - 1) * turn_stride` out
+    /// of instructions — a `mul` by a relocated stride rather than an
+    /// `lsl` by a relocated shift, so both halves reuse
+    /// `patch_load_imm_words` and neither needs a new patch kind. This is
+    /// the same index→address shape `GroupCreate`'s own arena scan already
+    /// emits against `GROUP_SLOT_SIZE`.
+    TurnStride { word: usize },
     /// The four-word `load_imm` starting at `word` materializes the
     /// absolute base address of the whole-image group arena (plans/M6.md
     /// item F, `layout::RuntimeTables::group_arena_capacity`-many
@@ -1346,6 +1368,13 @@ enum SkipKind {
     /// skip forward over the fresh prologue when the suspended
     /// discriminant is nonzero.
     Cbnz(u8),
+    /// plans/M10.md item 0c3: the 32-bit `cbz`, for the `u32`
+    /// `Option[TurnId]` fields the item introduced
+    /// (`SLOT_META_WAITER`/`SLOT_META_REPLY_STAGE`). It tests exactly the
+    /// four bytes the field occupies; an `x` test would fold the adjacent
+    /// field in as high bits, which is the whole bug class decision 557's
+    /// two-`u32` encoding exists to avoid.
+    CbzW(u8),
 }
 
 impl FnCtx<'_> {
@@ -1370,6 +1399,10 @@ impl FnCtx<'_> {
             SkipKind::Cbnz(r) => (
                 encode::enc_cbnz(r, delta, true),
                 format!("cbnz {}, #{delta}", reg_name(r)),
+            ),
+            SkipKind::CbzW(r) => (
+                encode::enc_cbz(r, delta, false),
+                format!("cbz w{r}, #{delta}"),
             ),
         };
         self.words[word] = (enc, text);
@@ -2253,8 +2286,22 @@ fn emit_queue_prepare(
     );
     ctx.load_ptr(X_A, X_A, 0);
     ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_EPOCH as usize);
-    // Clear waiter / reply_stage for a fresh op.
-    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
+    // Clear waiter / reply_stage for a fresh op. plans/M10.md item 0c3:
+    // two of the nine zero tests the item enumerated, and they split.
+    // `SLOT_META_WAITER` is one `u32` with unused padding above it, so
+    // `str wzr` is the honest width. `SLOT_META_REPLY_STAGE` is two live
+    // `u32` halves of one word whose `None` is `0` for both, so one
+    // 64-bit `str xzr` clears exactly the right thing and the instruction
+    // stays literally identical — the same argument 0c1 made for the
+    // waker's two halves.
+    ctx.push(
+        encode::enc_str_w_imm(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+        format!(
+            "str wzr, [{}, #{}]",
+            reg_name(X_D),
+            crate::virtqueue::SLOT_META_WAITER
+        ),
+    );
     ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
     // QueueOp = absolute meta address (X_D).
     ctx.store_slot(X_D, ctx.frame.off(dst));
@@ -2487,6 +2534,55 @@ fn emit_queue_suppress_interrupts(
 /// guest uses after ringing the doorbell. A completion on that park
 /// suppresses the sleep; an empty ring after the park returns without
 /// resolving (claim then fails closed by name).
+/// The one index→address rule, emitted from `codegen.rs` (plans/M10.md
+/// item 0c3): `id_reg` holds an `Option[TurnId]` already known nonzero and
+/// comes back holding `turns_base + (id - 1) * turn_stride` — the exact
+/// value `layout::RuntimePlacement::turn_addr` computes, and the exact
+/// value `layout::push_turn_addr_from_id` emits for the hand-assembled
+/// routines. `scratch` is clobbered.
+///
+/// The `- 1` lives here and in `TurnId::index` and nowhere else. Both
+/// constants arrive as relocated four-word `load_imm`s because codegen runs
+/// *before* the layout pass that computes them (`compute_runtime_tables`
+/// consumes `codegen::async_frame_sizes`), which is why this is a `mul` by
+/// a relocated stride rather than an `lsl` by a build-time shift.
+fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
+    ctx.push(
+        encode::enc_sub_imm(id_reg, id_reg, 1, true),
+        format!("sub {}, {}, #1", reg_name(id_reg), reg_name(id_reg)),
+    );
+    let word = ctx.cur_word();
+    ctx.load_imm(scratch, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = format!("turn-stride {}", reg_name(scratch));
+    }
+    ctx.relocs.push(Reloc::TurnStride { word });
+    ctx.push(
+        encode::enc_mul(id_reg, id_reg, scratch, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(id_reg),
+            reg_name(id_reg),
+            reg_name(scratch)
+        ),
+    );
+    let word = ctx.cur_word();
+    ctx.load_imm(scratch, 0);
+    for w in ctx.words[word..word + 4].iter_mut() {
+        w.1 = format!("turns-base {}", reg_name(scratch));
+    }
+    ctx.relocs.push(Reloc::TurnsBase { word });
+    ctx.push(
+        encode::enc_add_reg(id_reg, scratch, id_reg, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(id_reg),
+            reg_name(scratch),
+            reg_name(id_reg)
+        ),
+    );
+}
+
 fn emit_queue_drain(
     ctx: &mut FnCtx,
     f: &MwirFn,
@@ -2832,17 +2928,64 @@ fn emit_queue_drain(
     ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
 
     // Copy to reply_stage if registered; wake waiter if registered.
-    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
-    let no_stage = ctx.emit_skip(SkipKind::Cbz(X_F));
+    //
+    // plans/M10.md item 0c3: both slot-meta fields hold indices now, not
+    // addresses. `SLOT_META_REPLY_STAGE` is the `(TurnId, byte offset
+    // within that turn area)` pair decision 565 gives every
+    // frame-interior reference — the offset is `Frame::reply_stage_off`,
+    // per *caller* fn, and this drain is a different fn entirely, so no
+    // bare `TurnId` could recover it. `SLOT_META_WAITER` is a bare
+    // `Option[TurnId]`. Both live in DMA-pool memory, which is exactly why
+    // decision 560 fixed `TurnId` as a `u32`: legal wherever a `u32` is,
+    // so `SLOT_META_BYTES` stays 64 and no DMA pool layout moves.
+    //
+    // `ldr w` / `cbz w` throughout: an `x` load of the `TurnId` half would
+    // read the offset half (or, for the waiter, the unused padding above
+    // it) as high bits.
+    ctx.push(
+        encode::enc_ldr_w_imm(X_F, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16),
+        format!(
+            "ldr w{X_F}, [{}, #{}]",
+            reg_name(X_D),
+            crate::virtqueue::SLOT_META_REPLY_STAGE
+        ),
+    );
+    let no_stage = ctx.emit_skip(SkipKind::CbzW(X_F));
+    ctx.push(
+        encode::enc_ldr_w_imm(X_E, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16 + 4),
+        format!(
+            "ldr w{X_E}, [{}, #{}]",
+            reg_name(X_D),
+            crate::virtqueue::SLOT_META_REPLY_STAGE + 4
+        ),
+    );
+    push_turn_addr_from_id(ctx, X_F, X_B);
+    ctx.push(
+        encode::enc_add_reg(X_F, X_F, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_F),
+            reg_name(X_E)
+        ),
+    );
     // copy 32 bytes X_A → X_F
     for w in [0usize, 8, 16, 24] {
         ctx.load_ptr(X_B, X_A, w);
         ctx.store_ptr(X_B, X_F, w);
     }
-    ctx.patch_skip(no_stage, SkipKind::Cbz(X_F));
+    ctx.patch_skip(no_stage, SkipKind::CbzW(X_F));
 
-    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
-    let no_waiter = ctx.emit_skip(SkipKind::Cbz(X_F));
+    ctx.push(
+        encode::enc_ldr_w_imm(X_F, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+        format!(
+            "ldr w{X_F}, [{}, #{}]",
+            reg_name(X_D),
+            crate::virtqueue::SLOT_META_WAITER
+        ),
+    );
+    let no_waiter = ctx.emit_skip(SkipKind::CbzW(X_F));
+    push_turn_addr_from_id(ctx, X_F, X_B);
     ctx.load_imm(X_B, 1);
     ctx.push(
         encode::enc_str_x_imm(X_B, X_F, OFF_TURN_RESUME_READY as u16),
@@ -2852,8 +2995,18 @@ fn emit_queue_drain(
             reg_name(X_F)
         ),
     );
-    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as usize);
-    ctx.patch_skip(no_waiter, SkipKind::Cbz(X_F));
+    // The "consumed" store, still a zero test on the same field: `str wzr`
+    // clears exactly the four bytes the `Option[TurnId]` occupies, and the
+    // 1-based niche (decision 567) keeps `0` meaning "nobody waiting".
+    ctx.push(
+        encode::enc_str_w_imm(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+        format!(
+            "str wzr, [{}, #{}]",
+            reg_name(X_D),
+            crate::virtqueue::SLOT_META_WAITER
+        ),
+    );
+    ctx.patch_skip(no_waiter, SkipKind::CbzW(X_F));
 
     // last_used++
     ctx.load_slot(X_C, ctx.frame.off(queue));
@@ -6022,6 +6175,10 @@ fn emit_group_create(
     deadline: Option<Temp>,
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
+    // plans/M10.md item 0c2: this fn's own `program.fns` key — the
+    // `Reloc::TurnIdImm` key for "this turn", which is the value
+    // `OFF_GROUP_OWNER_TURN` now carries in place of `X_FRAME`.
+    fn_key: &str,
 ) -> Result<(), CodegenError> {
     const X_ARENA: u8 = 15;
     const X_CAND: u8 = 16;
@@ -6186,16 +6343,22 @@ fn emit_group_create(
                 reg_name(X_CAND)
             ),
         );
-        for off in [
-            OFF_GROUP_ACTIVE_CHILDREN,
-            OFF_GROUP_CANCELLED,
-            OFF_GROUP_JOIN_WAITER,
-        ] {
+        for off in [OFF_GROUP_ACTIVE_CHILDREN, OFF_GROUP_CANCELLED] {
             ctx.push(
                 encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
                 format!("str xzr, [{}, #{off}]", reg_name(X_CAND)),
             );
         }
+        // plans/M10.md item 0c2: `join_waiter` is now an
+        // `Option[TurnId]` — a `u32`, so the hygiene zeroing clears the
+        // four bytes the field actually occupies and not the four bytes of
+        // unused padding above it. `wzr` rather than `xzr` is the honest
+        // width; the niche (decision 567) makes `0` still mean "nobody
+        // waiting", so this zero test keeps its meaning exactly.
+        ctx.push(
+            encode::enc_str_w_imm(X_ZR, X_CAND, OFF_GROUP_JOIN_WAITER as u16),
+            format!("str wzr, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_CAND)),
+        );
         for c in 0..GROUP_MAX_CHILDREN {
             for off in [group_child_tag_off(c), group_child_payload_off(c)] {
                 ctx.push(
@@ -6220,17 +6383,31 @@ fn emit_group_create(
                 reg_name(X_CAND)
             ),
         );
-        // The owning frame (02-language.md §9.5's own "parent"): this
-        // turn's persistent area, which is exactly `X_FRAME`. Every
-        // cancellation observation site compares against it to decide
-        // whether a cancelled group terminates the observing activation (a
-        // child started into the group) or merely hands it a `CallError`
-        // (the `with`-block's own body).
+        // The owning turn (02-language.md §9.5's own "parent"): this fn's
+        // own turn, which used to be written as `X_FRAME` — the raw
+        // address of that turn's persistent area. plans/M10.md item 0c2
+        // makes it the turn's **`TurnId`**, a `u32` at +56, because both
+        // readers only ever compare it for equality and neither needs an
+        // address: `emit_group_cancelled_flags` below compares against
+        // this fn's own id, and `layout::emit_deadline_scan_and_delivery`
+        // against the build-time id of the turn its unrolled arm is about.
+        // Every cancellation observation site still decides the same
+        // thing — whether a cancelled group terminates the observing
+        // activation (a child started into the group) or merely hands it a
+        // `CallError` (the `with`-block's own body).
+        let word = ctx.cur_word();
+        ctx.load_imm(X_D, 0);
+        for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+            w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_D));
+        }
+        ctx.relocs.push(Reloc::TurnIdImm {
+            word,
+            key: fn_key.to_string(),
+        });
         ctx.push(
-            encode::enc_str_x_imm(X_FRAME, X_CAND, OFF_GROUP_OWNER_TURN as u16),
+            encode::enc_str_w_imm(X_D, X_CAND, OFF_GROUP_OWNER_TURN as u16),
             format!(
-                "str {}, [{}, #{OFF_GROUP_OWNER_TURN}]",
-                reg_name(X_FRAME),
+                "str w{X_D}, [{}, #{OFF_GROUP_OWNER_TURN}]",
                 reg_name(X_CAND)
             ),
         );
@@ -6782,7 +6959,7 @@ fn emit_flow_op(
             group_temp,
             capacity,
             deadline,
-        } => emit_group_create(*group_temp, *capacity, *deadline, ctx, gctx),
+        } => emit_group_create(*group_temp, *capacity, *deadline, ctx, gctx, fn_key),
         FlowInst::GroupStart {
             group_temp,
             callee_key,
@@ -6810,15 +6987,17 @@ fn emit_flow_op(
 ///
 /// - `X_C = 1` iff this turn has an ambient group AND that group's own
 ///   `cancelled` word is set, else `0`;
-/// - `X_D = 1` iff that same group's `owner_turn` is this turn's own
-///   persistent area (`X_FRAME`), else `0` — the child-vs-owner
-///   distinction `OFF_GROUP_OWNER_TURN`'s own doc comment explains.
+/// - `X_D = 1` iff that same group's `owner_turn` is this turn — since
+///   plans/M10.md item 0c2 a `TurnId` compared against this fn's own
+///   relocated id, not an address compared against `X_FRAME` — else `0`:
+///   the child-vs-owner distinction `OFF_GROUP_OWNER_TURN`'s own doc
+///   comment explains.
 ///
 /// Clobbers `X_A`/`X_B`/`X_E`. A no-op producing `X_C = X_D = 0` when the
 /// whole build has no group arena at all, which is what keeps every
 /// pre-item-F async golden byte-identical (`emit_checkpoint_cancellation_test`
 /// below has the full reasoning); callers must not emit it in that case.
-fn emit_group_cancelled_flags(ctx: &mut FnCtx) {
+fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str) {
     ctx.push(
         encode::enc_movz(X_C, 0, 0, true),
         format!("movz {}, #0", reg_name(X_C)),
@@ -6874,17 +7053,28 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx) {
         encode::enc_cset(X_C, Cond::Ne, true),
         format!("cset {}, ne", reg_name(X_C)),
     );
+    // plans/M10.md item 0c2: `owner_turn` is a `TurnId` (a `u32` at +56),
+    // so this is a 32-bit load compared against this fn's own relocated
+    // `TurnId` immediate instead of a 64-bit load compared against
+    // `X_FRAME`. Equality only — no index→address step is needed or
+    // wanted here. `ldr w`/`cmp w`: an `x` load would fold the adjacent
+    // word in as high bits.
     ctx.push(
-        encode::enc_ldr_x_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
-        format!(
-            "ldr {}, [{}, #{OFF_GROUP_OWNER_TURN}]",
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
+        encode::enc_ldr_w_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
+        format!("ldr w{X_A}, [{}, #{OFF_GROUP_OWNER_TURN}]", reg_name(X_B)),
     );
+    let word = ctx.cur_word();
+    ctx.load_imm(X_E, 0);
+    for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+        w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_E));
+    }
+    ctx.relocs.push(Reloc::TurnIdImm {
+        word,
+        key: fn_key.to_string(),
+    });
     ctx.push(
-        encode::enc_cmp_reg(X_A, X_FRAME, true),
-        format!("cmp {}, {}", reg_name(X_A), reg_name(X_FRAME)),
+        encode::enc_cmp_reg(X_A, X_E, false),
+        format!("cmp w{X_A}, w{X_E}"),
     );
     ctx.push(
         encode::enc_cset(X_D, Cond::Eq, true),
@@ -6893,7 +7083,7 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx) {
     ctx.patch_skip(skip_no_group, SkipKind::Cbz(X_A));
 }
 
-fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx) {
+fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx, fn_key: &str) {
     if gctx.arena_capacity == 0 {
         // No `with group(...)` exists anywhere in this build — a whole-
         // program fact (`layout::RuntimeTables::group_arena_capacity`),
@@ -6914,7 +7104,7 @@ fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx) {
     // `TURN_STATUS_COMPLETED` with a garbage reply and its group's own
     // child slot harvested as `Ok`, exactly as if it had finished.
     let cancelled_tail = ctx.word_offsets.len() - 1;
-    emit_group_cancelled_flags(ctx);
+    emit_group_cancelled_flags(ctx, fn_key);
     // Terminate this activation iff the ambient group is cancelled AND
     // this turn is not that group's own owner (`OFF_GROUP_OWNER_TURN`'s
     // own doc comment): a `g.start`ed child's frame never resumes
@@ -7295,17 +7485,27 @@ fn emit_await_suspend(
             // round-trip at all.
             emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             ctx.patch_skip(skip_park, SkipKind::Cbnz(X_C));
             // Park for real: register as this group's own join waiter.
+            // plans/M10.md item 0c2: by `TurnId` (a `u32` at +48), not by
+            // the raw `X_FRAME` address it used to store — the one reader
+            // (`layout::build_group_child_poll`) derefs it, and does so
+            // through `push_turn_addr_from_id`, the single index→address
+            // rule.
+            let word = ctx.cur_word();
+            ctx.load_imm(X_A, 0);
+            for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+                w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_A));
+            }
+            ctx.relocs.push(Reloc::TurnIdImm {
+                word,
+                key: fn_key.to_string(),
+            });
             ctx.push(
-                encode::enc_str_x_imm(X_FRAME, X_B, OFF_GROUP_JOIN_WAITER as u16),
-                format!(
-                    "str {}, [{}, #{OFF_GROUP_JOIN_WAITER}]",
-                    reg_name(X_FRAME),
-                    reg_name(X_B)
-                ),
+                encode::enc_str_w_imm(X_A, X_B, OFF_GROUP_JOIN_WAITER as u16),
+                format!("str w{X_A}, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_B)),
             );
             ctx.load_imm(X_A, resume_state as i64);
             ctx.store_slot(X_A, ctx.frame.off(state_temp));
@@ -7335,16 +7535,54 @@ fn emit_await_suspend(
             })?;
             let result_size = mwir::size_of(&f.temp_types[result_temp.0], ctx.layout)
                 .map_err(|e| CodegenError::unimplemented(&e))?;
-            // Publish stage address, then waiter, then observe RESOLVED
+            // Publish stage, then waiter, then observe RESOLVED
             // (mask–arm–recheck against a drain that already finished).
-            ctx.addr_of_slot(X_A, stage_off);
+            //
+            // plans/M10.md item 0c3: both are indices now. The waiter is
+            // this turn's own `TurnId` (a `u32` at `SLOT_META_WAITER`,
+            // whose upper half is unused padding); the reply stage is the
+            // `(TurnId, byte offset within that turn area)` pair decision
+            // 565 gives a frame-interior reference — `stage_off` is
+            // `Frame::reply_stage_off`, assigned per fn in `build_frame`,
+            // and the reader is `emit_queue_drain`, so an index alone
+            // could not recover it. Both fields keep the offsets and the
+            // publish order they always had, and `SLOT_META_BYTES` stays
+            // 64, so nothing in the DMA pool moves.
             ctx.load_slot(X_D, ctx.frame.off(*receipt_temp)); // meta
-            ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
+            let word = ctx.cur_word();
+            ctx.load_imm(X_A, 0);
+            for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+                w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_A));
+            }
+            ctx.relocs.push(Reloc::TurnIdImm {
+                word,
+                key: fn_key.to_string(),
+            });
+            let interior = (stage_off + ctx.slot_bias) as u16;
             ctx.push(
-                encode::enc_str_x_imm(X_FRAME, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+                encode::enc_movz(X_B, interior, 0, false),
+                format!("movz w{X_B}, #{interior:#x}"),
+            );
+            ctx.push(
+                encode::enc_str_w_imm(X_A, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16),
                 format!(
-                    "str {}, [{}, #{}]",
-                    reg_name(X_FRAME),
+                    "str w{X_A}, [{}, #{}]",
+                    reg_name(X_D),
+                    crate::virtqueue::SLOT_META_REPLY_STAGE
+                ),
+            );
+            ctx.push(
+                encode::enc_str_w_imm(X_B, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16 + 4),
+                format!(
+                    "str w{X_B}, [{}, #{}]",
+                    reg_name(X_D),
+                    crate::virtqueue::SLOT_META_REPLY_STAGE + 4
+                ),
+            );
+            ctx.push(
+                encode::enc_str_w_imm(X_A, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+                format!(
+                    "str w{X_A}, [{}, #{}]",
                     reg_name(X_D),
                     crate::virtqueue::SLOT_META_WAITER
                 ),
@@ -7387,7 +7625,7 @@ fn emit_await_suspend(
                 w += 8;
             }
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             ctx.patch_skip(need_park, SkipKind::Cbz(X_A));
             // Park until drain sets resume_ready.
@@ -7630,6 +7868,7 @@ fn emit_compose_staged_reply(
 /// — an `ActorCall` resume whose own ambient group is now cancelled never
 /// gets to use its stale composed `Ok(reply)`; it terminates instead, "the
 /// cancelled frame never resumes"), then jump on to the resumed state.
+#[allow(clippy::too_many_arguments)]
 fn emit_await_resume(
     resume_state: usize,
     result_temp: Temp,
@@ -7637,6 +7876,10 @@ fn emit_await_resume(
     f: &MwirFn,
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
+    // plans/M10.md item 0c2: the `Reloc::TurnIdImm` key
+    // `emit_group_cancelled_flags` below needs — this fn's own turn is
+    // what a group's `owner_turn` is now compared against.
+    fn_key: &str,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match what {
@@ -7681,7 +7924,7 @@ fn emit_await_resume(
                 );
                 ctx.store_slot(X_A, result_off);
                 ctx.checkpoint();
-                emit_checkpoint_cancellation_test(ctx, gctx);
+                emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
                 ctx.b_unconditional(state_flat_base[resume_state]);
                 return Ok(());
             }
@@ -7752,7 +7995,7 @@ fn emit_await_resume(
                         result_off + enum_payload_offset(composed_ty, 0, ctx.layout)?;
                     let op_payload_off =
                         call_error_off + enum_payload_offset(composed_err_ty, 0, ctx.layout)?;
-                    emit_group_cancelled_flags(ctx);
+                    emit_group_cancelled_flags(ctx, fn_key);
                     ctx.load_imm(X_A, CALL_ERROR_TAG_CANCELLED as i64);
                     ctx.store_slot(X_A, call_error_off);
                     let mut w = op_payload_off;
@@ -7800,7 +8043,7 @@ fn emit_await_resume(
                 // the value is composed and then immediately discarded by
                 // the termination test below, which is cheaper than
                 // branching around it.
-                emit_group_cancelled_flags(ctx);
+                emit_group_cancelled_flags(ctx, fn_key);
                 ctx.push(
                     encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
                     format!(
@@ -7834,7 +8077,7 @@ fn emit_await_resume(
                 }
             }
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
@@ -7845,7 +8088,7 @@ fn emit_await_resume(
             emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
             emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
@@ -7866,7 +8109,7 @@ fn emit_await_resume(
                 w += 8;
             }
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
@@ -7900,7 +8143,7 @@ fn emit_transition(
             // count, never mid-instruction).
             if target_flat <= flat_idx {
                 ctx.checkpoint();
-                emit_checkpoint_cancellation_test(ctx, gctx);
+                emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             }
             ctx.b_unconditional(target_flat);
             Ok(())
@@ -7975,6 +8218,7 @@ fn emit_flat_entry(
             f,
             ctx,
             gctx,
+            fn_key,
             state_flat_base,
         ),
     }
@@ -8420,6 +8664,17 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                         return Err(format!(
                             "fn `{key}`: Reloc::TurnFrameAddr word {word} (a 4-word load_imm) is \
                              out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::TurnsBase { word } | Reloc::TurnStride { word } => {
+                    // plans/M10.md item 0c3: the two halves of the drain's
+                    // own index→address step, each a four-word `load_imm`
+                    // of a layout-time constant.
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::TurnsBase/TurnStride word {word} (a 4-word                              load_imm) is out of range (code has {} word(s))",
                             f.code.len()
                         ));
                     }

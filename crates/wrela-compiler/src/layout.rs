@@ -620,8 +620,14 @@ pub struct GroupServiceCtx {
     pub arena_capacity: u64,
     /// Every turn area in the image (each actor's, then each free async
     /// fn's) — the set the delivery half scans to find suspended turns
-    /// whose own ambient group has just been cancelled.
-    pub turn_areas: Vec<u64>,
+    /// whose own ambient group has just been cancelled. Each entry is that
+    /// turn's build-time `(address, TurnId)` pair: the scan still addresses
+    /// the turn record absolutely, but plans/M10.md item 0c2 made
+    /// `OFF_GROUP_OWNER_TURN` a `TurnId`, so the owner test compares the id
+    /// rather than the address. Both come from the same
+    /// `RuntimePlacement::turn_addr` expression, so they can never name
+    /// different bytes.
+    pub turn_areas: Vec<(u64, TurnId)>,
 }
 
 /// `build_checkpoint_and_vector_stub`'s own result: the block's words plus
@@ -647,7 +653,12 @@ fn group_service_shape(runtime: Option<&RuntimeTables>) -> Option<GroupServiceCt
     Some(GroupServiceCtx {
         arena_base: 0,
         arena_capacity: tables.group_arena_capacity,
-        turn_areas: vec![0; tables.actors.len() + tables.free_turns.len()],
+        // Shape only: the emitted word count depends on the *number* of
+        // turn areas, never on any address or id value (every `load_imm`
+        // is a fixed four words). `TurnId::from_index(0)` is a stand-in
+        // for exactly that reason — the real ids arrive with
+        // `group_service_ctx` below.
+        turn_areas: vec![(0, TurnId::from_index(0)); tables.actors.len() + tables.free_turns.len()],
     })
 }
 
@@ -661,8 +672,30 @@ fn group_service_ctx(
     if tables.group_arena_capacity == 0 {
         return None;
     }
-    let mut turn_areas: Vec<u64> = placement.actors.iter().map(|a| a.turn).collect();
-    turn_areas.extend(placement.free_turns.values().copied());
+    // An actor's `TurnId` is its `tables.actors` index (`turn_id_for`'s own
+    // positional rule); a free turn's is the one `place_runtime_tables`
+    // recorded in `turn_ids` under the same key `free_turns` uses. Order is
+    // kept identical to the shape pass's, and to what this scan emitted
+    // before item 0c2 — a reordering is behaviourally inert (each unrolled
+    // arm is self-contained) but would make the golden `rtcode` diff
+    // unreadable.
+    let mut turn_areas: Vec<(u64, TurnId)> = placement
+        .actors
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.turn, TurnId::from_index(i)))
+        .collect();
+    for (key, &addr) in &placement.free_turns {
+        let Some(&id) = placement.turn_ids.get(key) else {
+            // `place_runtime_tables` fills `free_turns` and `turn_ids` from
+            // the same loop over the same keys, so this is unreachable;
+            // skipping rather than panicking leaves the shape-vs-real word
+            // count assert as the one thing that reports a disagreement,
+            // loudly, the way every other producer bug here does.
+            continue;
+        };
+        turn_areas.push((addr, id));
+    }
     Some(GroupServiceCtx {
         arena_base: placement.group_arena,
         arena_capacity: tables.group_arena_capacity,
@@ -751,7 +784,7 @@ fn emit_deadline_scan_and_delivery(a: &mut Asm, g: &GroupServiceCtx) {
         debug_assert_eq!(next, a.abs());
     }
 
-    for &turn in &g.turn_areas {
+    for &(turn, turn_id) in &g.turn_areas {
         a.load_imm(T0, turn);
         a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_BUSY as u16));
         let skip_a = a.skip_placeholder(); // cbz -> not busy
@@ -769,9 +802,15 @@ fn emit_deadline_scan_and_delivery(a: &mut Asm, g: &GroupServiceCtx) {
         a.push(encode::enc_add_reg(SLOT, SLOT, T1, true));
         a.push(encode::enc_ldr_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
         let skip_d = a.skip_placeholder(); // cbz -> not cancelled
-        a.push(encode::enc_ldr_x_imm(T1, SLOT, OFF_GROUP_OWNER_TURN as u16));
-        a.load_imm(T2, turn);
-        a.push(encode::enc_cmp_reg(T1, T2, true));
+        // plans/M10.md item 0c2: `owner_turn` is an `Option[TurnId]` (a
+        // `u32` at +56), so this arm compares the build-time `TurnId` of
+        // the turn it is about — not, as before, the build-time *address*
+        // of that turn. Equality only, so no index→address step. `ldr w` /
+        // `cmp w`: an `x` load here would fold the padding word above the
+        // field in as high bits and no comparison would ever match.
+        a.push(encode::enc_ldr_w_imm(T1, SLOT, OFF_GROUP_OWNER_TURN as u16));
+        a.load_imm(T2, turn_id.get() as u64);
+        a.push(encode::enc_cmp_reg(T1, T2, false));
         let skip_e = a.skip_placeholder(); // b.eq -> this turn owns the group
         a.load_imm(T1, 1);
         a.push(encode::enc_str_x_imm(T1, T0, OFF_TURN_RESUME_READY as u16));
@@ -1678,6 +1717,22 @@ fn wake_driver_undeclared(driver: &str) -> LayoutError {
          `img.driver({driver}, ...)` to the `@image` fn, or remove the `wake` \
          (03-hardware.md §6)"
     ))
+}
+
+/// plans/M10.md item 0c3: the one message shared by every
+/// `Reloc::TurnsBase`/`Reloc::TurnStride` resolution guard — one producer-bug
+/// site rather than four copies of the same sentence.
+///
+/// Unreachable from any source program, and the reason is structural: the
+/// only emitter of either reloc is `codegen::push_turn_addr_from_id`, called
+/// only from `emit_queue_drain`, which needs a `@driver` bound to a device
+/// with a virtqueue — and that requires a sealed `@image`, which is exactly
+/// what makes `RuntimePlacement` exist. Kept rather than unwrapped: a
+/// producer bug that somehow reached here must fail closed and loudly.
+fn turns_deref_needs_rtdata() -> String {
+    "internal error: a virtqueue drain needs the `RT.turns` base and stride to reach the turn a \
+     slot's waiter/reply-stage names, but this image's runtime tables were never placed"
+        .to_string()
 }
 
 fn wake_needs_rtdata(driver: &str) -> LayoutError {
@@ -3064,6 +3119,22 @@ pub fn layout_program(
                         })?;
                     patch_load_imm_words(&mut all_code_words, base + word, id.get() as u64);
                 }
+                Reloc::TurnsBase { word } => {
+                    // plans/M10.md item 0c3: `RT.turns`' own base, which is
+                    // `rtdata_base` exactly (item 0b put the array first).
+                    let addr = placement
+                        .as_ref()
+                        .map(|p| p.turns_base)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
+                Reloc::TurnStride { word } => {
+                    let stride = placement
+                        .as_ref()
+                        .map(|p| p.turn_stride)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut all_code_words, base + word, stride);
+                }
                 Reloc::GroupArenaBase { word } => {
                     let addr = placement.as_ref().map(|p| p.group_arena).ok_or_else(|| {
                         LayoutError::new(
@@ -3148,13 +3219,15 @@ pub fn layout_program(
                 | Reloc::CheckpointService { .. }
                 | Reloc::TurnFrameAddr { .. }
                 | Reloc::TurnIdImm { .. }
+                | Reloc::TurnsBase { .. }
+                | Reloc::TurnStride { .. }
                 | Reloc::GroupArenaBase { .. }
                 | Reloc::IrqVector { .. }
                 | Reloc::WakePending { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
-                         AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/GroupArenaBase/\
-                         IrqVector/WakePending reloc",
+                         AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/TurnsBase/TurnStride/\
+                         GroupArenaBase/IrqVector/WakePending reloc",
                     ));
                 }
             }
@@ -7259,11 +7332,18 @@ fn build_secondary_core_entry(core: usize, rt_run_one_core: usize, start: usize)
 /// already polls for). `child_turn_addr`/`group_arena_base` are real,
 /// already-placed addresses (this fn is built twice, placeholder then
 /// real, exactly like every other runtime-glue routine in this module).
+#[allow(clippy::too_many_arguments)]
 fn build_group_child_poll(
     child_turn_addr: u64,
     child_key: &str,
     group_arena_base: u64,
     child_index: usize,
+    // plans/M10.md item 0c2: the two build-time constants
+    // `push_turn_addr_from_id` needs to turn the `Option[TurnId]` a
+    // `join_waiter` now is back into the address its `resume_ready` word
+    // lives at.
+    turns_base: u64,
+    log2_stride: u8,
     start: usize,
 ) -> Asm {
     use crate::codegen::{
@@ -7326,13 +7406,19 @@ fn build_group_child_poll(
     a.push(encode::enc_str_x_imm(31, 9, OFF_TURN_BUSY as u16)); // busy = 0 (harvested)
 
     let skip_still_active = a.skip_placeholder(); // cbnz x13 -> no wake yet
-    a.push(encode::enc_ldr_x_imm(10, 12, OFF_GROUP_JOIN_WAITER as u16));
-    let skip_no_waiter = a.skip_placeholder(); // cbz x10 -> nothing waiting
+    // plans/M10.md item 0c2: `join_waiter` is an `Option[TurnId]` (a `u32`
+    // at +48). `ldr w`/`cbz w` test exactly the four bytes the field
+    // occupies — the 1-based niche (decision 567) keeps `cbz` meaning
+    // "nobody waiting" — and the address the wake actually needs comes
+    // from the one index→address rule.
+    a.push(encode::enc_ldr_w_imm(10, 12, OFF_GROUP_JOIN_WAITER as u16));
+    let skip_no_waiter = a.skip_placeholder(); // cbz w10 -> nothing waiting
+    push_turn_addr_from_id(&mut a, 10, 11, turns_base, log2_stride);
     a.load_imm(11, 1);
     a.push(encode::enc_str_x_imm(11, 10, OFF_TURN_RESUME_READY as u16));
     let no_wake = a.abs();
     a.patch_cbnz(skip_still_active, 13);
-    a.patch_cbz(skip_no_waiter, 10);
+    a.patch_cbz_w(skip_no_waiter, 10);
     debug_assert_eq!(no_wake, a.abs());
     a.push(encode::enc_movz(0, 1, 0, true)); // ran
     to_out.push(a.skip_placeholder());
@@ -7556,6 +7642,8 @@ fn build_runtime_glue_block(
             callee_key,
             placement.group_arena,
             child_index,
+            placement.turns_base,
+            placement.log2_turn_stride(),
             poll_start,
         );
         cursor += poll_asm.words.len();
@@ -10064,13 +10152,15 @@ pub fn layout_test_image(
             | Reloc::AbortVal { .. }
             | Reloc::CheckpointService { .. }
             | Reloc::TurnIdImm { .. }
+            | Reloc::TurnsBase { .. }
+            | Reloc::TurnStride { .. }
             | Reloc::GroupArenaBase { .. }
             | Reloc::IrqVector { .. }
             | Reloc::WakePending { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit an \
-                     AbortFixed/AbortVal/CheckpointService/TurnIdImm/GroupArenaBase/IrqVector/\
-                     WakePending reloc",
+                     AbortFixed/AbortVal/CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
+                     GroupArenaBase/IrqVector/WakePending reloc",
                 ));
             }
         }
@@ -10148,6 +10238,21 @@ pub fn layout_test_image(
                     // half of its `OFF_TURN_REPLY_SLOT` pair.
                     let id = turn_id_imm(fn_key)?;
                     patch_load_imm_words(&mut code_words, base + word, id);
+                }
+                Reloc::TurnsBase { word } => {
+                    // plans/M10.md item 0c3, twin of `layout_program`'s arm.
+                    let addr = real_placement
+                        .as_ref()
+                        .map(|p| p.turns_base)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                Reloc::TurnStride { word } => {
+                    let stride = real_placement
+                        .as_ref()
+                        .map(|p| p.turn_stride)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut code_words, base + word, stride);
                 }
                 Reloc::GroupArenaBase { word } => {
                     let addr = real_placement
