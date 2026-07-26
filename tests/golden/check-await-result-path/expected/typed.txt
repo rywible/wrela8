@@ -1,0 +1,34 @@
+Program
+  Struct name=Payload
+  Struct name=Store
+    Method name=from_await ret=u64
+      Receiver mode=mut ty=Store
+      Body
+        Let name=fetched ty=Result[Payload, CallError[never]]
+          Await ty=Result[Payload, CallError[never]]
+            Call key=Upstream.get ty=Payload
+              Receiver
+                Field name=upstream ty=Actor[Upstream]
+                  Local name=self ty=Store
+        Match
+          Local name=fetched ty=Result[Payload, CallError[never]]
+          Case
+            VariantPattern enum=Result variant=Ok ty=Result[Payload, CallError[never]]
+              Binding name=completion ty=Payload
+            Return
+              Field name=value ty=u64
+                Local name=completion ty=Payload
+          Case
+            VariantPattern enum=Result variant=Err ty=Result[Payload, CallError[never]]
+              Wildcard ty=CallError[never]
+            Return
+              Int text=0 ty=u64
+  Struct name=Upstream
+    Method name=get ret=Payload
+      Receiver mode=read ty=Upstream
+      Body
+        Return
+          StructLiteral name=Payload ty=Payload
+            Field name=value
+              Field name=value ty=u64
+                Local name=self ty=Upstream

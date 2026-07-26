@@ -1,0 +1,29 @@
+# plans/M9.md item J2d: a value bound *from* an await's result does not
+# span that await (02-language.md §9.2 — "live across" / 04 §1
+# "surviving"). Field access on it is legal; the over-broad
+# `seen_await`-only check used to reject this shape and 03-hardware.md
+# §3's DMA completion flow with it. Sibling pin: `err-await-external-path`
+# (an external argument that *does* span stays refused).
+module examples.check_await_result_path
+
+struct Payload:
+    value: u64
+
+@actor
+pub struct Upstream:
+    value: u64
+
+    pub fn get(read self) -> Payload:
+        return Payload(value=self.value)
+
+@actor
+pub struct Store:
+    upstream: Actor[Upstream]
+
+    pub async fn from_await(mut self) -> u64:
+        fetched = await self.upstream.get()
+        match fetched:
+            case .Ok(completion):
+                return completion.value
+            case .Err(_):
+                return 0

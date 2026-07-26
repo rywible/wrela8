@@ -10034,35 +10034,97 @@ fn check_deadline_expr(
 
 /// Cross-await access rule (02-language.md §9.2): "a whole-value access
 /// rooted at the current actor (`self.fs.cache`) may live across `await`
-/// ... but an access rooted in an external argument may not." Shipped as
-/// the dumbest sound approximation: a straight-line forward scan over an
-/// async body's already-typed statements, threading one `seen_await`
-/// flag (conservatively shared across sibling branches — an `await` in
-/// one `if` arm taints every statement lexically after the whole `if`,
-/// even along a sibling arm that itself had none; over-rejects a little,
-/// never under-rejects). Any `Field`-chain expression (`x.a.b`, one or
-/// more levels) whose root local is not exactly `self`, found once
+/// ... but an access rooted in an external argument may not." 04 §1:
+/// "whole-value accesses surviving `await` are rooted at the current
+/// actor turn." The operative verbs are *live across* / *surviving* —
+/// the rule is about a path that predates a suspension and is used after
+/// it, not about every field access that happens to sit lexically after
+/// an `await` in the same body (plans/M9.md item J2d / decision 525).
+///
+/// Approximation: a straight-line forward scan over an async body's
+/// already-typed statements, threading one `seen_await` flag
+/// (conservatively shared across sibling branches — an `await` in one
+/// `if` arm taints every statement lexically after the whole `if`, even
+/// along a sibling arm that itself had none; over-rejects a little,
+/// never under-rejects) plus the set of locals whose binding is observed
+/// *after* that flag is set (Let / match-arm / for / `with ... as` /
+/// post-await Assign-to-local). Any `Field`-chain (`x.a.b`) whose root
+/// is not `self` and is not in that post-await set, found once
 /// `seen_await` is set, is rejected — a bare local reference (no field)
 /// is unaffected, since only a *nested* access is the "whole-value
-/// access" 02-language.md §9.2 restricts.
-fn check_cross_await(body: &[TypedStmt]) -> Result<(), SemaError> {
-    let mut seen_await = false;
-    scan_await_cross_stmts(body, &mut seen_await)
+/// access" §9.2 restricts. A value bound from the await itself
+/// (`completion = await receipt`; 03 §3) is in the post-await set and
+/// is allowed; an external argument / pre-await local that spans is not.
+struct CrossAwaitScan {
+    seen_await: bool,
+    /// Locals bound after `seen_await` became true — they do not span
+    /// any suspension observed so far on this forward scan.
+    after_await: BTreeSet<String>,
 }
 
-fn scan_await_cross_stmts(stmts: &[TypedStmt], seen_await: &mut bool) -> Result<(), SemaError> {
+fn check_cross_await(body: &[TypedStmt]) -> Result<(), SemaError> {
+    let mut state = CrossAwaitScan {
+        seen_await: false,
+        after_await: BTreeSet::new(),
+    };
+    scan_await_cross_stmts(body, &mut state)
+}
+
+fn scan_await_cross_stmts(
+    stmts: &[TypedStmt],
+    state: &mut CrossAwaitScan,
+) -> Result<(), SemaError> {
     for s in stmts {
-        scan_await_cross_stmt(s, seen_await)?;
+        scan_await_cross_stmt(s, state)?;
     }
     Ok(())
 }
 
-fn scan_await_cross_stmt(s: &TypedStmt, seen_await: &mut bool) -> Result<(), SemaError> {
+fn typed_pattern_bindings(p: &TypedPattern, out: &mut BTreeSet<String>) {
+    match &p.kind {
+        TypedPatternKind::Wildcard | TypedPatternKind::Literal(_) => {}
+        TypedPatternKind::Binding(name) => {
+            out.insert(name.clone());
+        }
+        TypedPatternKind::Take(inner) => typed_pattern_bindings(inner, out),
+        TypedPatternKind::Variant { payload, .. } => {
+            for sp in payload {
+                typed_pattern_bindings(sp, out);
+            }
+        }
+        TypedPatternKind::Tuple(items) | TypedPatternKind::Array(items) => {
+            for i in items {
+                typed_pattern_bindings(i, out);
+            }
+        }
+        TypedPatternKind::Or(alts) => {
+            for a in alts {
+                typed_pattern_bindings(a, out);
+            }
+        }
+    }
+}
+
+fn scan_await_cross_stmt(s: &TypedStmt, state: &mut CrossAwaitScan) -> Result<(), SemaError> {
     match &s.kind {
-        TypedStmtKind::Let { value, .. } => scan_await_cross_expr(value, seen_await),
+        TypedStmtKind::Let { name, value, .. } => {
+            scan_await_cross_expr(value, state)?;
+            if state.seen_await {
+                state.after_await.insert(name.clone());
+            }
+            Ok(())
+        }
         TypedStmtKind::Assign { target, value } => {
-            scan_await_cross_expr(target, seen_await)?;
-            scan_await_cross_expr(value, seen_await)
+            scan_await_cross_expr(target, state)?;
+            scan_await_cross_expr(value, state)?;
+            // A post-await rebind replaces whatever spanned; subsequent
+            // field access is on the new value, which did not span.
+            if state.seen_await {
+                if let TypedExprKind::Local(name) = &target.kind {
+                    state.after_await.insert(name.clone());
+                }
+            }
+            Ok(())
         }
         TypedStmtKind::If {
             cond,
@@ -10070,57 +10132,68 @@ fn scan_await_cross_stmt(s: &TypedStmt, seen_await: &mut bool) -> Result<(), Sem
             elifs,
             else_branch,
         } => {
-            scan_await_cross_expr(cond, seen_await)?;
-            scan_await_cross_stmts(then_branch, seen_await)?;
+            scan_await_cross_expr(cond, state)?;
+            scan_await_cross_stmts(then_branch, state)?;
             for elif in elifs {
-                scan_await_cross_expr(&elif.cond, seen_await)?;
-                scan_await_cross_stmts(&elif.body, seen_await)?;
+                scan_await_cross_expr(&elif.cond, state)?;
+                scan_await_cross_stmts(&elif.body, state)?;
             }
             if let Some(b) = else_branch {
-                scan_await_cross_stmts(b, seen_await)?;
+                scan_await_cross_stmts(b, state)?;
             }
             Ok(())
         }
         TypedStmtKind::Match { scrutinee, arms } => {
-            scan_await_cross_expr(scrutinee, seen_await)?;
+            scan_await_cross_expr(scrutinee, state)?;
             for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_await_cross_expr(g, seen_await)?;
+                // Pattern bindings introduced once an await is already
+                // in view (including `match await ...: case .Ok(x):`) do
+                // not span; bindings entered before any await still can.
+                if state.seen_await {
+                    typed_pattern_bindings(&arm.pattern, &mut state.after_await);
                 }
-                scan_await_cross_stmts(&arm.body, seen_await)?;
+                if let Some(g) = &arm.guard {
+                    scan_await_cross_expr(g, state)?;
+                }
+                scan_await_cross_stmts(&arm.body, state)?;
             }
             Ok(())
         }
-        TypedStmtKind::For { iter, body, .. } => {
+        TypedStmtKind::For {
+            name, iter, body, ..
+        } => {
             match iter {
                 TypedForIter::Range(a, b, _) => {
-                    scan_await_cross_expr(a, seen_await)?;
-                    scan_await_cross_expr(b, seen_await)?;
+                    scan_await_cross_expr(a, state)?;
+                    scan_await_cross_expr(b, state)?;
                 }
-                TypedForIter::Expr(e) => scan_await_cross_expr(e, seen_await)?,
+                TypedForIter::Expr(e) => scan_await_cross_expr(e, state)?,
             }
-            scan_await_cross_stmts(body, seen_await)
+            if state.seen_await {
+                state.after_await.insert(name.clone());
+            }
+            scan_await_cross_stmts(body, state)
         }
         TypedStmtKind::While { cond, body } => {
-            scan_await_cross_expr(cond, seen_await)?;
-            scan_await_cross_stmts(body, seen_await)
+            scan_await_cross_expr(cond, state)?;
+            scan_await_cross_stmts(body, state)
         }
         TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => Ok(()),
         TypedStmtKind::Return(value) => match value {
-            Some(e) => scan_await_cross_expr(e, seen_await),
+            Some(e) => scan_await_cross_expr(e, state),
             None => Ok(()),
         },
         TypedStmtKind::Assert { cond, message } => {
-            scan_await_cross_expr(cond, seen_await)?;
+            scan_await_cross_expr(cond, state)?;
             if let Some(m) = message {
-                scan_await_cross_expr(m, seen_await)?;
+                scan_await_cross_expr(m, state)?;
             }
             Ok(())
         }
         TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-            scan_await_cross_expr(cond, seen_await)?;
+            scan_await_cross_expr(cond, state)?;
             if let Some(m) = message {
-                scan_await_cross_expr(m, seen_await)?;
+                scan_await_cross_expr(m, state)?;
             }
             Ok(())
         }
@@ -10129,24 +10202,29 @@ fn scan_await_cross_stmt(s: &TypedStmt, seen_await: &mut bool) -> Result<(), Sem
         // `await` inside one (`scan_defer_forbidden`), so it never itself
         // straddles a suspension.
         TypedStmtKind::Defer(_) => Ok(()),
-        TypedStmtKind::ExprStmt(e) => scan_await_cross_expr(e, seen_await),
+        TypedStmtKind::ExprStmt(e) => scan_await_cross_expr(e, state),
         // plans/M6.md item G: a bare `send`'s message arguments are
         // ordinary expressions and obey 02-language.md §9.2 exactly like
         // any other call's.
-        TypedStmtKind::BareSend { expr, .. } => scan_await_cross_expr(expr, seen_await),
+        TypedStmtKind::BareSend { expr, .. } => scan_await_cross_expr(expr, state),
         TypedStmtKind::WithGroup {
             capacity,
             deadline,
+            as_name,
             body,
-            ..
         } => {
             if let Some(c) = capacity {
-                scan_await_cross_expr(c, seen_await)?;
+                scan_await_cross_expr(c, state)?;
             }
             if let Some(d) = deadline {
-                scan_await_cross_expr(d, seen_await)?;
+                scan_await_cross_expr(d, state)?;
             }
-            scan_await_cross_stmts(body, seen_await)
+            if state.seen_await {
+                if let Some(n) = as_name {
+                    state.after_await.insert(n.clone());
+                }
+            }
+            scan_await_cross_stmts(body, state)
         }
     }
 }
@@ -10159,7 +10237,7 @@ fn root_local_name(e: &TypedExpr) -> Option<&str> {
     }
 }
 
-fn scan_await_cross_expr(e: &TypedExpr, seen_await: &mut bool) -> Result<(), SemaError> {
+fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<(), SemaError> {
     match &e.kind {
         TypedExprKind::Int(_)
         | TypedExprKind::Float(_)
@@ -10174,9 +10252,9 @@ fn scan_await_cross_expr(e: &TypedExpr, seen_await: &mut bool) -> Result<(), Sem
         | TypedExprKind::PoolName(_)
         | TypedExprKind::GroupChild(_) => Ok(()),
         TypedExprKind::Field(base, _) => {
-            if *seen_await {
+            if state.seen_await {
                 if let Some(root) = root_local_name(e) {
-                    if root != "self" {
+                    if root != "self" && !state.after_await.contains(root) {
                         // No real `L:C` is available here (decision 1:
                         // the typed tree carries no spans at all) —
                         // `omit_location` (`SemaError`'s own multi-line
@@ -10198,25 +10276,25 @@ fn scan_await_cross_expr(e: &TypedExpr, seen_await: &mut bool) -> Result<(), Sem
                     }
                 }
             }
-            scan_await_cross_expr(base, seen_await)
+            scan_await_cross_expr(base, state)
         }
         TypedExprKind::Index(base, idx) => {
-            scan_await_cross_expr(base, seen_await)?;
-            scan_await_cross_expr(idx, seen_await)
+            scan_await_cross_expr(base, state)?;
+            scan_await_cross_expr(idx, state)
         }
         TypedExprKind::Call { receiver, args, .. } => {
             if let Some(r) = receiver {
-                scan_await_cross_expr(r, seen_await)?;
+                scan_await_cross_expr(r, state)?;
             }
             for a in args.iter().flatten() {
-                scan_await_cross_expr(a, seen_await)?;
+                scan_await_cross_expr(a, state)?;
             }
             Ok(())
         }
         TypedExprKind::CallValue(callee, args) => {
-            scan_await_cross_expr(callee, seen_await)?;
+            scan_await_cross_expr(callee, state)?;
             for a in args {
-                scan_await_cross_expr(a, seen_await)?;
+                scan_await_cross_expr(a, state)?;
             }
             Ok(())
         }
@@ -10224,52 +10302,52 @@ fn scan_await_cross_expr(e: &TypedExpr, seen_await: &mut bool) -> Result<(), Sem
         | TypedExprKind::Neg(inner)
         | TypedExprKind::BitNot(inner)
         | TypedExprKind::Take(inner)
-        | TypedExprKind::Not(inner) => scan_await_cross_expr(inner, seen_await),
-        TypedExprKind::Try(inner, _) => scan_await_cross_expr(inner, seen_await),
+        | TypedExprKind::Not(inner) => scan_await_cross_expr(inner, state),
+        TypedExprKind::Try(inner, _) => scan_await_cross_expr(inner, state),
         TypedExprKind::Binary(_, l, r) | TypedExprKind::OpCall(_, l, r) => {
-            scan_await_cross_expr(l, seen_await)?;
-            scan_await_cross_expr(r, seen_await)
+            scan_await_cross_expr(l, state)?;
+            scan_await_cross_expr(r, state)
         }
-        TypedExprKind::Is(inner, _) => scan_await_cross_expr(inner, seen_await),
+        TypedExprKind::Is(inner, _) => scan_await_cross_expr(inner, state),
         TypedExprKind::And(l, r) | TypedExprKind::Or(l, r) => {
-            scan_await_cross_expr(l, seen_await)?;
-            scan_await_cross_expr(r, seen_await)
+            scan_await_cross_expr(l, state)?;
+            scan_await_cross_expr(r, state)
         }
         TypedExprKind::EnumConstruct { args, .. } => {
             for a in args {
-                scan_await_cross_expr(a, seen_await)?;
+                scan_await_cross_expr(a, state)?;
             }
             Ok(())
         }
         TypedExprKind::Closure { .. } => Ok(()), // a lending call is synchronous (02 §9.2) — never itself spans an await.
         TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
             for i in items {
-                scan_await_cross_expr(i, seen_await)?;
+                scan_await_cross_expr(i, state)?;
             }
             Ok(())
         }
         TypedExprKind::StructLiteral { fields, .. } => {
             for (_, v) in fields {
-                scan_await_cross_expr(v, seen_await)?;
+                scan_await_cross_expr(v, state)?;
             }
             Ok(())
         }
-        TypedExprKind::Panic(msg) => scan_await_cross_expr(msg, seen_await),
+        TypedExprKind::Panic(msg) => scan_await_cross_expr(msg, state),
         TypedExprKind::Intrinsic { receiver, args, .. } => {
             if let Some(r) = receiver {
-                scan_await_cross_expr(r, seen_await)?;
+                scan_await_cross_expr(r, state)?;
             }
             for (_, a) in args {
-                scan_await_cross_expr(a, seen_await)?;
+                scan_await_cross_expr(a, state)?;
             }
             Ok(())
         }
         TypedExprKind::Await(inner) => {
-            scan_await_cross_expr(inner, seen_await)?;
-            *seen_await = true;
+            scan_await_cross_expr(inner, state)?;
+            state.seen_await = true;
             Ok(())
         }
-        TypedExprKind::Send(inner) => scan_await_cross_expr(inner, seen_await),
+        TypedExprKind::Send(inner) => scan_await_cross_expr(inner, state),
     }
 }
 
@@ -11290,9 +11368,10 @@ mod tests {
     }
 
     /// `check_cross_await` (02-language.md §9.2): a self-rooted access on
-    /// both sides of an `await` is legal; the identical shape rooted at a
-    /// non-self local is rejected the moment it appears after the
-    /// `await`, never before it.
+    /// both sides of an `await` is legal; an external-rooted path that
+    /// *spans* the await (bound before, field-used after) is rejected;
+    /// a local bound *from* the await's result and then field-accessed
+    /// is legal — it does not span (03 §3 / plans/M9.md item J2d).
     #[test]
     fn check_cross_await_accepts_self_and_rejects_external_paths() {
         fn field(base_name: &str, field_name: &str) -> TypedExpr {
@@ -11335,7 +11414,8 @@ mod tests {
             "a self-rooted access spanning an await must be accepted"
         );
 
-        // external-rooted, only *after* the await: rejected.
+        // external-rooted, only *after* the await, never bound after it:
+        // rejected (the name is an argument / pre-await local).
         let external_after = vec![
             let_stmt("suspend", await_node.clone()),
             let_stmt("bad", field("input", "value")),
@@ -11350,11 +11430,22 @@ mod tests {
         // external root at all).
         let external_before = vec![
             let_stmt("fine", field("input", "value")),
-            let_stmt("suspend", await_node),
+            let_stmt("suspend", await_node.clone()),
         ];
         assert!(
             check_cross_await(&external_before).is_ok(),
             "an external-rooted access entirely before an await must be accepted"
+        );
+
+        // Bound from the await itself, then field-accessed: legal — the
+        // local does not span the suspension (03-hardware.md §3).
+        let bound_from_await = vec![
+            let_stmt("completion", await_node),
+            let_stmt("status", field("completion", "status")),
+        ];
+        assert!(
+            check_cross_await(&bound_from_await).is_ok(),
+            "a local bound from the await result must be field-accessible after it"
         );
     }
 }

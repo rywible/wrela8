@@ -3876,6 +3876,7 @@ const ASYNC_SEED_CASES: &[&str] = &[
     "check-actor-private-handle-helper",
     "check-actor-send",
     "check-await-self-path",
+    "check-await-result-path",
     "check-deadline",
     "check-group",
     "check-send-proven",

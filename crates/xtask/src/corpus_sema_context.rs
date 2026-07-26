@@ -372,6 +372,11 @@ async fn fetch_part(index: u32) -> u32:
         nest_items_into: "",
     },
     // 03 §3 — publish / await receipt / completion.status.
+    // `queue.publish` is the sealed VirtQueue intrinsic (not a DeclStruct
+    // method returning Receipt — that shape is @driver-handoff-only per
+    // 03 §5 / handoff.rs). A @driver root reaches `_corpus_snippet` so
+    // provenance (03 §1) accepts the DMA touch; the free wrapper holds
+    // the fence statements because they are statement-shaped.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
         start_line: 85,
@@ -386,16 +391,15 @@ struct Buf:
     @offset(0) word: u64
     @offset(8) pad: u64
 
-resource struct Prepared:
-    init(mut self):
-        return unit
+@driver
+struct Blk:
+    q: VirtQueue[..8]
 
-struct Queue:
-    fn publish(self, take operation: Prepared) -> Receipt[IoCompletion[own[Payloads] Buf]]:
-        panic("corpus context: queue.publish")
+    async fn kick(mut self, take prepared: QueueOp[own[Payloads] Buf, true]) -> Result[unit, IoError]:
+        return _corpus_snippet(queue=mut self.q, prepared=take prepared)
 "#,
         postamble: "",
-        params: "queue: Queue, take prepared: Prepared",
+        params: "mut queue: VirtQueue[..8], take prepared: QueueOp[own[Payloads] Buf, true]",
         ret: "Result[unit, IoError]",
         ret_ok: "Ok(unit)",
         async_wrapper: true,

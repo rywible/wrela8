@@ -1,0 +1,9 @@
+Module path=examples.check_await_result_path
+  Struct Payload data
+    field value: u64
+  Struct Upstream resource
+    field value: u64
+    fn get(read self) -> Payload
+  Struct Store resource
+    field upstream: Actor[Upstream]
+    async fn from_await(mut self) -> u64

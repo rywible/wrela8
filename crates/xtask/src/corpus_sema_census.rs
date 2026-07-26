@@ -44,7 +44,7 @@ pub const CORPUS_SEMA_CENSUS: &[(&str, &str)] = &[
     ("docs/language/02-language.md:674", "disagreement"),
     ("docs/language/02-language.md:870", "ok"),
     ("docs/language/03-hardware.md:51", "ok"),
-    ("docs/language/03-hardware.md:85", "disagreement"),
+    ("docs/language/03-hardware.md:85", "ok"),
     ("docs/language/03-hardware.md:180", "ok"),
     ("docs/language/03-hardware.md:224", "ok"),
     ("docs/language/03-hardware.md:258", "ok"),
