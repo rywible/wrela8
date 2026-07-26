@@ -133,22 +133,22 @@ pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
         gap: None,
     },
     CorpusSemaPin {
-        loc: "docs/language/03-hardware.md:85",
+        loc: "docs/language/03-hardware.md:86",
         kind: "ok",
         gap: None,
     },
     CorpusSemaPin {
-        loc: "docs/language/03-hardware.md:180",
+        loc: "docs/language/03-hardware.md:222",
         kind: "ok",
         gap: None,
     },
     CorpusSemaPin {
-        loc: "docs/language/03-hardware.md:224",
+        loc: "docs/language/03-hardware.md:266",
         kind: "ok",
         gap: None,
     },
     CorpusSemaPin {
-        loc: "docs/language/03-hardware.md:258",
+        loc: "docs/language/03-hardware.md:300",
         kind: "ok",
         gap: None,
     },

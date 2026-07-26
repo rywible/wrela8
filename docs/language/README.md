@@ -85,7 +85,7 @@ the draft's. The deliberate language changes:
 | `as` cast operator (plus `checked_as`/`truncate_as`) | Conversions are the one method shape: `to[T]()`, `checked_to[T]()`, `truncate_to[T]()` | 02 §6.1 |
 | Prefix `comptime` expression | `const` initializers and existing comptime contexts already force build-time evaluation | 02 §12 |
 | Two import forms (`from`/`import as`) | One: `from path import name`, where a name may be a submodule | 02 §2 |
-| `@dma` / `@mmio` / `@wire` | One `@layout(kind, ...)` with kinds `dma`, `mmio`, `wire` | 03 §3 |
+| `@dma` / `@mmio` / `@wire` | One `@layout(kind, ...)` with kinds `dma`, `mmio`, `wire`, `runtime` | 03 §3 |
 | `deriving(Eq)` | Structural `==`/`!=` is automatic for every data type | 02 §7.5 |
 
 Two candidates were cut and deliberately **restored** after review: `init`

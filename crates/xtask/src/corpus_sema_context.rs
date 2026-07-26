@@ -379,7 +379,7 @@ async fn fetch_part(index: u32) -> u32:
     // the fence statements because they are statement-shaped.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
-        start_line: 85,
+        start_line: 86,
         section: "3. DMA",
         preamble: r#"
 from core.io_error import IoError
@@ -411,7 +411,7 @@ struct Blk:
     // item, so the fence cannot open with it). drain_used in postamble.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
-        start_line: 180,
+        start_line: 222,
         section: "6. Interrupts",
         preamble: r#"
 @layout(mmio, endian=little)
@@ -453,7 +453,7 @@ struct BlkDriver:
     // 03 §8 — Untrusted narrowing. Checks clean with Completion + buffer.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
-        start_line: 224,
+        start_line: 266,
         section: "8. Untrusted device data",
         preamble: r#"
 struct Completion:

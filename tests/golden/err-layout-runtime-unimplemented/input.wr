@@ -1,0 +1,18 @@
+module examples.err_layout_runtime_unimplemented
+
+# plans/M10.md item A, decision 561: 03-hardware.md §3.1's fourth layout
+# kind is normative from the moment its wording lands, and unimplemented
+# until item A2 lands the field types it is defined in terms of (nested
+# `@layout(runtime)` structs and fixed-length arrays of one). It parses —
+# so the closed set every other `@layout` diagnostic advertises is the
+# truth — and is then refused. It is never silently accepted and checked
+# against rules written for the other three kinds.
+#
+# Note what this file does *not* contain: an array field or a nested
+# layout field. Those are item A2's own rejections, and pinning them here
+# would pin the wrong reason.
+
+@layout(runtime, endian=little)
+struct TurnArea:
+    state: u32
+    waiter: u32

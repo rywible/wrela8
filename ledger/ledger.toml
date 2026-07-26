@@ -1970,3 +1970,47 @@ note = """02-language.md §9.4: actor awaits compose to Result[T, CallError[E]],
 **J2b ruling (decision 518).** The doc is internally inconsistent: the worked await...? example contradicts unnameability. Shape decision 4 / GOAL tiebreak prefers ledger + goldens → minimal doc fix to match (doc-side). This gap exists so that if the normative "? converts it through from" sentence is kept, the missing work is visible: make CallError source-nameable (prelude or core), allow spelling it in from and signatures, and pin ? on an actor await.
 
 **Flip when** source can name CallError[E], write from, and a golden shows await actor.m(...)? succeeding into a Result whose error is either CallError[E] or a from-converted type. Opened by plans/M9.md item J2b (decisions 520–523)."""
+
+# --- M10: the runtime in wrela -----------------------------------------------
+
+[[clause]]
+id = "hardware.layout.runtime-class"
+doc = "03-hardware.md#3.1"
+status = "gap"
+note = """03-hardware.md §3 now names **four** layout kinds, not three: `dma`, `mmio`, `wire`, and `runtime`. §3.1 defines the fourth — "`@layout(runtime)` describes the machine's own tables ... Every rule above applies to it unchanged ... It adds one allowance the other three kinds do not have: a field of a `runtime` layout may be another `@layout(runtime)` type, or a fixed-length array of one ... A `runtime` layout is not device-visible ... and it carries no capability."
+
+**Shipped now (plans/M10.md item A, decision 561): the refusal, not the class.** `runtime` parses — `parse_layout_attr` and `declared_layout_kind` (`sema/types.rs`, two independent kind-name tables that must always move together; only the first is exhaustive-checked, the second silently yields `None`) both know the name, so the closed set every `@layout` diagnostic advertises is the truth. `check_one_layout` then refuses it immediately after parsing with `error[unimplemented]`, before any field is looked at, so a `runtime` declaration is never half-checked against rules written for the other three kinds. Pinned by `golden/err-layout-runtime-unimplemented`. The four diagnostics that hardcoded the closed set moved in the same commit (three in `sema/types.rs`, one in `eval/image_checks.rs`, the last pinned by `golden/err-dma-pool-payload-wrong-kind`) — otherwise the compiler would state a three-kind set it no longer has.
+
+**Missing.** The class itself: §3.1's one allowance is exactly the two field types `layout_field_size`/`check_one_layout` reject today — nested `@layout` structs (`sema/types.rs`, a rejection whose own text attributes it to plans/M7.md item E, which never landed) and `ast::Type::Array` fields. The array length is the hard half: `check_layouts` runs before name resolution and deliberately refuses to evaluate anything, so a `const`-named extent has no path today. That is plans/M10.md **item A2**.
+
+**User-visible consequence.** No `@layout(runtime)` type can be declared; every attempt is a named refusal citing item A2.
+
+**Flip when** item A2 lands the field types and a golden lays out a real `runtime` type end to end (size, offsets, padding, endianness reported, as §3 requires of every kind), plus rejections pinned for a device-visible use (`Mmio[L]`/`img.dma_pool[T]` of a `runtime` type) and for a capability field."""
+
+[[clause]]
+id = "hardware.layout.placed-static"
+doc = "03-hardware.md#3.1"
+status = "gap"
+note = """03-hardware.md §3.1: "`@placed(ADDR)` binds one declaration to the fixed comptime address `ADDR` ... It is legal on exactly one construct: a module-level `static` of a `@layout(runtime)` type, with at most one placed static per address. It is legal nowhere else."
+
+**Shipped now (plans/M10.md item A, decision 561): a total refusal.** `sema::types::check_placed_attrs` walks every attribute position the ast has — item, member, field, and `comptime if` branch at both scopes — and rejects `@placed` with `error[unimplemented]` wherever it appears, naming the reason: revision 0.1 declares no `static` (`static` is not a keyword; `ast::Item` has no `Static` variant; the word appears in no normative rule but §3.1's own), so *every* position an author can write the attribute in is one §3.1 forbids. Pinned by `golden/err-placed-unimplemented`. This exists because unknown attributes are otherwise **silently ignored** — 02-language.md §13's "unknown attributes are errors" is enforced nowhere (`sema/bodies.rs`, `test_attr_kind`'s own note) — so §3.1's wording without it would be a normative rule nothing checks, in the milestone whose subject is removing fail-opens. Narrow by construction: it names one attribute and does **not** turn on §13's general rule, which is its own, much larger, item.
+
+**Missing.** The `static` declaration itself (lexer keyword, `ast::Item` variant, and a mutability/aliasing story answering to 02 §3's ownership model, 03 §4's pools, and actor turn isolation), `@placed`'s argument shape and comptime address evaluation, and the placement itself — which has no fixed base to place against: every image section base is a bump result and `verify_section_sizes`' adjacent-section gap rule fires as `internal error:` on the gap a pinned address creates (plans/M10.md, "Known risks"). A fixed base would additionally be machine-revision-visible (`machine.layout.v1-constants`).
+
+**User-visible consequence.** `@placed` cannot be used at all; every occurrence is a named refusal.
+
+**Flip when** a module-level `static` of a `@layout(runtime)` type exists, `@placed(ADDR)` binds one, the at-most-one-per-address rule has its own rejection golden, and a positive golden shows the static at exactly `ADDR` in the image report."""
+
+[[clause]]
+id = "hardware.layout.placed-verified"
+doc = "03-hardware.md#3.1"
+status = "gap"
+note = """03-hardware.md §3.1: a placed static's address "is a checked build output rather than a convention". The separable half of `@placed` — not "the author may write an address" but "the compiler proves the bytes landed there, and reports it".
+
+**Shipped now: nothing but the refusal that keeps the rule honest** (`golden/err-placed-unimplemented`, shared with `hardware.layout.placed-static`). Opened as its own clause rather than folded into that one because the two flip on different evidence and, on this repo's own history, the verification half is the one that silently does not happen: `image.report.layout-asserts` is the standing precedent for a `@layout`-adjacent checking rule that stayed a gap long after its syntax existed.
+
+**Missing.** The report line naming each placed static and its resolved address; the verifier that the laid-out bytes are at that address; the at-most-one-per-address check; and the interaction with `verify_section_sizes`' gap rule, which must be decided (steer the bump cursor to the placed address, or give the rule a named placed-section exemption) rather than discovered inside a migration item (plans/M10.md, "Known risks").
+
+**User-visible consequence.** None yet — `@placed` is refused outright — but the moment it is accepted without this, an author's belief about an address is unchecked, which is precisely the failure `@offset`-outside-a-`@layout` is already rejected for.
+
+**Flip when** the image report publishes every placed static's address, a golden pins it, and a deliberately-conflicting or unplaceable address is a named build error rather than an `internal error:`."""
