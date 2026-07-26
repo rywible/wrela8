@@ -193,59 +193,10 @@ pub fn build_checkpoint_and_vector_stub_ex(
         relocs: emitted.relocs,
     }
 }
-/// plans/M10.md item E3 (decision 620): force-root one specialized
-/// `rt_run_one <core>` body per live core into `program.fns`. Call after
-/// `RuntimeWiring::derive` (rings + actor cores known) and before the
-/// code section is laid out.
-pub(super) fn inject_rt_run_one_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
-    let roots = mailbox_root_names(&wiring.tables);
-    for core in 0..wiring.tables.cores {
-        let select_actors: Vec<String> = roots
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| wiring.actor_cores.get(*i).copied().unwrap_or(0) == core)
-            .map(|(_, n)| n.clone())
-            .collect();
-        let child_poll_keys: Vec<String> = if core == 0 {
-            wiring.group_child_index.keys().cloned().collect()
-        } else {
-            Vec::new()
-        };
-        let has_drain = wiring.tables.rings.iter().any(|r| r.dst == core);
-        let spec = crate::codegen::RtRunOneSpec {
-            core,
-            select_actors,
-            child_poll_keys,
-            has_drain,
-        };
-        let key = crate::codegen::rt_run_one_symbol(core);
-        program
-            .fns
-            .insert(key, crate::codegen::emit_rt_run_one(&spec));
-    }
-}
-
-/// plans/M10.md item E4 (decision 623): force-root one specialized
-/// `rt_child_poll <callee>` body per static `g.start` site into
-/// `program.fns`. Call after `RuntimeWiring::derive` and before the code
-/// section is laid out (alongside `inject_rt_run_one_fns`).
-pub(super) fn inject_rt_child_poll_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
-    for (callee_key, &child_index) in &wiring.group_child_index {
-        let spec = crate::codegen::RtChildPollSpec {
-            callee_key: callee_key.clone(),
-            child_index,
-        };
-        let key = crate::codegen::rt_child_poll_symbol(callee_key);
-        program
-            .fns
-            .insert(key, crate::codegen::emit_rt_child_poll(&spec));
-    }
-}
-
 /// plans/M10.md item F (decision 630): force-root one specialized
 /// `rt_select_and_run <Actor>` body per mailbox root into `program.fns`.
 /// Call after `RuntimeWiring::derive` and before the code section is
-/// laid out (alongside `inject_rt_run_one_fns` / `inject_rt_child_poll_fns`).
+/// laid out.
 pub(super) fn inject_rt_select_and_run_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
     let mut xreply_by_producer: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for ring in &wiring.tables.rings {
@@ -1357,8 +1308,9 @@ pub(super) fn build_entry_driver(
                 crate::codegen::OFF_TURN_RESUME_READY as u16,
             ));
             let skip_reenter = a.skip_placeholder(); // cbnz x10, .reenter
-            // M10 E3: specialized `rt_run_one 0` in `code` (decision 620).
-            a.bl_call_key(&crate::codegen::rt_run_one_symbol(0));
+            // M11 F: generic `__wrela_rt_run_one(core)` — x0 = core.
+            a.push(encode::enc_movz(0, 0, 0, true));
+            a.bl_call_key("__wrela_rt_run_one");
             {
                 // cbnz x0, .drive_top (backward — a slice ran; try again)
                 let this = a.abs();
@@ -1741,10 +1693,43 @@ pub(super) fn codegen_runtime_force_roots_with(
     // M11 E: deadline poll/scan are not in RUNTIME_FORCE_ROOT_KEYS (only
     // reinjected when a group arena exists) — seed them here so this
     // helper can compile them for reinject / stub coverage.
+    // M11 F: run_one / child_poll + match ladders likewise.
     let mut only =
         crate::lower::guest_reachable_keys_closure(&programs, &crate::lower::LowerOpts::default());
-    for key in ["__wrela_deadline_poll", "__wrela_deadline_scan"] {
+    for key in [
+        "__wrela_deadline_poll",
+        "__wrela_deadline_scan",
+        "__wrela_rt_run_one",
+        "__wrela_child_poll",
+        "__wrela_select_count",
+        "__wrela_try_select",
+        "__wrela_try_drain",
+        "__wrela_resume_child",
+        "__wrela_child_turn_index",
+        "__wrela_child_slot",
+    ] {
         only.insert(key.to_string());
+    }
+    // Item F stubs live in the generated module; seed every `__select_*` /
+    // `__drain_*` / `__resume_*` so match-ladder Calls lower.
+    for typed in programs.values() {
+        for name in typed.fns.keys() {
+            if name.starts_with("__select_")
+                || name.starts_with("__drain_")
+                || name.starts_with("__resume_")
+            {
+                only.insert(name.clone());
+            }
+        }
+        for name in typed.imported.fns.keys() {
+            if name.starts_with("__select_")
+                || name.starts_with("__drain_")
+                || name.starts_with("__resume_")
+                || name.starts_with("__wrela_")
+            {
+                only.insert(name.clone());
+            }
+        }
     }
     let lower_opts = crate::lower::LowerOpts {
         emit_comptime_tests: false,
@@ -1776,34 +1761,71 @@ pub(super) fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
     codegen_runtime_force_roots_with(None)
 }
 
-/// Replace force-rooted deadline helpers with a codegen against the live
-/// `rtconfig` text (correct `RT` / `GROUPS` addresses for this image).
+/// Replace force-rooted deadline / run_one / child_poll helpers with a
+/// codegen against the live `rtconfig` text (correct `RT` / `GROUPS` /
+/// `sched` addresses and select/child match ladders for this image).
 pub(super) fn reinject_runtime_with_rtconfig(
     program: &mut CodegenProgram,
-    tables: &RuntimeTables,
+    wiring: &RuntimeWiring,
 ) -> Result<(), LayoutError> {
-    // Deadline helpers need `ambient_group` at 0x40 and a live group arena.
-    // Header-only turns (stride < 0x48) keep the stub-compiled bodies —
-    // those images never BL poll/scan (no arena).
-    if tables.group_arena_capacity == 0 || tables.turn_stride < 0x48 {
-        return Ok(());
-    }
+    let tables = &wiring.tables;
     let text = crate::rtconfig::generate(tables);
     let runtime_cg = codegen_runtime_force_roots_with(Some(&text)).map_err(|m| {
         LayoutError::new(format!(
             "internal error: could not codegen runtime helpers against live rtconfig: {m}"
         ))
     })?;
+    let extras = crate::rtconfig::RtconfigExtras {
+        select_by_core: tables.select_by_core.clone(),
+        drain_by_core: tables.drain_by_core.clone(),
+        child_sites: tables
+            .child_sites
+            .iter()
+            .map(
+                |(callee_key, child_index, turn_index)| crate::rtconfig::ChildSiteFact {
+                    callee_key: callee_key.clone(),
+                    child_index: *child_index,
+                    turn_index: *turn_index,
+                },
+            )
+            .collect(),
+    };
+    let remaps = crate::rtconfig::stub_call_remaps(&extras);
     let rodata_byte_base: usize = program.rodata.iter().map(Vec::len).sum();
-    // Only the deadline keys need live RT/GROUPS addresses; console/abort
-    // helpers already bind MACHINE_INFO / CONSOLE_* and must not be
-    // duplicated into rodata.
-    for key in ["__wrela_deadline_poll", "__wrela_deadline_scan"] {
+
+    // Keys that need live RT/GROUPS/sched addresses or match ladders.
+    // Console/abort helpers already bind MACHINE_INFO / CONSOLE_* and must
+    // not be duplicated into rodata.
+    let mut keys: Vec<&str> = Vec::new();
+    // Deadline helpers need ambient_group at 0x40 and a live group arena.
+    if tables.group_arena_capacity > 0 && tables.turn_stride >= 0x48 {
+        keys.push("__wrela_deadline_poll");
+        keys.push("__wrela_deadline_scan");
+    }
+    // Scheduler tick + child poll (item F) — always when wiring exists.
+    keys.push("__wrela_rt_run_one");
+    keys.push("__wrela_child_poll");
+    // Match ladders / stub wrappers (Calls remapped onto ImageStatic keys).
+    keys.push("__wrela_select_count");
+    keys.push("__wrela_try_select");
+    keys.push("__wrela_try_drain");
+    keys.push("__wrela_resume_child");
+    keys.push("__wrela_child_turn_index");
+    keys.push("__wrela_child_slot");
+
+    for key in keys {
         let Some(mut f) = runtime_cg.fns.get(key).cloned() else {
-            return Err(LayoutError::new(format!(
-                "internal error: live rtconfig codegen missing `{key}`"
-            )));
+            // Child poll / ladders may be absent from the reachability set
+            // when N_CHILD_SITES == 0 and nothing references them — only
+            // run_one is required.
+            if key == "__wrela_rt_run_one" {
+                return Err(LayoutError::new(format!(
+                    "internal error: live rtconfig codegen missing `{key}`"
+                )));
+            }
+            continue;
         };
+        crate::rtconfig::remap_call_keys(&mut f, &remaps);
         if rodata_byte_base != 0 {
             for r in &mut f.relocs {
                 if let Reloc::Rodata { byte_offset, .. } = r {
@@ -1813,7 +1835,6 @@ pub(super) fn reinject_runtime_with_rtconfig(
         }
         program.fns.insert(key.to_string(), f);
     }
-    // Deadline bodies only touch @placed statics — no rodata pool entries.
     let _ = runtime_cg.rodata;
     Ok(())
 }
@@ -1859,12 +1880,10 @@ pub fn layout_test_image(
         intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
     }
     if let Some(w) = wiring.as_ref() {
-        // M11 E: re-codegen runtime against live RT/GROUPS addresses before
-        // specialized rt_* inject and code layout (decision 784).
-        reinject_runtime_with_rtconfig(&mut program, &w.tables)?;
+        // M11 E/F: re-codegen runtime against live RT/GROUPS/sched + match
+        // ladders before specialized select/drain/enqueue inject.
+        reinject_runtime_with_rtconfig(&mut program, w)?;
         inject_rt_select_and_run_fns(&mut program, w);
-        inject_rt_child_poll_fns(&mut program, w);
-        inject_rt_run_one_fns(&mut program, w);
         inject_rt_cross_core_fns(&mut program, w);
         inject_boot_init_fn(&mut program, w);
     }
@@ -3422,135 +3441,6 @@ mod harness_jit {
         assert_eq!(page.call0_at(select_start * 4), 0, "idle again");
     }
 
-    /// `rt_run_one`'s deterministic round-robin: with several actors
-    /// ready, the cursor decides who runs, and advances past the actor
-    /// that ran. Uses the specialized `emit_rt_run_one` body (M10 E3/E4
-    /// deleted the hand-asm twin) with Call/RrCursor relocs patched for
-    /// this JIT page.
-    #[test]
-    fn rt_run_one_selects_ready_actors_round_robin_from_the_cursor() {
-        let capacity: u64 = 2;
-        let slot_size: u64 = 16;
-        let state_size: u64 = 8;
-        let ram = HostRam::new(4096);
-        let base = ram.base();
-        let region = |i: u64| -> ActorAddrs {
-            let b = base + i * 256;
-            let ring = b + state_size;
-            let head = ring + capacity * slot_size;
-            ActorAddrs {
-                state: b,
-                ring,
-                head,
-                tail: head + 8,
-                count: head + 16,
-                turn: head + 24,
-            }
-        };
-        let a0 = region(0);
-        let a1 = region(1);
-        let cursor_addr = base + 4096 - 8;
-        // plans/M10.md item 0c1: a stand-in two-element turn array holding
-        // the two waker records — element 0 (`TurnId` 1) and element 1
-        // (`TurnId` 2), at a power-of-two stride. The actors' own turn areas
-        // are addressed as build-time constants and need not be in it.
-        const LOG2_TURN_STRIDE: u8 = 7;
-        let turns_base = base + 2048;
-        let waker0 = turns_base;
-        let waker1 = turns_base + (1 << LOG2_TURN_STRIDE);
-
-        // Hand-seed one no-arg message per actor. The slot's waker word is
-        // `(waker_turn: u32, waker_core: u32)`; both cores are 0 (local).
-        for (a, id) in [(a0, 1u64), (a1, 2u64)] {
-            ram.write_u64(a.ring - base, 0);
-            ram.write_u64(a.ring + 8 - base, id);
-            ram.write_u64(a.tail - base, 1);
-            ram.write_u64(a.count - base, 1);
-        }
-
-        let m0 = vec![encode::enc_movz(0, 10, 0, true), encode::enc_ret(30)];
-        let m1 = vec![encode::enc_movz(0, 20, 0, true), encode::enc_ret(30)];
-
-        let mut combined: Vec<u32> = Vec::new();
-        let m0_start = combined.len();
-        combined.extend(m0);
-        let m1_start = combined.len();
-        combined.extend(m1);
-        let sel0_start = combined.len();
-        combined.extend(build_rt_select_and_run(
-            &a0,
-            capacity,
-            slot_size,
-            &[(m0_start, false)],
-            crate::codegen::TURN_RECORD_SIZE,
-            turns_base,
-            LOG2_TURN_STRIDE,
-            sel0_start,
-        ));
-        let sel1_start = combined.len();
-        combined.extend(build_rt_select_and_run(
-            &a1,
-            capacity,
-            slot_size,
-            &[(m1_start, false)],
-            crate::codegen::TURN_RECORD_SIZE,
-            turns_base,
-            LOG2_TURN_STRIDE,
-            sel1_start,
-        ));
-        let run_one_start = combined.len();
-        let spec = crate::codegen::RtRunOneSpec {
-            core: 0,
-            select_actors: vec!["A0".into(), "A1".into()],
-            child_poll_keys: Vec::new(),
-            has_drain: false,
-        };
-        let run_one = crate::codegen::emit_rt_run_one(&spec);
-        let select_targets = [
-            (crate::codegen::rt_select_and_run_symbol("A0"), sel0_start),
-            (crate::codegen::rt_select_and_run_symbol("A1"), sel1_start),
-        ];
-        let mut run_words: Vec<u32> = run_one.code.iter().map(|(w, _)| *w).collect();
-        for reloc in &run_one.relocs {
-            match reloc {
-                Reloc::Call { word, key } => {
-                    let target = select_targets
-                        .iter()
-                        .find(|(k, _)| k == key)
-                        .map(|(_, s)| *s)
-                        .expect("select target");
-                    let this = run_one_start + word;
-                    let delta = (target as i64 - this as i64) * 4;
-                    run_words[*word] = encode::enc_bl(delta as i32);
-                }
-                Reloc::RrCursor { word, .. } => {
-                    patch_load_imm_words(&mut run_words, *word, cursor_addr);
-                }
-                other => panic!("unexpected reloc in emit_rt_run_one JIT: {other:?}"),
-            }
-        }
-        combined.extend(run_words);
-
-        let page = ExecPage::new(&combined);
-        let run = || page.call0_at(run_one_start * 4);
-
-        // cursor starts at 1 (hand-set): actor 1 must run FIRST even
-        // though actor 0 is also ready — the tie-breaker is the cursor.
-        ram.write_u64(cursor_addr - base, 1);
-        assert_eq!(run(), 1, "one ready turn ran");
-        assert_eq!(
-            ram.read_u64(waker1 + OFF_TURN_REPLY - base),
-            20,
-            "cursor=1 -> actor 1 ran first"
-        );
-        assert_eq!(
-            ram.read_u64(cursor_addr - base),
-            0,
-            "cursor advanced past actor 1 (wrap)"
-        );
-        assert_eq!(run(), 1, "second tick runs the remaining ready actor");
-        assert_eq!(ram.read_u64(waker0 + OFF_TURN_REPLY - base), 10);
-        assert_eq!(ram.read_u64(cursor_addr - base), 1);
-        assert_eq!(run(), 0, "nothing ready");
-    }
+    // M11 F: RR oracle moved to boot goldens — `emit_rt_run_one` deleted;
+    // `__wrela_rt_run_one` is generic wrela over SCHED + match ladders.
 }

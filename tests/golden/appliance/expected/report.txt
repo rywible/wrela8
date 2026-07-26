@@ -11,7 +11,7 @@ ImageReport v0
   Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
   Input path=image.wr sha256=5778ef86a97edc7c4856fd70f343db253e77283c61dda63b4ca8a024d43ccddc
   Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee
-  Input path=<generated> sha256=d89784879b3727b637df2f1b40e7e597d6693a513b54e6c75236d5f461236a09
+  Input path=<generated> sha256=bc43712694ebcfda18c78310c34effed1042c2aa0040e1a1f8d00bf5775920c1
   Name value=storage-appliance
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -64,10 +64,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=11768
-  Section name=rodata base=0x40502e48 size=263
-  Section name=abort base=0x40502f50 size=120
-  Section name=checkpoint base=0x40502fc8 size=104
+  Section name=code base=0x40500050 size=18004
+  Section name=rodata base=0x405046a8 size=263
+  Section name=abort base=0x405047b0 size=120
+  Section name=checkpoint base=0x40504828 size=104
   Section name=rtdata base=0x40510000 size=496
   Section name=devregs base=0x405101f0 size=8
   Section name=pooldata base=0x405101f8 size=32768
@@ -79,6 +79,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=CacheActor mailbox=8 slot=16 frame=64 state=24
   Actor name=StatsActor mailbox=4 slot=24 frame=64 state=24

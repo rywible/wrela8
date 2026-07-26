@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_duration_field_image.wr sha256=5858d094bc772383036776140ca7edd88ac0a7e307a30b91af5ac49678d5a402
-  Input path=<generated> sha256=cc4ef5c45db8548367dcb11d711422c67a5ee3125f3b2e474cf08138bb6a8226
+  Input path=<generated> sha256=c319cdf30e49eff799a80dd55662acf90eaa15a4bb0459c3b0aea60ab4398d98
   Name value=duration-field-image
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -41,10 +41,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=10264
-  Section name=rodata base=0x40502868 size=289
-  Section name=abort base=0x4050298c size=120
-  Section name=checkpoint base=0x40502a04 size=104
+  Section name=code base=0x40500050 size=16592
+  Section name=rodata base=0x40504120 size=289
+  Section name=abort base=0x40504244 size=120
+  Section name=checkpoint base=0x405042bc size=104
   Section name=rtdata base=0x40510000 size=248
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -54,6 +54,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Store mailbox=8 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64

@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_two_devices.wr sha256=9f4c5d0be6360832f9a040c61b763ccd1908e80a723d793fe9a194f52a83741a
-  Input path=<generated> sha256=0758c89b70e04aa8f80f03bfb6e3946c29760877e10ba2935e3862f15c65121f
+  Input path=<generated> sha256=8a88689000643e0a9ba9c8b09ca8aa6e5c4f3a769716a262a41f04d4067d402b
   Name value=pool-two-devices
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -59,10 +59,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=9436
-  Section name=rodata base=0x40502530 size=263
-  Section name=abort base=0x40502638 size=120
-  Section name=checkpoint base=0x405026b0 size=104
+  Section name=code base=0x40500050 size=15796
+  Section name=rodata base=0x40503e08 size=263
+  Section name=abort base=0x40503f10 size=120
+  Section name=checkpoint base=0x40503f88 size=104
   Section name=rtdata base=0x40510000 size=32
   Section name=devregs base=0x40510020 size=16
   Section name=pooldata base=0x40510030 size=32
@@ -74,6 +74,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=8
   Driver name=OtherDriver state=8

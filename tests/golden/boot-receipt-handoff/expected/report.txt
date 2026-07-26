@@ -9,7 +9,7 @@ ImageReport v0
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
   Input path=examples/boot_receipt_handoff.wr sha256=9929c4ff996066e364d14bb1e3377ecd6f9b5bab38e9b9c2e2e44729e196fd0c
-  Input path=<generated> sha256=539949f1207159f9aced4e16aa2023d6ceecddee400b296245267abec9b14763
+  Input path=<generated> sha256=77edd8c2f9db50f40c881ebad6f7429266e1f1aaf2f5edc899f5aa40c0aa3d07
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -80,10 +80,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=24124
-  Section name=rodata base=0x40505e90 size=1314
-  Section name=abort base=0x405063b4 size=120
-  Section name=checkpoint base=0x4050642c size=336
+  Section name=code base=0x40500050 size=30284
+  Section name=rodata base=0x405076a0 size=1314
+  Section name=abort base=0x40507bc4 size=120
+  Section name=checkpoint base=0x40507c3c size=336
   Section name=rtdata base=0x40510000 size=6664
   Section name=devregs base=0x40511a08 size=104
   Section name=pooldata base=0x40511a70 size=1024
@@ -95,6 +95,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Ledger mailbox=4 slot=24 frame=64 state=8
   Actor name=Client mailbox=4 slot=16 frame=640 state=48

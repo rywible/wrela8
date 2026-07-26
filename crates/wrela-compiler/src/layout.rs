@@ -167,9 +167,8 @@ pub use harness::{
 pub(crate) use harness::emitted_a64_census_live_counts;
 
 use harness::{
-    append_rodata, build_entry_stub, inject_boot_init_fn, inject_rt_child_poll_fns,
-    inject_rt_cross_core_fns, inject_rt_run_one_fns, inject_rt_select_and_run_fns, push_halt,
-    reinject_runtime_with_rtconfig,
+    append_rodata, build_entry_stub, inject_boot_init_fn, inject_rt_cross_core_fns,
+    inject_rt_select_and_run_fns, push_halt, reinject_runtime_with_rtconfig,
 };
 
 #[cfg(test)]
@@ -2436,15 +2435,13 @@ pub fn layout_program(
         intern_fallible_init_abort_messages(w, &mut rodata_entries, &mut rodata_cursor);
     }
 
-    // M10 E3/E4/F/F2/H + M11 E: specialized runtime bodies into code;
-    // reinject deadline helpers against live RT/GROUPS addresses first.
+    // M10 E3/E4/F/F2/H + M11 E/F: specialized runtime bodies into code;
+    // reinject deadline/run_one/child_poll against live RT/GROUPS first.
     let mut program_owned;
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
-        reinject_runtime_with_rtconfig(&mut program_owned, &w.tables)?;
+        reinject_runtime_with_rtconfig(&mut program_owned, w)?;
         inject_rt_select_and_run_fns(&mut program_owned, w);
-        inject_rt_child_poll_fns(&mut program_owned, w);
-        inject_rt_run_one_fns(&mut program_owned, w);
         inject_rt_cross_core_fns(&mut program_owned, w);
         inject_boot_init_fn(&mut program_owned, w);
         &program_owned
@@ -3686,6 +3683,15 @@ pub struct RuntimeTables {
     /// bookkeeping + frame bytes, plus the per-core ready-queue tables,
     /// the per-core round-robin cursor words, and the group arena.
     pub total_bytes: u64,
+    /// M11 F (decision 790): mailbox-root names per live core, in
+    /// `mailbox_root_names` order filtered by placement — the RR select
+    /// list. Empty until `RuntimeWiring::derive` fills them.
+    pub select_by_core: Vec<Vec<String>>,
+    /// M11 F: `true` when this core has any inbound cross-core ring.
+    pub drain_by_core: Vec<bool>,
+    /// M11 F: `(callee_key, child_index, turn_index)` per `g.start` site,
+    /// in `BTreeMap` key order.
+    pub child_sites: Vec<(String, usize, usize)>,
 }
 
 impl RuntimeTables {
@@ -5306,9 +5312,11 @@ pub fn compute_runtime_tables(
         group_arena_capacity,
         // Single-core until placement says otherwise (`stripe_for_cores`),
         // and ringless until `add_cross_core_rings` says otherwise.
+        // select/drain/child facts filled later by `fill_rtconfig_facts`.
         rings: Vec::new(),
         cores: 1,
         total_bytes,
+        ..Default::default()
     }))
 }
 
@@ -6388,8 +6396,52 @@ impl RuntimeWiring {
         let rings = cross_core_rings(program, &wiring)?;
         reject_unlowerable_cross_core_shapes(&rings, &wiring, boot, program)?;
         wiring.tables.add_cross_core_rings(rings);
+        // M11 F: stamp select/drain/child facts onto tables so dump and
+        // reinject share one `rtconfig::generate` input (decision 790).
+        fill_rtconfig_facts(&mut wiring);
         Ok(Some(wiring))
     }
+}
+
+/// Fill `RuntimeTables::{select_by_core,drain_by_core,child_sites}` from
+/// the finished wiring (plans/M11.md item F / decision 790).
+fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
+    let roots = mailbox_root_names(&wiring.tables);
+    let mut select_by_core: Vec<Vec<String>> = vec![Vec::new(); wiring.tables.cores];
+    for (i, name) in roots.iter().enumerate() {
+        let core = wiring.actor_cores.get(i).copied().unwrap_or(0);
+        if core < select_by_core.len() {
+            select_by_core[core].push(name.clone());
+        }
+    }
+    let mut drain_by_core = vec![false; wiring.tables.cores];
+    for r in &wiring.tables.rings {
+        if r.dst < drain_by_core.len() {
+            drain_by_core[r.dst] = true;
+        }
+    }
+    let actor_n = wiring.tables.actors.len();
+    let msg_drivers = wiring
+        .tables
+        .drivers
+        .iter()
+        .filter(|d| d.mailbox.is_some())
+        .count();
+    let mut child_sites = Vec::new();
+    for (callee_key, &child_index) in &wiring.group_child_index {
+        let Some(pos) = wiring
+            .tables
+            .free_turns
+            .iter()
+            .position(|(k, _)| k == callee_key)
+        else {
+            continue;
+        };
+        child_sites.push((callee_key.clone(), child_index, actor_n + msg_drivers + pos));
+    }
+    wiring.tables.select_by_core = select_by_core;
+    wiring.tables.drain_by_core = drain_by_core;
+    wiring.tables.child_sites = child_sites;
 }
 
 pub struct BootCtx<'a> {
@@ -6408,8 +6460,8 @@ pub struct BootCtx<'a> {
     pub async_frames: &'a BTreeMap<String, u64>,
     /// `codegen::compute_group_child_indices`' result for this same build
     /// (plans/M6.md item F / M10 E4): every `g.start`-able callee's own
-    /// fixed child-slot ordinal — consumed by `inject_rt_child_poll_fns`
-    /// (specialized `rt_child_poll <callee>`). Empty for a build with no
+    /// fixed child-slot ordinal — consumed by `__wrela_child_poll` /
+    /// rtconfig child ladders (M11 F). Empty for a build with no
     /// `with group(...)` sites at all.
     pub group_child_index: &'a BTreeMap<String, usize>,
 }

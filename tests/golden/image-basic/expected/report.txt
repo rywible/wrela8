@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_basic.wr sha256=5ade76bddcdb88c460aa74e9523a154c7ffdd4e486504fc7dedf9ca3dc9052bd
-  Input path=<generated> sha256=81fcde1e7aa5f7f3a1b7f7f9c99f8d6624a334fa93e43ddddce3575948318ca0
+  Input path=<generated> sha256=bcd61e08feab412d5b25f0cd1c6ee59bd6476a766fce583ecb25edff97a74da5
   Name value=basic-appliance
   Target value=Target.wrela_machine_v1
   Device index=0 type=NicHw
@@ -53,10 +53,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=10400
-  Section name=rodata base=0x405028f0 size=263
-  Section name=abort base=0x405029f8 size=120
-  Section name=checkpoint base=0x40502a70 size=104
+  Section name=code base=0x40500050 size=16728
+  Section name=rodata base=0x405041a8 size=263
+  Section name=abort base=0x405042b0 size=120
+  Section name=checkpoint base=0x40504328 size=104
   Section name=rtdata base=0x40510000 size=400
   Section name=devregs base=0x40510190 size=8
   Section name=pooldata base=0x40510198 size=256
@@ -68,6 +68,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Store mailbox=16 slot=16 frame=64 state=16
   Driver name=Blk state=16

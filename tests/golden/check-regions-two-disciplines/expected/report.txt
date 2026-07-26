@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_regions_two_disciplines.wr sha256=1af016ae04df4306b8db8a62d94a44c6f4726f5db7fc327c6f93e2a787e53aa1
-  Input path=<generated> sha256=3e204e8cef4bb3593cb20617c85c0ebe0e41c09ced3a1f2d774377c04ada2cbf
+  Input path=<generated> sha256=60521cbfc25d21ef68f1a02b163cb4060ff20c22eb575ce0e18dcd2f8ec4729b
   Name value=check-regions-two-disciplines
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Adder
@@ -44,10 +44,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=20548
-  Section name=rodata base=0x40505098 size=460
-  Section name=abort base=0x40505264 size=120
-  Section name=checkpoint base=0x405052dc size=132
+  Section name=code base=0x40500050 size=26732
+  Section name=rodata base=0x405068c0 size=460
+  Section name=abort base=0x40506a8c size=120
+  Section name=checkpoint base=0x40506b04 size=132
   Section name=rtdata base=0x40510000 size=2296
   Section name=pooldata base=0x405108f8 size=32
   Entry base=0x40500000
@@ -58,6 +58,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Adder mailbox=4 slot=24 frame=64 state=8
   Turn fn=child_a frame=288

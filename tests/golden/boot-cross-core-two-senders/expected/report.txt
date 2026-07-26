@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_two_senders.wr sha256=8bdaba8a0bf8b91349961c092bf75c4d5378df35b465a509b6358d64f129470a
-  Input path=<generated> sha256=ff1a32ab82aac3a5b02dafe364e699cd06e8459acca096441f4bae026c6490d0
+  Input path=<generated> sha256=695800548c5ea23fcfbf906ebd59a5de3c03da8526b13cf3ff70df9c69587623
   Name value=cross-core-two-senders
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink
@@ -51,14 +51,14 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=16732
-  Section name=rodata base=0x405041b0 size=563
-  Section name=abort base=0x405043e4 size=120
-  Section name=checkpoint base=0x4050445c size=104
+  Section name=code base=0x40500050 size=23340
+  Section name=rodata base=0x40505b80 size=563
+  Section name=abort base=0x40505db4 size=120
+  Section name=checkpoint base=0x40505e2c size=104
   Section name=rtdata base=0x40510000 size=2680
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40503224
-  CoreEntry core=2 base=0x4050328c
+  CoreEntry core=1 base=0x40504be8
+  CoreEntry core=2 base=0x40504c54
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -66,6 +66,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Sink mailbox=4 slot=24 frame=64 state=8
   Actor name=Alpha mailbox=4 slot=16 frame=304 state=8

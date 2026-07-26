@@ -173,23 +173,8 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::ImageStatic,
         note: "decision 613; per-actor specialized admission",
     },
-    // REF: one select, no drain, no child polls. Grows with select/poll
-    // counts (image-static); pin is the REF shape above.
-    EmitterEntry {
-        name: "emit_rt_run_one",
-        file: "codegen.rs",
-        words: 46,
-        category: Category::ImageStatic,
-        note: "decision 620; per-core specialized scheduler tick",
-    },
-    // REF: one child at index 0. E4 deleted hand-asm `build_group_child_poll`.
-    EmitterEntry {
-        name: "emit_rt_child_poll",
-        file: "codegen.rs",
-        words: 75,
-        category: Category::ImageStatic,
-        note: "decision 623; per-site specialized group-child poll",
-    },
+    // emit_rt_run_one / emit_rt_child_poll deleted in M11 F
+    // (force-rooted __wrela_rt_run_one / __wrela_child_poll); −46/−75.
     // REF: one sync method, no xreply, frame = TURN_RECORD_SIZE (no lineage).
     EmitterEntry {
         name: "emit_rt_select_and_run",
@@ -223,12 +208,13 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         note: "decision 633; per-core specialized inbound drain (item F2)",
     },
     // REF: core 1. Includes 5 floor-cat1 SP-install words inside the body.
+    // M11 F: +1 movz x0,#core before BL __wrela_rt_run_one (26→27).
     EmitterEntry {
         name: "emit_secondary_core_entry",
         file: "codegen.rs",
-        words: 26,
+        words: 27,
         category: Category::ImageStatic,
-        note: "decision 633; per-core secondary entry (item F2); 5 floor-cat1 SP",
+        note: "decision 633; per-core secondary entry (item F2); 5 floor-cat1 SP; F +1 core arg",
     },
     // REF: empty group/irq/wake. Includes 5 floor-cat2 save/restore words
     // inside the body (decision 673) — counted here until a later floor
@@ -277,7 +263,8 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         note: "cfg(test) only; C left it for the latch probe",
     },
     // plans/M10.md item I / decisions 685–689: examined stated residue.
-    // REF zero tests = 94. Floor cats embedded (not in FLOOR_WORDS yet):
+    // REF zero tests = 94 (no rt_run_one arm when wiring is absent).
+    // Floor cats embedded (not in FLOOR_WORDS yet):
     // 5 cat1 SP, 1 cat3 halt brk; cat4 landing-pad arms appear only when
     // tests/boot_init exist (9 words/site). Migratable BL targets already
     // go to existing `__wrela_*` / `rt_*` keys; no further migrate without
@@ -306,7 +293,7 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 619; // was 714; M11 E −57/−38 deadline emitters
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 499; // was 619; M11 F −46/−75, +1 secondary core arg
 
 pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 0; // was 7; M (L-11) deleted dead harness push_turn_addr_from_id
 
@@ -316,7 +303,7 @@ pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residu
 /// `build_entry_stub` embeds `push_halt`; the JIT-only `build_rt_*`
 /// materializers are NON_INVENTORY, not rows). Useful as a ratchet total;
 /// not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 777; // was 872; M11 E −95
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 657; // was 777; M11 F −121 +1 secondary
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -327,10 +314,12 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 777; // was 872; M11 E −95
 /// Item G: checkpoint/deadline moved layout→codegen (811 / 76).
 /// Item M (L-11): dead harness `push_turn_addr_from_id` deleted — 3 body
 /// sites + 1 needle in its own doc comment (68→64).
+/// M11 F: run_one/child_poll emitters deleted (codegen 787→728); harness
+/// +1 movz before BL __wrela_rt_run_one (64→65).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
-    ("codegen.rs", 787), // was 811; E −24 emitters, +6 vector0 LR/x28 save around BL scan
+    ("codegen.rs", 728), // was 787; F −59 from deleted emitters
     ("layout.rs", 8),
-    ("layout/harness.rs", 64),
+    ("layout/harness.rs", 65), // was 64; F +1 core-arg movz
 ];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
@@ -480,7 +469,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 859,
+            ENCODE_ENC_SITE_COUNT, 801,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

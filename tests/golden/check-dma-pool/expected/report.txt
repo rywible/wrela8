@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_dma_pool.wr sha256=c31c2093ac64b743b1d0c8fc797232e95f8631cbbbd18fe4a67e20745436f8f8
-  Input path=<generated> sha256=98ffb2215f1887e9c317f1500edb6a029291bbfcc544b437db592aeb471a749c
+  Input path=<generated> sha256=cbdb21d4c997697e91fb1b8bb4585825627171b9dfbe7f4be7dbebf3a1521421
   Name value=dma-pool
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -59,10 +59,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=10456
-  Section name=rodata base=0x40502928 size=289
-  Section name=abort base=0x40502a4c size=120
-  Section name=checkpoint base=0x40502ac4 size=104
+  Section name=code base=0x40500050 size=16784
+  Section name=rodata base=0x405041e0 size=289
+  Section name=abort base=0x40504304 size=120
+  Section name=checkpoint base=0x4050437c size=104
   Section name=rtdata base=0x40510000 size=328
   Section name=devregs base=0x40510148 size=8
   Section name=pooldata base=0x40510150 size=384
@@ -74,6 +74,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Store mailbox=8 slot=24 frame=64 state=16
   Driver name=BlkDriver state=8

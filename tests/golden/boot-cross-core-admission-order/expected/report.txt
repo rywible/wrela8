@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_admission_order.wr sha256=3449664d139c8e99095986d5f97a355490dd4a279330ce785090cbf2d986dd0c
-  Input path=<generated> sha256=4690b540a628e4aa694ff4dcbd1e0979343097733a8d5241476027c7fd726d78
+  Input path=<generated> sha256=40d5e0a1fcf6261e70f7cd469a2ff314ef075a476ea301f23fd13014751b9508
   Name value=cross-core-admission-order
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink
@@ -51,14 +51,14 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=18472
-  Section name=rodata base=0x40504878 size=572
-  Section name=abort base=0x40504ab4 size=120
-  Section name=checkpoint base=0x40504b2c size=104
+  Section name=code base=0x40500050 size=25116
+  Section name=rodata base=0x40506270 size=572
+  Section name=abort base=0x405064ac size=120
+  Section name=checkpoint base=0x40506524 size=104
   Section name=rtdata base=0x40510000 size=3256
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40503aec
-  CoreEntry core=2 base=0x40503b54
+  CoreEntry core=1 base=0x405054d8
+  CoreEntry core=2 base=0x40505544
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -66,6 +66,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Sink mailbox=8 slot=24 frame=64 state=8
   Actor name=Near mailbox=4 slot=16 frame=304 state=8

@@ -5713,33 +5713,7 @@ fn rt_select_and_run_glue_target(key: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty())
 }
 
-/// Inputs `emit_rt_run_one` specializes on (plans/M10.md item E3 /
-/// decision 620). Built after `RuntimeWiring::derive` so actor cores and
-/// group-child keys are known.
-#[derive(Debug, Clone)]
-pub struct RtRunOneSpec {
-    pub core: usize,
-    /// Mailbox roots on this core, in `mailbox_root_names` order — the
-    /// same order hand-asm `build_rt_run_one` walked `select_starts`.
-    pub select_actors: Vec<String>,
-    /// Free-turn keys whose poll routines run on core 0 only (empty on
-    /// every secondary core). `BTreeMap` iteration order.
-    pub child_poll_keys: Vec<String>,
-    /// True when this core has any inbound cross-core ring.
-    pub has_drain: bool,
-}
-
-/// Inputs `emit_rt_child_poll` specializes on (plans/M10.md item E4 /
-/// decision 623). One body per static `g.start` site / free-turn key.
-#[derive(Debug, Clone)]
-pub struct RtChildPollSpec {
-    /// Free-turn / async fn key — also the `Reloc::Call` resume target
-    /// and the `Reloc::TurnFrameAddr` owner.
-    pub callee_key: String,
-    /// This site's index into the group arena's child slots
-    /// (`group_child_tag_off` / `group_child_payload_off`).
-    pub child_index: usize,
-}
+// M11 F: RtRunOneSpec / RtChildPollSpec deleted with their emitters.
 
 /// One dispatch arm of a specialized `rt_select_and_run` (plans/M10.md
 /// item F / decision 630). Declaration order = method index.
@@ -6577,6 +6551,17 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     } else {
         ctx.push(encode::enc_mov_reg(1, 0, true), "mov x1, x0".to_string());
     }
+    // M11 F (decision 793): park the completing scalar in OFF_TURN_REPLY so
+    // generic `__wrela_child_poll` can read it after the resume Call (the
+    // specialized emitter captured x1; wrela Calls only bind x0).
+    ctx.push(
+        encode::enc_str_x_imm(1, X_FRAME, OFF_TURN_REPLY as u16),
+        format!(
+            "str {}, [{}, #{OFF_TURN_REPLY}]  ; complete → turn.reply",
+            reg_name(1),
+            reg_name(X_FRAME)
+        ),
+    );
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
             // plans/M7.md item G, decision 17: same InterruptCell skip as
@@ -7792,6 +7777,14 @@ fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx, fn_key: &
 /// cancelled frame never resumes" — its own last-observed state is
 /// discarded, never published to `self`).
 fn emit_async_cancelled_tail(ctx: &mut FnCtx) {
+    // M11 F (decision 793): deterministic zero payload for cancelled harvest.
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_FRAME, OFF_TURN_REPLY as u16),
+        format!(
+            "str xzr, [{}, #{OFF_TURN_REPLY}]  ; cancelled → turn.reply = 0",
+            reg_name(X_FRAME)
+        ),
+    );
     ctx.load_imm(0, TURN_STATUS_CANCELLED as i64);
     ctx.load_slot(X_LR, ctx.frame.lr_off);
     ctx.push(encode::enc_ret(X_LR), "ret".to_string());
@@ -9333,550 +9326,10 @@ pub(crate) fn emit_rt_enqueue(actor: &str, capacity: u64, slot_size: u64) -> Cod
     }
 }
 
-/// plans/M10.md item E3 (decision 620): specialized `rt_run_one <core>`
-/// body under `rt_run_one_symbol(core)`. Same control flow as
-/// `layout::build_rt_run_one` — drain first (if any), two-pass round-robin
-/// over this core's selects, then core-0 child polls — with select / poll /
-/// drain targets as `Reloc::Call` and the RR cursor as `Reloc::RrCursor`
-/// (decision 621). Hand-asm twin deleted in E4's joint delete commit.
-///
-/// ABI: `() -> x0` = 1 if a slice ran, 0 if nothing ready. Saves `x30`
-/// (calls out); 16-byte frame matching the hand-asm.
-pub fn emit_rt_run_one(spec: &RtRunOneSpec) -> CodegenFn {
-    let mut words: Vec<(u32, String)> = Vec::new();
-    let mut relocs: Vec<Reloc> = Vec::new();
-
-    let push = |words: &mut Vec<(u32, String)>, w: u32, text: String| {
-        words.push((w, text));
-    };
-    let load_imm = |words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str| {
-        let h0 = (value & 0xFFFF) as u16;
-        let h1 = ((value >> 16) & 0xFFFF) as u16;
-        let h2 = ((value >> 32) & 0xFFFF) as u16;
-        let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(
-            words,
-            encode::enc_movz(reg, h0, 0, true),
-            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
-        );
-        push(
-            words,
-            encode::enc_movk(reg, h1, 16, true),
-            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
-        );
-        push(
-            words,
-            encode::enc_movk(reg, h2, 32, true),
-            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
-        );
-        push(
-            words,
-            encode::enc_movk(reg, h3, 48, true),
-            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
-        );
-    };
-    let load_rr_cursor =
-        |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, reg: u8, core: usize| {
-            let word = words.len();
-            load_imm(words, reg, 0, &format!("rr_cursor core {core}"));
-            for i in 0..4 {
-                if let Some((_, text)) = words.get_mut(word + i) {
-                    *text = format!("rr-cursor[{i}] x{reg} core={core}");
-                }
-            }
-            relocs.push(Reloc::RrCursor { word, core });
-        };
-    let bl_key = |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, key: &str| {
-        let word = words.len();
-        push(words, encode::enc_bl(0), format!("bl <{key}>"));
-        relocs.push(Reloc::Call {
-            word,
-            key: key.to_string(),
-        });
-    };
-
-    // prologue: save x30
-    push(
-        &mut words,
-        encode::enc_sub_imm(31, 31, 16, true),
-        "sub sp, sp, #16".to_string(),
-    );
-    push(
-        &mut words,
-        encode::enc_str_x_imm(30, 31, 0),
-        "str x30, [sp]".to_string(),
-    );
-
-    let mut to_out: Vec<usize> = Vec::new();
-    let n = spec.select_actors.len();
-
-    if spec.has_drain {
-        bl_key(&mut words, &mut relocs, &rt_drain_symbol(spec.core));
-        let skip = words.len();
-        push(&mut words, 0, "cbz x0, .continue".to_string());
-        to_out.push(words.len());
-        push(&mut words, 0, "b .out  ; x0 already 1".to_string());
-        let cont = words.len();
-        {
-            let delta = (cont as i64 - skip as i64) * 4;
-            words[skip].0 = encode::enc_cbz(0, delta as i32, true);
-            words[skip].1 = format!("cbz x0, .continue (+{delta})");
-        }
-    }
-
-    for pass in 0..2 {
-        for (i, actor) in spec.select_actors.iter().enumerate() {
-            load_rr_cursor(&mut words, &mut relocs, 9, spec.core);
-            push(
-                &mut words,
-                encode::enc_ldr_x_imm(10, 9, 0),
-                "ldr x10, [x9]  ; cursor".to_string(),
-            );
-            push(
-                &mut words,
-                encode::enc_cmp_imm(10, i as u16, true),
-                format!("cmp x10, #{i}"),
-            );
-            let skip = words.len();
-            push(
-                &mut words,
-                0,
-                if pass == 0 {
-                    "b.gt .skip".to_string()
-                } else {
-                    "b.le .skip".to_string()
-                },
-            );
-            bl_key(&mut words, &mut relocs, &rt_select_and_run_symbol(actor));
-            let skip_notran = words.len();
-            push(&mut words, 0, "cbz x0, .skip".to_string());
-            // Ran: cursor = (i + 1) % n
-            load_rr_cursor(&mut words, &mut relocs, 9, spec.core);
-            let next = ((i + 1) % n) as u64;
-            load_imm(&mut words, 10, next, "next cursor");
-            push(
-                &mut words,
-                encode::enc_str_x_imm(10, 9, 0),
-                "str x10, [x9]  ; advance cursor".to_string(),
-            );
-            push(
-                &mut words,
-                encode::enc_movz(0, 1, 0, true),
-                "movz x0, #1  ; ran".to_string(),
-            );
-            to_out.push(words.len());
-            push(&mut words, 0, "b .out".to_string());
-            let skip_to = words.len();
-            {
-                let delta = (skip_to as i64 - skip as i64) * 4;
-                let cond = if pass == 0 { Cond::Gt } else { Cond::Le };
-                words[skip].0 = encode::enc_b_cond(cond, delta as i32);
-                words[skip].1 =
-                    format!("b.{} .skip (+{delta})", if pass == 0 { "gt" } else { "le" });
-                let d2 = (skip_to as i64 - skip_notran as i64) * 4;
-                words[skip_notran].0 = encode::enc_cbz(0, d2 as i32, true);
-                words[skip_notran].1 = format!("cbz x0, .skip (+{d2})");
-            }
-        }
-    }
-
-    for callee in &spec.child_poll_keys {
-        bl_key(&mut words, &mut relocs, &rt_child_poll_symbol(callee));
-        let skip_notran = words.len();
-        push(&mut words, 0, "cbz x0, .skip".to_string());
-        to_out.push(words.len());
-        push(&mut words, 0, "b .out".to_string());
-        let skip_to = words.len();
-        {
-            let delta = (skip_to as i64 - skip_notran as i64) * 4;
-            words[skip_notran].0 = encode::enc_cbz(0, delta as i32, true);
-            words[skip_notran].1 = format!("cbz x0, .skip (+{delta})");
-        }
-    }
-
-    push(
-        &mut words,
-        encode::enc_movz(0, 0, 0, true),
-        "movz x0, #0  ; nothing ready".to_string(),
-    );
-    let out = words.len();
-    for m in &to_out {
-        let delta = (out as i64 - *m as i64) * 4;
-        words[*m].0 = encode::enc_b(delta as i32);
-        words[*m].1 = format!("b .out (+{delta})");
-    }
-    push(
-        &mut words,
-        encode::enc_ldr_x_imm(30, 31, 0),
-        "ldr x30, [sp]".to_string(),
-    );
-    push(
-        &mut words,
-        encode::enc_add_imm(31, 31, 16, true),
-        "add sp, sp, #16".to_string(),
-    );
-    push(&mut words, encode::enc_ret(30), "ret".to_string());
-
-    CodegenFn {
-        frame_size: 16,
-        code: words,
-        relocs,
-    }
-}
-
-/// plans/M10.md item E4 (decision 623): specialized `rt_child_poll <callee>`
-/// body under `rt_child_poll_symbol(callee)`. Same control flow as
-/// `layout::build_group_child_poll` — ready check, resume, harvest into
-/// the group arena via the `Option[GroupId]` niche (decision 669), maybe
-/// wake `join_waiter` — with turn/arena/stride addresses as existing
-/// Relocs (decision 624) and no mid-tick checkpoint (decision 625).
-/// Hand-asm twin deleted in E4's joint delete commit.
-///
-/// ABI: `() -> x0` = 1 if progress, 0 if nothing ready. Saves `x30`
-/// (calls the child); 16-byte frame matching the hand-asm.
-pub fn emit_rt_child_poll(spec: &RtChildPollSpec) -> CodegenFn {
-    let mut words: Vec<(u32, String)> = Vec::new();
-    let mut relocs: Vec<Reloc> = Vec::new();
-
-    let push = |words: &mut Vec<(u32, String)>, w: u32, text: String| {
-        words.push((w, text));
-    };
-    let load_imm = |words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str| {
-        let h0 = (value & 0xFFFF) as u16;
-        let h1 = ((value >> 16) & 0xFFFF) as u16;
-        let h2 = ((value >> 32) & 0xFFFF) as u16;
-        let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(
-            words,
-            encode::enc_movz(reg, h0, 0, true),
-            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
-        );
-        push(
-            words,
-            encode::enc_movk(reg, h1, 16, true),
-            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
-        );
-        push(
-            words,
-            encode::enc_movk(reg, h2, 32, true),
-            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
-        );
-        push(
-            words,
-            encode::enc_movk(reg, h3, 48, true),
-            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
-        );
-    };
-    let load_turn = |words: &mut Vec<(u32, String)>,
-                     relocs: &mut Vec<Reloc>,
-                     reg: u8,
-                     key: &str,
-                     label: &str| {
-        let word = words.len();
-        load_imm(words, reg, 0, label);
-        for i in 0..4 {
-            if let Some((_, text)) = words.get_mut(word + i) {
-                *text = format!("turn-frame[{i}] x{reg} <{key}>");
-            }
-        }
-        relocs.push(Reloc::TurnFrameAddr {
-            word,
-            key: key.to_string(),
-        });
-    };
-    let load_group_arena = |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, reg: u8| {
-        let word = words.len();
-        load_imm(words, reg, 0, "group_arena_base");
-        for i in 0..4 {
-            if let Some((_, text)) = words.get_mut(word + i) {
-                *text = format!("group-arena[{i}] x{reg}");
-            }
-        }
-        relocs.push(Reloc::GroupArenaBase { word });
-    };
-    let push_turn_addr_from_id =
-        |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, id_reg: u8, scratch: u8| {
-            push(
-                words,
-                encode::enc_sub_imm(id_reg, id_reg, 1, true),
-                format!("sub {}, {}, #1", reg_name(id_reg), reg_name(id_reg)),
-            );
-            let word = words.len();
-            load_imm(words, scratch, 0, "turn_stride");
-            for i in 0..4 {
-                if let Some((_, text)) = words.get_mut(word + i) {
-                    *text = format!("turn-stride[{i}] {}", reg_name(scratch));
-                }
-            }
-            relocs.push(Reloc::TurnStride { word });
-            push(
-                words,
-                encode::enc_mul(id_reg, id_reg, scratch, true),
-                format!(
-                    "mul {}, {}, {}",
-                    reg_name(id_reg),
-                    reg_name(id_reg),
-                    reg_name(scratch)
-                ),
-            );
-            let word = words.len();
-            load_imm(words, scratch, 0, "turns_base");
-            for i in 0..4 {
-                if let Some((_, text)) = words.get_mut(word + i) {
-                    *text = format!("turns-base[{i}] {}", reg_name(scratch));
-                }
-            }
-            relocs.push(Reloc::TurnsBase { word });
-            push(
-                words,
-                encode::enc_add_reg(id_reg, scratch, id_reg, true),
-                format!(
-                    "add {}, {}, {}",
-                    reg_name(id_reg),
-                    reg_name(scratch),
-                    reg_name(id_reg)
-                ),
-            );
-        };
-    let bl_key = |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, key: &str| {
-        let word = words.len();
-        push(words, encode::enc_bl(0), format!("bl <{key}>"));
-        relocs.push(Reloc::Call {
-            word,
-            key: key.to_string(),
-        });
-    };
-
-    let callee = spec.callee_key.as_str();
-    let child_index = spec.child_index;
-    let tag_off = group_child_tag_off(child_index) as u16;
-    let payload_off = group_child_payload_off(child_index) as u16;
-
-    // prologue: save x30
-    push(
-        &mut words,
-        encode::enc_sub_imm(31, 31, 16, true),
-        "sub sp, sp, #16".to_string(),
-    );
-    push(
-        &mut words,
-        encode::enc_str_x_imm(30, 31, 0),
-        "str x30, [sp]".to_string(),
-    );
-
-    let mut to_out: Vec<usize> = Vec::new();
-
-    load_turn(&mut words, &mut relocs, 9, callee, "child turn");
-    push(
-        &mut words,
-        encode::enc_ldr_x_imm(10, 9, OFF_TURN_BUSY as u16),
-        format!("ldr x10, [x9, #{OFF_TURN_BUSY}]  ; busy"),
-    );
-    let skip_a = words.len();
-    push(&mut words, 0, "cbz x10, .not_ready".to_string());
-    push(
-        &mut words,
-        encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16),
-        format!("ldr x10, [x9, #{OFF_TURN_SUSPENDED}]  ; suspended"),
-    );
-    let skip_b = words.len();
-    push(&mut words, 0, "cbz x10, .not_ready".to_string());
-    push(
-        &mut words,
-        encode::enc_ldr_x_imm(10, 9, OFF_TURN_RESUME_READY as u16),
-        format!("ldr x10, [x9, #{OFF_TURN_RESUME_READY}]  ; resume_ready"),
-    );
-    let skip_c = words.len();
-    push(&mut words, 0, "cbz x10, .not_ready".to_string());
-
-    // Ready: resume (x0 arbitrary — the resume path ignores incoming args).
-    load_imm(&mut words, 0, 0, "x0 = 0");
-    bl_key(&mut words, &mut relocs, callee);
-    push(
-        &mut words,
-        encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true),
-        format!("cmp x0, #{TURN_STATUS_SUSPENDED}"),
-    );
-    let skip_still_susp = words.len();
-    push(&mut words, 0, "b.eq .still_susp".to_string());
-
-    // Completed or cancelled: harvest into the group arena.
-    push(
-        &mut words,
-        encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true),
-        format!("cmp x0, #{TURN_STATUS_CANCELLED}"),
-    );
-    push(
-        &mut words,
-        encode::enc_cset(11, Cond::Eq, true),
-        "cset x11, eq  ; tag (0 Ok / 1 Cancelled)".to_string(),
-    );
-    // Ambient lineage Temp(0) at turn_area + TURN_RECORD_SIZE is an
-    // `Option[GroupId]` word (decision 669): 0 = None, else arena_index+1.
-    // Read it as that niche encoding — never as a bare `GroupId` wrapped
-    // in `Some` (that would alias "no group" with group 0). A `g.start`ed
-    // child always carries `Some` here; `sub #1` is the niche decode.
-    load_turn(
-        &mut words,
-        &mut relocs,
-        12,
-        callee,
-        "child turn (for Temp0)",
-    );
-    push(
-        &mut words,
-        encode::enc_add_imm(12, 12, TURN_RECORD_SIZE as u16, true),
-        format!("add x12, x12, #{TURN_RECORD_SIZE}  ; &Temp(0) Option[GroupId]"),
-    );
-    push(
-        &mut words,
-        encode::enc_ldr_x_imm(13, 12, 0),
-        "ldr x13, [x12]  ; Option[GroupId] (0 = None, else arena_index + 1)".to_string(),
-    );
-    push(
-        &mut words,
-        encode::enc_sub_imm(13, 13, 1, true),
-        "sub x13, x13, #1  ; Option[GroupId] niche → arena_index".to_string(),
-    );
-    load_imm(&mut words, 14, GROUP_SLOT_SIZE, "GROUP_SLOT_SIZE");
-    push(
-        &mut words,
-        encode::enc_mul(13, 13, 14, true),
-        "mul x13, x13, x14".to_string(),
-    );
-    load_group_arena(&mut words, &mut relocs, 12);
-    push(
-        &mut words,
-        encode::enc_add_reg(12, 12, 13, true),
-        "add x12, x12, x13  ; group addr".to_string(),
-    );
-    push(
-        &mut words,
-        encode::enc_str_x_imm(11, 12, tag_off),
-        format!("str x11, [x12, #{tag_off}]  ; child tag"),
-    );
-    push(
-        &mut words,
-        encode::enc_str_x_imm(1, 12, payload_off),
-        format!("str x1, [x12, #{payload_off}]  ; child payload"),
-    );
-    push(
-        &mut words,
-        encode::enc_ldr_x_imm(13, 12, OFF_GROUP_ACTIVE_CHILDREN as u16),
-        format!("ldr x13, [x12, #{OFF_GROUP_ACTIVE_CHILDREN}]"),
-    );
-    push(
-        &mut words,
-        encode::enc_sub_imm(13, 13, 1, true),
-        "sub x13, x13, #1".to_string(),
-    );
-    push(
-        &mut words,
-        encode::enc_str_x_imm(13, 12, OFF_GROUP_ACTIVE_CHILDREN as u16),
-        format!("str x13, [x12, #{OFF_GROUP_ACTIVE_CHILDREN}]"),
-    );
-    load_turn(
-        &mut words,
-        &mut relocs,
-        9,
-        callee,
-        "child turn (clear busy)",
-    );
-    push(
-        &mut words,
-        encode::enc_str_x_imm(31, 9, OFF_TURN_BUSY as u16),
-        format!("str xzr, [x9, #{OFF_TURN_BUSY}]  ; busy = 0"),
-    );
-
-    let skip_still_active = words.len();
-    push(&mut words, 0, "cbnz x13, .no_wake".to_string());
-    push(
-        &mut words,
-        encode::enc_ldr_w_imm(10, 12, OFF_GROUP_JOIN_WAITER as u16),
-        format!("ldr w10, [x12, #{OFF_GROUP_JOIN_WAITER}]"),
-    );
-    let skip_no_waiter = words.len();
-    push(&mut words, 0, "cbz w10, .no_wake".to_string());
-    push_turn_addr_from_id(&mut words, &mut relocs, 10, 11);
-    load_imm(&mut words, 11, 1, "resume_ready = 1");
-    push(
-        &mut words,
-        encode::enc_str_x_imm(11, 10, OFF_TURN_RESUME_READY as u16),
-        format!("str x11, [x10, #{OFF_TURN_RESUME_READY}]"),
-    );
-    let no_wake = words.len();
-    {
-        let delta = (no_wake as i64 - skip_still_active as i64) * 4;
-        words[skip_still_active].0 = encode::enc_cbnz(13, delta as i32, true);
-        words[skip_still_active].1 = format!("cbnz x13, .no_wake (+{delta})");
-        let d2 = (no_wake as i64 - skip_no_waiter as i64) * 4;
-        words[skip_no_waiter].0 = encode::enc_cbz(10, d2 as i32, false);
-        words[skip_no_waiter].1 = format!("cbz w10, .no_wake (+{d2})");
-    }
-    push(
-        &mut words,
-        encode::enc_movz(0, 1, 0, true),
-        "movz x0, #1  ; ran".to_string(),
-    );
-    to_out.push(words.len());
-    push(&mut words, 0, "b .out".to_string());
-
-    let still_susp = words.len();
-    {
-        let delta = (still_susp as i64 - skip_still_susp as i64) * 4;
-        words[skip_still_susp].0 = encode::enc_b_cond(Cond::Eq, delta as i32);
-        words[skip_still_susp].1 = format!("b.eq .still_susp (+{delta})");
-    }
-    push(
-        &mut words,
-        encode::enc_movz(0, 1, 0, true),
-        "movz x0, #1  ; ran a slice, still parked".to_string(),
-    );
-    to_out.push(words.len());
-    push(&mut words, 0, "b .out".to_string());
-
-    let not_ready = words.len();
-    {
-        let d_a = (not_ready as i64 - skip_a as i64) * 4;
-        words[skip_a].0 = encode::enc_cbz(10, d_a as i32, true);
-        words[skip_a].1 = format!("cbz x10, .not_ready (+{d_a})");
-        let d_b = (not_ready as i64 - skip_b as i64) * 4;
-        words[skip_b].0 = encode::enc_cbz(10, d_b as i32, true);
-        words[skip_b].1 = format!("cbz x10, .not_ready (+{d_b})");
-        let d_c = (not_ready as i64 - skip_c as i64) * 4;
-        words[skip_c].0 = encode::enc_cbz(10, d_c as i32, true);
-        words[skip_c].1 = format!("cbz x10, .not_ready (+{d_c})");
-    }
-    push(
-        &mut words,
-        encode::enc_movz(0, 0, 0, true),
-        "movz x0, #0  ; nothing to do".to_string(),
-    );
-
-    let out = words.len();
-    for m in &to_out {
-        let delta = (out as i64 - *m as i64) * 4;
-        words[*m].0 = encode::enc_b(delta as i32);
-        words[*m].1 = format!("b .out (+{delta})");
-    }
-    push(
-        &mut words,
-        encode::enc_ldr_x_imm(30, 31, 0),
-        "ldr x30, [sp]".to_string(),
-    );
-    push(
-        &mut words,
-        encode::enc_add_imm(31, 31, 16, true),
-        "add sp, sp, #16".to_string(),
-    );
-    push(&mut words, encode::enc_ret(30), "ret".to_string());
-
-    CodegenFn {
-        frame_size: 16,
-        code: words,
-        relocs,
-    }
-}
+// M11 item F: `emit_rt_run_one` / `emit_rt_child_poll` deleted —
+// `__wrela_rt_run_one` / `__wrela_child_poll` in `stdlib/core/runtime.wr`
+// (decisions 790–794). Spec structs kept only if still referenced…
+// (RtRunOneSpec / RtChildPollSpec removed with the emitters.)
 
 /// plans/M7.md item Z1: aggregate-reply arm with no waker — unreachable
 /// by construction (`send` is unit-only). Same imm as
@@ -11582,7 +11035,14 @@ pub fn emit_secondary_core_entry(spec: &RtSecondaryCoreEntrySpec) -> CodegenFn {
     );
 
     let loop_top = words.len();
-    bl_key(&mut words, &mut relocs, &rt_run_one_symbol(core));
+    // M11 F: `__wrela_rt_run_one(core)` — x0 = core (decision 794).
+    // Core index fits in 16 bits (machine VCPUS = 3).
+    push(
+        &mut words,
+        encode::enc_movz(0, core as u16, 0, true),
+        format!("movz x0, #{core}  ; core arg"),
+    );
+    bl_key(&mut words, &mut relocs, "__wrela_rt_run_one");
     {
         let this = words.len();
         let delta = (loop_top as i64 - this as i64) * 4;
@@ -12473,13 +11933,16 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     let resolvable = program.fns.contains_key(target)
                         || rt_enqueue_actor(target).is_some_and(|a| !a.is_empty())
                         || rt_run_one_glue_target(target)
-                        || rt_select_and_run_glue_target(target);
+                        || rt_select_and_run_glue_target(target)
+                        || target == "__wrela_rt_run_one"
+                        || target == "__wrela_deadline_poll"
+                        || target == "__wrela_deadline_scan";
                     if !resolvable {
                         return Err(format!(
                             "fn `{key}`: Reloc::Call targets `{target}`, which this \
                              `CodegenProgram` never codegen'd and which is not an \
-                             `rt_enqueue` / `rt_select_and_run` / `rt_child_poll` / \
-                             `rt_drain` / `rt_xreply` glue symbol either"
+                             `rt_enqueue` / `rt_select_and_run` / `rt_drain` / \
+                             `rt_xreply` / `__wrela_*` glue symbol either"
                         ));
                     }
                 }
@@ -12648,32 +12111,7 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
         "emit_rt_enqueue",
         emit_rt_enqueue("Actor", CAP, SLOT).code.len(),
     );
-    let spec = RtRunOneSpec {
-        core: 0,
-        select_actors: vec!["Actor".into()],
-        child_poll_keys: vec![],
-        has_drain: false,
-    };
-    out.insert("emit_rt_run_one", emit_rt_run_one(&spec).code.len());
-    // Variant with drain + one child poll — still one census key; the
-    // locked count is the no-drain/no-poll REF above. Recorded so a
-    // growth in the drained shape is visible when someone re-measures.
-    let _drained = {
-        let spec = RtRunOneSpec {
-            core: 0,
-            select_actors: vec!["Actor".into()],
-            child_poll_keys: vec!["Child.run".into()],
-            has_drain: true,
-        };
-        emit_rt_run_one(&spec).code.len()
-    };
-    let _ = _drained;
-    // M10 E4 / decision 623: REF one child at index 0.
-    let poll = RtChildPollSpec {
-        callee_key: "Child.run".into(),
-        child_index: 0,
-    };
-    out.insert("emit_rt_child_poll", emit_rt_child_poll(&poll).code.len());
+    // emit_rt_run_one / emit_rt_child_poll deleted in M11 F.
     // M10 F / decision 630: REF one sync method, slot_size=32, bare
     // turn area (no lineage slots), no xreply arms — same shape as
     // layout's build_rt_select_and_run REF row.
@@ -13284,88 +12722,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod rt_child_poll_tests {
-    use super::*;
-
-    /// Layout injects `rt_child_poll <callee>` after `--stage=asm` would
-    /// dump `CodegenProgram`, so the real body is invisible to the asm
-    /// golden (same trap item C recorded for `__wrela_abort_tail`). Pin
-    /// the emitted words here — an empty/stub body would still leave
-    /// every transcript green.
-    #[test]
-    fn emit_rt_child_poll_pins_real_bytes_and_option_group_id_niche() {
-        let spec = RtChildPollSpec {
-            callee_key: "child_fn".to_string(),
-            child_index: 0,
-        };
-        let f = emit_rt_child_poll(&spec);
-        assert_eq!(f.frame_size, 16);
-        assert!(
-            f.code.len() >= 60,
-            "hand-asm twin is 63 words; specialized body must be a real \
-             routine, not a stub (got {} words)",
-            f.code.len()
-        );
-        assert!(
-            !f.code
-                .iter()
-                .any(|(w, _)| *w == encode::enc_ret(30) && f.code.len() < 10),
-            "must not be a lone ret stub"
-        );
-        // Relocs layout must patch — without them the body is unusable.
-        assert!(
-            f.relocs
-                .iter()
-                .any(|r| matches!(r, Reloc::TurnFrameAddr { key, .. } if key == "child_fn")),
-            "TurnFrameAddr for the child turn"
-        );
-        assert!(
-            f.relocs
-                .iter()
-                .any(|r| matches!(r, Reloc::Call { key, .. } if key == "child_fn")),
-            "Reloc::Call resume of the child"
-        );
-        assert!(
-            f.relocs
-                .iter()
-                .any(|r| matches!(r, Reloc::GroupArenaBase { .. })),
-            "GroupArenaBase"
-        );
-        assert!(
-            f.relocs
-                .iter()
-                .any(|r| matches!(r, Reloc::TurnsBase { .. })),
-            "TurnsBase for join_waiter wake"
-        );
-        assert!(
-            f.relocs
-                .iter()
-                .any(|r| matches!(r, Reloc::TurnStride { .. })),
-            "TurnStride for join_waiter wake"
-        );
-        // Niche decode: after loading Temp(0) as Option[GroupId], sub #1.
-        assert!(
-            f.code.iter().any(|(w, t)| {
-                *w == encode::enc_sub_imm(13, 13, 1, true) && t.contains("Option[GroupId]")
-            }),
-            "must niche-decode Option[GroupId] with sub #1, not wrap a bare GroupId"
-        );
-        // Ready-check epilogue returns 0; progress returns 1.
-        assert!(
-            f.code
-                .iter()
-                .any(|(w, t)| *w == encode::enc_movz(0, 0, 0, true) && t.contains("nothing")),
-            "not-ready path returns 0"
-        );
-        assert!(
-            f.code
-                .iter()
-                .any(|(w, t)| *w == encode::enc_movz(0, 1, 0, true) && t.contains("ran")),
-            "progress path returns 1"
-        );
-    }
-}
+// M11 F: rt_child_poll_tests deleted with emit_rt_child_poll.
 
 #[cfg(test)]
 mod rt_select_and_run_tests {
@@ -13601,13 +12958,13 @@ mod rt_cross_core_tests {
         );
 
         let sec = emit_secondary_core_entry(&RtSecondaryCoreEntrySpec { core: 1 });
-        assert_eq!(sec.code.len(), 26);
+        assert_eq!(sec.code.len(), 27); // +1 movz x0, #core (M11 F)
         assert!(
             sec.relocs.iter().any(|r| matches!(
                 r,
-                Reloc::Call { key, .. } if key == &rt_run_one_symbol(1)
+                Reloc::Call { key, .. } if key == "__wrela_rt_run_one"
             )),
-            "secondary entry must Call rt_run_one"
+            "secondary entry must Call __wrela_rt_run_one"
         );
     }
 }

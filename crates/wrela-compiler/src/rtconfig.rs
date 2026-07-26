@@ -1,16 +1,40 @@
 //! Image runtime config generator (plans/M11.md item D, decisions 700–702 /
-//! 709 / 760–769; item E, decisions 780–786).
+//! 709 / 760–769; item E, decisions 780–786; item F, decisions 790–796).
 //!
 //! After `@image` evaluation + placement, the compiler pretty-prints a
 //! hidden facts-only module (`core.__image_runtime`) as source text and
 //! feeds it through the ordinary front end. No AST synthesis, no loops or
 //! decisions in the generated text — consts, `@layout(runtime)` types,
-//! and `@placed` statics at fixed addresses.
+//! `@placed` statics, and exhaustive `match` ladders over comptime indices.
 
 use crate::layout::{RuntimeTables, place_runtime_tables};
 use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 use wrela_machine::layout::RTDATA_BASE;
+
+/// One static `g.start` site (plans/M11.md item F / decision 791).
+#[derive(Debug, Clone)]
+pub struct ChildSiteFact {
+    /// Free-async / group-child callee key (`program.fns` spelling).
+    pub callee_key: String,
+    /// Slot ordinal within the group (`GROUP_MAX_CHILDREN` bound).
+    pub child_index: usize,
+    /// Index into `RT.turns` for this child's free-turn area.
+    pub turn_index: usize,
+}
+
+/// Image-specific facts beyond [`RuntimeTables`] (item F / decision 790).
+/// Empty vectors yield match ladders that always return 0 (stub / dump).
+#[derive(Debug, Clone, Default)]
+pub struct RtconfigExtras {
+    /// Mailbox-root names on each live core, in `mailbox_root_names` order
+    /// filtered by `actor_cores` — the RR select list `rt_run_one` walked.
+    pub select_by_core: Vec<Vec<String>>,
+    /// `true` when this core has any inbound cross-core ring.
+    pub drain_by_core: Vec<bool>,
+    /// `g.start` sites in `BTreeMap` key order (same as former inject).
+    pub child_sites: Vec<ChildSiteFact>,
+}
 
 /// Hidden module address (decision 701). Loader key is `["core", "__image_runtime"]`;
 /// the file declares plain `module __image_runtime` like every other `core.*` file.
@@ -24,6 +48,13 @@ pub const GENERATED_INPUT_PATH: &str = "<generated>";
 
 /// Dump stage name (decision 701).
 pub const DUMP_STAGE: &str = "rtconfig";
+
+/// Fixed stub pools (decision 791): `runtime.wr` always imports every
+/// stub so spliced match-ladder bodies can Call them. Counts are hard
+/// ceilings — generator fails closed if an image needs more.
+pub const SELECT_STUB_COUNT: usize = 32;
+pub const DRAIN_STUB_COUNT: usize = 3; // == VCPUS
+pub const RESUME_STUB_COUNT: usize = 16;
 
 /// Batch-1 stub text so `runtime.wr` can import counts / `RT` / `GROUPS`
 /// before a real image is evaluated (plans/M11.md item E / decision 780).
@@ -39,7 +70,7 @@ pub fn stub_text() -> String {
         ..RuntimeTables::default()
     };
     tables.stripe_for_cores(1);
-    generate(&tables)
+    generate_with(&tables, &RtconfigExtras::default())
 }
 
 /// Pretty-print the facts-only config module for `tables`.
@@ -48,12 +79,38 @@ pub fn stub_text() -> String {
 /// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
 /// <tables.cores>` with that exact spelling (decision 709 / 761).
 ///
-/// Item E (decision 781): structured `TurnArea` / `GroupSlot` overlays —
-/// `RT.turns` at `RTDATA_BASE`, `GROUPS.slots` at the placed group-arena
-/// address. `GROUP_SLOTS = max(GROUP_ARENA_CAPACITY, 1)` so the array
-/// length stays legal when capacity is 0 (decision 581); algorithms loop
-/// on `GROUP_ARENA_CAPACITY`.
+/// Item E (decision 781): structured `TurnArea` / `GroupSlot` overlays.
+/// Item F (decisions 790–792): `SCHED` stripe; child tag/payload fields;
+/// match ladders + fixed stub pools from `tables.select_by_core` /
+/// `drain_by_core` / `child_sites` (filled by `RuntimeWiring::derive`).
 pub fn generate(tables: &RuntimeTables) -> String {
+    let extras = RtconfigExtras {
+        select_by_core: tables.select_by_core.clone(),
+        drain_by_core: tables.drain_by_core.clone(),
+        child_sites: tables
+            .child_sites
+            .iter()
+            .map(|(callee_key, child_index, turn_index)| ChildSiteFact {
+                callee_key: callee_key.clone(),
+                child_index: *child_index,
+                turn_index: *turn_index,
+            })
+            .collect(),
+    };
+    generate_with(tables, &extras)
+}
+
+/// Pretty-print the facts-only config module for `tables` + item-F extras.
+///
+/// `tables.cores` must already reflect `PlacementTable.cores` (call
+/// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
+/// <tables.cores>` with that exact spelling (decision 709 / 761).
+///
+/// Item E (decision 781): structured `TurnArea` / `GroupSlot` overlays.
+/// Item F (decisions 790–792): `SchedCore` / `RT.sched` for RR cursors;
+/// child tag/payload fields; match ladders + placeholder stubs that layout
+/// remaps onto `rt_select_and_run` / `rt_drain` / resume callees.
+pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let n_turns_len = (tables.n_turns as usize).max(1);
     // Overlay stride is at least 0x48 so `ambient_group` at TURN_RECORD_SIZE
@@ -68,44 +125,71 @@ pub fn generate(tables: &RuntimeTables) -> String {
     let group_cap = tables.group_arena_capacity as usize;
     let group_slots = group_cap.max(1);
     let group_addr = placement.group_arena;
+    let n_cores = tables.cores;
+    let ready_cap = tables.ready_queue_capacity as usize;
+
+    // Flatten select actors for stub numbering (stable across cores).
+    let mut select_flat: Vec<(usize, usize, String)> = Vec::new();
+    for (core, actors) in extras.select_by_core.iter().enumerate() {
+        for (slot, name) in actors.iter().enumerate() {
+            select_flat.push((core, slot, name.clone()));
+        }
+    }
+    let n_child = extras.child_sites.len();
+    assert!(
+        select_flat.len() <= SELECT_STUB_COUNT,
+        "image needs {} select stubs; pool is {SELECT_STUB_COUNT} (decision 791)",
+        select_flat.len()
+    );
+    assert!(
+        n_cores <= DRAIN_STUB_COUNT,
+        "image needs {n_cores} drain stubs; pool is {DRAIN_STUB_COUNT} (decision 791)"
+    );
+    assert!(
+        n_child <= RESUME_STUB_COUNT,
+        "image needs {n_child} resume stubs; pool is {RESUME_STUB_COUNT} (decision 791)"
+    );
 
     let mut out = String::new();
     out.push_str("module __image_runtime\n");
     out.push_str("\n");
     out.push_str("# generated by wrela; do not edit (dump --stage=rtconfig)\n");
     out.push_str("\n");
-    push_const(&mut out, "N_CORES", tables.cores);
+    push_const(&mut out, "N_CORES", n_cores);
     push_const(&mut out, "N_TURNS", tables.n_turns as usize);
     push_const(&mut out, "N_TURNS_LEN", n_turns_len);
     push_const(&mut out, "N_ACTORS", tables.actors.len());
     push_const(&mut out, "N_DRIVERS", tables.drivers.len());
-    push_const(
-        &mut out,
-        "READY_QUEUE_CAPACITY",
-        tables.ready_queue_capacity as usize,
-    );
+    push_const(&mut out, "READY_QUEUE_CAPACITY", ready_cap);
     push_const(&mut out, "GROUP_ARENA_CAPACITY", group_cap);
     push_const(&mut out, "GROUP_SLOTS", group_slots);
     push_const(&mut out, "TURN_STRIDE", turn_stride);
     push_const(&mut out, "RTDATA_BYTES", tables.total_bytes as usize);
+    push_const(&mut out, "N_CHILD_SITES", n_child);
+    push_const(&mut out, "N_SELECT_STUBS", select_flat.len());
+    push_const(&mut out, "SELECT_STUB_COUNT", SELECT_STUB_COUNT);
+    push_const(&mut out, "DRAIN_STUB_COUNT", DRAIN_STUB_COUNT);
+    push_const(&mut out, "RESUME_STUB_COUNT", RESUME_STUB_COUNT);
     out.push('\n');
 
-    // Turn header the deadline scan reads. Size == TURN_STRIDE so
-    // `RT.turns[i]` indexes the live turn array when reinjected
-    // (decision 781). Fields in ascending offset order (03 §2).
+    // Turn header. `reply` at +24 is OFF_TURN_REPLY — async epilogue stores
+    // the completing scalar there so child_poll can read it after resume
+    // (decision 793). Size == TURN_STRIDE so `RT.turns[i]` indexes live
+    // turns when reinjected (decision 781).
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct TurnArea:\n");
     out.push_str("    busy: u64\n");
     out.push_str("    suspended: u64\n");
     out.push_str("    resume_ready: u64\n");
+    out.push_str("    reply: u64\n");
     out.push_str("    @offset(0x40) ambient_group: u64\n");
     if turn_stride > 0x48 {
         out.push_str(&format!("    @offset({:#x}) _tail: u8\n", turn_stride - 1));
     }
     out.push('\n');
 
-    // Group arena slot (codegen::GROUP_SLOT_SIZE == 96). `owner_turn` is a
-    // u32 at +56 (TurnId); children occupy +64..+96.
+    // Group arena slot (GROUP_SLOT_SIZE == 96). join_waiter / owner_turn are
+    // TurnIds (u32); children occupy +64..+96.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct GroupSlot:\n");
     out.push_str("    in_use: u64\n");
@@ -114,9 +198,20 @@ pub fn generate(tables: &RuntimeTables) -> String {
     out.push_str("    deadline_ns: u64\n");
     out.push_str("    cancelled: u64\n");
     out.push_str("    parent: u64\n");
-    out.push_str("    join_waiter: u64\n");
+    out.push_str("    @offset(0x30) join_waiter: u32\n");
     out.push_str("    @offset(0x38) owner_turn: u32\n");
-    out.push_str("    @offset(0x5f) _tail: u8\n");
+    out.push_str("    @offset(0x40) child0_tag: u64\n");
+    out.push_str("    child0_payload: u64\n");
+    out.push_str("    child1_tag: u64\n");
+    out.push_str("    child1_payload: u64\n");
+    out.push('\n');
+
+    // Per-core ready queue + RR cursor, matching `place_runtime_tables`
+    // after the turn array (decision 790).
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct SchedCore:\n");
+    out.push_str("    ready: [u64; READY_QUEUE_CAPACITY]\n");
+    out.push_str("    rr_cursor: u64\n");
     out.push('\n');
 
     out.push_str("@layout(runtime, endian=little)\n");
@@ -127,13 +222,173 @@ pub fn generate(tables: &RuntimeTables) -> String {
     out.push_str("pub static RT: RuntimeTables\n");
     out.push('\n');
 
+    // Scheduler stripe sits after turns + actor/driver mailboxes (not
+    // contiguous with `RT.turns`) — separate @placed at sched_base
+    // (decision 790). `rr_cursors[0]` is the first core's cursor word,
+    // which follows that core's ready[] in SchedCore.
+    //
+    // Stub / empty turn sets place sched at `base` in `place_runtime_tables`;
+    // the overlay still reserves `N_TURNS_LEN` turns at RTDATA_BASE, so use
+    // a non-colliding placeholder after that array for typecheck.
+    let sched_base = if tables.n_turns == 0 {
+        RTDATA_BASE + (n_turns_len as u64) * (turn_stride as u64)
+    } else {
+        match placement.rr_cursors.first() {
+            Some(&rr) => rr - (ready_cap as u64) * 8,
+            None => RTDATA_BASE + tables.n_turns * tables.turn_stride,
+        }
+    };
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct SchedStripe:\n");
+    out.push_str("    cores: [SchedCore; N_CORES]\n");
+    out.push('\n');
+    out.push_str(&format!("@placed({sched_base:#x})\n"));
+    out.push_str("pub static SCHED: SchedStripe\n");
+    out.push('\n');
+
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct GroupArena:\n");
     out.push_str("    slots: [GroupSlot; GROUP_SLOTS]\n");
     out.push('\n');
     out.push_str(&format!("@placed({group_addr:#x})\n"));
     out.push_str("pub static GROUPS: GroupArena\n");
+    out.push('\n');
+
+    // Fixed stub pools (decision 791): always emitted so `runtime.wr` can
+    // import every name. Live remaps overwrite Call targets; unused stubs
+    // stay as `return 0`.
+    for i in 0..SELECT_STUB_COUNT {
+        out.push_str(&format!("pub fn __select_{i}() -> u64:\n"));
+        out.push_str("    return 0\n");
+        out.push('\n');
+    }
+    for core in 0..DRAIN_STUB_COUNT {
+        out.push_str(&format!("pub fn __drain_{core}() -> u64:\n"));
+        out.push_str("    return 0\n");
+        out.push('\n');
+    }
+    for i in 0..RESUME_STUB_COUNT {
+        out.push_str(&format!("pub fn __resume_{i}() -> u64:\n"));
+        out.push_str("    return 0\n");
+        out.push('\n');
+    }
+
+    // --- match ladders (facts only; no if/while) ---------------------------
+    out.push_str("pub fn __wrela_select_count(core: usize) -> usize:\n");
+    out.push_str("    match core:\n");
+    for (core, actors) in extras.select_by_core.iter().enumerate() {
+        out.push_str(&format!("        case {core}:\n"));
+        out.push_str(&format!("            return {}\n", actors.len()));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_try_select(core: usize, slot: usize) -> u64:\n");
+    out.push_str("    match core:\n");
+    let mut stub_i = 0usize;
+    for (core, actors) in extras.select_by_core.iter().enumerate() {
+        out.push_str(&format!("        case {core}:\n"));
+        if actors.is_empty() {
+            out.push_str("            return 0\n");
+        } else {
+            out.push_str("            match slot:\n");
+            for slot in 0..actors.len() {
+                out.push_str(&format!("                case {slot}:\n"));
+                out.push_str(&format!("                    return __select_{stub_i}()\n"));
+                stub_i += 1;
+            }
+            out.push_str("                case _:\n");
+            out.push_str("                    return 0\n");
+        }
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_try_drain(core: usize) -> u64:\n");
+    out.push_str("    match core:\n");
+    for (core, has) in extras.drain_by_core.iter().enumerate() {
+        out.push_str(&format!("        case {core}:\n"));
+        if *has {
+            out.push_str(&format!("            return __drain_{core}()\n"));
+        } else {
+            out.push_str("            return 0\n");
+        }
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_resume_child(site: usize) -> u64:\n");
+    out.push_str("    match site:\n");
+    for i in 0..n_child {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return __resume_{i}()\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_child_turn_index(site: usize) -> usize:\n");
+    out.push_str("    match site:\n");
+    for (i, site) in extras.child_sites.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {}\n", site.turn_index));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_child_slot(site: usize) -> usize:\n");
+    out.push_str("    match site:\n");
+    for (i, site) in extras.child_sites.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {}\n", site.child_index));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+
     out
+}
+
+/// Call-key remaps from generated stubs onto ImageStatic / resume targets
+/// (decision 791). Applied to reinjected runtime codegen before insert.
+pub fn stub_call_remaps(extras: &RtconfigExtras) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut stub_i = 0usize;
+    for actors in &extras.select_by_core {
+        for name in actors {
+            out.push((
+                format!("__select_{stub_i}"),
+                crate::codegen::rt_select_and_run_symbol(name),
+            ));
+            stub_i += 1;
+        }
+    }
+    for (core, has) in extras.drain_by_core.iter().enumerate() {
+        if *has {
+            out.push((
+                format!("__drain_{core}"),
+                crate::codegen::rt_drain_symbol(core),
+            ));
+        }
+    }
+    for (i, site) in extras.child_sites.iter().enumerate() {
+        out.push((format!("__resume_{i}"), site.callee_key.clone()));
+    }
+    out
+}
+
+/// Rewrite `Reloc::Call` keys in `f` according to `remaps` (from→to).
+pub fn remap_call_keys(f: &mut crate::codegen::CodegenFn, remaps: &[(String, String)]) {
+    for r in &mut f.relocs {
+        if let crate::codegen::Reloc::Call { key, .. } = r {
+            if let Some((_, to)) = remaps.iter().find(|(from, _)| from == key) {
+                *key = to.clone();
+            }
+        }
+    }
 }
 
 fn push_const(out: &mut String, name: &str, value: usize) {
@@ -337,9 +592,14 @@ mod tests {
         let text = generate(&t);
         assert!(text.contains("struct TurnArea:\n"));
         assert!(text.contains("struct GroupSlot:\n"));
+        assert!(text.contains("struct SchedCore:\n"));
+        assert!(text.contains("struct SchedStripe:\n"));
         assert!(text.contains("pub const GROUP_SLOTS: usize = 1\n"));
         assert!(text.contains("turns: [TurnArea; N_TURNS_LEN]\n"));
+        assert!(text.contains("cores: [SchedCore; N_CORES]\n"));
+        assert!(text.contains("pub static SCHED: SchedStripe\n"));
         assert!(text.contains("slots: [GroupSlot; GROUP_SLOTS]\n"));
+        assert!(text.contains("pub const N_CHILD_SITES: usize = 0\n"));
     }
 }
 
@@ -462,6 +722,6 @@ mod typecheck_live {
             .iter()
             .find(|l| l.name == "RuntimeTables")
             .expect("RuntimeTables");
-        assert_eq!(rt.size, Some(3072), "RuntimeTables = 3 * 1024");
+        assert_eq!(rt.size, Some(3072), "RuntimeTables = 3 * 1024 turns");
     }
 }

@@ -7697,12 +7697,13 @@ Program
     0209: 94000000  bl <__wrela_abort>
     0210: 14000001  b #4
     0211: aa0003e1  mov x1, x0
-    0212: d2800000  movz x0, #0x0
-    0213: f2a00000  movk x0, #0x0, lsl #16
-    0214: f2c00000  movk x0, #0x0, lsl #32
-    0215: f2e00000  movk x0, #0x0, lsl #48
-    0216: f9408f9e  ldr lr, [x28, #280]
-    0217: d65f03c0  ret
+    0212: f9000f81  str x1, [x28, #24]  ; complete → turn.reply
+    0213: d2800000  movz x0, #0x0
+    0214: f2a00000  movk x0, #0x0, lsl #16
+    0215: f2c00000  movk x0, #0x0, lsl #32
+    0216: f2e00000  movk x0, #0x0, lsl #48
+    0217: f9408f9e  ldr lr, [x28, #280]
+    0218: d65f03c0  ret
   Fn key=rt_enqueue Store frame=0 bytes
     0000: d2800009  mailbox-addr[0] Count x9 <Store>
     0001: f2a00009  mailbox-addr[1] Count x9 <Store>

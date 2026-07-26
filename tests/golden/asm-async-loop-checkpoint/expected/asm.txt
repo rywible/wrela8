@@ -2535,12 +2535,13 @@ Program
     0247: 94000000  bl <__wrela_checkpoint_service>
     0248: 17ffff34  b #-816
     0249: aa0003e1  mov x1, x0
-    0250: d2800000  movz x0, #0x0
-    0251: f2a00000  movk x0, #0x0, lsl #16
-    0252: f2c00000  movk x0, #0x0, lsl #32
-    0253: f2e00000  movk x0, #0x0, lsl #48
-    0254: f940a79e  ldr lr, [x28, #328]
-    0255: d65f03c0  ret
+    0250: f9000f81  str x1, [x28, #24]  ; complete → turn.reply
+    0251: d2800000  movz x0, #0x0
+    0252: f2a00000  movk x0, #0x0, lsl #16
+    0253: f2c00000  movk x0, #0x0, lsl #32
+    0254: f2e00000  movk x0, #0x0, lsl #48
+    0255: f940a79e  ldr lr, [x28, #328]
+    0256: d65f03c0  ret
   Rodata
     0: offset=0x0 shift count 
     1: offset=0xc  is out of range for a 64-bit type
