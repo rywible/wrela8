@@ -345,6 +345,7 @@ const SCRATCH_C: u8 = 11;
 /// (immediate)'s Rd/Rn field, where `31` means `SP`) — a separate name so
 /// a reader never has to reason about which encoding class is in play at
 /// each call site.
+#[allow(dead_code)]
 const X_ZR: u8 = 31;
 
 /// Placeholder failure exit codes (module doc's own "Entry/abort
@@ -446,158 +447,48 @@ pub fn build_checkpoint_and_vector_stub_ex(
     irq_vectors: &[IrqVectorEntry],
     wake_drains: &[WakeDrainEntry],
 ) -> CheckpointBlock {
-    let mut a = Asm::new(0);
-
-    // --- __wrela_vector0_service --- placed first: word offset 0, so the
-    // checkpoint loop's own `BL` below needs no forward-reference bookkeeping.
-    let vector0_start = a.abs();
-    debug_assert_eq!(vector0_start, 0);
-    let observed_addr = machine_layout::MACHINE_INFO_BASE + machine_info::OFF_VECTOR0_OBSERVED;
-    a.load_imm(SCRATCH_A, observed_addr);
-    a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
-    a.push(encode::enc_add_imm(SCRATCH_B, SCRATCH_B, 1, true));
-    a.push(encode::enc_str_x_imm(SCRATCH_B, SCRATCH_A, 0));
-    if let Some(g) = group.filter(|g| g.arena_capacity > 0) {
-        emit_deadline_scan_and_delivery(&mut a, g);
-    }
-    a.push(encode::enc_ret(30));
-
-    // --- __wrela_checkpoint_service ---
-    let checkpoint_service_word = a.abs();
-    a.push(encode::enc_sub_imm(X_SP, X_SP, 16, true)); // sub sp, sp, #16
-    a.push(encode::enc_str_x_imm(30, X_SP, 0)); // str x30, [sp]  (BL below clobbers it)
-    let pending_addr = wrela_machine::pending::core_word_addr(0);
-    let multi = !irq_vectors.is_empty() || !wake_drains.is_empty();
-    if !multi {
-        // M6 byte-identical path: one vector, whole-word clear.
-        let loop_top = a.abs();
-        a.load_imm(SCRATCH_A, pending_addr);
-        a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
-        let skip_done = a.skip_placeholder(); // cbz X_B, .done
-        a.bl_to(vector0_start);
-        a.load_imm(SCRATCH_A, pending_addr);
-        a.push(encode::enc_str_x_imm(X_ZR, SCRATCH_A, 0));
-        a.b_to(loop_top);
-        let done = a.abs();
-        a.patch_cbz(skip_done, SCRATCH_B);
-        debug_assert_eq!(done, a.abs());
-    } else {
-        // plans/M7.md item G: multi-vector + wake-pending drain.
-        // Registers inside the loop (reloaded after every BL):
-        //   x9  = pending word address / scratch
-        //   x10 = pending bits (live snapshot)
-        //   x11 = clear-mask accumulator / did_work flag
-        //   x12 = per-bit test
-        //   x0  = driver state (ISR / @task receiver)
-        let loop_top = a.abs();
-        a.push(encode::enc_movz(SCRATCH_C, 0, 0, true)); // did_work = 0
-        a.load_imm(SCRATCH_A, pending_addr);
-        a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
-        let skip_pending = a.skip_placeholder(); // cbz pending, .after_pending
-
-        // clear_mask accumulator in x11 for the pending half; did_work
-        // is rebuilt as 1 once any bit is serviced.
-        a.push(encode::enc_movz(SCRATCH_C, 0, 0, true)); // clear_mask = 0
-
-        // bit 0 → vector0
-        a.push(encode::enc_movz(9, 1, 0, true));
-        a.push(encode::enc_and_reg(12, SCRATCH_B, 9, true));
-        let skip_v0 = a.skip_placeholder(); // cbz x12, .skip_v0
-        // Preserve pending + clear_mask across the BL (callee clobbers x9..).
-        a.push(encode::enc_sub_imm(X_SP, X_SP, 16, true));
-        a.push(encode::enc_str_x_imm(SCRATCH_B, X_SP, 0));
-        a.push(encode::enc_str_x_imm(SCRATCH_C, X_SP, 8));
-        a.bl_to(vector0_start);
-        a.push(encode::enc_ldr_x_imm(SCRATCH_B, X_SP, 0));
-        a.push(encode::enc_ldr_x_imm(SCRATCH_C, X_SP, 8));
-        a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
-        a.push(encode::enc_movz(9, 1, 0, true));
-        a.push(encode::enc_orr_reg(SCRATCH_C, SCRATCH_C, 9, true)); // clear_mask |= 1
-        a.patch_cbz(skip_v0, 12);
-
-        // Device-owned vectors.
-        for entry in irq_vectors {
-            let mask = 1u64 << (entry.vector & 63);
-            a.load_imm(9, mask);
-            a.push(encode::enc_and_reg(12, SCRATCH_B, 9, true));
-            let skip = a.skip_placeholder();
-            a.push(encode::enc_sub_imm(X_SP, X_SP, 32, true));
-            a.push(encode::enc_str_x_imm(SCRATCH_B, X_SP, 0));
-            a.push(encode::enc_str_x_imm(SCRATCH_C, X_SP, 8));
-            a.push(encode::enc_str_x_imm(9, X_SP, 16)); // mask
-            a.load_imm(0, entry.driver_state); // x0 = self
-            a.bl_call_key(&entry.handler_key);
-            a.push(encode::enc_ldr_x_imm(SCRATCH_B, X_SP, 0));
-            a.push(encode::enc_ldr_x_imm(SCRATCH_C, X_SP, 8));
-            a.push(encode::enc_ldr_x_imm(9, X_SP, 16));
-            a.push(encode::enc_add_imm(X_SP, X_SP, 32, true));
-            a.push(encode::enc_orr_reg(SCRATCH_C, SCRATCH_C, 9, true));
-            a.patch_cbz(skip, 12);
-        }
-
-        // BIC-clear serviced bits, keep any raise that landed mid-dispatch.
-        a.load_imm(SCRATCH_A, pending_addr);
-        a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
-        a.push(encode::enc_bic_reg(SCRATCH_B, SCRATCH_B, SCRATCH_C, true));
-        a.push(encode::enc_str_x_imm(SCRATCH_B, SCRATCH_A, 0));
-        a.push(encode::enc_movz(SCRATCH_C, 1, 0, true)); // did_work = 1
-        a.patch_cbz(skip_pending, SCRATCH_B);
-
-        // Sticky wake-pending drain (03 §6 mask–arm–recheck for the
-        // ISR→bottom-half edge). Fixed-point: a `@task` that re-wakes
-        // itself is consumed before this service returns.
-        let wake_top = a.abs();
-        a.push(encode::enc_movz(12, 0, 0, true)); // any_wake = 0
-        for w in wake_drains {
-            let pending_word = w.driver_state + w.wake_pending_off;
-            a.load_imm(SCRATCH_A, pending_word);
-            a.push(encode::enc_ldr_x_imm(SCRATCH_B, SCRATCH_A, 0));
-            let skip_w = a.skip_placeholder();
-            a.push(encode::enc_str_x_imm(X_ZR, SCRATCH_A, 0)); // clear first
-            a.push(encode::enc_sub_imm(X_SP, X_SP, 16, true));
-            a.push(encode::enc_str_x_imm(12, X_SP, 0)); // save any_wake
-            a.push(encode::enc_str_x_imm(SCRATCH_C, X_SP, 8)); // save did_work
-            a.load_imm(0, w.driver_state);
-            a.bl_call_key(&w.task_key);
-            a.push(encode::enc_ldr_x_imm(12, X_SP, 0));
-            a.push(encode::enc_ldr_x_imm(SCRATCH_C, X_SP, 8));
-            a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
-            a.push(encode::enc_movz(12, 1, 0, true)); // any_wake = 1
-            a.push(encode::enc_movz(SCRATCH_C, 1, 0, true)); // did_work = 1
-            a.patch_cbz(skip_w, SCRATCH_B);
-        }
-        a.push(encode::enc_cbnz(
-            12,
-            ((wake_top as i64 - a.abs() as i64) * 4) as i32,
-            true,
-        ));
-
-        // Recheck: pending raise or wake during the drains above.
-        a.push(encode::enc_cbnz(
-            SCRATCH_C,
-            ((loop_top as i64 - a.abs() as i64) * 4) as i32,
-            true,
-        ));
-    }
-    a.push(encode::enc_ldr_x_imm(30, X_SP, 0));
-    a.push(encode::enc_add_imm(X_SP, X_SP, 16, true));
-    a.push(encode::enc_ret(30));
-
-    // --- __wrela_deadline_poll (plans/M6.md item F #3) ------------------
-    let deadline_poll_word = match group.filter(|g| g.arena_capacity > 0) {
-        Some(g) => {
-            let start = a.abs();
-            emit_deadline_poll(&mut a, g);
-            Some(start)
-        }
-        None => None,
+    // plans/M10.md item G / decision 670: specialized emitters in codegen,
+    // materialized here into the checkpoint section (VMM + Reloc::CheckpointService
+    // need a self-contained word block).
+    use crate::codegen::{
+        CheckpointEmitSpec, CheckpointIrqSpec, CheckpointWakeSpec, DeadlineGroupSpec,
+        emit_checkpoint_and_vector_stub,
     };
-
+    let group_spec = group.map(|g| DeadlineGroupSpec {
+        arena_base: g.arena_base,
+        arena_capacity: g.arena_capacity,
+        turn_areas: g
+            .turn_areas
+            .iter()
+            .map(|(addr, id)| (*addr, id.get()))
+            .collect(),
+    });
+    let irq = irq_vectors
+        .iter()
+        .map(|e| CheckpointIrqSpec {
+            vector: e.vector,
+            handler_key: e.handler_key.clone(),
+            driver_state: e.driver_state,
+        })
+        .collect();
+    let wake = wake_drains
+        .iter()
+        .map(|e| CheckpointWakeSpec {
+            driver_state: e.driver_state,
+            wake_pending_off: e.wake_pending_off,
+            task_key: e.task_key.clone(),
+        })
+        .collect();
+    let emitted = emit_checkpoint_and_vector_stub(&CheckpointEmitSpec {
+        group: group_spec,
+        irq_vectors: irq,
+        wake_drains: wake,
+    });
     CheckpointBlock {
-        words: a.words,
-        checkpoint_service_word,
-        deadline_poll_word,
-        relocs: a.relocs,
+        words: emitted.words,
+        checkpoint_service_word: emitted.checkpoint_service_word,
+        deadline_poll_word: emitted.deadline_poll_word,
+        relocs: emitted.relocs,
     }
 }
 
@@ -667,7 +558,11 @@ fn group_service_shape(runtime: Option<&RuntimeTables>) -> Option<GroupServiceCt
     // plans/M10.md item G / decision 671: same owner set as
     // `place_runtime_tables` — actors, then messageable drivers, then free
     // turns. Word count depends only on the length.
-    let n_driver_turns = tables.drivers.iter().filter(|d| d.mailbox.is_some()).count();
+    let n_driver_turns = tables
+        .drivers
+        .iter()
+        .filter(|d| d.mailbox.is_some())
+        .count();
     let n = tables.actors.len() + n_driver_turns + tables.free_turns.len();
     Some(GroupServiceCtx {
         arena_base: 0,
@@ -732,211 +627,6 @@ fn group_service_ctx(
         arena_capacity: tables.group_arena_capacity,
         turn_areas,
     })
-}
-
-/// The vector-0 service's real body (plans/M6.md item F #2, 04-compiler.md
-/// §4): the deadline scan, then cancellation delivery. Runs synchronously
-/// inside `__wrela_checkpoint_service`'s own dispatch, so it inherits that
-/// routine's contract verbatim — may clobber `x9..x14`, must preserve
-/// `x28`/`sp`, no calls of its own (so `x30` needs no saving here).
-///
-/// **Step 1, the scan** — a fully-unrolled linear walk of the static arena
-/// (CLAUDE.md's "linear scans over the static arena", no timer wheel):
-/// every `in_use`, not-yet-`cancelled` slot with a nonzero `deadline_ns`
-/// that the clock has passed gets `cancelled = 1`. The clock read is the
-/// ordinary trapping `CLOCK_MMIO_ADDR` load (`codegen::emit_now`'s own
-/// address), so it is a real, recorded `ChoiceRead` in the VMM's choice
-/// sequence and replays from the log rather than from the host clock.
-///
-/// **Step 2, "cancels child registrations recursively" (04 §4), which this
-/// scan already performs — recorded, because it looks like an omission**:
-/// deadlines only ever *narrow* (`codegen::emit_group_create` stores
-/// `min(ambient, own)`, with a group declaring no deadline of its own
-/// inheriting the ambient one unchanged), so every descendant of an expired
-/// group carries an effective deadline no later than its ancestor's and is
-/// therefore expired at the very same instant this same single pass
-/// examines it. Deadline expiry is also M6's *only* cancellation source
-/// (no `race`, no explicit cancel API, and an abandon is image-fatal per
-/// decision 12). A separate parent-to-child propagation pass would
-/// therefore be provably dead code today — and, worse, an *unsound* one
-/// unless iterated to a fixed point, since a child group can occupy a lower
-/// arena index than its parent (`GroupCreate` claims the first free slot).
-/// The day a second cancellation source exists, the fixed-point pass is the
-/// thing to add here.
-///
-/// **Step 3, delivery to parked turns**: a turn suspended on an `await`
-/// whose own ambient group has just been cancelled may have nothing left
-/// that would ever wake it, so the scan makes it `resume_ready` — its own
-/// resume path then composes `CallError::Cancelled` and terminates at the
-/// checkpoint that follows (`codegen::emit_await_resume`/
-/// `emit_checkpoint_cancellation_test`). A group's own *owner* turn is
-/// deliberately excluded (`codegen::OFF_GROUP_OWNER_TURN`): its frame is
-/// never terminated, so force-resuming it would hand the `with`-block's own
-/// body a reply that never arrived. **Disclosed floor**: an owner parked on
-/// an await that can never resolve is therefore not woken by this scan — it
-/// is woken transitively when its own children are cancelled and harvested
-/// (`codegen::emit_rt_child_poll`), which is the only shape any M6
-/// golden constructs; a group with no outstanding children whose owner
-/// awaits an actor that never replies is not constructible at M6's own
-/// acyclic-handle source surface (item D's own recorded finding).
-fn emit_deadline_scan_and_delivery(a: &mut Asm, g: &GroupServiceCtx) {
-    use crate::codegen::{
-        GROUP_SLOT_SIZE, OFF_GROUP_CANCELLED, OFF_GROUP_DEADLINE, OFF_GROUP_IN_USE,
-        OFF_GROUP_OWNER_TURN, OFF_TURN_BUSY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED,
-        TURN_RECORD_SIZE,
-    };
-    const NOW: u8 = SCRATCH_A; // x9  — the clock read, live across the whole scan
-    const SLOT: u8 = SCRATCH_B; // x10 — the candidate slot address
-    const T0: u8 = SCRATCH_C; // x11
-    const T1: u8 = 12;
-    const T2: u8 = 13;
-
-    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
-    a.push(encode::enc_ldr_x_imm(NOW, T0, 0));
-
-    for i in 0..g.arena_capacity {
-        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
-        let skip_a = a.skip_placeholder(); // cbz -> next slot
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
-        let skip_b = a.skip_placeholder(); // cbnz -> already cancelled
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
-        let skip_c = a.skip_placeholder(); // cbz -> no deadline
-        // Expired iff now >= deadline (unsigned — both are raw ns).
-        a.push(encode::enc_cmp_reg(NOW, T0, true));
-        let skip_d = a.skip_placeholder(); // b.cc -> not yet
-        a.load_imm(T1, 1);
-        a.push(encode::enc_str_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
-        let next = a.abs();
-        a.patch_cbz(skip_a, T0);
-        a.patch_cbnz(skip_b, T0);
-        a.patch_cbz(skip_c, T0);
-        a.patch_cond(skip_d, Cond::Cc);
-        debug_assert_eq!(next, a.abs());
-    }
-
-    for &(turn, turn_id) in &g.turn_areas {
-        a.load_imm(T0, turn);
-        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_BUSY as u16));
-        let skip_a = a.skip_placeholder(); // cbz -> not busy
-        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_SUSPENDED as u16));
-        let skip_b = a.skip_placeholder(); // cbz -> running, not parked
-        // Ambient group = this turn's own frame `Temp(0)`, always the first
-        // slot past the 48-byte turn record (`flowwir::FrameLayout`'s own
-        // fixed lineage convention, `codegen::LINEAGE_GROUP_SLOT`).
-        a.push(encode::enc_ldr_x_imm(T1, T0, TURN_RECORD_SIZE as u16));
-        let skip_c = a.skip_placeholder(); // cbz -> no ambient group
-        a.push(encode::enc_sub_imm(T1, T1, 1, true));
-        a.load_imm(T2, GROUP_SLOT_SIZE);
-        a.push(encode::enc_mul(T1, T1, T2, true));
-        a.load_imm(SLOT, g.arena_base);
-        a.push(encode::enc_add_reg(SLOT, SLOT, T1, true));
-        a.push(encode::enc_ldr_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
-        let skip_d = a.skip_placeholder(); // cbz -> not cancelled
-        // plans/M10.md item 0c2: `owner_turn` is an `Option[TurnId]` (a
-        // `u32` at +56), so this arm compares the build-time `TurnId` of
-        // the turn it is about — not, as before, the build-time *address*
-        // of that turn. Equality only, so no index→address step. `ldr w` /
-        // `cmp w`: an `x` load here would fold the padding word above the
-        // field in as high bits and no comparison would ever match.
-        a.push(encode::enc_ldr_w_imm(T1, SLOT, OFF_GROUP_OWNER_TURN as u16));
-        a.load_imm(T2, turn_id.get() as u64);
-        a.push(encode::enc_cmp_reg(T1, T2, false));
-        let skip_e = a.skip_placeholder(); // b.eq -> this turn owns the group
-        a.load_imm(T1, 1);
-        a.push(encode::enc_str_x_imm(T1, T0, OFF_TURN_RESUME_READY as u16));
-        let next = a.abs();
-        a.patch_cbz(skip_a, T1);
-        a.patch_cbz(skip_b, T1);
-        a.patch_cbz(skip_c, T1);
-        a.patch_cbz(skip_d, T1);
-        a.patch_cond(skip_e, Cond::Eq);
-        debug_assert_eq!(next, a.abs());
-    }
-}
-
-/// `__wrela_deadline_poll()` (plans/M6.md item F #3) — the scheduler's own
-/// half of the deadline protocol, called once per entry-driver scheduler
-/// tick. Two jobs, in one linear scan of the static arena:
-///
-/// 1. **Arm the park** (06-machine.md §5): the minimum effective deadline
-///    over every live, not-yet-cancelled group is written to
-///    `machine_info::OFF_NEXT_DEADLINE` (`0` when no group has one), which
-///    is exactly what the entry driver's own park branch reads and what the
-///    VMM sleeps until. Written every tick rather than maintained
-///    incrementally — the arena is a handful of static slots, and an
-///    incremental min would need invalidation on every create/close/cancel
-///    (CLAUDE.md's cleverness budget: no profile, no cleverness).
-///
-/// 2. **Raise the deadline vector when the guest is *running***. M6's real
-///    injector is this service (decision 7), but the VMM can only raise a
-///    vector at an exit, and a `.wr` program that always has ready work
-///    never parks — at M6 nothing else can block a turn forever (item D's
-///    own finding: no deadlock is constructible at the acyclic-handle
-///    source surface), so a spinning child would otherwise run past its
-///    deadline unnoticed. So when the poll finds the minimum deadline
-///    already passed it sets this core's own pending word (bit 0) — the
-///    identical word the VMM's own raise writes, observed the identical
-///    way. That routing is not ceremony: setting the pending word instead
-///    of calling the scan directly is *what makes the cancellation land at
-///    a checkpoint* (02-language.md §9.5: "never between arbitrary
-///    instructions") rather than at whatever instruction the scheduler
-///    happened to be at, and it is the only reason the injection point is
-///    deterministic and replay-identical.
-///
-/// The clock read is the ordinary trapping `CLOCK_MMIO_ADDR` load, so every
-/// poll that finds a live deadline costs one recorded `ClockRead` — real,
-/// deliberate, and the honest price of a tick-granularity deadline service
-/// with no timer hardware. Leaf routine: clobbers `x9..x13` only, never
-/// `x28`/`sp`, and calls nothing.
-fn emit_deadline_poll(a: &mut Asm, g: &GroupServiceCtx) {
-    use crate::codegen::{
-        GROUP_SLOT_SIZE, OFF_GROUP_CANCELLED, OFF_GROUP_DEADLINE, OFF_GROUP_IN_USE,
-    };
-    const MIN: u8 = SCRATCH_A; // x9 — 0 = no live deadline
-    const SLOT: u8 = SCRATCH_B; // x10
-    const T0: u8 = SCRATCH_C; // x11
-    const T1: u8 = 12;
-    const T2: u8 = 13;
-
-    a.push(encode::enc_movz(MIN, 0, 0, true));
-    for i in 0..g.arena_capacity {
-        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
-        let skip_a = a.skip_placeholder(); // cbz -> next
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
-        let skip_b = a.skip_placeholder(); // cbnz -> already cancelled
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
-        let skip_c = a.skip_placeholder(); // cbz -> no deadline
-        // min = (min == 0 || this < min) ? this : min
-        a.push(encode::enc_cmp_reg(T0, MIN, true));
-        a.push(encode::enc_csel(T1, T0, MIN, Cond::Cc, true)); // T1 = this < min ? this : min
-        a.push(encode::enc_cmp_imm(MIN, 0, true));
-        a.push(encode::enc_csel(MIN, T0, T1, Cond::Eq, true)); // min == 0 -> take this
-        let next = a.abs();
-        a.patch_cbz(skip_a, T0);
-        a.patch_cbnz(skip_b, T0);
-        a.patch_cbz(skip_c, T0);
-        debug_assert_eq!(next, a.abs());
-    }
-    a.load_imm(
-        T0,
-        machine_layout::MACHINE_INFO_BASE + machine_info::OFF_NEXT_DEADLINE,
-    );
-    a.push(encode::enc_str_x_imm(MIN, T0, 0));
-    let skip_done = a.skip_placeholder(); // cbz MIN -> nothing armed
-    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
-    a.push(encode::enc_ldr_x_imm(T1, T0, 0)); // T1 = now
-    a.push(encode::enc_cmp_reg(T1, MIN, true));
-    let skip_not_yet = a.skip_placeholder(); // b.cc -> deadline still in the future
-    a.load_imm(T0, wrela_machine::pending::core_word_addr(0));
-    a.load_imm(T2, 1);
-    a.push(encode::enc_str_x_imm(T2, T0, 0)); // raise vector 0
-    let done = a.abs();
-    a.patch_cbz(skip_done, MIN);
-    a.patch_cond(skip_not_yet, Cond::Cc);
-    debug_assert_eq!(done, a.abs());
-    a.push(encode::enc_ret(30));
 }
 
 // --- section packing helpers ---------------------------------------------
@@ -7748,6 +7438,7 @@ impl Asm {
         w
     }
 
+    #[allow(dead_code)]
     fn patch_cond(&mut self, marker: usize, cond: Cond) {
         let target = self.abs();
         let this = self.start + marker;
@@ -9353,31 +9044,8 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         build_abort_tail_codegen_fn().code.len(),
     );
 
-    // Checkpoint (empty group / irq / wake) — M6-shaped floor shell + loop.
-    {
-        let block = build_checkpoint_and_vector_stub_ex(None, &[], &[]);
-        insert(
-            &mut out,
-            "build_checkpoint_and_vector_stub_ex",
-            block.words.len(),
-        );
-    }
-
-    // Deadline helpers at REF group shape (owned by G; not inside the empty
-    // checkpoint measure above).
-    {
-        let g = GroupServiceCtx {
-            arena_base: 0x4050_3000,
-            arena_capacity: 1,
-            turn_areas: vec![(TURNS_BASE, TurnId::from_index(0))],
-        };
-        let mut a = Asm::new(0);
-        emit_deadline_scan_and_delivery(&mut a, &g);
-        insert(&mut out, "emit_deadline_scan_and_delivery", a.words.len());
-        let mut a = Asm::new(0);
-        emit_deadline_poll(&mut a, &g);
-        insert(&mut out, "emit_deadline_poll", a.words.len());
-    }
+    // M10 G: checkpoint + deadline emitters measured in
+    // codegen::emitted_a64_census_specialization_live_counts.
 
     // Helpers measured in isolation (delta on a fresh Asm).
     {
@@ -9839,7 +9507,10 @@ pub struct Store:
         );
         assert_eq!(ctx.turn_areas[0].0, p.actors[0].turn);
         assert_eq!(ctx.turn_areas[0].1, TurnId::from_index(0));
-        let driver = p.driver_mailboxes.get(&0).expect("messageable driver placed");
+        let driver = p
+            .driver_mailboxes
+            .get(&0)
+            .expect("messageable driver placed");
         assert_eq!(ctx.turn_areas[1].0, driver.turn);
         assert_eq!(ctx.turn_areas[1].1, TurnId::from_index(1));
         assert_eq!(ctx.turn_areas[2].0, p.free_turns["f"]);

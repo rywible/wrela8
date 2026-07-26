@@ -7061,7 +7061,7 @@ fn emit_group_create(
         // makes it the turn's **`TurnId`**, a `u32` at +56, because both
         // readers only ever compare it for equality and neither needs an
         // address: `emit_group_cancelled_flags` below compares against
-        // this fn's own id, and `layout::emit_deadline_scan_and_delivery`
+        // this fn's own id, and `emit_deadline_scan_and_delivery`
         // against the build-time id of the turn its unrolled arm is about.
         // Every cancellation observation site still decides the same
         // thing — whether a cancelled group terminates the observing
@@ -11974,6 +11974,404 @@ pub fn emit_boot_init(spec: &BootInitSpec) -> CodegenFn {
     }
 }
 
+// --- plans/M10.md item G: checkpoint + deadline specialized emitters -----
+//
+// Materialized into the checkpoint section (not force-rooted into `code`):
+// `Reloc::CheckpointService`, the entry driver's `bl_to(deadline_poll)`,
+// and the VMM HVF suite's `build_checkpoint_and_vector_stub` all need a
+// self-contained word block. Specialization is on `arena_capacity` and
+// `turn_areas` (fully unrolled). Floor cat2 save/restore (5 words) stays
+// inside the checkpoint service body — counted in the ImageStatic row,
+// not pretended migrated (decision 673).
+
+/// Group-arena facts for deadline scan/poll (plans/M10.md item G).
+#[derive(Debug, Clone)]
+pub struct DeadlineGroupSpec {
+    pub arena_base: u64,
+    pub arena_capacity: u64,
+    /// `(turn_area_addr, TurnId::get())` — build-time immediates; the
+    /// checkpoint block is still shape-then-real double-built.
+    pub turn_areas: Vec<(u64, u32)>,
+}
+
+/// One sealed `IrqCap.bind` site for the checkpoint dispatch loop.
+#[derive(Debug, Clone)]
+pub struct CheckpointIrqSpec {
+    pub vector: u64,
+    pub handler_key: String,
+    pub driver_state: u64,
+}
+
+/// One `@driver` sticky wake-pending → `@task` drain site.
+#[derive(Debug, Clone)]
+pub struct CheckpointWakeSpec {
+    pub driver_state: u64,
+    pub wake_pending_off: u64,
+    pub task_key: String,
+}
+
+/// Inputs `emit_checkpoint_and_vector_stub` specializes on.
+#[derive(Debug, Clone)]
+pub struct CheckpointEmitSpec {
+    pub group: Option<DeadlineGroupSpec>,
+    pub irq_vectors: Vec<CheckpointIrqSpec>,
+    pub wake_drains: Vec<CheckpointWakeSpec>,
+}
+
+/// Result of `emit_checkpoint_and_vector_stub` — words plus entry offsets.
+pub struct CheckpointEmitResult {
+    pub words: Vec<u32>,
+    pub checkpoint_service_word: usize,
+    pub deadline_poll_word: Option<usize>,
+    pub relocs: Vec<Reloc>,
+}
+
+/// Tiny word-list builder for the checkpoint block (layout::Asm shape,
+/// start always 0 so reloc word indices are block-relative).
+struct CpAsm {
+    words: Vec<u32>,
+    relocs: Vec<Reloc>,
+}
+
+impl CpAsm {
+    fn new() -> Self {
+        Self {
+            words: Vec::new(),
+            relocs: Vec::new(),
+        }
+    }
+    fn abs(&self) -> usize {
+        self.words.len()
+    }
+    fn push(&mut self, w: u32) {
+        self.words.push(w);
+    }
+    fn load_imm(&mut self, reg: u8, value: u64) {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        self.push(encode::enc_movz(reg, h0, 0, true));
+        self.push(encode::enc_movk(reg, h1, 16, true));
+        self.push(encode::enc_movk(reg, h2, 32, true));
+        self.push(encode::enc_movk(reg, h3, 48, true));
+    }
+    fn bl_to(&mut self, target_abs: usize) {
+        let this = self.abs();
+        let delta = (target_abs as i64 - this as i64) * 4;
+        self.push(encode::enc_bl(delta as i32));
+    }
+    fn b_to(&mut self, target_abs: usize) {
+        let this = self.abs();
+        let delta = (target_abs as i64 - this as i64) * 4;
+        self.push(encode::enc_b(delta as i32));
+    }
+    fn bl_call_key(&mut self, key: &str) {
+        let w = self.abs();
+        self.push(encode::enc_bl(0));
+        self.relocs.push(Reloc::Call {
+            word: w,
+            key: key.to_string(),
+        });
+    }
+    fn skip_placeholder(&mut self) -> usize {
+        let w = self.words.len();
+        self.push(0);
+        w
+    }
+    fn patch_cond(&mut self, marker: usize, cond: Cond) {
+        let target = self.abs();
+        let delta = (target as i64 - marker as i64) * 4;
+        self.words[marker] = encode::enc_b_cond(cond, delta as i32);
+    }
+    fn patch_cbz(&mut self, marker: usize, reg: u8) {
+        let target = self.abs();
+        let delta = (target as i64 - marker as i64) * 4;
+        self.words[marker] = encode::enc_cbz(reg, delta as i32, true);
+    }
+    fn patch_cbnz(&mut self, marker: usize, reg: u8) {
+        let target = self.abs();
+        let delta = (target as i64 - marker as i64) * 4;
+        self.words[marker] = encode::enc_cbnz(reg, delta as i32, true);
+    }
+}
+
+const CP_X_SP: u8 = 31;
+const CP_SCRATCH_A: u8 = 9;
+const CP_SCRATCH_B: u8 = 10;
+const CP_SCRATCH_C: u8 = 11;
+const CP_X_ZR: u8 = 31;
+
+/// plans/M10.md item G / decision 670: specialized deadline scan +
+/// cancellation delivery. Fully unrolled over `arena_capacity` and
+/// `turn_areas`. Leaf fragment — no `ret` (inlined into vector0).
+pub fn emit_deadline_scan_and_delivery(spec: &DeadlineGroupSpec) -> Vec<u32> {
+    let mut a = CpAsm::new();
+    emit_deadline_scan_and_delivery_into(&mut a, spec);
+    a.words
+}
+
+fn emit_deadline_scan_and_delivery_into(a: &mut CpAsm, g: &DeadlineGroupSpec) {
+    const NOW: u8 = CP_SCRATCH_A;
+    const SLOT: u8 = CP_SCRATCH_B;
+    const T0: u8 = CP_SCRATCH_C;
+    const T1: u8 = 12;
+    const T2: u8 = 13;
+
+    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
+    a.push(encode::enc_ldr_x_imm(NOW, T0, 0));
+
+    for i in 0..g.arena_capacity {
+        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
+        let skip_a = a.skip_placeholder();
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
+        let skip_b = a.skip_placeholder();
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
+        let skip_c = a.skip_placeholder();
+        a.push(encode::enc_cmp_reg(NOW, T0, true));
+        let skip_d = a.skip_placeholder();
+        a.load_imm(T1, 1);
+        a.push(encode::enc_str_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
+        let next = a.abs();
+        a.patch_cbz(skip_a, T0);
+        a.patch_cbnz(skip_b, T0);
+        a.patch_cbz(skip_c, T0);
+        a.patch_cond(skip_d, Cond::Cc);
+        debug_assert_eq!(next, a.abs());
+    }
+
+    for &(turn, turn_id) in &g.turn_areas {
+        a.load_imm(T0, turn);
+        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_BUSY as u16));
+        let skip_a = a.skip_placeholder();
+        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_SUSPENDED as u16));
+        let skip_b = a.skip_placeholder();
+        a.push(encode::enc_ldr_x_imm(T1, T0, TURN_RECORD_SIZE as u16));
+        let skip_c = a.skip_placeholder();
+        a.push(encode::enc_sub_imm(T1, T1, 1, true));
+        a.load_imm(T2, GROUP_SLOT_SIZE);
+        a.push(encode::enc_mul(T1, T1, T2, true));
+        a.load_imm(SLOT, g.arena_base);
+        a.push(encode::enc_add_reg(SLOT, SLOT, T1, true));
+        a.push(encode::enc_ldr_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
+        let skip_d = a.skip_placeholder();
+        a.push(encode::enc_ldr_w_imm(T1, SLOT, OFF_GROUP_OWNER_TURN as u16));
+        a.load_imm(T2, turn_id as u64);
+        a.push(encode::enc_cmp_reg(T1, T2, false));
+        let skip_e = a.skip_placeholder();
+        a.load_imm(T1, 1);
+        a.push(encode::enc_str_x_imm(T1, T0, OFF_TURN_RESUME_READY as u16));
+        let next = a.abs();
+        a.patch_cbz(skip_a, T1);
+        a.patch_cbz(skip_b, T1);
+        a.patch_cbz(skip_c, T1);
+        a.patch_cbz(skip_d, T1);
+        a.patch_cond(skip_e, Cond::Eq);
+        debug_assert_eq!(next, a.abs());
+    }
+}
+
+/// plans/M10.md item G / decision 670: specialized `__wrela_deadline_poll`.
+/// Includes the trailing `ret`.
+pub fn emit_deadline_poll(spec: &DeadlineGroupSpec) -> CodegenFn {
+    let mut a = CpAsm::new();
+    emit_deadline_poll_into(&mut a, spec);
+    a.push(encode::enc_ret(30));
+    CodegenFn {
+        frame_size: 0,
+        code: a.words.into_iter().map(|w| (w, String::new())).collect(),
+        relocs: a.relocs,
+    }
+}
+
+fn emit_deadline_poll_into(a: &mut CpAsm, g: &DeadlineGroupSpec) {
+    const MIN: u8 = CP_SCRATCH_A;
+    const SLOT: u8 = CP_SCRATCH_B;
+    const T0: u8 = CP_SCRATCH_C;
+    const T1: u8 = 12;
+    const T2: u8 = 13;
+
+    a.push(encode::enc_movz(MIN, 0, 0, true));
+    for i in 0..g.arena_capacity {
+        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
+        let skip_a = a.skip_placeholder();
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
+        let skip_b = a.skip_placeholder();
+        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
+        let skip_c = a.skip_placeholder();
+        a.push(encode::enc_cmp_reg(T0, MIN, true));
+        a.push(encode::enc_csel(T1, T0, MIN, Cond::Cc, true));
+        a.push(encode::enc_cmp_imm(MIN, 0, true));
+        a.push(encode::enc_csel(MIN, T0, T1, Cond::Eq, true));
+        let next = a.abs();
+        a.patch_cbz(skip_a, T0);
+        a.patch_cbnz(skip_b, T0);
+        a.patch_cbz(skip_c, T0);
+        debug_assert_eq!(next, a.abs());
+    }
+    a.load_imm(
+        T0,
+        wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_NEXT_DEADLINE,
+    );
+    a.push(encode::enc_str_x_imm(MIN, T0, 0));
+    let skip_done = a.skip_placeholder();
+    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
+    a.push(encode::enc_ldr_x_imm(T1, T0, 0));
+    a.push(encode::enc_cmp_reg(T1, MIN, true));
+    let skip_not_yet = a.skip_placeholder();
+    a.load_imm(T0, wrela_machine::pending::core_word_addr(0));
+    a.load_imm(T2, 1);
+    a.push(encode::enc_str_x_imm(T2, T0, 0));
+    let done = a.abs();
+    a.patch_cbz(skip_done, MIN);
+    a.patch_cond(skip_not_yet, Cond::Cc);
+    debug_assert_eq!(done, a.abs());
+}
+
+/// plans/M10.md item G / decision 670: full checkpoint + vector0 + optional
+/// deadline poll block. Contains 5 floor-cat2 save/restore words around
+/// the pending loop (decision 673).
+pub fn emit_checkpoint_and_vector_stub(spec: &CheckpointEmitSpec) -> CheckpointEmitResult {
+    let mut a = CpAsm::new();
+
+    let vector0_start = a.abs();
+    debug_assert_eq!(vector0_start, 0);
+    let observed_addr = wrela_machine::layout::MACHINE_INFO_BASE
+        + wrela_machine::machine_info::OFF_VECTOR0_OBSERVED;
+    a.load_imm(CP_SCRATCH_A, observed_addr);
+    a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
+    a.push(encode::enc_add_imm(CP_SCRATCH_B, CP_SCRATCH_B, 1, true));
+    a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
+    if let Some(g) = spec.group.as_ref().filter(|g| g.arena_capacity > 0) {
+        emit_deadline_scan_and_delivery_into(&mut a, g);
+    }
+    a.push(encode::enc_ret(30));
+
+    let checkpoint_service_word = a.abs();
+    // Floor cat2 save/restore (5 words): sub/str … ldr/add/ret.
+    a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
+    a.push(encode::enc_str_x_imm(30, CP_X_SP, 0));
+    let pending_addr = wrela_machine::pending::core_word_addr(0);
+    let multi = !spec.irq_vectors.is_empty() || !spec.wake_drains.is_empty();
+    if !multi {
+        let loop_top = a.abs();
+        a.load_imm(CP_SCRATCH_A, pending_addr);
+        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
+        let skip_done = a.skip_placeholder();
+        a.bl_to(vector0_start);
+        a.load_imm(CP_SCRATCH_A, pending_addr);
+        a.push(encode::enc_str_x_imm(CP_X_ZR, CP_SCRATCH_A, 0));
+        a.b_to(loop_top);
+        let done = a.abs();
+        a.patch_cbz(skip_done, CP_SCRATCH_B);
+        debug_assert_eq!(done, a.abs());
+    } else {
+        let loop_top = a.abs();
+        a.push(encode::enc_movz(CP_SCRATCH_C, 0, 0, true));
+        a.load_imm(CP_SCRATCH_A, pending_addr);
+        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
+        let skip_pending = a.skip_placeholder();
+        a.push(encode::enc_movz(CP_SCRATCH_C, 0, 0, true));
+        a.push(encode::enc_movz(9, 1, 0, true));
+        a.push(encode::enc_and_reg(12, CP_SCRATCH_B, 9, true));
+        let skip_v0 = a.skip_placeholder();
+        a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
+        a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
+        a.push(encode::enc_str_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
+        a.bl_to(vector0_start);
+        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
+        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
+        a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
+        a.push(encode::enc_movz(9, 1, 0, true));
+        a.push(encode::enc_orr_reg(CP_SCRATCH_C, CP_SCRATCH_C, 9, true));
+        a.patch_cbz(skip_v0, 12);
+
+        for entry in &spec.irq_vectors {
+            let mask = 1u64 << (entry.vector & 63);
+            a.load_imm(9, mask);
+            a.push(encode::enc_and_reg(12, CP_SCRATCH_B, 9, true));
+            let skip = a.skip_placeholder();
+            a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 32, true));
+            a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
+            a.push(encode::enc_str_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
+            a.push(encode::enc_str_x_imm(9, CP_X_SP, 16));
+            a.load_imm(0, entry.driver_state);
+            a.bl_call_key(&entry.handler_key);
+            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
+            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
+            a.push(encode::enc_ldr_x_imm(9, CP_X_SP, 16));
+            a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 32, true));
+            a.push(encode::enc_orr_reg(CP_SCRATCH_C, CP_SCRATCH_C, 9, true));
+            a.patch_cbz(skip, 12);
+        }
+
+        a.load_imm(CP_SCRATCH_A, pending_addr);
+        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
+        a.push(encode::enc_bic_reg(
+            CP_SCRATCH_B,
+            CP_SCRATCH_B,
+            CP_SCRATCH_C,
+            true,
+        ));
+        a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
+        a.push(encode::enc_movz(CP_SCRATCH_C, 1, 0, true));
+        a.patch_cbz(skip_pending, CP_SCRATCH_B);
+
+        let wake_top = a.abs();
+        a.push(encode::enc_movz(12, 0, 0, true));
+        for w in &spec.wake_drains {
+            let pending_word = w.driver_state + w.wake_pending_off;
+            a.load_imm(CP_SCRATCH_A, pending_word);
+            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
+            let skip_w = a.skip_placeholder();
+            a.push(encode::enc_str_x_imm(CP_X_ZR, CP_SCRATCH_A, 0));
+            a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
+            a.push(encode::enc_str_x_imm(12, CP_X_SP, 0));
+            a.push(encode::enc_str_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
+            a.load_imm(0, w.driver_state);
+            a.bl_call_key(&w.task_key);
+            a.push(encode::enc_ldr_x_imm(12, CP_X_SP, 0));
+            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
+            a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
+            a.push(encode::enc_movz(12, 1, 0, true));
+            a.push(encode::enc_movz(CP_SCRATCH_C, 1, 0, true));
+            a.patch_cbz(skip_w, CP_SCRATCH_B);
+        }
+        a.push(encode::enc_cbnz(
+            12,
+            ((wake_top as i64 - a.abs() as i64) * 4) as i32,
+            true,
+        ));
+        a.push(encode::enc_cbnz(
+            CP_SCRATCH_C,
+            ((loop_top as i64 - a.abs() as i64) * 4) as i32,
+            true,
+        ));
+    }
+    a.push(encode::enc_ldr_x_imm(30, CP_X_SP, 0));
+    a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
+    a.push(encode::enc_ret(30));
+
+    let deadline_poll_word = match spec.group.as_ref().filter(|g| g.arena_capacity > 0) {
+        Some(g) => {
+            let start = a.abs();
+            emit_deadline_poll_into(&mut a, g);
+            a.push(encode::enc_ret(30));
+            Some(start)
+        }
+        None => None,
+    };
+
+    CheckpointEmitResult {
+        words: a.words,
+        checkpoint_service_word,
+        deadline_poll_word,
+        relocs: a.relocs,
+    }
+}
+
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
 /// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
 /// via `emit_flowwir_fn` above), merged into one `CodegenProgram` sharing
@@ -12454,6 +12852,24 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
         driver_slots: vec![],
     };
     out.insert("emit_boot_init", emit_boot_init(&boot).code.len());
+    // M10 G / decision 670: REF empty group/irq/wake = 26 (incl. 5 floor-cat2);
+    // deadline scan/poll REF arena_capacity=1, one turn area.
+    let cp = emit_checkpoint_and_vector_stub(&CheckpointEmitSpec {
+        group: None,
+        irq_vectors: vec![],
+        wake_drains: vec![],
+    });
+    out.insert("emit_checkpoint_and_vector_stub", cp.words.len());
+    let g = DeadlineGroupSpec {
+        arena_base: 0x4050_3000,
+        arena_capacity: 1,
+        turn_areas: vec![(0x4050_1000, 1)],
+    };
+    out.insert(
+        "emit_deadline_scan_and_delivery",
+        emit_deadline_scan_and_delivery(&g).len(),
+    );
+    out.insert("emit_deadline_poll", emit_deadline_poll(&g).code.len());
     out
 }
 

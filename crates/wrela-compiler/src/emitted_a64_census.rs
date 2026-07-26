@@ -228,31 +228,29 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::ImageStatic,
         note: "decision 633; per-core secondary entry (item F2); 5 floor-cat1 SP",
     },
-    // --- not yet migrated ------------------------------------------------
-    // Checkpoint block at REF (empty group/irq/wake). Includes the 5-word
-    // save/restore (floor cat2) plus the M6 pending loop; deadline scan /
-    // poll are separate rows (G). Classified as G because the non-floor
-    // body dominates and item G owns migrating it.
+    // REF: empty group/irq/wake. Includes 5 floor-cat2 save/restore words
+    // inside the body (decision 673) — counted here until a later floor
+    // extraction, same carve-out shape as secondary-core SP (decision 636).
     EmitterEntry {
-        name: "build_checkpoint_and_vector_stub_ex",
-        file: "layout.rs",
+        name: "emit_checkpoint_and_vector_stub",
+        file: "codegen.rs",
         words: 26,
-        category: Category::NotYetMigrated,
-        note: "G; contains 5 floor-cat2 save/restore words",
+        category: Category::ImageStatic,
+        note: "decision 670; contains 5 floor-cat2 save/restore words",
     },
     EmitterEntry {
         name: "emit_deadline_scan_and_delivery",
-        file: "layout.rs",
+        file: "codegen.rs",
         words: 57,
-        category: Category::NotYetMigrated,
-        note: "G; REF arena_capacity=1, one turn area",
+        category: Category::ImageStatic,
+        note: "decision 670; REF arena_capacity=1, one turn area",
     },
     EmitterEntry {
         name: "emit_deadline_poll",
-        file: "layout.rs",
+        file: "codegen.rs",
         words: 38,
-        category: Category::NotYetMigrated,
-        note: "G; REF arena_capacity=1",
+        category: Category::ImageStatic,
+        note: "decision 670; REF arena_capacity=1",
     },
     // REF: one actor, state_size=8, no init calls (memset loop).
     EmitterEntry {
@@ -262,12 +260,13 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::ImageStatic,
         note: "decision 680; memset zero-fill (681); was layout build_boot_init",
     },
+    // --- not yet migrated ------------------------------------------------
     EmitterEntry {
         name: "push_turn_addr_from_id",
         file: "layout.rs",
         words: 7,
         category: Category::NotYetMigrated,
-        note: "shared index→address; G paths",
+        note: "shared index→address; remaining harness paths",
     },
     // --- unclassified ----------------------------------------------------
     // Micro-helper used by both floor and migratable paths; not itself a
@@ -318,16 +317,16 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 593; // was 579; H +14 emit_boot_init
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 714; // was 593; G +26+57+38
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 128; // was 232; H −10, I residue −94
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 7; // was 128; G −26−57−38
 
 pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residue)
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 879; // was 875; H −10+14
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 879; // unchanged; G moves not-yet→image-static
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -335,8 +334,8 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 879; // was 875; H −10+14
 /// census file (it documents the needle). Measured 2026-07-26. Adding a
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
-/// Item H: boot_init moved layout→codegen (720 / 156).
-pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 720), ("layout.rs", 156)];
+/// Item G: checkpoint/deadline moved layout→codegen (811 / 76).
+pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 811), ("layout.rs", 76)];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
 pub const ENCODE_ENC_SITE_COUNT: usize = {
@@ -485,7 +484,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 876,
+            ENCODE_ENC_SITE_COUNT, 887,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -624,6 +623,10 @@ mod tests {
         "layout.rs::build_rt_select_and_run",
         "layout.rs::build_rt_enqueue",
         "layout.rs::build_checkpoint_and_vector_stub",
+        // M10 G: thin materialize of `emit_checkpoint_and_vector_stub`.
+        "layout.rs::build_checkpoint_and_vector_stub_ex",
+        "codegen.rs::emit_deadline_scan_and_delivery_into",
+        "codegen.rs::emit_deadline_poll_into",
         "layout.rs::build_runtime_glue_block",
         "layout.rs::build_runtime_block",
         "layout.rs::install_abort_tail_floor",
@@ -632,7 +635,10 @@ mod tests {
     /// Census rows that are real emitters (measured word count) but whose
     /// body does not itself contain `encode::enc_` — thin wrappers that
     /// forward to a counted sibling. Still locked by the live-count test.
-    const WRAPPER_EMITTERS: &[&str] = &[];
+    const WRAPPER_EMITTERS: &[&str] = &[
+        // Item G: public entry forwards to `*_into` (which holds the enc_).
+        "codegen.rs::emit_deadline_scan_and_delivery",
+    ];
 
     #[test]
     fn emitted_a64_census_matches_live_measurements() {
