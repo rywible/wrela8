@@ -1,0 +1,26 @@
+module examples.asm_placed_index
+
+# plans/M10.md item B1: indexed access into a placed `@layout(runtime)`
+# array field. Pins the bounds-check shape (cmp + bl __wrela_abort_val)
+# so it cannot change silently — the same abort path that carries the
+# re-entrancy latch (decisions 590–592).
+
+const N_SLOTS: usize = 4
+
+@layout(runtime, endian=little)
+struct CoreMarkPage:
+    @offset(0x68) marks: [u64; N_SLOTS]
+
+@placed(0x40000000)
+static CORE_MARKS: CoreMarkPage
+
+fn read_mark(i: usize) -> u64:
+    return CORE_MARKS.marks[i]
+
+fn write_mark(i: usize, v: u64):
+    CORE_MARKS.marks[i] = v
+
+@image
+pub fn build() -> Image:
+    img = Image(name="asm-placed-index", target=Target.wrela_machine_v1)
+    return img.seal()

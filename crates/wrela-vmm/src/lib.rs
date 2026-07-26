@@ -2187,6 +2187,20 @@ fn boot_image_core(
                 .to_string(),
         )
     })?;
+    // plans/M10.md item B1 / decision 591: the abort re-entrancy latch must
+    // be clear on every green boot. A nonzero value after exit 0 means an
+    // abort path ran (or left the latch set) on a boot that claimed success.
+    if exit_code == 0 {
+        let latch_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE
+            + machine_info::OFF_ABORT_LATCH) as usize;
+        let latch = unsafe { std::ptr::read_unaligned((host_ram.add(latch_off)) as *const u64) };
+        if latch != 0 {
+            return Err(VmmError::GuestFault(format!(
+                "abort re-entrancy latch at machine_info::OFF_ABORT_LATCH is {latch:#x} after a \
+                 green boot (exit_code=0); decision 591 requires it never set on any green boot"
+            )));
+        }
+    }
     // plans/M8.md item C1: every core this image released must have
     // executed its own entry block. The mark is guest-written (each core's
     // entry stores `machine_info::core_mark_running(n)` into its own slot),

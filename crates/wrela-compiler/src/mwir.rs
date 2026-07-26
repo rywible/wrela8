@@ -314,6 +314,32 @@ pub enum Inst {
         value: Temp,
         len: usize,
     },
+    /// Indexed load through a placed `@layout(runtime)` array field
+    /// (plans/M10.md item B1). `base` holds the placed static's address
+    /// word; `field_offset` / `elem_stride` are dense layout bytes (not
+    /// mwir slot sizes); bounds-checked against `len` exactly like
+    /// `IndexGet`, which is why this is the first source path that emits
+    /// `bl __wrela_abort_val` against a placed table.
+    PlacedIndexGet {
+        dst: Temp,
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        len: usize,
+        elem_stride: u64,
+        ty: Type,
+    },
+    /// In-place counterpart of `PlacedIndexGet` for
+    /// `STATIC.array_field[i] = value`.
+    PlacedIndexSet {
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        value: Temp,
+        len: usize,
+        elem_stride: u64,
+        ty: Type,
+    },
 
     // --- enums ---------------------------------------------------------
     /// Builds an enum value: `tag` is the variant's own declaration-order
@@ -1372,6 +1398,32 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             value,
         } => format!(
             "MmioWrite base={base} offset={offset:#x} ty={} value={value}",
+            types::render_type(ty)
+        ),
+        Inst::PlacedIndexGet {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            ty,
+        } => format!(
+            "PlacedIndexGet dst={dst} base={base} field_offset={field_offset:#x} \
+             index={index} len={len} elem_stride={elem_stride} ty={}",
+            types::render_type(ty)
+        ),
+        Inst::PlacedIndexSet {
+            base,
+            field_offset,
+            index,
+            value,
+            len,
+            elem_stride,
+            ty,
+        } => format!(
+            "PlacedIndexSet base={base} field_offset={field_offset:#x} index={index} \
+             value={value} len={len} elem_stride={elem_stride} ty={}",
             types::render_type(ty)
         ),
         Inst::QueuePrepare {

@@ -1593,6 +1593,76 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 w += 8;
             }
         }
+        // plans/M10.md item B1: dense-layout index through a placed
+        // `@layout(runtime)` array field. Bounds-check shape matches
+        // `IndexGet` (cmp + `bl __wrela_abort_val`); address is
+        // `base + field_offset + index * elem_stride`.
+        Inst::PlacedIndexGet {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            ty,
+        } => {
+            emit_placed_index_addr(
+                ctx,
+                ctx.frame.off(*base),
+                *field_offset,
+                ctx.frame.off(*index),
+                *len,
+                *elem_stride,
+                X_C,
+            );
+            let width = mmio_access_width(ty, 0)?;
+            let (enc, mnem) = match width {
+                1 => (encode::enc_ldrb_imm(X_B, X_C, 0), "ldrb"),
+                2 => (encode::enc_ldrh_imm(X_B, X_C, 0), "ldrh"),
+                4 => (encode::enc_ldr_w_imm(X_B, X_C, 0), "ldr"),
+                _ => (encode::enc_ldr_x_imm(X_B, X_C, 0), "ldr"),
+            };
+            let rt = if width == 8 {
+                reg_name(X_B)
+            } else {
+                format!("w{X_B}")
+            };
+            ctx.push(enc, format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)));
+            ctx.store_slot(X_B, ctx.frame.off(*dst));
+        }
+        Inst::PlacedIndexSet {
+            base,
+            field_offset,
+            index,
+            value,
+            len,
+            elem_stride,
+            ty,
+        } => {
+            emit_placed_index_addr(
+                ctx,
+                ctx.frame.off(*base),
+                *field_offset,
+                ctx.frame.off(*index),
+                *len,
+                *elem_stride,
+                X_C,
+            );
+            let width = mmio_access_width(ty, 0)?;
+            ctx.load_slot(X_B, ctx.frame.off(*value));
+            let (enc, mnem) = match width {
+                1 => (encode::enc_strb_imm(X_B, X_C, 0), "strb"),
+                2 => (encode::enc_strh_imm(X_B, X_C, 0), "strh"),
+                4 => (encode::enc_str_w_imm(X_B, X_C, 0), "str"),
+                _ => (encode::enc_str_x_imm(X_B, X_C, 0), "str"),
+            };
+            let rt = if width == 8 {
+                reg_name(X_B)
+            } else {
+                format!("w{X_B}")
+            };
+            ctx.push(enc, format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)));
+        }
         Inst::MakeEnum { dst, tag, payload } => {
             let dst_off = ctx.frame.off(*dst);
             ctx.load_imm(X_A, *tag as i64);
@@ -4316,6 +4386,65 @@ fn emit_index_addr(
     ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
     ctx.addr_of_slot(out_reg, base_off);
     ctx.load_imm(X_D, elem_size as i64);
+    ctx.push(
+        encode::enc_mul(X_E, X_A, X_D, true),
+        format!(
+            "mul {}, {}, {}",
+            reg_name(X_E),
+            reg_name(X_A),
+            reg_name(X_D)
+        ),
+    );
+    ctx.push(
+        encode::enc_add_reg(out_reg, out_reg, X_E, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(out_reg),
+            reg_name(out_reg),
+            reg_name(X_E)
+        ),
+    );
+}
+
+/// plans/M10.md item B1: address of `placed_base[field_offset + i*stride]`
+/// with the same bounds-check abort shape as `emit_index_addr`.
+fn emit_placed_index_addr(
+    ctx: &mut FnCtx,
+    base_off: usize,
+    field_offset: u64,
+    index_off: usize,
+    len: usize,
+    elem_stride: u64,
+    out_reg: u8,
+) {
+    ctx.load_slot(X_A, index_off);
+    ctx.load_imm(X_B, len as i64);
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_B, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
+    );
+    let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
+    ctx.abort_val(
+        "index ",
+        X_A,
+        false,
+        &format!(" out of bounds (length {len})"),
+    );
+    ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
+    ctx.load_slot(out_reg, base_off);
+    if field_offset != 0 {
+        ctx.load_imm(X_D, field_offset as i64);
+        ctx.push(
+            encode::enc_add_reg(out_reg, out_reg, X_D, true),
+            format!(
+                "add {}, {}, {}",
+                reg_name(out_reg),
+                reg_name(out_reg),
+                reg_name(X_D)
+            ),
+        );
+    }
+    ctx.load_imm(X_D, elem_stride as i64);
     ctx.push(
         encode::enc_mul(X_E, X_A, X_D, true),
         format!(

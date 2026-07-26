@@ -263,6 +263,16 @@ pub mod machine_info {
     /// either way this offset is reserved now, past `OFF_TEST_LINE_BUF`'s
     /// own 256-byte scratch region, so nothing else needs to move.
     pub const OFF_VECTOR0_OBSERVED: u64 = 0x200;
+
+    /// Offset 0x208 (520): plans/M10.md item B1 / decision 591 — one-word
+    /// abort re-entrancy latch. `__wrela_abort` / `__wrela_abort_val` store
+    /// `1` on first entry and, on a second entry (a bounds failure inside
+    /// the console print path that produces the diagnostic), skip printing
+    /// and go straight to the halt/landing-pad tail. Cleared in that shared
+    /// tail before the continuation jump, so a later green test never
+    /// observes a stale latch. Zero on every green boot (asserted by the
+    /// VMM after a zero exit).
+    pub const OFF_ABORT_LATCH: u64 = 0x208;
 }
 
 /// Console: a runtime-owned tx ring, virtio-shaped (plans/M5.md decision
@@ -758,7 +768,8 @@ mod tests {
             machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
                 <= machine_info::OFF_VECTOR0_OBSERVED
         );
-        assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= layout::MACHINE_INFO_SIZE);
+        assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= machine_info::OFF_ABORT_LATCH);
+        assert!(machine_info::OFF_ABORT_LATCH + 8 <= layout::MACHINE_INFO_SIZE);
     }
 
     /// plans/M8.md item C1: every core's own mark word is distinct, inside

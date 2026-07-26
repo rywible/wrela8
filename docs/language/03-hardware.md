@@ -130,7 +130,9 @@ any other declaration. A `static` has a required type and no initializer;
 `@placed(ADDR)` is required on every `static` in this revision (there is
 no unplaced static storage). Named-field read and write of a placed
 static's scalar fields are loads and stores at constant offsets from
-`ADDR`; indexing into a placed array field is a later rule.
+`ADDR`. Indexing into a placed array field is a bounds-checked load or
+store at `ADDR + field_offset + index * element_stride`, where a failing
+bounds check aborts through `__wrela_abort_val` (plans/M10.md item B1).
 
 ```wrela
 const N_TURNS: usize = 4

@@ -940,6 +940,16 @@ fn runtime_layout_field_offset(
     field: &str,
     prog: &TypedProgram,
 ) -> Result<u64, LowerError> {
+    Ok(runtime_layout_field(layout, field, prog)?.offset)
+}
+
+/// Offset and dense byte size of a `@layout(runtime)` field (plans/M10.md
+/// item B1 uses `size` as `len * elem_stride` for array fields).
+fn runtime_layout_field(
+    layout: &str,
+    field: &str,
+    prog: &TypedProgram,
+) -> Result<crate::sema::types::LayoutField, LowerError> {
     let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
         return Err(LowerError::internal(format!(
             "placed-static field access through `{layout}`, which has no layout table entry"
@@ -948,12 +958,54 @@ fn runtime_layout_field_offset(
     for e in &l.entries {
         if let crate::sema::types::LayoutEntry::Field(f) = e {
             if f.name == field {
-                return Ok(f.offset);
+                return Ok(f.clone());
             }
         }
     }
     Err(LowerError::internal(format!(
         "`{layout}` declares no field `{field}` (the checker already refused this)"
+    )))
+}
+
+/// `STATIC.array_field[i]` place parts: layout field offset, dense element
+/// stride, and compile-time length (plans/M10.md item B1).
+fn placed_array_field_index(
+    array_place: &TypedExpr,
+    prog: &TypedProgram,
+) -> Result<Option<(TypedExpr /* static base */, u64, u64, usize)>, LowerError> {
+    let TypedExprKind::Field(static_base, fname) = &array_place.kind else {
+        return Ok(None);
+    };
+    let TypedExprKind::Static(sname) = &static_base.kind else {
+        return Ok(None);
+    };
+    let layout_name = match bodies::unwrap_own(static_base.ty.clone()) {
+        Type::Named(n, _) => n,
+        other => {
+            return Err(LowerError::internal(format!(
+                "placed static `{sname}` has non-named type {other:?}"
+            )));
+        }
+    };
+    let field = runtime_layout_field(&layout_name, fname, prog)?;
+    let len = eval_array_len_with_prog(&array_place.ty, prog)?;
+    if len == 0 {
+        return Err(LowerError::internal(format!(
+            "placed array field `{layout_name}.{fname}` has length 0"
+        )));
+    }
+    if field.size % len as u64 != 0 {
+        return Err(LowerError::internal(format!(
+            "placed array field `{layout_name}.{fname}` size {} is not divisible by len {len}",
+            field.size
+        )));
+    }
+    let elem_stride = field.size / len as u64;
+    Ok(Some((
+        (**static_base).clone(),
+        field.offset,
+        elem_stride,
+        len,
     )))
 }
 
@@ -2063,6 +2115,24 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Index(base, idx_expr) => {
+            // plans/M10.md item B1: `STATIC.array_field[i] = value` — dense
+            // layout store, not a frame-slot IndexSet after MmioRead.
+            if let Some((static_expr, field_offset, elem_stride, len)) =
+                placed_array_field_index(base, b.prog())?
+            {
+                let base_temp = lower_expr(&static_expr, b, env)?;
+                let idx_temp = lower_expr(idx_expr, b, env)?;
+                b.emit(Inst::PlacedIndexSet {
+                    base: base_temp,
+                    field_offset,
+                    index: idx_temp,
+                    value,
+                    len,
+                    elem_stride,
+                    ty: target.ty.clone(),
+                });
+                return Ok(());
+            }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let idx_temp = lower_expr(idx_expr, b, env)?;
             let len = eval_array_len(&base.ty)?;
@@ -2673,6 +2743,25 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             Ok(dst)
         }
         TypedExprKind::Index(base, idx_expr) => {
+            // plans/M10.md item B1: `STATIC.array_field[i]` — dense layout
+            // load with the ordinary IndexGet bounds-check shape.
+            if let Some((static_expr, field_offset, elem_stride, len)) =
+                placed_array_field_index(base, b.prog())?
+            {
+                let base_temp = lower_expr(&static_expr, b, env)?;
+                let idx_temp = lower_expr(idx_expr, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::PlacedIndexGet {
+                    dst,
+                    base: base_temp,
+                    field_offset,
+                    index: idx_temp,
+                    len,
+                    elem_stride,
+                    ty: expr.ty.clone(),
+                });
+                return Ok(dst);
+            }
             let base_temp = lower_expr(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
             // plans/M9.md item C1: `String[..N][i]` with a literal index
@@ -4420,6 +4509,39 @@ fn eval_array_len(ty: &Type) -> Result<usize, LowerError> {
 
 fn eval_len_expr(e: &ast::Expr) -> Result<usize, LowerError> {
     if let Some(n) = bodies::literal_array_len(e) {
+        return usize::try_from(n).map_err(|_| LowerError::internal("array length out of range"));
+    }
+    Err(LowerError::unimplemented(
+        "an array length expression that is not a literal is",
+    ))
+}
+
+/// Array length for lowering, including a module-level `const` name
+/// (plans/M10.md item B1 — placed tables sized by `const N`).
+fn eval_array_len_with_prog(ty: &Type, prog: &TypedProgram) -> Result<usize, LowerError> {
+    match ty {
+        Type::Array(_, len_expr) => eval_len_expr_with_prog(len_expr, prog),
+        Type::Own(_, inner) => eval_array_len_with_prog(inner, prog),
+        _ => Err(LowerError::unimplemented(
+            "indexing a non-array (e.g. `Bytes`) value is",
+        )),
+    }
+}
+
+fn eval_len_expr_with_prog(e: &ast::Expr, prog: &TypedProgram) -> Result<usize, LowerError> {
+    if let Some(n) = bodies::literal_array_len(e) {
+        return usize::try_from(n).map_err(|_| LowerError::internal("array length out of range"));
+    }
+    if let ast::Expr::Name(_, name) = e {
+        let v = crate::eval::interp::eval_const(prog, name).map_err(|err| {
+            LowerError::internal(format!(
+                "const `{name}` failed to evaluate during array-length lowering: {}",
+                err.message
+            ))
+        })?;
+        let n = value::as_i128(&v).ok_or_else(|| {
+            LowerError::internal(format!("array length const `{name}` is not an integer"))
+        })?;
         return usize::try_from(n).map_err(|_| LowerError::internal("array length out of range"));
     }
     Err(LowerError::unimplemented(

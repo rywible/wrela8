@@ -319,15 +319,18 @@ with `panic`. It is also unnecessary, because typed wrela dissolves the
 sites rather than translating them:
 `BRK_ASYNC_DISPATCH_NO_STATE_MATCHED` is emitted by codegen itself at every
 resume dispatch tail, so the runtime inherits it free;
-`BRK_LINE_APPEND_OVERFLOW`/`BRK_LINE_COMMIT_OVERFLOW` become ordinary
-array-bounds checks on the fixed-size console ring, which codegen already
-emits everywhere — better than today, since a bounds failure gains a
-diagnostic instead of a bare trap; and `BRK_REPLY_SLOT_NO_WAKER` becomes
-*unrepresentable* once the waker is a non-optional `TurnId` field. The two
-that resist — `BRK_ACTOR_TURN_CANCELLED`/`BRK_AWAIT_ACTOR_REJECTED` — are
-not unreachability guards at all but a **representation gap**, named as
-such in their own comment ("the turn record carries one scalar reply word
-and no error tag, so there is nothing to hand the awaiting turn but a
+`BRK_LINE_APPEND_OVERFLOW`/`BRK_LINE_COMMIT_OVERFLOW` dissolve as **status
+returns** from the console routines (plans/M10.md decision 592) — *not* as
+ordinary array-bounds checks that call `__wrela_abort_val`, because that
+abort path prints via the same console routines and a bounds failure
+inside them would recurse unboundedly (decision 590; the abort path
+carries a re-entrancy latch so a second entry skips printing and goes
+straight to the halt tail — decision 591); and `BRK_REPLY_SLOT_NO_WAKER`
+becomes *unrepresentable* once the waker is a non-optional `TurnId` field.
+The two that resist — `BRK_ACTOR_TURN_CANCELLED`/`BRK_AWAIT_ACTOR_REJECTED`
+— are not unreachability guards at all but a **representation gap**, named
+as such in their own comment ("the turn record carries one scalar reply
+word and no error tag, so there is nothing to hand the awaiting turn but a
 lie"). So the standing rule for this milestone: **a surviving explicit trap
 is a finding about the representation, not a case for an escape hatch** —
 it says the reply channel needs a tag, which that code already predicts.

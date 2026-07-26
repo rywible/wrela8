@@ -2087,13 +2087,16 @@ doc = "03-hardware.md#3.1"
 status = "test"
 tests = [
   "golden/check-placed-machine-info",
+  "golden/asm-placed-index",
   "golden/err-placed-unimplemented",
   "golden/err-placed-not-runtime",
   "golden/err-placed-duplicate-addr",
 ]
 note = """03-hardware.md §3.1: "`@placed(ADDR)` binds one declaration to the fixed comptime address `ADDR` ... It is legal on exactly one construct: a module-level `static` of a `@layout(runtime)` type, with at most one placed static per address. It is legal nowhere else."
 
-**Shipped (plans/M10.md item A2c, decisions 586–589).** Module-level `static NAME: Type` (required type, no initializer) with required `@placed(ADDR)` (integer literal). Accepted only when `Type` is a `@layout(runtime)` type; wrong-position `@placed`, non-runtime type, and duplicate ADDR are named rejections (`golden/err-placed-unimplemented`, `err-placed-not-runtime`, `err-placed-duplicate-addr`). Named-field scalar R/W lowers to the Mmio[L] shape (`MmioRead`/`MmioWrite` at the layout offset from a materialized base). Landed against the three machine pages so `verify_section_sizes` is never asked to place bytes inside the image blob at a fixed address. Positive pin: `golden/check-placed-machine-info`."""
+**Shipped (plans/M10.md item A2c, decisions 586–589).** Module-level `static NAME: Type` (required type, no initializer) with required `@placed(ADDR)` (integer literal). Accepted only when `Type` is a `@layout(runtime)` type; wrong-position `@placed`, non-runtime type, and duplicate ADDR are named rejections (`golden/err-placed-unimplemented`, `err-placed-not-runtime`, `err-placed-duplicate-addr`). Named-field scalar R/W lowers to the Mmio[L] shape (`MmioRead`/`MmioWrite` at the layout offset from a materialized base). Landed against the three machine pages so `verify_section_sizes` is never asked to place bytes inside the image blob at a fixed address. Positive pin: `golden/check-placed-machine-info`.
+
+**B1 (decision 668):** indexing into a placed array field is a bounds-checked dense load/store (`PlacedIndexGet`/`PlacedIndexSet`); pin `golden/asm-placed-index`."""
 
 [[clause]]
 id = "hardware.layout.placed-verified"

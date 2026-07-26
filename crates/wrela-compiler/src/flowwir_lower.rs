@@ -458,6 +458,14 @@ fn runtime_layout_field_offset_flow(
     layout: &str,
     field: &str,
 ) -> Result<u64, FlowError> {
+    Ok(runtime_layout_field_flow(prog, layout, field)?.offset)
+}
+
+fn runtime_layout_field_flow(
+    prog: &TypedProgram,
+    layout: &str,
+    field: &str,
+) -> Result<crate::sema::types::LayoutField, FlowError> {
     let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
         return Err(FlowError::internal(format!(
             "placed-static field access through `{layout}`, which has no layout table entry"
@@ -466,12 +474,53 @@ fn runtime_layout_field_offset_flow(
     for e in &l.entries {
         if let crate::sema::types::LayoutEntry::Field(f) = e {
             if f.name == field {
-                return Ok(f.offset);
+                return Ok(f.clone());
             }
         }
     }
     Err(FlowError::internal(format!(
         "`{layout}` declares no field `{field}` (the checker already refused this)"
+    )))
+}
+
+/// `STATIC.array_field[i]` place parts (plans/M10.md item B1).
+fn placed_array_field_index_flow(
+    array_place: &TypedExpr,
+    prog: &TypedProgram,
+) -> Result<Option<(TypedExpr, u64, u64, usize)>, FlowError> {
+    let TypedExprKind::Field(static_base, fname) = &array_place.kind else {
+        return Ok(None);
+    };
+    let TypedExprKind::Static(sname) = &static_base.kind else {
+        return Ok(None);
+    };
+    let layout_name = match bodies::unwrap_own(static_base.ty.clone()) {
+        Type::Named(n, _) => n,
+        other => {
+            return Err(FlowError::internal(format!(
+                "placed static `{sname}` has non-named type {other:?}"
+            )));
+        }
+    };
+    let field = runtime_layout_field_flow(prog, &layout_name, fname)?;
+    let len = eval_array_len_with_prog(prog, &array_place.ty)?;
+    if len == 0 {
+        return Err(FlowError::internal(format!(
+            "placed array field `{layout_name}.{fname}` has length 0"
+        )));
+    }
+    if field.size % len as u64 != 0 {
+        return Err(FlowError::internal(format!(
+            "placed array field `{layout_name}.{fname}` size {} is not divisible by len {len}",
+            field.size
+        )));
+    }
+    let elem_stride = field.size / len as u64;
+    Ok(Some((
+        (**static_base).clone(),
+        field.offset,
+        elem_stride,
+        len,
     )))
 }
 
@@ -572,6 +621,33 @@ fn eval_array_len(ty: &Type) -> Result<usize, FlowError> {
             usize::try_from(n).map_err(|_| FlowError::internal("array length out of range"))
         }
         Type::Own(_, inner) => eval_array_len(inner),
+        _ => Err(FlowError::unimplemented("indexing a non-array value is")),
+    }
+}
+
+fn eval_array_len_with_prog(prog: &TypedProgram, ty: &Type) -> Result<usize, FlowError> {
+    match ty {
+        Type::Array(_, len_expr) => {
+            if let Some(n) = bodies::literal_array_len(len_expr) {
+                return usize::try_from(n)
+                    .map_err(|_| FlowError::internal("array length out of range"));
+            }
+            if let crate::syntax::ast::Expr::Name(_, name) = len_expr.as_ref() {
+                let v = crate::eval::interp::eval_const(prog, name).map_err(|err| {
+                    FlowError::internal(format!(
+                        "const `{name}` failed to evaluate during array-length lowering: {}",
+                        err.message
+                    ))
+                })?;
+                let n = value::as_i128(&v).ok_or_else(|| {
+                    FlowError::internal(format!("array length const `{name}` is not an integer"))
+                })?;
+                return usize::try_from(n)
+                    .map_err(|_| FlowError::internal("array length out of range"));
+            }
+            Err(FlowError::unimplemented("a non-literal array length is"))
+        }
+        Type::Own(_, inner) => eval_array_len_with_prog(prog, inner),
         _ => Err(FlowError::unimplemented("indexing a non-array value is")),
     }
 }
@@ -2175,6 +2251,23 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Index(base, idx_expr) => {
+            // plans/M10.md item B1: placed array field index write.
+            if let Some((static_expr, field_offset, elem_stride, len)) =
+                placed_array_field_index_flow(base, b.prog)?
+            {
+                let base_temp = lower_expr_flat(&static_expr, b, env)?;
+                let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+                b.emit_mwir(Inst::PlacedIndexSet {
+                    base: base_temp,
+                    field_offset,
+                    index: idx_temp,
+                    value,
+                    len,
+                    elem_stride,
+                    ty: target.ty.clone(),
+                });
+                return Ok(());
+            }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let idx_temp = lower_expr_flat(idx_expr, b, env)?;
             let len = eval_array_len(&base.ty)?;
@@ -2473,6 +2566,37 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             "an `await`/group-child nested inside a larger expression (only a direct \
              `let`/assignment/`return`/bare-statement operand is supported) is",
         )),
+        TypedExprKind::Index(base, idx_expr) => {
+            // plans/M10.md item B1: placed array field index read.
+            if let Some((static_expr, field_offset, elem_stride, len)) =
+                placed_array_field_index_flow(base, b.prog)?
+            {
+                let base_temp = lower_expr_flat(&static_expr, b, env)?;
+                let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::PlacedIndexGet {
+                    dst,
+                    base: base_temp,
+                    field_offset,
+                    index: idx_temp,
+                    len,
+                    elem_stride,
+                    ty: e.ty.clone(),
+                });
+                return Ok(dst);
+            }
+            let base_temp = lower_expr_flat(base, b, env)?;
+            let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+            let len = eval_array_len(&base.ty)?;
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::IndexGet {
+                dst,
+                base: base_temp,
+                index: idx_temp,
+                len,
+            });
+            Ok(dst)
+        }
         other => Err(FlowError::unimplemented(format!(
             "lowering this expression shape ({other:?}) inside an async body is"
         ))),

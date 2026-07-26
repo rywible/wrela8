@@ -9073,11 +9073,17 @@ fn build_fmt_dec(addrs: &HarnessAddrs, start: usize) -> Asm {
     a
 }
 
-/// The shared tail every abort body ends in: increment
+/// The shared tail every abort body ends in: clear the re-entrancy latch
+/// (plans/M10.md item B1 / decision 591), increment
 /// `machine_info::OFF_TEST_FAILED` and long-jump to the landing pad's own
 /// continuation address (module doc's own "landing pad" section) — never
 /// `RET`. Clobbers `x9`/`x10`.
 fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
+    // Clear latch before the continuation jump so a later green test never
+    // observes a stale "already aborting" bit from a prior abort.
+    a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
+    a.push(encode::enc_movz(10, 0, 0, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
     a.push(encode::enc_ldr_x_imm(10, 9, 0));
     a.push(encode::enc_add_imm(10, 10, 1, true));
@@ -9099,6 +9105,10 @@ fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
 /// `__wrela_ring_append` calls that need it (`x0`-`x18` are all
 /// caller-saved under this ABI, module doc above — nothing survives a
 /// `BL` on its own).
+///
+/// plans/M10.md item B1 / decision 591: a one-word re-entrancy latch at
+/// `OFF_ABORT_LATCH` routes a second entry (bounds failure inside the
+/// console print path) straight to the halt tail without printing again.
 fn build_abort_fixed(
     addrs: &HarnessAddrs,
     start: usize,
@@ -9108,6 +9118,13 @@ fn build_abort_fixed(
     newline_off: usize,
 ) -> Asm {
     let mut a = Asm::new(start);
+    // Latch check before any SP work — re-entry must not touch the stack.
+    a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    let reenter = a.skip_placeholder(); // cbnz x10 → shared_tail
+    a.push(encode::enc_movz(10, 1, 0, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+
     a.push(encode::enc_sub_imm(31, 31, 16, true)); // sub sp, sp, #16
     a.push(encode::enc_str_x_imm(0, 31, 0));
     a.push(encode::enc_str_x_imm(1, 31, 8));
@@ -9126,6 +9143,7 @@ fn build_abort_fixed(
 
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
     a.bl_to(commit_start);
+    a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
     a
 }
@@ -9139,6 +9157,8 @@ fn build_abort_fixed(
 /// landing-pad tail. All six incoming args are stashed on the stack up
 /// front (48 bytes) and reloaded around each of the four
 /// `__wrela_ring_append`/one `__wrela_fmt_dec` calls that clobber them.
+///
+/// Same re-entrancy latch as `build_abort_fixed` (decision 591).
 fn build_abort_val(
     addrs: &HarnessAddrs,
     start: usize,
@@ -9149,6 +9169,12 @@ fn build_abort_val(
     newline_off: usize,
 ) -> Asm {
     let mut a = Asm::new(start);
+    a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
+    a.push(encode::enc_ldr_x_imm(10, 9, 0));
+    let reenter = a.skip_placeholder(); // cbnz x10 → shared_tail
+    a.push(encode::enc_movz(10, 1, 0, true));
+    a.push(encode::enc_str_x_imm(10, 9, 0));
+
     a.push(encode::enc_sub_imm(31, 31, 48, true));
     for (i, reg) in [0u8, 1, 2, 3, 4, 5].into_iter().enumerate() {
         a.push(encode::enc_str_x_imm(reg, 31, (i * 8) as u16));
@@ -9179,6 +9205,7 @@ fn build_abort_val(
 
     a.push(encode::enc_add_imm(31, 31, 48, true));
     a.bl_to(commit_start);
+    a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
     a
 }
@@ -9275,6 +9302,7 @@ fn build_entry_driver(
         mi::OFF_RING_DATA_BUMP,
         mi::OFF_RING_DESC_BUMP,
         mi::OFF_LINE_START,
+        mi::OFF_ABORT_LATCH,
     ] {
         a.load_imm(10, addrs.info_base + off);
         a.push(encode::enc_str_x_imm(9, 10, 0));
@@ -12033,6 +12061,13 @@ mod harness_jit {
             f()
         }
 
+        fn call2_at(&self, byte_offset: usize, a0: u64, a1: u64) -> u64 {
+            assert!(byte_offset < self.len);
+            let f: extern "C" fn(u64, u64) -> u64 =
+                unsafe { std::mem::transmute(self.ptr.add(byte_offset)) };
+            f(a0, a1)
+        }
+
         /// plans/M10.md item 0c1: `rt_enqueue`'s ABI grew an `x4`
         /// (`Option[CoreId]`), so the admission tests need five arguments.
         fn call5_at(&self, byte_offset: usize, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
@@ -12211,6 +12246,55 @@ mod harness_jit {
         // register's value is never reinterpreted as signed).
         let (_len, s) = fmt_dec_call(-1i64, false);
         assert_eq!(s, u64::MAX.to_string());
+    }
+
+    /// plans/M10.md item B1 / decision 591: a second entry into
+    /// `__wrela_abort` with the latch already set skips printing and
+    /// lands at the shared halt/continuation tail. First entry sets the
+    /// latch and clears it in that same tail.
+    #[test]
+    fn abort_reentrancy_latch_skips_print_on_second_entry() {
+        let ram = HostRam::new(4096 * 4);
+        let addrs = HarnessAddrs {
+            info_base: ram.base(),
+            ring_base: ram.base() + 4096,
+            data_base: ram.base() + 4096 * 2,
+            exit_mmio_addr: 0,
+        };
+        // Combined page: [ret stub][abort_fixed][landing ret]
+        // append/commit are the same 1-word `ret` at word 0; abort starts
+        // at word 1; continuation lands at the final `ret`.
+        let ret = encode::enc_ret(30);
+        let abort_start = 1usize;
+        let abort = build_abort_fixed(&addrs, abort_start, 0, 0, 0, 0);
+        // Rodata relocs for FAILED/newline are unresolved here — re-entry
+        // never reaches them. First entry would need real rodata; we only
+        // exercise the latch-set path's early exit.
+        let mut words = vec![ret];
+        words.extend(abort.words.iter().copied());
+        let land_off = words.len();
+        words.push(ret);
+        let page = ExecPage::new(&words);
+        let land_addr = page.ptr as u64 + (land_off * 4) as u64;
+        ram.write_u64(mi::OFF_TEST_CONTINUATION, land_addr);
+
+        // Pre-set latch: second-entry path. Must not touch ring bump,
+        // must clear latch, must increment failed.
+        ram.write_u64(mi::OFF_ABORT_LATCH, 1);
+        ram.write_u64(mi::OFF_TEST_FAILED, 0);
+        ram.write_u64(mi::OFF_RING_DATA_BUMP, 42);
+        let _ = page.call2_at(abort_start * 4, 0, 0);
+        assert_eq!(
+            ram.read_u64(mi::OFF_ABORT_LATCH),
+            0,
+            "tail clears the latch"
+        );
+        assert_eq!(ram.read_u64(mi::OFF_TEST_FAILED), 1);
+        assert_eq!(
+            ram.read_u64(mi::OFF_RING_DATA_BUMP),
+            42,
+            "re-entry must skip console print (ring bump unchanged)"
+        );
     }
 
     // --- __wrela_line_begin / __wrela_ring_append / __wrela_line_commit ----
