@@ -1092,6 +1092,9 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     // driver state (the cell's value; ops address the live
                     // word at `self_ptr + field_off`, never a side table).
                     | "InterruptCell"
+                    // plans/M10.md item D / decision 616 (completing 611).
+                    | "TurnId"
+                    | "CoreId"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             // `Actor[T]`/`Rejected[T]` (if ever instantiated) carry their

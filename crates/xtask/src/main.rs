@@ -4362,12 +4362,22 @@ fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncReach) {
         Ok(a) => a,
     };
     let group_arena_capacity = layout::count_with_group_sites(&modules);
+    let enqueue_specs = match layout::mailbox_enqueue_specs(&graph, &modules, &layout_ctx) {
+        Err(msg) => {
+            return (
+                async_stage_err("layout::mailbox_enqueue_specs", "build", msg),
+                reach,
+            );
+        }
+        Ok(s) => s,
+    };
     let codegen_program = match codegen::codegen_program_with_async(
         &mwir_program,
         &flow_program,
         &layout_ctx,
         &method_index,
         group_arena_capacity,
+        &enqueue_specs,
     ) {
         Err(e) => {
             return (
@@ -7238,12 +7248,15 @@ fn build_runtime_test_image(
     let test_args =
         layout::resolve_runtime_test_args(program, test_names, &graph).map_err(|e| e)?;
     let group_arena_capacity = layout::count_with_group_sites(modules);
+    let enqueue_specs =
+        layout::mailbox_enqueue_specs(&graph, modules, &layout_ctx).map_err(|e| e)?;
     let codegen_program = codegen::codegen_program_with_async(
         &mwir_program,
         &flow_program,
         &layout_ctx,
         &method_index,
         group_arena_capacity,
+        &enqueue_specs,
     )
     .map_err(|e| e.message)?;
     let async_frames =

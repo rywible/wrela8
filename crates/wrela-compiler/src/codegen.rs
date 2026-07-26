@@ -517,6 +517,25 @@ pub enum Reloc {
     /// materializes the absolute address of `@driver` `driver`'s sticky
     /// wake-pending word (trailing word of its state).
     WakePending { word: usize, driver: String },
+    /// plans/M10.md item D (decisions 613–614): the four-word `load_imm`
+    /// starting at `word` materializes one absolute address of mailbox
+    /// root `actor`'s ring bookkeeping — `ring` / `tail` / `count`. Full
+    /// RT `@placed` for mailbox `rtdata` is not ready; this is the same
+    /// `patch_load_imm_words` shape as `TurnFrameAddr`, not a pointer type.
+    MailboxAddr {
+        word: usize,
+        actor: String,
+        field: MailboxField,
+    },
+}
+
+/// Which word of a mailbox root's ring bookkeeping a `Reloc::MailboxAddr`
+/// materializes (plans/M10.md item D / decision 614).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailboxField {
+    Ring,
+    Tail,
+    Count,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -643,6 +662,11 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
                     // plans/M7.md item G, decision 17: one word, passed by
                     // value like every other builtin pseudo-type.
                     | "InterruptCell"
+                    // plans/M10.md item D / decision 616 (completing 611):
+                    // by-value at the ABI boundary — not a by-pointer
+                    // `struct` / `Option` niche packing.
+                    | "TurnId"
+                    | "CoreId"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             false
@@ -8720,6 +8744,219 @@ pub fn async_frame_sizes(
     Ok(out)
 }
 
+/// plans/M10.md item D (decisions 613–615): one specialized mailbox
+/// admission body under `rt_enqueue_symbol(actor)`. Hand-shaped leaf —
+/// same register ABI and control flow as `layout::build_ring_enqueue`,
+/// with ring/tail/count addresses as `Reloc::MailboxAddr` rather than
+/// baked immediates (full RT `@placed` is not ready; decision 614).
+/// Wrapping `+%` at the source level is the `add_imm` here (decision 652):
+/// no `Reloc::AbortFixed` on overflow.
+///
+/// ABI (post-D0): `x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn,
+/// x4=waker_core -> x0` = 0 admitted / 1 rejected. Leaf: no frame.
+fn emit_rt_enqueue(actor: &str, capacity: u64, slot_size: u64) -> CodegenFn {
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+
+    let push = |words: &mut Vec<(u32, String)>, w: u32, text: String| {
+        words.push((w, text));
+    };
+    let load_imm = |words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str| {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        push(
+            words,
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h1, 16, true),
+            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h2, 32, true),
+            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h3, 48, true),
+            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
+        );
+    };
+    let load_mailbox = |words: &mut Vec<(u32, String)>,
+                        relocs: &mut Vec<Reloc>,
+                        reg: u8,
+                        field: MailboxField,
+                        actor: &str| {
+        let word = words.len();
+        load_imm(words, reg, 0, &format!("mailbox {:?} <{actor}>", field));
+        for i in 0..4 {
+            if let Some((_, text)) = words.get_mut(word + i) {
+                *text = format!("mailbox-addr[{i}] {:?} x{reg} <{actor}>", field);
+            }
+        }
+        relocs.push(Reloc::MailboxAddr {
+            word,
+            actor: actor.to_string(),
+            field,
+        });
+    };
+
+    // count = *count_addr; if count >= capacity: return 1
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Count, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(10, 9, 0),
+        "ldr x10, [x9]".to_string(),
+    );
+    load_imm(&mut words, 11, capacity, "capacity");
+    push(
+        &mut words,
+        encode::enc_cmp_reg(10, 11, true),
+        "cmp x10, x11".to_string(),
+    );
+    let skip_ok = words.len();
+    push(&mut words, 0, "b.lt .ok".to_string()); // patched below
+    push(
+        &mut words,
+        encode::enc_movz(0, 1, 0, true),
+        "movz x0, #1  ; rejected".to_string(),
+    );
+    let to_end = words.len();
+    push(&mut words, 0, "b .end".to_string()); // patched below
+    let ok = words.len();
+    {
+        let delta = (ok as i64 - skip_ok as i64) * 4;
+        words[skip_ok].0 = encode::enc_b_cond(Cond::Lt, delta as i32);
+        words[skip_ok].1 = format!("b.lt .ok (+{delta})");
+    }
+
+    // slot = ring + tail * slot_size
+    load_mailbox(&mut words, &mut relocs, 12, MailboxField::Tail, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(13, 12, 0),
+        "ldr x13, [x12]".to_string(),
+    );
+    load_imm(&mut words, 14, slot_size, "slot_size");
+    push(
+        &mut words,
+        encode::enc_mul(14, 13, 14, true),
+        "mul x14, x13, x14".to_string(),
+    );
+    load_mailbox(&mut words, &mut relocs, 15, MailboxField::Ring, actor);
+    push(
+        &mut words,
+        encode::enc_add_reg(15, 15, 14, true),
+        "add x15, x15, x14".to_string(),
+    );
+
+    push(
+        &mut words,
+        encode::enc_str_x_imm(0, 15, 0),
+        "str x0, [x15]  ; method_idx".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_w_imm(3, 15, 8),
+        "str w3, [x15, #8]  ; waker_turn".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_w_imm(4, 15, 12),
+        "str w4, [x15, #12]  ; waker_core".to_string(),
+    );
+
+    let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
+    if arg_words >= 1 {
+        push(
+            &mut words,
+            encode::enc_str_x_imm(1, 15, 16),
+            "str x1, [x15, #16]  ; arg0".to_string(),
+        );
+    }
+    if arg_words >= 2 {
+        push(
+            &mut words,
+            encode::enc_str_x_imm(2, 15, 24),
+            "str x2, [x15, #24]  ; arg1".to_string(),
+        );
+    }
+
+    // tail = (tail + 1) % capacity  — wrapping add (decision 652)
+    push(
+        &mut words,
+        encode::enc_add_imm(13, 13, 1, true),
+        "add x13, x13, #1".to_string(),
+    );
+    load_imm(&mut words, 9, capacity, "capacity");
+    push(
+        &mut words,
+        encode::enc_cmp_reg(13, 9, true),
+        "cmp x13, x9".to_string(),
+    );
+    let skip_nowrap = words.len();
+    push(&mut words, 0, "b.lt .nowrap".to_string());
+    push(
+        &mut words,
+        encode::enc_movz(13, 0, 0, true),
+        "movz x13, #0".to_string(),
+    );
+    let nowrap = words.len();
+    {
+        let delta = (nowrap as i64 - skip_nowrap as i64) * 4;
+        words[skip_nowrap].0 = encode::enc_b_cond(Cond::Lt, delta as i32);
+        words[skip_nowrap].1 = format!("b.lt .nowrap (+{delta})");
+    }
+    load_mailbox(&mut words, &mut relocs, 12, MailboxField::Tail, actor);
+    push(
+        &mut words,
+        encode::enc_str_x_imm(13, 12, 0),
+        "str x13, [x12]  ; tail".to_string(),
+    );
+
+    // count += 1
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Count, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(10, 9, 0),
+        "ldr x10, [x9]".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(10, 10, 1, true),
+        "add x10, x10, #1".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(10, 9, 0),
+        "str x10, [x9]  ; count".to_string(),
+    );
+
+    push(
+        &mut words,
+        encode::enc_movz(0, 0, 0, true),
+        "movz x0, #0  ; admitted".to_string(),
+    );
+    let end = words.len();
+    {
+        let delta = (end as i64 - to_end as i64) * 4;
+        words[to_end].0 = encode::enc_b(delta as i32);
+        words[to_end].1 = format!("b .end (+{delta})");
+    }
+    push(&mut words, encode::enc_ret(30), "ret".to_string());
+
+    CodegenFn {
+        frame_size: 0,
+        code: words,
+        relocs,
+    }
+}
+
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
 /// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
 /// via `emit_flowwir_fn` above), merged into one `CodegenProgram` sharing
@@ -8739,6 +8976,10 @@ pub fn codegen_program_with_async(
     // by a `FlowInst::GroupCreate`/`GroupStart`, neither of which any
     // pre-F program ever lowers).
     group_arena_capacity: u64,
+    // plans/M10.md item D / decision 613: per-mailbox-root specialized
+    // enqueue bodies (`name`, `capacity`, `slot_size`). Empty when the
+    // image has no mailbox roots (dump without an `@image`, sync-only).
+    enqueue_specs: &[(String, u64, u64)],
 ) -> Result<CodegenProgram, CodegenError> {
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
@@ -8755,6 +8996,11 @@ pub fn codegen_program_with_async(
             key.clone(),
             emit_flowwir_fn(key, f, layout, &mut rodata, method_index, &gctx)?,
         );
+    }
+    // M10 D: force-root specialized admission keys into the emit set.
+    for (name, capacity, slot_size) in enqueue_specs {
+        let key = rt_enqueue_symbol(name);
+        fns.insert(key, emit_rt_enqueue(name, *capacity, *slot_size));
     }
     Ok(CodegenProgram {
         fns,
@@ -8984,6 +9230,17 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::TurnsBase/TurnStride word {word} (a 4-word                              load_imm) is out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::MailboxAddr { word, .. } => {
+                    // plans/M10.md item D: four-word load_imm of a mailbox
+                    // ring/tail/count address.
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::MailboxAddr word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
                             f.code.len()
                         ));
                     }

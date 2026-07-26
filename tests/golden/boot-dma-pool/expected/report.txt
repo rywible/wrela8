@@ -27,6 +27,18 @@ ImageReport v0
     Child value=actor#1
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
   Placement id=actor#1 type=Worker core=0 source=inferred work=0 work_source=unproved bytes=168 bytes_state=16 bytes_mailbox=152 bytes_pool=0
+  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
+    Padding offset=0x0 size=80
+    Field name=ring_data_bump type=u64 offset=0x50 size=8
+    Field name=ring_desc_bump type=u64 offset=0x58 size=8
+    Field name=line_start type=u64 offset=0x60 size=8
+  Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
+    Field name=avail_flags_idx type=u32 offset=0x1000 size=4
+    Padding offset=0x1004 size=2564
+    Field name=doorbell type=u64 offset=0x1a08 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
+    Field name=_pad type=u64 offset=0x0 size=8
   Layout name=BlkReqHeader kind=dma endian=little size=16 padding=0
     Field name=kind type=u32 offset=0x0 size=4
     Field name=reserved type=u32 offset=0x4 size=4
@@ -34,19 +46,22 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=4256
-  Section name=rodata base=0x405010f0 size=426
-  Section name=abort base=0x4050129c size=120
-  Section name=checkpoint base=0x40501314 size=104
-  Section name=rtcode base=0x4050137c size=1968
-  Section name=rtdata base=0x40501b30 size=3496
-  Section name=pooldata base=0x405028d8 size=384
+  Section name=code base=0x40500050 size=5440
+  Section name=rodata base=0x40501590 size=495
+  Section name=abort base=0x40501780 size=120
+  Section name=checkpoint base=0x405017f8 size=104
+  Section name=rtcode base=0x40501860 size=1968
+  Section name=rtdata base=0x40502010 size=3496
+  Section name=pooldata base=0x40502db8 size=384
   Entry base=0x40500000
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   Actor name=Ledger mailbox=8 slot=24 frame=64 state=8
   Actor name=Worker mailbox=8 slot=16 frame=480 state=16
   Turn fn=pool_backed_image frame=640
   Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=3496
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x405028d8 size=128 align=8 coherency=coherent device=device#0
-  Pool name=Scratch kind=image payload=u32 slots=4 slot_bytes=64 base=0x40502958 size=256 align=8 coherency=coherent device=none
-  BlkPool name=BlockControl device=device#0 base=0x405028d8 size=0x80
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40502db8 size=128 align=8 coherency=coherent device=device#0
+  Pool name=Scratch kind=image payload=u32 slots=4 slot_bytes=64 base=0x40502e38 size=256 align=8 coherency=coherent device=none
+  BlkPool name=BlockControl device=device#0 base=0x40502db8 size=0x80

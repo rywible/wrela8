@@ -1333,6 +1333,81 @@ fn reject_unlowerable_cross_core_shapes(
     Ok(())
 }
 
+/// plans/M10.md item D / decision 613: `(mailbox-root name, capacity,
+/// slot_size)` for every actor and messageable driver — the inputs
+/// `emit_rt_enqueue` specializes on. Independent of async frame sizes
+/// (slot width is method shapes only), so callers can compute this
+/// before `codegen_program_with_async`.
+pub fn mailbox_enqueue_specs(
+    graph: &ImageGraph,
+    modules: &BTreeMap<String, Module>,
+    layout_ctx: &LayoutCtx,
+) -> Result<Vec<(String, u64, u64)>, String> {
+    if graph.actors.is_empty() && graph.drivers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let shapes = merge_actor_pub_methods(modules, layout_ctx).map_err(|e| e.message)?;
+    let mut out = Vec::new();
+    for decl in &graph.actors {
+        let name = crate::sema::types::render_type(&decl.actor_type);
+        let mailbox_capacity = declared_mailbox_capacity(&decl.args, &format!("actor `{name}`"))?
+            .ok_or_else(|| {
+            format!(
+                "actor `{name}` has no declared `mailbox=` capacity (plans/M6.md decision 3: \
+                 the declared bound is the whole of M6's own mailbox-capacity story; derivation \
+                 is out of scope)"
+            )
+        })?;
+        let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
+        let max_args_bytes = methods
+            .iter()
+            .map(|m| m.param_sizes.iter().sum::<u64>())
+            .max()
+            .unwrap_or(0);
+        let slot_size = 16 + max_args_bytes;
+        out.push((name, mailbox_capacity, slot_size));
+    }
+    for decl in &graph.drivers {
+        let name = crate::sema::types::render_type(&decl.actor_type);
+        let Some(capacity) = declared_mailbox_capacity(&decl.args, &format!("driver `{name}`"))?
+        else {
+            continue;
+        };
+        let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
+        let max_args_bytes = methods
+            .iter()
+            .map(|m| m.param_sizes.iter().sum::<u64>())
+            .max()
+            .unwrap_or(0);
+        let slot_size = 16 + max_args_bytes;
+        out.push((name, capacity, slot_size));
+    }
+    Ok(out)
+}
+
+/// Resolve mailbox root `name`'s ring bookkeeping addresses from a live
+/// placement (plans/M10.md item D / decision 614).
+fn resolve_mailbox_ring_addrs(
+    placement: &RuntimePlacement,
+    tables: &RuntimeTables,
+    name: &str,
+) -> Option<RingAddrs> {
+    if let Some((i, _)) = tables
+        .actors
+        .iter()
+        .enumerate()
+        .find(|(_, a)| a.name == name)
+    {
+        return placement.actors.get(i).map(|a| a.mailbox());
+    }
+    for (i, d) in tables.drivers.iter().enumerate() {
+        if d.mailbox.is_some() && d.name == name {
+            return placement.driver_mailboxes.get(&i).map(|a| a.mailbox());
+        }
+    }
+    None
+}
+
 /// One mailbox root's own `(capacity, slot size)` — a declared actor's, or
 /// (plans/M8.md item D) a messageable `@driver`'s. The one lookup
 /// `cross_core_rings` needs, so a ring feeding a driver's mailbox is sized
@@ -3173,6 +3248,30 @@ pub fn layout_program(
                     let addr = driver_wake_pending_addr(p, t, driver)?;
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                // M10 D / decision 614
+                Reloc::MailboxAddr { word, actor, field } => {
+                    let (p, t) = match (placement.as_ref(), runtime_live) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(
+                                "internal error: a Reloc::MailboxAddr exists but this image has \
+                                 no runtime tables",
+                            ));
+                        }
+                    };
+                    let addrs = resolve_mailbox_ring_addrs(p, t, actor).ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::MailboxAddr names actor `{actor}`, which this \
+                             image's runtime tables never placed a mailbox for"
+                        ))
+                    })?;
+                    let addr = match field {
+                        crate::codegen::MailboxField::Ring => addrs.ring,
+                        crate::codegen::MailboxField::Tail => addrs.tail,
+                        crate::codegen::MailboxField::Count => addrs.count,
+                    };
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -3237,11 +3336,12 @@ pub fn layout_program(
                 | Reloc::TurnStride { .. }
                 | Reloc::GroupArenaBase { .. }
                 | Reloc::IrqVector { .. }
-                | Reloc::WakePending { .. } => {
+                | Reloc::WakePending { .. }
+                | Reloc::MailboxAddr { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
                          AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/TurnsBase/TurnStride/\
-                         GroupArenaBase/IrqVector/WakePending reloc",
+                         GroupArenaBase/IrqVector/WakePending/MailboxAddr reloc",
                     ));
                 }
             }
@@ -3644,12 +3744,17 @@ pub fn try_layout_program(
         Err(_) => return Ok(None),
     };
     let group_arena_capacity = count_with_group_sites(modules);
+    let enqueue_specs = match mailbox_enqueue_specs(graph, modules, layout_ctx) {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
     let codegen_program = match crate::codegen::codegen_program_with_async(
         &merged,
         &flow,
         layout_ctx,
         &method_index,
         group_arena_capacity,
+        &enqueue_specs,
     ) {
         Ok(p) => p,
         Err(_) => return Ok(None),
@@ -7199,9 +7304,9 @@ fn build_rt_run_one(
 /// in bounds at both ends and needs no per-method table on this path.
 fn build_rt_drain(
     core: usize,
-    // (ring addrs, capacity, slot size, that mailbox root's own
-    // `__rt_enqueue_*` start word)
-    request_lanes: &[(RingAddrs, u64, u64, usize)],
+    // (ring addrs, capacity, slot size, that mailbox root's actor name —
+    // M10 D: `bl_call_key(rt_enqueue_symbol(actor))` into the compiled body)
+    request_lanes: &[(RingAddrs, u64, u64, String)],
     // (ring addrs, capacity)
     reply_lanes: &[(RingAddrs, u64)],
     // plans/M10.md item 0c1: see `build_rt_select_and_run`. The reply lane
@@ -7258,7 +7363,7 @@ fn build_rt_drain(
         debug_assert_eq!(next, a.abs());
     }
 
-    for (addrs, capacity, slot_size, enqueue_start) in request_lanes {
+    for (addrs, capacity, slot_size, actor) in request_lanes {
         // plans/M10.md item D0 (decision 610): the destination mailbox's
         // own `rt_enqueue` now takes its arguments **by value** in
         // `x1`/`x2`, so this lane loads them out of the request-ring slot
@@ -7306,7 +7411,8 @@ fn build_rt_drain(
         } else {
             a.push(encode::enc_mov_reg(2, 31, true)); // mov x2, xzr
         }
-        a.bl_to(*enqueue_start);
+        // M10 D / decision 615: compiled specialized body in `code`.
+        a.bl_call_key(&crate::codegen::rt_enqueue_symbol(actor));
         // Rejected: the target mailbox is full. Leave the message in the
         // ring (back-pressure) and stop this lane — never a drop.
         let skip_full = a.skip_placeholder(); // cbnz x0, .next
@@ -7613,7 +7719,6 @@ fn build_runtime_glue_block(
         ));
     }
     let mut select_starts = Vec::with_capacity(roots.len());
-    let mut enqueue_starts: Vec<usize> = Vec::with_capacity(roots.len());
     let mut cursor = start;
     // --- plans/M8.md item C2: the cross-core ring routines --------------
     //
@@ -7673,20 +7778,13 @@ fn build_runtime_glue_block(
         }
     }
 
-    for (i, (name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
+    for (i, (_name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
         let (_, dispatch_keys) = &actor_dispatch[i];
 
-        let enqueue_start = cursor;
-        let enqueue_words = build_rt_enqueue(addrs, *capacity, *slot_size, enqueue_start);
-        cursor += enqueue_words.len();
-        enqueue_starts.push(enqueue_start);
-        symbols.insert(crate::codegen::rt_enqueue_symbol(name), enqueue_start);
-        asms.push(Asm {
-            start: enqueue_start,
-            words: enqueue_words,
-            relocs: Vec::new(),
-        });
-
+        // M10 D / decision 615: per-actor mailbox admission lives in the
+        // `code` section (`emit_rt_enqueue` under `rt_enqueue_symbol`); do
+        // not place a hand-asm twin into glue_symbols. Cross-core request
+        // rings still emit `build_ring_enqueue` above for `xsend` (F2).
         let select_start = cursor;
         // plans/M8.md item C2: only an actor whose own core produces
         // replies for another core carries the remote-waker arm.
@@ -7755,12 +7853,10 @@ fn build_runtime_glue_block(
         if reqs.is_empty() && reps.is_empty() {
             continue;
         }
-        let resolved: Vec<(RingAddrs, u64, u64, usize)> = reqs
+        let resolved: Vec<(RingAddrs, u64, u64, String)> = reqs
             .iter()
-            .filter_map(|(addrs, cap, slot, actor)| {
-                let idx = roots.iter().position(|(n, ..)| n == actor)?;
-                Some((*addrs, *cap, *slot, enqueue_starts[idx]))
-            })
+            .filter(|(_, _, _, actor)| roots.iter().any(|(n, ..)| n == actor))
+            .map(|(addrs, cap, slot, actor)| (*addrs, *cap, *slot, actor.clone()))
             .collect();
         let start_here = cursor;
         let asm = build_rt_drain(
@@ -9142,7 +9238,9 @@ fn build_abort_fixed(
     a.bl_to(append_start);
 
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
-    a.bl_to(commit_start);
+    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+    let _ = commit_start;
+    a.bl_call_key("__wrela_line_commit");
     a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
     a
@@ -9204,7 +9302,9 @@ fn build_abort_val(
     a.bl_to(append_start);
 
     a.push(encode::enc_add_imm(31, 31, 48, true));
-    a.bl_to(commit_start);
+    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+    let _ = commit_start;
+    a.bl_call_key("__wrela_line_commit");
     a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
     a
@@ -9355,7 +9455,9 @@ fn build_entry_driver(
     // failing is image-fatal with a diagnosable line (plans/M6.md decision
     // 12, plans/M7.md decision 8), never a fault at zero.
     let boot_cont_marker = if let Some(boot_init) = boot_init_start {
-        a.bl_to(line_begin_start);
+        // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
+        let _ = line_begin_start;
+        a.bl_call_key("__wrela_line_begin");
         let marker = a.load_imm_placeholder(9);
         a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
         a.push(encode::enc_str_x_imm(9, 10, 0));
@@ -9374,7 +9476,9 @@ fn build_entry_driver(
         let prefix_len = prefix_bytes.len() as u64;
         let prefix_off = append_rodata(rodata, rodata_cursor, prefix_bytes);
 
-        a.bl_to(line_begin_start);
+        // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
+        let _ = line_begin_start;
+        a.bl_call_key("__wrela_line_begin");
 
         a.load_rodata_addr_at(0, prefix_off);
         a.load_imm(1, prefix_len);
@@ -9531,7 +9635,9 @@ fn build_entry_driver(
         a.load_imm(1, 3);
         a.bl_to(append_start);
 
-        a.bl_to(commit_start);
+        // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+        let _ = commit_start;
+        a.bl_call_key("__wrela_line_commit");
 
         a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
         a.push(encode::enc_ldr_x_imm(10, 9, 0));
@@ -9550,7 +9656,9 @@ fn build_entry_driver(
         let target = a.addr(harness_base);
         a.patch_load_imm(marker, 9, target);
     }
-    a.bl_to(line_begin_start);
+    // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
+    let _ = line_begin_start;
+    a.bl_call_key("__wrela_line_begin");
 
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
@@ -9576,7 +9684,9 @@ fn build_entry_driver(
     a.load_imm(1, 8);
     a.bl_to(append_start);
 
-    a.bl_to(commit_start);
+    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+    let _ = commit_start;
+    a.bl_call_key("__wrela_line_commit");
 
     // Exit code: 0 if failed==0, else 1 — stored plainly then via the
     // trapping MMIO store (the same two-writes-one-trap shape
@@ -9764,6 +9874,93 @@ pub struct BootCtx<'a> {
     pub group_child_index: &'a BTreeMap<String, usize>,
 }
 
+/// plans/M10.md item B2: inject force-rooted `core.runtime` helpers into
+/// a `CodegenProgram` that was lowered without the auto-loaded module
+/// (fuzz / diff-eval / profile / older conformance shortcuts). Real
+/// `wrela test` already lowers them via `guest_reachable_keys_closure`;
+/// this is the fail-closed backstop so `layout_test_image`'s harness
+/// `bl_call_key("__wrela_line_*")` never meets a missing symbol.
+fn with_force_rooted_runtime(program: &CodegenProgram) -> Result<CodegenProgram, LayoutError> {
+    let missing: Vec<&str> = crate::lower::RUNTIME_FORCE_ROOT_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !program.fns.contains_key(*k))
+        .collect();
+    if missing.is_empty() {
+        return Ok(program.clone());
+    }
+    let runtime_cg = codegen_runtime_force_roots().map_err(|m| {
+        LayoutError::new(format!(
+            "internal error: could not codegen force-rooted runtime helpers ({missing:?}): {m}"
+        ))
+    })?;
+    let mut out = program.clone();
+    let rodata_byte_base: usize = out.rodata.iter().map(Vec::len).sum();
+    for (key, mut f) in runtime_cg.fns {
+        if out.fns.contains_key(&key) {
+            continue;
+        }
+        if rodata_byte_base != 0 {
+            for r in &mut f.relocs {
+                if let Reloc::Rodata { byte_offset, .. } = r {
+                    *byte_offset += rodata_byte_base;
+                }
+            }
+        }
+        out.fns.insert(key, f);
+    }
+    out.rodata.extend(runtime_cg.rodata);
+    Ok(out)
+}
+
+/// Lower + codegen every `RUNTIME_FORCE_ROOT_KEYS` entry from
+/// `stdlib/core/runtime.wr` as a standalone `CodegenProgram`.
+fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
+    let (runtime_key, runtime_loaded) = crate::loader::load_runtime_module()
+        .map_err(|_| "stdlib/core/runtime.wr missing".to_string())?;
+    let mut modules = BTreeMap::new();
+    modules.insert(runtime_key.clone(), runtime_loaded.module);
+    let mut paths = BTreeMap::new();
+    paths.insert(
+        runtime_key.clone(),
+        runtime_loaded.file.display().to_string(),
+    );
+    let programs_vec = crate::sema::check_program_typed(&modules, &paths).map_err(|e| e.message)?;
+    let programs: BTreeMap<String, crate::sema::typed::TypedProgram> = programs_vec
+        .into_iter()
+        .map(|(k, p)| (k.join("."), p))
+        .collect();
+    let modules_dot: BTreeMap<String, Module> =
+        modules.into_iter().map(|(k, m)| (k.join("."), m)).collect();
+    let only: BTreeSet<String> = crate::lower::RUNTIME_FORCE_ROOT_KEYS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let lower_opts = crate::lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(only),
+    };
+    let mut mwir_programs = Vec::new();
+    let mut flow_fns = BTreeMap::new();
+    for typed in programs.values() {
+        mwir_programs
+            .push(crate::lower::lower_program_with(typed, &lower_opts).map_err(|e| e.message)?);
+        flow_fns.extend(
+            crate::flowwir_lower::lower_program_with(typed, &lower_opts)
+                .map_err(|e| e.message)?
+                .fns,
+        );
+    }
+    let mwir = merge_mwir_programs(mwir_programs);
+    let flow = crate::flowwir::FlowWirProgram { fns: flow_fns };
+    let mut layout_ctx = merge_layout_ctx(&modules_dot).map_err(|e| e.message)?;
+    enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
+    let method_index =
+        actor_method_index_tables(&modules_dot, &layout_ctx).map_err(|e| e.message)?;
+    crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0)
+        .map_err(|e| e.message)
+}
+
 pub fn layout_test_image(
     program: &CodegenProgram,
     runtime_tests: &[String],
@@ -9779,6 +9976,11 @@ pub fn layout_test_image(
     // identical).
     test_args: &BTreeMap<String, Vec<u64>>,
 ) -> Result<ImageLayout, LayoutError> {
+    // M10 B2: harness bl_call_keys force-rooted console helpers. Callers
+    // that already lowered `core.runtime` are a no-op; others get them
+    // injected here so the reloc never fails closed on a missing symbol.
+    let program = with_force_rooted_runtime(program)?;
+    let program = &program;
     check_transcript_bound(program, runtime_tests)?;
 
     let image_base = machine_layout::IMAGE_BASE;
@@ -10266,11 +10468,12 @@ pub fn layout_test_image(
             | Reloc::TurnStride { .. }
             | Reloc::GroupArenaBase { .. }
             | Reloc::IrqVector { .. }
-            | Reloc::WakePending { .. } => {
+            | Reloc::WakePending { .. }
+            | Reloc::MailboxAddr { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit an \
                      AbortFixed/AbortVal/CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
-                     GroupArenaBase/IrqVector/WakePending reloc",
+                     GroupArenaBase/IrqVector/WakePending/MailboxAddr reloc",
                 ));
             }
         }
@@ -10389,6 +10592,30 @@ pub fn layout_test_image(
                         }
                     };
                     let addr = driver_wake_pending_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                // M10 D / decision 614
+                Reloc::MailboxAddr { word, actor, field } => {
+                    let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(
+                                "internal error: a Reloc::MailboxAddr exists but this image has \
+                                 no runtime tables",
+                            ));
+                        }
+                    };
+                    let addrs = resolve_mailbox_ring_addrs(p, t, actor).ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::MailboxAddr names actor `{actor}`, which this \
+                             image's runtime tables never placed a mailbox for"
+                        ))
+                    })?;
+                    let addr = match field {
+                        crate::codegen::MailboxField::Ring => addrs.ring,
+                        crate::codegen::MailboxField::Tail => addrs.tail,
+                        crate::codegen::MailboxField::Count => addrs.count,
+                    };
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
             }
@@ -10524,9 +10751,15 @@ pub fn t():
         let mut layout_ctx = merge_layout_ctx(&modules).expect("layout ctx");
         enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
         let method_index = actor_method_index_tables(&modules, &layout_ctx).expect("index");
-        let codegen =
-            crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0)
-                .expect("codegen");
+        let codegen = crate::codegen::codegen_program_with_async(
+            &mwir,
+            &flow,
+            &layout_ctx,
+            &method_index,
+            0,
+            &[],
+        )
+        .expect("codegen");
         assert!(
             codegen.fns.contains_key("__wrela_runtime_probe"),
             "probe must be in codegen fns"

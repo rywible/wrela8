@@ -3542,12 +3542,58 @@ mod tests {
         use std::collections::{BTreeMap, BTreeSet};
         use wrela_compiler::sema::typed::TestKind;
         use wrela_compiler::sema::types::{Type, TypeArg};
-        use wrela_compiler::{codegen, layout};
+        use wrela_compiler::{codegen, layout, loader, lower};
 
         let tokens = wrela_compiler::syntax::lexer::lex(src).expect("conformance source must lex");
         let module = wrela_compiler::syntax::parser::parse(tokens).expect("must parse");
-        let program =
-            wrela_compiler::sema::check_typed(&module, "<conformance>").expect("must check");
+        // M10 B2 / A2d: mirror `bin/wrela.rs::test_cmd` — auto-load
+        // `core.runtime` and force-root its helpers so harness
+        // `bl_call_key("__wrela_line_*")` resolves.
+        let (runtime_key, runtime_loaded) = match loader::load_runtime_module() {
+            Ok(v) => v,
+            Err(_) => panic!("stdlib/core/runtime.wr must load"),
+        };
+        let root_key = module.path.clone();
+        let mut modules_vec = BTreeMap::new();
+        modules_vec.insert(root_key.clone(), module.clone());
+        modules_vec.insert(runtime_key.clone(), runtime_loaded.module);
+        let mut paths = BTreeMap::new();
+        paths.insert(root_key.clone(), "<conformance>".to_string());
+        paths.insert(
+            runtime_key.clone(),
+            runtime_loaded.file.display().to_string(),
+        );
+        // Mirror `bin/wrela.rs::load_runtime_bearing_singleton`: time prelude
+        // for `seconds(...)` etc., then drop `core.time` from the maps.
+        let time_key: Option<Vec<String>> = if loader::module_mentions_time(&module) {
+            let (time_key, time_loaded) = match loader::load_time_module() {
+                Ok(v) => v,
+                Err(_) => panic!("stdlib/core/time.wr must load"),
+            };
+            paths.insert(time_key.clone(), time_loaded.file.display().to_string());
+            modules_vec.insert(time_key.clone(), time_loaded.module);
+            Some(time_key)
+        } else {
+            None
+        };
+        let mut programs_vec =
+            wrela_compiler::sema::check_program_typed(&modules_vec, &paths).expect("must check");
+        if let Some(tk) = &time_key {
+            programs_vec.remove(tk);
+            modules_vec.remove(tk);
+        }
+        let programs: BTreeMap<String, wrela_compiler::sema::typed::TypedProgram> = programs_vec
+            .into_iter()
+            .map(|(k, p)| (k.join("."), p))
+            .collect();
+        let modules: BTreeMap<String, wrela_compiler::syntax::ast::Module> = modules_vec
+            .into_iter()
+            .map(|(k, m)| (k.join("."), m))
+            .collect();
+        // Prefer the user root's TypedProgram for test discovery / image fn.
+        let program = programs
+            .get(&root_key.join("."))
+            .expect("root program present");
         let runtime_tests: Vec<String> = program
             .tests
             .iter()
@@ -3559,27 +3605,44 @@ mod tests {
             "a conformance source declares runtime tests"
         );
 
-        let mut modules = BTreeMap::new();
-        modules.insert(module.path.join("."), module.clone());
-        let layout_ctx = layout::merge_layout_ctx(&modules).expect("layout ctx");
-        let mwir_program = wrela_compiler::lower::lower_program(&program).expect("sync lower");
-        let flow_program =
-            wrela_compiler::flowwir_lower::lower_program(&program).expect("flowwir lower");
+        let reachable =
+            lower::guest_reachable_keys_closure(&programs, &lower::LowerOpts::default());
+        let lower_opts = lower::LowerOpts {
+            emit_comptime_tests: false,
+            only: Some(reachable),
+        };
+        let mut mwir_programs = Vec::new();
+        let mut flow_fns = BTreeMap::new();
+        for typed in programs.values() {
+            mwir_programs.push(lower::lower_program_with(typed, &lower_opts).expect("sync lower"));
+            flow_fns.extend(
+                wrela_compiler::flowwir_lower::lower_program_with(typed, &lower_opts)
+                    .expect("flowwir lower")
+                    .fns,
+            );
+        }
+        let mwir_program = layout::merge_mwir_programs(mwir_programs);
+        let flow_program = wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
+        let mut layout_ctx = layout::merge_layout_ctx(&modules).expect("layout ctx");
+        layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
         let graph = match &program.image_fn {
             Some(fn_name) => {
-                wrela_compiler::eval::interp::eval_image(&program, fn_name).expect("image graph")
+                wrela_compiler::eval::interp::eval_image(program, fn_name).expect("image graph")
             }
             None => Default::default(),
         };
         let method_index =
             layout::actor_method_index_tables(&modules, &layout_ctx).expect("method index");
         let group_arena_capacity = layout::count_with_group_sites(&modules);
+        let enqueue_specs =
+            layout::mailbox_enqueue_specs(&graph, &modules, &layout_ctx).expect("enqueue specs");
         let codegen_program = codegen::codegen_program_with_async(
             &mwir_program,
             &flow_program,
             &layout_ctx,
             &method_index,
             group_arena_capacity,
+            &enqueue_specs,
         )
         .expect("codegen");
         let async_frames =
@@ -3682,12 +3745,15 @@ mod tests {
         let method_index =
             layout::actor_method_index_tables(&modules, &layout_ctx).expect("method index");
         let group_arena_capacity = layout::count_with_group_sites(&modules);
+        let enqueue_specs =
+            layout::mailbox_enqueue_specs(&graph, &modules, &layout_ctx).expect("enqueue specs");
         let codegen_program = codegen::codegen_program_with_async(
             &mwir_program,
             &flow_program,
             &layout_ctx,
             &method_index,
             group_arena_capacity,
+            &enqueue_specs,
         )
         .expect("codegen");
         let async_frames =

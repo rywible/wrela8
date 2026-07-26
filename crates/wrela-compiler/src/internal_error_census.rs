@@ -32,7 +32,9 @@
 pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // 75 -> 77, plans/M10.md item A2c: two sites in `collect_placed_statics`
     // (non-named type / missing completed size).
-    ("layout.rs", 77),
+    // 77 -> 78, plans/M10.md item B2: `with_force_rooted_runtime` inject
+    // failure when standalone runtime codegen cannot run.
+    ("layout.rs", 78),
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     ("eval/interp.rs", 79),
     ("lower.rs", 5),
@@ -140,7 +142,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 178,
+            INTERNAL_ERROR_SITE_COUNT, 179,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

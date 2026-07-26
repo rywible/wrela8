@@ -1,0 +1,1 @@
+error[unimplemented]: codegen for more than 2 scalar message args (the by-value mailbox admission ABI carries x1/x2 only) is not implemented yet

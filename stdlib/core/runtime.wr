@@ -1,5 +1,75 @@
-# plans/M10.md item A2d
+# plans/M10.md item A2d / B2 / D
+# Always-loaded runtime module. Names are not auto-visible (decision 584);
+# harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
 
+# M10 B2: machine pages the console formatter speaks to (decision 593).
+# Addresses match wrela-machine::layout / console — bytes live in the VMM's
+# pages, not the image blob (decision 588).
+
+const QUEUE_SIZE: u64 = 256
+const DESC_WORD_COUNT: usize = 512
+const CONSOLE_DATA_BASE: u64 = 0x40003000
+
+@layout(runtime, endian=little)
+struct MachineInfoPage:
+    @offset(0x50) ring_data_bump: u64
+    @offset(0x58) ring_desc_bump: u64
+    @offset(0x60) line_start: u64
+
+@placed(0x40000000)
+static MACHINE_INFO: MachineInfoPage
+
+# Descriptor table as 512 u64 words (256 × 16-byte entries). Word 2i is
+# desc.addr; word 2i+1 packs virtio len:u32 (low) + flags/next:u32 (high).
+@layout(runtime, endian=little)
+struct ConsoleRingPage:
+    @offset(0x0) desc_words: [u64; DESC_WORD_COUNT]
+    @offset(0x1000) avail_flags_idx: u32
+    @offset(0x1a08) doorbell: u64
+
+@placed(0x40001000)
+static CONSOLE_RING: ConsoleRingPage
+
+# Declared so the three machine pages are all @placed (A2c/B1). line_commit
+# materializes CONSOLE_DATA_BASE as a const — a bare static is not a u64.
+@layout(runtime, endian=little)
+struct ConsoleDataPage:
+    @offset(0x0) _pad: u64
+
+@placed(0x40003000)
+static CONSOLE_DATA: ConsoleDataPage
+
+# Force-root seed (A2d / decision 583). Per-actor mailbox admission
+# (`rt_enqueue <Actor>`) is synthesized into CodegenProgram under
+# specialized keys (item D / decisions 613–615) — not spelled here,
+# because the key contains a space no wrela identifier may carry.
 pub fn __wrela_runtime_probe():
     return
+
+# M10 B2: snapshot OFF_RING_DATA_BUMP into OFF_LINE_START.
+pub fn __wrela_line_begin():
+    MACHINE_INFO.line_start = MACHINE_INFO.ring_data_bump
+    return
+
+# M10 B2: scalar status dissolves BRK_LINE_COMMIT_OVERFLOW (decision 592).
+# Returns 0 = Ok, 1 = Overflow. A sum type would be an aggregate return
+# (x8 pointer) that harness bl_call_key sites do not arm — keep it a
+# register-sized value so callers can ignore x0.
+pub fn __wrela_line_commit() -> u64:
+    desc_bump = MACHINE_INFO.ring_desc_bump
+    if desc_bump >= QUEUE_SIZE:
+        return 1
+    line_start = MACHINE_INFO.line_start
+    data_bump = MACHINE_INFO.ring_data_bump
+    len = data_bump -% line_start
+    data_addr = CONSOLE_DATA_BASE +% line_start
+    wi = (desc_bump *% 2).to[usize]()
+    CONSOLE_RING.desc_words[wi] = data_addr
+    # flags/next = 0 occupies the high half of this word (little-endian).
+    CONSOLE_RING.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
+    new_idx = desc_bump +% 1
+    CONSOLE_RING.avail_flags_idx = (new_idx *% 65536).to[u32]()
+    MACHINE_INFO.ring_desc_bump = new_idx
+    CONSOLE_RING.doorbell = 1
+    return 0
