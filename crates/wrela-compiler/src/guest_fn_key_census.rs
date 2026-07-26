@@ -39,6 +39,10 @@ pub const ZERO_FN_DUMPS: &[(&str, &str)] = &[
         "err-mwir-if-else-scope-leak/expected/mwir.txt",
         "sema/lower refuse scope leak; mwir dump is empty",
     ),
+    (
+        "err-send-too-many-args/expected/asm.txt",
+        "codegen refuses >2 scalar message args before emitting fns (M10 item D / decision 610)",
+    ),
 ];
 
 /// Required `Fn key=` spellings per dump path under `tests/golden/`.
