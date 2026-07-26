@@ -90,11 +90,12 @@ const ACTOR_SURFACE: &[&str] = &[
 const MMIO_WRAPPERS: &[&str] = &["ReadOnly", "WriteOnly"];
 
 /// The one marked-value mechanism's three policy names (plans/M7.md item
-/// H2a, 03-hardware.md §8 / 05-library.md §6): `Untrusted` (live),
-/// `Validated` / `Secret` (recognized so the mechanism can refuse them by
-/// name as out of M7's honest-scope line, rather than as unknown types).
-/// Resolution and sealing live in `sema::types::resolve_named` /
-/// `sema::bodies`; being in scope is not being constructible.
+/// H2a / plans/M9.md item G, 03-hardware.md §8 / 05-library.md §6):
+/// `Untrusted` (live), `Validated` / `Secret` (recognized so the
+/// mechanism can refuse them by name — M9 G2/G3 deferrals — rather than
+/// as unknown types). Resolution and sealing live in
+/// `sema::types::resolve_named` / `sema::bodies`; being in scope is not
+/// being constructible.
 const MARKED_VALUES: &[&str] = &["Untrusted", "Validated", "Secret"];
 
 /// Fail-closed type names that resolve only to refuse by plan item

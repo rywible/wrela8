@@ -4392,10 +4392,10 @@ fn resolve_named(
             let _args = expect_type_args(n, 2)?;
             return Err(SemaError::at(
                 "type",
-                "the marked-value mechanism refuses policy `Validated[F, T]` in this milestone \
-                 — plans/M7.md's honest-scope line keeps only `Untrusted[T]` IN (03-hardware.md \
-                 §8); `Validated[F, T]` needs `FormatValidator[F, T].validate` and \
-                 `into_value(take self)` (05-library.md §6), which are out of M7"
+                "the marked-value mechanism refuses policy `Validated[F, T]` — plans/M9.md \
+                 item G2 defers it (decision 353): needs `FormatValidator[F, T].validate` and \
+                 `into_value(take self)` (05-library.md §6); only `Untrusted[T]` is live \
+                 (03-hardware.md §8)"
                     .to_string(),
                 n.span,
             ));
@@ -4404,10 +4404,10 @@ fn resolve_named(
             let _args = expect_type_args(n, 1)?;
             return Err(SemaError::at(
                 "type",
-                "the marked-value mechanism refuses policy `Secret[T]` in this milestone — \
-                 plans/M7.md's honest-scope line keeps only `Untrusted[T]` IN (03-hardware.md \
-                 §8); `Secret[T]` needs secret-preserving transforms and the comptime \
-                 non-serialization rule (02-language.md §12), which are out of M7"
+                "the marked-value mechanism refuses policy `Secret[T]` — plans/M9.md item G3 \
+                 defers it (decision 354): needs secret-preserving transforms and the comptime \
+                 non-serialization rule (02-language.md §12); only `Untrusted[T]` is live \
+                 (03-hardware.md §8)"
                     .to_string(),
                 n.span,
             ));

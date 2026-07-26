@@ -1,8 +1,8 @@
 module examples.err_validated_out_of_scope
 
-# plans/M7.md item H2a: one marked-value mechanism, three policies. The
-# mechanism refuses `Validated[F, T]` by name as out of M7's honest-scope
-# line (only `Untrusted[T]` is IN).
+# plans/M9.md item G2 / decision 353: one marked-value mechanism, three
+# policies. `Validated[F, T]` is refused by name until FormatValidator
+# + into_value land — not an unknown-type miss.
 
 fn bad(v: Validated[u32, u32]) -> u32:
     return 0
