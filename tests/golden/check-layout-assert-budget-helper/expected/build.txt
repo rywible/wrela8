@@ -1,2 +1,2 @@
-error[build]: `@layout_assert` fn `budget` failed: assertion failed: code budget is 400 bytes
+error[build]: `@layout_assert` fn `budget` failed: assertion failed: code budget is 1500 bytes
   while evaluating `budget`
