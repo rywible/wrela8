@@ -352,7 +352,7 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 951; // was 1072; F −121
 /// census file (it documents the needle). Measured 2026-07-26. Adding a
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
-pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 478), ("layout.rs", 328)];
+pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 560), ("layout.rs", 266)];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
 pub const ENCODE_ENC_SITE_COUNT: usize = {
@@ -501,7 +501,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 806,
+            ENCODE_ENC_SITE_COUNT, 826,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
