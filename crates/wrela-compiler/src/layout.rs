@@ -10189,6 +10189,230 @@ pub fn layout_test_image(
     })
 }
 
+/// plans/M10.md item F0: live word counts for hand-emitted A64 emitters
+/// under the census reference configuration documented in
+/// `emitted_a64_census`. `#[cfg(test)]` so production builds keep the
+/// private builders private; the census unit test is the only caller.
+#[cfg(test)]
+pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'static str, usize> {
+    use std::collections::BTreeMap;
+    let mut out: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let insert = |out: &mut BTreeMap<&'static str, usize>, name: &'static str, n: usize| {
+        assert!(
+            out.insert(name, n).is_none(),
+            "duplicate census measure key {name}"
+        );
+    };
+
+    // --- reference configuration (pinned; image-dependent emitters use this) ---
+    // capacity=4, slot_size=32 (one arg word beyond the 16-byte header).
+    // One select target, no child polls, no drain, no xreply arms.
+    // Checkpoint: empty irq/wake (M6 path), no group arena.
+    // Deadline scan/poll: arena_capacity=1, one turn area.
+    // Boot init: one actor, state_size=8, no init calls.
+    // Entry driver: zero runtime tests, cores=1, no boot_init, no rt_run_one.
+    // Drain: core=0, one request lane + one reply lane, capacity=4.
+    // Group child poll: one child at index 0.
+    // Secondary core entry: core=1.
+    const CAP: u64 = 4;
+    const SLOT: u64 = 32;
+    const TURNS_BASE: u64 = 0x4050_1000;
+    const LOG2_STRIDE: u8 = 6;
+    let ring = RingAddrs {
+        ring: 0x4050_2000,
+        head: 0x4050_2100,
+        tail: 0x4050_2108,
+        count: 0x4050_2110,
+    };
+    let actor = ActorAddrs {
+        state: 0x4050_0000,
+        ring: ring.ring,
+        head: ring.head,
+        tail: ring.tail,
+        count: ring.count,
+        turn: TURNS_BASE,
+    };
+
+    // Floor / halt.
+    {
+        let mut w = Vec::new();
+        push_halt(&mut w, 0);
+        insert(&mut out, "push_halt", w.len());
+    }
+    insert(&mut out, "build_entry_stub", build_entry_stub().len());
+    insert(
+        &mut out,
+        "build_abort_tail_codegen_fn",
+        build_abort_tail_codegen_fn().code.len(),
+    );
+
+    // Checkpoint (empty group / irq / wake) — M6-shaped floor shell + loop.
+    {
+        let block = build_checkpoint_and_vector_stub_ex(None, &[], &[]);
+        insert(
+            &mut out,
+            "build_checkpoint_and_vector_stub_ex",
+            block.words.len(),
+        );
+    }
+
+    // Deadline helpers at REF group shape (owned by G; not inside the empty
+    // checkpoint measure above).
+    {
+        let g = GroupServiceCtx {
+            arena_base: 0x4050_3000,
+            arena_capacity: 1,
+            turn_areas: vec![(TURNS_BASE, TurnId::from_index(0))],
+        };
+        let mut a = Asm::new(0);
+        emit_deadline_scan_and_delivery(&mut a, &g);
+        insert(&mut out, "emit_deadline_scan_and_delivery", a.words.len());
+        let mut a = Asm::new(0);
+        emit_deadline_poll(&mut a, &g);
+        insert(&mut out, "emit_deadline_poll", a.words.len());
+    }
+
+    // Helpers measured in isolation (delta on a fresh Asm).
+    {
+        let mut a = Asm::new(0);
+        push_raise_pending(&mut a, 1);
+        insert(&mut out, "push_raise_pending", a.words.len());
+    }
+    {
+        let mut a = Asm::new(0);
+        push_ring_advance(&mut a, 11, 12, ring.head, CAP);
+        insert(&mut out, "push_ring_advance", a.words.len());
+    }
+    {
+        let mut a = Asm::new(0);
+        push_turn_addr_from_id(&mut a, 14, 12, TURNS_BASE, LOG2_STRIDE);
+        insert(&mut out, "push_turn_addr_from_id", a.words.len());
+    }
+    {
+        let mut w = Vec::new();
+        push_load_imm(&mut w, 9, 0x1234);
+        insert(&mut out, "push_load_imm", w.len());
+    }
+
+    // Runtime hand-asm inventory.
+    insert(
+        &mut out,
+        "build_ring_enqueue",
+        build_ring_enqueue(&ring, CAP, SLOT, 0).len(),
+    );
+    // Thin wrapper: same words as build_ring_enqueue. Kept in the census
+    // because the symbol still exists (JIT suite / pub API).
+    insert(
+        &mut out,
+        "build_rt_enqueue",
+        build_rt_enqueue(&actor, CAP, SLOT, 0).len(),
+    );
+    insert(
+        &mut out,
+        "build_rt_xsend",
+        build_rt_xsend(0, 0, 1, 0).words.len(),
+    );
+    insert(
+        &mut out,
+        "build_rt_xreply",
+        build_rt_xreply(&ring, CAP, 1, 0).words.len(),
+    );
+    insert(
+        &mut out,
+        "build_rt_select_and_run",
+        build_rt_select_and_run(
+            &actor,
+            CAP,
+            SLOT,
+            &[(0, false)],
+            crate::codegen::TURN_RECORD_SIZE,
+            TURNS_BASE,
+            LOG2_STRIDE,
+            0,
+        )
+        .len(),
+    );
+    insert(
+        &mut out,
+        "build_rt_run_one",
+        build_rt_run_one(&[0], &[], None, 0x4050_4000, 0)
+            .words
+            .len(),
+    );
+    insert(
+        &mut out,
+        "build_rt_drain",
+        build_rt_drain(
+            0,
+            &[(ring, CAP, SLOT, "Actor".into())],
+            &[(ring, CAP)],
+            TURNS_BASE,
+            LOG2_STRIDE,
+            0,
+        )
+        .words
+        .len(),
+    );
+    insert(
+        &mut out,
+        "build_secondary_core_entry",
+        build_secondary_core_entry(1, 0).words.len(),
+    );
+    insert(
+        &mut out,
+        "build_group_child_poll",
+        build_group_child_poll(
+            TURNS_BASE,
+            "Child.run",
+            0x4050_3000,
+            0,
+            TURNS_BASE,
+            LOG2_STRIDE,
+            0,
+        )
+        .words
+        .len(),
+    );
+    insert(
+        &mut out,
+        "build_boot_init",
+        build_boot_init(&[actor], &[], &[8], &[], &[None], &[], &[], &[], 0)
+            .expect("boot_init")
+            .words
+            .len(),
+    );
+    {
+        let addrs = HarnessAddrs::production();
+        let mut rodata: Vec<Vec<u8>> = Vec::new();
+        let mut cursor = 0usize;
+        let asm = build_entry_driver(
+            &addrs,
+            0,
+            0,
+            &[],
+            &std::collections::BTreeSet::new(),
+            false,
+            0,
+            None,
+            &mut rodata,
+            &mut cursor,
+            None,
+            &BTreeMap::new(),
+            1,
+        );
+        insert(&mut out, "build_entry_driver", asm.words.len());
+    }
+    // Test-only residue of item C (cfg(test) helper).
+    {
+        let addrs = HarnessAddrs::production();
+        let mut a = Asm::new(0);
+        push_abort_tail(&mut a, &addrs);
+        insert(&mut out, "push_abort_tail", a.words.len());
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

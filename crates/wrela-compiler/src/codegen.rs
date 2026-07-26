@@ -10004,6 +10004,43 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
     Ok(())
 }
 
+/// plans/M10.md item F0: live word counts for image-static specialization
+/// emitters (decisions 613 / 620) under the census reference configuration.
+#[cfg(test)]
+pub(crate) fn emitted_a64_census_specialization_live_counts()
+-> std::collections::BTreeMap<&'static str, usize> {
+    use std::collections::BTreeMap;
+    let mut out = BTreeMap::new();
+    // Same CAP/SLOT as layout::emitted_a64_census_live_counts.
+    const CAP: u64 = 4;
+    const SLOT: u64 = 32;
+    out.insert(
+        "emit_rt_enqueue",
+        emit_rt_enqueue("Actor", CAP, SLOT).code.len(),
+    );
+    let spec = RtRunOneSpec {
+        core: 0,
+        select_actors: vec!["Actor".into()],
+        child_poll_keys: vec![],
+        has_drain: false,
+    };
+    out.insert("emit_rt_run_one", emit_rt_run_one(&spec).code.len());
+    // Variant with drain + one child poll — still one census key; the
+    // locked count is the no-drain/no-poll REF above. Recorded so a
+    // growth in the drained shape is visible when someone re-measures.
+    let _drained = {
+        let spec = RtRunOneSpec {
+            core: 0,
+            select_actors: vec!["Actor".into()],
+            child_poll_keys: vec!["Child.run".into()],
+            has_drain: true,
+        };
+        emit_rt_run_one(&spec).code.len()
+    };
+    let _ = _drained;
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

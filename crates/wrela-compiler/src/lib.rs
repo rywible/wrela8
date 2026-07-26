@@ -29,6 +29,7 @@
 //! with it on every pure program.
 
 pub mod codegen;
+pub mod emitted_a64_census;
 pub mod encode;
 pub mod eval;
 pub mod flowwir;
