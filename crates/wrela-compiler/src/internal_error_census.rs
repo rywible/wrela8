@@ -45,7 +45,10 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // ring_index out of range) in layout_program + layout_test_image.
     // 96 -> 100, plans/M10.md item H: Reloc::DriverState resolve (no tables /
     // undeclared driver) in layout_program + layout_test_image.
-    ("layout.rs", 100),
+    // 100 -> 70+27, plans/M10.md item K: extract harness submodule; −3 from
+    // deleted empty RuntimeBlock reloc-resolve arms (always-None path).
+    ("layout.rs", 70),
+    ("layout/harness.rs", 27),
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     ("eval/interp.rs", 79),
     ("lower.rs", 5),
@@ -153,7 +156,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 201,
+            INTERNAL_ERROR_SITE_COUNT, 198,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

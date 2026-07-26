@@ -5,7 +5,7 @@
 //! silently." That test did not exist; decisions 613 and 620 satisfied D
 //! and E3 with Rust emitters that push `encode::enc_*` word by word
 //! (`emit_rt_enqueue`, `emit_rt_run_one`), relocating the Rust-shaped hole
-//! from `layout.rs` into `codegen.rs` rather than removing it. Those
+//! from `layout.rs` / `layout/harness.rs` into `codegen.rs` rather than removing it. Those
 //! decisions are frozen. This file locks the *inventory as it stands* —
 //! every hand-shaped emitter, its measured word count under a pinned
 //! reference configuration, and a category — so the next emitter is a
@@ -137,7 +137,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     // `layout_program`'s build-image abort landings (decision 655).
     EmitterEntry {
         name: "push_halt",
-        file: "layout.rs",
+        file: "layout/harness.rs",
         words: 15,
         category: Category::Floor,
         note: "floor cat1+cat3 halt sequence",
@@ -148,7 +148,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     // subtracts that overlap.
     EmitterEntry {
         name: "build_entry_stub",
-        file: "layout.rs",
+        file: "layout/harness.rs",
         words: 20,
         category: Category::Floor,
         note: "floor cat1 SP install + halt",
@@ -157,7 +157,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     // Item C: overwrites the compiled `__wrela_abort_tail` stub.
     EmitterEntry {
         name: "build_abort_tail_codegen_fn",
-        file: "layout.rs",
+        file: "layout/harness.rs",
         words: 6,
         category: Category::Floor,
         note: "floor cat4 abort long-jump",
@@ -263,7 +263,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     // --- not yet migrated ------------------------------------------------
     EmitterEntry {
         name: "push_turn_addr_from_id",
-        file: "layout.rs",
+        file: "layout/harness.rs",
         words: 7,
         category: Category::NotYetMigrated,
         note: "shared index→address; remaining harness paths",
@@ -273,7 +273,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     // floor category and not owned by one migration item.
     EmitterEntry {
         name: "push_load_imm",
-        file: "layout.rs",
+        file: "layout/harness.rs",
         words: 4,
         category: Category::Unclassified,
         note: "micro-helper; 4 words always",
@@ -282,7 +282,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     // images; still emits A64 words in the crate.
     EmitterEntry {
         name: "push_abort_tail",
-        file: "layout.rs",
+        file: "layout/harness.rs",
         words: 19,
         category: Category::Unclassified,
         note: "cfg(test) only; C left it for the latch probe",
@@ -295,7 +295,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     // new keys or language surface (decision 685).
     EmitterEntry {
         name: "build_entry_driver",
-        file: "layout.rs",
+        file: "layout/harness.rs",
         words: 94,
         category: Category::Unclassified,
         note: "I residue (685–689); REF zero tests; cat1 SP + cat3 brk embedded",
@@ -335,7 +335,11 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 879; // unchanged; G moves not-yet→
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
 /// Item G: checkpoint/deadline moved layout→codegen (811 / 76).
-pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 811), ("layout.rs", 76)];
+pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
+    ("codegen.rs", 811),
+    ("layout.rs", 8),
+    ("layout/harness.rs", 68),
+];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
 pub const ENCODE_ENC_SITE_COUNT: usize = {
@@ -493,7 +497,7 @@ mod tests {
     /// contains `encode::enc_`, keyed as `file::name`.
     fn scan_enc_fns() -> BTreeMap<String, ()> {
         let mut out = BTreeMap::new();
-        for file in ["layout.rs", "codegen.rs"] {
+        for file in ["layout.rs", "layout/harness.rs", "codegen.rs"] {
             let path = src_root().join(file);
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!("read {}: {e}", path.display());
@@ -507,6 +511,10 @@ mod tests {
                 } else if let Some(rest) = line.strip_prefix("pub fn ") {
                     Some(rest.split('(').next().unwrap_or("").trim())
                 } else if let Some(rest) = line.strip_prefix("pub(crate) fn ") {
+                    Some(rest.split('(').next().unwrap_or("").trim())
+                } else if let Some(rest) = line.strip_prefix("pub(super) fn ") {
+                    // plans/M10.md item K: harness submodule emits with
+                    // parent-only visibility.
                     Some(rest.split('(').next().unwrap_or("").trim())
                 } else {
                     None
@@ -616,20 +624,18 @@ mod tests {
         "layout.rs::patch_load_imm_words",
         "layout.rs::patch_adrp_add",
         "layout.rs::layout_program",
-        "layout.rs::emitted_a64_census_live_counts",
+        "layout/harness.rs::emitted_a64_census_live_counts",
         "codegen.rs::emitted_a64_census_specialization_live_counts",
         // M10 F: JIT-only materialize of `emit_rt_select_and_run` (patches
         // Call/MailboxAddr/Turns*); not a hand-asm emitter row.
-        "layout.rs::build_rt_select_and_run",
-        "layout.rs::build_rt_enqueue",
-        "layout.rs::build_checkpoint_and_vector_stub",
+        "layout/harness.rs::build_rt_select_and_run",
+        "layout/harness.rs::build_rt_enqueue",
+        "layout/harness.rs::build_checkpoint_and_vector_stub",
         // M10 G: thin materialize of `emit_checkpoint_and_vector_stub`.
-        "layout.rs::build_checkpoint_and_vector_stub_ex",
+        "layout/harness.rs::build_checkpoint_and_vector_stub_ex",
         "codegen.rs::emit_deadline_scan_and_delivery_into",
         "codegen.rs::emit_deadline_poll_into",
-        "layout.rs::build_runtime_glue_block",
-        "layout.rs::build_runtime_block",
-        "layout.rs::install_abort_tail_floor",
+        "layout/harness.rs::install_abort_tail_floor",
     ];
 
     /// Census rows that are real emitters (measured word count) but whose
