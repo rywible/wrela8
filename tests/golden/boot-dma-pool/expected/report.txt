@@ -46,13 +46,13 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=5440
-  Section name=rodata base=0x40501590 size=495
-  Section name=abort base=0x40501780 size=120
-  Section name=checkpoint base=0x405017f8 size=104
-  Section name=rtcode base=0x40501860 size=1968
-  Section name=rtdata base=0x40502010 size=3496
-  Section name=pooldata base=0x40502db8 size=384
+  Section name=code base=0x40500050 size=5868
+  Section name=rodata base=0x40501740 size=495
+  Section name=abort base=0x40501930 size=120
+  Section name=checkpoint base=0x405019a8 size=104
+  Section name=rtcode base=0x40501a10 size=1540
+  Section name=rtdata base=0x40502018 size=3496
+  Section name=pooldata base=0x40502dc0 size=384
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -62,6 +62,6 @@ ImageReport v0
   Turn fn=pool_backed_image frame=640
   Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=3496
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40502db8 size=128 align=8 coherency=coherent device=device#0
-  Pool name=Scratch kind=image payload=u32 slots=4 slot_bytes=64 base=0x40502e38 size=256 align=8 coherency=coherent device=none
-  BlkPool name=BlockControl device=device#0 base=0x40502db8 size=0x80
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40502dc0 size=128 align=8 coherency=coherent device=device#0
+  Pool name=Scratch kind=image payload=u32 slots=4 slot_bytes=64 base=0x40502e40 size=256 align=8 coherency=coherent device=none
+  BlkPool name=BlockControl device=device#0 base=0x40502dc0 size=0x80

@@ -9957,7 +9957,8 @@ fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
     let method_index =
         actor_method_index_tables(&modules_dot, &layout_ctx).map_err(|e| e.message)?;
-    crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0)
+    // M10 item D: dump / no-@image paths have no mailbox roots — empty specs.
+    crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0, &[])
         .map_err(|e| e.message)
 }
 

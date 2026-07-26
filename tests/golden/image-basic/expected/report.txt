@@ -41,14 +41,14 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=1540
-  Section name=rodata base=0x40500658 size=69
-  Section name=abort base=0x405006a0 size=120
-  Section name=checkpoint base=0x40500718 size=104
-  Section name=rtcode base=0x40500780 size=1044
-  Section name=rtdata base=0x40500b98 size=400
-  Section name=devregs base=0x40500d28 size=8
-  Section name=pooldata base=0x40500d30 size=256
+  Section name=code base=0x40500050 size=1752
+  Section name=rodata base=0x40500728 size=69
+  Section name=abort base=0x40500770 size=120
+  Section name=checkpoint base=0x405007e8 size=104
+  Section name=rtcode base=0x40500850 size=832
+  Section name=rtdata base=0x40500b90 size=400
+  Section name=devregs base=0x40500d20 size=8
+  Section name=pooldata base=0x40500d28 size=256
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -57,5 +57,5 @@ ImageReport v0
   Driver name=Blk state=16
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=400
-  DeviceRegs device=device#0 type=NicHw driver=Blk base=0x40500d28 size=8
-  Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40500d30 size=256 align=8 coherency=coherent device=none
+  DeviceRegs device=device#0 type=NicHw driver=Blk base=0x40500d20 size=8
+  Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40500d28 size=256 align=8 coherency=coherent device=none
