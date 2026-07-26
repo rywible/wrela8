@@ -798,11 +798,35 @@ fn mutate_seed_input_from(rng: &mut Rng, bases: &[String], donors: &[String]) ->
     bytes
 }
 
+/// How far one lexer-fuzz input got — every iteration reaches the lexer
+/// itself (that is this lane's whole surface); the split is Ok vs Err so
+/// a future collapse into "all Err, never a real token stream" is visible.
+#[derive(Debug, Clone, Default)]
+struct LexerReach {
+    lex_ok: bool,
+}
+
+#[derive(Default)]
+struct LexerReachTotals {
+    lex_ok: u64,
+    lex_err: u64,
+}
+
+impl LexerReachTotals {
+    fn add(&mut self, r: &LexerReach) {
+        if r.lex_ok {
+            self.lex_ok += 1;
+        } else {
+            self.lex_err += 1;
+        }
+    }
+}
+
 /// Every invariant the fuzzer checks, once per iteration, on one input.
 /// Lexes twice under `catch_unwind` (a panic is a finding, not a crash) so
 /// the determinism invariant and the no-panic invariant share one call
-/// shape.
-fn check_lex_invariants(input: &str) -> Result<(), String> {
+/// shape. Returns measured reach on success (plans/M9.md item PP).
+fn check_lex_invariants(input: &str) -> Result<LexerReach, String> {
     let first = std::panic::catch_unwind(|| lexer::lex(input))
         .map_err(|p| format!("lexer panicked: {}", panic_message(&p)))?;
     let second = std::panic::catch_unwind(|| lexer::lex(input))
@@ -814,7 +838,8 @@ fn check_lex_invariants(input: &str) -> Result<(), String> {
                     "lexing is not deterministic: two runs produced different tokens".into(),
                 );
             }
-            check_ok_invariants(t1)
+            check_ok_invariants(t1)?;
+            Ok(LexerReach { lex_ok: true })
         }
         (Err(e1), Err(e2)) => {
             if e1.message != e2.message || e1.line != e2.line || e1.col != e2.col {
@@ -822,7 +847,7 @@ fn check_lex_invariants(input: &str) -> Result<(), String> {
                     "lexing is not deterministic: two runs produced different errors".into(),
                 );
             }
-            Ok(())
+            Ok(LexerReach { lex_ok: false })
         }
         _ => Err("lexing is not deterministic: one run errored and the other did not".into()),
     }
@@ -883,6 +908,7 @@ fn check_ok_invariants(tokens: &[Token]) -> Result<(), String> {
 
 fn run_lexer_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
+    let mut totals = LexerReachTotals::default();
     for i in 0..iters {
         let bytes = if i % 2 == 0 {
             random_input(&mut rng)
@@ -890,11 +916,17 @@ fn run_lexer_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), S
             mutate_seed_input(&mut rng, seed_inputs)
         };
         let input = String::from_utf8_lossy(&bytes).into_owned();
-        if let Err(reason) = check_lex_invariants(&input) {
-            return report_fuzz_failure("lexer", "crash-", seed, i, &input, &reason);
+        match check_lex_invariants(&input) {
+            Ok(reach) => totals.add(&reach),
+            Err(reason) => {
+                return report_fuzz_failure("lexer", "crash-", seed, i, &input, &reason);
+            }
         }
     }
-    println!("fuzz lexer: {iters} iteration(s) clean (seed={seed})");
+    println!(
+        "fuzz lexer: {iters} iteration(s) clean (seed={seed}); reached lex Ok {}, lex Err {}",
+        totals.lex_ok, totals.lex_err,
+    );
     Ok(())
 }
 
@@ -1018,11 +1050,58 @@ fn run_pipeline_once(input: &str) -> PipelineOutcome {
     }
 }
 
+/// Measured reach for the parser lane (plans/M9.md item PP): how many
+/// inputs got past lex into `parse_any`, and how many died at lex.
+#[derive(Debug, Clone, Default)]
+struct ParserReach {
+    /// `parser::parse_any` ran (lex succeeded).
+    parsed: bool,
+    /// That parse accepted the input.
+    parse_ok: bool,
+}
+
+#[derive(Default)]
+struct ParserReachTotals {
+    parse_ok: u64,
+    parse_err: u64,
+    died_lex: u64,
+}
+
+impl ParserReachTotals {
+    fn add(&mut self, r: &ParserReach) {
+        if !r.parsed {
+            self.died_lex += 1;
+        } else if r.parse_ok {
+            self.parse_ok += 1;
+        } else {
+            self.parse_err += 1;
+        }
+    }
+}
+
+fn parser_reach_of(o: &PipelineOutcome) -> ParserReach {
+    match o {
+        PipelineOutcome::Ok(_) => ParserReach {
+            parsed: true,
+            parse_ok: true,
+        },
+        PipelineOutcome::ParseErr { .. } => ParserReach {
+            parsed: true,
+            parse_ok: false,
+        },
+        PipelineOutcome::LexErr { .. } => ParserReach {
+            parsed: false,
+            parse_ok: false,
+        },
+    }
+}
+
 /// Every invariant the parser fuzzer checks, once per iteration, on one
 /// input. Runs the whole lex-then-parse pipeline twice under
 /// `catch_unwind` (a panic in either stage is a finding), mirroring
-/// `check_lex_invariants`'s shape.
-fn check_parse_invariants(input: &str) -> Result<(), String> {
+/// `check_lex_invariants`'s shape. Returns measured reach on success
+/// (plans/M9.md item PP).
+fn check_parse_invariants(input: &str) -> Result<ParserReach, String> {
     let first = std::panic::catch_unwind(|| run_pipeline_once(input))
         .map_err(|p| format!("parser panicked: {}", panic_message(&p)))?;
     let second = std::panic::catch_unwind(|| run_pipeline_once(input))
@@ -1034,7 +1113,7 @@ fn check_parse_invariants(input: &str) -> Result<(), String> {
                     "parsing is not deterministic: two runs produced different ASTs".into(),
                 );
             }
-            Ok(())
+            Ok(parser_reach_of(&first))
         }
         (
             PipelineOutcome::LexErr {
@@ -1053,7 +1132,7 @@ fn check_parse_invariants(input: &str) -> Result<(), String> {
                     "parsing is not deterministic: two runs produced different lex errors".into(),
                 );
             }
-            Ok(())
+            Ok(parser_reach_of(&first))
         }
         (
             PipelineOutcome::ParseErr {
@@ -1072,7 +1151,7 @@ fn check_parse_invariants(input: &str) -> Result<(), String> {
                     "parsing is not deterministic: two runs produced different parse errors".into(),
                 );
             }
-            Ok(())
+            Ok(parser_reach_of(&first))
         }
         _ => Err(
             "parsing is not deterministic: the two runs disagreed on success/failure or which \
@@ -1139,17 +1218,25 @@ fn token_soup(rng: &mut Rng) -> String {
 
 fn run_parser_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
+    let mut totals = ParserReachTotals::default();
     for i in 0..iters {
         let input = if i % 2 == 0 {
             String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
         } else {
             token_soup(&mut rng)
         };
-        if let Err(reason) = check_parse_invariants(&input) {
-            return report_fuzz_failure("parser", "parse-crash-", seed, i, &input, &reason);
+        match check_parse_invariants(&input) {
+            Ok(reach) => totals.add(&reach),
+            Err(reason) => {
+                return report_fuzz_failure("parser", "parse-crash-", seed, i, &input, &reason);
+            }
         }
     }
-    println!("fuzz parser: {iters} iteration(s) clean (seed={seed})");
+    println!(
+        "fuzz parser: {iters} iteration(s) clean (seed={seed}); reached parse Ok {}, parse Err {}, \
+         died at lex {}",
+        totals.parse_ok, totals.parse_err, totals.died_lex,
+    );
     Ok(())
 }
 
@@ -1329,13 +1416,71 @@ fn run_sema_pipeline_once(input: &str) -> SemaPipelineOutcome {
     }
 }
 
+/// Measured reach for the sema lane (plans/M9.md item PP): how many
+/// inputs reached `sema::check_dump`, and where the rest died.
+#[derive(Debug, Clone, Default)]
+struct SemaReach {
+    /// `sema::check_dump` ran (lex+parse succeeded).
+    checked: bool,
+    /// That check accepted the input.
+    check_ok: bool,
+    died_lex: bool,
+    died_parse: bool,
+}
+
+#[derive(Default)]
+struct SemaReachTotals {
+    check_ok: u64,
+    check_err: u64,
+    died_lex: u64,
+    died_parse: u64,
+}
+
+impl SemaReachTotals {
+    fn add(&mut self, r: &SemaReach) {
+        if r.died_lex {
+            self.died_lex += 1;
+        } else if r.died_parse {
+            self.died_parse += 1;
+        } else if r.check_ok {
+            self.check_ok += 1;
+        } else if r.checked {
+            self.check_err += 1;
+        }
+    }
+}
+
+fn sema_reach_of(o: &SemaPipelineOutcome) -> SemaReach {
+    match o {
+        SemaPipelineOutcome::Ok(_) => SemaReach {
+            checked: true,
+            check_ok: true,
+            ..SemaReach::default()
+        },
+        SemaPipelineOutcome::SemaErr { .. } => SemaReach {
+            checked: true,
+            check_ok: false,
+            ..SemaReach::default()
+        },
+        SemaPipelineOutcome::LexErr { .. } => SemaReach {
+            died_lex: true,
+            ..SemaReach::default()
+        },
+        SemaPipelineOutcome::ParseErr { .. } => SemaReach {
+            died_parse: true,
+            ..SemaReach::default()
+        },
+    }
+}
+
 /// Every invariant the sema fuzzer checks, once per iteration, on one
 /// input. Runs the whole lex-then-parse-then-check pipeline twice under
 /// `catch_unwind`, mirroring `check_parse_invariants`'s shape, plus a
 /// direct check that a successful `SemaError` category (when the outcome
 /// is instead an error) is one of the fixed set, and that `sema::dump` is
 /// itself panic-free and repeat-call-identical on a successful outcome.
-fn check_sema_invariants(input: &str) -> Result<(), String> {
+/// Returns measured reach on success (plans/M9.md item PP).
+fn check_sema_invariants(input: &str) -> Result<SemaReach, String> {
     let first = std::panic::catch_unwind(|| run_sema_pipeline_once(input))
         .map_err(|p| format!("sema panicked: {}", panic_message(&p)))?;
     let second = std::panic::catch_unwind(|| run_sema_pipeline_once(input))
@@ -1364,7 +1509,6 @@ fn check_sema_invariants(input: &str) -> Result<(), String> {
             if d1 != d2 {
                 return Err("sema is not deterministic: two runs produced different dumps".into());
             }
-            Ok(())
         }
         (
             SemaPipelineOutcome::LexErr {
@@ -1383,7 +1527,6 @@ fn check_sema_invariants(input: &str) -> Result<(), String> {
                     "sema is not deterministic: two runs produced different lex errors".into(),
                 );
             }
-            Ok(())
         }
         (
             SemaPipelineOutcome::ParseErr {
@@ -1402,7 +1545,6 @@ fn check_sema_invariants(input: &str) -> Result<(), String> {
                     "sema is not deterministic: two runs produced different parse errors".into(),
                 );
             }
-            Ok(())
         }
         (
             SemaPipelineOutcome::SemaErr {
@@ -1427,14 +1569,16 @@ fn check_sema_invariants(input: &str) -> Result<(), String> {
                     "sema is not deterministic: two runs produced different diagnostics".into(),
                 );
             }
-            Ok(())
         }
-        _ => Err(
-            "sema is not deterministic: the two runs disagreed on success/failure or which \
+        _ => {
+            return Err(
+                "sema is not deterministic: the two runs disagreed on success/failure or which \
              stage failed"
-                .into(),
-        ),
+                    .into(),
+            );
+        }
     }
+    Ok(sema_reach_of(&first))
 }
 
 // --- fuzz: sema roundtrip stability + item-rotation invariance ----------
@@ -1666,16 +1810,24 @@ fn check_sema_roundtrip_and_rotation_guarded(input: &str) -> Result<(), String> 
 
 fn run_sema_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
+    let mut totals = SemaReachTotals::default();
     for i in 0..iters {
         let input = fuzz_input_with_comptime_assert_shapes(&mut rng, seed_inputs, i);
-        if let Err(reason) = check_sema_invariants(&input) {
-            return report_fuzz_failure("sema", "sema-crash-", seed, i, &input, &reason);
+        match check_sema_invariants(&input) {
+            Ok(reach) => totals.add(&reach),
+            Err(reason) => {
+                return report_fuzz_failure("sema", "sema-crash-", seed, i, &input, &reason);
+            }
         }
         if let Err(reason) = check_sema_roundtrip_and_rotation_guarded(&input) {
             return report_fuzz_failure("sema", "sema-crash-", seed, i, &input, &reason);
         }
     }
-    println!("fuzz sema: {iters} iteration(s) clean (seed={seed})");
+    println!(
+        "fuzz sema: {iters} iteration(s) clean (seed={seed}); reached check Ok {}, check Err {}, \
+         died at lex {}, parse {}",
+        totals.check_ok, totals.check_err, totals.died_lex, totals.died_parse,
+    );
     Ok(())
 }
 
@@ -2098,6 +2250,62 @@ fn eval_outcome_carries_no_internal_error(outcome: &EvalPipelineOutcome) -> Resu
     Ok(())
 }
 
+/// Measured reach for the eval lane (plans/M9.md item PP): the surface
+/// this lane exists for is `check_typed` then `run_tests` (and optionally
+/// the image pipeline). Inputs that die at lex/parse/sema never touch it.
+#[derive(Debug, Clone, Default)]
+struct EvalReach {
+    /// `sema::check_typed` accepted — `run_tests` therefore ran.
+    check_typed: bool,
+    died_lex: bool,
+    died_parse: bool,
+    /// Parsed but `check_typed` rejected.
+    died_sema: bool,
+}
+
+#[derive(Default)]
+struct EvalReachTotals {
+    check_typed: u64,
+    died_lex: u64,
+    died_parse: u64,
+    died_sema: u64,
+}
+
+impl EvalReachTotals {
+    fn add(&mut self, r: &EvalReach) {
+        if r.check_typed {
+            self.check_typed += 1;
+        } else if r.died_lex {
+            self.died_lex += 1;
+        } else if r.died_parse {
+            self.died_parse += 1;
+        } else if r.died_sema {
+            self.died_sema += 1;
+        }
+    }
+}
+
+fn eval_reach_of(o: &EvalPipelineOutcome) -> EvalReach {
+    match o {
+        EvalPipelineOutcome::Ok(_, _) => EvalReach {
+            check_typed: true,
+            ..EvalReach::default()
+        },
+        EvalPipelineOutcome::LexErr { .. } => EvalReach {
+            died_lex: true,
+            ..EvalReach::default()
+        },
+        EvalPipelineOutcome::ParseErr { .. } => EvalReach {
+            died_parse: true,
+            ..EvalReach::default()
+        },
+        EvalPipelineOutcome::SemaErr { .. } => EvalReach {
+            died_sema: true,
+            ..EvalReach::default()
+        },
+    }
+}
+
 /// Every invariant the eval fuzzer checks, once per iteration, on one
 /// input. Runs the whole lex-then-parse-then-check_typed-then-(run_tests,
 /// then — plans/M4.md item E — the image pipeline when exactly one
@@ -2105,8 +2313,9 @@ fn eval_outcome_carries_no_internal_error(outcome: &EvalPipelineOutcome) -> Resu
 /// `check_sema_invariants`'s shape, plus the well-formedness check
 /// (invariant (d)) on a successful outcome (both `run_tests`'s own report
 /// and, when present, the image pipeline's own outcome) and the
-/// fixed-category check (also (d)) on a `SemaErr` outcome.
-fn check_eval_invariants(input: &str) -> Result<(), String> {
+/// fixed-category check (also (d)) on a `SemaErr` outcome. Returns
+/// measured reach on success (plans/M9.md item PP).
+fn check_eval_invariants(input: &str) -> Result<EvalReach, String> {
     let first = std::panic::catch_unwind(|| run_eval_pipeline_once(input))
         .map_err(|p| format!("eval panicked: {}", panic_message(&p)))?;
     let second = std::panic::catch_unwind(|| run_eval_pipeline_once(input))
@@ -2141,7 +2350,6 @@ fn check_eval_invariants(input: &str) -> Result<(), String> {
                         .into(),
                 );
             }
-            Ok(())
         }
         (
             EvalPipelineOutcome::LexErr {
@@ -2160,7 +2368,6 @@ fn check_eval_invariants(input: &str) -> Result<(), String> {
                     "eval is not deterministic: two runs produced different lex errors".into(),
                 );
             }
-            Ok(())
         }
         (
             EvalPipelineOutcome::ParseErr {
@@ -2179,7 +2386,6 @@ fn check_eval_invariants(input: &str) -> Result<(), String> {
                     "eval is not deterministic: two runs produced different parse errors".into(),
                 );
             }
-            Ok(())
         }
         (
             EvalPipelineOutcome::SemaErr {
@@ -2205,14 +2411,16 @@ fn check_eval_invariants(input: &str) -> Result<(), String> {
                         .into(),
                 );
             }
-            Ok(())
         }
-        _ => Err(
-            "eval is not deterministic: the two runs disagreed on success/failure or which \
+        _ => {
+            return Err(
+                "eval is not deterministic: the two runs disagreed on success/failure or which \
              stage failed"
-                .into(),
-        ),
+                    .into(),
+            );
+        }
     }
+    Ok(eval_reach_of(&first))
 }
 
 /// plans/M9.md item NN: fixed shapes that put `comptime assert` over a
@@ -2272,13 +2480,21 @@ fn fuzz_input_with_comptime_assert_shapes(rng: &mut Rng, seed_inputs: &[String],
 
 fn run_eval_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
+    let mut totals = EvalReachTotals::default();
     for i in 0..iters {
         let input = fuzz_input_with_comptime_assert_shapes(&mut rng, seed_inputs, i);
-        if let Err(reason) = check_eval_invariants(&input) {
-            return report_fuzz_failure("eval", "eval-crash-", seed, i, &input, &reason);
+        match check_eval_invariants(&input) {
+            Ok(reach) => totals.add(&reach),
+            Err(reason) => {
+                return report_fuzz_failure("eval", "eval-crash-", seed, i, &input, &reason);
+            }
         }
     }
-    println!("fuzz eval: {iters} iteration(s) clean (seed={seed})");
+    println!(
+        "fuzz eval: {iters} iteration(s) clean (seed={seed}); reached check_typed {}, \
+         died at lex {}, parse {}, check {}",
+        totals.check_typed, totals.died_lex, totals.died_parse, totals.died_sema,
+    );
     Ok(())
 }
 
@@ -2606,6 +2822,58 @@ fn attempt_layout(
     }
 }
 
+/// Measured reach for the lower lane (plans/M9.md item PP): the surface
+/// this lane exists for is `lower`/`codegen` after `check_typed`. The
+/// `time_layout_rejected` counter names NN's carry-out 2 explicitly — a
+/// `build_layout_ctx` failure on a time-mentioning module that already
+/// passed `check_typed` — so the before/after of teaching that inject is
+/// visible in the printed line rather than inferred.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LowerReach {
+    check_typed: bool,
+    lower_ok: bool,
+    lower_rejected: bool,
+    /// NN carry-out 2: `build_layout_ctx` failed after check_typed on a
+    /// time-mentioning module (classified as LowerRejected until PP fixes
+    /// the inject). Separate from ordinary lower rejections.
+    time_layout_rejected: bool,
+    codegen_ok: bool,
+    codegen_rejected: bool,
+    layout_built: bool,
+    died_lex: bool,
+    died_parse: bool,
+    died_sema: bool,
+}
+
+#[derive(Default)]
+struct LowerReachTotals {
+    check_typed: u64,
+    lower_ok: u64,
+    lower_rejected: u64,
+    time_layout_rejected: u64,
+    codegen_ok: u64,
+    codegen_rejected: u64,
+    layout_built: u64,
+    died_lex: u64,
+    died_parse: u64,
+    died_sema: u64,
+}
+
+impl LowerReachTotals {
+    fn add(&mut self, r: &LowerReach) {
+        self.check_typed += u64::from(r.check_typed);
+        self.lower_ok += u64::from(r.lower_ok);
+        self.lower_rejected += u64::from(r.lower_rejected);
+        self.time_layout_rejected += u64::from(r.time_layout_rejected);
+        self.codegen_ok += u64::from(r.codegen_ok);
+        self.codegen_rejected += u64::from(r.codegen_rejected);
+        self.layout_built += u64::from(r.layout_built);
+        self.died_lex += u64::from(r.died_lex);
+        self.died_parse += u64::from(r.died_parse);
+        self.died_sema += u64::from(r.died_sema);
+    }
+}
+
 /// One full run of the pipeline the lower fuzzer exercises: lex, then (on
 /// success) parse a whole module, then `sema::check_typed`, then (on a
 /// successful typecheck) `lower::lower_program`, then (on success)
@@ -2614,98 +2882,128 @@ fn attempt_layout(
 /// `run_eval_pipeline_once`'s own `"<fuzz-eval>"`: the determinism check
 /// only ever compares two runs of the *same* input against each other, so
 /// any fixed placeholder works.
-fn run_lower_pipeline_once(input: &str) -> LowerFuzzOutcome {
+fn run_lower_pipeline_once(input: &str) -> (LowerFuzzOutcome, LowerReach) {
+    let mut reach = LowerReach::default();
     let module = match lexer::lex(input) {
         Err(e) => {
-            return LowerFuzzOutcome::LexErr {
-                message: e.message,
-                line: e.line,
-                col: e.col,
-            };
-        }
-        Ok(tokens) => match parser::parse(tokens) {
-            Err(e) => {
-                return LowerFuzzOutcome::ParseErr {
+            reach.died_lex = true;
+            return (
+                LowerFuzzOutcome::LexErr {
                     message: e.message,
                     line: e.line,
                     col: e.col,
-                };
+                },
+                reach,
+            );
+        }
+        Ok(tokens) => match parser::parse(tokens) {
+            Err(e) => {
+                reach.died_parse = true;
+                return (
+                    LowerFuzzOutcome::ParseErr {
+                        message: e.message,
+                        line: e.line,
+                        col: e.col,
+                    },
+                    reach,
+                );
             }
             Ok(module) => module,
         },
     };
     let program = match sema::check_typed(&module, "<fuzz-lower>") {
         Err(e) => {
-            return LowerFuzzOutcome::SemaErr {
-                category: e.category,
-                message: e.message,
-                line: e.line,
-                col: e.col,
-                extra_lines: e.extra_lines,
-                omit_location: e.omit_location,
-            };
+            reach.died_sema = true;
+            return (
+                LowerFuzzOutcome::SemaErr {
+                    category: e.category,
+                    message: e.message,
+                    line: e.line,
+                    col: e.col,
+                    extra_lines: e.extra_lines,
+                    omit_location: e.omit_location,
+                },
+                reach,
+            );
         }
         Ok(p) => p,
     };
+    reach.check_typed = true;
     let mwir_program = match lower::lower_program(&program) {
         Err(e) => {
             return if e.message.starts_with("internal error: ") {
-                LowerFuzzOutcome::Bug(format!("lower::lower_program: {}", e.message))
+                (
+                    LowerFuzzOutcome::Bug(format!("lower::lower_program: {}", e.message)),
+                    reach,
+                )
             } else {
-                LowerFuzzOutcome::LowerRejected { message: e.message }
+                reach.lower_rejected = true;
+                (
+                    LowerFuzzOutcome::LowerRejected { message: e.message },
+                    reach,
+                )
             };
         }
         Ok(p) => p,
     };
+    reach.lower_ok = true;
     let mwir_dump = mwir::dump(&mwir_program);
     let layout_ctx = match mwir::build_layout_ctx(&module, &Default::default()) {
         Err(e) => {
-            // plans/M9.md item NN carry-out / item LL residue: `check_typed`
-            // splices `core.time` when the source mentions a time-prelude
-            // name, so `build_layout_ctx(&module, empty)` is no longer a
-            // strict subset of what just accepted. A type error here on a
-            // time-mentioning module is that asymmetry (Duration/Instant
-            // known to check, unknown to empty-import declare), not a
-            // newly introduced producer bug — reject, don't Bug. Other
-            // build_layout_ctx failures on non-time modules stay Bugs.
-            let needs_time = input
-                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .any(|tok| {
-                    tok == "now" || wrela_compiler::loader::TIME_PRELUDE_NAMES.contains(&tok)
-                });
-            if needs_time {
-                return LowerFuzzOutcome::LowerRejected { message: e.message };
-            }
-            return LowerFuzzOutcome::Bug(format!(
-                "mwir::build_layout_ctx failed after check_typed already accepted this program: \
+            // After item PP, `build_layout_ctx` injects the same
+            // Duration/Instant arity `check_typed` does, so a failure
+            // here on a `check_typed`-accepted program is a genuine bug
+            // again — including on time-mentioning modules.
+            return (
+                LowerFuzzOutcome::Bug(format!(
+                    "mwir::build_layout_ctx failed after check_typed already accepted this program: \
                  {e:?}"
-            ));
+                )),
+                reach,
+            );
         }
         Ok(c) => c,
     };
     let codegen_program = match codegen::codegen_program(&mwir_program, &layout_ctx) {
         Err(e) => {
             return if e.message.starts_with("internal error: ") {
-                LowerFuzzOutcome::Bug(format!("codegen::codegen_program: {}", e.message))
+                (
+                    LowerFuzzOutcome::Bug(format!("codegen::codegen_program: {}", e.message)),
+                    reach,
+                )
             } else {
-                LowerFuzzOutcome::CodegenRejected { message: e.message }
+                reach.codegen_rejected = true;
+                (
+                    LowerFuzzOutcome::CodegenRejected { message: e.message },
+                    reach,
+                )
             };
         }
         Ok(p) => p,
     };
     if let Err(reason) = codegen::validate(&codegen_program) {
-        return LowerFuzzOutcome::Bug(format!("codegen::validate: {reason}"));
+        return (
+            LowerFuzzOutcome::Bug(format!("codegen::validate: {reason}")),
+            reach,
+        );
     }
+    reach.codegen_ok = true;
     let code_words = concat_code_words(&codegen_program);
     let layout = match attempt_layout(&program, &codegen_program) {
         Ok(l) => l,
-        Err(bug) => return LowerFuzzOutcome::Bug(bug),
+        Err(bug) => return (LowerFuzzOutcome::Bug(bug), reach),
     };
-    LowerFuzzOutcome::Ok {
-        mwir_dump,
-        code_words,
-        layout,
+    if matches!(layout, LayoutOutcome::Built { .. }) {
+        reach.layout_built = true;
     }
+    (
+        LowerFuzzOutcome::Ok {
+            mwir_dump,
+            code_words,
+            layout,
+        },
+        reach,
+    )
 }
 
 /// Every invariant the lower fuzzer checks, once per iteration, on one
@@ -2715,16 +3013,18 @@ fn run_lower_pipeline_once(input: &str) -> LowerFuzzOutcome {
 /// "never a `Bug`" check, then invariant (b)'s determinism compare,
 /// matched per-shape (rather than one blanket `!=`) so a divergence names
 /// exactly which stage disagreed, mirroring every other lane's own
-/// diagnostic style in this file.
-fn check_lower_invariants(input: &str) -> Result<(), String> {
-    let first = std::panic::catch_unwind(|| run_lower_pipeline_once(input))
+/// diagnostic style in this file. Returns measured reach on success
+/// (plans/M9.md item PP).
+fn check_lower_invariants(input: &str) -> Result<LowerReach, String> {
+    let (first, reach) = std::panic::catch_unwind(|| run_lower_pipeline_once(input))
         .map_err(|p| format!("lower/codegen panicked: {}", panic_message(&p)))?;
-    let second = std::panic::catch_unwind(|| run_lower_pipeline_once(input)).map_err(|p| {
-        format!(
-            "lower/codegen panicked on a repeat call: {}",
-            panic_message(&p)
-        )
-    })?;
+    let (second, reach2) =
+        std::panic::catch_unwind(|| run_lower_pipeline_once(input)).map_err(|p| {
+            format!(
+                "lower/codegen panicked on a repeat call: {}",
+                panic_message(&p)
+            )
+        })?;
 
     if let LowerFuzzOutcome::Bug(msg) = &first {
         return Err(format!("lower/codegen fuzz found a bug: {msg}"));
@@ -2766,7 +3066,6 @@ fn check_lower_invariants(input: &str) -> Result<(), String> {
                     "lower is not deterministic: two runs produced different lex errors".into(),
                 );
             }
-            Ok(())
         }
         (
             LowerFuzzOutcome::ParseErr {
@@ -2785,7 +3084,6 @@ fn check_lower_invariants(input: &str) -> Result<(), String> {
                     "lower is not deterministic: two runs produced different parse errors".into(),
                 );
             }
-            Ok(())
         }
         (
             LowerFuzzOutcome::SemaErr {
@@ -2811,7 +3109,6 @@ fn check_lower_invariants(input: &str) -> Result<(), String> {
                         .into(),
                 );
             }
-            Ok(())
         }
         (
             LowerFuzzOutcome::LowerRejected { message: m1 },
@@ -2823,7 +3120,6 @@ fn check_lower_invariants(input: &str) -> Result<(), String> {
                         .into(),
                 );
             }
-            Ok(())
         }
         (
             LowerFuzzOutcome::CodegenRejected { message: m1 },
@@ -2835,7 +3131,6 @@ fn check_lower_invariants(input: &str) -> Result<(), String> {
                         .into(),
                 );
             }
-            Ok(())
         }
         (LowerFuzzOutcome::Ok { .. }, LowerFuzzOutcome::Ok { .. }) => {
             if first != second {
@@ -2845,37 +3140,52 @@ fn check_lower_invariants(input: &str) -> Result<(), String> {
                         .into(),
                 );
             }
-            Ok(())
         }
-        _ => Err(
-            "lower is not deterministic: the two runs disagreed on success/failure or which \
+        _ => {
+            return Err(
+                "lower is not deterministic: the two runs disagreed on success/failure or which \
              stage failed"
-                .into(),
-        ),
+                    .into(),
+            );
+        }
     }
+    if reach != reach2 {
+        return Err("lower is not deterministic: two runs reached different stages".into());
+    }
+    Ok(reach)
 }
 
 fn run_lower_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
+    let mut totals = LowerReachTotals::default();
     for i in 0..iters {
-        // plans/M9.md item NN: comptime-assert-over-runtime-name shapes
-        // live in `fuzz sema`/`fuzz eval` (the lanes that police the
-        // producer-bug prefix on `check_typed`). Wiring them into this
-        // lane shifted the smoke schedule onto a pre-existing
-        // `mwir::build_layout_ctx` hole against a mutated
-        // `check-time-prelude-types` input (`unknown type Duration`
-        // after check_typed accepted) — recorded as a carry-out, not
-        // fixed here. Keep the historical 50/50 mutate/soup mix.
-        let input = if i % 2 == 0 {
-            String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
-        } else {
-            token_soup(&mut rng)
-        };
-        if let Err(reason) = check_lower_invariants(&input) {
-            return report_fuzz_failure("lower", "lower-crash-", seed, i, &input, &reason);
+        // plans/M9.md item NN carry-out 3 / item PP: same
+        // comptime-assert-over-runtime-name shapes as `fuzz sema`/`eval`,
+        // now that `build_layout_ctx` injects the time prelude (carry-out
+        // 2) so wiring them no longer shifts the schedule onto that hole.
+        let input = fuzz_input_with_comptime_assert_shapes(&mut rng, seed_inputs, i);
+        match check_lower_invariants(&input) {
+            Ok(reach) => totals.add(&reach),
+            Err(reason) => {
+                return report_fuzz_failure("lower", "lower-crash-", seed, i, &input, &reason);
+            }
         }
     }
-    println!("fuzz lower: {iters} iteration(s) clean (seed={seed})");
+    println!(
+        "fuzz lower: {iters} iteration(s) clean (seed={seed}); reached check_typed {}, \
+         lower Ok {}, lower rejected {} ({} time-prelude layout-ctx), codegen Ok {}, \
+         codegen rejected {}, layout built {}, died at lex {}, parse {}, check {}",
+        totals.check_typed,
+        totals.lower_ok,
+        totals.lower_rejected,
+        totals.time_layout_rejected,
+        totals.codegen_ok,
+        totals.codegen_rejected,
+        totals.layout_built,
+        totals.died_lex,
+        totals.died_parse,
+        totals.died_sema,
+    );
     Ok(())
 }
 
@@ -3799,6 +4109,38 @@ fn generate_import_closure(rng: &mut Rng) -> ImportClosure {
     }
 }
 
+/// Measured reach for the imports lane (plans/M9.md item PP). Shapes are
+/// hand-built multi-module programs, so most iterations should reach
+/// `check_program_typed`; the printed line makes a silent generator
+/// collapse visible the same way the async lane's does.
+#[derive(Debug, Clone, Default)]
+struct ImportsReach {
+    check_accepted: bool,
+    check_rejected: bool,
+    run_tests: bool,
+    lower_ok: bool,
+    lower_rejected: bool,
+}
+
+#[derive(Default)]
+struct ImportsReachTotals {
+    check_accepted: u64,
+    check_rejected: u64,
+    run_tests: u64,
+    lower_ok: u64,
+    lower_rejected: u64,
+}
+
+impl ImportsReachTotals {
+    fn add(&mut self, r: &ImportsReach) {
+        self.check_accepted += u64::from(r.check_accepted);
+        self.check_rejected += u64::from(r.check_rejected);
+        self.run_tests += u64::from(r.run_tests);
+        self.lower_ok += u64::from(r.lower_ok);
+        self.lower_rejected += u64::from(r.lower_rejected);
+    }
+}
+
 fn parse_module_source(src: &str) -> Result<Module, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {}", e.message))?;
     match parser::parse_any(tokens).map_err(|e| format!("parse: {}", e.message))? {
@@ -3813,8 +4155,10 @@ fn message_has_internal_error(msg: &str) -> bool {
 
 /// One iteration of the imports lane: build a closed multi-module
 /// program, typecheck the whole closure, run comptime tests on the root,
-/// and lower the root. Any `"internal error: "` is a finding.
-fn check_imports_invariants(closure: &ImportClosure) -> Result<(), String> {
+/// and lower the root. Any `"internal error: "` is a finding. Returns
+/// measured reach on success (plans/M9.md item PP).
+fn check_imports_invariants(closure: &ImportClosure) -> Result<ImportsReach, String> {
+    let mut reach = ImportsReach::default();
     let mut modules: BTreeMap<Vec<String>, Module> = BTreeMap::new();
     let mut paths: BTreeMap<Vec<String>, String> = BTreeMap::new();
     for (addr, src) in &closure.modules {
@@ -3835,15 +4179,18 @@ fn check_imports_invariants(closure: &ImportClosure) -> Result<(), String> {
             }
             // Named rejection is fine — shapes are intentionally narrow
             // and a future language change may refuse one of them by name.
-            return Ok(());
+            reach.check_rejected = true;
+            return Ok(reach);
         }
     };
+    reach.check_accepted = true;
 
     let root = programs
         .get(&closure.root)
         .ok_or_else(|| "imports: root module missing from checked programs".to_string())?;
 
     let (report, _all_ok) = eval::run_tests(root);
+    reach.run_tests = true;
     for line in report.lines() {
         if message_has_internal_error(line) {
             return Err(format!("imports: run_tests reported {line}"));
@@ -3856,7 +4203,9 @@ fn check_imports_invariants(closure: &ImportClosure) -> Result<(), String> {
     }
 
     match lower::lower_program(root) {
-        Ok(_) => {}
+        Ok(_) => {
+            reach.lower_ok = true;
+        }
         Err(e) => {
             if message_has_internal_error(&e.message) {
                 return Err(format!(
@@ -3864,10 +4213,11 @@ fn check_imports_invariants(closure: &ImportClosure) -> Result<(), String> {
                     e.message
                 ));
             }
+            reach.lower_rejected = true;
         }
     }
 
-    Ok(())
+    Ok(reach)
 }
 
 fn format_import_closure(closure: &ImportClosure) -> String {
@@ -3881,6 +4231,7 @@ fn format_import_closure(closure: &ImportClosure) -> String {
 
 fn run_imports_fuzz(iters: u64, seed: u64) -> Result<(), String> {
     let mut rng = Rng::new(seed);
+    let mut totals = ImportsReachTotals::default();
     for i in 0..iters {
         let closure = generate_import_closure(&mut rng);
         let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3892,14 +4243,26 @@ fn run_imports_fuzz(iters: u64, seed: u64) -> Result<(), String> {
         }))
         .unwrap_or_else(|_| Err("imports: panic in check_program_typed/run_tests/lower".into()));
         match (&first, &second) {
-            (Ok(()), Ok(())) => {}
+            (Ok(r1), Ok(r2)) => {
+                if r1.check_accepted != r2.check_accepted
+                    || r1.check_rejected != r2.check_rejected
+                    || r1.run_tests != r2.run_tests
+                    || r1.lower_ok != r2.lower_ok
+                    || r1.lower_rejected != r2.lower_rejected
+                {
+                    return Err(format!(
+                        "imports fuzz nondeterminism at iteration {i} (seed={seed}): reach disagreed"
+                    ));
+                }
+                totals.add(r1);
+            }
             (Err(a), Err(b)) if a == b => {
                 return Err(format!(
                     "imports fuzz failure at iteration {i} (seed={seed}): {a}\n--- modules ---\n{}",
                     format_import_closure(&closure)
                 ));
             }
-            (Ok(()), Err(b)) | (Err(b), Ok(())) => {
+            (Ok(_), Err(b)) | (Err(b), Ok(_)) => {
                 return Err(format!(
                     "imports fuzz nondeterminism at iteration {i} (seed={seed}): one run Ok, \
                      other Err ({b})"
@@ -3912,7 +4275,15 @@ fn run_imports_fuzz(iters: u64, seed: u64) -> Result<(), String> {
             }
         }
     }
-    println!("fuzz imports: {iters} iteration(s) clean (seed={seed})");
+    println!(
+        "fuzz imports: {iters} iteration(s) clean (seed={seed}); reached check_program_typed \
+         accepted {}, rejected {}, run_tests {}, lower Ok {}, lower rejected {}",
+        totals.check_accepted,
+        totals.check_rejected,
+        totals.run_tests,
+        totals.lower_ok,
+        totals.lower_rejected,
+    );
     Ok(())
 }
 
