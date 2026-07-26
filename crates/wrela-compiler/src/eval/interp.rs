@@ -2159,6 +2159,11 @@ fn eval_intrinsic<'a, 'p>(
             ctx.charge(v.weight())?;
             Ok(v)
         }
+        // plans/M9.md item F3 decision 347: `[T; N].map_take` /
+        // `try_map_take` (05-library.md §7).
+        "Array.map_take" | "Array.try_map_take" => {
+            eval_array_map_take(key, receiver, args, env, dstack, loop_marker, ctx)
+        }
         other => Err(ctx.abandon(format!(
             "internal error: unknown/runtime-only builder intrinsic `{other}` reached the \
              comptime evaluator"
@@ -2181,6 +2186,9 @@ fn duration_as_nanos(v: Value, ctx: &Interp<'_>) -> Result<Value, Unwind> {
         other => Err(ctx.abandon(format!(
             "internal error: RestartIntensity.within is not a Duration (found {other:?})"
         ))),
+    }
+}
+
 fn eval_array_map_take<'a, 'p>(
     key: &str,
     receiver: &'a Option<Box<TypedExpr>>,
