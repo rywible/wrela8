@@ -7188,7 +7188,7 @@ fn emit_group_start(
     // own `busy` (harvested inline; available for a later loop iteration
     // of this same `g.start` site to reuse). A suspended child leaves both
     // untouched: still `busy`, still counted `active`, for
-    // `layout::build_group_child_poll` to harvest later.
+    // `codegen::emit_rt_child_poll` to harvest later.
     ctx.push(
         encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
@@ -7962,8 +7962,8 @@ fn emit_await_suspend(
             // Park for real: register as this group's own join waiter.
             // plans/M10.md item 0c2: by `TurnId` (a `u32` at +48), not by
             // the raw `X_FRAME` address it used to store — the one reader
-            // (`layout::build_group_child_poll`) derefs it, and does so
-            // through `push_turn_addr_from_id`, the single index→address
+            // (`codegen::emit_rt_child_poll`) derefs it, and does so
+            // through `TurnsBase`/`TurnStride`, the single index→address
             // rule.
             let word = ctx.cur_word();
             ctx.load_imm(X_A, 0);
@@ -9114,7 +9114,7 @@ fn emit_rt_enqueue(actor: &str, capacity: u64, slot_size: u64) -> CodegenFn {
 /// `layout::build_rt_run_one` — drain first (if any), two-pass round-robin
 /// over this core's selects, then core-0 child polls — with select / poll /
 /// drain targets as `Reloc::Call` and the RR cursor as `Reloc::RrCursor`
-/// (decision 621). Hand-asm twin kept until E4's deletion commit.
+/// (decision 621). Hand-asm twin deleted in E4's joint delete commit.
 ///
 /// ABI: `() -> x0` = 1 if a slice ran, 0 if nothing ready. Saves `x30`
 /// (calls out); 16-byte frame matching the hand-asm.
@@ -9306,7 +9306,7 @@ pub fn emit_rt_run_one(spec: &RtRunOneSpec) -> CodegenFn {
 /// the group arena via the `Option[GroupId]` niche (decision 669), maybe
 /// wake `join_waiter` — with turn/arena/stride addresses as existing
 /// Relocs (decision 624) and no mid-tick checkpoint (decision 625).
-/// Hand-asm twin kept until E4's joint delete commit.
+/// Hand-asm twin deleted in E4's joint delete commit.
 ///
 /// ABI: `() -> x0` = 1 if progress, 0 if nothing ready. Saves `x30`
 /// (calls the child); 16-byte frame matching the hand-asm.

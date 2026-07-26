@@ -756,7 +756,7 @@ fn group_service_ctx(
 /// body a reply that never arrived. **Disclosed floor**: an owner parked on
 /// an await that can never resolve is therefore not woken by this scan — it
 /// is woken transitively when its own children are cancelled and harvested
-/// (`layout::build_group_child_poll`), which is the only shape any M6
+/// (`codegen::emit_rt_child_poll`), which is the only shape any M6
 /// golden constructs; a group with no outstanding children whose owner
 /// awaits an actor that never replies is not constructible at M6's own
 /// acyclic-handle source surface (item D's own recorded finding).
@@ -7301,131 +7301,6 @@ fn build_rt_select_and_run_core(
     a
 }
 
-/// `rt_run_one() -> x0 (1 = ran one ready turn-slice, 0 = nothing
-/// ready)` — 04 §2's selection across every actor on the core, made
-/// concrete at M6's defaults: every mailbox head shares one (priority,
-/// deadline) key (all normal band, deadline = infinity), so selection is
-/// exactly the deterministic round-robin cursor over the per-actor
-/// readiness `rt_select_and_run` already encodes. Fully unrolled, two
-/// passes over the build-time actor list — pass one tries every actor at
-/// or after the cursor, pass two the rest — and the first actor that
-/// reports "ran" advances the cursor to its own successor and returns 1.
-/// plans/M6.md item F: once no actor reports "ran," this fn also tries
-/// every group-child poll routine in fixed program order (`child_poll_starts`,
-/// below) — a `g.start`ed child is never part of the round-robin cursor at
-/// all (there is no admission-ordering fairness question between a
-/// group's own children the way there is between actors' mailboxes;
-/// `RuntimePlacement`'s own per-child free-turn area already gives each
-/// one a fixed, unique poll site). The entry driver loops this between a
-/// root turn's own suspend points; "nothing ready" with the root still
-/// incomplete is the deadlock condition (`DEADLOCK_MSG`).
-#[allow(dead_code)] // M10 E3: kept until E4's joint delete commit; JIT suite still calls it.
-fn build_rt_run_one(
-    select_starts: &[usize],
-    child_poll_starts: &[usize],
-    // plans/M8.md item C2: this core's own inbound-ring drain, when it has
-    // any inbound lane. Called **first**, before selection: a message that
-    // crossed a core boundary has to reach a mailbox before the FIFO order
-    // 04 §2 promises can mean anything for it. `None` for every core with
-    // no inbound ring — every core of every pre-C2 image — which emits not
-    // one extra instruction.
-    drain_start: Option<usize>,
-    rr_cursor_addr: u64,
-    start: usize,
-) -> Asm {
-    let mut a = Asm::new(start);
-    a.push(encode::enc_sub_imm(31, 31, 16, true));
-    a.push(encode::enc_str_x_imm(30, 31, 0));
-    let n = select_starts.len();
-    let mut to_out: Vec<usize> = Vec::new();
-    if let Some(drain) = drain_start {
-        // A drain that moved anything reports progress on its own: the
-        // caller's loop comes straight back here, and the root turn's own
-        // `resume_ready` re-check (the entry driver's loop) sees a reply
-        // this drain just delivered. Bounded by ring occupancy, so this can
-        // never spin.
-        a.bl_to(drain);
-        let skip = a.skip_placeholder(); // cbz x0, .continue
-        to_out.push(a.skip_placeholder()); // b .out (x0 already holds 1)
-        let cont = a.abs();
-        a.patch_cbz(skip, 0);
-        debug_assert_eq!(cont, a.abs());
-    }
-    for pass in 0..2 {
-        for (i, &sel) in select_starts.iter().enumerate() {
-            // Reload the cursor each arm — the BL below clobbers scratch.
-            a.load_imm(9, rr_cursor_addr);
-            a.push(encode::enc_ldr_x_imm(10, 9, 0));
-            a.push(encode::enc_cmp_imm(10, i as u16, true));
-            let skip = a.skip_placeholder(); // pass 0: b.gt (cursor > i -> not yet); pass 1: b.le (already tried)
-            a.bl_to(sel);
-            let skip_notran = a.skip_placeholder(); // cbz x0, .skip
-            // Ran: cursor = (i + 1) % n, report 1.
-            a.load_imm(9, rr_cursor_addr);
-            a.load_imm(10, ((i + 1) % n) as u64);
-            a.push(encode::enc_str_x_imm(10, 9, 0));
-            a.push(encode::enc_movz(0, 1, 0, true));
-            to_out.push(a.skip_placeholder());
-            let skip_to = a.abs();
-            a.patch_cond(skip, if pass == 0 { Cond::Gt } else { Cond::Le });
-            a.patch_cbz(skip_notran, 0);
-            debug_assert_eq!(skip_to, a.abs());
-        }
-    }
-    for &poll in child_poll_starts {
-        a.bl_to(poll);
-        let skip_notran = a.skip_placeholder(); // cbz x0, .skip
-        to_out.push(a.skip_placeholder());
-        let skip_to = a.abs();
-        a.patch_cbz(skip_notran, 0);
-        debug_assert_eq!(skip_to, a.abs());
-    }
-    a.push(encode::enc_movz(0, 0, 0, true)); // nothing ready
-    let out = a.abs();
-    for m in &to_out {
-        let this = a.start + m;
-        let delta = (out as i64 - this as i64) * 4;
-        a.words[*m] = encode::enc_b(delta as i32);
-    }
-    a.push(encode::enc_ldr_x_imm(30, 31, 0));
-    a.push(encode::enc_add_imm(31, 31, 16, true));
-    a.push(encode::enc_ret(30));
-    a
-}
-
-/// plans/M8.md item C2: one core's own **inbound ring drain**,
-/// `rt_drain_<core>() -> x0 (1 = something moved, 0 = both lanes were
-/// empty)`. 04 §2 puts one cooperative loop on each core "over the actors
-/// placed there"; this is the step that turns a cross-core arrival into
-/// something that loop can select, and it runs *inside* that loop rather
-/// than in any interrupt or host callback — the only thing the far core did
-/// was publish into memory and raise a word.
-///
-/// Order and shape:
-///
-/// 1. **Clear this core's own pending word first** (secondary cores only —
-///    core 0's word belongs to `__wrela_checkpoint_service`, which already
-///    clears it on the park-resume path). Clear-then-re-derive is
-///    06 §5/04 §2's mask-arm-recheck: a wake that lands *during* the drain
-///    re-raises the word, so the core does not sleep on it, and re-running
-///    the drain is idempotent because readiness is read out of memory
-///    every time.
-/// 2. **Reply lanes**, one ring per sending core: write the reply word into
-///    the destination turn record and set `resume_ready`. Both stores are
-///    to memory this core owns the scheduling of, which is the point of
-///    routing the reply through a ring at all.
-/// 3. **Request lanes**, one ring per (sending core, target mailbox root):
-///    hand each message to the *same* `__rt_enqueue_<Actor>` a same-core
-///    send would have called, with the identical register ABI. If that
-///    admission is **rejected** (the mailbox is full), the message is left
-///    in the ring and this lane stops — back-pressure, never a drop. The
-///    ring then fills, and the next sender is rejected at its own send site
-///    exactly as a full mailbox rejects today (decision 29's own rule).
-///
-/// `x2` is the whole slot's argument-word count rather than the method's
-/// own: a ring slot and the mailbox slot it feeds are the same size by
-/// construction (`cross_core_rings`), so copying the full argument area is
-/// in bounds at both ends and needs no per-method table on this path.
 fn build_rt_drain(
     core: usize,
     // (ring addrs, capacity, slot size, that mailbox root's actor name —
@@ -7626,148 +7501,6 @@ fn build_secondary_core_entry(core: usize, start: usize) -> Asm {
     a
 }
 
-/// One static `g.start` call site's own poll routine (item F #2): checks
-/// its own callee's fixed free-turn area for `busy && suspended &&
-/// resume_ready` and, if ready, resumes it (an ordinary `BL` to the
-/// callee's own compiled entry — the fresh-vs-resume discriminant is the
-/// callee's own job, `codegen::emit_async_entry`'s doc). `x0 -> 1` iff this
-/// call made real progress (either a resumed slice ran, whether it went on
-/// to suspend again or finished, or nothing here was ready at all reports
-/// `x0 -> 0`) — `build_rt_run_one`'s own "did anything run this tick"
-/// convention, shared with `rt_select_and_run`. On completion/cancellation:
-/// writes this child's own `(tag, payload)` into the group arena
-/// (`group_child_tag_off`/`group_child_payload_off` at `child_index`),
-/// decrements `active_children`, clears the child's own `busy` (harvested —
-/// available for a later loop iteration of the same `with`-site to reuse),
-/// and — iff `active_children` reaches zero and a `join_waiter` is
-/// registered — wakes it (`OFF_TURN_RESUME_READY = 1`, the identical
-/// generic "something changed, re-check the root" signal the entry driver
-/// already polls for). `child_turn_addr`/`group_arena_base` are real,
-/// already-placed addresses (this fn is built twice, placeholder then
-/// real, exactly like every other runtime-glue routine in this module).
-///
-/// M10 E4: specialized twin is `codegen::emit_rt_child_poll`; this hand-asm
-/// is kept until the joint E3/E4 delete commit.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)] // M10 E4: kept until joint delete; no longer placed in glue.
-fn build_group_child_poll(
-    child_turn_addr: u64,
-    child_key: &str,
-    group_arena_base: u64,
-    child_index: usize,
-    // plans/M10.md item 0c2: the two build-time constants
-    // `push_turn_addr_from_id` needs to turn the `Option[TurnId]` a
-    // `join_waiter` now is back into the address its `resume_ready` word
-    // lives at.
-    turns_base: u64,
-    log2_stride: u8,
-    start: usize,
-) -> Asm {
-    use crate::codegen::{
-        GROUP_SLOT_SIZE, OFF_GROUP_ACTIVE_CHILDREN, OFF_GROUP_JOIN_WAITER, OFF_TURN_BUSY,
-        OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED, TURN_RECORD_SIZE, TURN_STATUS_CANCELLED,
-        TURN_STATUS_SUSPENDED, group_child_payload_off, group_child_tag_off,
-    };
-    let mut a = Asm::new(start);
-    a.push(encode::enc_sub_imm(31, 31, 16, true));
-    a.push(encode::enc_str_x_imm(30, 31, 0));
-
-    let mut to_out: Vec<usize> = Vec::new(); // x0 already set; jump to epilogue.
-
-    a.load_imm(9, child_turn_addr);
-    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_BUSY as u16));
-    let skip_a = a.skip_placeholder(); // cbz -> not ready
-    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16));
-    let skip_b = a.skip_placeholder(); // cbz -> not ready
-    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_RESUME_READY as u16));
-    let skip_c = a.skip_placeholder(); // cbz -> not ready
-
-    // Ready: resume (x0 arbitrary — the resume path ignores incoming args).
-    a.load_imm(0, 0);
-    a.bl_call_key(child_key);
-    a.push(encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true));
-    let skip_still_susp = a.skip_placeholder(); // b.eq -> still suspended (ran a slice, nothing to harvest yet)
-
-    // Completed or cancelled: harvest into the group arena.
-    a.push(encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true));
-    a.push(encode::enc_cset(11, Cond::Eq, true)); // x11 = tag (0 Ok / 1 Cancelled)
-    // Temp(0) ambient lineage is `Option[GroupId]` (decision 669): 0 = None,
-    // else arena_index + 1. Load that niche word — never a bare GroupId
-    // wrapped in Some (would alias "no group" with group 0).
-    a.load_imm(12, child_turn_addr + TURN_RECORD_SIZE); // &Temp(0) Option[GroupId]
-    a.push(encode::enc_ldr_x_imm(13, 12, 0)); // x13 = Option[GroupId] word
-    a.push(encode::enc_sub_imm(13, 13, 1, true)); // niche → arena_index
-    a.load_imm(14, GROUP_SLOT_SIZE);
-    a.push(encode::enc_mul(13, 13, 14, true));
-    a.load_imm(12, group_arena_base);
-    a.push(encode::enc_add_reg(12, 12, 13, true)); // x12 = group addr
-    a.push(encode::enc_str_x_imm(
-        11,
-        12,
-        group_child_tag_off(child_index) as u16,
-    ));
-    a.push(encode::enc_str_x_imm(
-        1,
-        12,
-        group_child_payload_off(child_index) as u16,
-    ));
-    a.push(encode::enc_ldr_x_imm(
-        13,
-        12,
-        OFF_GROUP_ACTIVE_CHILDREN as u16,
-    ));
-    a.push(encode::enc_sub_imm(13, 13, 1, true));
-    a.push(encode::enc_str_x_imm(
-        13,
-        12,
-        OFF_GROUP_ACTIVE_CHILDREN as u16,
-    ));
-    a.load_imm(9, child_turn_addr);
-    a.push(encode::enc_str_x_imm(31, 9, OFF_TURN_BUSY as u16)); // busy = 0 (harvested)
-
-    let skip_still_active = a.skip_placeholder(); // cbnz x13 -> no wake yet
-    // plans/M10.md item 0c2: `join_waiter` is an `Option[TurnId]` (a `u32`
-    // at +48). `ldr w`/`cbz w` test exactly the four bytes the field
-    // occupies — the 1-based niche (decision 567) keeps `cbz` meaning
-    // "nobody waiting" — and the address the wake actually needs comes
-    // from the one index→address rule.
-    a.push(encode::enc_ldr_w_imm(10, 12, OFF_GROUP_JOIN_WAITER as u16));
-    let skip_no_waiter = a.skip_placeholder(); // cbz w10 -> nothing waiting
-    push_turn_addr_from_id(&mut a, 10, 11, turns_base, log2_stride);
-    a.load_imm(11, 1);
-    a.push(encode::enc_str_x_imm(11, 10, OFF_TURN_RESUME_READY as u16));
-    let no_wake = a.abs();
-    a.patch_cbnz(skip_still_active, 13);
-    a.patch_cbz_w(skip_no_waiter, 10);
-    debug_assert_eq!(no_wake, a.abs());
-    a.push(encode::enc_movz(0, 1, 0, true)); // ran
-    to_out.push(a.skip_placeholder());
-
-    let still_susp = a.abs();
-    a.patch_cond(skip_still_susp, Cond::Eq);
-    debug_assert_eq!(still_susp, a.abs());
-    a.push(encode::enc_movz(0, 1, 0, true)); // ran a slice, still parked
-    to_out.push(a.skip_placeholder());
-
-    let not_ready = a.abs();
-    a.patch_cbz(skip_a, 10);
-    a.patch_cbz(skip_b, 10);
-    a.patch_cbz(skip_c, 10);
-    debug_assert_eq!(not_ready, a.abs());
-    a.push(encode::enc_movz(0, 0, 0, true)); // nothing to do
-
-    let epilogue = a.abs();
-    for m in &to_out {
-        let this = a.start + m;
-        let delta = (epilogue as i64 - this as i64) * 4;
-        a.words[*m] = encode::enc_b(delta as i32);
-    }
-    a.push(encode::enc_ldr_x_imm(30, 31, 0));
-    a.push(encode::enc_add_imm(31, 31, 16, true));
-    a.push(encode::enc_ret(30));
-    a
-}
-
 /// The deadlock diagnostic's exact transcript wording (printed through
 /// the ordinary `__wrela_abort` path onto the failing root turn's own
 /// test line, then counted as that test's failure — the image exits
@@ -7809,11 +7542,10 @@ fn build_runtime_glue_block(
     // assignment (shape decision 2: never a second truth). Every entry is
     // `0` for a single-core image.
     actor_cores: &[usize],
-    // plans/M6.md item F / M10 E4: every static `g.start` site's
-    // `(callee_key, child_index)` used to drive hand-asm poll placement
-    // here; specialized `rt_child_poll` now lives in `code` (decision 623),
-    // so this parameter is retained only so call sites stay stable until
-    // the joint delete cleans the signature.
+    // plans/M6.md item F / M10 E4: `group_child_index` once drove hand-asm
+    // poll placement here; specialized `rt_child_poll` lives in `code`
+    // (decision 623). Parameter retained so `BootCtx` call sites stay
+    // stable (wiring still owns the map for inject).
     _group_child_index: &BTreeMap<String, usize>,
     start: usize,
 ) -> RuntimeGlue {
@@ -7950,10 +7682,9 @@ fn build_runtime_glue_block(
     // free turn, and the only free turns that run are the root test turn's
     // own, which is core 0's (06 §3).
     //
-    // M10 E3: `rt_run_one` itself lives in `code` as a specialized
-    // compiled body (`emit_rt_run_one`); hand-asm `build_rt_run_one` is
-    // kept for the macOS JIT suite and deleted in E4's joint commit.
-    // M10 E4: hand-asm `build_group_child_poll` kept until the same joint delete.
+    // M10 E3/E4: `rt_run_one` / `rt_child_poll` live in `code` as
+    // specialized compiled bodies; hand-asm builders deleted in E4's
+    // joint delete commit.
     for core in 0..tables.cores {
         let empty_req: Vec<(RingAddrs, u64, u64, String)> = Vec::new();
         let empty_rep: Vec<(RingAddrs, u64)> = Vec::new();
@@ -9638,11 +9369,10 @@ pub struct BootCtx<'a> {
     /// redesign's sizing input (`compute_runtime_tables`'s own doc).
     pub async_frames: &'a BTreeMap<String, u64>,
     /// `codegen::compute_group_child_indices`' result for this same build
-    /// (plans/M6.md item F): every `g.start`-able callee's own fixed
-    /// child-slot ordinal — the one fact `build_runtime_glue_block` needs
-    /// to build each static call site's own poll routine
-    /// (`build_group_child_poll`) alongside the actor glue. Empty for a
-    /// build with no `with group(...)` sites at all.
+    /// (plans/M6.md item F / M10 E4): every `g.start`-able callee's own
+    /// fixed child-slot ordinal — consumed by `inject_rt_child_poll_fns`
+    /// (specialized `rt_child_poll <callee>`). Empty for a build with no
+    /// `with group(...)` sites at all.
     pub group_child_index: &'a BTreeMap<String, usize>,
 }
 
@@ -12797,7 +12527,9 @@ mod harness_jit {
 
     /// `rt_run_one`'s deterministic round-robin: with several actors
     /// ready, the cursor decides who runs, and advances past the actor
-    /// that ran.
+    /// that ran. Uses the specialized `emit_rt_run_one` body (M10 E3/E4
+    /// deleted the hand-asm twin) with Call/RrCursor relocs patched for
+    /// this JIT page.
     #[test]
     fn rt_run_one_selects_ready_actors_round_robin_from_the_cursor() {
         let capacity: u64 = 2;
@@ -12870,14 +12602,37 @@ mod harness_jit {
             sel1_start,
         ));
         let run_one_start = combined.len();
-        let run_one = build_rt_run_one(
-            &[sel0_start, sel1_start],
-            &[],
-            None,
-            cursor_addr,
-            run_one_start,
-        );
-        combined.extend(run_one.words);
+        let spec = crate::codegen::RtRunOneSpec {
+            core: 0,
+            select_actors: vec!["A0".into(), "A1".into()],
+            child_poll_keys: Vec::new(),
+            has_drain: false,
+        };
+        let run_one = crate::codegen::emit_rt_run_one(&spec);
+        let select_targets = [
+            (crate::codegen::rt_select_and_run_symbol("A0"), sel0_start),
+            (crate::codegen::rt_select_and_run_symbol("A1"), sel1_start),
+        ];
+        let mut run_words: Vec<u32> = run_one.code.iter().map(|(w, _)| *w).collect();
+        for reloc in &run_one.relocs {
+            match reloc {
+                Reloc::Call { word, key } => {
+                    let target = select_targets
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, s)| *s)
+                        .expect("select target");
+                    let this = run_one_start + word;
+                    let delta = (target as i64 - this as i64) * 4;
+                    run_words[*word] = encode::enc_bl(delta as i32);
+                }
+                Reloc::RrCursor { word, .. } => {
+                    patch_load_imm_words(&mut run_words, *word, cursor_addr);
+                }
+                other => panic!("unexpected reloc in emit_rt_run_one JIT: {other:?}"),
+            }
+        }
+        combined.extend(run_words);
 
         let page = ExecPage::new(&combined);
         let run = || page.call0_at(run_one_start * 4);
