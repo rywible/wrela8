@@ -512,7 +512,21 @@ fn corpus(args: &[String]) -> Result<(), String> {
     if verbose_sema {
         print_corpus_sema_report(&sema_rows);
     }
-    verify_corpus_sema_census(&sema_rows)?;
+    // Keys first: a duplicate/malformed key makes the other two ambiguous.
+    // The stub and census checks then both run, because one edited block
+    // fails both and a human wants to see both rows to repin, not to
+    // rediscover the second failure after fixing the first.
+    verify_corpus_sema_keys(&sema_rows)?;
+    let mut errs = Vec::new();
+    if let Err(e) = verify_corpus_sema_contexts(&sema_rows) {
+        errs.push(e);
+    }
+    if let Err(e) = verify_corpus_sema_census(&sema_rows) {
+        errs.push(e);
+    }
+    if !errs.is_empty() {
+        return Err(errs.join("; "));
+    }
     Ok(())
 }
 
@@ -546,6 +560,10 @@ fn example_is_aspirational(b: &DocBlock) -> bool {
 /// disagreement — the J1 "noise" keyhole is retired by per-block context.
 #[derive(Debug)]
 struct CorpusSemaRow {
+    /// Content key of the block body — the identity used by both pinned
+    /// tables (plans/M10.md item A3, decision 710).
+    key: String,
+    /// Live `path:line`, for humans and diagnostics only.
     loc: String,
     section: String,
     kind: CorpusSemaKind,
@@ -581,8 +599,8 @@ impl CorpusSemaKind {
 fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, String> {
     let loc = format!("{}:{}", display_repo_path(&b.doc), b.start_line);
     let section = nearest_doc_section(&b.doc, b.start_line);
-    let doc_rel = display_repo_path(&b.doc);
-    let ctx = corpus_sema_context::lookup(&doc_rel, b.start_line);
+    let key = corpus_sema_context::block_key(&b.body);
+    let ctx = corpus_sema_context::lookup(&key);
     let result = match parsed_ast {
         Parsed::Module(module) => {
             if module.imports.is_empty() {
@@ -605,12 +623,14 @@ fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, St
     };
     match result {
         Ok(()) => Ok(CorpusSemaRow {
+            key,
             loc,
             section,
             kind: CorpusSemaKind::Ok,
             detail: "ok".into(),
         }),
         Err(detail) => Ok(CorpusSemaRow {
+            key,
             loc,
             section,
             kind: CorpusSemaKind::Disagreement,
@@ -902,16 +922,115 @@ fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
         "corpus sema: checked {}, ok {ok}, disagreements {disagreements}",
         rows.len()
     );
+    // Every row, with its content key: the pinned tables are keyed by that
+    // key and humans hand-write them, so the report has to print it — a
+    // key you cannot read off the report is a key you cannot pin
+    // (plans/M10.md item A3, decision 712).
+    println!("corpus sema blocks (key = content hash; pin tables match on this, not on the line):");
+    for r in rows {
+        println!(
+            "  {:<13} {:<12} {} (§ {})",
+            r.kind.as_str(),
+            r.key,
+            r.loc,
+            r.section
+        );
+    }
     if disagreements > 0 {
         println!("corpus sema disagreements:");
         for r in rows
             .iter()
             .filter(|r| r.kind == CorpusSemaKind::Disagreement)
         {
-            println!("  {} (§ {})", r.loc, r.section);
+            println!("  {} [{}] (§ {})", r.loc, r.key, r.section);
             println!("    {}", r.detail);
         }
     }
+}
+
+/// Content keys must be unique and well-formed, in the live set and in both
+/// pinned tables (plans/M10.md item A3). Uniqueness is what makes a 12-hex
+/// content key safe to use as an identity: a collision, or two doc fences
+/// with byte-identical bodies, would make a pin ambiguous — so it fails
+/// closed here instead of picking one.
+fn verify_corpus_sema_keys(rows: &[CorpusSemaRow]) -> Result<(), String> {
+    use std::collections::BTreeMap;
+    let mut problems = Vec::new();
+    let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+    for r in rows {
+        if r.key.len() != 12 || !r.key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            problems.push(format!(
+                "block `{}` has malformed content key `{}` (want 12 hex chars)",
+                r.loc, r.key
+            ));
+        }
+        if let Some(prev) = seen.insert(&r.key, &r.loc) {
+            problems.push(format!(
+                "two corpus blocks share content key `{}`: `{prev}` and `{}` — \
+                 byte-identical fence bodies (or a hash collision) make a pin \
+                 ambiguous; make one block's text differ",
+                r.key, r.loc
+            ));
+        }
+    }
+    let mut pinned_keys: BTreeMap<&str, &str> = BTreeMap::new();
+    for p in corpus_sema_census::CORPUS_SEMA_CENSUS {
+        if let Some(prev) = pinned_keys.insert(p.key, p.loc) {
+            problems.push(format!(
+                "corpus_sema_census.rs pins key `{}` twice (`{prev}` and `{}`)",
+                p.key, p.loc
+            ));
+        }
+    }
+    let mut ctx_keys: BTreeMap<&str, usize> = BTreeMap::new();
+    for c in corpus_sema_context::CORPUS_SEMA_CONTEXTS {
+        if let Some(prev) = ctx_keys.insert(c.key, c.line) {
+            problems.push(format!(
+                "corpus_sema_context.rs declares key `{}` twice (lines {prev} and {})",
+                c.key, c.line
+            ));
+        }
+    }
+    if !problems.is_empty() {
+        for p in &problems {
+            eprintln!("corpus sema keys: {p}");
+        }
+        return Err(format!("corpus sema keys: {} problem(s)", problems.len()));
+    }
+    Ok(())
+}
+
+/// Every per-block declaration stub must attach to a live block
+/// (plans/M10.md item A3). Before the content-key change a stub whose line
+/// number had shifted simply stopped matching and the block was checked
+/// bare — the silent detach that produced three phantom disagreements in
+/// item A. Now a stub that matches nothing is a loud failure.
+fn verify_corpus_sema_contexts(rows: &[CorpusSemaRow]) -> Result<(), String> {
+    let mut problems = Vec::new();
+    for c in corpus_sema_context::CORPUS_SEMA_CONTEXTS {
+        if !rows.iter().any(|r| r.key == c.key) {
+            problems.push(format!(
+                "stub for `{}:{}` (§ {}) has key `{}`, which matches no live corpus \
+                 block — that fence's body was edited, or the fence was removed. \
+                 Stubs are keyed by block content, so this is not a line-number \
+                 drift you can ignore: re-review the block, then update its `key` \
+                 in crates/xtask/src/corpus_sema_context.rs to the key printed for \
+                 it by `cargo xtask corpus --sema` (and delete the stub if the \
+                 block is gone).",
+                c.doc, c.line, c.section, c.key
+            ));
+        }
+    }
+    if !problems.is_empty() {
+        for p in &problems {
+            eprintln!("corpus sema context: {p}");
+        }
+        return Err(format!(
+            "corpus sema context: {} stale stub(s); update crates/xtask/src/corpus_sema_context.rs after review",
+            problems.len()
+        ));
+    }
+    Ok(())
 }
 
 /// Compare live corpus-sema rows against the pinned census (plans/M9.md
@@ -921,20 +1040,24 @@ fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
 /// gap). Also fails if a pin's shape is wrong, a block is unpinned /
 /// missing, or an accepted row's ledger gap is missing / no longer
 /// `status = "gap"`.
+///
+/// Matching is on the block's **content key**, never on `path:line`
+/// (plans/M10.md item A3, decision 710) — an insertion above a fence must
+/// not disturb its pin. The flip side is that editing a fence's body loses
+/// its pin; that is reported as a re-review requirement, not as decay
+/// (decision 711).
 fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
     use std::collections::BTreeMap;
-    let live: BTreeMap<&str, &str> = rows
-        .iter()
-        .map(|r| (r.loc.as_str(), r.kind.as_str()))
-        .collect();
+    let live: BTreeMap<&str, &CorpusSemaRow> = rows.iter().map(|r| (r.key.as_str(), r)).collect();
     let pinned: BTreeMap<&str, &corpus_sema_census::CorpusSemaPin> =
         corpus_sema_census::CORPUS_SEMA_CENSUS
             .iter()
-            .map(|p| (p.loc, p))
+            .map(|p| (p.key, p))
             .collect();
 
     let mut problems = Vec::new();
-    for (loc, pin) in &pinned {
+    for (key, pin) in &pinned {
+        let loc = pin.loc;
         // Structural: ok rows have no gap; disagreements must cite one.
         match (pin.kind, pin.gap) {
             ("ok", None) => {}
@@ -949,18 +1072,29 @@ fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
                 "pin `{loc}`: unknown kind `{other}` (want ok or disagreement)"
             )),
         }
-        match live.get(loc) {
+        match live.get(key) {
             None => problems.push(format!(
-                "pinned block `{loc}` ({}) missing from live corpus sema",
+                "pin-lost: no live corpus block has content key `{key}` (pinned \
+                 {} for `{loc}`) — that fence's body was edited, or the fence was \
+                 removed. Pins are keyed by block content, so this is not pin \
+                 decay and not a line-number shift: the edited block's \
+                 classification must be re-reviewed. Run `cargo xtask corpus \
+                 --sema`, read the block's new classification, then update this \
+                 row's `key` (and `loc`) in crates/xtask/src/corpus_sema_census.rs \
+                 — or delete the row if the block is gone.",
                 pin.kind
             )),
-            Some(live_kind) if *live_kind != pin.kind => {
+            Some(row) if row.kind.as_str() != pin.kind => {
+                let live_kind = row.kind.as_str();
+                let at = &row.loc;
                 if pin.kind == "ok" {
-                    problems.push(format!("ok-decay: `{loc}` was pinned ok, now {live_kind}"));
-                } else if pin.kind == "disagreement" && *live_kind == "ok" {
+                    problems.push(format!(
+                        "ok-decay: `{at}` [{key}] was pinned ok, now {live_kind}"
+                    ));
+                } else if pin.kind == "disagreement" && live_kind == "ok" {
                     let gap = pin.gap.unwrap_or("<missing gap>");
                     problems.push(format!(
-                        "accepted-disagreement-cleared: `{loc}` was pinned as \
+                        "accepted-disagreement-cleared: `{at}` [{key}] was pinned as \
                          disagreement citing gap `{gap}`, but now typechecks — \
                          update corpus_sema_census.rs and flip that ledger gap \
                          to `test` (or restore the disagreement if the clearance \
@@ -968,7 +1102,7 @@ fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
                     ));
                 } else {
                     problems.push(format!(
-                        "census drift: `{loc}` pinned {}, live {live_kind}",
+                        "census drift: `{at}` [{key}] pinned {}, live {live_kind}",
                         pin.kind
                     ));
                 }
@@ -976,11 +1110,19 @@ fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
             Some(_) => {}
         }
     }
-    for loc in live.keys() {
-        if !pinned.contains_key(loc) {
+    for (key, row) in &live {
+        if !pinned.contains_key(key) {
             problems.push(format!(
-                "unpinned block `{loc}` ({}) — add it to corpus_sema_census.rs",
-                live[loc]
+                "unpinned block `{}` (currently at {}, live classification {}) — \
+                 either a new fence, or an existing fence whose body was edited \
+                 (editing a body changes its key by design). An edited block's \
+                 pinned classification must be re-reviewed and updated: after \
+                 reviewing `cargo xtask corpus --sema`, add or repin the row in \
+                 crates/xtask/src/corpus_sema_census.rs with key `{}`.",
+                key,
+                row.loc,
+                row.kind.as_str(),
+                key
             ));
         }
     }

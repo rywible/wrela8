@@ -1,9 +1,21 @@
 //! Per-block declaration stubs for `corpus --sema` (plans/M9.md items J1b/J1c).
 //!
-//! Keyed by repo-relative doc path and the block's first body line — the
-//! same coordinates the `--sema` report prints. Each stub may only declare
-//! names the snippet already references; it must not restructure, weaken,
-//! or dodge the interesting part of the example.
+//! **Keyed by a content hash of the block's own body** — the first 12 hex
+//! chars of SHA-256 over the exact fence text (plans/M10.md item A3,
+//! decision 710). It used to be keyed by `(doc, start_line)`, which meant
+//! inserting *anything* above a fence shifted its line number and silently
+//! detached its preamble; M10 item A hit exactly that and got three
+//! phantom "disagreements". A content key is immune to edits *above* the
+//! block, and an edit *to* the block loses the key loudly — see decision
+//! 711 for why that is the correct direction.
+//!
+//! `doc` and `line` are audit aids, not part of the match: they let a human
+//! find the block, and they may go stale after an insertion without
+//! breaking anything (`corpus --sema` prints each block's live line and
+//! key).
+//!
+//! Each stub may only declare names the snippet already references; it must
+//! not restructure, weaken, or dodge the interesting part of the example.
 //!
 //! The stubs live here (not in the markdown) so rendered docs stay
 //! unchanged. A human reading this file is the audit surface for "what
@@ -14,10 +26,30 @@
 //! splices the fence's own item text into that type. Fence content is never
 //! discarded — J1c deleted `drop_fragment_items` for exactly that reason.
 
+/// The content key of a corpus block: the first 12 hex chars of SHA-256
+/// over the block's exact body text. This is the *only* thing that keys a
+/// block here and in `corpus_sema_census` (plans/M10.md item A3, decision
+/// 710); line numbers are audit aids and never participate in matching.
+///
+/// 12 hex chars = 48 bits. A collision is not a silent correctness hazard:
+/// `verify_corpus_sema_keys` in `main.rs` fails closed if two live blocks
+/// ever share a key.
+pub fn block_key(body: &str) -> String {
+    wrela_compiler::report::sha256_hex(body.as_bytes())[..12].to_string()
+}
+
 /// One block's injected declarations / wrapper shape.
 pub struct CorpusSemaContext {
+    /// Repo-relative doc holding the block when this row was written
+    /// (audit aid; **not** matched on — see the module docs).
+    #[allow(dead_code)]
     pub doc: &'static str,
-    pub start_line: usize,
+    /// The block's content key (`block_key` of its body). The match key.
+    pub key: &'static str,
+    /// The block's first body line when this row was written (audit aid;
+    /// **not** matched on, and allowed to go stale after an insertion).
+    #[allow(dead_code)]
+    pub line: usize,
     /// Human-facing section title (audit aid; not used by lookup).
     #[allow(dead_code)]
     pub section: &'static str,
@@ -51,11 +83,12 @@ pub struct CorpusSemaContext {
     pub nest_items_into: &'static str,
 }
 
-/// Look up the stub for a doc block. `doc` is repo-relative.
-pub fn lookup(doc: &str, start_line: usize) -> Option<&'static CorpusSemaContext> {
-    CORPUS_SEMA_CONTEXTS
-        .iter()
-        .find(|c| c.doc == doc && c.start_line == start_line)
+/// Look up the stub for a doc block by its content key (`block_key`).
+/// Nothing else is consulted — moving a block within a doc, or between
+/// docs, keeps its stub attached; editing its body detaches it, which
+/// `verify_corpus_sema_contexts` in `main.rs` then reports by name.
+pub fn lookup(key: &str) -> Option<&'static CorpusSemaContext> {
+    CORPUS_SEMA_CONTEXTS.iter().find(|c| c.key == key)
 }
 
 /// Every currently-contextualized block, plus any later additions. Absence
@@ -65,7 +98,8 @@ pub const CORPUS_SEMA_CONTEXTS: &[CorpusSemaContext] = &[
     // 02 §3.1 — `take current` then reassign. Names: Packet, current.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 150,
+        key: "91f2c87cf267",
+        line: 150,
         section: "3.1 How a resource ends",
         preamble: r#"
 resource struct Packet:
@@ -85,7 +119,8 @@ resource struct Packet:
     // 02 §4 — image pool + net_pool.get + nic.transmit.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 185,
+        key: "be05640fe581",
+        line: 185,
         section: "4. Pools and `own`",
         preamble: r#"
 resource struct Packet:
@@ -112,7 +147,8 @@ struct NetPool:
     // load-bearing surface (known unimplemented).
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 206,
+        key: "ae1b6fca2a64",
+        line: 206,
         section: "4. Pools and `own`",
         preamble: r#"
 struct Node:
@@ -131,7 +167,8 @@ fn compose(mut scene: Node):
     // 02 §5.1 — access modes on call sites.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 250,
+        key: "dd7b0c3dadfe",
+        line: 250,
         section: "5.1 Parameters and call sites",
         preamble: r#"
 resource struct Packet:
@@ -162,7 +199,8 @@ fn submit(queue: u32, take payload: Packet):
     // DmaBlock. CacheLine.invalid must accept the taken element.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 348,
+        key: "b49b24ba36e0",
+        line: 348,
         section: "7.1 Structs",
         preamble: r#"
 pool Payloads
@@ -192,7 +230,8 @@ const N: usize = 1
     // `return None` (internal Option/Result mix — decision below).
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 370,
+        key: "7595bd03723a",
+        line: 370,
         section: "7.2 Enums and matching",
         preamble: r#"
 from core.io_error import IoError
@@ -213,7 +252,8 @@ fn use(value: u32):
     // 02 §7.2 — `is .Some` sugar.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 396,
+        key: "8e5ee656b323",
+        line: 396,
         section: "7.2 Enums and matching",
         preamble: r#"
 fn lookup(key: u32) -> Option[usize]:
@@ -235,7 +275,8 @@ fn use(index: usize):
     // wrapper matches §8.1's definite-initialization merge shape.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 473,
+        key: "b05b056b05b1",
+        line: 473,
         section: "8.1 Statements",
         preamble: r#"
 enum Lookup[T]:
@@ -257,7 +298,8 @@ fn lookup(key: u32) -> Lookup[u32]:
     // trailing call statement for `_corpus_snippet`.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 530,
+        key: "276e58180606",
+        line: 530,
         section: "8.3 Closures",
         preamble: r#"
 struct Item:
@@ -286,7 +328,8 @@ struct Table:
     // source-nameable, so `?` on the await cannot convert.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 604,
+        key: "f56a6f9b7f60",
+        line: 604,
         section: "9.3 Messages",
         preamble: r#"
 pool Bufs
@@ -311,7 +354,8 @@ struct Codec:
     // The fence uses `event` twice as parallel illustrations; one binding.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 656,
+        key: "e18a87c8f714",
+        line: 656,
         section: "9.4 Calls, errors, and admission",
         preamble: r#"
 resource struct Event:
@@ -351,7 +395,8 @@ fn stash(take event: Event):
     // composed await cannot convert (same residual as §9.3 `:604`).
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        start_line: 674,
+        key: "84c332141ae2",
+        line: 674,
         section: "9.5 Groups",
         preamble: r#"
 @actor
@@ -379,7 +424,8 @@ async fn fetch_part(index: u32) -> u32:
     // the fence statements because they are statement-shaped.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
-        start_line: 86,
+        key: "f4ee6fe571a7",
+        line: 86,
         section: "3. DMA",
         preamble: r#"
 from core.io_error import IoError
@@ -411,7 +457,8 @@ struct Blk:
     // item, so the fence cannot open with it). drain_used in postamble.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
-        start_line: 222,
+        key: "5bbef735fe9c",
+        line: 222,
         section: "6. Interrupts",
         preamble: r#"
 @layout(mmio, endian=little)
@@ -453,7 +500,8 @@ struct BlkDriver:
     // 03 §8 — Untrusted narrowing. Checks clean with Completion + buffer.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
-        start_line: 266,
+        key: "f0f2c62e8a44",
+        line: 266,
         section: "8. Untrusted device data",
         preamble: r#"
 struct Completion:
