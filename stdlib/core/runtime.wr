@@ -1,4 +1,4 @@
-# plans/M10.md item A2d / B2 / B3 / D
+# plans/M10.md item A2d / B2 / B3 / B4 / D
 # Always-loaded runtime module. Names are not auto-visible (decision 584);
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
@@ -6,10 +6,13 @@ module runtime
 # M10 B2: machine pages the console formatter speaks to (decision 593).
 # Addresses match wrela-machine::layout / console — bytes live in the VMM's
 # pages, not the image blob (decision 588).
+# M10 B4: packed CONSOLE_DATA.bytes for append (decisions 594–596);
+# OFF_TEST_LINE_BUF stays B3's TEST_LINE_BUF (named fields).
 
 const QUEUE_SIZE: u64 = 256
 const DESC_WORD_COUNT: usize = 512
 const CONSOLE_DATA_BASE: u64 = 0x40003000
+const DATA_SIZE: usize = 16384
 
 @layout(runtime, endian=little)
 struct MachineInfoPage:
@@ -31,11 +34,11 @@ struct ConsoleRingPage:
 @placed(0x40001000)
 static CONSOLE_RING: ConsoleRingPage
 
-# Declared so the three machine pages are all @placed (A2c/B1). line_commit
-# materializes CONSOLE_DATA_BASE as a const — a bare static is not a u64.
+# Packed transcript bytes (decision 596). line_commit still materializes
+# CONSOLE_DATA_BASE as a const; append indexes `.bytes` densely.
 @layout(runtime, endian=little)
 struct ConsoleDataPage:
-    @offset(0x0) _pad: u64
+    bytes: [u8; DATA_SIZE]
 
 @placed(0x40003000)
 static CONSOLE_DATA: ConsoleDataPage
@@ -315,3 +318,60 @@ pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
     reverse_one(mut lo, mut hi)
     reverse_one(mut lo, mut hi)
     return pos.to[u64]()
+
+# M10 B4: binary-split packed copy — no `while`/`for` back-edge, so no
+# checkpoint mid-line (decision 597). Recursion depth is log2(n); Call is
+# not a loop Jump, so FnCtx::checkpoint never fires here. Line-buf source
+# is B3's TEST_LINE_BUF via `load_at` (named fields; decision 597).
+fn copy_line_buf_range(bump: usize, start: usize, n: usize):
+    if n == 0:
+        return
+    if n == 1:
+        CONSOLE_DATA.bytes[bump +% start] = load_at(start)
+        return
+    half: usize = n >> 1
+    copy_line_buf_range(bump, start, half)
+    copy_line_buf_range(bump, start +% half, n -% half)
+
+fn copy_bytes_range(src: Bytes, bump: usize, start: usize, n: usize):
+    if n == 0:
+        return
+    if n == 1:
+        CONSOLE_DATA.bytes[bump +% start] = src[start]
+        return
+    half: usize = n >> 1
+    copy_bytes_range(src, bump, start, half)
+    copy_bytes_range(src, bump, start +% half, n -% half)
+
+# M10 B4: append from OFF_TEST_LINE_BUF. No pointer — the buffer address
+# is a placed-static fact. Returns 0 on success, 1 on overflow
+# (decision 592: status, not BRK / abort).
+pub fn __wrela_console_append_line_buf(len: usize) -> u64:
+    # Layout field is u64 (decision 563); index wants usize. Same width
+    # on this machine — `.to` abort is unreachable for a bump that
+    # passed the ring-capacity check below (decision 591).
+    bump: usize = MACHINE_INFO.ring_data_bump.to[usize]()
+    end: usize = bump +% len
+    if end < bump:
+        return 1
+    if end > DATA_SIZE:
+        return 1
+    copy_line_buf_range(bump, 0, len)
+    MACHINE_INFO.ring_data_bump = end.to[u64]()
+    return 0
+
+# M10 B4: append `len` packed bytes from an unbounded Bytes handle
+# (base, capacity). `len` must be ≤ handle capacity; longer / ring
+# overflow returns 1 (decision 592).
+pub fn __wrela_console_append_bytes(src: Bytes, len: usize) -> u64:
+    bump: usize = MACHINE_INFO.ring_data_bump.to[usize]()
+    if len > src.len:
+        return 1
+    end: usize = bump +% len
+    if end < bump:
+        return 1
+    if end > DATA_SIZE:
+        return 1
+    copy_bytes_range(src, bump, 0, len)
+    MACHINE_INFO.ring_data_bump = end.to[u64]()
+    return 0

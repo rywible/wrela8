@@ -34,8 +34,8 @@ ImageReport v0
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
     Padding offset=0x1004 size=2564
     Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
-    Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=b0 type=u8 offset=0x0 size=1
     Field name=b1 type=u8 offset=0x1 size=1
@@ -61,16 +61,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=11856
-  Section name=rodata base=0x40502ea0 size=448
-  Section name=abort base=0x40503060 size=120
-  Section name=checkpoint base=0x405030d8 size=104
-  Section name=rtcode base=0x40503140 size=3536
-  Section name=rtdata base=0x40503f10 size=2680
+  Section name=code base=0x40500050 size=13856
+  Section name=rodata base=0x40503670 size=499
+  Section name=abort base=0x40503864 size=120
+  Section name=checkpoint base=0x405038dc size=104
+  Section name=rtcode base=0x40503944 size=3536
+  Section name=rtdata base=0x40504718 size=2680
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40503ddc
-  CoreEntry core=2 base=0x40503e44
-  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  CoreEntry core=1 base=0x405045e0
+  CoreEntry core=2 base=0x40504648
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
@@ -78,7 +78,7 @@ ImageReport v0
   Actor name=Alpha mailbox=4 slot=16 frame=304 state=8
   Actor name=Beta mailbox=4 slot=16 frame=304 state=8
   Turn fn=two_senders_one_ring frame=480
-  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120 base=0x405048c8
-  Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72 base=0x40504940
+  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120 base=0x405050d0
+  Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72 base=0x40505148
   Turns count=4 stride=512 bytes=2048
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2680

@@ -30,8 +30,8 @@ ImageReport v0
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
     Padding offset=0x1004 size=2564
     Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
-    Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=b0 type=u8 offset=0x0 size=1
     Field name=b1 type=u8 offset=0x1 size=1
@@ -67,15 +67,15 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=11552
-  Section name=rodata base=0x40502d70 size=786
-  Section name=abort base=0x40503084 size=120
-  Section name=checkpoint base=0x405030fc size=104
-  Section name=rtcode base=0x40503164 size=856
-  Section name=rtdata base=0x405034c0 size=2328
-  Section name=devregs base=0x40503dd8 size=272
+  Section name=code base=0x40500050 size=13552
+  Section name=rodata base=0x40503540 size=837
+  Section name=abort base=0x40503888 size=120
+  Section name=checkpoint base=0x40503900 size=104
+  Section name=rtcode base=0x40503968 size=856
+  Section name=rtdata base=0x40503cc0 size=2328
+  Section name=devregs base=0x405045d8 size=272
   Entry base=0x40500000
-  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
@@ -84,4 +84,4 @@ ImageReport v0
   Driver name=BlkDriver state=32
   Turns count=2 stride=1024 bytes=2048
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2328
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503dd8 size=272
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405045d8 size=272

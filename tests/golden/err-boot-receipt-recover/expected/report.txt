@@ -44,8 +44,8 @@ ImageReport v0
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
     Padding offset=0x1004 size=2564
     Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
-    Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=b0 type=u8 offset=0x0 size=1
     Field name=b1 type=u8 offset=0x1 size=1
@@ -85,16 +85,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=18220
-  Section name=rodata base=0x40504780 size=1190
-  Section name=abort base=0x40504c28 size=120
-  Section name=checkpoint base=0x40504ca0 size=336
-  Section name=rtcode base=0x40504df0 size=1152
-  Section name=rtdata base=0x40505270 size=2408
-  Section name=devregs base=0x40505bd8 size=104
-  Section name=pooldata base=0x40505c40 size=1536
+  Section name=code base=0x40500050 size=20220
+  Section name=rodata base=0x40504f50 size=1241
+  Section name=abort base=0x4050542c size=120
+  Section name=checkpoint base=0x405054a4 size=336
+  Section name=rtcode base=0x405055f4 size=1152
+  Section name=rtdata base=0x40505a78 size=2408
+  Section name=devregs base=0x405063e0 size=104
+  Section name=pooldata base=0x40506448 size=1536
   Entry base=0x40500000
-  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
@@ -103,14 +103,14 @@ ImageReport v0
   Driver name=BlkDriver state=112
   Turns count=2 stride=1024 bytes=2048
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2408
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40505bd8 size=104
-  IrqHostInject base=0x40505bd8 offset=0x60 status=0xa501 vector=1
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40505c40 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40505e40 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockSpares kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40506040 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40505c40 size=0x200
-  BlkPool name=BlockPayloads device=device#0 base=0x40505e40 size=0x200
-  BlkPool name=BlockSpares device=device#0 base=0x40506040 size=0x200
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405063e0 size=104
+  IrqHostInject base=0x405063e0 offset=0x60 status=0xa501 vector=1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40506448 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40506648 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockSpares kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40506848 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40506448 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x40506648 size=0x200
+  BlkPool name=BlockSpares device=device#0 base=0x40506848 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
-  BlkQueue index=0 size=8 desc=0x40505c40 avail=0x40505cc0 used=0x40505cd8 doorbell=0x40505d20
+  BlkQueue index=0 size=8 desc=0x40506448 avail=0x405064c8 used=0x405064e0 doorbell=0x40506528
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

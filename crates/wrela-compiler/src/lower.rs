@@ -309,6 +309,9 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_line_commit",
     // M10 B3: decimal renderer (harness bl_call_key target).
     "__wrela_fmt_dec",
+    // M10 B4: console append split (line_buf / Bytes).
+    "__wrela_console_append_line_buf",
+    "__wrela_console_append_bytes",
 ];
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
@@ -2740,6 +2743,16 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     return Ok(dst);
                 }
             }
+            // plans/M10.md item B4: `Bytes.len` is handle word 1 (capacity).
+            if matches!(base_ty, Type::Bytes(None)) && name == "len" {
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: 1,
+                });
+                return Ok(dst);
+            }
             let idx = field_index(b.prog(), &base_ty, name)?;
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::Project {
@@ -2771,6 +2784,18 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             }
             let base_temp = lower_expr(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
+            // plans/M10.md item B4 / decisions 595–596: unbounded `Bytes`
+            // parameter — packed-byte index through the (base, len) handle.
+            if matches!(base_ty, Type::Bytes(None)) {
+                let idx_temp = lower_expr(idx_expr, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::BytesIndexGet {
+                    dst,
+                    base: base_temp,
+                    index: idx_temp,
+                });
+                return Ok(dst);
+            }
             // plans/M9.md item C1: `String[..N][i]` with a literal index
             // projects slot `1+i` after a compile-time capacity check.
             // Dynamic indices (and occupied-length runtime checks beyond

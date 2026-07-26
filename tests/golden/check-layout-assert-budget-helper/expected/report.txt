@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/image_report.wr sha256=7abde3292fbefa4cd47b167ad19ed31ab9e08a7267f0dc3d40b1414b80b416bf
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
-  Input path=examples/check_layout_assert_budget_helper.wr sha256=a690e24ccac412cfc04c09a969ba1736843143fc0606a3c982282ebc4dbcc8b2
+  Input path=examples/check_layout_assert_budget_helper.wr sha256=b84f0a8378865bba39e7344a239d9832970195f15e2180bb304967f46ceaeb34
   Name value=layout-assert-budget-helper
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -26,8 +26,8 @@ ImageReport v0
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
     Padding offset=0x1004 size=2564
     Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
-    Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=b0 type=u8 offset=0x0 size=1
     Field name=b1 type=u8 offset=0x1 size=1
@@ -53,14 +53,14 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=8104
-  Section name=rodata base=0x40501ff8 size=148
-  Section name=abort base=0x4050208c size=120
-  Section name=checkpoint base=0x40502104 size=104
-  Section name=rtcode base=0x4050216c size=720
-  Section name=rtdata base=0x40502440 size=248
+  Section name=code base=0x40500050 size=10104
+  Section name=rodata base=0x405027c8 size=199
+  Section name=abort base=0x40502890 size=120
+  Section name=checkpoint base=0x40502908 size=104
+  Section name=rtcode base=0x40502970 size=720
+  Section name=rtdata base=0x40502c40 size=248
   Entry base=0x40500000
-  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21

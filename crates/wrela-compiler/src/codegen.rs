@@ -626,6 +626,11 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         // plans/M7.md item E4 / decision 19: `own[P] T` is one opaque word
         // (a guest pool-slot address), passed by value like a capability.
         Type::Own(..) => false,
+        // plans/M10.md item B4 / decision 595: unbounded `Bytes` is a
+        // two-word (base, len) handle passed in two consecutive argument
+        // registers — not a by-pointer aggregate. Source cannot observe
+        // the address; only BytesIndexGet / console append consume it.
+        Type::Bytes(None) => false,
         // plans/M6.md item D (verification fix, decision 11b's own boot
         // exercised this for the first time): the M6 builtin-pseudo-type
         // vehicle (`mwir::size_of`'s own doc comment has the full list) is
@@ -672,8 +677,17 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         // plans/M9.md item C1: length word + N byte slots — by-pointer
         // aggregate like every other multi-slot value.
         Type::String(_) => true,
+        // Exact `Bytes[N]` stays the slot-per-byte aggregate (decision 596
+        // flags this as the anomaly vs packed unbounded handles).
+        Type::Bytes(Some(_)) => true,
         _ => false,
     }
+}
+
+/// plans/M10.md item B4: unbounded `Bytes` occupies two argument registers
+/// (base, then len).
+fn is_bytes_handle(ty: &Type) -> bool {
+    matches!(strip_wrappers(ty), Type::Bytes(None))
 }
 
 /// `(bit width, signed)` for the ten integer scalar types — a small,
@@ -883,6 +897,17 @@ fn field_offset_size(
             if index > n {
                 return Err(CodegenError::internal(format!(
                     "`String[..{n}]` project index {index} out of range"
+                )));
+            }
+            let _ = layout;
+            Ok((8 * index, 8))
+        }
+        // plans/M10.md item B4: word 0 = base (not source-visible as a
+        // field), word 1 = capacity (`Bytes.len`).
+        Type::Bytes(None) => {
+            if index > 1 {
+                return Err(CodegenError::internal(format!(
+                    "`Bytes` project index {index} out of range"
                 )));
             }
             let _ = layout;
@@ -1687,6 +1712,16 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(enc, format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)));
         }
+        // plans/M10.md item B4 / decisions 595–596: packed byte load
+        // through an unbounded `Bytes` (base, len) handle.
+        Inst::BytesIndexGet { dst, base, index } => {
+            emit_bytes_index_addr(ctx, ctx.frame.off(*base), ctx.frame.off(*index), X_C)?;
+            ctx.push(
+                encode::enc_ldrb_imm(X_B, X_C, 0),
+                format!("ldrb w{}, [{}, #0]", X_B, reg_name(X_C)),
+            );
+            ctx.store_slot(X_B, ctx.frame.off(*dst));
+        }
         Inst::MakeEnum { dst, tag, payload } => {
             let dst_off = ctx.frame.off(*dst);
             ctx.load_imm(X_A, *tag as i64);
@@ -1901,14 +1936,40 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     by_ptr.insert(i);
                 }
             }
+            // plans/M10.md item B4: Bytes handles consume two consecutive
+            // argument registers, so the physical register cursor is not
+            // identical to the logical arg index.
+            let mut reg: u8 = 0;
             for (i, arg) in args.iter().enumerate() {
-                if by_ptr.contains(&i) {
-                    ctx.addr_of_slot(i as u8, ctx.frame.off(*arg));
-                } else {
-                    ctx.load_slot(i as u8, ctx.frame.off(*arg));
+                let arg_ty = &f.temp_types[arg.0];
+                if is_bytes_handle(arg_ty) {
+                    if reg > 7 {
+                        return Err(CodegenError::unimplemented(
+                            "more than 8 call arguments (Bytes handle needs two registers)",
+                        ));
+                    }
+                    let off = ctx.frame.off(*arg);
+                    ctx.load_slot(reg, off);
+                    ctx.load_slot(reg + 1, off + 8);
+                    reg += 2;
+                    continue;
                 }
+                if reg > 8 {
+                    return Err(CodegenError::unimplemented("more than 8 call arguments"));
+                }
+                if by_ptr.contains(&i) {
+                    ctx.addr_of_slot(reg, ctx.frame.off(*arg));
+                } else {
+                    ctx.load_slot(reg, ctx.frame.off(*arg));
+                }
+                reg += 1;
             }
             let dst_ty = f.temp_types[dst.0].clone();
+            if is_bytes_handle(&dst_ty) {
+                return Err(CodegenError::unimplemented(
+                    "returning an unbounded `Bytes` handle is",
+                ));
+            }
             if is_aggregate(&dst_ty) {
                 ctx.addr_of_slot(8, ctx.frame.off(*dst));
             }
@@ -1919,6 +1980,11 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         }
         Inst::Return { value } => {
             if let Some(v) = value {
+                if is_bytes_handle(&f.ret) {
+                    return Err(CodegenError::unimplemented(
+                        "returning an unbounded `Bytes` handle is",
+                    ));
+                }
                 if is_aggregate(&f.ret) {
                     let ret_ptr_off = ctx.frame.ret_ptr_off.ok_or_else(|| {
                         CodegenError::internal("`Return` with a value but no ret_ptr slot")
@@ -4430,6 +4496,47 @@ fn emit_index_addr(
     );
 }
 
+/// plans/M10.md item B4 / decisions 595–596: address of packed byte
+/// `handle.base[index]`, bounds-checked against the handle's own `len`
+/// word (runtime, not a compile-time N). Abort shape matches
+/// `emit_index_addr` (cmp + `bl __wrela_abort_val`).
+fn emit_bytes_index_addr(
+    ctx: &mut FnCtx,
+    handle_off: usize,
+    index_off: usize,
+    out_reg: u8,
+) -> Result<(), CodegenError> {
+    // X_A = index; X_B = handle.len; compare; on fail abort with the
+    // live index (length rendered as the handle's own len word).
+    ctx.load_slot(X_A, index_off);
+    ctx.load_slot(X_B, handle_off + 8);
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_B, true),
+        format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
+    );
+    let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
+    // Suffix embeds the live length so the diagnostic matches IndexGet's
+    // `"index {i} out of bounds (length {len})"` shape; the length half
+    // is written through a small scratch because abort_val takes one
+    // value register. Re-use X_B (still the len) after stashing the index
+    // message's value register — abort_val's own contract takes X_A as
+    // the interpolated value when we pass it; here we pass X_A = index.
+    ctx.abort_val("index ", X_A, false, " out of bounds (Bytes)");
+    ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
+    // out = handle.base + index (elem_stride = 1 packed byte).
+    ctx.load_slot(out_reg, handle_off);
+    ctx.push(
+        encode::enc_add_reg(out_reg, out_reg, X_A, true),
+        format!(
+            "add {}, {}, {}",
+            reg_name(out_reg),
+            reg_name(out_reg),
+            reg_name(X_A)
+        ),
+    );
+    Ok(())
+}
+
 /// plans/M10.md item B1: address of `placed_base[field_offset + i*stride]`
 /// with the same bounds-check abort shape as `emit_index_addr`.
 fn emit_placed_index_addr(
@@ -4931,6 +5038,20 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
             return Err(CodegenError::unimplemented("more than 8 call arguments"));
         }
         let ty = &f.temp_types[p.0];
+        // plans/M10.md item B4: unbounded `Bytes` arrives as two words in
+        // consecutive registers (base, len) — store both into the frame.
+        if is_bytes_handle(ty) {
+            if next_reg > 7 {
+                return Err(CodegenError::unimplemented(
+                    "more than 8 call arguments (Bytes handle needs two registers)",
+                ));
+            }
+            let dst_off = frame.off(*p);
+            ctx.store_slot(next_reg, dst_off);
+            ctx.store_slot(next_reg + 1, dst_off + 8);
+            next_reg += 2;
+            continue;
+        }
         // Aggregates and `mut` params (even scalars) arrive as pointers
         // (plans/M9.md item CC): copy in, and for `mut` also save the
         // pointer for the epilogue write-back.
@@ -5981,6 +6102,19 @@ fn emit_async_entry(
             return Err(CodegenError::unimplemented("more than 8 call arguments"));
         }
         let ty = &f.temp_types[p.0];
+        // plans/M10.md item B4: same two-register Bytes handle as emit_prologue.
+        if is_bytes_handle(ty) {
+            if next_reg > 7 {
+                return Err(CodegenError::unimplemented(
+                    "more than 8 call arguments (Bytes handle needs two registers)",
+                ));
+            }
+            let dst_off = ctx.frame.off(*p);
+            ctx.store_slot(next_reg, dst_off);
+            ctx.store_slot(next_reg + 1, dst_off + 8);
+            next_reg += 2;
+            continue;
+        }
         if is_aggregate(ty) || *mode == AccessMode::Mut {
             if *mode == AccessMode::Mut {
                 let (pt, ptr_off) = mut_ptr_iter.next().ok_or_else(|| {

@@ -3282,6 +3282,21 @@ fn check_field_expr(
             span,
         ));
     }
+    // plans/M10.md item B4 / decision 595: unbounded `Bytes` handle's
+    // capacity word. The base address is not a field — source cannot
+    // observe it.
+    if matches!(&base_ty, Type::Bytes(None)) {
+        if name == "len" {
+            return Ok(TypedExpr {
+                ty: Type::Usize,
+                kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
+            });
+        }
+        return Err(type_error(
+            format!("type `Bytes` has no field `{name}`"),
+            span,
+        ));
+    }
     match &base_ty {
         Type::Named(sname, targs) => {
             // A generic instantiation's field (item H): substitute +
