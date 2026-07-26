@@ -672,7 +672,7 @@ One construct is the unit of deadline, cancellation, and child concurrency:
 
 ```wrela
 with group(deadline=now() + ms(50)):          # a bounded operation
-    result = await storage.read_file(path)
+    result = await storage.read_file(path)?
 
 with group(capacity=4) as g:                  # bounded child work
     g.start(fetch_part, index=0)
