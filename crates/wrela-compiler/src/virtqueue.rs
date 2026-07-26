@@ -147,8 +147,11 @@ pub const PUBLISH_WRITE_ORDER: &[&str] =
 ///
 /// Decision 22: `QueueOp` / `Receipt` is the absolute address of the meta
 /// record (not the descriptor head). Drain owns `last_used`; await parks
-/// the waiter turn-area and reply-stage addresses in the meta; drain
+/// the waiter turn and reply-stage location in the meta; drain
 /// writes `IoCompletion` into that stage and sets `resume_ready`.
+/// plans/M10.md item 0c3: those two are **indices**, not addresses — see
+/// `SLOT_META_WAITER`/`SLOT_META_REPLY_STAGE` below. `SLOT_META_BYTES`
+/// is unchanged at 64, so no pool window moves.
 /// Decision 23: `current_epoch` starts at 0; `RunningDevice.reset` bumps
 /// it; `prepare_block` stamps it into `SLOT_META_EPOCH`; drain rejects a
 /// mismatch as `CompletionFault::StaleId`.
@@ -166,7 +169,24 @@ pub const SLOT_META_FLAGS: u64 = 32;
 /// multi-flight is deferred with the free-list (decision 20); single-flight
 /// uses `SLOT_FLAG_INFLIGHT` for the duplicate half.
 pub const SLOT_META_EPOCH: u64 = 40;
+/// plans/M10.md item 0c3 (decisions 557/560/567): the turn awaiting this
+/// op, as an `Option[TurnId]` — a plain `u32`, `0` = nobody waiting. It
+/// used to be that turn area's raw 64-bit address. A `u32` is legal in
+/// `@layout(dma)` memory with no new field-type rule, which is exactly
+/// what decision 560 bought by fixing `TurnId`'s representation; the four
+/// bytes at +52 are now unused padding, and `SLOT_META_BYTES` is
+/// unchanged, so no DMA pool layout moves and `verify_pool_windows` is
+/// untouched. Written by `codegen::emit_await_suspend`'s `Receipt` arm and
+/// zeroed on a fresh op; read (and cleared) by `codegen::emit_queue_drain`,
+/// which is the one place in `codegen.rs` that dereferences a `TurnId`.
 pub const SLOT_META_WAITER: u64 = 48;
+/// plans/M10.md item 0c3 (decision 565): where the drain writes this op's
+/// `IoCompletion` — two adjacent `u32`s in the one word it always
+/// occupied, `(TurnId at +56, byte offset within that turn area at +60)`,
+/// the same shape 0c1 gave `codegen::OFF_TURN_REPLY_SLOT` and for the same
+/// reason. It does **not** reduce to a bare `TurnId`: the offset is
+/// `Frame::reply_stage_off`, assigned per awaiting fn, and the reader is a
+/// different fn from the writer, so no index alone recovers it.
 pub const SLOT_META_REPLY_STAGE: u64 = 56;
 /// `flags` bit 0: device writes the payload (`T_IN` / `device_writes_payload=true`).
 pub const SLOT_FLAG_DEVICE_WRITES: u64 = 1;

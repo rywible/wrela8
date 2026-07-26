@@ -1719,6 +1719,22 @@ fn wake_driver_undeclared(driver: &str) -> LayoutError {
     ))
 }
 
+/// plans/M10.md item 0c3: the one message shared by every
+/// `Reloc::TurnsBase`/`Reloc::TurnStride` resolution guard — one producer-bug
+/// site rather than four copies of the same sentence.
+///
+/// Unreachable from any source program, and the reason is structural: the
+/// only emitter of either reloc is `codegen::push_turn_addr_from_id`, called
+/// only from `emit_queue_drain`, which needs a `@driver` bound to a device
+/// with a virtqueue — and that requires a sealed `@image`, which is exactly
+/// what makes `RuntimePlacement` exist. Kept rather than unwrapped: a
+/// producer bug that somehow reached here must fail closed and loudly.
+fn turns_deref_needs_rtdata() -> String {
+    "internal error: a virtqueue drain needs the `RT.turns` base and stride to reach the turn a \
+     slot's waiter/reply-stage names, but this image's runtime tables were never placed"
+        .to_string()
+}
+
 fn wake_needs_rtdata(driver: &str) -> LayoutError {
     LayoutError::new(format!(
         "`wake` for `@driver` `{driver}` needs a sealed `@image` that declares that driver — \
@@ -3103,6 +3119,22 @@ pub fn layout_program(
                         })?;
                     patch_load_imm_words(&mut all_code_words, base + word, id.get() as u64);
                 }
+                Reloc::TurnsBase { word } => {
+                    // plans/M10.md item 0c3: `RT.turns`' own base, which is
+                    // `rtdata_base` exactly (item 0b put the array first).
+                    let addr = placement
+                        .as_ref()
+                        .map(|p| p.turns_base)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
+                Reloc::TurnStride { word } => {
+                    let stride = placement
+                        .as_ref()
+                        .map(|p| p.turn_stride)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut all_code_words, base + word, stride);
+                }
                 Reloc::GroupArenaBase { word } => {
                     let addr = placement.as_ref().map(|p| p.group_arena).ok_or_else(|| {
                         LayoutError::new(
@@ -3187,13 +3219,15 @@ pub fn layout_program(
                 | Reloc::CheckpointService { .. }
                 | Reloc::TurnFrameAddr { .. }
                 | Reloc::TurnIdImm { .. }
+                | Reloc::TurnsBase { .. }
+                | Reloc::TurnStride { .. }
                 | Reloc::GroupArenaBase { .. }
                 | Reloc::IrqVector { .. }
                 | Reloc::WakePending { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
-                         AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/GroupArenaBase/\
-                         IrqVector/WakePending reloc",
+                         AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/TurnsBase/TurnStride/\
+                         GroupArenaBase/IrqVector/WakePending reloc",
                     ));
                 }
             }
@@ -10118,13 +10152,15 @@ pub fn layout_test_image(
             | Reloc::AbortVal { .. }
             | Reloc::CheckpointService { .. }
             | Reloc::TurnIdImm { .. }
+            | Reloc::TurnsBase { .. }
+            | Reloc::TurnStride { .. }
             | Reloc::GroupArenaBase { .. }
             | Reloc::IrqVector { .. }
             | Reloc::WakePending { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit an \
-                     AbortFixed/AbortVal/CheckpointService/TurnIdImm/GroupArenaBase/IrqVector/\
-                     WakePending reloc",
+                     AbortFixed/AbortVal/CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
+                     GroupArenaBase/IrqVector/WakePending reloc",
                 ));
             }
         }
@@ -10202,6 +10238,21 @@ pub fn layout_test_image(
                     // half of its `OFF_TURN_REPLY_SLOT` pair.
                     let id = turn_id_imm(fn_key)?;
                     patch_load_imm_words(&mut code_words, base + word, id);
+                }
+                Reloc::TurnsBase { word } => {
+                    // plans/M10.md item 0c3, twin of `layout_program`'s arm.
+                    let addr = real_placement
+                        .as_ref()
+                        .map(|p| p.turns_base)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                Reloc::TurnStride { word } => {
+                    let stride = real_placement
+                        .as_ref()
+                        .map(|p| p.turn_stride)
+                        .ok_or_else(|| LayoutError::new(turns_deref_needs_rtdata()))?;
+                    patch_load_imm_words(&mut code_words, base + word, stride);
                 }
                 Reloc::GroupArenaBase { word } => {
                     let addr = real_placement
