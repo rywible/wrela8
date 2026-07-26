@@ -1,0 +1,24 @@
+module examples.err_string_capacity_build_limit
+
+# `cargo xtask fuzz lower --seed 101`, iteration 6134 (2026-07-26).
+#
+# plans/M9.md item K1 added `string_capacity_fits` to stop a
+# layout-unrepresentable `String[..N]` from typechecking and then panicking
+# at lowering. It checked the wrong thing: that `8 * (1 + N)` does not
+# overflow `usize`. That admits N = 2^60 — the byte count is perfectly
+# computable — and then `lower::emit_string_aggregate` calls
+# `Vec::with_capacity(1 + N)` and Rust aborts with `capacity overflow`,
+# which is a bare panic, not an `internal error:` diagnostic.
+#
+# The fuzzer found it by truncating `err-fstring-bound-overflow` so the
+# declared `String[..2^60]` survived without the concat sum K1 *did* guard
+# — i.e. the guard was real but reachable around.
+#
+# The fix makes the rule a **build limit** rather than an overflow check,
+# reusing the number `[elem; N]` already carries (65536 elements). This
+# case pins the declaration site; `err-string-concat-overflow` and
+# `err-fstring-bound-overflow` pin the two sum sites, both re-based onto
+# individually-legal operands so they still test summation.
+
+fn wide() -> String[..1152921504606846976]:
+    return "x"

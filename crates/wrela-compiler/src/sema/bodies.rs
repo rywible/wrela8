@@ -2532,22 +2532,33 @@ pub(crate) fn literal_array_len(e: &Expr) -> Option<i128> {
     }
 }
 
+/// The largest `String[..N]` capacity a build accepts — the same bound
+/// `[elem; N]` already carries (`check_array_len`'s 65536-element build
+/// limit), for the same reason and with the same number: a `String[..N]`
+/// is one length word plus `N` byte slots, so `N` is an element count in
+/// exactly the sense an array's is. At the limit the aggregate is
+/// `8 * (1 + 65536)` = 512 KiB, which is already far past anything a
+/// 1 GiB guest image should hold in one value.
+pub(crate) const MAX_STRING_CAPACITY: i128 = 65_536;
+
 /// Whether `n` is a layout-representable `String[..N]` capacity
-/// (plans/M9.md item K1). Layout is one length word plus `N` byte slots
-/// (`mwir::size_of`: `8 * (1 + N)`). An i128 sum that fits only in i128
-/// (or a usize that overflows the slot product) used to typecheck and
-/// then panic the compiler at lowering.
+/// (plans/M9.md item K1, corrected 2026-07-26 by a `fuzz lower` find).
+/// Layout is one length word plus `N` byte slots (`mwir::size_of`:
+/// `8 * (1 + N)`). An i128 sum that fits only in i128 (or a usize that
+/// overflows the slot product) used to typecheck and then panic the
+/// compiler at lowering.
+///
+/// **Arithmetic representability is not enough, which is what K1 got
+/// wrong.** `8 * (1 + N)` not overflowing `usize` admits `N = 2^60`: the
+/// byte count is computable, and then `lower::emit_string_aggregate` calls
+/// `Vec::with_capacity(1 + N)` and Rust aborts with `capacity overflow` —
+/// a non-`internal error` panic, i.e. exactly the fail-open this predicate
+/// exists to close. `cargo xtask fuzz lower --seed 101` found it at
+/// iteration 6134 by truncating `golden/err-fstring-bound-overflow` so the
+/// declared `String[..2^60]` survived without the concat sum that K1 did
+/// guard. So the bound is a **build limit**, not an overflow check.
 pub(crate) fn string_capacity_fits(n: i128) -> bool {
-    if n < 0 {
-        return false;
-    }
-    let Ok(n) = usize::try_from(n) else {
-        return false;
-    };
-    const SLOT: usize = 8;
-    n.checked_add(1)
-        .and_then(|words| words.checked_mul(SLOT))
-        .is_some()
+    (0..=MAX_STRING_CAPACITY).contains(&n)
 }
 
 /// Resolves a pattern's (or a leading-dot expression's) variant payload

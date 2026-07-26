@@ -4142,7 +4142,10 @@ fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
                 if !crate::sema::bodies::string_capacity_fits(cap) {
                     return Err(SemaError::at(
                         "type",
-                        "`String[..N]` capacity is out of range".to_string(),
+                        format!(
+                            "`String[..N]` capacity {cap} exceeds the {}-element build limit",
+                            crate::sema::bodies::MAX_STRING_CAPACITY
+                        ),
                         n.span,
                     ));
                 }
