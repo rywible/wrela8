@@ -69,7 +69,13 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
     ),
     (
         "asm-runtime-probe/expected/asm.txt",
-        &["__wrela_runtime_probe", "probe_seed"],
+        &[
+            "__wrela_runtime_probe",
+            "__wrela_line_begin",
+            "__wrela_line_commit",
+            "__wrela_fmt_dec",
+            "probe_seed",
+        ], // M10 B2/B3
     ),
     (
         "asm-placed-index/expected/asm.txt",

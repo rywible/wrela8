@@ -9288,7 +9288,9 @@ fn build_abort_val(
 
     a.push(encode::enc_ldr_x_imm(0, 31, 16));
     a.push(encode::enc_ldr_x_imm(1, 31, 24));
-    a.bl_to(fmt_dec_start); // x0 = len, written into OFF_TEST_LINE_BUF
+    // M10 B3: wrela `__wrela_fmt_dec` (hand-asm retained until B5).
+    let _ = fmt_dec_start;
+    a.bl_call_key("__wrela_fmt_dec"); // x0 = len, written into OFF_TEST_LINE_BUF
     a.push(encode::enc_mov_reg(1, 0, true));
     a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
     a.bl_to(append_start);
@@ -9663,7 +9665,9 @@ fn build_entry_driver(
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
     a.push(encode::enc_movz(1, 0, 0, true));
-    a.bl_to(fmt_dec_start);
+    // M10 B3: wrela `__wrela_fmt_dec` (hand-asm retained until B5).
+    let _ = fmt_dec_start;
+    a.bl_call_key("__wrela_fmt_dec");
     a.push(encode::enc_mov_reg(1, 0, true));
     a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
     a.bl_to(append_start);
@@ -9675,7 +9679,8 @@ fn build_entry_driver(
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
     a.push(encode::enc_movz(1, 0, 0, true));
-    a.bl_to(fmt_dec_start);
+    // M10 B3
+    a.bl_call_key("__wrela_fmt_dec");
     a.push(encode::enc_mov_reg(1, 0, true));
     a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
     a.bl_to(append_start);
@@ -9932,10 +9937,11 @@ fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
         .collect();
     let modules_dot: BTreeMap<String, Module> =
         modules.into_iter().map(|(k, m)| (k.join("."), m)).collect();
-    let only: BTreeSet<String> = crate::lower::RUNTIME_FORCE_ROOT_KEYS
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
+    // Walk callees of the force-root seeds (M10 B3: `__wrela_fmt_dec`
+    // calls `store_at` / `extract_one` / …). Seeding only the root keys
+    // leaves those helpers un-codegen'd and layout's Reloc::Call fails.
+    let only =
+        crate::lower::guest_reachable_keys_closure(&programs, &crate::lower::LowerOpts::default());
     let lower_opts = crate::lower::LowerOpts {
         emit_comptime_tests: false,
         only: Some(only),

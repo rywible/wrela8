@@ -32,22 +32,45 @@ ImageReport v0
     Field name=doorbell type=u64 offset=0x1a08 size=8
   Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
     Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
+    Field name=b0 type=u8 offset=0x0 size=1
+    Field name=b1 type=u8 offset=0x1 size=1
+    Field name=b2 type=u8 offset=0x2 size=1
+    Field name=b3 type=u8 offset=0x3 size=1
+    Field name=b4 type=u8 offset=0x4 size=1
+    Field name=b5 type=u8 offset=0x5 size=1
+    Field name=b6 type=u8 offset=0x6 size=1
+    Field name=b7 type=u8 offset=0x7 size=1
+    Field name=b8 type=u8 offset=0x8 size=1
+    Field name=b9 type=u8 offset=0x9 size=1
+    Field name=b10 type=u8 offset=0xa size=1
+    Field name=b11 type=u8 offset=0xb size=1
+    Field name=b12 type=u8 offset=0xc size=1
+    Field name=b13 type=u8 offset=0xd size=1
+    Field name=b14 type=u8 offset=0xe size=1
+    Field name=b15 type=u8 offset=0xf size=1
+    Field name=b16 type=u8 offset=0x10 size=1
+    Field name=b17 type=u8 offset=0x11 size=1
+    Field name=b18 type=u8 offset=0x12 size=1
+    Field name=b19 type=u8 offset=0x13 size=1
+    Field name=b20 type=u8 offset=0x14 size=1
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=1560
-  Section name=rodata base=0x40500668 size=69
-  Section name=abort base=0x405006b0 size=120
-  Section name=checkpoint base=0x40500728 size=104
-  Section name=rtcode base=0x40500790 size=740
-  Section name=rtdata base=0x40500a78 size=192
-  Section name=devregs base=0x40500b38 size=8
+  Section name=code base=0x40500050 size=8112
+  Section name=rodata base=0x40502000 size=148
+  Section name=abort base=0x40502094 size=120
+  Section name=checkpoint base=0x4050210c size=104
+  Section name=rtcode base=0x40502174 size=740
+  Section name=rtdata base=0x40502458 size=192
+  Section name=devregs base=0x40502518 size=8
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
+  PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Probe mailbox=4 slot=16 frame=64 state=8
   Driver name=BlkDriver state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=192
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500b38 size=8
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40502518 size=8
