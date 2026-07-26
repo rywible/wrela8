@@ -395,7 +395,9 @@ struct Queue:
         nest_items_into: "",
     },
     // 03 §6 — ISR body. Nest the fence's `fn on_queue_irq` into BlkDriver;
-    // drain_used (not in the fence) continues the type in the postamble.
+    // preamble `init` carries `irq.bind` (the wiring the prose names one
+    // paragraph above — `init` is a struct member, not a fragment-top
+    // item, so the fence cannot open with it). drain_used in postamble.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
         start_line: 180,
@@ -409,10 +411,22 @@ struct VirtioIrqMmio:
 const INT_VRING: u32 = 1
 const INT_CONFIG: u32 = 2
 
+struct VirtioBlock:
+    id: u32
+
 @driver
 struct BlkDriver:
     irq_regs: Mmio[VirtioIrqMmio]
     pending: InterruptCell[u32]
+    irq: IrqCap[u32]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        self.pending = InterruptCell(0)
+        irq = claimed.take_irq()
+        irq.bind(self.on_queue_irq)
+        self.irq = take irq
 "#,
         postamble: r#"
     @task

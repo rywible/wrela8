@@ -177,7 +177,7 @@ declared handled bits, ignores undefined bits, and never writes undefined
 bits to an acknowledge register.
 
 ```wrela
-fn on_queue_irq(self):                # bound as an ISR by the image wiring
+fn on_queue_irq(self):                # ISR via irq.bind in driver init (see prose)
     status = self.irq_regs.interrupt_status.read()
     handled = status & (INT_VRING | INT_CONFIG)
     if handled != 0:
