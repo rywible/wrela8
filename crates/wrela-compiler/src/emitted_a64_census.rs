@@ -65,7 +65,8 @@
 //!   plan's category 4 (decision 650): pre-SP; must-clobber-no-register;
 //!   no expression form (`brk`/…); stored code address jumped to
 //! - **image_static** — specialization sanctioned by decisions 613 / 620 /
-//!   623 / 630 (`emit_rt_enqueue`, `emit_rt_run_one`, `emit_rt_child_poll`)
+//!   623 / 630 / 633 (`emit_rt_enqueue`, `emit_rt_run_one`,
+//!   `emit_rt_child_poll`, `emit_rt_select_and_run`, cross-core quartet)
 //! - **not_yet_migrated** — owned by a named remaining item (F, F2, G, H,
 //!   I, K)
 //! - **unclassified** — could not be confidently placed; still counted
@@ -159,7 +160,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::Floor,
         note: "floor cat4 abort long-jump",
     },
-    // --- image-static specialization (613 / 620 / 623 / 630) --------------
+    // --- image-static specialization (613 / 620 / 623 / 630 / 633) -------
     // REF: capacity=4, slot_size=32 → same length as build_ring_enqueue.
     EmitterEntry {
         name: "emit_rt_enqueue",
@@ -193,6 +194,38 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::ImageStatic,
         note: "decision 630; per-actor specialized select/dispatch (item F)",
     },
+    // REF: one request ring cap=4 slot=32 (inlined enqueue; decision 637).
+    EmitterEntry {
+        name: "emit_rt_xsend",
+        file: "codegen.rs",
+        words: 69,
+        category: Category::ImageStatic,
+        note: "decision 633; per-edge specialized cross-core send (item F2)",
+    },
+    // REF: one reply ring cap=4.
+    EmitterEntry {
+        name: "emit_rt_xreply",
+        file: "codegen.rs",
+        words: 58,
+        category: Category::ImageStatic,
+        note: "decision 633; per-edge specialized cross-core reply (item F2)",
+    },
+    // REF: core 0, one request lane + one reply lane.
+    EmitterEntry {
+        name: "emit_rt_drain",
+        file: "codegen.rs",
+        words: 126,
+        category: Category::ImageStatic,
+        note: "decision 633; per-core specialized inbound drain (item F2)",
+    },
+    // REF: core 1. Includes 5 floor-cat1 SP-install words inside the body.
+    EmitterEntry {
+        name: "emit_secondary_core_entry",
+        file: "codegen.rs",
+        words: 26,
+        category: Category::ImageStatic,
+        note: "decision 633; per-core secondary entry (item F2); 5 floor-cat1 SP",
+    },
     // --- not yet migrated ------------------------------------------------
     // Checkpoint block at REF (empty group/irq/wake). Includes the 5-word
     // save/restore (floor cat2) plus the M6 pending loop; deadline scan /
@@ -224,7 +257,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         file: "layout.rs",
         words: 55,
         category: Category::NotYetMigrated,
-        note: "F2 (xsend still BLs it; decision 615)",
+        note: "F2 delete; unused by xsend after 637; JIT/census until delete",
     },
     // Pub wrapper over build_ring_enqueue — identical word count under REF.
     EmitterEntry {
@@ -232,21 +265,21 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         file: "layout.rs",
         words: 55,
         category: Category::NotYetMigrated,
-        note: "F2/K; thin wrapper, same body as build_ring_enqueue",
+        note: "F2 delete; thin wrapper, same body as build_ring_enqueue",
     },
     EmitterEntry {
         name: "build_rt_xsend",
         file: "layout.rs",
         words: 18,
         category: Category::NotYetMigrated,
-        note: "F2",
+        note: "F2 delete; hand-asm twin of emit_rt_xsend",
     },
     EmitterEntry {
         name: "build_rt_xreply",
         file: "layout.rs",
         words: 58,
         category: Category::NotYetMigrated,
-        note: "F2",
+        note: "F2 delete; hand-asm twin of emit_rt_xreply",
     },
     // M10 F deleted `build_rt_select_and_run` — specialized twin is
     // `emit_rt_select_and_run` (decision 630).
@@ -255,14 +288,14 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         file: "layout.rs",
         words: 122,
         category: Category::NotYetMigrated,
-        note: "F2; REF one request + one reply lane",
+        note: "F2 delete; hand-asm twin of emit_rt_drain; REF one req+reply",
     },
     EmitterEntry {
         name: "build_secondary_core_entry",
         file: "layout.rs",
         words: 26,
         category: Category::NotYetMigrated,
-        note: "F2; contains 5 floor-cat1 SP-install words",
+        note: "F2 delete; hand-asm twin of emit_secondary_core_entry",
     },
     EmitterEntry {
         name: "build_boot_init",
@@ -283,21 +316,21 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         file: "layout.rs",
         words: 8,
         category: Category::NotYetMigrated,
-        note: "F2 helper (xsend)",
+        note: "F2 delete; helper for hand-asm xsend/xreply",
     },
     EmitterEntry {
         name: "push_ring_advance",
         file: "layout.rs",
         words: 13,
         category: Category::NotYetMigrated,
-        note: "F2 helper (drain)",
+        note: "F2 delete; helper for hand-asm drain/xreply",
     },
     EmitterEntry {
         name: "push_turn_addr_from_id",
         file: "layout.rs",
         words: 7,
         category: Category::NotYetMigrated,
-        note: "shared index→address; used by F/F2/G/E4 paths",
+        note: "shared index→address; used by G paths once F2 deletes drain",
     },
     // --- unclassified ----------------------------------------------------
     // Micro-helper used by both floor and migratable paths; not itself a
@@ -335,16 +368,16 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 300; // was 176; F +124 emit_rt_select_and_run
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 579; // was 300; F2 +69+58+126+26
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 587; // was 708; F deleted build_rt_select_and_run 121
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 587; // unchanged until F2 delete
 
 pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 951; // was 1072; F −121
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 1230; // was 951; F2 +279
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -352,7 +385,7 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 951; // was 1072; F −121
 /// census file (it documents the needle). Measured 2026-07-26. Adding a
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
-pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 560), ("layout.rs", 266)];
+pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 693), ("layout.rs", 266)];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
 pub const ENCODE_ENC_SITE_COUNT: usize = {
@@ -501,7 +534,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 826,
+            ENCODE_ENC_SITE_COUNT, 959,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

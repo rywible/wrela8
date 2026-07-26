@@ -1004,13 +1004,11 @@ fn unresolved_call_target(target: &str, graph: Option<&ImageGraph>) -> LayoutErr
     ))
 }
 
-/// plans/M8.md item C2: `__rt_xsend_<src core>_<Actor>` — the cross-core
-/// send routine an `__rt_enqueue_<Actor>` call is *redirected* to when the
-/// call site's own core is not the target's. One symbol per (sending core,
-/// target mailbox root) pair, because the ring it writes is one per
-/// (sending core, target mailbox root) pair.
+/// plans/M8.md item C2 / M10 F2: `rt_xsend <src> <Actor>` — specialized
+/// body in `code` (decision 633). One symbol per (sending core, target
+/// mailbox root) pair.
 fn xsend_symbol(src_core: usize, actor: &str) -> String {
-    format!("__rt_xsend_{src_core}_{actor}")
+    crate::codegen::rt_xsend_symbol(src_core, actor)
 }
 
 /// plans/M8.md item C2: which core a call site runs on. An actor method
@@ -1086,6 +1084,18 @@ fn resolve_cross_core_edge(
         return Ok(None);
     };
     if w.placement.cores <= 1 {
+        return Ok(None);
+    }
+    // M10 F2: specialized runtime bodies (`rt_drain`, `rt_run_one`, …)
+    // `Reloc::Call` `rt_enqueue` to admit into a *local* mailbox after
+    // draining a request ring. Their keys are synthetic (space-bearing) and
+    // are not turn owners — `caller_core` would fall back to 0 and wrongly
+    // redirect the Call to `rt_xsend`, re-publishing into the request ring
+    // (SPSC witness fault: ring grows while the consuming core alone runs).
+    // Only source fns' Calls are candidates for the cross-core redirect;
+    // hand-asm drain never hit this path (glue `bl_call_key`, not
+    // `Reloc::Call` through `program.fns`).
+    if crate::codegen::symbol_is_synthetic(caller_key) {
         return Ok(None);
     }
     let Some(target_actor) = crate::codegen::rt_enqueue_actor(target) else {
@@ -1516,6 +1526,101 @@ fn inject_rt_select_and_run_fns(program: &mut CodegenProgram, wiring: &RuntimeWi
         program
             .fns
             .insert(key, crate::codegen::emit_rt_select_and_run(&spec));
+    }
+}
+
+/// plans/M10.md item F2 (decision 633): force-root specialized cross-core
+/// bodies — `rt_xsend` / `rt_xreply` / `rt_drain` / `rt_secondary_core_entry`
+/// — into `program.fns`. Call after `RuntimeWiring::derive` and before the
+/// code section is laid out.
+fn inject_rt_cross_core_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+    let roots = mailbox_root_names(&wiring.tables);
+    for (ri, ring) in wiring.tables.rings.iter().enumerate() {
+        match ring.kind {
+            RingKind::Reply => {
+                let spec = crate::codegen::RtXreplySpec {
+                    src_core: ring.src,
+                    dst_core: ring.dst,
+                    ring_index: ri,
+                    capacity: ring.capacity,
+                };
+                let key = crate::codegen::rt_xreply_symbol(ring.src, ring.dst);
+                program
+                    .fns
+                    .insert(key, crate::codegen::emit_rt_xreply(&spec));
+            }
+            RingKind::Request => {
+                let actor = ring.actor.clone().unwrap_or_default();
+                let spec = crate::codegen::RtXsendSpec {
+                    src_core: ring.src,
+                    dst_core: ring.dst,
+                    actor: actor.clone(),
+                    ring_index: ri,
+                    capacity: ring.capacity,
+                    slot_size: ring.slot_size,
+                };
+                let key = crate::codegen::rt_xsend_symbol(ring.src, &actor);
+                program
+                    .fns
+                    .insert(key, crate::codegen::emit_rt_xsend(&spec));
+            }
+        }
+    }
+
+    let mut request_lanes: BTreeMap<usize, Vec<crate::codegen::RtDrainRequestLane>> =
+        BTreeMap::new();
+    let mut reply_lanes: BTreeMap<usize, Vec<crate::codegen::RtDrainReplyLane>> = BTreeMap::new();
+    for (ri, ring) in wiring.tables.rings.iter().enumerate() {
+        match ring.kind {
+            RingKind::Reply => {
+                reply_lanes
+                    .entry(ring.dst)
+                    .or_default()
+                    .push(crate::codegen::RtDrainReplyLane {
+                        ring_index: ri,
+                        capacity: ring.capacity,
+                    });
+            }
+            RingKind::Request => {
+                let actor = ring.actor.clone().unwrap_or_default();
+                if !roots.iter().any(|n| n == &actor) {
+                    continue;
+                }
+                request_lanes
+                    .entry(ring.dst)
+                    .or_default()
+                    .push(crate::codegen::RtDrainRequestLane {
+                        ring_index: ri,
+                        capacity: ring.capacity,
+                        slot_size: ring.slot_size,
+                        actor,
+                    });
+            }
+        }
+    }
+    for core in 0..wiring.tables.cores {
+        let reqs = request_lanes.remove(&core).unwrap_or_default();
+        let reps = reply_lanes.remove(&core).unwrap_or_default();
+        if reqs.is_empty() && reps.is_empty() {
+            continue;
+        }
+        let spec = crate::codegen::RtDrainSpec {
+            core,
+            request_lanes: reqs,
+            reply_lanes: reps,
+        };
+        let key = crate::codegen::rt_drain_symbol(core);
+        program
+            .fns
+            .insert(key, crate::codegen::emit_rt_drain(&spec));
+    }
+
+    for core in 1..wiring.tables.cores {
+        let spec = crate::codegen::RtSecondaryCoreEntrySpec { core };
+        let key = crate::codegen::rt_secondary_core_entry_symbol(core);
+        program
+            .fns
+            .insert(key, crate::codegen::emit_secondary_core_entry(&spec));
     }
 }
 
@@ -2900,14 +3005,14 @@ pub fn layout_program(
         None => None,
     };
 
-    // M10 E3/E4/F: specialized `rt_run_one` / `rt_child_poll` /
-    // `rt_select_and_run` into code (decisions 620 / 623 / 630).
+    // M10 E3/E4/F/F2: specialized runtime bodies into code.
     let mut program_owned;
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
         inject_rt_select_and_run_fns(&mut program_owned, w);
         inject_rt_child_poll_fns(&mut program_owned, w);
         inject_rt_run_one_fns(&mut program_owned, w);
+        inject_rt_cross_core_fns(&mut program_owned, w);
         &program_owned
     } else {
         program
@@ -3434,6 +3539,33 @@ pub fn layout_program(
                     })?;
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                // M10 F2 / decision 634
+                Reloc::RingAddr {
+                    word,
+                    ring_index,
+                    field,
+                } => {
+                    let p = placement.as_ref().ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a Reloc::RingAddr exists but this image has no \
+                             runtime placement",
+                        )
+                    })?;
+                    let addrs = p.rings.get(*ring_index).copied().ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::RingAddr names ring_index {ring_index}, but \
+                             this image only placed {} ring(s)",
+                            p.rings.len()
+                        ))
+                    })?;
+                    let addr = match field {
+                        crate::codegen::RingField::Ring => addrs.ring,
+                        crate::codegen::RingField::Head => addrs.head,
+                        crate::codegen::RingField::Tail => addrs.tail,
+                        crate::codegen::RingField::Count => addrs.count,
+                    };
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -3500,11 +3632,12 @@ pub fn layout_program(
                 | Reloc::IrqVector { .. }
                 | Reloc::WakePending { .. }
                 | Reloc::MailboxAddr { .. }
-                | Reloc::RrCursor { .. } => {
+                | Reloc::RrCursor { .. }
+                | Reloc::RingAddr { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
                          AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/TurnsBase/TurnStride/\
-                         GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor reloc",
+                         GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor/RingAddr reloc",
                     ));
                 }
             }
@@ -3564,13 +3697,17 @@ pub fn layout_program(
     // blk filled later — ring verify runs in attach_blk_report
 
     let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
-    // plans/M8.md item C1: each secondary core's entry, `rtcode`-relative
-    // word index resolved against that section's own placed base.
-    let core_entries: Vec<(usize, u64)> = match (&runtime_block, rtcode_base) {
-        (Some(b), Some(rc)) => b
-            .core_entry_starts
-            .iter()
-            .map(|&(core, word)| (core, rc + (word as u64) * 4))
+    // M10 F2: secondary-core entries live in `code` under
+    // `rt_secondary_core_entry <core>` (decision 633). Resolve against
+    // `fn_word_base` / `code_base`, not glue/`rtcode`.
+    let core_entries: Vec<(usize, u64)> = match (wiring.as_ref(), code_base) {
+        (Some(w), cb) if w.tables.cores > 1 => (1..w.tables.cores)
+            .filter_map(|core| {
+                let key = crate::codegen::rt_secondary_core_entry_symbol(core);
+                fn_word_base
+                    .get(&key)
+                    .map(|&word| (core, cb + (word as u64) * 4))
+            })
             .collect(),
         _ => Vec::new(),
     };
@@ -6720,6 +6857,7 @@ pub fn build_ring_enqueue(
 /// ("wakes are idempotent; the runtime park primitive has mask-arm-recheck
 /// semantics"). A core woken for a ring drains its rings because its loop
 /// always does, not because a bit told it to.
+#[allow(dead_code)]  // F2: deleted in the follow-up commit
 fn push_raise_pending(a: &mut Asm, core: usize) {
     a.load_imm(9, wrela_machine::pending::core_word_addr(core));
     a.push(encode::enc_ldr_x_imm(10, 9, 0));
@@ -6732,6 +6870,7 @@ fn push_raise_pending(a: &mut Asm, core: usize) {
 /// the current index, `addr_reg` is scratch, `cursor_addr` is the head or
 /// tail word's own address. Shared by every drain lane below so the wrap
 /// arithmetic exists once.
+#[allow(dead_code)]  // F2: deleted in the follow-up commit
 fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capacity: u64) {
     a.push(encode::enc_add_imm(reg, reg, 1, true));
     a.load_imm(scratch, capacity);
@@ -6772,6 +6911,7 @@ fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capaci
 ///
 /// The wake is skipped on rejection: nothing was published, so there is
 /// nothing to wake for.
+#[allow(dead_code)]  // F2: deleted in the follow-up commit
 fn build_rt_xsend(
     ring_enqueue_start: usize,
     src_core: usize,
@@ -6829,6 +6969,7 @@ fn build_rt_xsend(
 ///
 /// A leaf routine (no `BL`), so it clobbers no link register and needs no
 /// frame: `x9..x15` scratch, `x0`/`x1` its arguments.
+#[allow(dead_code)]  // F2: deleted in the follow-up commit
 fn build_rt_xreply(addrs: &RingAddrs, capacity: u64, dst_core: usize, start: usize) -> Asm {
     let mut a = Asm::new(start);
 
@@ -6945,6 +7086,7 @@ pub fn build_rt_select_and_run(
     words
 }
 
+#[allow(dead_code)]  // F2: deleted in the follow-up commit
 fn build_rt_drain(
     core: usize,
     // (ring addrs, capacity, slot size, that mailbox root's actor name —
@@ -7116,6 +7258,7 @@ fn build_rt_drain(
 /// consult `machine_info::OFF_NEXT_DEADLINE`: that word is core 0's park
 /// deadline, and no turn can arm a deadline on a secondary core while no
 /// message can reach one — item C2 gives a woken secondary both.
+#[allow(dead_code)]  // F2: deleted in the follow-up commit
 fn build_secondary_core_entry(core: usize, start: usize) -> Asm {
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(core) + machine_layout::CORE_STACK_SIZE;
@@ -7193,168 +7336,23 @@ fn build_runtime_glue_block(
     _group_child_index: &BTreeMap<String, usize>,
     start: usize,
 ) -> RuntimeGlue {
-    let mut asms = Vec::new();
-    let mut symbols = BTreeMap::new();
-    // plans/M8.md item D: one loop over every mailbox root — each declared
-    // actor, then each messageable `@driver`, in `mailbox_root_names`'
-    // order (which `actor_dispatch` is built in). A messageable driver
-    // reaches the *identical* `build_rt_enqueue` and
-    // `build_rt_select_and_run_symbolic`, so there is exactly one admission
-    // routine shape and one dispatch routine shape in the machine; nothing
-    // below can tell an actor from a driver, which is the point.
-    let mut roots: Vec<(&str, &ActorAddrs, u64, u64, u64)> =
-        Vec::with_capacity(tables.actors.len() + tables.drivers.len());
-
-    for (i, a) in tables.actors.iter().enumerate() {
-        roots.push((
-            a.name.as_str(),
-            &placement.actors[i],
-            a.mailbox_capacity,
-            a.slot_size,
-            a.frame_size,
-        ));
-    }
-    for (i, d) in tables.drivers.iter().enumerate() {
-        let (Some(mb), Some(addrs)) = (&d.mailbox, placement.driver_mailboxes.get(&i)) else {
-            continue;
-        };
-        roots.push((
-            d.name.as_str(),
-            addrs,
-            mb.capacity,
-            mb.slot_size,
-            mb.frame_size,
-        ));
-    }
-    let mut cursor = start;
-    // --- plans/M8.md item C2: the cross-core ring routines --------------
-    //
-    // Emitted **before** the per-actor pairs below, for one mechanical
-    // reason: a selected turn's delivery arm calls `__rt_xreply_*`, and a
-    // local `BL` needs its target's word index already fixed. An image with
-    // no cross-core edge emits nothing here at all, so every pre-C2 image's
-    // per-actor pairs still start at `start` and every pinned byte holds
-    // (decision 12's own "emits nothing" shape, kept).
-    //
-    // `xreply_by_producer[d]` = the `(remote core, routine)` list an actor
-    // placed on core `d` needs; `request_lanes[dst]` = what core `dst`'s
-    // own drain consumes.
-    let mut xreply_by_producer: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
-    let mut request_lanes: BTreeMap<usize, Vec<(RingAddrs, u64, u64, String)>> = BTreeMap::new();
-    let mut reply_lanes: BTreeMap<usize, Vec<(RingAddrs, u64)>> = BTreeMap::new();
-    for (ri, ring) in tables.rings.iter().enumerate() {
-        let addrs = placement.rings[ri];
-        match ring.kind {
-            RingKind::Reply => {
-                let start_here = cursor;
-                let asm = build_rt_xreply(&addrs, ring.capacity, ring.dst, start_here);
-                cursor += asm.words.len();
-                asms.push(asm);
-                // M10 F: register under a synthetic key so specialized
-                // `rt_select_and_run` can `Reloc::Call` it (decision 630);
-                // item F2 owns migrating the body itself.
-                symbols.insert(
-                    crate::codegen::rt_xreply_symbol(ring.src, ring.dst),
-                    start_here,
-                );
-                xreply_by_producer
-                    .entry(ring.src)
-                    .or_default()
-                    .push((ring.dst, start_here));
-                reply_lanes
-                    .entry(ring.dst)
-                    .or_default()
-                    .push((addrs, ring.capacity));
-            }
-            RingKind::Request => {
-                let enqueue_start = cursor;
-                let enqueue_words =
-                    build_ring_enqueue(&addrs, ring.capacity, ring.slot_size, enqueue_start);
-                cursor += enqueue_words.len();
-                asms.push(Asm {
-                    start: enqueue_start,
-                    words: enqueue_words,
-                    relocs: Vec::new(),
-                });
-                let xsend_start = cursor;
-                let asm = build_rt_xsend(enqueue_start, ring.src, ring.dst, xsend_start);
-                cursor += asm.words.len();
-                asms.push(asm);
-                let actor = ring.actor.clone().unwrap_or_default();
-                symbols.insert(xsend_symbol(ring.src, &actor), xsend_start);
-                request_lanes.entry(ring.dst).or_default().push((
-                    addrs,
-                    ring.capacity,
-                    ring.slot_size,
-                    actor,
-                ));
-            }
-        }
-    }
-
-    // M10 D / decision 615: per-actor mailbox admission lives in `code`
-    // (`emit_rt_enqueue`). M10 F / decision 630: `rt_select_and_run <Actor>`
-    // likewise lives in `code` (`emit_rt_select_and_run`); do not place a
-    // hand-asm twin into glue_symbols. Hand-asm builders kept until F's
-    // delete commit (JIT suite / census). Cross-core request rings still
-    // emit `build_ring_enqueue` above for `xsend` (F2).
-    let _ = (actor_dispatch, actor_cores, &xreply_by_producer);
-
-    // M10 E4: `rt_child_poll <callee>` lives in `code` (`emit_rt_child_poll`);
-    // do not place a hand-asm twin into glue_symbols. `rt_run_one` already
-    // `Reloc::Call`s the synthetic key (decision 623). The free-turn
-    // consistency check against `placement.free_turns` is now
-    // `Reloc::TurnFrameAddr` resolution's job.
-    //
-    // plans/M8.md item C1 / C2: drains, then secondary-core entries.
-    // Group child polls stay on core 0: a `with group(...)` child is a
-    // free turn, and the only free turns that run are the root test turn's
-    // own, which is core 0's (06 §3).
-    //
-    // M10 E3/E4/F: `rt_run_one` / `rt_child_poll` / `rt_select_and_run` live
-    // in `code` as specialized compiled bodies; hand-asm select builders
-    // kept until F's delete commit.
-    for core in 0..tables.cores {
-        let empty_req: Vec<(RingAddrs, u64, u64, String)> = Vec::new();
-        let empty_rep: Vec<(RingAddrs, u64)> = Vec::new();
-        let reqs = request_lanes.get(&core).unwrap_or(&empty_req);
-        let reps = reply_lanes.get(&core).unwrap_or(&empty_rep);
-        if reqs.is_empty() && reps.is_empty() {
-            continue;
-        }
-        let resolved: Vec<(RingAddrs, u64, u64, String)> = reqs
-            .iter()
-            .filter(|(_, _, _, actor)| roots.iter().any(|(n, ..)| n == actor))
-            .map(|(addrs, cap, slot, actor)| (*addrs, *cap, *slot, actor.clone()))
-            .collect();
-        let start_here = cursor;
-        let asm = build_rt_drain(
-            core,
-            &resolved,
-            reps,
-            placement.turns_base,
-            placement.log2_turn_stride(),
-            start_here,
-        );
-        cursor += asm.words.len();
-        symbols.insert(crate::codegen::rt_drain_symbol(core), start_here);
-        asms.push(asm);
-    }
-    // Each secondary core's own entry block, after every routine it calls
-    // via `bl_call_key` (M10 E3: `rt_run_one <core>` in `code`).
-    let mut core_entry_starts = Vec::new();
-    for core in 1..tables.cores {
-        let start_here = cursor;
-        let entry_asm = build_secondary_core_entry(core, start_here);
-        cursor += entry_asm.words.len();
-        core_entry_starts.push(start_here);
-        asms.push(entry_asm);
-    }
-    let _ = cursor;
+    let asms = Vec::new();
+    let symbols = BTreeMap::new();
+    // M10 F2 / decision 633: cross-core quartet lives in `code`
+    // (`inject_rt_cross_core_fns`). Glue emits nothing for rings/drain/
+    // secondary entries. Hand-asm builders kept until F2's delete commit.
+    let _ = (
+        actor_dispatch,
+        actor_cores,
+        placement,
+        tables,
+        start,
+        _group_child_index,
+    );
     RuntimeGlue {
         asms,
         symbols,
-        core_entry_starts,
+        core_entry_starts: Vec::new(),
     }
 }
 
@@ -9140,6 +9138,7 @@ pub fn layout_test_image(
         inject_rt_select_and_run_fns(&mut program, w);
         inject_rt_child_poll_fns(&mut program, w);
         inject_rt_run_one_fns(&mut program, w);
+        inject_rt_cross_core_fns(&mut program, w);
     }
     let program = &program;
 
@@ -9582,11 +9581,12 @@ pub fn layout_test_image(
             | Reloc::IrqVector { .. }
             | Reloc::WakePending { .. }
             | Reloc::MailboxAddr { .. }
-            | Reloc::RrCursor { .. } => {
+            | Reloc::RrCursor { .. }
+            | Reloc::RingAddr { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit a \
                      CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
-                     GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor reloc",
+                     GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor/RingAddr reloc",
                 ));
             }
         }
@@ -9768,6 +9768,32 @@ pub fn layout_test_image(
                     })?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
+                Reloc::RingAddr {
+                    word,
+                    ring_index,
+                    field,
+                } => {
+                    let p = real_placement.as_ref().ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a Reloc::RingAddr exists but this image has no \
+                             runtime placement",
+                        )
+                    })?;
+                    let addrs = p.rings.get(*ring_index).copied().ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::RingAddr names ring_index {ring_index}, but \
+                             this image only placed {} ring(s)",
+                            p.rings.len()
+                        ))
+                    })?;
+                    let addr = match field {
+                        crate::codegen::RingField::Ring => addrs.ring,
+                        crate::codegen::RingField::Head => addrs.head,
+                        crate::codegen::RingField::Tail => addrs.tail,
+                        crate::codegen::RingField::Count => addrs.count,
+                    };
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
             }
         }
     }
@@ -9804,12 +9830,19 @@ pub fn layout_test_image(
     // blk filled later — ring verify runs in attach_blk_report
 
     let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
-    // plans/M8.md item C1: harness-section word indices resolved against
-    // that section's own base (which is `IMAGE_BASE` on this flavor).
-    let core_entries: Vec<(usize, u64)> = core_entry_starts
-        .iter()
-        .map(|&(core, word)| (core, harness_base + (word as u64) * 4))
-        .collect();
+    // M10 F2: secondary-core entries live in `code` (decision 633).
+    let core_entries: Vec<(usize, u64)> = match (wiring.as_ref(), code_base) {
+        (Some(w), cb) if w.tables.cores > 1 => (1..w.tables.cores)
+            .filter_map(|core| {
+                let key = crate::codegen::rt_secondary_core_entry_symbol(core);
+                fn_word_base
+                    .get(&key)
+                    .map(|&word| (core, cb + (word as u64) * 4))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let _ = core_entry_starts;
     Ok(ImageLayout {
         blob,
         entry: harness_base + (entry_start as u64) * 4,
@@ -11647,6 +11680,146 @@ fn two():
 // only a host-mmap'd stand-in region (`HarnessAddrs`'s own
 // test-vs-production split, module doc above) — never the real,
 // unmapped-in-a-test-process `wrela_machine` constants.
+
+#[cfg(test)]
+mod f2_cross_core_layout_tests {
+    use super::*;
+    use crate::codegen::{
+        emit_rt_drain, emit_rt_xreply, emit_rt_xsend, emit_secondary_core_entry, Reloc,
+        RingField, RtDrainRequestLane, RtDrainSpec, RtSecondaryCoreEntrySpec, RtXreplySpec,
+        RtXsendSpec,
+    };
+
+    fn ring() -> RingAddrs {
+        RingAddrs {
+            ring: 0x4050_4008,
+            head: 0x4050_4050,
+            tail: 0x4050_4058,
+            count: 0x4050_4060,
+        }
+    }
+
+    fn materialize_ring_addrs(code: &mut [u32], relocs: &[Reloc], addrs: &RingAddrs) {
+        for r in relocs {
+            if let Reloc::RingAddr { word, field, .. } = r {
+                let addr = match field {
+                    RingField::Ring => addrs.ring,
+                    RingField::Head => addrs.head,
+                    RingField::Tail => addrs.tail,
+                    RingField::Count => addrs.count,
+                };
+                patch_load_imm_words(code, *word, addr);
+            }
+        }
+    }
+
+    fn dump_diffs(hand: &[u32], emit: &[u32], emit_text: &[(u32, String)]) {
+        let n = hand.len().max(emit.len());
+        for i in 0..n {
+            let h = hand.get(i).copied();
+            let e = emit.get(i).copied();
+            if h != e {
+                let t = emit_text
+                    .get(i)
+                    .map(|(_, s)| s.as_str())
+                    .unwrap_or("?");
+                eprintln!(
+                    "diff @{i}: hand={h:?} emit={e:?} ({t})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn emit_rt_xsend_has_inlined_enqueue_and_ring_addrs() {
+        let e = emit_rt_xsend(&RtXsendSpec {
+            src_core: 0,
+            dst_core: 1,
+            actor: "Off".into(),
+            ring_index: 0,
+            capacity: 4,
+            slot_size: 16,
+        });
+        assert!(e.code.len() >= 60, "got {}", e.code.len());
+        assert!(e
+            .relocs
+            .iter()
+            .any(|r| matches!(r, Reloc::RingAddr { field: RingField::Count, .. })));
+        assert!(
+            !e.relocs.iter().any(|r| matches!(r, Reloc::Call { .. })),
+            "xsend must inline enqueue (decision 637), not BL"
+        );
+    }
+
+    #[test]
+    fn emit_rt_xreply_matches_hand_asm_after_ring_patch() {
+        let addrs = ring();
+        let hand = build_rt_xreply(&addrs, 1, 0, 0);
+        let e = emit_rt_xreply(&RtXreplySpec {
+            src_core: 1,
+            dst_core: 0,
+            ring_index: 0,
+            capacity: 1,
+        });
+        assert_eq!(
+            hand.words.len(),
+            e.code.len(),
+            "len hand={} emit={}",
+            hand.words.len(),
+            e.code.len()
+        );
+        let mut emit_words: Vec<u32> = e.code.iter().map(|(w, _)| *w).collect();
+        materialize_ring_addrs(&mut emit_words, &e.relocs, &addrs);
+        if hand.words != emit_words {
+            dump_diffs(&hand.words, &emit_words, &e.code);
+        }
+        assert_eq!(hand.words, emit_words);
+    }
+
+    #[test]
+    fn emit_rt_drain_request_lane_matches_hand_asm_after_patch() {
+        let addrs = ring();
+        let hand = build_rt_drain(1, &[(addrs, 4, 16, "Off".into())], &[], 0, 9, 0);
+        let e = emit_rt_drain(&RtDrainSpec {
+            core: 1,
+            request_lanes: vec![RtDrainRequestLane {
+                ring_index: 0,
+                capacity: 4,
+                slot_size: 16,
+                actor: "Off".into(),
+            }],
+            reply_lanes: vec![],
+        });
+        let mut emit_words: Vec<u32> = e.code.iter().map(|(w, _)| *w).collect();
+        materialize_ring_addrs(&mut emit_words, &e.relocs, &addrs);
+        assert_eq!(
+            hand.words.len(),
+            emit_words.len(),
+            "len hand={} emit={}",
+            hand.words.len(),
+            emit_words.len()
+        );
+        if hand.words != emit_words {
+            dump_diffs(&hand.words, &emit_words, &e.code);
+        }
+        assert_eq!(hand.words, emit_words);
+    }
+
+    #[test]
+    fn emit_secondary_matches_hand_asm() {
+        let hand = build_secondary_core_entry(1, 0);
+        let e = emit_secondary_core_entry(&RtSecondaryCoreEntrySpec { core: 1 });
+        assert_eq!(hand.words.len(), e.code.len());
+        let emit_words: Vec<u32> = e.code.iter().map(|(w, _)| *w).collect();
+        if hand.words != emit_words {
+            dump_diffs(&hand.words, &emit_words, &e.code);
+        }
+        assert_eq!(hand.words, emit_words);
+    }
+
+
+}
+
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 mod harness_jit {
     use super::*;
