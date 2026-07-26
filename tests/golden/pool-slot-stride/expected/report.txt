@@ -68,14 +68,13 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=11344
-  Section name=rodata base=0x40502ca0 size=199
-  Section name=abort base=0x40502d68 size=120
-  Section name=checkpoint base=0x40502de0 size=104
-  Section name=rtcode base=0x40502e48 size=76
-  Section name=rtdata base=0x40502e98 size=24
-  Section name=devregs base=0x40502eb0 size=8
-  Section name=pooldata base=0x40502eb8 size=37
+  Section name=code base=0x40500050 size=11436
+  Section name=rodata base=0x40502d00 size=199
+  Section name=abort base=0x40502dc8 size=120
+  Section name=checkpoint base=0x40502e40 size=104
+  Section name=rtdata base=0x40502ea8 size=24
+  Section name=devregs base=0x40502ec0 size=8
+  Section name=pooldata base=0x40502ec8 size=37
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -84,8 +83,8 @@ ImageReport v0
   Driver name=BlkDriver state=8
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=24
-  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40502eb0 size=8
-  Pool name=Control kind=dma payload=Odd slots=4 slot_bytes=9 base=0x40502eb8 size=36 align=8 coherency=coherent device=device#0
-  Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x40502edc size=1 align=1 coherency=coherent device=device#0
-  BlkPool name=Control device=device#0 base=0x40502eb8 size=0x24
-  BlkPool name=Scratch device=device#0 base=0x40502edc size=0x1
+  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40502ec0 size=8
+  Pool name=Control kind=dma payload=Odd slots=4 slot_bytes=9 base=0x40502ec8 size=36 align=8 coherency=coherent device=device#0
+  Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x40502eec size=1 align=1 coherency=coherent device=device#0
+  BlkPool name=Control device=device#0 base=0x40502ec8 size=0x24
+  BlkPool name=Scratch device=device#0 base=0x40502eec size=0x1

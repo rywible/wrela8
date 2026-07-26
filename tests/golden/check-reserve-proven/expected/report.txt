@@ -78,14 +78,13 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=12468
-  Section name=rodata base=0x40503108 size=226
-  Section name=abort base=0x405031ec size=120
-  Section name=checkpoint base=0x40503264 size=104
-  Section name=rtcode base=0x405032cc size=200
-  Section name=rtdata base=0x40503398 size=48
-  Section name=devregs base=0x405033c8 size=104
-  Section name=pooldata base=0x40503430 size=2560
+  Section name=code base=0x40500050 size=12624
+  Section name=rodata base=0x405031a0 size=226
+  Section name=abort base=0x40503284 size=120
+  Section name=checkpoint base=0x405032fc size=104
+  Section name=rtdata base=0x40503368 size=48
+  Section name=devregs base=0x40503398 size=104
+  Section name=pooldata base=0x40503400 size=2560
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -94,11 +93,11 @@ ImageReport v0
   Driver name=BlkDriver state=32
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405033c8 size=104
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503430 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=4 slot_bytes=512 base=0x40503630 size=2048 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40503430 size=0x200
-  BlkPool name=BlockPayloads device=device#0 base=0x40503630 size=0x800
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503398 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503400 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=4 slot_bytes=512 base=0x40503600 size=2048 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40503400 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x40503600 size=0x800
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
-  BlkQueue index=0 size=8 desc=0x40503430 avail=0x405034b0 used=0x405034c8 doorbell=0x40503510
+  BlkQueue index=0 size=8 desc=0x40503400 avail=0x40503480 used=0x40503498 doorbell=0x405034e0
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

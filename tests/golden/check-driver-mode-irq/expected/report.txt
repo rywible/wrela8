@@ -61,13 +61,12 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=12000
-  Section name=rodata base=0x40502f30 size=199
-  Section name=abort base=0x40502ff8 size=120
-  Section name=checkpoint base=0x40503070 size=336
-  Section name=rtcode base=0x405031c0 size=100
-  Section name=rtdata base=0x40503228 size=48
-  Section name=devregs base=0x40503258 size=8
+  Section name=code base=0x40500050 size=12056
+  Section name=rodata base=0x40502f68 size=199
+  Section name=abort base=0x40503030 size=120
+  Section name=checkpoint base=0x405030a8 size=336
+  Section name=rtdata base=0x405031f8 size=48
+  Section name=devregs base=0x40503228 size=8
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -76,5 +75,5 @@ ImageReport v0
   Driver name=BlkDriver[DriverMode.Irq] state=32
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver[DriverMode.Irq] base=0x40503258 size=8
-  IrqHostInject base=0x40503258 offset=0x60 status=0xa501 vector=1
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver[DriverMode.Irq] base=0x40503228 size=8
+  IrqHostInject base=0x40503228 offset=0x60 status=0xa501 vector=1

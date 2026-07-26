@@ -72,14 +72,13 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=11456
-  Section name=rodata base=0x40502d10 size=199
-  Section name=abort base=0x40502dd8 size=120
-  Section name=checkpoint base=0x40502e50 size=104
-  Section name=rtcode base=0x40502eb8 size=132
-  Section name=rtdata base=0x40502f40 size=32
-  Section name=devregs base=0x40502f60 size=16
-  Section name=pooldata base=0x40502f70 size=32
+  Section name=code base=0x40500050 size=11620
+  Section name=rodata base=0x40502db8 size=199
+  Section name=abort base=0x40502e80 size=120
+  Section name=checkpoint base=0x40502ef8 size=104
+  Section name=rtdata base=0x40502f60 size=32
+  Section name=devregs base=0x40502f80 size=16
+  Section name=pooldata base=0x40502f90 size=32
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -89,9 +88,9 @@ ImageReport v0
   Driver name=OtherDriver state=8
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=2 ready_queue=1 group_arena=0 bytes=32
-  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40502f60 size=8
-  DeviceRegs device=device#1 type=OtherHw driver=OtherDriver base=0x40502f68 size=8
-  Pool name=ControlA kind=dma payload=Ctl slots=2 slot_bytes=8 base=0x40502f70 size=16 align=8 coherency=coherent device=device#0
-  Pool name=ControlB kind=dma payload=Ctl slots=2 slot_bytes=8 base=0x40502f80 size=16 align=8 coherency=coherent device=device#1
-  BlkPool name=ControlA device=device#0 base=0x40502f70 size=0x10
-  BlkPool name=ControlB device=device#1 base=0x40502f80 size=0x10
+  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40502f80 size=8
+  DeviceRegs device=device#1 type=OtherHw driver=OtherDriver base=0x40502f88 size=8
+  Pool name=ControlA kind=dma payload=Ctl slots=2 slot_bytes=8 base=0x40502f90 size=16 align=8 coherency=coherent device=device#0
+  Pool name=ControlB kind=dma payload=Ctl slots=2 slot_bytes=8 base=0x40502fa0 size=16 align=8 coherency=coherent device=device#1
+  BlkPool name=ControlA device=device#0 base=0x40502f90 size=0x10
+  BlkPool name=ControlB device=device#1 base=0x40502fa0 size=0x10
