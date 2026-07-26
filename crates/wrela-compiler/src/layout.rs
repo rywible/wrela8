@@ -12254,6 +12254,76 @@ mod harness_jit {
         );
     }
 
+    /// plans/M10.md item C / decision 650: the six floor words every abort
+    /// long-jumps through were pinned by nothing at all. `dump --stage=asm`
+    /// shows this symbol as the wrela `__wrela_abort_tail` stub's compiled
+    /// `ret` (the stub exists only so `finish_abort`'s call type-checks),
+    /// because the overwrite happens later, in `with_force_rooted_runtime`.
+    /// So the bytes that actually run appeared in no golden and no test:
+    /// dropping `install_abort_tail_floor` would have left every test image
+    /// *returning* from abort instead of long-jumping to the landing pad,
+    /// and the whole suite would still have been green.
+    ///
+    /// The address is checked by decoding it back out of the `MOVZ`/`MOVK`
+    /// stream rather than by recomputing the same halfword arithmetic the
+    /// builder uses — an inverse, so a wrong constant fails instead of
+    /// agreeing with itself.
+    #[test]
+    fn install_abort_tail_floor_replaces_the_stub_with_the_long_jump() {
+        let stub = crate::codegen::CodegenFn {
+            frame_size: 16,
+            code: vec![(encode::enc_ret(30), "ret".to_string())],
+            relocs: Vec::new(),
+        };
+        let mut fns = BTreeMap::new();
+        fns.insert("__wrela_abort".to_string(), stub.clone());
+        fns.insert("__wrela_abort_tail".to_string(), stub.clone());
+        let mut program = CodegenProgram {
+            fns,
+            rodata: Vec::new(),
+        };
+        install_abort_tail_floor(&mut program).expect("install");
+
+        let tail = &program.fns["__wrela_abort_tail"];
+        assert_eq!(tail.frame_size, 0, "the floor tail owns no frame");
+        assert!(tail.relocs.is_empty(), "the floor tail relocates nothing");
+        assert_eq!(tail.code.len(), 6, "four immediate words, LDR, BR");
+        assert!(
+            !tail.code.iter().any(|(w, _)| *w == encode::enc_ret(30)),
+            "the compiled `ret` stub must be gone — an abort that returns \
+             would resume the failing test instead of landing"
+        );
+        assert_eq!(tail.code[4].0, encode::enc_ldr_x_imm(9, 9, 0));
+        assert_eq!(tail.code[5].0, encode::enc_br(9));
+
+        // MOVZ/MOVK: imm16 at bits[20:5], shift/16 at bits[22:21].
+        let mut addr = 0u64;
+        for (w, _) in &tail.code[..4] {
+            let imm16 = ((*w >> 5) & 0xFFFF) as u64;
+            let shift = ((*w >> 21) & 0x3) * 16;
+            addr |= imm16 << shift;
+        }
+        assert_eq!(
+            addr,
+            machine_layout::MACHINE_INFO_BASE + mi::OFF_TEST_CONTINUATION,
+            "the tail must load the landing pad's own continuation slot"
+        );
+
+        // Fail-closed: abort bodies present without the tail in the emit
+        // set is an internal inconsistency, never a silent skip.
+        let mut orphan = CodegenProgram {
+            fns: BTreeMap::new(),
+            rodata: Vec::new(),
+        };
+        orphan.fns.insert("__wrela_abort_val".to_string(), stub);
+        let err = install_abort_tail_floor(&mut orphan).unwrap_err();
+        assert!(
+            err.message.contains("`__wrela_abort_tail` in the emit set"),
+            "got: {}",
+            err.message
+        );
+    }
+
     // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
     // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
     //

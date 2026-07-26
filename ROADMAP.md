@@ -463,158 +463,201 @@ full three-part price like everything else.
   underneath an already-recorded park/unpark decision — a cleverness-budget
   purchase against idle cores, which do not exist before M8.
 
-### M11 — The cost contract
+### M11 — The cycle proxy
 Perf without chasing hardware. Today `compiler.costs.predicted-vs-measured`
 is a gap whose own note says it plainly: `report::render` predicts no costs
-anywhere, so `profile` has nothing to diff its measurements against. This
-milestone builds the prediction side, and it builds it as a **contract**,
-not as a chip.
+anywhere, so `profile` has nothing to put beside its measurements. This
+milestone builds the missing oracle: a deterministic **proxy-cycle** score
+for tuning the code wrela emits. Its question is deliberately narrower
+than "how many cycles will this host take?":
 
-**`wrela-cost-v1` — the cost model is designed, not inherited.** 06 §1
-currently says "the compiler's one cost model is the A76," which is the
-last place this machine inherits rather than designs. The ISA line one
-sentence earlier already shows the right pattern — ARMv8.2-A, "the
-intersection of Cortex-A76 and Apple Silicon," a contract real chips
-happen to satisfy. Do the same for cost: a versioned parameter file beside
-`wrela-machine-v1`'s address constants, holding the latency table, issue
-width, port set, ROB depth, cache geometry, and branch costs as **data** —
-checked in, diffable, revised only in its own commit
-(`bench/thresholds.toml`'s precedent exactly). The A76 is demoted from
-*definition* to **calibration donor**: the chip v1's constants were first
-measured on, and the floor the envelope tracks. The unit is the **v1
-work-cycle**, matching 02 §883's own word for `@budget` ("proven work
-bound") — defined by the contract, measured in the world.
+> Given two semantically equivalent emitted programs, which one should be
+> faster on the target?
 
-Three consequences, each solving a problem that would otherwise need its
-own mechanism:
+That is the question instruction selection, spill choice, scheduling,
+peepholes, bounds-check discharge, scalar replacement, inlining and every
+other compiler performance pass actually need. M11 optimizes for
+**differential accuracy** — ranking alternatives correctly — not for an
+absolute cycle prediction and not for a portable worst-case execution-time
+proof.
 
-- **Soundness gets a direction.** The profile is the *pessimal envelope*:
-  every conforming host must meet or beat it — the performance analogue of
-  the ISA intersection. A `@budget(cycles=N)` proof discharged against the
-  profile is then sound on every host, and `predicted-vs-measured` stops
-  being a vague "diff them" and becomes an inequality with teeth:
-  **measured ≤ predicted, always.** A host that exceeds the envelope is
-  either a model bug or a nonconforming host — both findings, both
-  pinnable. That is also the crisp definition of "supported host" this
-  project lacks: ISA conformance asserted at boot, cost conformance
-  asserted at calibration.
-- **Determinism comes free.** The model is a pure function of (instruction
-  stream, profile file), so cycle goldens are byte-identical on every dev
-  machine regardless of the chip in it. That property is what makes cycle
-  counts *goldens* at all; a model defined as "the A76" would leak
-  whichever laptop measured it.
-- **Revision already has a ritual.** Changing a constant moves goldens, so
-  it goes through `golden --update`: deliberate commit, diff reviewed,
-  clause cited. And 04 §7 already requires build identity to carry "the
-  build-affecting constants" — the profile version slots into an existing
-  report line.
+**`wrela-cost-v1` is a scoring contract, not a chip.** A versioned parameter
+file beside `wrela-machine-v1`'s address constants holds the instruction
+latencies, dependency and issue rules, branch classes, and only those
+further effects calibration has earned. It is checked in, diffable, and
+revised only in its own commit (`bench/thresholds.toml`'s precedent). Its
+unit is the **v1 proxy-cycle**: intentionally cycle-shaped, A76-shaped by
+heritage, but defined by the file rather than by whichever host measured
+it. The build identity carries both its version and content digest.
+Physical A/B corroboration uses the same host and harness the project
+already has (`bench guest` / `profile` under Hypervisor.framework); M11
+does not schedule a second calibration host.
 
-**Two models, two soundness requirements.** *Static, worst-case, per turn*:
-data-dependent branches take their worst outcome, loops take the bounds
-`sema.bounds.loops` proves; must be a sound **upper bound**, because this
-is what discharges `@budget(cycles=N)` — an optimistic proof is a lie — and
-fails closed when it cannot bound something. *Replay-exact, per recording*:
-deterministic replay fixes every branch outcome and every address, so the
-only residual uncertainty is microarchitectural, never semantic; this one
-scores optimization search and backs the cycle goldens.
+The score is a pure function of the final laid-out instruction stream, the
+profile file, and — where one exists — explicit execution weights. That
+makes score goldens byte-identical on every development machine. A constant
+change moves goldens and therefore goes through `golden --update`, review,
+and a cited clause exactly like every other build-affecting constant.
 
-**Build order, largest error term first, each independently verifiable.**
-(1) Structural simulation — a scoreboard of per-register ready cycles,
-per-port free cycles, and a decode/ROB cap, walked over the emitted
-instruction stream. Not "simulate an A76" (unverifiable) but model the
-declared resources: ~200 lines, no recursion, deterministic, and the
-difference between ~3x error and single digits. Note this is only possible
-because there is no LLVM — `codegen.rs` emits every word, so the model
-reads the exact final stream with no black box between. (2) Exact cache
-simulation from the replay address trace — static layout means the address
-sequence is known, so misses are computed, not estimated. (3) The branch
-taxonomy: bounds checks, checkpoint tests, and overflow checks are
-statically biased and predict near-perfectly; a loop with a proven trip
-count mispredicts exactly once per execution; only genuine data-dependent
-conditionals are unmodelable, and the report **declares** them rather than
-folding them in — `812 cycles (780 exact, 32 estimated across 2 sites)`.
-(4) The prefetcher, only if (2)'s residual says it matters.
+**Score what runs.** The primary input is the final relocated instruction
+stream, after codegen, runtime insertion and layout — not a pre-layout asm
+approximation and not an IR operation count. M11 adds a stable
+`wrela dump --stage=cost` surface with totals by image, owner, function,
+basic block and turn where those boundaries exist. Every term carries a
+why-chain back through MachineWir/FlowWir to the source or synthetic
+runtime site and names the profile rule that priced it. A diff such as
+`proxy_cycles: 812 -> 852` must expand into the blocks, instructions and
+constants responsible; a number without causality is not a review surface.
 
-**Zero tolerance on the semantic half.** The replay-exact model also
-predicts every *architectural* count the recorder already logs — vCPU
-exits, clock reads, transcript bytes, checkpoint crossings (`xtask profile`
-prints these today; `bench guest` already asserts them identical across
-boots). Those must match **exactly**: they are semantic, not
-microarchitectural, so a mismatch is a bug, full stop. Timing error is a
-calibration question; semantic error never is. The whole semantic half can
-be built and verified before a single latency constant exists.
+**IR passes use the backend as their scorer.** There is no second
+"FlowWir cycle" formula to drift from emitted reality. The A/B harness
+clones the same input, runs a pass off and on, lowers both candidates
+through the ordinary backend and layout, and compares their final proxy
+scores. A candidate-selection API does the same for bounded searches over
+spill choices, instruction sequences or other local alternatives. Full
+lowering is the dumb baseline even if it is slow; making candidate scoring
+incremental, cached or IR-local requires a compiler profile and its own
+regression lock like any other cleverness.
 
-**Cost carries why-chains.** 04 §7 already requires whole-image analyses to
-show causality ("Inference reduces annotations; it must not hide
-causality"). Apply it to cost: every term cites its site and the profile
-constant that produced it, so a golden diff of `cycles_per_turn: 812 -> 852`
-expands into which block, which instruction class, which constant. That is
-what makes a cycle regression reviewable like a correctness change instead
-of a number that moved — and it is the audit trail that makes a
-search-found "win" show its work.
+This captures every IR win that survives lowering into cheaper code:
+removed copies and checks, folded constants, dead operations, reduced frame
+traffic, better scalarization, and inlining or loop changes whose priced
+path is known. It also correctly reports **no win** when later lowering
+canonicalizes two different IRs to the same stream. Wins that depend on
+unknown branch frequencies, data-dependent trip counts, cache locality or
+cross-core interference are outside the first scorer's knowledge and are
+labelled as such, never silently assigned false precision.
 
-**Calibration is a pinning discipline, not an afternoon on a laptop.**
-Never model an effect without an isolating microbenchmark that pins it;
-each modeled element (port pressure, ROB depth, L1 geometry, prefetcher)
-gets one, measured once on real hardware and committed as a constant. When
-measured deviates from predicted beyond tolerance, handle it exactly like a
-fuzz find: minimize to an isolating case, pin it, re-lock the constant it
-exposes — never nudge a number until the diff goes quiet. Calibration
-workloads are themselves recorded, replayable, in-tree goldens. This gives
-real hardware its correct and minimal role: **calibrating parameters,
-rarely — never chasing regressions.**
+**Dumb model first; residuals buy detail.** Start with instruction costs,
+dependency chains, issue width and explicit branch classes over
+straight-line blocks and statically known control flow. Ports, ROB effects,
+recording-weighted paths, cache simulation and prefetch are added only when
+a pinned calibration pair proves the simpler model ranks alternatives
+wrong. In particular, `ChoiceLog v1` does not contain branch outcomes or
+memory addresses; any later replay-weighted cache model first needs an
+explicit deterministic trace producer and its own dump/goldens. "Replay is
+deterministic" is not permission to pretend that trace already exists.
 
-**Acceptance rule (settled here).** There is **no percent threshold on a
-win**, because the reason thresholds exist — measurement noise — does not
-apply to a pure function. The model has zero variance and nonzero *bias*,
-so the gate is the model's own declared uncertainty on the terms a change
-touches: a 1-cycle win in exactly-modeled code is a real cycle and lands; a
-50-cycle win concentrated in data-dependent estimates is untrustworthy at
-any size. The rule self-tightens as calibration improves, with no constant
-to relitigate. Directions are asymmetric: **regressions threshold at zero**
-— any increase is a golden diff that must be explained — while wins have no
-floor. And the complexity gate stays where it already is: a small win that
-adds a special case fails the regeneration test, and would fail it at 100
-cycles too. Never reject a win for being small; only reject complexity that
-is not paid for.
+**Calibration tests rankings, not numerology.** Each modeled effect has an
+isolating A/B microbenchmark, amplified until the physical difference is
+larger than measurement noise, with source, raw observations and derivation
+committed beside the resulting constant. The calibration report's primary
+oracles are pairwise ordering accuracy, false-win rate and correlation of
+predicted deltas with measured deltas; it also carries a held-out set that
+was not used to choose constants. A proxy win that a physical A/B turns
+into a regression is handled like a fuzz find: minimize the pair, pin it,
+then either fix the relevant rule or mark that class unscored. Never nudge
+a constant until one workload goes quiet.
 
-**The model proposes; the recording disposes.** Search may use the model to
-rank a million candidates — that is what it is for. **Landing** still pays
-the cleverness budget's full three-part price, including a before/after on
-a named recording. The model never becomes the landing authority. That is
-the structural anti-Goodhart bound: exploiting a model bias can win a
-search, but it cannot merge, because the recording will not corroborate it.
+**Zero tolerance remains zero where the facts are semantic.** Recording
+facts that already exist — choice entries, vCPU exits, transcript bytes and
+exit status — compare exactly. If M11 wants checkpoint crossings or another
+architectural count, it first records and pins that fact; `profile` does not
+claim to measure something the recorder does not expose. These equalities
+are separate from proxy calibration: semantic mismatch is a bug, while a
+performance misranking is a model finding.
 
-Flips: `compiler.costs.predicted-vs-measured`. Depends on
-`sema.bounds.loops` (whose own gap note already says proving it "needs the
-comptime engine and cost model" — the two are mutually referencing, and
-either half helps the other). Requires a normative edit to 06 §1's
-cost-model sentence: minimal, same-commit clause, REVIEW-QUEUE line.
-Non-goals: optimizing anything (M11 builds the oracle; spending it is the
-cleverness budget's job, in the order recorded below); multicore
-contention modelling (single-core per-turn is the granularity optimization
-decisions are made at, and cross-core sharing is a measured calibration
-factor, not a modelled one); DVFS and thermal, permanently out of scope.
+**06 §5's expected exit rates per device are in scope here as semantic
+predictions.** They are architectural facts of a named recording, not
+µarch estimates: the report predicts them, `profile`/`repro` compare them
+exactly, and a mismatch is a bug. That retires the old ledger flip story
+that waited on a "device milestone" for exit-rate lines — M11 owns the
+prediction side and the exact comparison, same commit as the clause note
+rewrite.
 
-**Settled here: no learned policy inside the compiler.** A fast
-deterministic oracle is exactly what learned compiler optimization needs,
-and it demonstrably works elsewhere — that is not the objection. The
-objections are that a weights blob is the most anti-regeneration artifact
-that exists ("any crate should be rewritable from docs + contracts + tests
-alone" — a learned policy is definitionally not), that 04 §7's
-must-not-hide-causality requirement is violated by construction (a policy
-cannot answer "why did it spill x9?"), and that Goodhart goes from
-incidental to systematic and uninspectable, since the policy is *trained*
-to exploit model bias. The win is available without the artifact: run the
-search offline and ship a **table**. Bounded exhaustive search under a
-budget, failing closed over it (structurally identical to the DST schedule
-enumeration in the coverage pass); superoptimization over small windows
-whose verified result commits as a peephole table — data, diffable,
-regenerable from oracle plus search. Register allocation needs no learning
-at all: linear scan, the scorer, and bounded search over spill choices. The
-rule, stated once: **ML may inform an artifact; it may never be an
-artifact** — the same relationship this project already has with fuzzing,
-where the fuzzer is not in the compiler and the pinned case it found is.
+**Acceptance is asymmetric, but the proxy never merges code by itself.**
+The deterministic score has no minimum-win threshold: one proxy-cycle in a
+fully scored region is a real model delta, while any regression is a golden
+diff that must be explained. Physical measurements do have noise. An
+inconclusive before/after is not permission to promote the proxy; amplify
+with more straight-line sites, improve the workload, or record that the
+candidate is not yet physically measurable. The complexity gate is
+unchanged: a small score win does not pay for a special case that fails the
+regeneration test, and a large one does not excuse it either.
+
+**The model proposes; the recording disposes.** Search may use the proxy to
+rank a million candidates — that is what it is for. Landing still pays the
+cleverness budget's full three-part price, including a physical
+before/after on a named recording and a lock. The proxy is an additional
+deterministic review surface, never the landing authority. Exploiting model
+bias can win a search; it cannot merge.
+
+The plan's ordered spine is: (0) the minimal normative correction that
+distinguishes this optimization proxy from a future proof model, plus a
+rewrite of the `compiler.costs.predicted-vs-measured` ledger note so its
+flip condition matches this milestone rather than the stale "device
+milestone exit-rate lines" story; (1) a stable final-stream inventory and
+`--stage=cost` dump; (2) `wrela-cost-v1`, identity and the first
+straight-line scorer; (3) why-chain goldens and deterministic/metamorphic
+checks; (4) the IR pass A/B and candidate-scoring harness; (5) the
+differential calibration corpus; (6) `profile` integration, report
+expected-exit-rate lines, and ledger closure; then (7) only the model
+features justified by pinned misrankings; and (8) one held-out
+optimization capstone that proves the whole loop works. Useful invariants
+include determinism, monotonicity when a profile cost rises, identical
+streams scoring identically, and every score term naming an instruction
+and profile rule.
+
+**The capstone spends exactly one unit of cleverness: proven
+constant-index bounds-check elimination.** A FlowWir pass removes a bounds
+check only when the array length and index prove the access in range; it
+adds no heuristic and an unproved case remains byte-for-byte on the naive
+path. This is the deliberate first purchase because it exercises every
+piece M11 exists to build without hiding behind a backend-only peephole:
+pass off/on over the same IR, ordinary lowering and layout, a final-stream
+why-chain showing the removed check and abort edge, a proxy delta, verifier
+and `diff-eval` agreement, a physical before/after on an amplified named
+recording, and a lock.
+
+**Amplify without inventing loop machinery.** The obvious amplifier — a
+tight loop over the site — collides with the machine: async back-edges
+emit the checkpoint service and drown the delta, and synchronous loops
+still need `sema.bounds.loops`, which this milestone deliberately does not
+depend on. The capstone workload therefore amplifies by **unrolling or by
+many independent straight-line sites**, so the removed checks dominate the
+measured path without a new loop-bounds engine and without checkpoint
+noise. Record that shape in the plan; do not rediscover it mid-item.
+
+The capstone case is **held out of calibration** until the profile and
+scorer are frozen, so it tests prediction rather than teaching the model
+its expected answer. Three outcomes, all honest: (a) measurable physical
+win and proxy agrees — land the pass under the three-part cleverness
+price; (b) measurable physical delta and proxy disagrees — pin the
+misranking, revise the model or its declared uncertainty, and rerun
+(never waive, never tune against the held-out case); (c) no measurable
+physical delta even after straight-line amplification — record that
+finding and do **not** land the optimization, but the proxy is still
+allowed to close if its calibration oracles and semantic exact-matches are
+green. Direction agreement is required only when the physical delta is
+measurable above noise. M11 may conclude that this candidate does not pay;
+it may not conclude that a proxy which ranked a measurable case incorrectly
+is ready.
+
+Flips: `compiler.costs.predicted-vs-measured`, when `profile` shows proxy
+and physical deltas for named A/B cases and exact comparisons for the
+semantic counts it reports (including expected exit rates once the report
+predicts them). Opens separate clauses for final-stream coverage, score
+determinism, why-chains and differential calibration; one coarse clause is
+not enough to certify the oracle. **Does not depend on
+`sema.bounds.loops`.** Requires coordinated normative edits to 04 §6 and
+06 §1 (and their README summary): the optimization cost model is a proxy,
+not "the real microarchitecture" and not the mechanism that discharges
+`@budget`. Minimal edits, same-commit clauses, REVIEW-QUEUE lines.
+
+Non-goals: optimizing anything beyond the single capstone (M11 builds the
+oracle, then spends once to validate it); proving `@budget`; a portable
+WCET or host-conformance envelope; exact replay path/address reconstruction
+unless calibration demands it; multicore contention; DVFS and thermal.
+
+**Settled here: no learned policy inside the compiler.** A deterministic
+oracle is exactly what learned optimization could exploit, but a weights
+blob fails the regeneration test, hides the causality 04 §7 requires, and
+systematizes Goodhart against the proxy. Run searches offline and ship
+their reviewable result: a table, constant, or verified peephole. Bounded
+exhaustive search may run under a budget and fail closed over it; register
+allocation may combine a simple allocator, this scorer, and bounded spill
+search. **ML may inform an artifact; it may never be an artifact** — the
+same relationship the project already has with fuzzing.
 
 ### Recorded language intentions (not yet scheduled)
 
@@ -626,12 +669,20 @@ where the fuzzer is not in the compiler and the pinned case it found is.
   impossible `CallError` variants, 02 §9.4); `pub` boundaries still
   demand a declared nominal enum. Lands when `Result`/`from` conversion
   machinery is real; it is a normative doc change first, human-reviewed.
-- **Deferred until an ingredient exists**: an end-to-end latency
-  assertion (`@latency_assert`) waits for the measured cost model
-  (`compiler.costs.predicted-vs-measured`); graph-level flow policy
-  waits until a concrete image needs a concrete named check — hardcode
-  that check, no policy query language; whole-image snapshot/time-travel
-  is a VMM feature to weigh after M6's recorder exists.
+- **Cost proofs** (deliberately not M11). M11's proxy ranks compiler
+  alternatives; it does not discharge `@budget`, make
+  `sema.bounds.loops` sound in cycles, or prove elapsed latency. Those need
+  a separate static upper-bound model with explicit path, memory and
+  interference assumptions, plus a normative decision about the existing
+  `@budget(bound=...)` work/memory surface. An end-to-end
+  `@latency_assert` needs that proof model and a defined host contract, not
+  merely a well-calibrated optimizer proxy. Human-gated because promoting a
+  useful estimate into a safety proof is exactly the sort of semantic
+  change that must never happen by accretion.
+- **Deferred until an ingredient exists**: graph-level flow policy waits
+  until a concrete image needs a concrete named check — hardcode that
+  check, no policy query language; whole-image snapshot/time-travel is a
+  VMM feature to weigh after M6's recorder exists.
 - **The flagship host** (recorded 2026-07-24; deliberately *not* a
   milestone — human-gated like everything else in this section). CLAUDE.md
   names the flagship as wrela OS on Raspberry Pi 5 / 1 GiB, and
@@ -731,7 +782,7 @@ where the fuzzer is not in the compiler and the pinned case it found is.
   devices, a dumb scalar tile compositor, and golden frame digests were
   rung 9 of the ladder. They are now off it, and the reason is not that
   the work is hard: it is that nothing else needs it. Every remaining rung
-  — the stdlib, the runtime in wrela, the cost contract — is compiler and
+  — the stdlib, the runtime in wrela, the cycle proxy — is compiler and
   machine work, and a compositor would interrupt that rather than inform
   it. Pixels is the one item whose dependencies all point *backwards* with
   nothing pointing back: the compositor is guest wrela source, so it wants
@@ -739,9 +790,9 @@ where the fuzzer is not in the compiler and the pinned case it found is.
   whose NEON lowering 04 §6 already calls a backend obligation because
   "the flagship's compositor is its hottest loop"), and its inner loop is
   a named future hot spot (see the cleverness budget), so it wants the
-  cost contract — with which "tune only after a frame exists to measure"
-  stops being a deferral and becomes an ordinary budget purchase priced
-  against the envelope.
+  cycle proxy — with which "tune only after a frame exists to measure"
+  stops being a deferral and becomes an ordinary budget purchase scored by
+  the proxy and disposed by the frame recording.
 
   *What descheduling leaves open, stated rather than implied.*
   `machine.display.golden-frames` is a gap **no rung owns**, recorded as
@@ -812,19 +863,19 @@ Rules that follow:
   flat p99.9: its tail is dominated by scheduling, interference, page
   faults, and allocator behavior, and wrela has none of those by
   construction. That win is not earned by optimization; it is already true,
-  and it is the claim to defend. It also compounds with M11 — `@budget
-  (cycles=N)` against the cost envelope means the tail can be **proven at
-  build time** rather than measured and hoped for. No operating system can
-  make that offer. Measure tails, not averages; a benchmark reporting only
-  a mean is measuring the half of the story wrela does not win on.
+  and it is the claim to defend. M11 makes tuning that path repeatable, but
+  its proxy does **not** prove the tail at build time — that claim waits for
+  the separate cost-proof work recorded above. Measure tails, not averages;
+  a benchmark reporting only a mean is measuring the half of the story
+  wrela does not win on.
 - **The scheduler's own spend order** (recorded so it is not improvised
   the first time someone profiles a boot). Each step manufactures the
   evidence the next one needs: (1) M10 — the runtime becomes wrela, and
   the dispatch compare chain stops being hand-written by construction;
   (2) **measure** — `bench guest` over byte-identical transcripts gives the
-  exact before/after that has never existed for this code, and M11's cost
-  contract turns it into a zero-variance golden diff rather than a timing
-  run; (3) the two
+  exact before/after that has never existed for this code, and M11 adds a
+  zero-variance proxy-score diff **beside**, never instead of, the physical
+  timing run; (3) the two
   dumb wins, if and only if the profile asks for them — populate the
   already-reserved ready-queue table (O(actors) scan → O(1) pop, no layout
   change, the slots are placed already) and lower a dense comptime-known
