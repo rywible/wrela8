@@ -75,16 +75,22 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
             "__wrela_fmt_dec",
             "__wrela_line_begin",
             "__wrela_line_commit",
+            "__wrela_abort",
+            "__wrela_abort_val",
+            "__wrela_abort_tail",
             "__wrela_runtime_probe",
             "ascii_digit",
+            "append_failed_literal",
+            "append_newline_literal",
             "copy_bytes_range",
             "copy_line_buf_range",
             "extract_one",
+            "finish_abort",
             "load_at",
             "probe_seed",
             "reverse_one",
             "store_at",
-        ], // M10 B2/B3/B4
+        ], // M10 B2/B3/B4/C
     ),
     (
         "asm-placed-index/expected/asm.txt",

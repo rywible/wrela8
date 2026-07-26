@@ -312,6 +312,9 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     // M10 B4: console append split (line_buf / Bytes).
     "__wrela_console_append_line_buf",
     "__wrela_console_append_bytes",
+    // M10 C: abort print bodies (Reloc::AbortFixed / AbortVal targets).
+    "__wrela_abort",
+    "__wrela_abort_val",
 ];
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
@@ -4714,6 +4717,15 @@ pub fn t():
         assert!(
             reachable.contains("__wrela_fmt_dec"),
             "force-root must seed fmt_dec: {reachable:?}"
+        );
+        // M10 C
+        assert!(
+            reachable.contains("__wrela_abort"),
+            "force-root must seed abort: {reachable:?}"
+        );
+        assert!(
+            reachable.contains("__wrela_abort_val"),
+            "force-root must seed abort_val: {reachable:?}"
         );
         let lower_opts = LowerOpts {
             emit_comptime_tests: false,

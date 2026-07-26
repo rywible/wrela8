@@ -1,4 +1,4 @@
-# plans/M10.md item A2d / B2 / B3 / B4 / D
+# plans/M10.md item A2d / B2 / B3 / B4 / C / D
 # Always-loaded runtime module. Names are not auto-visible (decision 584);
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
@@ -8,6 +8,8 @@ module runtime
 # pages, not the image blob (decision 588).
 # M10 B4: packed CONSOLE_DATA.bytes for append (decisions 594–596);
 # OFF_TEST_LINE_BUF stays B3's TEST_LINE_BUF (named fields).
+# M10 C: abort latch + fail counter (decision 591); long-jump is floor
+# category 4 hand-asm (`__wrela_abort_tail`).
 
 const QUEUE_SIZE: u64 = 256
 const DESC_WORD_COUNT: usize = 512
@@ -16,9 +18,11 @@ const DATA_SIZE: usize = 16384
 
 @layout(runtime, endian=little)
 struct MachineInfoPage:
+    @offset(0x48) test_failed: u64
     @offset(0x50) ring_data_bump: u64
     @offset(0x58) ring_desc_bump: u64
     @offset(0x60) line_start: u64
+    @offset(0x208) abort_latch: u64
 
 @placed(0x40000000)
 static MACHINE_INFO: MachineInfoPage
@@ -375,3 +379,68 @@ pub fn __wrela_console_append_bytes(src: Bytes, len: usize) -> u64:
     copy_bytes_range(src, bump, 0, len)
     MACHINE_INFO.ring_data_bump = end.to[u64]()
     return 0
+
+# M10 C: floor category 4 long-jump (decision 650). Body is overwritten
+# by layout with hand-asm `LDR`+`BR` against OFF_TEST_CONTINUATION — the
+# `return` here is only so the call graph type-checks; it must never
+# remain in a test image.
+fn __wrela_abort_tail():
+    return
+
+# Shared landing-pad bookkeeping (decision 591): clear latch, count a
+# fail, then the computed long-jump. Both first-entry and re-entry end
+# here so a bounds failure inside the print path cannot recurse.
+fn finish_abort():
+    MACHINE_INFO.abort_latch = 0
+    MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+    __wrela_abort_tail()
+    return
+
+# "FAILED " via named line-buf stores — Static[Bytes[N]] still cannot
+# coerce to an unbounded Bytes parameter (decision 595), and abort must
+# not depend on harness-interned rodata.
+fn append_failed_literal() -> u64:
+    store_at(0, 70)
+    store_at(1, 65)
+    store_at(2, 73)
+    store_at(3, 76)
+    store_at(4, 69)
+    store_at(5, 68)
+    store_at(6, 32)
+    return __wrela_console_append_line_buf(7)
+
+fn append_newline_literal() -> u64:
+    store_at(0, 10)
+    return __wrela_console_append_line_buf(1)
+
+# M10 C: `__wrela_abort(msg: Bytes)` — ABI x0/x1 = (ptr, len), matching
+# today's Reloc::AbortFixed callers (capacity equals length). Re-entrancy
+# latch at OFF_ABORT_LATCH (decision 591); overflow from append/commit is
+# status (decision 592); wrapping arith (decision 652); no loop back-edge
+# (decision 597 — reuses console helpers).
+pub fn __wrela_abort(msg: Bytes):
+    if MACHINE_INFO.abort_latch != 0:
+        finish_abort()
+        return
+    MACHINE_INFO.abort_latch = 1
+    _ = append_failed_literal()
+    _ = __wrela_console_append_bytes(msg, msg.len)
+    _ = append_newline_literal()
+    _ = __wrela_line_commit()
+    finish_abort()
+
+# M10 C: `__wrela_abort_val` — six-register ABI (prefix Bytes, value,
+# value_signed, suffix Bytes) matching Reloc::AbortVal callers.
+pub fn __wrela_abort_val(prefix: Bytes, value: u64, value_signed: u64, suffix: Bytes):
+    if MACHINE_INFO.abort_latch != 0:
+        finish_abort()
+        return
+    MACHINE_INFO.abort_latch = 1
+    _ = append_failed_literal()
+    _ = __wrela_console_append_bytes(prefix, prefix.len)
+    digs = __wrela_fmt_dec(value, value_signed)
+    _ = __wrela_console_append_line_buf(digs.to[usize]())
+    _ = __wrela_console_append_bytes(suffix, suffix.len)
+    _ = append_newline_literal()
+    _ = __wrela_line_commit()
+    finish_abort()

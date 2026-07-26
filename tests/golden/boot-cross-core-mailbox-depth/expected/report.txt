@@ -24,11 +24,14 @@ ImageReport v0
   Placement id=actor#0 type=Sink core=1 source=explicit work=0 work_source=unproved bytes=56 bytes_state=8 bytes_mailbox=48 bytes_pool=0
   Placement id=actor#1 type=Near core=0 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Placement id=actor#2 type=Far core=2 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
-    Padding offset=0x0 size=80
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
+    Padding offset=0x0 size=72
+    Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
+    Padding offset=0x68 size=416
+    Field name=abort_latch type=u64 offset=0x208 size=8
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -61,28 +64,28 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=14536
-  Section name=rodata base=0x40503918 size=598
-  Section name=abort base=0x40503b70 size=120
-  Section name=checkpoint base=0x40503be8 size=104
-  Section name=rtcode base=0x40503c50 size=5716
-  Section name=rtdata base=0x405052a8 size=4800
+  Section name=code base=0x40500050 size=15980
+  Section name=rodata base=0x40503ec0 size=598
+  Section name=abort base=0x40504118 size=120
+  Section name=checkpoint base=0x40504190 size=104
+  Section name=rtcode base=0x405041f8 size=5716
+  Section name=rtdata base=0x40505850 size=4800
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40505170
-  CoreEntry core=2 base=0x405051d8
+  CoreEntry core=1 base=0x40505718
+  CoreEntry core=2 base=0x40505780
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
-  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Sink mailbox=1 slot=24 frame=64 state=8
   Actor name=Near mailbox=4 slot=16 frame=304 state=8
   Actor name=Far mailbox=4 slot=16 frame=256 state=8
   Turn fn=mailbox_depth_backpressures_under_three_cores frame=672
-  Ring kind=request src=0 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x40506418
-  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40506448
-  Ring kind=request src=2 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x405064a0
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x405064d0
-  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x40506508
-  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40506530
+  Ring kind=request src=0 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x405069c0
+  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x405069f0
+  Ring kind=request src=2 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x40506a48
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40506a78
+  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x40506ab0
+  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40506ad8
   Turns count=4 stride=1024 bytes=4096
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=4800

@@ -19,11 +19,14 @@ ImageReport v0
     Child value=actor#1
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
   Placement id=actor#1 type=Worker core=0 source=inferred work=0 work_source=unproved bytes=168 bytes_state=16 bytes_mailbox=152 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
-    Padding offset=0x0 size=80
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
+    Padding offset=0x0 size=72
+    Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
+    Padding offset=0x68 size=416
+    Field name=abort_latch type=u64 offset=0x208 size=8
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -56,16 +59,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=10336
-  Section name=rodata base=0x405028b0 size=225
-  Section name=abort base=0x40502994 size=120
-  Section name=checkpoint base=0x40502a0c size=104
-  Section name=rtcode base=0x40502a74 size=1344
-  Section name=rtdata base=0x40502fb8 size=552
+  Section name=code base=0x40500050 size=11780
+  Section name=rodata base=0x40502e58 size=225
+  Section name=abort base=0x40502f3c size=120
+  Section name=checkpoint base=0x40502fb4 size=104
+  Section name=rtcode base=0x4050301c size=1344
+  Section name=rtdata base=0x40503560 size=552
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
-  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Ledger mailbox=8 slot=24 frame=64 state=8
   Actor name=Worker mailbox=8 slot=16 frame=64 state=16

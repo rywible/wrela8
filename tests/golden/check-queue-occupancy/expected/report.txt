@@ -21,11 +21,14 @@ ImageReport v0
   Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
     Child value=driver#0
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=6176 bytes_state=32 bytes_mailbox=0 bytes_pool=6144
-  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
-    Padding offset=0x0 size=80
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
+    Padding offset=0x0 size=72
+    Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
+    Padding offset=0x68 size=416
+    Field name=abort_latch type=u64 offset=0x208 size=8
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -65,25 +68,25 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=10520
-  Section name=rodata base=0x40502968 size=226
-  Section name=abort base=0x40502a4c size=120
-  Section name=checkpoint base=0x40502ac4 size=104
-  Section name=rtcode base=0x40502b2c size=224
-  Section name=rtdata base=0x40502c10 size=48
-  Section name=devregs base=0x40502c40 size=104
-  Section name=pooldata base=0x40502ca8 size=4096
+  Section name=code base=0x40500050 size=11964
+  Section name=rodata base=0x40502f10 size=226
+  Section name=abort base=0x40502ff4 size=120
+  Section name=checkpoint base=0x4050306c size=104
+  Section name=rtcode base=0x405030d4 size=224
+  Section name=rtdata base=0x405031b8 size=48
+  Section name=devregs base=0x405031e8 size=104
+  Section name=pooldata base=0x40503250 size=4096
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
-  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=32
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40502c40 size=104
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=256 slot_bytes=16 base=0x40502ca8 size=4096 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40502ca8 size=0x1000
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405031e8 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=256 slot_bytes=16 base=0x40503250 size=4096 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40503250 size=0x1000
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
-  BlkQueue index=0 size=128 desc=0x40502ca8 avail=0x405034a8 used=0x405035b0 doorbell=0x405039b8
+  BlkQueue index=0 size=128 desc=0x40503250 avail=0x40503a50 used=0x40503b58 doorbell=0x40503f60
   BlkAccounting descriptors_per_op=3 queue_depth=128 occupancy_bound=42

@@ -281,6 +281,179 @@ Program
     0071: f9404bfe  ldr lr, [sp, #144]
     0072: 910283ff  add sp, sp, #160
     0073: d65f03c0  ret
+  Fn key=__wrela_abort frame=144 bytes
+    0000: d10243ff  sub sp, sp, #144
+    0001: f90043fe  str lr, [sp, #128]
+    0002: f90003e0  str x0, [sp, #0]
+    0003: f90007e1  str x1, [sp, #8]
+    0004: d2800009  movz x9, #0x0
+    0005: f2a80009  movk x9, #0x4000, lsl #16
+    0006: f2c00009  movk x9, #0x0, lsl #32
+    0007: f2e00009  movk x9, #0x0, lsl #48
+    0008: f9000be9  str x9, [sp, #16]
+    0009: f9400be9  ldr x9, [sp, #16]
+    0010: f941052a  ldr x10, [x9, #520]
+    0011: f9000fea  str x10, [sp, #24]
+    0012: d2800009  movz x9, #0x0
+    0013: f2a00009  movk x9, #0x0, lsl #16
+    0014: f2c00009  movk x9, #0x0, lsl #32
+    0015: f2e00009  movk x9, #0x0, lsl #48
+    0016: f90013e9  str x9, [sp, #32]
+    0017: f9400fe9  ldr x9, [sp, #24]
+    0018: f94013ea  ldr x10, [sp, #32]
+    0019: eb0a013f  cmp x9, x10
+    0020: 9a9f07eb  cset x11, ne
+    0021: f90017eb  str x11, [sp, #40]
+    0022: f94017e9  ldr x9, [sp, #40]
+    0023: b40000a9  cbz x9, #20
+    0024: 94000000  bl <finish_abort>
+    0025: f9001be0  str x0, [sp, #48]
+    0026: 14000027  b #156
+    0027: 14000001  b #4
+    0028: d2800029  movz x9, #0x1
+    0029: f2a00009  movk x9, #0x0, lsl #16
+    0030: f2c00009  movk x9, #0x0, lsl #32
+    0031: f2e00009  movk x9, #0x0, lsl #48
+    0032: f9001fe9  str x9, [sp, #56]
+    0033: d2800009  movz x9, #0x0
+    0034: f2a80009  movk x9, #0x4000, lsl #16
+    0035: f2c00009  movk x9, #0x0, lsl #32
+    0036: f2e00009  movk x9, #0x0, lsl #48
+    0037: f90023e9  str x9, [sp, #64]
+    0038: f94023e9  ldr x9, [sp, #64]
+    0039: f9401fea  ldr x10, [sp, #56]
+    0040: f901052a  str x10, [x9, #520]
+    0041: 94000000  bl <append_failed_literal>
+    0042: f90027e0  str x0, [sp, #72]
+    0043: f94027e9  ldr x9, [sp, #72]
+    0044: f9002be9  str x9, [sp, #80]
+    0045: f94007e9  ldr x9, [sp, #8]
+    0046: f9002fe9  str x9, [sp, #88]
+    0047: f94003e0  ldr x0, [sp, #0]
+    0048: f94007e1  ldr x1, [sp, #8]
+    0049: f9402fe2  ldr x2, [sp, #88]
+    0050: 94000000  bl <__wrela_console_append_bytes>
+    0051: f90033e0  str x0, [sp, #96]
+    0052: f94033e9  ldr x9, [sp, #96]
+    0053: f9002be9  str x9, [sp, #80]
+    0054: 94000000  bl <append_newline_literal>
+    0055: f90037e0  str x0, [sp, #104]
+    0056: f94037e9  ldr x9, [sp, #104]
+    0057: f9002be9  str x9, [sp, #80]
+    0058: 94000000  bl <__wrela_line_commit>
+    0059: f9003be0  str x0, [sp, #112]
+    0060: f9403be9  ldr x9, [sp, #112]
+    0061: f9002be9  str x9, [sp, #80]
+    0062: 94000000  bl <finish_abort>
+    0063: f9003fe0  str x0, [sp, #120]
+    0064: 14000001  b #4
+    0065: f94043fe  ldr lr, [sp, #128]
+    0066: 910243ff  add sp, sp, #144
+    0067: d65f03c0  ret
+  Fn key=__wrela_abort_tail frame=16 bytes
+    0000: d10043ff  sub sp, sp, #16
+    0001: f90003fe  str lr, [sp, #0]
+    0002: 14000002  b #8
+    0003: 14000001  b #4
+    0004: f94003fe  ldr lr, [sp, #0]
+    0005: 910043ff  add sp, sp, #16
+    0006: d65f03c0  ret
+  Fn key=__wrela_abort_val frame=224 bytes
+    0000: d10383ff  sub sp, sp, #224
+    0001: f9006bfe  str lr, [sp, #208]
+    0002: f90003e0  str x0, [sp, #0]
+    0003: f90007e1  str x1, [sp, #8]
+    0004: f9000be2  str x2, [sp, #16]
+    0005: f9000fe3  str x3, [sp, #24]
+    0006: f90013e4  str x4, [sp, #32]
+    0007: f90017e5  str x5, [sp, #40]
+    0008: d2800009  movz x9, #0x0
+    0009: f2a80009  movk x9, #0x4000, lsl #16
+    0010: f2c00009  movk x9, #0x0, lsl #32
+    0011: f2e00009  movk x9, #0x0, lsl #48
+    0012: f9001be9  str x9, [sp, #48]
+    0013: f9401be9  ldr x9, [sp, #48]
+    0014: f941052a  ldr x10, [x9, #520]
+    0015: f9001fea  str x10, [sp, #56]
+    0016: d2800009  movz x9, #0x0
+    0017: f2a00009  movk x9, #0x0, lsl #16
+    0018: f2c00009  movk x9, #0x0, lsl #32
+    0019: f2e00009  movk x9, #0x0, lsl #48
+    0020: f90023e9  str x9, [sp, #64]
+    0021: f9401fe9  ldr x9, [sp, #56]
+    0022: f94023ea  ldr x10, [sp, #64]
+    0023: eb0a013f  cmp x9, x10
+    0024: 9a9f07eb  cset x11, ne
+    0025: f90027eb  str x11, [sp, #72]
+    0026: f94027e9  ldr x9, [sp, #72]
+    0027: b40000a9  cbz x9, #20
+    0028: 94000000  bl <finish_abort>
+    0029: f9002be0  str x0, [sp, #80]
+    0030: 1400003e  b #248
+    0031: 14000001  b #4
+    0032: d2800029  movz x9, #0x1
+    0033: f2a00009  movk x9, #0x0, lsl #16
+    0034: f2c00009  movk x9, #0x0, lsl #32
+    0035: f2e00009  movk x9, #0x0, lsl #48
+    0036: f9002fe9  str x9, [sp, #88]
+    0037: d2800009  movz x9, #0x0
+    0038: f2a80009  movk x9, #0x4000, lsl #16
+    0039: f2c00009  movk x9, #0x0, lsl #32
+    0040: f2e00009  movk x9, #0x0, lsl #48
+    0041: f90033e9  str x9, [sp, #96]
+    0042: f94033e9  ldr x9, [sp, #96]
+    0043: f9402fea  ldr x10, [sp, #88]
+    0044: f901052a  str x10, [x9, #520]
+    0045: 94000000  bl <append_failed_literal>
+    0046: f90037e0  str x0, [sp, #104]
+    0047: f94037e9  ldr x9, [sp, #104]
+    0048: f9003be9  str x9, [sp, #112]
+    0049: f94007e9  ldr x9, [sp, #8]
+    0050: f9003fe9  str x9, [sp, #120]
+    0051: f94003e0  ldr x0, [sp, #0]
+    0052: f94007e1  ldr x1, [sp, #8]
+    0053: f9403fe2  ldr x2, [sp, #120]
+    0054: 94000000  bl <__wrela_console_append_bytes>
+    0055: f90043e0  str x0, [sp, #128]
+    0056: f94043e9  ldr x9, [sp, #128]
+    0057: f9003be9  str x9, [sp, #112]
+    0058: f9400be0  ldr x0, [sp, #16]
+    0059: f9400fe1  ldr x1, [sp, #24]
+    0060: 94000000  bl <__wrela_fmt_dec>
+    0061: f90047e0  str x0, [sp, #136]
+    0062: f94047e9  ldr x9, [sp, #136]
+    0063: f9004be9  str x9, [sp, #144]
+    0064: f9404be9  ldr x9, [sp, #144]
+    0065: aa0903eb  mov x11, x9
+    0066: f9004feb  str x11, [sp, #152]
+    0067: f9404fe0  ldr x0, [sp, #152]
+    0068: 94000000  bl <__wrela_console_append_line_buf>
+    0069: f90053e0  str x0, [sp, #160]
+    0070: f94053e9  ldr x9, [sp, #160]
+    0071: f9003be9  str x9, [sp, #112]
+    0072: f94017e9  ldr x9, [sp, #40]
+    0073: f90057e9  str x9, [sp, #168]
+    0074: f94013e0  ldr x0, [sp, #32]
+    0075: f94017e1  ldr x1, [sp, #40]
+    0076: f94057e2  ldr x2, [sp, #168]
+    0077: 94000000  bl <__wrela_console_append_bytes>
+    0078: f9005be0  str x0, [sp, #176]
+    0079: f9405be9  ldr x9, [sp, #176]
+    0080: f9003be9  str x9, [sp, #112]
+    0081: 94000000  bl <append_newline_literal>
+    0082: f9005fe0  str x0, [sp, #184]
+    0083: f9405fe9  ldr x9, [sp, #184]
+    0084: f9003be9  str x9, [sp, #112]
+    0085: 94000000  bl <__wrela_line_commit>
+    0086: f90063e0  str x0, [sp, #192]
+    0087: f94063e9  ldr x9, [sp, #192]
+    0088: f9003be9  str x9, [sp, #112]
+    0089: 94000000  bl <finish_abort>
+    0090: f90067e0  str x0, [sp, #200]
+    0091: 14000001  b #4
+    0092: f9406bfe  ldr lr, [sp, #208]
+    0093: 910383ff  add sp, sp, #224
+    0094: d65f03c0  ret
   Fn key=__wrela_console_append_bytes frame=192 bytes
     0000: d10303ff  sub sp, sp, #192
     0001: f9005bfe  str lr, [sp, #176]
@@ -1090,6 +1263,152 @@ Program
     0004: f94003fe  ldr lr, [sp, #0]
     0005: 910043ff  add sp, sp, #16
     0006: d65f03c0  ret
+  Fn key=append_failed_literal frame=192 bytes
+    0000: d10303ff  sub sp, sp, #192
+    0001: f9005ffe  str lr, [sp, #184]
+    0002: d2800009  movz x9, #0x0
+    0003: f2a00009  movk x9, #0x0, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: d28008c9  movz x9, #0x46
+    0008: f2a00009  movk x9, #0x0, lsl #16
+    0009: f2c00009  movk x9, #0x0, lsl #32
+    0010: f2e00009  movk x9, #0x0, lsl #48
+    0011: f90007e9  str x9, [sp, #8]
+    0012: f94003e0  ldr x0, [sp, #0]
+    0013: f94007e1  ldr x1, [sp, #8]
+    0014: 94000000  bl <store_at>
+    0015: f9000be0  str x0, [sp, #16]
+    0016: d2800029  movz x9, #0x1
+    0017: f2a00009  movk x9, #0x0, lsl #16
+    0018: f2c00009  movk x9, #0x0, lsl #32
+    0019: f2e00009  movk x9, #0x0, lsl #48
+    0020: f9000fe9  str x9, [sp, #24]
+    0021: d2800829  movz x9, #0x41
+    0022: f2a00009  movk x9, #0x0, lsl #16
+    0023: f2c00009  movk x9, #0x0, lsl #32
+    0024: f2e00009  movk x9, #0x0, lsl #48
+    0025: f90013e9  str x9, [sp, #32]
+    0026: f9400fe0  ldr x0, [sp, #24]
+    0027: f94013e1  ldr x1, [sp, #32]
+    0028: 94000000  bl <store_at>
+    0029: f90017e0  str x0, [sp, #40]
+    0030: d2800049  movz x9, #0x2
+    0031: f2a00009  movk x9, #0x0, lsl #16
+    0032: f2c00009  movk x9, #0x0, lsl #32
+    0033: f2e00009  movk x9, #0x0, lsl #48
+    0034: f9001be9  str x9, [sp, #48]
+    0035: d2800929  movz x9, #0x49
+    0036: f2a00009  movk x9, #0x0, lsl #16
+    0037: f2c00009  movk x9, #0x0, lsl #32
+    0038: f2e00009  movk x9, #0x0, lsl #48
+    0039: f9001fe9  str x9, [sp, #56]
+    0040: f9401be0  ldr x0, [sp, #48]
+    0041: f9401fe1  ldr x1, [sp, #56]
+    0042: 94000000  bl <store_at>
+    0043: f90023e0  str x0, [sp, #64]
+    0044: d2800069  movz x9, #0x3
+    0045: f2a00009  movk x9, #0x0, lsl #16
+    0046: f2c00009  movk x9, #0x0, lsl #32
+    0047: f2e00009  movk x9, #0x0, lsl #48
+    0048: f90027e9  str x9, [sp, #72]
+    0049: d2800989  movz x9, #0x4c
+    0050: f2a00009  movk x9, #0x0, lsl #16
+    0051: f2c00009  movk x9, #0x0, lsl #32
+    0052: f2e00009  movk x9, #0x0, lsl #48
+    0053: f9002be9  str x9, [sp, #80]
+    0054: f94027e0  ldr x0, [sp, #72]
+    0055: f9402be1  ldr x1, [sp, #80]
+    0056: 94000000  bl <store_at>
+    0057: f9002fe0  str x0, [sp, #88]
+    0058: d2800089  movz x9, #0x4
+    0059: f2a00009  movk x9, #0x0, lsl #16
+    0060: f2c00009  movk x9, #0x0, lsl #32
+    0061: f2e00009  movk x9, #0x0, lsl #48
+    0062: f90033e9  str x9, [sp, #96]
+    0063: d28008a9  movz x9, #0x45
+    0064: f2a00009  movk x9, #0x0, lsl #16
+    0065: f2c00009  movk x9, #0x0, lsl #32
+    0066: f2e00009  movk x9, #0x0, lsl #48
+    0067: f90037e9  str x9, [sp, #104]
+    0068: f94033e0  ldr x0, [sp, #96]
+    0069: f94037e1  ldr x1, [sp, #104]
+    0070: 94000000  bl <store_at>
+    0071: f9003be0  str x0, [sp, #112]
+    0072: d28000a9  movz x9, #0x5
+    0073: f2a00009  movk x9, #0x0, lsl #16
+    0074: f2c00009  movk x9, #0x0, lsl #32
+    0075: f2e00009  movk x9, #0x0, lsl #48
+    0076: f9003fe9  str x9, [sp, #120]
+    0077: d2800889  movz x9, #0x44
+    0078: f2a00009  movk x9, #0x0, lsl #16
+    0079: f2c00009  movk x9, #0x0, lsl #32
+    0080: f2e00009  movk x9, #0x0, lsl #48
+    0081: f90043e9  str x9, [sp, #128]
+    0082: f9403fe0  ldr x0, [sp, #120]
+    0083: f94043e1  ldr x1, [sp, #128]
+    0084: 94000000  bl <store_at>
+    0085: f90047e0  str x0, [sp, #136]
+    0086: d28000c9  movz x9, #0x6
+    0087: f2a00009  movk x9, #0x0, lsl #16
+    0088: f2c00009  movk x9, #0x0, lsl #32
+    0089: f2e00009  movk x9, #0x0, lsl #48
+    0090: f9004be9  str x9, [sp, #144]
+    0091: d2800409  movz x9, #0x20
+    0092: f2a00009  movk x9, #0x0, lsl #16
+    0093: f2c00009  movk x9, #0x0, lsl #32
+    0094: f2e00009  movk x9, #0x0, lsl #48
+    0095: f9004fe9  str x9, [sp, #152]
+    0096: f9404be0  ldr x0, [sp, #144]
+    0097: f9404fe1  ldr x1, [sp, #152]
+    0098: 94000000  bl <store_at>
+    0099: f90053e0  str x0, [sp, #160]
+    0100: d28000e9  movz x9, #0x7
+    0101: f2a00009  movk x9, #0x0, lsl #16
+    0102: f2c00009  movk x9, #0x0, lsl #32
+    0103: f2e00009  movk x9, #0x0, lsl #48
+    0104: f90057e9  str x9, [sp, #168]
+    0105: f94057e0  ldr x0, [sp, #168]
+    0106: 94000000  bl <__wrela_console_append_line_buf>
+    0107: f9005be0  str x0, [sp, #176]
+    0108: f9405be0  ldr x0, [sp, #176]
+    0109: 14000002  b #8
+    0110: 14000001  b #4
+    0111: f9405ffe  ldr lr, [sp, #184]
+    0112: 910303ff  add sp, sp, #192
+    0113: d65f03c0  ret
+  Fn key=append_newline_literal frame=48 bytes
+    0000: d100c3ff  sub sp, sp, #48
+    0001: f90017fe  str lr, [sp, #40]
+    0002: d2800009  movz x9, #0x0
+    0003: f2a00009  movk x9, #0x0, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: d2800149  movz x9, #0xa
+    0008: f2a00009  movk x9, #0x0, lsl #16
+    0009: f2c00009  movk x9, #0x0, lsl #32
+    0010: f2e00009  movk x9, #0x0, lsl #48
+    0011: f90007e9  str x9, [sp, #8]
+    0012: f94003e0  ldr x0, [sp, #0]
+    0013: f94007e1  ldr x1, [sp, #8]
+    0014: 94000000  bl <store_at>
+    0015: f9000be0  str x0, [sp, #16]
+    0016: d2800029  movz x9, #0x1
+    0017: f2a00009  movk x9, #0x0, lsl #16
+    0018: f2c00009  movk x9, #0x0, lsl #32
+    0019: f2e00009  movk x9, #0x0, lsl #48
+    0020: f9000fe9  str x9, [sp, #24]
+    0021: f9400fe0  ldr x0, [sp, #24]
+    0022: 94000000  bl <__wrela_console_append_line_buf>
+    0023: f90013e0  str x0, [sp, #32]
+    0024: f94013e0  ldr x0, [sp, #32]
+    0025: 14000002  b #8
+    0026: 14000001  b #4
+    0027: f94017fe  ldr lr, [sp, #40]
+    0028: 9100c3ff  add sp, sp, #48
+    0029: d65f03c0  ret
   Fn key=ascii_digit frame=272 bytes
     0000: d10443ff  sub sp, sp, #272
     0001: f90083fe  str lr, [sp, #256]
@@ -1699,6 +2018,54 @@ Program
     0087: f9403bfe  ldr lr, [sp, #112]
     0088: 910203ff  add sp, sp, #128
     0089: d65f03c0  ret
+  Fn key=finish_abort frame=80 bytes
+    0000: d10143ff  sub sp, sp, #80
+    0001: f90023fe  str lr, [sp, #64]
+    0002: d2800009  movz x9, #0x0
+    0003: f2a00009  movk x9, #0x0, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: d2800009  movz x9, #0x0
+    0008: f2a80009  movk x9, #0x4000, lsl #16
+    0009: f2c00009  movk x9, #0x0, lsl #32
+    0010: f2e00009  movk x9, #0x0, lsl #48
+    0011: f90007e9  str x9, [sp, #8]
+    0012: f94007e9  ldr x9, [sp, #8]
+    0013: f94003ea  ldr x10, [sp, #0]
+    0014: f901052a  str x10, [x9, #520]
+    0015: d2800009  movz x9, #0x0
+    0016: f2a80009  movk x9, #0x4000, lsl #16
+    0017: f2c00009  movk x9, #0x0, lsl #32
+    0018: f2e00009  movk x9, #0x0, lsl #48
+    0019: f9000be9  str x9, [sp, #16]
+    0020: f9400be9  ldr x9, [sp, #16]
+    0021: f940252a  ldr x10, [x9, #72]
+    0022: f9000fea  str x10, [sp, #24]
+    0023: d2800029  movz x9, #0x1
+    0024: f2a00009  movk x9, #0x0, lsl #16
+    0025: f2c00009  movk x9, #0x0, lsl #32
+    0026: f2e00009  movk x9, #0x0, lsl #48
+    0027: f90013e9  str x9, [sp, #32]
+    0028: f9400fe9  ldr x9, [sp, #24]
+    0029: f94013ea  ldr x10, [sp, #32]
+    0030: 8b0a012b  add x11, x9, x10
+    0031: f90017eb  str x11, [sp, #40]
+    0032: d2800009  movz x9, #0x0
+    0033: f2a80009  movk x9, #0x4000, lsl #16
+    0034: f2c00009  movk x9, #0x0, lsl #32
+    0035: f2e00009  movk x9, #0x0, lsl #48
+    0036: f9001be9  str x9, [sp, #48]
+    0037: f9401be9  ldr x9, [sp, #48]
+    0038: f94017ea  ldr x10, [sp, #40]
+    0039: f900252a  str x10, [x9, #72]
+    0040: 94000000  bl <__wrela_abort_tail>
+    0041: f9001fe0  str x0, [sp, #56]
+    0042: 14000002  b #8
+    0043: 14000001  b #4
+    0044: f94023fe  ldr lr, [sp, #64]
+    0045: 910143ff  add sp, sp, #80
+    0046: d65f03c0  ret
   Fn key=guest_nested frame=224 bytes
     0000: d280001c  turn-frame[0] x28 <guest_nested>
     0001: f2a0001c  turn-frame[1] x28 <guest_nested>
