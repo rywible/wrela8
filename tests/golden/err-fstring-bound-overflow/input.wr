@@ -1,0 +1,21 @@
+module examples.err_fstring_bound_overflow
+
+# plans/M9.md item K1: an f-string's summed Format bound must not
+# overflow a layout-representable `String[..N]` capacity. Each operand's
+# bound (2^60) fits alone; the sum (2^61) does not. Pre-fix accepted the
+# sum in i128 and later panicked at lowering (`capacity overflow`).
+
+pub struct Big:
+    n: u8
+
+    fn max_formatted_len() -> usize:
+        return 1152921504606846976
+
+    fn format(read self) -> String[..1152921504606846976]:
+        return "x"
+
+@test
+fn sum_two():
+    a = Big(n=1)
+    b = Big(n=2)
+    _ = f"{a}{b}"

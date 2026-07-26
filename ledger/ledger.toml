@@ -821,6 +821,8 @@ tests = [
   "golden/err-fstring-secret",
   "golden/err-fstring-no-widen",
   "golden/err-fstring-in-isr",
+  "golden/err-fstring-bound-overflow",
+  "golden/err-string-concat-overflow",
 ]
 note = """02-language.md §1.1 / 05-library.md §6: `f\"...\"` type-checks every interpolation and sums literal bytes plus each operand's `max_formatted_len` into `String[..N]`. plans/M9.md item D (decisions 260–264).
 
@@ -832,7 +834,9 @@ note = """02-language.md §1.1 / 05-library.md §6: `f\"...\"` type-checks every
 
 **Pinned.** `check-fstring-bounds`: `f\"{42}\"` settle `2052050`; inferred `f\"a={a}\"` → `4097061`; `f\"n={42u32} ok={false}\"` → `13110061` (value `n=42 ok=false`), braces `9123108`, `label(7)` → `4105100`, bound `21` (eval/value pins; mwir stays comptime-only `Store.init` by design — guest f-string / Format lowering is owned by `check-format-fstring-guest`, plans/M9.md item KK decision 365). Item D2 extended the golden to lead with the literal/inferred spellings.
 
-**Guest tier (plans/M9.md item D3, decision 320).** Same `check-format-fstring-guest` pins f-string lowering in a guest-reachable `@actor` method (mwir `FormatScalar`/`StringConcat`, boot `19`)."""
+**Guest tier (plans/M9.md item D3, decision 320).** Same `check-format-fstring-guest` pins f-string lowering in a guest-reachable `@actor` method (mwir `FormatScalar`/`StringConcat`, boot `19`).
+
+**plans/M9.md item K1 (decisions 540–544).** A summed / concatenated capacity must be layout-representable: `8*(1+N)` fits in `usize` (`string_capacity_fits`). Pre-fix accepted i128 sums (including `2^60+2^60`) and then panicked at lowering (`capacity overflow`). Pinned: `golden/err-fstring-bound-overflow`, `golden/err-string-concat-overflow`. Literal `String[..N]` annotations and Format bounds use the same gate."""
 
 [[clause]]
 id = "comptime.eval.no-panics"
@@ -1434,10 +1438,12 @@ tests = [
   "golden/err-isr-for",
   "golden/err-isr-dma",
   "golden/err-isr-plain-field",
+  "golden/err-now-in-isr",
+  "golden/err-now-default-in-isr",
   "golden/check-irq-bind",
   "golden/check-interrupt-cell",
 ]
-note = "03-hardware.md §6: \"The binding — not a keyword — makes the compiler restrict the function's transitive effects to the ISR set: read/write its device's typed MMIO and acknowledge its source; read/write that driver's `InterruptCell[T]` state; call helpers whose inferred effects fit the same set; and `wake(...)` a statically bound task. It cannot allocate, await, block, call another actor, touch device-owned DMA payloads, drain unbounded work, use floating point, or format.\"\n\nplans/M7.md item G, decision 3: the same whole-graph reachability `eval::legal::classify` already computes — a third color. Seeds are every `IrqCap.bind` handler `FnRef` in the module (`collect_isr_roots`); forward reachability marks the ISR's transitive closure; any node in that closure whose signature or body carries a forbidden effect is rejected, with the call path from the ISR root naming the effect (`eval::legal::check_isr_effects`, wired beside `check_provenance` in `sema::check_typed`).\n\n**Allowed today.** Typed MMIO read/write (`golden/check-irq-bind`). `InterruptCell[T]` (`golden/check-interrupt-cell`). `wake` (`hardware.bottom-half`).\n\n**Source-shaped rejections.** Floating point (`golden/err-isr-float` / `err-isr-float-via-helper`); `while` (`golden/err-isr-while`) and `for` (`golden/err-isr-for`) as \"drain unbounded work\"; DMA/`own` (`golden/err-isr-dma`); plain field channel (`golden/err-isr-plain-field`). Bring-up transitions, `IrqCap.bind`/`unmask`, `Group.*`, and `now()` inside the closure are also named forbidden.\n\n**Unrepresentable in a sync ISR's transitive closure today.** An ISR must be a plain `fn`; a plain `fn` cannot `await`/`send`/`with group` (earlier diagnostics). Those arms are unit-tested in `eval::legal::tests::isr_forbidden_reason_names_every_doc_effect`. **Format** fails closed at `bodies` (`f-strings are not checked yet`). **Allocate** has no runtime allocator node yet. Both stay left closed, named, until a typed node exists for the exhaustive match to refuse.\n\n**Left closed, named.** Receipts (item E).\n\n**Item I's sweep (2026-07-25) — \"Receipts (item E)\" left-closed line is stale.** E4 closed receipt resolve on `@task`; format/allocate remain unrepresentable as noted."
+note = "03-hardware.md §6: \"The binding — not a keyword — makes the compiler restrict the function's transitive effects to the ISR set: read/write its device's typed MMIO and acknowledge its source; read/write that driver's `InterruptCell[T]` state; call helpers whose inferred effects fit the same set; and `wake(...)` a statically bound task. It cannot allocate, await, block, call another actor, touch device-owned DMA payloads, drain unbounded work, use floating point, or format.\"\n\nplans/M7.md item G, decision 3: the same whole-graph reachability `eval::legal::classify` already computes — a third color. Seeds are every `IrqCap.bind` handler `FnRef` in the module (`collect_isr_roots`); forward reachability marks the ISR's transitive closure; any node in that closure whose signature or body carries a forbidden effect is rejected, with the call path from the ISR root naming the effect (`eval::legal::check_isr_effects`, wired beside `check_provenance` in `sema::check_typed`).\n\n**Allowed today.** Typed MMIO read/write (`golden/check-irq-bind`). `InterruptCell[T]` (`golden/check-interrupt-cell`). `wake` (`hardware.bottom-half`).\n\n**Source-shaped rejections.** Floating point (`golden/err-isr-float` / `err-isr-float-via-helper`); `while` (`golden/err-isr-while`) and `for` (`golden/err-isr-for`) as \"drain unbounded work\"; DMA/`own` (`golden/err-isr-dma`); plain field channel (`golden/err-isr-plain-field`). Bring-up transitions, `IrqCap.bind`/`unmask`, `Group.*`, and `now()` inside the closure are also named forbidden. plans/M9.md item K1: `now()` in a parameter default is scanned with the callee (`golden/err-now-default-in-isr`); direct body use remains `golden/err-now-in-isr`.\n\n**Unrepresentable in a sync ISR's transitive closure today.** An ISR must be a plain `fn`; a plain `fn` cannot `await`/`send`/`with group` (earlier diagnostics). Those arms are unit-tested in `eval::legal::tests::isr_forbidden_reason_names_every_doc_effect`. **Format** fails closed at `bodies` (`f-strings are not checked yet`). **Allocate** has no runtime allocator node yet. Both stay left closed, named, until a typed node exists for the exhaustive match to refuse.\n\n**Left closed, named.** Receipts (item E).\n\n**Item I's sweep (2026-07-25) — \"Receipts (item E)\" left-closed line is stale.** E4 closed receipt resolve on `@task`; format/allocate remain unrepresentable as noted."
 [[clause]]
 id = "hardware.bottom-half"
 doc = "03-hardware.md#6"
@@ -1686,6 +1692,8 @@ tests = [
   "golden/err-duration-overflow",
   "golden/err-now-in-comptime",
   "golden/err-now-in-isr",
+  "golden/err-now-default-in-comptime",
+  "golden/err-now-default-in-isr",
   "golden/boot-instant-monotonic",
   "golden/boot-deadline-cancel",
   "xtask:repro",
@@ -1699,6 +1707,8 @@ note = """05-library.md §5: `Duration` constructors are ordinary phase-neutral 
 **Constructors.** Ordinary checked `*` overflow — `error[comptime]: arithmetic overflow in '*'` while evaluating `ms` (`golden/err-duration-overflow`). Arith pinned by value in `golden/check-duration-arith` (equality against `ns(...)`, not `.nanos` peeks).
 
 **`now()`.** Stays intrinsic. Comptime refusal unchanged (`golden/err-now-in-comptime`: "`is_ready` uses `now()` (a runtime-only clock read)"). ISR refusal via `eval::legal::check_isr_effects` (`golden/err-now-in-isr`: "uses a runtime clock read (`now()` — not in the ISR effect set)"). Guest lowering: FlowWir `Now` → `codegen::emit_now` trapping load at `CLOCK_MMIO_ADDR`; VMM returns `monotonic_ns()` and logs `ChoiceEntry::ClockRead` (reuses M6's entry — no new tag). Monotonicity proven by `golden/boot-instant-monotonic` (two successive `now()` reads; `Instant.less_than` asserts order) plus existing `xtask:repro` clock-log tamper on `boot-deadline-cancel`.
+
+**plans/M9.md item K1 (decisions 540–544).** Parameter defaults are scanned with the fn for both comptime legality and ISR effects. Call sites store `None` for an omitted slot, so `now()` in `TypedParam::default` was invisible to a body-only scan — `fn stamp(t: Instant = now())` looked Legal/ISR-clean while an omitted-arg call still evaluated `now()`. Pinned: `golden/err-now-default-in-comptime` (clean `error[comptime]`, not the pre-fix `internal error:`), `golden/err-now-default-in-isr` (`on_queue_irq -> stamp`). Field defaults remain the disclosed `eval::legal` scope boundary.
 
 **Instant opacity.** Public API is `now()` + methods; fields are non-`pub`. Cross-module field privacy is a pre-existing language gap (not opened here); Instant struct-literal construction from outside is currently possible and recorded as residue.
 
@@ -1883,7 +1893,23 @@ note = """05-library.md §7: bounded collections and array whole-consumption. pl
 
 **Backend (MM).** Nested field/index assignment and nested `mut self` / `mut` arg places lower via RMW (`Project`/`IndexGet` out, `SetField`/`IndexSet`, write back). `golden/check-nested-place-assign`, `golden/check-list-backend`, `golden/check-slotmap-backend` pin method asm. `diff-eval` agrees on the List/SlotMap/`map_take` cases (no longer lowering-skipped).
 
-**Refused by name (not approximated).** Free/method type params beyond the struct's (`get[R]`) — JJ; nested `SlotMap.Key` path; `reserve`/`resolve` (M10); `InterruptCell` assign through a nested field chain (live STLR only knows bare `self.<cell>`); `List.lend`/`each` CallValue (closure/fn-value call); nested `mut` as an awaited/`send` actor-call argument."""
+**Refused by name (not approximated).** Free/method type params beyond the struct's (`get[R]`) — JJ; nested `SlotMap.Key` path; `reserve`/`resolve` (M10); `InterruptCell` assign through a nested field chain (live STLR only knows bare `self.<cell>`); `List.lend`/`each` CallValue (closure/fn-value call); nested `mut` as an awaited/`send` actor-call argument.
+
+**plans/M9.md item K1.** Cross-map key discipline depends on distinct `map_id`s. Decision 346 made `map_id` caller-minted; 05 §7 says "`SlotMap` mints a fresh non-wrapping instance ID". With colliding caller ids, a key from map A aliases into map B unchanged (property suite only tested distinct ids). See gap `library.collections.slotmap-minted-id`."""
+
+[[clause]]
+id = "library.collections.slotmap-minted-id"
+doc = "05-library.md#7"
+status = "gap"
+note = """05-library.md §7: "`SlotMap` mints a fresh non-wrapping instance ID"; lookups validate `(map_id, index, generation)` so foreign keys miss instead of aliasing. plans/M9.md item F2 decision 346 implemented `map_id` as a **construction argument (caller-minted)** and pinned foreign/stale/fabricated misses only under distinct ids (`golden/check-slotmap-key-discipline`).
+
+**Hole (plans/M9.md item K1).** Two `SlotMap[u64, 2](map_id=1)` instances: insert into A, then `b.get_value(k_from_a)` returns `Some` — A's key is usable in B unchanged. Fabricating `Key(map_id=<known>, index=0, generation=0)` into a map whose id the caller chose also hits; that is same-map key reconstruction (Key is a data struct with pub fields), not the cross-map property — the colliding-id case is.
+
+**Missing.** A mint that assigns a fresh non-wrapping instance id without caller choice (compiler intrinsic, image-wide counter, or equivalent), plus a golden that two maps constructed without supplying ids cannot share a key. Alternative docs-win (caller responsibility) would invert ground-truth rule 1 against 05 §7's "mints".
+
+**User-visible consequence.** Cross-map key safety is conditional on caller discipline decision 346 assumed but did not enforce; the absolute property item K seeded is false today.
+
+**Flip when** construction no longer takes a caller `map_id` (or uniqueness is enforced), and a golden shows two maps' keys never alias. Opened by plans/M9.md item K1 (decision 543) rather than half-fixing uniqueness in the sweep."""
 
 [[clause]]
 id = "compiler.fuzz.measured-reach"

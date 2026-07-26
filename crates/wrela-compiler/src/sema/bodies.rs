@@ -1645,6 +1645,12 @@ fn validate_format_contract(
         return Err(types::secret_has_no_format(span));
     }
     let bound = format_bound_from_body(&max_fn.body, span)?;
+    if !string_capacity_fits(i128::from(bound)) {
+        return Err(type_error(
+            format!("Format max_formatted_len bound {bound} is out of range for `String[..N]`"),
+            span,
+        ));
+    }
     let Type::String(n_expr) = &fmt_fn.ret else {
         return Err(type_error(
             "Format.format must return `String[..N]`".to_string(),
@@ -2524,6 +2530,24 @@ pub(crate) fn literal_array_len(e: &Expr) -> Option<i128> {
         Expr::Int(_, text) => parse_int_literal(text),
         _ => None, // needs comptime evaluation; skip the arity check rather than fail closed.
     }
+}
+
+/// Whether `n` is a layout-representable `String[..N]` capacity
+/// (plans/M9.md item K1). Layout is one length word plus `N` byte slots
+/// (`mwir::size_of`: `8 * (1 + N)`). An i128 sum that fits only in i128
+/// (or a usize that overflows the slot product) used to typecheck and
+/// then panic the compiler at lowering.
+pub(crate) fn string_capacity_fits(n: i128) -> bool {
+    if n < 0 {
+        return false;
+    }
+    let Ok(n) = usize::try_from(n) else {
+        return false;
+    };
+    const SLOT: usize = 8;
+    n.checked_add(1)
+        .and_then(|words| words.checked_mul(SLOT))
+        .is_some()
 }
 
 /// Resolves a pattern's (or a leading-dot expression's) variant payload
@@ -3836,6 +3860,12 @@ fn check_string_add(
     let sum = ln
         .checked_add(rn)
         .ok_or_else(|| type_error("String concatenation capacity overflows".to_string(), span))?;
+    if !string_capacity_fits(sum) {
+        return Err(type_error(
+            "String concatenation capacity overflows".to_string(),
+            span,
+        ));
+    }
     Ok(Some(TypedExpr {
         ty: Type::String(Box::new(Expr::Int(span, sum.to_string()))),
         kind: TypedExprKind::Binary(BinOp::Add, Box::new(lt), Box::new(rt)),

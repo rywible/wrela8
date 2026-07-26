@@ -993,8 +993,13 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
                 "String capacity is not a literal (unsupported by the layout fn)".to_string()
             })?;
+            if !crate::sema::bodies::string_capacity_fits(n) {
+                return Err("String capacity out of range".to_string());
+            }
             let n = usize::try_from(n).map_err(|_| "String capacity out of range".to_string())?;
-            Ok(SLOT * (1 + n))
+            Ok(SLOT
+                .checked_mul(1 + n)
+                .ok_or_else(|| "String capacity out of range".to_string())?)
         }
         Type::Fn(_, _) => Err("sizing a `fn` value type is not implemented yet".to_string()),
         Type::Generic(_) => {

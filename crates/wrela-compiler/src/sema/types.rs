@@ -4135,7 +4135,20 @@ fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
     }
     expect_arity(n, 1)?;
     match &n.args[0] {
-        GenericArg::Bound(e) => Ok(Type::String(Box::new(e.clone()))),
+        GenericArg::Bound(e) => {
+            // plans/M9.md item K1: refuse a literal capacity the layout
+            // fn cannot represent (same rule as concat / f-string sums).
+            if let Some(cap) = crate::sema::bodies::literal_array_len(e) {
+                if !crate::sema::bodies::string_capacity_fits(cap) {
+                    return Err(SemaError::at(
+                        "type",
+                        "`String[..N]` capacity is out of range".to_string(),
+                        n.span,
+                    ));
+                }
+            }
+            Ok(Type::String(Box::new(e.clone())))
+        }
         // `String[CAP]` (no `..`) — exact form, refused by name.
         // Bound form `String[..CAP]` is always `GenericArg::Bound`.
         GenericArg::Type(ast::Type::Named(_inner)) if _inner.args.is_empty() => Err(SemaError::at(

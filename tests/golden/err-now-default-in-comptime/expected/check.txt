@@ -1,0 +1,2 @@
+error[comptime]: `comptime assert` requires a comptime-legal closure, but `stamp` is not comptime-callable at 12:5
+  `stamp` uses `now()` (a runtime-only clock read)

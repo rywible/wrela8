@@ -1,0 +1,13 @@
+module examples.err_now_default_in_comptime
+
+# plans/M9.md item K1: `now()` in a parameter default is a runtime-only
+# clock read. Before the fix, legality scanned only the fn body, so
+# `stamp` was Legal and evaluating an omitted-arg call abandoned with
+# `internal error: unknown/runtime-only builder intrinsic now`.
+
+fn stamp(t: Instant = now()) -> bool:
+    return true
+
+pub fn check() -> bool:
+    comptime assert stamp(), "clock via default"
+    return true

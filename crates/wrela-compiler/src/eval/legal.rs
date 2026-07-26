@@ -67,11 +67,15 @@
 //! (typed.rs: an omitted, defaulted field is elided, its default living
 //! once on `TypedStruct::field_defaults`) — so a fn that constructs a
 //! struct while leaving a defaulted field to its default does not, in
-//! its own typed body, carry whatever that default itself calls. Since
-//! nothing illegal is representable anywhere yet (see above), this has
-//! no effect on any verdict today; it is recorded here as a deliberate,
-//! disclosed boundary for whoever revisits this once M5 makes an illegal
-//! field default constructible, rather than silently mishandled.
+//! its own typed body, carry whatever that default itself calls. That
+//! boundary still stands for *field* defaults.
+//!
+//! **Parameter defaults are not in that boundary** (plans/M9.md item K1):
+//! `TypedParam::default` is scanned with the fn's body for both
+//! comptime legality and ISR effects. Call sites store `None` for an
+//! omitted slot, so the intrinsic/`now()` lives only on the param; a
+//! body-only scan let `fn stamp(t: Instant = now())` look Legal and
+//! ISR-clean while an omitted-arg call still evaluated `now()`.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -941,6 +945,15 @@ fn build_nodes(program: &TypedProgram) -> BTreeMap<String, NodeInfo> {
 fn insert_fn_node(nodes: &mut BTreeMap<String, NodeInfo>, key: String, f: &TypedFn) {
     let mut scan = BodyScan::default();
     scan_stmts(&f.body, &mut scan);
+    // plans/M9.md item K1: omitted-arg calls leave `None` in the Call's
+    // arg list; the default expression lives only on `TypedParam`. Scan
+    // it here so `now()` (and any other illegal op) in a default marks
+    // the fn Illegal for comptime the same way a body use would.
+    for p in &f.params {
+        if let Some(def) = &p.default {
+            scan_expr(def, &mut scan);
+        }
+    }
     // Plans/M6.md item A: an `async fn`'s own color is itself an async
     // operation (02-language.md §12: "free of ... async/actor
     // operations" names the fn, not merely its statements) —
@@ -2255,6 +2268,15 @@ fn isr_forbidden_of(program: &TypedProgram, key: &str) -> Option<String> {
     }
     let mut scan = BodyScan::default();
     scan_isr_forbidden_stmts(&f.body, &mut scan);
+    // plans/M9.md item K1: same as `insert_fn_node` — param defaults are
+    // part of calling the fn with an omitted arg. Without this, an ISR
+    // that calls `stamp()` with `fn stamp(t: Instant = now())` never saw
+    // `now()` in either body.
+    for p in &f.params {
+        if let Some(def) = &p.default {
+            scan_isr_forbidden_expr(def, &mut scan);
+        }
+    }
     scan.illegal.map(|r| format!("uses {r}"))
 }
 

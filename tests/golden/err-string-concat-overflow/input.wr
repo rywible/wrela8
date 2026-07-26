@@ -1,0 +1,8 @@
+module examples.err_string_concat_overflow
+
+# plans/M9.md item K1: `String[..N] + String[..M]` must refuse when
+# N+M is not layout-representable. Pre-fix accepted the i128 sum and
+# reported only a return-type mismatch against `String[..2^64]`.
+
+fn add(a: String[..1152921504606846976], b: String[..1152921504606846976]) -> String[..1]:
+    return a + b
