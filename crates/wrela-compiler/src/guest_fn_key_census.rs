@@ -84,13 +84,9 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
             "append_newline_literal",
             "copy_bytes_range",
             "copy_line_buf_range",
-            "extract_one",
             "finish_abort",
-            "load_at",
             "probe_seed",
-            "reverse_one",
-            "store_at",
-        ], // M10 B2/B3/B4/C
+        ], // M10 B2/B3/B4/C; M11 B drops store_at/load_at/extract_one/reverse_one
     ),
     (
         "asm-placed-index/expected/asm.txt",

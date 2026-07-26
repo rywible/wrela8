@@ -6,38 +6,54 @@ module examples.err_cross_core_checkpoint
 #
 # `__wrela_checkpoint_service` names core 0's own pending word by a baked-in
 # constant (`pending::core_word_addr(0)`, twice), and so does every
-# checkpoint test `codegen::FnCtx::checkpoint` emits at a loop back-edge.
-# That was exactly right while core 0 was the only core that ran turns. Item
-# C2 makes a turn run on core 1 — and a turn on core 1 reaching a loop
-# back-edge would find core 0's word nonzero, call the service, and have it
-# **clear that whole word**: the wake a cross-core reply ring just raised
-# for core 0 would be consumed by a core it was not addressed to, and core 0
-# would park forever. 06-machine.md §5's mask-arm-recheck exists to make a
-# wake unlosable, and this is the one way this item could still lose one.
+# checkpoint test `codegen::FnCtx::checkpoint` emits at an async loop
+# back-edge that is a genuine state cycle (`lower_while_split` — a `while`
+# whose body contains `await`). That was exactly right while core 0 was the
+# only core that ran turns. Item C2 makes a turn run on core 1 — and a turn
+# on core 1 reaching that back-edge would find core 0's word nonzero, call
+# the service, and have it **clear that whole word**: the wake a cross-core
+# reply ring just raised for core 0 would be consumed by a core it was not
+# addressed to, and core 0 would park forever.
 #
-# So it fails closed instead, naming the fn, its core, and why. Lifting it
-# is per-core checkpoint services (and the per-core deadline word they
-# imply) — real work with its own oracles, not something to smuggle in
-# behind a cross-core ring.
+# plans/M11.md decision 740: sync `@budget` loops no longer emit
+# checkpoints (trip counters only), so a sync `while` on core 1 is legal.
+# This oracle therefore uses an **async method loop with `await` inside** —
+# the remaining half that still splices `Reloc::CheckpointService` onto a
+# `Transition::Jump` back-edge.
 #
 # Vacuity control: change `core=1` to `core=0` and this image builds and
-# boots — the loop is ordinary code, refused only for *where it runs*.
-# Remove the `while` and it builds on core 1 too: no back-edge, no
-# checkpoint, no `Reloc::CheckpointService`, which is why the check keys off
-# that reloc rather than off "is this method complicated".
+# boots. Remove the `while` (or the `await` inside it, collapsing to an
+# intra-state mwir jump with no checkpoint reloc) and it builds on core 1
+# too.
+
+@actor
+pub struct Cell:
+    n: u64
+
+    init(mut self):
+        self.n = 1
+
+    pub fn get(read self) -> u64:
+        return self.n
 
 @actor
 pub struct Spinner:
     n: u64
+    cell: Actor[Cell]
 
-    init(mut self):
+    init(mut self, cell: Actor[Cell]):
         self.n = 0
+        self.cell = cell
 
-    pub fn tick(mut self) -> u64:
+    pub async fn tick(mut self) -> u64:
         i: u64 = 0
-        @budget(bound=1000000)
         while i < 3:
-            self.n = self.n + 1
+            outcome = await self.cell.get()
+            match outcome:
+                case .Ok(v):
+                    self.n = self.n + v
+                case .Err(_):
+                    pass
             i = i + 1
         return self.n
 
@@ -53,9 +69,10 @@ async fn spins_off_core(s: Actor[Spinner]):
 @image
 pub fn build() -> Image:
     img = Image(name="cross-core-checkpoint", target=Target.wrela_machine_v1)
-    s = img.actor(Spinner, mailbox=4, core=1)
+    c = img.actor(Cell, mailbox=4, core=1)
+    s = img.actor(Spinner, mailbox=4, core=1, cell=c)
     img.supervise(
-        children=[s],
+        children=[c, s],
         strategy=Restart.OneForOne,
         intensity=RestartIntensity(max=3, within=seconds(10)),
     )

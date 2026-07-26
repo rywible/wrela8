@@ -38,7 +38,7 @@ Program
     0035: 9a9fa7eb  cset x11, lt
     0036: f90027eb  str x11, [sp, #72]
     0037: f94027e9  ldr x9, [sp, #72]
-    0038: b4000b69  cbz x9, #364
+    0038: b4000a89  cbz x9, #336
     0039: d2800029  movz x9, #0x1
     0040: f2a00009  movk x9, #0x0, lsl #16
     0041: f2c00009  movk x9, #0x0, lsl #32
@@ -121,20 +121,13 @@ Program
     0118: f90047eb  str x11, [sp, #136]
     0119: f94047e9  ldr x9, [sp, #136]
     0120: f9001fe9  str x9, [sp, #56]
-    0121: d28e0009  movz x9, #0x7000
-    0122: f2a80009  movk x9, #0x4000, lsl #16
-    0123: f2c00009  movk x9, #0x0, lsl #32
-    0124: f2e00009  movk x9, #0x0, lsl #48
-    0125: f940012a  ldr x10, [x9]
-    0126: b400004a  cbz x10, #8
-    0127: 94000000  bl <__wrela_checkpoint_service>
-    0128: 17ffffa0  b #-384
-    0129: f94017e0  ldr x0, [sp, #40]
-    0130: 14000002  b #8
-    0131: 14000001  b #4
-    0132: f9404bfe  ldr lr, [sp, #144]
-    0133: 910283ff  add sp, sp, #160
-    0134: d65f03c0  ret
+    0121: 17ffffa7  b #-356
+    0122: f94017e0  ldr x0, [sp, #40]
+    0123: 14000002  b #8
+    0124: 14000001  b #4
+    0125: f9404bfe  ldr lr, [sp, #144]
+    0126: 910283ff  add sp, sp, #160
+    0127: d65f03c0  ret
   Fn key=sum_to frame=128 bytes
     0000: d10203ff  sub sp, sp, #128
     0001: f9003bfe  str lr, [sp, #112]
@@ -164,7 +157,7 @@ Program
     0025: 9a9fa7eb  cset x11, lt
     0026: f9001beb  str x11, [sp, #48]
     0027: f9401be9  ldr x9, [sp, #48]
-    0028: b4000929  cbz x9, #292
+    0028: b4000849  cbz x9, #264
     0029: d2800029  movz x9, #0x1
     0030: f2a00009  movk x9, #0x0, lsl #16
     0031: f2c00009  movk x9, #0x0, lsl #32
@@ -229,20 +222,13 @@ Program
     0090: f90037eb  str x11, [sp, #104]
     0091: f94037e9  ldr x9, [sp, #104]
     0092: f90013e9  str x9, [sp, #32]
-    0093: d28e0009  movz x9, #0x7000
-    0094: f2a80009  movk x9, #0x4000, lsl #16
-    0095: f2c00009  movk x9, #0x0, lsl #32
-    0096: f2e00009  movk x9, #0x0, lsl #48
-    0097: f940012a  ldr x10, [x9]
-    0098: b400004a  cbz x10, #8
-    0099: 94000000  bl <__wrela_checkpoint_service>
-    0100: 17ffffb2  b #-312
-    0101: f9400be0  ldr x0, [sp, #16]
-    0102: 14000002  b #8
-    0103: 14000001  b #4
-    0104: f9403bfe  ldr lr, [sp, #112]
-    0105: 910203ff  add sp, sp, #128
-    0106: d65f03c0  ret
+    0093: 17ffffb9  b #-284
+    0094: f9400be0  ldr x0, [sp, #16]
+    0095: 14000002  b #8
+    0096: 14000001  b #4
+    0097: f9403bfe  ldr lr, [sp, #112]
+    0098: 910203ff  add sp, sp, #128
+    0099: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: loop budget exceeded
     1: offset=0x26 index 
