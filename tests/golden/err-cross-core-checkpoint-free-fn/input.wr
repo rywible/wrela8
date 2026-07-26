@@ -1,23 +1,20 @@
 module examples.err_cross_core_checkpoint_free_fn
 
-# plans/M10.md, pre-migration finding: the sibling of
-# `err-cross-core-checkpoint`, and the hole it left open.
+# plans/M10.md pre-migration finding, amended by plans/M11.md decision 740.
 #
-# That golden pins the refusal for a loop written *inside* a method of an
-# actor placed on a secondary core. This one hoists the identical loop into
-# a free fn. Before the fix, `caller_core`'s `None => 0` fallback attributed
-# the free fn to core 0, the guard passed, and the image built — then hung
-# at boot: core 1 ran the loop, its checkpoint polled and whole-word-cleared
-# **core 0's** pending word, ate the wake `build_rt_xreply` had just raised
-# for core 0, and the VMM reported "every core is parked with an empty
-# pending word". That is exactly the failure `err-cross-core-checkpoint`'s
-# own diagnostic text describes, reached by the one path it did not cover.
+# Originally the sibling of `err-cross-core-checkpoint`: a loop hoisted into
+# a free fn passed the secondary-core guard (unattributed key fell back to
+# "core 0"), then hung at boot by clearing core 0's pending word from core 1.
 #
-# Two controls, both verified by hand and recorded here so a future edit
-# cannot make this golden vacuous:
-#   - move the `while` inline into `Slow.churn` and you get
-#     `err-cross-core-checkpoint`'s original "runs on core 1" diagnostic;
-#   - delete the `while` from `spin` and the same program boots green.
+# Decision 740 retires checkpoints on sync `@budget` loops (trip counters
+# only). A free sync fn with a bounded loop therefore carries no
+# `Reloc::CheckpointService`, cannot eat a cross-core wake, and is legal on
+# a secondary core. This golden is now the positive witness of that close:
+# `spin` stays a free sync helper; `Slow` on core 1 calls it; the boot is
+# green.
+#
+# The async half of the refusal remains `err-cross-core-checkpoint` (an
+# async method loop on core 1 still fails closed).
 
 pub fn spin(n: u64) -> u64:
     i: u64 = 0

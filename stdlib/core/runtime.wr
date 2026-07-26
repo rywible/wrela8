@@ -13,7 +13,7 @@ from core.__image_runtime import N_CORES
 # Addresses match wrela-machine::layout / console — bytes live in the VMM's
 # pages, not the image blob (decision 588).
 # M10 B4: packed CONSOLE_DATA.bytes for append (decisions 594–596);
-# OFF_TEST_LINE_BUF stays B3's TEST_LINE_BUF (named fields).
+# M11 B: OFF_TEST_LINE_BUF is packed `[u8; 21]` (decision 740).
 # M10 C: abort latch + fail counter (decision 591); long-jump is floor
 # category 4 hand-asm (`__wrela_abort_tail`).
 
@@ -87,36 +87,20 @@ pub fn __wrela_line_commit() -> u64:
     CONSOLE_RING.doorbell = 1
     return 0
 
-# M10 B3: `__wrela_fmt_dec` — dumb digit render into OFF_TEST_LINE_BUF.
-# Sole copy after B5 deleted the hand-asm twin. Digit extract and reverse
-# are fully unrolled call sequences (decision 597): a `while` back-edge
-# would splice `__wrela_checkpoint_service` onto console formatting.
-# Named u8 fields avoid index bounds-check aborts; helpers keep the
-# div/mod cold paths from being cloned twenty times.
+# M11 B: `__wrela_fmt_dec` — dumb digit render into OFF_TEST_LINE_BUF.
+# Sole copy after M10 B5 deleted the hand-asm twin. Digit extract, reverse,
+# and append copies are ordinary `@budget`-bounded sync loops over a packed
+# `[u8; 21]` (decisions 740–742). Sync loops emit trip counters, not
+# checkpoints (M11 item A / decision 721), so a back-edge cannot splice
+# `__wrela_checkpoint_service` onto console formatting (M10 decision 597
+# dissolved). Index bounds still emit `bl __wrela_abort_val`; the abort
+# latch (M10 decision 591) keeps a second entry from recursing into print.
+
+const LINE_BUF_SIZE: usize = 21
 
 @layout(runtime, endian=little)
 struct TestLineBuf:
-    @offset(0) b0: u8
-    @offset(1) b1: u8
-    @offset(2) b2: u8
-    @offset(3) b3: u8
-    @offset(4) b4: u8
-    @offset(5) b5: u8
-    @offset(6) b6: u8
-    @offset(7) b7: u8
-    @offset(8) b8: u8
-    @offset(9) b9: u8
-    @offset(10) b10: u8
-    @offset(11) b11: u8
-    @offset(12) b12: u8
-    @offset(13) b13: u8
-    @offset(14) b14: u8
-    @offset(15) b15: u8
-    @offset(16) b16: u8
-    @offset(17) b17: u8
-    @offset(18) b18: u8
-    @offset(19) b19: u8
-    @offset(20) b20: u8
+    bytes: [u8; LINE_BUF_SIZE]
 
 # MACHINE_INFO_BASE + OFF_TEST_LINE_BUF (0x40000000 + 0x100).
 @placed(0x40000100)
@@ -145,136 +129,6 @@ fn ascii_digit(d: u64) -> u8:
         return 57
     return 48
 
-fn store_at(pos: usize, ch: u8):
-    if pos == 0:
-        TEST_LINE_BUF.b0 = ch
-        return
-    if pos == 1:
-        TEST_LINE_BUF.b1 = ch
-        return
-    if pos == 2:
-        TEST_LINE_BUF.b2 = ch
-        return
-    if pos == 3:
-        TEST_LINE_BUF.b3 = ch
-        return
-    if pos == 4:
-        TEST_LINE_BUF.b4 = ch
-        return
-    if pos == 5:
-        TEST_LINE_BUF.b5 = ch
-        return
-    if pos == 6:
-        TEST_LINE_BUF.b6 = ch
-        return
-    if pos == 7:
-        TEST_LINE_BUF.b7 = ch
-        return
-    if pos == 8:
-        TEST_LINE_BUF.b8 = ch
-        return
-    if pos == 9:
-        TEST_LINE_BUF.b9 = ch
-        return
-    if pos == 10:
-        TEST_LINE_BUF.b10 = ch
-        return
-    if pos == 11:
-        TEST_LINE_BUF.b11 = ch
-        return
-    if pos == 12:
-        TEST_LINE_BUF.b12 = ch
-        return
-    if pos == 13:
-        TEST_LINE_BUF.b13 = ch
-        return
-    if pos == 14:
-        TEST_LINE_BUF.b14 = ch
-        return
-    if pos == 15:
-        TEST_LINE_BUF.b15 = ch
-        return
-    if pos == 16:
-        TEST_LINE_BUF.b16 = ch
-        return
-    if pos == 17:
-        TEST_LINE_BUF.b17 = ch
-        return
-    if pos == 18:
-        TEST_LINE_BUF.b18 = ch
-        return
-    if pos == 19:
-        TEST_LINE_BUF.b19 = ch
-        return
-    if pos == 20:
-        TEST_LINE_BUF.b20 = ch
-        return
-    return
-
-fn load_at(pos: usize) -> u8:
-    if pos == 0:
-        return TEST_LINE_BUF.b0
-    if pos == 1:
-        return TEST_LINE_BUF.b1
-    if pos == 2:
-        return TEST_LINE_BUF.b2
-    if pos == 3:
-        return TEST_LINE_BUF.b3
-    if pos == 4:
-        return TEST_LINE_BUF.b4
-    if pos == 5:
-        return TEST_LINE_BUF.b5
-    if pos == 6:
-        return TEST_LINE_BUF.b6
-    if pos == 7:
-        return TEST_LINE_BUF.b7
-    if pos == 8:
-        return TEST_LINE_BUF.b8
-    if pos == 9:
-        return TEST_LINE_BUF.b9
-    if pos == 10:
-        return TEST_LINE_BUF.b10
-    if pos == 11:
-        return TEST_LINE_BUF.b11
-    if pos == 12:
-        return TEST_LINE_BUF.b12
-    if pos == 13:
-        return TEST_LINE_BUF.b13
-    if pos == 14:
-        return TEST_LINE_BUF.b14
-    if pos == 15:
-        return TEST_LINE_BUF.b15
-    if pos == 16:
-        return TEST_LINE_BUF.b16
-    if pos == 17:
-        return TEST_LINE_BUF.b17
-    if pos == 18:
-        return TEST_LINE_BUF.b18
-    if pos == 19:
-        return TEST_LINE_BUF.b19
-    if pos == 20:
-        return TEST_LINE_BUF.b20
-    return 48
-
-# One LSD extract step. If mag is already 0, no-op.
-fn extract_one(mut mag: u64, mut pos: usize):
-    if mag == 0:
-        return
-    store_at(pos, ascii_digit(mag % 10))
-    mag = mag / 10
-    pos = pos +% 1
-    return
-
-# One reverse-swap step. If lo >= hi, no-op.
-fn reverse_one(mut lo: usize, mut hi: usize):
-    if lo < hi:
-        t = load_at(lo)
-        store_at(lo, load_at(hi))
-        store_at(hi, t)
-        lo = lo +% 1
-        hi = hi -% 1
-    return
-
 # ABI: x0=value bits, x1=is_signed (nonzero => signed), x0=len. Magnitude
 # via wrapping negation (decision 652); never checked. Not Format (598).
 pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
@@ -289,69 +143,49 @@ pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
             mag = 0 -% value
     pos: usize = 0
     if neg:
-        store_at(0, 45)
+        TEST_LINE_BUF.bytes[0] = 45
         pos = 1
     digits_start = pos
     if mag == 0:
-        store_at(pos, 48)
+        TEST_LINE_BUF.bytes[pos] = 48
         return (pos +% 1).to[u64]()
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
-    extract_one(mut mag, mut pos)
+    # u64 has at most 20 decimal digits.
+    @budget(bound=20)
+    while mag != 0:
+        TEST_LINE_BUF.bytes[pos] = ascii_digit(mag % 10)
+        mag = mag / 10
+        pos = pos +% 1
     lo = digits_start
     hi = pos -% 1
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
-    reverse_one(mut lo, mut hi)
+    # At most 10 swaps for 20 digits.
+    @budget(bound=10)
+    while lo < hi:
+        t = TEST_LINE_BUF.bytes[lo]
+        TEST_LINE_BUF.bytes[lo] = TEST_LINE_BUF.bytes[hi]
+        TEST_LINE_BUF.bytes[hi] = t
+        lo = lo +% 1
+        hi = hi -% 1
     return pos.to[u64]()
 
-# M10 B4: binary-split packed copy — no `while`/`for` back-edge, so no
-# checkpoint mid-line (decision 597). Recursion depth is log2(n); Call is
-# not a loop Jump, so FnCtx::checkpoint never fires here. Line-buf source
-# is B3's TEST_LINE_BUF via `load_at` (named fields; decision 597).
-fn copy_line_buf_range(bump: usize, start: usize, n: usize):
-    if n == 0:
-        return
-    if n == 1:
-        CONSOLE_DATA.bytes[bump +% start] = load_at(start)
-        return
-    half: usize = n >> 1
-    copy_line_buf_range(bump, start, half)
-    copy_line_buf_range(bump, start +% half, n -% half)
+# M11 B: linear copy under a trip-counter bound (decision 741). Callers
+# have already status-returned on ring overflow, so `n ≤ LINE_BUF_SIZE`
+# / `n ≤ DATA_SIZE` on the green path; a bounds fail still hits the
+# abort latch (decision 742).
+fn copy_line_buf_range(bump: usize, n: usize):
+    i: usize = 0
+    @budget(bound=21)
+    while i < n:
+        CONSOLE_DATA.bytes[bump +% i] = TEST_LINE_BUF.bytes[i]
+        i = i +% 1
+    return
 
-fn copy_bytes_range(src: Bytes, bump: usize, start: usize, n: usize):
-    if n == 0:
-        return
-    if n == 1:
-        CONSOLE_DATA.bytes[bump +% start] = src[start]
-        return
-    half: usize = n >> 1
-    copy_bytes_range(src, bump, start, half)
-    copy_bytes_range(src, bump, start +% half, n -% half)
+fn copy_bytes_range(src: Bytes, bump: usize, n: usize):
+    i: usize = 0
+    @budget(bound=16384)
+    while i < n:
+        CONSOLE_DATA.bytes[bump +% i] = src[i]
+        i = i +% 1
+    return
 
 # M10 B4: append from OFF_TEST_LINE_BUF. No pointer — the buffer address
 # is a placed-static fact. Returns 0 on success, 1 on overflow
@@ -366,7 +200,7 @@ pub fn __wrela_console_append_line_buf(len: usize) -> u64:
         return 1
     if end > DATA_SIZE:
         return 1
-    copy_line_buf_range(bump, 0, len)
+    copy_line_buf_range(bump, len)
     MACHINE_INFO.ring_data_bump = end.to[u64]()
     return 0
 
@@ -382,7 +216,7 @@ pub fn __wrela_console_append_bytes(src: Bytes, len: usize) -> u64:
         return 1
     if end > DATA_SIZE:
         return 1
-    copy_bytes_range(src, bump, 0, len)
+    copy_bytes_range(src, bump, len)
     MACHINE_INFO.ring_data_bump = end.to[u64]()
     return 0
 
@@ -402,28 +236,28 @@ fn finish_abort():
     __wrela_abort_tail()
     return
 
-# "FAILED " via named line-buf stores — Static[Bytes[N]] still cannot
-# coerce to an unbounded Bytes parameter (decision 595), and abort must
-# not depend on harness-interned rodata.
+# "FAILED " via line-buf stores — Static[Bytes[N]] still cannot coerce
+# to an unbounded Bytes parameter (decision 595), and abort must not
+# depend on harness-interned rodata.
 fn append_failed_literal() -> u64:
-    store_at(0, 70)
-    store_at(1, 65)
-    store_at(2, 73)
-    store_at(3, 76)
-    store_at(4, 69)
-    store_at(5, 68)
-    store_at(6, 32)
+    TEST_LINE_BUF.bytes[0] = 70
+    TEST_LINE_BUF.bytes[1] = 65
+    TEST_LINE_BUF.bytes[2] = 73
+    TEST_LINE_BUF.bytes[3] = 76
+    TEST_LINE_BUF.bytes[4] = 69
+    TEST_LINE_BUF.bytes[5] = 68
+    TEST_LINE_BUF.bytes[6] = 32
     return __wrela_console_append_line_buf(7)
 
 fn append_newline_literal() -> u64:
-    store_at(0, 10)
+    TEST_LINE_BUF.bytes[0] = 10
     return __wrela_console_append_line_buf(1)
 
 # M10 C: `__wrela_abort(msg: Bytes)` — ABI x0/x1 = (ptr, len), matching
 # today's Reloc::AbortFixed callers (capacity equals length). Re-entrancy
 # latch at OFF_ABORT_LATCH (decision 591); overflow from append/commit is
-# status (decision 592); wrapping arith (decision 652); no loop back-edge
-# (decision 597 — reuses console helpers).
+# status (decision 592); wrapping arith (decision 652); console helpers
+# use `@budget`-bounded sync loops (M11 decisions 740–742).
 pub fn __wrela_abort(msg: Bytes):
     if MACHINE_INFO.abort_latch != 0:
         finish_abort()

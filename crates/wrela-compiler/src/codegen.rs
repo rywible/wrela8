@@ -350,17 +350,16 @@ use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
 
-/// plans/M6.md decision 6: any *backward* unconditional `Jump` is a loop's
-/// own back-edge (the exact, and only, shape `lower.rs`/`flowwir_lower.rs`
-/// ever emit for one — a `while`/`for`'s own trailing repeat-jump to its
-/// condition check). A forward `Jump` (an `if`/`match` arm's own
-/// end-of-block skip) is never a loop back-edge and never gets a
-/// checkpoint. `target <= idx` (not just `<`) is deliberately inclusive:
-/// no producer ever emits a genuine self-jump, so this can never
-/// misclassify anything in practice, and stays the simpler, dumber check.
-fn is_loop_back_edge(inst: &Inst, idx: usize) -> bool {
-    matches!(inst, Inst::Jump { target } if *target <= idx)
-}
+// plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
+// unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
+// the exact shape `lower.rs` / `flowwir_lower.rs` emit for a `while`/
+// `for` trailing repeat. A forward `Jump` (an `if`/`match` arm's
+// end-of-block skip) is never a back-edge. Sync `emit_fn` does **not**
+// splice a checkpoint onto that back-edge: trip counters (decision 732)
+// are the sole sync discharge. Checkpoints on sync back-edges made
+// console helpers illegal in multi-core images (M10 decision 597 /
+// layout's `Reloc::CheckpointService` ownership check). Async
+// `Transition::Jump` still checkpoints via the same position test.
 
 // --- scratch register numbering (fixed, never reused for anything else) ---
 
@@ -5459,7 +5458,7 @@ fn emit_fn(
 
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut counts = Vec::with_capacity(f.body.len());
-    for (i, inst) in f.body.iter().enumerate() {
+    for inst in f.body.iter() {
         let mut probe = FnCtx {
             frame: &frame,
             layout,
@@ -5470,9 +5469,7 @@ fn emit_fn(
             slot_base: X_SP,
             slot_bias: 0,
         };
-        if is_loop_back_edge(inst, i) {
-            probe.checkpoint();
-        }
+        // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
         emit_one(inst, f, &mut probe)?;
         counts.push(probe.words.len());
     }
@@ -5496,10 +5493,11 @@ fn emit_fn(
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
-    for (i, inst) in f.body.iter().enumerate() {
-        if is_loop_back_edge(inst, i) {
-            ctx.checkpoint();
-        }
+    for inst in f.body.iter() {
+        // plans/M11.md decision 740: sync loop back-edges carry trip
+        // counters only — no `FnCtx::checkpoint` (M10 decision 597
+        // dissolved for console helpers; multi-core layout ownership
+        // of `Reloc::CheckpointService` stays async-only).
         emit_one(inst, f, &mut ctx)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
@@ -5539,14 +5537,13 @@ fn emit_fn(
 //      from that state's own 0-based local index to its real position in
 //      the flattened stream at flatten time (`remap_local_jumps`) — after
 //      that one rewrite, every downstream mechanism (the two-pass
-//      word-count sizing, `FnCtx::b_unconditional`/`cbz`, decision 6's own
-//      loop-back-edge checkpoint test) is completely unaware it is looking
-//      at a flattened multi-state program rather than an ordinary mwir
-//      body; the exact same `is_loop_back_edge`-style position test
-//      (`target flat index <= this flat index`) that already drives sync
-//      fns' own checkpoints drives an async fn's `Transition::Jump`-shaped
-//      loop back-edges too (`lower_while_split`'s own state-cycle shape),
-//      with no new heuristic needed.
+//      word-count sizing, `FnCtx::b_unconditional`/`cbz`) is completely
+//      unaware it is looking at a flattened multi-state program rather
+//      than an ordinary mwir body. Async `Transition::Jump` back-edges
+//      still get decision 6's checkpoint via `target_flat <= flat_idx`
+//      (`lower_while_split`'s state-cycle shape); sync `emit_fn` no
+//      longer splices checkpoints onto mwir back-edges (plans/M11.md
+//      decision 740 — trip counters only).
 //   3. Each state's own `Transition`, compiled as one more "flat position"
 //      immediately after that state's own ops (so a local jump to
 //      "one past this state's last op" — legal, `flowwir_lower.rs`'s own
@@ -8843,12 +8840,13 @@ fn emit_transition(
         Transition::Return(value) => emit_one(&Inst::Return { value: *value }, f, ctx),
         Transition::Jump(target_state) => {
             let target_flat = state_flat_base[*target_state];
-            // decision 6: every loop back-edge gets a checkpoint — a
-            // `Transition::Jump` is only ever backward for a loop's own
+            // decision 6: every *async* loop back-edge gets a checkpoint —
+            // a `Transition::Jump` is only ever backward for a loop's own
             // state-cycle repeat (`flowwir_lower.rs`'s own
-            // `lower_while_split`); the identical position test
-            // (`is_loop_back_edge`) that drives a sync fn's back-edges
-            // drives this one too. plans/M6.md item F: this back-edge is
+            // `lower_while_split`); the position test `target_flat <=
+            // flat_idx` is the same classification sync mwir once used
+            // (plans/M11.md decision 740 retires the sync half — trip
+            // counters only). plans/M6.md item F: this back-edge is
             // also where a spinning turn's own cancellation is observed
             // (decision 7's flip witness — a deterministic iteration
             // count, never mid-instruction).

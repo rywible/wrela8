@@ -1,1 +1,2 @@
-error[build]: the runtime test tier could not lay out the test image: `spin` contains a checkpoint (a loop back-edge) and is not owned by any declared actor or driver, so this build cannot prove which core it runs on. In a multi-core image that is refused: a checkpoint serviced from a secondary core clears core 0's pending word and eats the wake a cross-core ring raised for it. Move the loop into a method of an actor placed on core 0, or remove it; per-core checkpoint services are not part of plans/M8.md item C2
+test lost_wake: ok
+1 passed, 0 failed
