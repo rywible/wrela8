@@ -340,9 +340,10 @@ fn stash(take event: Event):
         async_wrapper: true,
         nest_items_into: "",
     },
-    // 02 §9.5 — with group. Method name `read` is a keyword and cannot be
-    // declared; Storage is provided without it so the call surfaces
-    // honestly. fetch_part is the name the snippet starts.
+    // 02 §9.5 — with group. Method is `read_file` (not `read`: `read` is a
+    // keyword and cannot be a declared method name — decision 517). Bare
+    // `await` (no `?`): CallError is not source-nameable, so `?` on a
+    // composed await cannot convert (same residual as §9.3 `:604`).
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         start_line: 674,
@@ -351,6 +352,9 @@ fn stash(take event: Event):
 @actor
 struct Storage:
     id: u32
+
+    pub async fn read_file(self, path: u32) -> u32:
+        return path
 
 async fn fetch_part(index: u32) -> u32:
     return index
