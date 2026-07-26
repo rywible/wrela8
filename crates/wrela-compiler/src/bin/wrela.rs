@@ -28,13 +28,14 @@ use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::placement;
 use wrela_compiler::report;
+use wrela_compiler::rtconfig;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 use wrela_compiler::{codegen, lower};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report|rtconfig> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
 
 // Set by every diagnostic printer while `dump` runs; cleared at the
 // start of each `dump` invocation. Plans/M9.md item NN: `dump` exits
@@ -596,6 +597,25 @@ fn build_report(
                                     modules,
                                 ) {
                                     Ok(Some(image_layout)) => {
+                                        // plans/M11.md item D: generate the
+                                        // facts-only config from the live
+                                        // RuntimeTables (post-stripe, with
+                                        // rings), batch-2 typecheck, and
+                                        // record the digest in the report.
+                                        if let Some(ref tables) = image_layout.runtime {
+                                            let rt_text = rtconfig::generate_and_typecheck(tables)
+                                                .map_err(|e| {
+                                                    if e.ends_with('\n') {
+                                                        e
+                                                    } else {
+                                                        format!("{e}\n")
+                                                    }
+                                                })?;
+                                            let digest = report::sha256_hex(rt_text.as_bytes());
+                                            rtconfig::insert_generated_input_line(
+                                                &mut text, &digest,
+                                            );
+                                        }
                                         layout::render_layout_section(&mut text, &image_layout);
                                         // plans/M9.md item H: run registered
                                         // `@layout_assert` fns against a real
@@ -688,6 +708,81 @@ fn run_report_stage(
         Err(diag) => {
             eprint!("{diag}");
             note_dump_diagnostic();
+        }
+    }
+}
+
+/// `wrela dump --stage=rtconfig` (plans/M11.md item D): generate the
+/// facts-only `core.__image_runtime` module from the laid-out image's
+/// `RuntimeTables` and print it. Same `@image` discovery as report.
+fn run_rtconfig_stage(
+    programs: &BTreeMap<String, TypedProgram>,
+    modules: &BTreeMap<String, Module>,
+) {
+    match build_rtconfig(programs, modules) {
+        Ok(text) => print!("{text}"),
+        Err(diag) => {
+            eprint!("{diag}");
+            note_dump_diagnostic();
+        }
+    }
+}
+
+fn build_rtconfig(
+    programs: &BTreeMap<String, TypedProgram>,
+    modules: &BTreeMap<String, Module>,
+) -> Result<String, String> {
+    let candidates: Vec<(&String, &String)> = programs
+        .iter()
+        .filter_map(|(module, p)| p.image_fn.as_ref().map(|f| (module, f)))
+        .collect();
+    match candidates.len() {
+        0 => Err("error[build]: no `@image` fn found in the build closure\n".to_string()),
+        1 => {
+            let (module, fn_name) = candidates[0];
+            let program = &programs[module];
+            let graph = eval::interp::eval_image(program, fn_name)
+                .map_err(|e| render_sema_error(&eval::to_sema_error(e)))?;
+            eval::image_checks::check_sealed(&graph, program, programs)
+                .map_err(|e| render_sema_error(&e))?;
+            let mut layout_ctx =
+                layout::merge_layout_ctx(modules).map_err(|e| render_sema_error(&e))?;
+            layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+            match layout::try_layout_program(programs, &layout_ctx, &graph, modules) {
+                Ok(Some(image_layout)) => {
+                    let Some(tables) = image_layout.runtime.as_ref() else {
+                        return Err(
+                            "error[build]: image has no runtime tables; nothing to generate for \
+                             --stage=rtconfig\n"
+                                .to_string(),
+                        );
+                    };
+                    let text = rtconfig::generate_and_typecheck(tables).map_err(|e| {
+                        if e.ends_with('\n') {
+                            e
+                        } else {
+                            format!("{e}\n")
+                        }
+                    })?;
+                    Ok(text)
+                }
+                Ok(None) => Err(
+                    "error[build]: this program's reachable surface did not fully lower; \
+                     --stage=rtconfig needs a laid-out image\n"
+                        .to_string(),
+                ),
+                Err(e) => Err(format!("error[build]: layout: {e}\n")),
+            }
+        }
+        _ => {
+            let names: Vec<String> = candidates
+                .iter()
+                .map(|(module, fn_name)| format!("{module}::{fn_name}"))
+                .collect();
+            Err(format!(
+                "error[build]: more than one `@image` fn reachable in the build closure ({})\n",
+                names.join(", ")
+            ))
         }
     }
 }
@@ -1340,6 +1435,30 @@ fn dump(args: &[String]) -> ExitCode {
                     Ok(module) => match load_build_closure(&path, module) {
                         Ok((programs, file_paths, modules_by_addr)) => {
                             run_report_stage(&programs, &file_paths, &modules_by_addr);
+                        }
+                        Err(()) => {}
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        // plans/M11.md item D / decision 701: generated facts-only config.
+        "rtconfig" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match load_build_closure(&path, module) {
+                        Ok((programs, _, modules_by_addr)) => {
+                            run_rtconfig_stage(&programs, &modules_by_addr);
                         }
                         Err(()) => {}
                     },

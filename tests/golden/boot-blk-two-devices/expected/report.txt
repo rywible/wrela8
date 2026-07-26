@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_blk_two_devices.wr sha256=d579cfb43de0d8492f675f300d8d8a25106226d57ddaa79eff85c68f679e8ae9
+  Input path=<generated> sha256=87102d24d89046c0a0f12effd8f98d029e380be1eeac9f52d5e493822c35c497
   Name value=boot-blk-two-devices
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

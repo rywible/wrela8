@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_device_bringup.wr sha256=2c6fbc0ec28558ce58ac89358a9a9fb62680d5e34591805f4f8a393f81864d76
+  Input path=<generated> sha256=e16b4298c7a1911bbc2813ff820fb0f56337a674444884c27f622684e6add441
   Name value=boot-device-bringup
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

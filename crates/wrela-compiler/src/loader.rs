@@ -305,6 +305,11 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
                 // the module doc comment's own note on this shape.
                 continue;
             }
+            // plans/M11.md item D / decision 765: generated config module
+            // is not on disk; batch-1 strips the import from `runtime.wr`.
+            if is_image_runtime_import(&import.path) {
+                continue;
+            }
             let (key, file, expected_root) = import_target(&pkgroot, &import.path, import.span)?;
             if modules.contains_key(&key) {
                 continue;
@@ -324,8 +329,18 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
                     import.span,
                 ));
             }
-            let module = parse_file(&file)?;
+            let mut module = parse_file(&file)?;
             check_agrees(&file, &module, &expected_root)?;
+            // If this is `core.runtime`, strip its deferred import so
+            // batch-1 sema does not look for a missing module.
+            if key.len() == RUNTIME_MODULE_KEY.len()
+                && key
+                    .iter()
+                    .zip(RUNTIME_MODULE_KEY.iter())
+                    .all(|(a, b)| a == *b)
+            {
+                defer_image_runtime_import(&mut module);
+            }
             queue.push(key.clone());
             modules.insert(key, LoadedModule { file, module });
         }
@@ -429,9 +444,33 @@ pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
 /// the file's own `module runtime` address (plans/M10.md item A2d).
 pub const RUNTIME_MODULE_KEY: &[&str] = &["core", "runtime"];
 
+/// Loader key for the generated image-runtime config module (plans/M11.md
+/// item D / decision 701). Never loaded from disk — supplied after `@image`
+/// evaluation by `rtconfig::generate`.
+pub const IMAGE_RUNTIME_MODULE_KEY: &[&str] = &["core", "__image_runtime"];
+
 /// Package-root-relative report path for auto-injected `core.runtime`
 /// (`report::address_to_relative_path` of the dotted address).
 pub const RUNTIME_INPUT_PATH: &str = "core/runtime.wr";
+
+/// Drop `from core.__image_runtime import …` so batch-1 / non-image front
+/// ends typecheck without a disk file (plans/M11.md decision 704 / 723 /
+/// 765). Batch-2 re-parses `runtime.wr` unstripped alongside the generated
+/// module.
+pub fn defer_image_runtime_import(module: &mut Module) {
+    module
+        .imports
+        .retain(|imp| imp.path.as_slice() != IMAGE_RUNTIME_MODULE_KEY);
+}
+
+/// True when `path` is the deferred generated config module.
+pub fn is_image_runtime_import(path: &[String]) -> bool {
+    path.len() == IMAGE_RUNTIME_MODULE_KEY.len()
+        && path
+            .iter()
+            .zip(IMAGE_RUNTIME_MODULE_KEY.iter())
+            .all(|(a, b)| a == *b)
+}
 
 /// True when any loaded module is runtime-bearing (plans/M10.md item A2d /
 /// decision 582): `@test(runtime)`, free/method `async fn`, `@actor`, or
@@ -529,16 +568,40 @@ pub fn ensure_runtime_module(
             Span::default(),
         ));
     }
-    let module = parse_file(&file)?;
+    let mut module = parse_file(&file)?;
     check_agrees(&file, &module, &expected_root)?;
+    defer_image_runtime_import(&mut module);
     modules.insert(key, LoadedModule { file, module });
     Ok(())
 }
 
 /// Parses toolchain `stdlib/core/runtime.wr` into a standalone loaded
 /// module (plans/M10.md item A2d: no-import runtime-bearing images still
-/// need the module in the programs map).
+/// need the module in the programs map). Batch-1 strips the deferred
+/// `core.__image_runtime` import (plans/M11.md item D).
 pub fn load_runtime_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
+    let key: Vec<String> = RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let toolchain = toolchain_stdlib_core();
+    let file = toolchain.join("runtime.wr");
+    if !file.is_file() {
+        return Err(build_error(
+            "stdlib not found: toolchain `stdlib/core/runtime.wr` is missing".to_string(),
+            Span::default(),
+        ));
+    }
+    let mut module = parse_file(&file)?;
+    check_agrees(&file, &module, &toolchain)?;
+    defer_image_runtime_import(&mut module);
+    Ok((key, LoadedModule { file, module }))
+}
+
+/// Like [`load_runtime_module`], but keeps the `core.__image_runtime`
+/// import for batch-2 (plans/M11.md item D / decision 765).
+pub fn load_runtime_module_with_image_runtime_import()
+-> Result<(Vec<String>, LoadedModule), LoadError> {
     let key: Vec<String> = RUNTIME_MODULE_KEY
         .iter()
         .map(|s| (*s).to_string())

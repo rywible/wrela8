@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_dma_pool.wr sha256=37b728d1798277ddde4310ffa68a62c06b81a885c9c05db71f9756fc2fdfd05d
+  Input path=<generated> sha256=7f95ed5b4e691b706eadf5bd7f4ad189128f89db02176d28bf111a7d32cc9ef3
   Name value=boot-dma-pool
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw

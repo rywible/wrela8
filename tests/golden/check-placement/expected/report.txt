@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_placement.wr sha256=a736fa504e833d97e8d24cdd4f75e2bab88362a18d3984b1c339158b9a6dc4ce
+  Input path=<generated> sha256=5c5587d2b80b10e2de5295a12f47a80e7d0b9b7a909b6728f1b8a3414792de3a
   Name value=placement-basic
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store

@@ -3,6 +3,12 @@
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
 
+# plans/M11.md item D / decision 765: import the generated facts module.
+# Batch-1 loads strip this import (module text does not exist on disk);
+# batch-2 re-sema with the generator's output. Unused until E–J migrate
+# algorithms onto N_CORES / RT — keep the seam narrow.
+from core.__image_runtime import N_CORES
+
 # M10 B2: machine pages the console formatter speaks to (decision 593).
 # Addresses match wrela-machine::layout / console — bytes live in the VMM's
 # pages, not the image blob (decision 588).

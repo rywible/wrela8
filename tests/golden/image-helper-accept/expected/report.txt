@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_helper_accept.wr sha256=778775c518a862679582bb91bb3633bd6b8c3f8ea940a1bd905a9d7dcd68abd0
+  Input path=<generated> sha256=2b1b40185c9c6ec5608f0c200eeee5ead24a44c54958e783b655d585ac9842e2
   Name value=helper-ok
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store

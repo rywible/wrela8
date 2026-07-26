@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_cap_mint.wr sha256=2b05d44fa02e0557a941d29d69c4ca6d48bfada3562726b4dd139b63e9064d15
+  Input path=<generated> sha256=97c9f0756d8bbef39d0bff59ae058d470e1be73875c564c2bb440f5ac9a3ff19
   Name value=cap-mint
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw

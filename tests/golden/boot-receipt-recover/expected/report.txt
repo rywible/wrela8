@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_receipt_recover.wr sha256=b6654dcc34165d92fd104ba9ec160ed259f1d7896ea3321783de57cd26dad005
+  Input path=<generated> sha256=bfabdbeb28feb101d292876a49c3cddacd38b1337bade792ed395ca3bc065d52
   Name value=boot-receipt-recover
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

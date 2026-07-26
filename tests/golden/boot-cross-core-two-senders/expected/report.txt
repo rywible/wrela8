@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_two_senders.wr sha256=8bdaba8a0bf8b91349961c092bf75c4d5378df35b465a509b6358d64f129470a
+  Input path=<generated> sha256=dd859974055b71aba22dad917536e3430eaaf70547bd14c0e28153ad2507913b
   Name value=cross-core-two-senders
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink

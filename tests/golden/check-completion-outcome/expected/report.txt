@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_completion_outcome.wr sha256=a274d5d65d2d96fd0e3919232ccffc1bffe8894fce97f26db7f09d1f9688287d
+  Input path=<generated> sha256=50a03aa41360e561544bed7aaad7fcda4d524689475c9013f48b885cdab4ccd9
   Name value=check-completion-outcome
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

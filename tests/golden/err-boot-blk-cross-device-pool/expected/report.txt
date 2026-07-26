@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_blk_cross_device_pool.wr sha256=3089f815cd3c1f01cb52cd02591d4d6a347dd822f5326ce5422d5771f54210c1
+  Input path=<generated> sha256=87102d24d89046c0a0f12effd8f98d029e380be1eeac9f52d5e493822c35c497
   Name value=err-boot-blk-cross-device-pool
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_irq_isr.wr sha256=d431394efe516577be4598ebd4d65c895b7e0cd784b76bc3c6c99c6ee2b058c8
+  Input path=<generated> sha256=f0da24307e2fe0d5c76b991a71e5e4996a21d6477a58957d7bd9c8252bd36368
   Name value=boot-irq-isr
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
