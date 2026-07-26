@@ -403,10 +403,16 @@ pub enum TypedStmtKind {
         take_binding: bool,
         iter: TypedForIter,
         body: Vec<TypedStmt>,
+        /// Sync-loop trip bound from `@budget(bound=N)` (02 §8.1 /
+        /// plans/M11.md decision 721). `Some(n)` on a synchronous loop;
+        /// `None` on an async loop (checkpoint path unchanged).
+        budget: Option<u64>,
     },
     While {
         cond: TypedExpr,
         body: Vec<TypedStmt>,
+        /// See [`TypedStmtKind::For::budget`].
+        budget: Option<u64>,
     },
     Break,
     Continue,
@@ -967,10 +973,14 @@ fn dump_stmt(stmt: &TypedStmt, depth: usize, out: &mut String) {
             take_binding,
             iter,
             body,
+            budget,
         } => {
             let mut header = format!("For name={name} elem_ty={}", ty(elem_ty));
             if *take_binding {
                 header.push_str(" take=true");
+            }
+            if let Some(n) = budget {
+                header.push_str(&format!(" budget={n}"));
             }
             push_line(out, depth, &header);
             match iter {
@@ -984,8 +994,12 @@ fn dump_stmt(stmt: &TypedStmt, depth: usize, out: &mut String) {
             push_line(out, depth + 1, "Body");
             dump_stmts(body, depth + 2, out);
         }
-        TypedStmtKind::While { cond, body } => {
-            push_line(out, depth, "While");
+        TypedStmtKind::While { cond, body, budget } => {
+            let header = match budget {
+                Some(n) => format!("While budget={n}"),
+                None => "While".to_string(),
+            };
+            push_line(out, depth, &header);
             dump_expr(cond, depth + 1, out);
             push_line(out, depth + 1, "Body");
             dump_stmts(body, depth + 2, out);
@@ -1807,7 +1821,7 @@ fn rekey_stmt(st: &mut TypedStmt, subs: &BTreeMap<String, String>) {
                 rekey_stmt(s, subs);
             }
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             rekey_expr(cond, subs);
             for s in body {
                 rekey_stmt(s, subs);

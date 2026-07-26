@@ -110,6 +110,7 @@ fn add_one(mut c: Counter):
 fn probe_loop() -> u32:
     c = Counter(n=0)
     i: u32 = 0
+    @budget(bound=1000000)
     while i < 5:
         add_one(mut c)
         i = i + 1

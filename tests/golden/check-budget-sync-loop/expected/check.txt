@@ -1,0 +1,3 @@
+Module path=examples.check_budget_sync_loop
+  Fn sum_to(n: read u64) -> u64
+  Fn sum_four(values: read [u64; 4]) -> u64

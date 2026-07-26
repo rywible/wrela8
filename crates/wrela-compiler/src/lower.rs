@@ -599,7 +599,7 @@ fn collect_callees_from_stmt(program: &TypedProgram, stmt: &TypedStmt, out: &mut
             }
             collect_callees_from_stmts(program, body, out);
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             collect_callees_from_expr(program, cond, out);
             collect_callees_from_stmts(program, body, out);
         }
@@ -1437,8 +1437,8 @@ fn lower_stmt<'a>(
         TypedStmtKind::Match { scrutinee, arms } => {
             lower_match(scrutinee, arms, b, env, defers, loops)
         }
-        TypedStmtKind::While { cond, body } => {
-            lower_while(cond, body, b, env, defers, loops)?;
+        TypedStmtKind::While { cond, body, budget } => {
+            lower_while(cond, body, *budget, b, env, defers, loops)?;
             Ok(false)
         }
         TypedStmtKind::For {
@@ -1446,9 +1446,10 @@ fn lower_stmt<'a>(
             elem_ty,
             iter,
             body,
+            budget,
             ..
         } => {
-            lower_for(name, elem_ty, iter, body, b, env, defers, loops)?;
+            lower_for(name, elem_ty, iter, body, *budget, b, env, defers, loops)?;
             Ok(false)
         }
         TypedStmtKind::Break => {
@@ -1610,6 +1611,7 @@ fn lower_if<'a>(
 fn lower_while<'a>(
     cond: &'a TypedExpr,
     body: &'a [TypedStmt],
+    budget: Option<u64>,
     b: &mut FnBuilder,
     env: &mut LEnv,
     defers: &mut Vec<&'a TypedDeferBody>,
@@ -1620,12 +1622,26 @@ fn lower_while<'a>(
         continue_fixups: Vec::new(),
         defer_marker: defers.len(),
     });
+    // Hidden trip counter (02 §8.1 / decision 721): abort if the body
+    // runs more than `N` times. Absent on async loops (checkpoint path).
+    let trips = budget.map(|n| {
+        let t = b.fresh(Type::U64);
+        b.emit(Inst::ConstInt {
+            dst: t,
+            ty: Type::U64,
+            value: 0,
+        });
+        (t, n)
+    });
     let cond_pos = b.here();
     let c = lower_expr(cond, b, env)?;
     let end_fixup = b.emit(Inst::JumpIfFalse {
         cond: c,
         target: usize::MAX,
     });
+    if let Some((trips_t, n)) = trips {
+        emit_trip_check(b, trips_t, n)?;
+    }
     env.push(BTreeMap::new());
     lower_block(body, b, env, defers, loops)?;
     env.pop();
@@ -1642,12 +1658,62 @@ fn lower_while<'a>(
     Ok(())
 }
 
+/// Increment the trip counter and abort when it exceeds `bound`.
+fn emit_trip_check(b: &mut FnBuilder, trips_t: Temp, bound: u64) -> Result<(), LowerError> {
+    let one = b.fresh(Type::U64);
+    b.emit(Inst::ConstInt {
+        dst: one,
+        ty: Type::U64,
+        value: 1,
+    });
+    let next = b.fresh(Type::U64);
+    b.emit(Inst::ArithWrapping {
+        dst: next,
+        op: BinOp::AddW,
+        ty: Type::U64,
+        lhs: trips_t,
+        rhs: one,
+    });
+    b.emit(Inst::Copy {
+        dst: trips_t,
+        src: next,
+    });
+    let lim = b.fresh(Type::U64);
+    b.emit(Inst::ConstInt {
+        dst: lim,
+        ty: Type::U64,
+        value: i128::from(bound),
+    });
+    let ok = b.fresh(Type::Bool);
+    b.emit(Inst::Compare {
+        dst: ok,
+        op: BinOp::Le,
+        ty: Type::U64,
+        lhs: trips_t,
+        rhs: lim,
+    });
+    let fail_fixup = b.emit(Inst::JumpIfFalse {
+        cond: ok,
+        target: usize::MAX,
+    });
+    let after = b.emit(Inst::Jump { target: usize::MAX });
+    let fail_pos = b.here();
+    b.patch_jump(fail_fixup, fail_pos);
+    b.emit(Inst::AssertFail {
+        message: Some("loop budget exceeded".to_string()),
+    });
+    let after_pos = b.here();
+    b.patch_jump(after, after_pos);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_for<'a>(
     name: &str,
     elem_ty: &Type,
     iter: &'a TypedForIter,
     body: &'a [TypedStmt],
+    budget: Option<u64>,
     b: &mut FnBuilder,
     env: &mut LEnv,
     defers: &mut Vec<&'a TypedDeferBody>,
@@ -1657,6 +1723,15 @@ fn lower_for<'a>(
         break_fixups: Vec::new(),
         continue_fixups: Vec::new(),
         defer_marker: defers.len(),
+    });
+    let trips = budget.map(|n| {
+        let t = b.fresh(Type::U64);
+        b.emit(Inst::ConstInt {
+            dst: t,
+            ty: Type::U64,
+            value: 0,
+        });
+        (t, n)
     });
     match iter {
         TypedForIter::Range(from, to, inclusive) => {
@@ -1681,6 +1756,9 @@ fn lower_for<'a>(
                 cond: cond_t,
                 target: usize::MAX,
             });
+            if let Some((trips_t, n)) = trips {
+                emit_trip_check(b, trips_t, n)?;
+            }
             env.push(BTreeMap::new());
             env_insert(env, name.to_string(), i_temp);
             lower_block(body, b, env, defers, loops)?;
@@ -1743,6 +1821,9 @@ fn lower_for<'a>(
                 cond: cond_t,
                 target: usize::MAX,
             });
+            if let Some((trips_t, n)) = trips {
+                emit_trip_check(b, trips_t, n)?;
+            }
             let elem_t = b.fresh(elem_ty.clone());
             b.emit(Inst::IndexGet {
                 dst: elem_t,
@@ -4826,6 +4907,7 @@ pub fn area(s: Shape) -> u64:
 pub fn sum_to(n: u64) -> u64:
     total: u64 = 0
     i: u64 = 0
+    @budget(bound=1000000)
     while i < n:
         total = total + i
         i = i + 1
@@ -4836,6 +4918,15 @@ pub fn sum_to(n: u64) -> u64:
         let f = mwir.fns.get("sum_to").expect("fn lowered");
         assert!(f.body.iter().any(|i| matches!(i, Inst::Jump { .. })));
         assert!(f.body.iter().any(|i| matches!(i, Inst::JumpIfFalse { .. })));
+        assert!(
+            f.body.iter().any(|i| matches!(
+                i,
+                Inst::AssertFail {
+                    message: Some(m)
+                } if m == "loop budget exceeded"
+            )),
+            "sync loop must lower a trip-counter AssertFail"
+        );
     }
 
     #[test]

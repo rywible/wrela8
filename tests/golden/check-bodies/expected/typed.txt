@@ -48,7 +48,7 @@ Program
     Body
       Let name=total ty=u64
         Int text=0 ty=u64
-      For name=x elem_ty=u64 take=true
+      For name=x elem_ty=u64 take=true budget=1000000
         Local name=xs ty=[u64; 3]
         Body
           Assign
@@ -114,7 +114,7 @@ Program
   Fn name=first_positive ret=Option[i64]
     Param name=xs mode=read ty=[i64; 3]
     Body
-      For name=x elem_ty=i64
+      For name=x elem_ty=i64 budget=1000000
         Local name=xs ty=[i64; 3]
         Body
           If
@@ -206,7 +206,7 @@ Program
     Body
       Let name=total ty=u64
         Int text=0 ty=u64
-      For name=x elem_ty=u64
+      For name=x elem_ty=u64 budget=1000000
         Local name=xs ty=[u64; 3]
         Body
           Assign
@@ -221,7 +221,7 @@ Program
     Body
       Let name=total ty=u64
         Int text=0 ty=u64
-      For name=i elem_ty=u64
+      For name=i elem_ty=u64 budget=1000000
         Range inclusive=false
           Int text=0 ty=u64
           Local name=n ty=u64

@@ -33,6 +33,7 @@ pub fn convert_wrapped(raw: u64) -> Result[u64, WrapError]:
     return Ok(value)
 
 pub fn first_positive(xs: [i64; 3]) -> Option[i64]:
+    @budget(bound=1000000)
     for x in xs:
         if x > 0:
             return Some(x)
@@ -59,18 +60,21 @@ pub fn make_found(v: u64) -> Lookup:
 
 pub fn sum_range(n: u64) -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     for i in 0 .. n:
         total += i
     return total
 
 pub fn sum_array(xs: [u64; 3]) -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     for x in xs:
         total += x
     return total
 
 pub fn consume_array(take xs: [u64; 3]) -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     for take x in take xs:
         total += x
     return total

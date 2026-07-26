@@ -1,1 +1,1 @@
-error[access]: a `take`n iterable requires a `take` binding: write `for take x in take array` at 11:5
+error[access]: a `take`n iterable requires a `take` binding: write `for take x in take array` at 12:5

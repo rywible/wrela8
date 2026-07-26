@@ -154,77 +154,91 @@ Program
       0017: MakeAggregate dst=t14 elems=[t12,t13]
       0018: SetField base=t0 index=5 value=t14
       0019: Return
-  Fn key=struct:SlotMap[u64, 2].insert ret=Result[Key, SlotMapFull] temps=29 receiver=t0:mut params=[t1:take]
+  Fn key=struct:SlotMap[u64, 2].insert ret=Result[Key, SlotMapFull] temps=34 receiver=t0:mut params=[t1:take]
     Temp t0 ty=SlotMap[u64, 2]
     Temp t1 ty=u64
     Temp t2 ty=usize
     Temp t3 ty=usize
-    Temp t4 ty=usize
-    Temp t5 ty=bool
-    Temp t6 ty=[bool; 2]
-    Temp t7 ty=bool
-    Temp t8 ty=bool
-    Temp t9 ty=bool
-    Temp t10 ty=[bool; 2]
-    Temp t11 ty=bool
+    Temp t4 ty=u64
+    Temp t5 ty=usize
+    Temp t6 ty=bool
+    Temp t7 ty=u64
+    Temp t8 ty=u64
+    Temp t9 ty=u64
+    Temp t10 ty=bool
+    Temp t11 ty=[bool; 2]
     Temp t12 ty=bool
     Temp t13 ty=bool
-    Temp t14 ty=[bool; 2]
-    Temp t15 ty=Option[u64]
-    Temp t16 ty=[Option[u64]; 2]
-    Temp t17 ty=usize
-    Temp t18 ty=usize
-    Temp t19 ty=usize
-    Temp t20 ty=u64
-    Temp t21 ty=[u8; 2]
-    Temp t22 ty=u8
-    Temp t23 ty=Key
-    Temp t24 ty=Result[Key, SlotMapFull]
-    Temp t25 ty=usize
-    Temp t26 ty=usize
-    Temp t27 ty=SlotMapFull
-    Temp t28 ty=Result[Key, SlotMapFull]
+    Temp t14 ty=bool
+    Temp t15 ty=[bool; 2]
+    Temp t16 ty=bool
+    Temp t17 ty=bool
+    Temp t18 ty=bool
+    Temp t19 ty=[bool; 2]
+    Temp t20 ty=Option[u64]
+    Temp t21 ty=[Option[u64]; 2]
+    Temp t22 ty=usize
+    Temp t23 ty=usize
+    Temp t24 ty=usize
+    Temp t25 ty=u64
+    Temp t26 ty=[u8; 2]
+    Temp t27 ty=u8
+    Temp t28 ty=Key
+    Temp t29 ty=Result[Key, SlotMapFull]
+    Temp t30 ty=usize
+    Temp t31 ty=usize
+    Temp t32 ty=SlotMapFull
+    Temp t33 ty=Result[Key, SlotMapFull]
     Body
       0000: ConstInt dst=t2 ty=usize value=0
       0001: Copy dst=t3 src=t2
-      0002: ConstInt dst=t4 ty=usize value=2
-      0003: Compare op=< ty=usize dst=t5 lhs=t3 rhs=t4
-      0004: JumpIfFalse cond=t5 target=0039
-      0005: Project dst=t6 base=t0 index=3
-      0006: IndexGet dst=t7 base=t6 index=t3 len=2
-      0007: Not dst=t8 src=t7
-      0008: JumpIfFalse cond=t8 target=0014
-      0009: Project dst=t10 base=t0 index=4
-      0010: IndexGet dst=t11 base=t10 index=t3 len=2
-      0011: Not dst=t12 src=t11
-      0012: Copy dst=t9 src=t12
-      0013: Jump target=0015
-      0014: ConstBool dst=t9 value=false
-      0015: JumpIfFalse cond=t9 target=0035
-      0016: ConstBool dst=t13 value=true
-      0017: Project dst=t14 base=t0 index=3
-      0018: IndexSet base=t14 index=t3 value=t13 len=2
-      0019: SetField base=t0 index=3 value=t14
-      0020: MakeEnum dst=t15 tag=1 payload=[t1]
-      0021: Project dst=t16 base=t0 index=5
-      0022: IndexSet base=t16 index=t3 value=t15 len=2
-      0023: SetField base=t0 index=5 value=t16
-      0024: Project dst=t17 base=t0 index=1
-      0025: ConstInt dst=t18 ty=usize value=1
-      0026: ArithChecked op=+ ty=usize dst=t19 lhs=t17 rhs=t18 abort="arithmetic overflow in `+`"
-      0027: SetField base=t0 index=1 value=t19
-      0028: Project dst=t20 base=t0 index=0
-      0029: Project dst=t21 base=t0 index=2
-      0030: IndexGet dst=t22 base=t21 index=t3 len=2
-      0031: MakeAggregate dst=t23 elems=[t20,t3,t22]
-      0032: MakeEnum dst=t24 tag=0 payload=[t23]
-      0033: Return value=t24
-      0034: Jump target=0035
-      0035: ConstInt dst=t25 ty=usize value=1
-      0036: ArithChecked op=+ ty=usize dst=t26 lhs=t3 rhs=t25 abort="arithmetic overflow in `+`"
-      0037: Copy dst=t3 src=t26
-      0038: Jump target=0002
-      0039: MakeEnum dst=t27 tag=0 payload=[]
-      0040: MakeEnum dst=t28 tag=1 payload=[t27]
-      0041: Return value=t28
-      0042: Return
+      0002: ConstInt dst=t4 ty=u64 value=0
+      0003: ConstInt dst=t5 ty=usize value=2
+      0004: Compare op=< ty=usize dst=t6 lhs=t3 rhs=t5
+      0005: JumpIfFalse cond=t6 target=0048
+      0006: ConstInt dst=t7 ty=u64 value=1
+      0007: ArithWrapping op=+% ty=u64 dst=t8 lhs=t4 rhs=t7
+      0008: Copy dst=t4 src=t8
+      0009: ConstInt dst=t9 ty=u64 value=1000000
+      0010: Compare op=<= ty=u64 dst=t10 lhs=t4 rhs=t9
+      0011: JumpIfFalse cond=t10 target=0013
+      0012: Jump target=0014
+      0013: AssertFail message="loop budget exceeded"
+      0014: Project dst=t11 base=t0 index=3
+      0015: IndexGet dst=t12 base=t11 index=t3 len=2
+      0016: Not dst=t13 src=t12
+      0017: JumpIfFalse cond=t13 target=0023
+      0018: Project dst=t15 base=t0 index=4
+      0019: IndexGet dst=t16 base=t15 index=t3 len=2
+      0020: Not dst=t17 src=t16
+      0021: Copy dst=t14 src=t17
+      0022: Jump target=0024
+      0023: ConstBool dst=t14 value=false
+      0024: JumpIfFalse cond=t14 target=0044
+      0025: ConstBool dst=t18 value=true
+      0026: Project dst=t19 base=t0 index=3
+      0027: IndexSet base=t19 index=t3 value=t18 len=2
+      0028: SetField base=t0 index=3 value=t19
+      0029: MakeEnum dst=t20 tag=1 payload=[t1]
+      0030: Project dst=t21 base=t0 index=5
+      0031: IndexSet base=t21 index=t3 value=t20 len=2
+      0032: SetField base=t0 index=5 value=t21
+      0033: Project dst=t22 base=t0 index=1
+      0034: ConstInt dst=t23 ty=usize value=1
+      0035: ArithChecked op=+ ty=usize dst=t24 lhs=t22 rhs=t23 abort="arithmetic overflow in `+`"
+      0036: SetField base=t0 index=1 value=t24
+      0037: Project dst=t25 base=t0 index=0
+      0038: Project dst=t26 base=t0 index=2
+      0039: IndexGet dst=t27 base=t26 index=t3 len=2
+      0040: MakeAggregate dst=t28 elems=[t25,t3,t27]
+      0041: MakeEnum dst=t29 tag=0 payload=[t28]
+      0042: Return value=t29
+      0043: Jump target=0044
+      0044: ConstInt dst=t30 ty=usize value=1
+      0045: ArithChecked op=+ ty=usize dst=t31 lhs=t3 rhs=t30 abort="arithmetic overflow in `+`"
+      0046: Copy dst=t3 src=t31
+      0047: Jump target=0003
+      0048: MakeEnum dst=t32 tag=0 payload=[]
+      0049: MakeEnum dst=t33 tag=1 payload=[t32]
+      0050: Return value=t33
+      0051: Return

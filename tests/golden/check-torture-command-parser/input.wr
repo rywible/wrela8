@@ -118,6 +118,7 @@ pub fn unwrap_reply(take slot: Option[Reply], fallback: u64) -> u64:
 
 pub fn first_matching[T](items: [T; 3], target: T) -> Option[usize]:
     i: usize = 0
+    @budget(bound=1000000)
     while i < 3:
         if items[i] == target:
             return Some(i)
@@ -133,6 +134,7 @@ pub fn use_first_matching_bool() -> Option[usize]:
 pub fn count_gets(cmds: [Command; 3]) -> u64:
     total: u64 = 0
     i: usize = 0
+    @budget(bound=1000000)
     while i < 3:
         match cmds[i]:
             case .Get(_):

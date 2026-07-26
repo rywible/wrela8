@@ -2,6 +2,7 @@ module examples.err_comptime_quota
 
 pub fn spin() -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     while true:
         total = total + 1
     return total

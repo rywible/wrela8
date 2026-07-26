@@ -12,6 +12,7 @@ pub fn make(n: u64) -> Packet:
 pub fn use_it(n: u64) -> u64:
     total: u64 = 0
     i: u64 = 0
+    @budget(bound=1000000)
     while i < n:
         q = make(i)
         total += q.size

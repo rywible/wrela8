@@ -91,6 +91,7 @@ resource struct DoubleBuffer:
 
 pub fn touch_front_repeatedly(mut buf: DoubleBuffer, times: u64) -> unit:
     i: u64 = 0
+    @budget(bound=1000000)
     while i < times:
         slot = take buf.front
         buf.front = take slot
@@ -98,6 +99,7 @@ pub fn touch_front_repeatedly(mut buf: DoubleBuffer, times: u64) -> unit:
 
 pub fn cycle_frames(mut buf: DoubleBuffer, times: u64) -> unit:
     i: u64 = 0
+    @budget(bound=1000000)
     while i < times:
         buf.flip()
         i += 1

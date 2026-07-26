@@ -17,6 +17,7 @@ pub fn use_takes() -> u64:
     a: u64 = 5
     arr: [u64; 3] = [1, 2, 3]
     total: u64 = 0
+    @budget(bound=1000000)
     for take v in take arr:
         total = total + v
     b = Box(item=9)

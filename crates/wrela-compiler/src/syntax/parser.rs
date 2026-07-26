@@ -296,6 +296,14 @@ impl Parser {
         }
     }
 
+    fn error_at(&self, span: Span, message: impl Into<String>) -> ParseError {
+        ParseError {
+            message: message.into(),
+            line: span.line,
+            col: span.col,
+        }
+    }
+
     fn expect_keyword(&mut self, kw: &str) -> Result<Span, ParseError> {
         if self.at_keyword(kw) {
             let span = self.peek_span();
@@ -898,11 +906,29 @@ impl Parser {
             }
             if self.looks_like_item_start() {
                 entries.push(FragmentEntry::Item(self.parse_item(doc, attrs)?));
+            } else if !attrs.is_empty() {
+                // 02 §13: only `@budget` may precede a statement, and only a loop.
+                if doc.is_some() {
+                    return Err(self.error_here(
+                        "a `##` doc comment attaches to the immediately following declaration \
+                         (02-language.md §1), and a statement is not a declaration",
+                    ));
+                }
+                if attrs.len() != 1 {
+                    return Err(self.error_here(
+                        "only one `@budget(...)` statement attribute may precede a loop \
+                         (02-language.md §13)",
+                    ));
+                }
+                let attr = attrs.into_iter().next().expect("len == 1");
+                entries.push(FragmentEntry::Stmt(self.parse_loop_after_budget(attr)?));
             } else {
-                if doc.is_some() || !attrs.is_empty() {
-                    return Err(
-                        self.error_here("doc comments/attributes may only precede a declaration")
-                    );
+                if doc.is_some() {
+                    return Err(self.error_here(
+                        "a `##` doc comment attaches to the immediately following declaration \
+                         (02-language.md §1), and a statement is not a declaration — use a plain \
+                         `#` comment inside a body",
+                    ));
                 }
                 entries.push(FragmentEntry::Stmt(self.parse_stmt()?));
             }
@@ -2549,9 +2575,55 @@ impl Parser {
             if self.at_kind(TokenKind::Eof) {
                 return Err(self.error_here("expected a statement, found end of file"));
             }
-            stmts.push(self.parse_stmt()?);
+            stmts.push(self.parse_stmt_maybe_budget()?);
         }
         Ok(stmts)
+    }
+
+    /// A body statement, optionally preceded by `@budget(bound=N)`
+    /// (02-language.md §8.1 / §13 — the only statement attribute).
+    fn parse_stmt_maybe_budget(&mut self) -> Result<Stmt, ParseError> {
+        if self.at_op("@") {
+            let attr = self.parse_attr()?;
+            self.skip_newlines();
+            return self.parse_loop_after_budget(attr);
+        }
+        self.parse_stmt()
+    }
+
+    fn skip_newlines(&mut self) {
+        while self.at_kind(TokenKind::Newline) {
+            self.bump();
+        }
+    }
+
+    fn parse_loop_after_budget(&mut self, attr: Attr) -> Result<Stmt, ParseError> {
+        if attr.name != "budget" {
+            return Err(self.error_at(
+                attr.span,
+                format!(
+                    "only `@budget(...)` may be a statement attribute (02-language.md §13); \
+                     found `@{name}`",
+                    name = attr.name
+                ),
+            ));
+        }
+        if self.at_keyword("for") {
+            let mut f = self.parse_for_stmt()?;
+            f.budget = Some(attr);
+            return Ok(Stmt::For(f));
+        }
+        if self.at_keyword("while") {
+            let mut w = self.parse_while_stmt()?;
+            w.budget = Some(attr);
+            return Ok(Stmt::While(w));
+        }
+        Err(self.error_at(
+            attr.span,
+            "`@budget(...)` in statement position must immediately precede `for` or `while` \
+             (02-language.md §13)"
+                .to_string(),
+        ))
     }
 
     /// The suite following a `:` — either a normal indented block (now the
@@ -2604,7 +2676,7 @@ impl Parser {
     /// roundtrip-ambiguity finding) — so it is rejected outright rather than
     /// guessed at.
     fn parse_inline_stmt_seq(&mut self) -> Result<Vec<Stmt>, ParseError> {
-        let stmt = self.parse_stmt()?;
+        let stmt = self.parse_stmt_maybe_budget()?;
         if self.at_kind(TokenKind::Newline) {
             self.bump();
         } else if !(matches!(self.peek_kind(), TokenKind::Eof | TokenKind::Dedent)
@@ -2944,6 +3016,7 @@ impl Parser {
             name,
             iterable,
             body,
+            budget: None,
         })
     }
 
@@ -2952,7 +3025,12 @@ impl Parser {
         let cond = self.parse_or()?;
         self.expect_op(":")?;
         let body = self.parse_stmt_suite()?;
-        Ok(WhileStmt { span, cond, body })
+        Ok(WhileStmt {
+            span,
+            cond,
+            body,
+            budget: None,
+        })
     }
 
     fn parse_with_stmt(&mut self) -> Result<WithStmt, ParseError> {
@@ -3827,6 +3905,9 @@ fn dump_stmt(stmt: &Stmt, depth: usize, strip: bool, out: &mut String) {
             }
         }
         Stmt::For(f) => {
+            if let Some(attr) = &f.budget {
+                dump_attrs(std::slice::from_ref(attr), depth, strip, out);
+            }
             let mut header = format!("{} name={}", hdr(strip, "For", f.span), f.name);
             if f.take_binding {
                 header.push_str(" take=true");
@@ -3837,6 +3918,9 @@ fn dump_stmt(stmt: &Stmt, depth: usize, strip: bool, out: &mut String) {
             dump_stmts(&f.body, depth + 2, strip, out);
         }
         Stmt::While(w) => {
+            if let Some(attr) = &w.budget {
+                dump_attrs(std::slice::from_ref(attr), depth, strip, out);
+            }
             push_line(out, depth, &hdr(strip, "While", w.span));
             dump_expr(&w.cond, depth + 1, strip, out);
             push_line(out, depth + 1, "Body");

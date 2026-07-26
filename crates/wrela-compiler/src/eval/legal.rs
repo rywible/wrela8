@@ -707,7 +707,7 @@ fn scan_hardware_stmt(stmt: &TypedStmt, authority: &Authority, scan: &mut BodySc
             }
             scan_hardware_stmts(body, authority, scan);
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             scan_hardware_expr(cond, authority, scan);
             scan_hardware_stmts(body, authority, scan);
         }
@@ -1178,7 +1178,7 @@ fn scan_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
             }
             scan_stmts(body, scan);
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             scan_expr(cond, scan);
             scan_stmts(body, scan);
         }
@@ -1616,7 +1616,7 @@ fn fn_contains_wake(f: &TypedFn) -> bool {
                 }
                 walk_stmts(body, found);
             }
-            TypedStmtKind::While { cond, body } => {
+            TypedStmtKind::While { cond, body, .. } => {
                 walk_expr(cond, found);
                 walk_stmts(body, found);
             }
@@ -1851,7 +1851,7 @@ fn scan_bottom_half_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
             }
             scan_bottom_half_stmts(body, scan);
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             scan_bottom_half_expr(cond, scan);
             scan_bottom_half_stmts(body, scan);
         }
@@ -2084,7 +2084,7 @@ fn scan_isr_bind_stmt(stmt: &TypedStmt, scan: &mut BodyScan, roots: &mut BTreeSe
             }
             scan_isr_bind_stmts(body, scan, roots);
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             scan_isr_bind_expr(cond, roots);
             scan_isr_bind_stmts(body, scan, roots);
         }
@@ -2397,7 +2397,7 @@ fn scan_isr_forbidden_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
             }
             scan_isr_forbidden_stmts(body, scan);
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             scan_isr_forbidden_expr(cond, scan);
             scan_isr_forbidden_stmts(body, scan);
         }
@@ -3157,6 +3157,7 @@ pub fn double(x: u64) -> u64:
                     kind: TypedExprKind::Bool(true),
                 },
                 body: vec![],
+                budget: None,
             }),
             Some("a loop (drain unbounded work — loops belong in the bottom half)")
         );
@@ -3177,6 +3178,7 @@ pub fn double(x: u64) -> u64:
                     false,
                 ),
                 body: vec![],
+                budget: None,
             }),
             Some("a loop (drain unbounded work — loops belong in the bottom half)")
         );

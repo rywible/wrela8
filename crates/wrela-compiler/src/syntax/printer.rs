@@ -865,6 +865,9 @@ fn print_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
             }
         }
         Stmt::For(f) => {
+            if let Some(attr) = &f.budget {
+                print_attrs(std::slice::from_ref(attr), indent, out);
+            }
             let mut header = "for ".to_string();
             if f.take_binding {
                 header.push_str("take ");
@@ -877,6 +880,9 @@ fn print_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
             print_stmts(&f.body, indent + 1, out);
         }
         Stmt::While(w) => {
+            if let Some(attr) = &w.budget {
+                print_attrs(std::slice::from_ref(attr), indent, out);
+            }
             push_line(
                 out,
                 indent,

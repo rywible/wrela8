@@ -1,0 +1,20 @@
+module examples.check_budget_sync_loop
+
+# plans/M11.md item A / decision 721: a sync loop with `@budget(bound=N)`
+# is accepted; the trip counter is the discharge (fail-closed runtime bound).
+
+pub fn sum_to(n: u64) -> u64:
+    total: u64 = 0
+    i: u64 = 0
+    @budget(bound=64)
+    while i < n:
+        total = total + i
+        i = i + 1
+    return total
+
+pub fn sum_four(values: [u64; 4]) -> u64:
+    total: u64 = 0
+    @budget(bound=4)
+    for v in values:
+        total = total +% v
+    return total

@@ -343,7 +343,7 @@ fn stmt_contains_await(s: &TypedStmt) -> bool {
                         || block_contains_await(&a.body)
                 })
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             expr_contains_await(cond) || block_contains_await(body)
         }
         TypedStmtKind::For { iter, body, .. } => {
@@ -977,7 +977,7 @@ fn lower_stmt<'a>(
             }
             lower_match(scrutinee, arms, b, env, defers, loops)
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             lower_while(cond, body, b, env, defers, loops)?;
             Ok(false)
         }

@@ -14,6 +14,7 @@ struct Point:
 
 fn label(p: Point) -> String[..32]:
     total = clamp(p.x.to[u64]())
+    @budget(bound=1000000)
     for i in 0 .. 4:
         total += i
     return f"point {total}"

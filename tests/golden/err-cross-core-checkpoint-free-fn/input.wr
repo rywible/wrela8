@@ -22,6 +22,7 @@ module examples.err_cross_core_checkpoint_free_fn
 pub fn spin(n: u64) -> u64:
     i: u64 = 0
     acc: u64 = 0
+    @budget(bound=1000000)
     while i < n:
         acc = acc + i
         i = i + 1

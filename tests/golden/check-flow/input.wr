@@ -35,6 +35,7 @@ pub fn move_then_fresh(take current: Packet) -> Packet:
 
 pub fn restore_in_loop(mut h: Handle, n: u64) -> unit:
     i: u64 = 0
+    @budget(bound=1000000)
     while i < n:
         p = take h.packet
         h.packet = take p

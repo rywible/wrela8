@@ -781,7 +781,7 @@ fn collect_asserts_stmt<'p>(stmt: &'p TypedStmt, out: &mut Vec<AssertSite<'p>>) 
             }
             collect_asserts_stmts(body, out);
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             collect_asserts_expr(cond, out);
             collect_asserts_stmts(body, out);
         }

@@ -89,6 +89,7 @@ fn fabricated_keys_miss():
 fn generation_exhausted_never_wraps():
     m = SlotMap[u64, 1](map_id=1)
     i: u16 = 0
+    @budget(bound=1000000)
     while i < 256:
         x: u64 = i.to[u64]()
         match m.try_insert(take x):

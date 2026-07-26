@@ -706,6 +706,8 @@ pub struct MatchStmt {
 }
 
 /// `for [take] name in iterable: body` (02-language.md §8.1).
+/// Optional `budget` is the statement-attribute `@budget(bound=N)` that
+/// immediately preceded this loop (02 §8.1 / §13; plans/M11.md decision 721).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForStmt {
     pub span: Span,
@@ -713,6 +715,7 @@ pub struct ForStmt {
     pub name: String,
     pub iterable: Expr,
     pub body: Vec<Stmt>,
+    pub budget: Option<Attr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -720,6 +723,8 @@ pub struct WhileStmt {
     pub span: Span,
     pub cond: Expr,
     pub body: Vec<Stmt>,
+    /// See [`ForStmt::budget`].
+    pub budget: Option<Attr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
