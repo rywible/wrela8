@@ -1,0 +1,70 @@
+module examples.err_cross_core_checkpoint_free_fn
+
+# plans/M10.md, pre-migration finding: the sibling of
+# `err-cross-core-checkpoint`, and the hole it left open.
+#
+# That golden pins the refusal for a loop written *inside* a method of an
+# actor placed on a secondary core. This one hoists the identical loop into
+# a free fn. Before the fix, `caller_core`'s `None => 0` fallback attributed
+# the free fn to core 0, the guard passed, and the image built — then hung
+# at boot: core 1 ran the loop, its checkpoint polled and whole-word-cleared
+# **core 0's** pending word, ate the wake `build_rt_xreply` had just raised
+# for core 0, and the VMM reported "every core is parked with an empty
+# pending word". That is exactly the failure `err-cross-core-checkpoint`'s
+# own diagnostic text describes, reached by the one path it did not cover.
+#
+# Two controls, both verified by hand and recorded here so a future edit
+# cannot make this golden vacuous:
+#   - move the `while` inline into `Slow.churn` and you get
+#     `err-cross-core-checkpoint`'s original "runs on core 1" diagnostic;
+#   - delete the `while` from `spin` and the same program boots green.
+
+pub fn spin(n: u64) -> u64:
+    i: u64 = 0
+    acc: u64 = 0
+    while i < n:
+        acc = acc + i
+        i = i + 1
+    return acc
+
+@actor
+pub struct Quick:
+    n: u64
+
+    init(mut self):
+        self.n = 5
+
+    pub fn get(read self) -> u64:
+        return self.n
+
+@actor
+pub struct Slow:
+    n: u64
+
+    init(mut self):
+        self.n = 0
+
+    pub fn churn(mut self):
+        self.n = spin(64)
+
+@test(runtime)
+async fn lost_wake(q: Actor[Quick], s: Actor[Slow]):
+    send s.churn()
+    v = await q.get()
+    match v:
+        case .Ok(n):
+            assert n == 5, "expected 5 from Quick"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-cross-core-checkpoint-free-fn", target=Target.wrela_machine_v1)
+    q = img.actor(Quick, mailbox=4, core=1)
+    s = img.actor(Slow, mailbox=4, core=1)
+    img.supervise(
+        children=[q, s],
+        strategy=Restart.OneForOne,
+        intensity=RestartIntensity(max=3, within=seconds(10)),
+    )
+    return img.seal()

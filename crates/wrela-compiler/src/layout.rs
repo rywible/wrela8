@@ -967,12 +967,44 @@ fn xsend_symbol(src_core: usize, actor: &str) -> String {
 /// shape decision 2), and anything else is a free turn — and the only free
 /// turns that run are the root turns core 0's entry driver drives.
 fn caller_core(caller_key: &str, w: &RuntimeWiring) -> usize {
+    attributed_core(caller_key, w).unwrap_or(0)
+}
+
+/// The same lookup as [`caller_core`], but **honest about not knowing**.
+///
+/// `caller_core`'s `None => 0` fallback reads "a free key is a free turn,
+/// and free turns are core 0's entry driver's". That is true of a free
+/// *turn*; it is false of a free *function*, which is an ordinary callee
+/// and runs on whatever core its caller runs on. The two are the same key
+/// shape — no `Actor.` prefix — so `turn_owner` cannot tell them apart.
+///
+/// For a *sizing* question the difference does not matter (a free fn owns
+/// no turn area either way). For a *proof* question it decides the answer:
+/// `reject_unlowerable_cross_core_shapes`' checkpoint arm exists to prove a
+/// fn does **not** run off core 0, and answering "core 0" for a key it
+/// cannot attribute makes the proof vacuous exactly where it is needed.
+/// That was a live defect — a loop hoisted out of a core-1 actor method
+/// into a free fn passed the guard and then ate core 0's cross-core wake,
+/// hanging the image (`golden/err-cross-core-checkpoint-free-fn`).
+///
+/// A free key that owns a **free turn area** (`RuntimeTables::free_turns`
+/// — the `@test(runtime)` roots and free `async fn`s) is still core 0, and
+/// positively so: 06 §3 makes boot and the root turns the entry core's, and
+/// `reply_ring_capacity`'s own comment records the same. That is the line
+/// between the two free-key shapes, and it is why this returns `Some(0)`
+/// for one and `None` for the other.
+fn attributed_core(caller_key: &str, w: &RuntimeWiring) -> Option<usize> {
     let actor_names: Vec<String> = w.tables.actors.iter().map(|a| a.name.clone()).collect();
     let driver_names: Vec<String> = w.tables.drivers.iter().map(|d| d.name.clone()).collect();
-    match turn_owner(caller_key, &actor_names).or_else(|| turn_owner(caller_key, &driver_names)) {
-        Some(owner) => w.placement.core_of_actor_type(owner).unwrap_or(0),
-        None => 0,
+    if let Some(owner) =
+        turn_owner(caller_key, &actor_names).or_else(|| turn_owner(caller_key, &driver_names))
+    {
+        return Some(w.placement.core_of_actor_type(owner).unwrap_or(0));
     }
+    if w.tables.free_turns.iter().any(|(k, _)| k == caller_key) {
+        return Some(0);
+    }
+    None
 }
 
 /// plans/M8.md item C2, the item that lifted C1's own build error: a
@@ -1216,15 +1248,33 @@ fn reject_unlowerable_cross_core_shapes(
         {
             continue;
         }
-        let core = caller_core(key, w);
-        if core != 0 {
-            return Err(LayoutError::new(format!(
-                "`{key}` runs on core {core} and contains a checkpoint (a loop back-edge), but \
-                 `__wrela_checkpoint_service` and every checkpoint test name core 0's own pending \
-                 word by construction — servicing one from core {core} would clear the wake a \
-                 cross-core ring raised for core 0. Place this actor on core 0, or remove the \
-                 loop; per-core checkpoint services are not part of plans/M8.md item C2"
-            )));
+        // Fail closed on "cannot attribute", not just on "attributed to a
+        // secondary core": the whole job of this arm is to *prove* the fn
+        // runs on core 0, and an unattributed key is exactly the case that
+        // shipped the hang.
+        match attributed_core(key, w) {
+            Some(0) => {}
+            Some(core) => {
+                return Err(LayoutError::new(format!(
+                    "`{key}` runs on core {core} and contains a checkpoint (a loop back-edge), \
+                     but `__wrela_checkpoint_service` and every checkpoint test name core 0's \
+                     own pending word by construction — servicing one from core {core} would \
+                     clear the wake a cross-core ring raised for core 0. Place this actor on \
+                     core 0, or remove the loop; per-core checkpoint services are not part of \
+                     plans/M8.md item C2"
+                )));
+            }
+            None => {
+                return Err(LayoutError::new(format!(
+                    "`{key}` contains a checkpoint (a loop back-edge) and is not owned by any \
+                     declared actor or driver, so this build cannot prove which core it runs \
+                     on. In a multi-core image that is refused: a checkpoint serviced from a \
+                     secondary core clears core 0's pending word and eats the wake a cross-core \
+                     ring raised for it. Move the loop into a method of an actor placed on core \
+                     0, or remove it; per-core checkpoint services are not part of plans/M8.md \
+                     item C2"
+                )));
+            }
         }
     }
     Ok(())
