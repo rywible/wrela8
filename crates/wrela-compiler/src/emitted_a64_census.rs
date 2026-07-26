@@ -213,13 +213,8 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::NotYetMigrated,
         note: "F2",
     },
-    EmitterEntry {
-        name: "build_rt_select_and_run",
-        file: "layout.rs",
-        words: 121,
-        category: Category::NotYetMigrated,
-        note: "F delete; hand-asm twin of emit_rt_select_and_run; REF one sync",
-    },
+    // M10 F deleted `build_rt_select_and_run` — specialized twin is
+    // `emit_rt_select_and_run` (decision 630).
     EmitterEntry {
         name: "build_rt_drain",
         file: "layout.rs",
@@ -307,14 +302,14 @@ pub const FLOOR_WORDS: usize = 26;
 
 pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 300; // was 176; F +124 emit_rt_select_and_run
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 708; // was 824; E4 deleted 46+70
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 587; // was 708; F deleted build_rt_select_and_run 121
 
 pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 1072; // was 948; F +124
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 951; // was 1072; F −121
 
 #[cfg(test)]
 mod tests {
@@ -455,8 +450,9 @@ mod tests {
         "layout.rs::layout_program",
         "layout.rs::emitted_a64_census_live_counts",
         "codegen.rs::emitted_a64_census_specialization_live_counts",
-        "layout.rs::build_rt_select_and_run_core",
-        "layout.rs::build_rt_select_and_run_symbolic",
+        // M10 F: JIT-only materialize of `emit_rt_select_and_run` (patches
+        // Call/MailboxAddr/Turns*); not a hand-asm emitter row.
+        "layout.rs::build_rt_select_and_run",
         "layout.rs::build_checkpoint_and_vector_stub",
         "layout.rs::emit_boot_init_arg",
         "layout.rs::build_runtime_glue_block",
@@ -467,10 +463,7 @@ mod tests {
     /// Census rows that are real emitters (measured word count) but whose
     /// body does not itself contain `encode::enc_` — thin wrappers that
     /// forward to a counted sibling. Still locked by the live-count test.
-    const WRAPPER_EMITTERS: &[&str] = &[
-        "layout.rs::build_rt_enqueue",
-        "layout.rs::build_rt_select_and_run", // forwards to _core
-    ];
+    const WRAPPER_EMITTERS: &[&str] = &["layout.rs::build_rt_enqueue"];
 
     #[test]
     fn emitted_a64_census_matches_live_measurements() {

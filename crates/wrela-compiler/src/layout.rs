@@ -4305,13 +4305,13 @@ fn push_turn_addr_from_id(a: &mut Asm, id_reg: u8, scratch: u8, turns_base: u64,
 /// which can have at most one outstanding `await` (non-reentrancy caps
 /// in-flight activations at one per turn area), so there can never be more
 /// undelivered replies bound for `s` than the ring holds. Same class and
-/// same treatment as `BRK_REPLY_SLOT_NO_WAKER` above.
+/// same treatment as the dissolved aggregate-no-waker trap (item F).
 const BRK_XREPLY_RING_FULL: u16 = 0xACD7;
 
-/// plans/M8.md item C2: a waker carried a core tag naming a core this
-/// image never brought up. Unreachable: the tag is written by
-/// `build_rt_xsend`, one build-time constant per emitted routine.
-const BRK_XREPLY_UNKNOWN_CORE: u16 = 0xACD8;
+// M10 F dissolved `BRK_XREPLY_UNKNOWN_CORE` (0xACD8): specialized
+// `emit_rt_select_and_run` dense-matches `xreply_remotes` (decision 557
+// typed core tag + decision 630). F2's `build_rt_xreply` still owns the
+// ring-full trap above.
 
 /// Per-actor ring bookkeeping beyond the ring bytes themselves: head,
 /// tail, count (3 `u64`s). Reply plumbing no longer lives here at all —
@@ -6868,511 +6868,81 @@ fn build_rt_xreply(addrs: &RingAddrs, capacity: u64, dst_core: usize, start: usi
     a
 }
 
-/// `rt_select_actor() -> x0 (1 = ran one turn-slice this call, 0 = not
-/// ready — busy with its awaited reply still outstanding, or its own
-/// mailbox is empty)`. One "tick" of 04 §2's event loop for one actor,
-/// carrying the whole selection half of the park-and-resume contract
-/// (`codegen::OFF_TURN_*`'s own module doc; admission is `rt_enqueue`'s
-/// entirely separate job):
-///
-///   - **Readiness**: a busy actor whose turn is parked AND whose reply
-///     has been delivered (`suspended && resume_ready`) is ready to
-///     *resume*; a non-busy actor with a queued message is ready for a
-///     *fresh* turn; anything else reports 0. Decision 4's
-///     non-reentrancy is exactly the busy check: a queued second message
-///     stays queued until the owning turn fully completes.
-///   - **Fresh dispatch**: FIFO pop from `head` — method idx, waker, and
-///     args read from the slot; `cur_method`/`waker` saved into the turn
-///     record; `head`/`count` advanced HERE, at selection ("admission
-///     occupies one logical mailbox slot until selection", 04 §2 — the
-///     slot is released the moment the turn starts, not when it ends);
-///     `busy = 1`; `BL` the method.
-///   - **Resume dispatch**: re-`BL` the SAME compiled method
-///     (`cur_method`, the saved dispatch index) — the fn's own entry
-///     discriminant routes itself to its saved `resume_state`.
-///   - **Status**: each dispatch arm knows its method's color at build
-///     time. A sync method's return IS completion (its reply in `x0`) —
-///     a sync `pub` method runs as one complete, unsuspendable turn. An
-///     async method returns `x0 = TURN_STATUS_*`: suspended means this
-///     call ran a real slice (return 1, busy stays set — the park);
-///     completed carries the reply in `x1`.
-///   - **Delivery**: on completion, the reply is written to the waker's
-///     own turn record (`[waker + OFF_TURN_REPLY]`, then
-///     `resume_ready = 1`) — waker 0 (a `send`) delivers nowhere; then
-///     `busy = 0`.
-///   - **Aggregate replies** (plans/M7.md item Z1, decision 9a): an arm
-///     whose method declares an aggregate reply first loads the parked
-///     caller's staging-slot address out of the turn record
-///     (`[waker + OFF_TURN_REPLY_SLOT]`) into `x8`, this machine's
-///     aggregate-return-pointer register, so the method writes its reply
-///     straight into the awaiting frame. Such an arm then delivers a
-///     deterministic 0 in the scalar reply word — the value already went
-///     through `x8`, and nothing else is copied.
-///
-/// `dispatch[i]` = (call target, is_async). Register use: `x9..x13`
-/// scratch; `x15` = method_idx, live across the dispatch chain; `x0`
-/// (self ptr) / `x1`/`x2` (args) are set before `.dispatch` and must
-/// survive every arm's own preamble.
-///
-/// This JIT/HVF-facing entry point carries no aggregate-reply flags: every
-/// dispatch target it is ever given is a hand-built conformance stub with
-/// a scalar reply (`wrela-vmm`'s own harness pair, and this file's own
-/// `harness_jit` suite), so the flag is `false` by construction rather
-/// than by convention. The real image path is
-/// `build_rt_select_and_run_symbolic` below, which carries the real ones.
-///
-/// M10 F: specialized twin is `codegen::emit_rt_select_and_run`; this
-/// hand-asm is kept until F's delete commit.
-#[allow(dead_code)] // M10 F: kept until delete; no longer placed in glue.
+/// M10 item F: hand-asm `build_rt_select_and_run*` deleted. Specialized
+/// twin is `codegen::emit_rt_select_and_run` (decision 630). This helper
+/// materializes that body for same-buffer JIT/HVF harnesses that still
+/// name methods by absolute word index — patches `MailboxAddr` /
+/// `TurnsBase` / `TurnStride` / method `Reloc::Call`s against the stand-in
+/// addresses the harness already knows.
+#[allow(clippy::too_many_arguments)]
 pub fn build_rt_select_and_run(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
     dispatch: &[(usize, bool)],
     frame_area_size: u64,
-    // plans/M10.md item 0c1: the turn array's own base and log2 stride —
-    // the two build-time constants `push_turn_addr_from_id` needs to turn
-    // the `Option[TurnId]` a waker now is back into an address. For a real
-    // image these are `RuntimePlacement::turns_base` /
-    // `log2_turn_stride()`; a JIT/HVF harness passes its own stand-in pair.
     turns_base: u64,
     log2_stride: u8,
     start: usize,
 ) -> Vec<u32> {
-    let colors: Vec<(bool, bool)> = dispatch
-        .iter()
-        .map(|(_, is_async)| (*is_async, false))
-        .collect();
-    build_rt_select_and_run_core(
-        addrs,
-        capacity,
-        slot_size,
-        &colors,
-        frame_area_size,
-        &[],
-        turns_base,
-        log2_stride,
-        start,
-        |a, idx| a.bl_to(dispatch[idx].0),
-    )
-    .words
-}
-
-/// The exact same routine as `build_rt_select_and_run` above, but
-/// dispatching to a *real compiled program's own `code` section* by fn
-/// key (a `Reloc::Call`, resolved by `layout_test_image` exactly like an
-/// ordinary compiled call) instead of a same-buffer absolute word index —
-/// a sync method's real compiled body and an async method's real compiled
-/// state-machine entry are both ordinary `program.fns` entries. Shares
-/// every byte of hand-assembly with the JIT-tested original above via
-/// `build_rt_select_and_run_core` — never a forked copy.
-#[allow(dead_code)] // M10 F: kept until delete commit; no longer placed in glue.
-fn build_rt_select_and_run_symbolic(
-    addrs: &ActorAddrs,
-    capacity: u64,
-    slot_size: u64,
-    dispatch: &[(String, bool, bool)],
-    frame_area_size: u64,
-    // plans/M8.md item C2: `(remote core, that core pair's own
-    // `__rt_xreply_*` start word)` for every core whose turns can hold a
-    // waker on a message admitted here. Empty for every single-core image
-    // and for every actor no other core sends to — such an actor's
-    // delivery path keeps its pre-C2 bytes exactly.
-    xreply: &[(usize, usize)],
-    turns_base: u64,
-    log2_stride: u8,
-    start: usize,
-) -> Asm {
-    let colors: Vec<(bool, bool)> = dispatch
-        .iter()
-        .map(|(_, is_async, reply_is_aggregate)| (*is_async, *reply_is_aggregate))
-        .collect();
-    build_rt_select_and_run_core(
-        addrs,
-        capacity,
-        slot_size,
-        &colors,
-        frame_area_size,
-        xreply,
-        turns_base,
-        log2_stride,
-        start,
-        |a, idx| a.bl_call_key(&dispatch[idx].0),
-    )
-}
-
-/// plans/M7.md item Z1: the dispatch arm's own should-be-unreachable
-/// guard — a method whose declared reply is an aggregate was selected on
-/// a turn with **no waker**. Unreachable by construction: the only
-/// waker-less admission is `send`, and 02-language.md §9.4 makes `send`'s
-/// target a unit-returning method (enforced at `sema::bodies`'
-/// `check_send_call`), so no aggregate-reply method can ever be enqueued
-/// without one. A 0 here is a producer bug in this compiler, not a
-/// program's doing — the same class as the dispatch table's own
-/// no-arm-matched `brk 0xACD0` right below it, and deliberately the same
-/// treatment.
-const BRK_REPLY_SLOT_NO_WAKER: u16 = 0xACD6;
-
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)] // M10 F: kept until delete; no longer placed in glue.
-fn build_rt_select_and_run_core(
-    addrs: &ActorAddrs,
-    capacity: u64,
-    slot_size: u64,
-    // Per dispatch index, in declaration order: `(is_async,
-    // reply_is_aggregate)` — the two build-time facts an arm's own shape
-    // depends on (`ActorMethodShape`).
-    methods: &[(bool, bool)],
-    // This actor's own whole turn-area size (`ActorRuntimeLayout::frame_size`)
-    // — the turn record plus its widest async frame. An actor with no async
-    // method has exactly the record and no frame slots at all.
-    frame_area_size: u64,
-    // plans/M8.md item C2: see `build_rt_select_and_run_symbolic`. Empty
-    // means "no cross-core waker can reach this actor" and emits not one
-    // extra instruction.
-    xreply: &[(usize, usize)],
-    // plans/M10.md item 0c1: see `build_rt_select_and_run`.
-    turns_base: u64,
-    log2_stride: u8,
-    start: usize,
-    mut call_dispatch: impl FnMut(&mut Asm, usize),
-) -> Asm {
     use crate::codegen::{
-        CALL_ERROR_TAG_CANCELLED, OFF_TURN_CUR_METHOD, OFF_TURN_REPLY, OFF_TURN_REPLY_SLOT,
-        OFF_TURN_REPLY_TAG, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED, OFF_TURN_WAKER,
-        REPLY_TAG_OK, TURN_RECORD_SIZE, TURN_STATUS_CANCELLED, TURN_STATUS_SUSPENDED,
+        MailboxField, Reloc, RtSelectAndRunSpec, RtSelectMethod, emit_rt_select_and_run,
     };
-    let mut a = Asm::new(start);
-    // Unlike most other hand-assembled fragments in this file (leaf fns,
-    // or noreturn like the abort stubs), this one both calls out (`BL`
-    // into a dispatched method) *and* returns via an ordinary `ret` — so
-    // it must save/restore its own `x30` (link register), exactly the
-    // ABI's own "x30 is call-clobbered" rule `codegen.rs`'s real
-    // prologues already apply: a first draft of the item-C original
-    // skipped this, called the dispatched method, and hung forever (the
-    // dispatched method's own `RET x30` correctly returned *into* this
-    // fn right after its own `BL`, but this fn's *own* final `ret x30`
-    // then read that same, now-stale value instead of its original
-    // caller's address, jumping back into itself in an infinite loop —
-    // caught by a real JIT execution test hanging, exactly what this
-    // module's own "behavior is the oracle" doc paragraph is for).
-    a.push(encode::enc_sub_imm(31, 31, 16, true)); // sub sp, sp, #16
-    a.push(encode::enc_str_x_imm(30, 31, 0)); // str x30, [sp]
-    let mut to_idle_ret: Vec<usize> = Vec::new(); // b .epilogue with x0 already 0
-    let mut to_epilogue: Vec<usize> = Vec::new(); // b .epilogue with x0 already set
-    let mut to_deliver: Vec<usize> = Vec::new(); // b .deliver with x9 = reply
-
-    // --- readiness -----------------------------------------------------
-    // busy?
-    a.load_imm(9, addrs.turn);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0)); // x10 = busy (OFF_TURN_BUSY = 0)
-    let skip_fresh_check = a.skip_placeholder(); // cbz x10, .fresh_check
-    // busy: resumable only if suspended && resume_ready.
-    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16));
-    let skip_idle_a = a.skip_placeholder(); // cbz x10, .idle
-    a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_RESUME_READY as u16));
-    let skip_idle_b = a.skip_placeholder(); // cbz x10, .idle
-    // resume: x15 = cur_method; x0 = self ptr (harmless on resume — the
-    // fn's own resume path reads nothing from the arg registers).
-    a.push(encode::enc_ldr_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16));
-    a.load_imm(0, addrs.state);
-    let to_dispatch_from_resume = a.skip_placeholder(); // b .dispatch
-
-    // .idle (busy but not resumable): x0 = 0, epilogue.
-    let idle = a.abs();
-    a.patch_cbz(skip_idle_a, 10);
-    a.patch_cbz(skip_idle_b, 10);
-    debug_assert_eq!(idle, a.abs());
-    a.push(encode::enc_movz(0, 0, 0, true));
-    to_idle_ret.push(a.skip_placeholder());
-
-    // .fresh_check: mailbox empty?
-    let fresh_check = a.abs();
-    a.patch_cbz(skip_fresh_check, 10);
-    debug_assert_eq!(fresh_check, a.abs());
-    a.load_imm(9, addrs.count);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    let skip_have_msg = a.skip_placeholder(); // cbnz x10, .have_msg
-    a.push(encode::enc_movz(0, 0, 0, true));
-    to_idle_ret.push(a.skip_placeholder());
-    let have_msg = a.abs();
-    a.patch_cbnz(skip_have_msg, 10);
-    debug_assert_eq!(have_msg, a.abs());
-
-    // --- fresh selection ------------------------------------------------
-    // busy = 1
-    a.load_imm(9, addrs.turn);
-    a.load_imm(10, 1);
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-
-    // slot = ring + head * slot_size
-    a.load_imm(11, addrs.head);
-    a.push(encode::enc_ldr_x_imm(12, 11, 0));
-    a.load_imm(13, slot_size);
-    a.push(encode::enc_mul(13, 12, 13, true));
-    a.load_imm(9, addrs.ring);
-    a.push(encode::enc_add_reg(13, 9, 13, true)); // x13 = slot addr
-
-    a.push(encode::enc_ldr_x_imm(15, 13, 0)); // x15 = method_idx
-    // plans/M10.md item 0c1: the slot's waker word is two `u32` fields —
-    // `waker_turn` at +8, `waker_core` at +12 — copied field-for-field into
-    // the turn record's own pair at `OFF_TURN_WAKER`/`+4`. `ldr w`, never
-    // `ldr x`: an `x` load here would fold the core into the index's high
-    // bits and reinvent the tagging this item deleted.
-    a.push(encode::enc_ldr_w_imm(10, 13, 8)); // w10 = waker_turn
-    a.push(encode::enc_ldr_w_imm(14, 13, 12)); // w14 = waker_core
-    a.load_imm(9, addrs.turn);
-    a.push(encode::enc_str_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16));
-    a.push(encode::enc_str_w_imm(10, 9, OFF_TURN_WAKER as u16));
-    a.push(encode::enc_str_w_imm(14, 9, OFF_TURN_WAKER as u16 + 4));
-    // plans/M6.md item F: a freshly selected turn starts with *no* ambient
-    // lineage (02-language.md §9.5 — a message carries no group; a turn's
-    // lineage is its own task root's, and an actor turn's root is the
-    // message that started it). The two lineage slots are the first two
-    // words past the turn record (`codegen::LINEAGE_GROUP_SLOT`/
-    // `LINEAGE_DEADLINE_SLOT`, `flowwir::FrameLayout`'s fixed convention),
-    // and a previous activation of a *different* method on this same actor
-    // could otherwise leave a stale group id behind — harmless today only
-    // because every M6 actor method that opens a group also closes it, but
-    // correct by construction now rather than by accident.
-    // Guarded on the area actually *having* those two slots: an actor with
-    // no `async` method at all gets a turn area of exactly
-    // `TURN_RECORD_SIZE` bytes and no frame slots past it, so storing there
-    // would scribble on whatever `place_runtime_tables` put next (a real
-    // bug the flagship group goldens caught the moment this zeroing was
-    // added unguarded — the group arena's own `in_use` words, three regions
-    // later, came back set and `GroupCreate` reported "arena capacity
-    // exceeded").
-    //
-    // plans/M10.md item 0a: the guard stays keyed on this owner's own **raw**
-    // area (`ActorRuntimeLayout::frame_size` / `DriverMailbox::frame_size`,
-    // both unchanged by the uniform-stride reservation), never on
-    // `RuntimeTables::turn_stride`. The stride answers "how many bytes were
-    // reserved", not "does this owner have lineage slots" — keyed on the
-    // stride, a bare actor whose area is exactly `TURN_RECORD_SIZE` would
-    // start emitting these two stores into its own padding, changing
-    // `rtcode` for no reason and scribbling past its record the moment the
-    // grouping changes.
-    if frame_area_size >= TURN_RECORD_SIZE + 16 {
-        a.push(encode::enc_str_x_imm(31, 9, TURN_RECORD_SIZE as u16));
-        a.push(encode::enc_str_x_imm(31, 9, (TURN_RECORD_SIZE + 8) as u16));
-    }
-    // Load only as many 8-byte arg words as this ring's own `slot_size`
-    // actually reserves past the 16-byte idx+waker pair (never
-    // unconditionally 2): the smallest legal slot is `slot_size=16` (a
-    // no-arg message) — reading fixed words regardless would read *past*
-    // the ring into `head`/`tail` themselves for a narrower slot. A real
-    // HVF boot caught the item-C ancestor of exactly this bug (module
-    // doc note); the bound stays load-bearing here.
-    let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
-    if arg_words >= 1 {
-        a.push(encode::enc_ldr_x_imm(1, 13, 16)); // x1 = arg0
-    }
-    if arg_words >= 2 {
-        a.push(encode::enc_ldr_x_imm(2, 13, 24)); // x2 = arg1
-    }
-    // Release the slot NOW — selection, not completion, frees it
-    // (04 §2): head = (head + 1) % capacity; count -= 1. `x12` still
-    // holds the head value from the slot computation above.
-    a.push(encode::enc_add_imm(12, 12, 1, true));
-    a.load_imm(9, capacity);
-    a.push(encode::enc_cmp_reg(12, 9, true));
-    let skip_nowrap = a.skip_placeholder(); // b.lt .nowrap
-    a.push(encode::enc_movz(12, 0, 0, true));
-    let nowrap = a.abs();
-    a.patch_cond(skip_nowrap, Cond::Lt);
-    debug_assert_eq!(nowrap, a.abs());
-    a.load_imm(11, addrs.head);
-    a.push(encode::enc_str_x_imm(12, 11, 0));
-    a.load_imm(9, addrs.count);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    a.push(encode::enc_sub_imm(10, 10, 1, true));
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-
-    a.load_imm(0, addrs.state); // x0 = self ptr (the receiver ABI)
-
-    // --- dispatch (shared by fresh and resume; x15 = method index) -----
-    let dispatch = a.abs();
-    {
-        let this = a.start + to_dispatch_from_resume;
-        let delta = (dispatch as i64 - this as i64) * 4;
-        a.words[to_dispatch_from_resume] = encode::enc_b(delta as i32);
-    }
-    for (idx, &(is_async, reply_is_aggregate)) in methods.iter().enumerate() {
-        a.push(encode::enc_cmp_imm(15, idx as u16, true));
-        let skip_next = a.skip_placeholder(); // b.ne .next
-        if reply_is_aggregate {
-            // plans/M7.md item Z1 (decision 9a): hand the method its
-            // caller's own staging slot in `x8`. The waker is this turn
-            // record's own (stored at fresh selection, still there on a
-            // resume — it is only cleared at delivery), and the parked
-            // caller wrote `OFF_TURN_REPLY_SLOT` immediately before
-            // enqueueing this very message. `x9`..`x13` only: `x0` (self),
-            // `x1`/`x2` (args) and `x15` (method index) are all live
-            // across this preamble.
-            //
-            // plans/M10.md item 0c1 (decision 565): two index→address
-            // conversions, because neither word is an address any more.
-            // The waker is an `Option[TurnId]`, and `OFF_TURN_REPLY_SLOT`
-            // is a `(TurnId, byte offset within that turn area)` pair — a
-            // frame-interior reference, whose offset is the *caller's*
-            // per-fn `Frame::reply_stage_off` and so cannot be recovered
-            // from an index alone.
-            a.load_imm(9, addrs.turn);
-            a.push(encode::enc_ldr_w_imm(10, 9, OFF_TURN_WAKER as u16));
-            let skip_have_waker = a.skip_placeholder(); // cbnz w10, .have_waker
-            a.push(encode::enc_brk(BRK_REPLY_SLOT_NO_WAKER));
-            a.patch_cbnz_w(skip_have_waker, 10);
-            // x10 = the waker's own turn area.
-            push_turn_addr_from_id(&mut a, 10, 11, turns_base, log2_stride);
-            a.push(encode::enc_ldr_w_imm(8, 10, OFF_TURN_REPLY_SLOT as u16));
-            a.push(encode::enc_ldr_w_imm(
-                11,
-                10,
-                OFF_TURN_REPLY_SLOT as u16 + 4,
-            ));
-            // x8 = that turn area + the staging slot's own interior offset.
-            push_turn_addr_from_id(&mut a, 8, 12, turns_base, log2_stride);
-            a.push(encode::enc_add_reg(8, 8, 11, true));
+    let methods: Vec<RtSelectMethod> = dispatch
+        .iter()
+        .enumerate()
+        .map(|(i, (_, is_async))| RtSelectMethod {
+            key: format!("__jit_select_m{i}"),
+            is_async: *is_async,
+            reply_is_aggregate: false,
+        })
+        .collect();
+    let method_starts: Vec<usize> = dispatch.iter().map(|(s, _)| *s).collect();
+    let spec = RtSelectAndRunSpec {
+        actor: "__jit_actor".into(),
+        capacity,
+        slot_size,
+        frame_area_size,
+        methods,
+        actor_core: 0,
+        xreply_remotes: vec![],
+    };
+    let f = emit_rt_select_and_run(&spec);
+    let mut words: Vec<u32> = f.code.iter().map(|(w, _)| *w).collect();
+    let turn_stride = 1u64 << log2_stride;
+    for reloc in &f.relocs {
+        match reloc {
+            Reloc::MailboxAddr { word, field, .. } => {
+                let value = match field {
+                    MailboxField::Ring => addrs.ring,
+                    MailboxField::Head => addrs.head,
+                    MailboxField::Tail => addrs.tail,
+                    MailboxField::Count => addrs.count,
+                    MailboxField::State => addrs.state,
+                    MailboxField::Turn => addrs.turn,
+                };
+                patch_load_imm_words(&mut words, *word, value);
+            }
+            Reloc::TurnsBase { word } => {
+                patch_load_imm_words(&mut words, *word, turns_base);
+            }
+            Reloc::TurnStride { word } => {
+                patch_load_imm_words(&mut words, *word, turn_stride);
+            }
+            Reloc::Call { word, key } => {
+                let idx: usize = key
+                    .strip_prefix("__jit_select_m")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| panic!("unexpected Call key in JIT select: {key}"));
+                let target = method_starts[idx];
+                let this = start + *word;
+                let delta = (target as i64 - this as i64) * 4;
+                words[*word] = encode::enc_bl(delta as i32);
+            }
+            other => panic!("unexpected reloc in JIT select materialize: {other:?}"),
         }
-        call_dispatch(&mut a, idx);
-        if is_async {
-            // x0 = status; on completion x1 = the scalar reply.
-            a.push(encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true));
-            let skip_not_suspended = a.skip_placeholder(); // b.ne .not_suspended
-            // Suspended: a real slice ran; busy stays set; x0 is
-            // already 1 (TURN_STATUS_SUSPENDED) — the "ran" report.
-            to_epilogue.push(a.skip_placeholder());
-            let not_suspended = a.abs();
-            a.patch_cond(skip_not_suspended, Cond::Ne);
-            debug_assert_eq!(not_suspended, a.abs());
-            // plans/M10.md item J: `TURN_STATUS_CANCELLED` from an actor
-            // turn delivers `CallError::Cancelled` through the reply tag
-            // (decision 559) — the representation gap that used to force
-            // `BRK_ACTOR_TURN_CANCELLED` is closed. Still rare by
-            // construction at M6 (lineage zeroed at fresh selection), but
-            // no longer a trap when it does happen.
-            a.push(encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true));
-            let skip_completed = a.skip_placeholder(); // b.ne .completed
-            a.push(encode::enc_movz(9, 0, 0, true)); // reply = 0
-            a.load_imm(14, CALL_ERROR_TAG_CANCELLED);
-            to_deliver.push(a.skip_placeholder()); // b .deliver
-            let completed = a.abs();
-            a.patch_cond(skip_completed, Cond::Ne);
-            debug_assert_eq!(completed, a.abs());
-        }
-        // The one word that differs between the three method shapes —
-        // what `.deliver` will store into the waker's own reply slot.
-        // A sync method's return IS completion (reply in x0); an async
-        // one that got here completed (reply in x1); and an
-        // aggregate-reply method of either color already wrote its whole
-        // reply through `x8` into the awaiting frame, so its scalar word
-        // is a deliberate, deterministic 0 — that word is image-visible,
-        // and a stable 0 beats whatever register state the method
-        // happened to leave behind.
-        let reply_reg = match (reply_is_aggregate, is_async) {
-            (true, _) => 31, // xzr
-            (false, true) => 1,
-            (false, false) => 0,
-        };
-        a.push(encode::enc_mov_reg(9, reply_reg, true)); // x9 = reply
-        a.load_imm(14, REPLY_TAG_OK); // x14 = Ok
-        to_deliver.push(a.skip_placeholder());
-        let next = a.abs();
-        a.patch_cond(skip_next, Cond::Ne);
-        debug_assert_eq!(next, a.abs());
     }
-    // No dispatch entry matched — an internal-error guard: `rt_enqueue`
-    // only ever admits a `method_idx` this same table was built from,
-    // and `cur_method` is only ever one it stored itself.
-    a.push(encode::enc_brk(0xACD0));
-
-    // --- .deliver: reply (x9) -> waker's record; busy = 0; return 1 ----
-    let deliver = a.abs();
-    for m in &to_deliver {
-        let this = a.start + m;
-        let delta = (deliver as i64 - this as i64) * 4;
-        a.words[*m] = encode::enc_b(delta as i32);
-    }
-    debug_assert_eq!(deliver, a.abs());
-    a.load_imm(10, addrs.turn);
-    a.push(encode::enc_ldr_w_imm(11, 10, OFF_TURN_WAKER as u16));
-    let skip_no_waker = a.skip_placeholder(); // cbz w11, .no_waker
-    // plans/M8.md item C2: a waker whose `waker_core` field is nonzero
-    // (decision 30) names a turn record on **another** core, so its reply
-    // goes back the way the request came — over that core pair's own reply
-    // ring — instead of being stored straight into a remote turn record.
-    // Emitted only for an actor that a cross-core edge can actually reach;
-    // every single-core image, and every actor no other core messages,
-    // keeps the untouched two-store delivery below, word for word.
-    //
-    // plans/M10.md item 0c1: the core is its own `u32` field at
-    // `OFF_TURN_WAKER + 4`, so this is one `ldr w` and a `cbz w` — the
-    // `lsr`/`load_imm`/`bic` untag chain is gone, and `x11` stays a pure
-    // `TurnId` all the way to the remote arm's `x0`.
-    let mut to_after_remote: Vec<usize> = Vec::new();
-    if !xreply.is_empty() {
-        a.push(encode::enc_ldr_w_imm(13, 10, OFF_TURN_WAKER as u16 + 4));
-        let skip_local = a.skip_placeholder(); // cbz w13, .local
-        for (remote_core, routine) in xreply {
-            a.push(encode::enc_cmp_imm(13, (*remote_core as u16) + 1, false));
-            let skip_arm = a.skip_placeholder(); // b.ne .next_arm
-            // x0 = TurnId | (reply_tag << 32); x1 = reply. Item J packs
-            // the tag into the high half of the TurnId word (decision 665).
-            a.push(encode::enc_mov_reg(0, 11, false)); // w0 = waker TurnId
-            a.push(encode::enc_lsl_imm(15, 14, 32, true));
-            a.push(encode::enc_orr_reg(0, 0, 15, true));
-            a.push(encode::enc_mov_reg(1, 9, true)); // x1 = reply
-            a.bl_to(*routine);
-            to_after_remote.push(a.skip_placeholder()); // b .after_remote
-            let next_arm = a.abs();
-            a.patch_cond(skip_arm, Cond::Ne);
-            debug_assert_eq!(next_arm, a.abs());
-        }
-        a.push(encode::enc_brk(BRK_XREPLY_UNKNOWN_CORE));
-        let local = a.abs();
-        a.patch_cbz_w(skip_local, 13);
-        debug_assert_eq!(local, a.abs());
-    }
-    // .local: index→address, then tag + reply + resume_ready.
-    push_turn_addr_from_id(&mut a, 11, 12, turns_base, log2_stride);
-    a.push(encode::enc_str_x_imm(14, 11, OFF_TURN_REPLY_TAG as u16));
-    a.push(encode::enc_str_x_imm(9, 11, OFF_TURN_REPLY as u16));
-    a.push(encode::enc_movz(12, 1, 0, true));
-    a.push(encode::enc_str_x_imm(12, 11, OFF_TURN_RESUME_READY as u16));
-    let no_waker = a.abs();
-    a.patch_cbz_w(skip_no_waker, 11);
-    for m in &to_after_remote {
-        let this = a.start + m;
-        let delta = (no_waker as i64 - this as i64) * 4;
-        a.words[*m] = encode::enc_b(delta as i32);
-    }
-    debug_assert_eq!(no_waker, a.abs());
-    if !xreply.is_empty() {
-        // The remote arm's `BL` clobbered `x10`; the turn-record stores
-        // below need it back. (No-op for every image with no remote arm.)
-        a.load_imm(10, addrs.turn);
-    }
-    a.push(encode::enc_str_x_imm(31, 10, 0)); // busy = 0 (xzr)
-    // waker = 0 (hygiene). Deliberately still ONE 64-bit `str xzr`: the two
-    // `u32` fields plans/M10.md item 0c1 introduced (`waker_turn` at +32,
-    // `waker_core` at +36) are the two halves of exactly this word, so one
-    // store clears both. Two `str wzr` would be two words to say the same
-    // thing, and `None` is 0 for both fields by the same niche convention.
-    a.push(encode::enc_str_x_imm(31, 10, OFF_TURN_WAKER as u16));
-    a.push(encode::enc_movz(0, 1, 0, true)); // ran a turn(-slice)
-
-    // --- .epilogue (every exit; x0 already holds the report) -----------
-    let epilogue = a.abs();
-    a.push(encode::enc_ldr_x_imm(30, 31, 0)); // ldr x30, [sp]
-    a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
-    a.push(encode::enc_ret(30));
-    for m in to_idle_ret.iter().chain(to_epilogue.iter()) {
-        let this = a.start + m;
-        let delta = (epilogue as i64 - this as i64) * 4;
-        a.words[*m] = encode::enc_b(delta as i32);
-    }
-    a
+    words
 }
 
 fn build_rt_drain(
@@ -8774,6 +8344,10 @@ impl Asm {
         self.words[marker] = encode::enc_cbz(reg, delta as i32, false);
     }
 
+    // M10 F deleted the last `patch_cbnz_w` call site (select hand-asm).
+    // Keep the 32-bit cbnz sibling next to `patch_cbz_w` for F2's reply-
+    // ring `u32` fields (decision 557); silence until that item uses it.
+    #[allow(dead_code)]
     fn patch_cbnz_w(&mut self, marker: usize, reg: u8) {
         let target = self.abs();
         let this = self.start + marker;
@@ -10381,23 +9955,10 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         "build_rt_xreply",
         build_rt_xreply(&ring, CAP, 1, 0).words.len(),
     );
-    insert(
-        &mut out,
-        "build_rt_select_and_run",
-        build_rt_select_and_run(
-            &actor,
-            CAP,
-            SLOT,
-            &[(0, false)],
-            crate::codegen::TURN_RECORD_SIZE,
-            TURNS_BASE,
-            LOG2_STRIDE,
-            0,
-        )
-        .len(),
-    );
-    // M10 E4 deleted `build_rt_run_one` / `build_group_child_poll`; their
-    // specialized twins live in codegen's specialization census.
+    // M10 F deleted hand-asm `build_rt_select_and_run*`; the JIT helper of
+    // the same name only materializes `emit_rt_select_and_run` (counted in
+    // codegen's specialization census). E4 likewise dropped
+    // `build_rt_run_one` / `build_group_child_poll` from this inventory.
     insert(
         &mut out,
         "build_rt_drain",
