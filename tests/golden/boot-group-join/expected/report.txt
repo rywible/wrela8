@@ -17,16 +17,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=4592
-  Section name=rodata base=0x40501240 size=418
-  Section name=abort base=0x405013e4 size=120
-  Section name=checkpoint base=0x4050145c size=904
-  Section name=rtcode base=0x405017e4 size=1464
-  Section name=rtdata base=0x40501da0 size=2288
+  Section name=code base=0x40500050 size=5120
+  Section name=rodata base=0x40501450 size=296
+  Section name=abort base=0x40501578 size=120
+  Section name=checkpoint base=0x405015f0 size=904
+  Section name=rtcode base=0x40501978 size=1484
+  Section name=rtdata base=0x40501f48 size=2288
   Entry base=0x40500000
-  Actor name=Doubler mailbox=4 slot=24 frame=56 state=0
-  Turn fn=fetch_a frame=280
-  Turn fn=fetch_b frame=280
-  Turn fn=test_join frame=424
+  Actor name=Doubler mailbox=4 slot=24 frame=64 state=0
+  Turn fn=fetch_a frame=288
+  Turn fn=fetch_b frame=288
+  Turn fn=test_join frame=432
   Turns count=4 stride=512 bytes=2048
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2288

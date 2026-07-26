@@ -1,2 +1,2 @@
-test await_into_full_mailbox: FAILED await rejected: `Logger`'s mailbox was full (M6 does not compose CallError::NotAdmitted, so a full mailbox is fatal here)
-0 passed, 1 failed
+test await_into_full_mailbox: ok
+1 passed, 0 failed

@@ -671,31 +671,31 @@ Program
     0001: f2a0001c  turn-frame[1] x28 <guest_map>
     0002: f2c0001c  turn-frame[2] x28 <guest_map>
     0003: f2e0001c  turn-frame[3] x28 <guest_map>
-    0004: f900e79e  str lr, [x28, #456]
+    0004: f900eb9e  str lr, [x28, #464]
     0005: f9400789  ldr x9, [x28, #8]
     0006: b5000109  cbnz x9, #32
-    0007: f9002780  str x0, [x28, #72]
+    0007: f9002b80  str x0, [x28, #80]
     0008: d2800009  movz x9, #0x0
     0009: f2a00009  movk x9, #0x0, lsl #16
     0010: f2c00009  movk x9, #0x0, lsl #32
     0011: f2e00009  movk x9, #0x0, lsl #48
-    0012: f900e389  str x9, [x28, #448]
+    0012: f900e789  str x9, [x28, #456]
     0013: 1400000b  b #44
     0014: f900079f  str xzr, [x28, #8]
     0015: f9000b9f  str xzr, [x28, #16]
-    0016: f940e389  ldr x9, [x28, #448]
+    0016: f940e789  ldr x9, [x28, #456]
     0017: f100013f  cmp x9, #0
     0018: 540000c0  b.eq #24
     0019: f100053f  cmp x9, #1
-    0020: 54000560  b.eq #172
+    0020: 54000840  b.eq #264
     0021: f100093f  cmp x9, #2
-    0022: 540018e0  b.eq #796
+    0022: 54001f80  b.eq #1008
     0023: d4359a80  brk #0xacd4
     0024: d2800029  movz x9, #0x1
     0025: f2a00009  movk x9, #0x0, lsl #16
     0026: f2c00009  movk x9, #0x0, lsl #32
     0027: f2e00009  movk x9, #0x0, lsl #48
-    0028: f900e389  str x9, [x28, #448]
+    0028: f900e789  str x9, [x28, #456]
     0029: aa1f03e1  mov x1, xzr
     0030: aa1f03e2  mov x2, xzr
     0031: d2800003  turn-id[0] x3 <guest_map>
@@ -711,310 +711,370 @@ Program
     0041: f2c00000  movk x0, #0x0, lsl #32
     0042: f2e00000  movk x0, #0x0, lsl #48
     0043: 94000000  bl <rt_enqueue Store>
-    0044: b4000100  cbz x0, #32
-    0045: 90000000  adrp x0, rodata+0xc6
-    0046: 91000000  add x0, x0, rodata+0xc6
-    0047: d2800f01  movz x1, #0x78
-    0048: f2a00001  movk x1, #0x0, lsl #16
-    0049: f2c00001  movk x1, #0x0, lsl #32
-    0050: f2e00001  movk x1, #0x0, lsl #48
-    0051: 94000000  bl <__wrela_abort>
-    0052: d2800029  movz x9, #0x1
-    0053: f2a00009  movk x9, #0x0, lsl #16
-    0054: f2c00009  movk x9, #0x0, lsl #32
-    0055: f2e00009  movk x9, #0x0, lsl #48
-    0056: f9000789  str x9, [x28, #8]
-    0057: d2800020  movz x0, #0x1
-    0058: f2a00000  movk x0, #0x0, lsl #16
-    0059: f2c00000  movk x0, #0x0, lsl #32
-    0060: f2e00000  movk x0, #0x0, lsl #48
-    0061: f940e79e  ldr lr, [x28, #456]
-    0062: d65f03c0  ret
-    0063: f9400f89  ldr x9, [x28, #24]
-    0064: f9002f89  str x9, [x28, #88]
-    0065: d2800009  movz x9, #0x0
-    0066: f2a00009  movk x9, #0x0, lsl #16
-    0067: f2c00009  movk x9, #0x0, lsl #32
-    0068: f2e00009  movk x9, #0x0, lsl #48
-    0069: f9002b89  str x9, [x28, #80]
-    0070: d28e0009  movz x9, #0x7000
-    0071: f2a80009  movk x9, #0x4000, lsl #16
-    0072: f2c00009  movk x9, #0x0, lsl #32
-    0073: f2e00009  movk x9, #0x0, lsl #48
-    0074: f940012a  ldr x10, [x9]
-    0075: b400004a  cbz x10, #8
-    0076: 94000000  bl <__wrela_checkpoint_service>
-    0077: 14000001  b #4
-    0078: f9402b89  ldr x9, [x28, #80]
-    0079: f9003789  str x9, [x28, #104]
-    0080: f9402f89  ldr x9, [x28, #88]
-    0081: f9003b89  str x9, [x28, #112]
-    0082: f9403389  ldr x9, [x28, #96]
-    0083: f9003f89  str x9, [x28, #120]
-    0084: f9403789  ldr x9, [x28, #104]
-    0085: f9004789  str x9, [x28, #136]
-    0086: d2800009  movz x9, #0x0
-    0087: f2a00009  movk x9, #0x0, lsl #16
-    0088: f2c00009  movk x9, #0x0, lsl #32
-    0089: f2e00009  movk x9, #0x0, lsl #48
-    0090: f9004b89  str x9, [x28, #144]
-    0091: f9404789  ldr x9, [x28, #136]
-    0092: f9404b8a  ldr x10, [x28, #144]
-    0093: eb0a013f  cmp x9, x10
-    0094: 9a9f17eb  cset x11, eq
-    0095: f9004f8b  str x11, [x28, #152]
-    0096: f9403b89  ldr x9, [x28, #112]
-    0097: f9005389  str x9, [x28, #160]
-    0098: f9405389  ldr x9, [x28, #160]
-    0099: f9004389  str x9, [x28, #128]
-    0100: d2800029  movz x9, #0x1
-    0101: f2a00009  movk x9, #0x0, lsl #16
+    0044: b40003e0  cbz x0, #124
+    0045: d280006a  movz x10, #0x3
+    0046: f2a0000a  movk x10, #0x0, lsl #16
+    0047: f2c0000a  movk x10, #0x0, lsl #32
+    0048: f2e0000a  movk x10, #0x0, lsl #48
+    0049: f9001f8a  str x10, [x28, #56]
+    0050: d2800009  movz x9, #0x0
+    0051: f2a00009  movk x9, #0x0, lsl #16
+    0052: f2c00009  movk x9, #0x0, lsl #32
+    0053: f2e00009  movk x9, #0x0, lsl #48
+    0054: f9000f89  str x9, [x28, #24]
+    0055: b50000aa  cbnz x10, #20
+    0056: f9003389  str x9, [x28, #96]
+    0057: f900379f  str sp, [x28, #104]
+    0058: f9002f9f  str sp, [x28, #88]
+    0059: 5400010e  b.al #32
+    0060: f900338a  str x10, [x28, #96]
+    0061: f9003789  str x9, [x28, #104]
+    0062: d2800029  movz x9, #0x1
+    0063: f2a00009  movk x9, #0x0, lsl #16
+    0064: f2c00009  movk x9, #0x0, lsl #32
+    0065: f2e00009  movk x9, #0x0, lsl #48
+    0066: f9002f89  str x9, [x28, #88]
+    0067: d28e0009  movz x9, #0x7000
+    0068: f2a80009  movk x9, #0x4000, lsl #16
+    0069: f2c00009  movk x9, #0x0, lsl #32
+    0070: f2e00009  movk x9, #0x0, lsl #48
+    0071: f940012a  ldr x10, [x9]
+    0072: b400004a  cbz x10, #8
+    0073: 94000000  bl <__wrela_checkpoint_service>
+    0074: 14000022  b #136
+    0075: d2800029  movz x9, #0x1
+    0076: f2a00009  movk x9, #0x0, lsl #16
+    0077: f2c00009  movk x9, #0x0, lsl #32
+    0078: f2e00009  movk x9, #0x0, lsl #48
+    0079: f9000789  str x9, [x28, #8]
+    0080: d2800020  movz x0, #0x1
+    0081: f2a00000  movk x0, #0x0, lsl #16
+    0082: f2c00000  movk x0, #0x0, lsl #32
+    0083: f2e00000  movk x0, #0x0, lsl #48
+    0084: f940eb9e  ldr lr, [x28, #464]
+    0085: d65f03c0  ret
+    0086: f9400f89  ldr x9, [x28, #24]
+    0087: f9401f8a  ldr x10, [x28, #56]
+    0088: b50000aa  cbnz x10, #20
+    0089: f9003389  str x9, [x28, #96]
+    0090: f900379f  str sp, [x28, #104]
+    0091: f9002f9f  str sp, [x28, #88]
+    0092: 5400010e  b.al #32
+    0093: f900338a  str x10, [x28, #96]
+    0094: f9003789  str x9, [x28, #104]
+    0095: d2800029  movz x9, #0x1
+    0096: f2a00009  movk x9, #0x0, lsl #16
+    0097: f2c00009  movk x9, #0x0, lsl #32
+    0098: f2e00009  movk x9, #0x0, lsl #48
+    0099: f9002f89  str x9, [x28, #88]
+    0100: d28e0009  movz x9, #0x7000
+    0101: f2a80009  movk x9, #0x4000, lsl #16
     0102: f2c00009  movk x9, #0x0, lsl #32
     0103: f2e00009  movk x9, #0x0, lsl #48
-    0104: f9005789  str x9, [x28, #168]
-    0105: f9404f89  ldr x9, [x28, #152]
-    0106: f940578a  ldr x10, [x28, #168]
-    0107: 8a0a012b  and x11, x9, x10
-    0108: f9005b8b  str x11, [x28, #176]
-    0109: f9405b89  ldr x9, [x28, #176]
-    0110: b40002c9  cbz x9, #88
-    0111: d2800249  movz x9, #0x12
-    0112: f2a00009  movk x9, #0x0, lsl #16
-    0113: f2c00009  movk x9, #0x0, lsl #32
-    0114: f2e00009  movk x9, #0x0, lsl #48
-    0115: f9005f89  str x9, [x28, #184]
-    0116: f9404389  ldr x9, [x28, #128]
-    0117: f9405f8a  ldr x10, [x28, #184]
-    0118: eb0a013f  cmp x9, x10
-    0119: 9a9f17eb  cset x11, eq
-    0120: f900638b  str x11, [x28, #192]
-    0121: f9406389  ldr x9, [x28, #192]
-    0122: b4000049  cbz x9, #8
-    0123: 14000008  b #32
-    0124: 90000000  adrp x0, rodata+0x13e
-    0125: 91000000  add x0, x0, rodata+0x13e
-    0126: d2800341  movz x1, #0x1a
-    0127: f2a00001  movk x1, #0x0, lsl #16
-    0128: f2c00001  movk x1, #0x0, lsl #32
-    0129: f2e00001  movk x1, #0x0, lsl #48
-    0130: 94000000  bl <__wrela_abort>
-    0131: 14000033  b #204
-    0132: f9403789  ldr x9, [x28, #104]
-    0133: f9006789  str x9, [x28, #200]
-    0134: d2800029  movz x9, #0x1
-    0135: f2a00009  movk x9, #0x0, lsl #16
-    0136: f2c00009  movk x9, #0x0, lsl #32
-    0137: f2e00009  movk x9, #0x0, lsl #48
-    0138: f9006b89  str x9, [x28, #208]
-    0139: f9406789  ldr x9, [x28, #200]
-    0140: f9406b8a  ldr x10, [x28, #208]
-    0141: eb0a013f  cmp x9, x10
-    0142: 9a9f17eb  cset x11, eq
-    0143: f9006f8b  str x11, [x28, #216]
-    0144: f9403b89  ldr x9, [x28, #112]
-    0145: f9007389  str x9, [x28, #224]
-    0146: f9403f89  ldr x9, [x28, #120]
-    0147: f9007789  str x9, [x28, #232]
-    0148: d2800029  movz x9, #0x1
-    0149: f2a00009  movk x9, #0x0, lsl #16
-    0150: f2c00009  movk x9, #0x0, lsl #32
-    0151: f2e00009  movk x9, #0x0, lsl #48
-    0152: f9007b89  str x9, [x28, #240]
-    0153: f9406f89  ldr x9, [x28, #216]
-    0154: f9407b8a  ldr x10, [x28, #240]
-    0155: 8a0a012b  and x11, x9, x10
-    0156: f9007f8b  str x11, [x28, #248]
-    0157: f9407f89  ldr x9, [x28, #248]
-    0158: b4000229  cbz x9, #68
-    0159: d2800009  movz x9, #0x0
-    0160: f2a00009  movk x9, #0x0, lsl #16
-    0161: f2c00009  movk x9, #0x0, lsl #32
-    0162: f2e00009  movk x9, #0x0, lsl #48
-    0163: f9008389  str x9, [x28, #256]
-    0164: f9408389  ldr x9, [x28, #256]
-    0165: b4000049  cbz x9, #8
-    0166: 14000008  b #32
-    0167: 90000000  adrp x0, rodata+0x158
-    0168: 91000000  add x0, x0, rodata+0x158
-    0169: d28003c1  movz x1, #0x1e
-    0170: f2a00001  movk x1, #0x0, lsl #16
-    0171: f2c00001  movk x1, #0x0, lsl #32
-    0172: f2e00001  movk x1, #0x0, lsl #48
-    0173: 94000000  bl <__wrela_abort>
-    0174: 14000008  b #32
-    0175: 90000000  adrp x0, rodata+0x52
-    0176: 91000000  add x0, x0, rodata+0x52
-    0177: d2800b41  movz x1, #0x5a
-    0178: f2a00001  movk x1, #0x0, lsl #16
-    0179: f2c00001  movk x1, #0x0, lsl #32
-    0180: f2e00001  movk x1, #0x0, lsl #48
-    0181: 94000000  bl <__wrela_abort>
-    0182: d2800049  movz x9, #0x2
-    0183: f2a00009  movk x9, #0x0, lsl #16
-    0184: f2c00009  movk x9, #0x0, lsl #32
-    0185: f2e00009  movk x9, #0x0, lsl #48
-    0186: f900e389  str x9, [x28, #448]
-    0187: aa1f03e1  mov x1, xzr
-    0188: aa1f03e2  mov x2, xzr
-    0189: d2800003  turn-id[0] x3 <guest_map>
-    0190: f2a00003  turn-id[1] x3 <guest_map>
-    0191: f2c00003  turn-id[2] x3 <guest_map>
-    0192: f2e00003  turn-id[3] x3 <guest_map>
-    0193: d2800004  movz x4, #0x0
-    0194: f2a00004  movk x4, #0x0, lsl #16
-    0195: f2c00004  movk x4, #0x0, lsl #32
-    0196: f2e00004  movk x4, #0x0, lsl #48
-    0197: d2800020  movz x0, #0x1
-    0198: f2a00000  movk x0, #0x0, lsl #16
-    0199: f2c00000  movk x0, #0x0, lsl #32
-    0200: f2e00000  movk x0, #0x0, lsl #48
-    0201: 94000000  bl <rt_enqueue Store>
-    0202: b4000100  cbz x0, #32
-    0203: 90000000  adrp x0, rodata+0xc6
-    0204: 91000000  add x0, x0, rodata+0xc6
-    0205: d2800f01  movz x1, #0x78
-    0206: f2a00001  movk x1, #0x0, lsl #16
-    0207: f2c00001  movk x1, #0x0, lsl #32
-    0208: f2e00001  movk x1, #0x0, lsl #48
-    0209: 94000000  bl <__wrela_abort>
-    0210: d2800029  movz x9, #0x1
-    0211: f2a00009  movk x9, #0x0, lsl #16
-    0212: f2c00009  movk x9, #0x0, lsl #32
-    0213: f2e00009  movk x9, #0x0, lsl #48
-    0214: f9000789  str x9, [x28, #8]
-    0215: d2800020  movz x0, #0x1
-    0216: f2a00000  movk x0, #0x0, lsl #16
-    0217: f2c00000  movk x0, #0x0, lsl #32
-    0218: f2e00000  movk x0, #0x0, lsl #48
-    0219: f940e79e  ldr lr, [x28, #456]
-    0220: d65f03c0  ret
-    0221: f9400f89  ldr x9, [x28, #24]
-    0222: f9008b89  str x9, [x28, #272]
-    0223: d2800009  movz x9, #0x0
-    0224: f2a00009  movk x9, #0x0, lsl #16
-    0225: f2c00009  movk x9, #0x0, lsl #32
-    0226: f2e00009  movk x9, #0x0, lsl #48
-    0227: f9008789  str x9, [x28, #264]
-    0228: d28e0009  movz x9, #0x7000
-    0229: f2a80009  movk x9, #0x4000, lsl #16
-    0230: f2c00009  movk x9, #0x0, lsl #32
-    0231: f2e00009  movk x9, #0x0, lsl #48
-    0232: f940012a  ldr x10, [x9]
-    0233: b400004a  cbz x10, #8
-    0234: 94000000  bl <__wrela_checkpoint_service>
-    0235: 14000001  b #4
-    0236: f9408789  ldr x9, [x28, #264]
-    0237: f9009389  str x9, [x28, #288]
-    0238: f9408b89  ldr x9, [x28, #272]
-    0239: f9009789  str x9, [x28, #296]
-    0240: f9408f89  ldr x9, [x28, #280]
-    0241: f9009b89  str x9, [x28, #304]
-    0242: f9409389  ldr x9, [x28, #288]
-    0243: f900a389  str x9, [x28, #320]
-    0244: d2800009  movz x9, #0x0
-    0245: f2a00009  movk x9, #0x0, lsl #16
-    0246: f2c00009  movk x9, #0x0, lsl #32
-    0247: f2e00009  movk x9, #0x0, lsl #48
-    0248: f900a789  str x9, [x28, #328]
-    0249: f940a389  ldr x9, [x28, #320]
-    0250: f940a78a  ldr x10, [x28, #328]
-    0251: eb0a013f  cmp x9, x10
-    0252: 9a9f17eb  cset x11, eq
-    0253: f900ab8b  str x11, [x28, #336]
-    0254: f9409789  ldr x9, [x28, #296]
-    0255: f900af89  str x9, [x28, #344]
-    0256: f940af89  ldr x9, [x28, #344]
-    0257: f9009f89  str x9, [x28, #312]
-    0258: d2800029  movz x9, #0x1
-    0259: f2a00009  movk x9, #0x0, lsl #16
-    0260: f2c00009  movk x9, #0x0, lsl #32
-    0261: f2e00009  movk x9, #0x0, lsl #48
-    0262: f900b389  str x9, [x28, #352]
-    0263: f940ab89  ldr x9, [x28, #336]
-    0264: f940b38a  ldr x10, [x28, #352]
-    0265: 8a0a012b  and x11, x9, x10
-    0266: f900b78b  str x11, [x28, #360]
-    0267: f940b789  ldr x9, [x28, #360]
-    0268: b40002c9  cbz x9, #88
-    0269: d2800049  movz x9, #0x2
-    0270: f2a00009  movk x9, #0x0, lsl #16
-    0271: f2c00009  movk x9, #0x0, lsl #32
-    0272: f2e00009  movk x9, #0x0, lsl #48
-    0273: f900bb89  str x9, [x28, #368]
-    0274: f9409f89  ldr x9, [x28, #312]
-    0275: f940bb8a  ldr x10, [x28, #368]
-    0276: eb0a013f  cmp x9, x10
-    0277: 9a9f17eb  cset x11, eq
-    0278: f900bf8b  str x11, [x28, #376]
-    0279: f940bf89  ldr x9, [x28, #376]
-    0280: b4000049  cbz x9, #8
-    0281: 14000008  b #32
-    0282: 90000000  adrp x0, rodata+0x176
-    0283: 91000000  add x0, x0, rodata+0x176
-    0284: d2800441  movz x1, #0x22
-    0285: f2a00001  movk x1, #0x0, lsl #16
-    0286: f2c00001  movk x1, #0x0, lsl #32
-    0287: f2e00001  movk x1, #0x0, lsl #48
-    0288: 94000000  bl <__wrela_abort>
-    0289: 14000033  b #204
-    0290: f9409389  ldr x9, [x28, #288]
-    0291: f900c389  str x9, [x28, #384]
-    0292: d2800029  movz x9, #0x1
-    0293: f2a00009  movk x9, #0x0, lsl #16
-    0294: f2c00009  movk x9, #0x0, lsl #32
-    0295: f2e00009  movk x9, #0x0, lsl #48
-    0296: f900c789  str x9, [x28, #392]
-    0297: f940c389  ldr x9, [x28, #384]
-    0298: f940c78a  ldr x10, [x28, #392]
-    0299: eb0a013f  cmp x9, x10
-    0300: 9a9f17eb  cset x11, eq
-    0301: f900cb8b  str x11, [x28, #400]
+    0104: f940012a  ldr x10, [x9]
+    0105: b400004a  cbz x10, #8
+    0106: 94000000  bl <__wrela_checkpoint_service>
+    0107: 14000001  b #4
+    0108: f9402f89  ldr x9, [x28, #88]
+    0109: f9003b89  str x9, [x28, #112]
+    0110: f9403389  ldr x9, [x28, #96]
+    0111: f9003f89  str x9, [x28, #120]
+    0112: f9403789  ldr x9, [x28, #104]
+    0113: f9004389  str x9, [x28, #128]
+    0114: f9403b89  ldr x9, [x28, #112]
+    0115: f9004b89  str x9, [x28, #144]
+    0116: d2800009  movz x9, #0x0
+    0117: f2a00009  movk x9, #0x0, lsl #16
+    0118: f2c00009  movk x9, #0x0, lsl #32
+    0119: f2e00009  movk x9, #0x0, lsl #48
+    0120: f9004f89  str x9, [x28, #152]
+    0121: f9404b89  ldr x9, [x28, #144]
+    0122: f9404f8a  ldr x10, [x28, #152]
+    0123: eb0a013f  cmp x9, x10
+    0124: 9a9f17eb  cset x11, eq
+    0125: f900538b  str x11, [x28, #160]
+    0126: f9403f89  ldr x9, [x28, #120]
+    0127: f9005789  str x9, [x28, #168]
+    0128: f9405789  ldr x9, [x28, #168]
+    0129: f9004789  str x9, [x28, #136]
+    0130: d2800029  movz x9, #0x1
+    0131: f2a00009  movk x9, #0x0, lsl #16
+    0132: f2c00009  movk x9, #0x0, lsl #32
+    0133: f2e00009  movk x9, #0x0, lsl #48
+    0134: f9005b89  str x9, [x28, #176]
+    0135: f9405389  ldr x9, [x28, #160]
+    0136: f9405b8a  ldr x10, [x28, #176]
+    0137: 8a0a012b  and x11, x9, x10
+    0138: f9005f8b  str x11, [x28, #184]
+    0139: f9405f89  ldr x9, [x28, #184]
+    0140: b40002c9  cbz x9, #88
+    0141: d2800249  movz x9, #0x12
+    0142: f2a00009  movk x9, #0x0, lsl #16
+    0143: f2c00009  movk x9, #0x0, lsl #32
+    0144: f2e00009  movk x9, #0x0, lsl #48
+    0145: f9006389  str x9, [x28, #192]
+    0146: f9404789  ldr x9, [x28, #136]
+    0147: f940638a  ldr x10, [x28, #192]
+    0148: eb0a013f  cmp x9, x10
+    0149: 9a9f17eb  cset x11, eq
+    0150: f900678b  str x11, [x28, #200]
+    0151: f9406789  ldr x9, [x28, #200]
+    0152: b4000049  cbz x9, #8
+    0153: 14000008  b #32
+    0154: 90000000  adrp x0, rodata+0xc6
+    0155: 91000000  add x0, x0, rodata+0xc6
+    0156: d2800341  movz x1, #0x1a
+    0157: f2a00001  movk x1, #0x0, lsl #16
+    0158: f2c00001  movk x1, #0x0, lsl #32
+    0159: f2e00001  movk x1, #0x0, lsl #48
+    0160: 94000000  bl <__wrela_abort>
+    0161: 14000033  b #204
+    0162: f9403b89  ldr x9, [x28, #112]
+    0163: f9006b89  str x9, [x28, #208]
+    0164: d2800029  movz x9, #0x1
+    0165: f2a00009  movk x9, #0x0, lsl #16
+    0166: f2c00009  movk x9, #0x0, lsl #32
+    0167: f2e00009  movk x9, #0x0, lsl #48
+    0168: f9006f89  str x9, [x28, #216]
+    0169: f9406b89  ldr x9, [x28, #208]
+    0170: f9406f8a  ldr x10, [x28, #216]
+    0171: eb0a013f  cmp x9, x10
+    0172: 9a9f17eb  cset x11, eq
+    0173: f900738b  str x11, [x28, #224]
+    0174: f9403f89  ldr x9, [x28, #120]
+    0175: f9007789  str x9, [x28, #232]
+    0176: f9404389  ldr x9, [x28, #128]
+    0177: f9007b89  str x9, [x28, #240]
+    0178: d2800029  movz x9, #0x1
+    0179: f2a00009  movk x9, #0x0, lsl #16
+    0180: f2c00009  movk x9, #0x0, lsl #32
+    0181: f2e00009  movk x9, #0x0, lsl #48
+    0182: f9007f89  str x9, [x28, #248]
+    0183: f9407389  ldr x9, [x28, #224]
+    0184: f9407f8a  ldr x10, [x28, #248]
+    0185: 8a0a012b  and x11, x9, x10
+    0186: f900838b  str x11, [x28, #256]
+    0187: f9408389  ldr x9, [x28, #256]
+    0188: b4000229  cbz x9, #68
+    0189: d2800009  movz x9, #0x0
+    0190: f2a00009  movk x9, #0x0, lsl #16
+    0191: f2c00009  movk x9, #0x0, lsl #32
+    0192: f2e00009  movk x9, #0x0, lsl #48
+    0193: f9008789  str x9, [x28, #264]
+    0194: f9408789  ldr x9, [x28, #264]
+    0195: b4000049  cbz x9, #8
+    0196: 14000008  b #32
+    0197: 90000000  adrp x0, rodata+0xe0
+    0198: 91000000  add x0, x0, rodata+0xe0
+    0199: d28003c1  movz x1, #0x1e
+    0200: f2a00001  movk x1, #0x0, lsl #16
+    0201: f2c00001  movk x1, #0x0, lsl #32
+    0202: f2e00001  movk x1, #0x0, lsl #48
+    0203: 94000000  bl <__wrela_abort>
+    0204: 14000008  b #32
+    0205: 90000000  adrp x0, rodata+0x52
+    0206: 91000000  add x0, x0, rodata+0x52
+    0207: d2800b41  movz x1, #0x5a
+    0208: f2a00001  movk x1, #0x0, lsl #16
+    0209: f2c00001  movk x1, #0x0, lsl #32
+    0210: f2e00001  movk x1, #0x0, lsl #48
+    0211: 94000000  bl <__wrela_abort>
+    0212: d2800049  movz x9, #0x2
+    0213: f2a00009  movk x9, #0x0, lsl #16
+    0214: f2c00009  movk x9, #0x0, lsl #32
+    0215: f2e00009  movk x9, #0x0, lsl #48
+    0216: f900e789  str x9, [x28, #456]
+    0217: aa1f03e1  mov x1, xzr
+    0218: aa1f03e2  mov x2, xzr
+    0219: d2800003  turn-id[0] x3 <guest_map>
+    0220: f2a00003  turn-id[1] x3 <guest_map>
+    0221: f2c00003  turn-id[2] x3 <guest_map>
+    0222: f2e00003  turn-id[3] x3 <guest_map>
+    0223: d2800004  movz x4, #0x0
+    0224: f2a00004  movk x4, #0x0, lsl #16
+    0225: f2c00004  movk x4, #0x0, lsl #32
+    0226: f2e00004  movk x4, #0x0, lsl #48
+    0227: d2800020  movz x0, #0x1
+    0228: f2a00000  movk x0, #0x0, lsl #16
+    0229: f2c00000  movk x0, #0x0, lsl #32
+    0230: f2e00000  movk x0, #0x0, lsl #48
+    0231: 94000000  bl <rt_enqueue Store>
+    0232: b40003e0  cbz x0, #124
+    0233: d280006a  movz x10, #0x3
+    0234: f2a0000a  movk x10, #0x0, lsl #16
+    0235: f2c0000a  movk x10, #0x0, lsl #32
+    0236: f2e0000a  movk x10, #0x0, lsl #48
+    0237: f9001f8a  str x10, [x28, #56]
+    0238: d2800009  movz x9, #0x0
+    0239: f2a00009  movk x9, #0x0, lsl #16
+    0240: f2c00009  movk x9, #0x0, lsl #32
+    0241: f2e00009  movk x9, #0x0, lsl #48
+    0242: f9000f89  str x9, [x28, #24]
+    0243: b50000aa  cbnz x10, #20
+    0244: f9008f89  str x9, [x28, #280]
+    0245: f900939f  str sp, [x28, #288]
+    0246: f9008b9f  str sp, [x28, #272]
+    0247: 5400010e  b.al #32
+    0248: f9008f8a  str x10, [x28, #280]
+    0249: f9009389  str x9, [x28, #288]
+    0250: d2800029  movz x9, #0x1
+    0251: f2a00009  movk x9, #0x0, lsl #16
+    0252: f2c00009  movk x9, #0x0, lsl #32
+    0253: f2e00009  movk x9, #0x0, lsl #48
+    0254: f9008b89  str x9, [x28, #272]
+    0255: d28e0009  movz x9, #0x7000
+    0256: f2a80009  movk x9, #0x4000, lsl #16
+    0257: f2c00009  movk x9, #0x0, lsl #32
+    0258: f2e00009  movk x9, #0x0, lsl #48
+    0259: f940012a  ldr x10, [x9]
+    0260: b400004a  cbz x10, #8
+    0261: 94000000  bl <__wrela_checkpoint_service>
+    0262: 14000022  b #136
+    0263: d2800029  movz x9, #0x1
+    0264: f2a00009  movk x9, #0x0, lsl #16
+    0265: f2c00009  movk x9, #0x0, lsl #32
+    0266: f2e00009  movk x9, #0x0, lsl #48
+    0267: f9000789  str x9, [x28, #8]
+    0268: d2800020  movz x0, #0x1
+    0269: f2a00000  movk x0, #0x0, lsl #16
+    0270: f2c00000  movk x0, #0x0, lsl #32
+    0271: f2e00000  movk x0, #0x0, lsl #48
+    0272: f940eb9e  ldr lr, [x28, #464]
+    0273: d65f03c0  ret
+    0274: f9400f89  ldr x9, [x28, #24]
+    0275: f9401f8a  ldr x10, [x28, #56]
+    0276: b50000aa  cbnz x10, #20
+    0277: f9008f89  str x9, [x28, #280]
+    0278: f900939f  str sp, [x28, #288]
+    0279: f9008b9f  str sp, [x28, #272]
+    0280: 5400010e  b.al #32
+    0281: f9008f8a  str x10, [x28, #280]
+    0282: f9009389  str x9, [x28, #288]
+    0283: d2800029  movz x9, #0x1
+    0284: f2a00009  movk x9, #0x0, lsl #16
+    0285: f2c00009  movk x9, #0x0, lsl #32
+    0286: f2e00009  movk x9, #0x0, lsl #48
+    0287: f9008b89  str x9, [x28, #272]
+    0288: d28e0009  movz x9, #0x7000
+    0289: f2a80009  movk x9, #0x4000, lsl #16
+    0290: f2c00009  movk x9, #0x0, lsl #32
+    0291: f2e00009  movk x9, #0x0, lsl #48
+    0292: f940012a  ldr x10, [x9]
+    0293: b400004a  cbz x10, #8
+    0294: 94000000  bl <__wrela_checkpoint_service>
+    0295: 14000001  b #4
+    0296: f9408b89  ldr x9, [x28, #272]
+    0297: f9009789  str x9, [x28, #296]
+    0298: f9408f89  ldr x9, [x28, #280]
+    0299: f9009b89  str x9, [x28, #304]
+    0300: f9409389  ldr x9, [x28, #288]
+    0301: f9009f89  str x9, [x28, #312]
     0302: f9409789  ldr x9, [x28, #296]
-    0303: f900cf89  str x9, [x28, #408]
-    0304: f9409b89  ldr x9, [x28, #304]
-    0305: f900d389  str x9, [x28, #416]
-    0306: d2800029  movz x9, #0x1
-    0307: f2a00009  movk x9, #0x0, lsl #16
-    0308: f2c00009  movk x9, #0x0, lsl #32
-    0309: f2e00009  movk x9, #0x0, lsl #48
-    0310: f900d789  str x9, [x28, #424]
-    0311: f940cb89  ldr x9, [x28, #400]
-    0312: f940d78a  ldr x10, [x28, #424]
-    0313: 8a0a012b  and x11, x9, x10
-    0314: f900db8b  str x11, [x28, #432]
-    0315: f940db89  ldr x9, [x28, #432]
-    0316: b4000229  cbz x9, #68
-    0317: d2800009  movz x9, #0x0
-    0318: f2a00009  movk x9, #0x0, lsl #16
-    0319: f2c00009  movk x9, #0x0, lsl #32
-    0320: f2e00009  movk x9, #0x0, lsl #48
-    0321: f900df89  str x9, [x28, #440]
-    0322: f940df89  ldr x9, [x28, #440]
-    0323: b4000049  cbz x9, #8
-    0324: 14000008  b #32
-    0325: 90000000  adrp x0, rodata+0x198
-    0326: 91000000  add x0, x0, rodata+0x198
-    0327: d28003c1  movz x1, #0x1e
-    0328: f2a00001  movk x1, #0x0, lsl #16
-    0329: f2c00001  movk x1, #0x0, lsl #32
-    0330: f2e00001  movk x1, #0x0, lsl #48
-    0331: 94000000  bl <__wrela_abort>
-    0332: 14000008  b #32
-    0333: 90000000  adrp x0, rodata+0x52
-    0334: 91000000  add x0, x0, rodata+0x52
-    0335: d2800b41  movz x1, #0x5a
-    0336: f2a00001  movk x1, #0x0, lsl #16
-    0337: f2c00001  movk x1, #0x0, lsl #32
-    0338: f2e00001  movk x1, #0x0, lsl #48
-    0339: 94000000  bl <__wrela_abort>
-    0340: 14000001  b #4
-    0341: aa0003e1  mov x1, x0
-    0342: d2800000  movz x0, #0x0
-    0343: f2a00000  movk x0, #0x0, lsl #16
-    0344: f2c00000  movk x0, #0x0, lsl #32
-    0345: f2e00000  movk x0, #0x0, lsl #48
-    0346: f940e79e  ldr lr, [x28, #456]
-    0347: d65f03c0  ret
+    0303: f900a789  str x9, [x28, #328]
+    0304: d2800009  movz x9, #0x0
+    0305: f2a00009  movk x9, #0x0, lsl #16
+    0306: f2c00009  movk x9, #0x0, lsl #32
+    0307: f2e00009  movk x9, #0x0, lsl #48
+    0308: f900ab89  str x9, [x28, #336]
+    0309: f940a789  ldr x9, [x28, #328]
+    0310: f940ab8a  ldr x10, [x28, #336]
+    0311: eb0a013f  cmp x9, x10
+    0312: 9a9f17eb  cset x11, eq
+    0313: f900af8b  str x11, [x28, #344]
+    0314: f9409b89  ldr x9, [x28, #304]
+    0315: f900b389  str x9, [x28, #352]
+    0316: f940b389  ldr x9, [x28, #352]
+    0317: f900a389  str x9, [x28, #320]
+    0318: d2800029  movz x9, #0x1
+    0319: f2a00009  movk x9, #0x0, lsl #16
+    0320: f2c00009  movk x9, #0x0, lsl #32
+    0321: f2e00009  movk x9, #0x0, lsl #48
+    0322: f900b789  str x9, [x28, #360]
+    0323: f940af89  ldr x9, [x28, #344]
+    0324: f940b78a  ldr x10, [x28, #360]
+    0325: 8a0a012b  and x11, x9, x10
+    0326: f900bb8b  str x11, [x28, #368]
+    0327: f940bb89  ldr x9, [x28, #368]
+    0328: b40002c9  cbz x9, #88
+    0329: d2800049  movz x9, #0x2
+    0330: f2a00009  movk x9, #0x0, lsl #16
+    0331: f2c00009  movk x9, #0x0, lsl #32
+    0332: f2e00009  movk x9, #0x0, lsl #48
+    0333: f900bf89  str x9, [x28, #376]
+    0334: f940a389  ldr x9, [x28, #320]
+    0335: f940bf8a  ldr x10, [x28, #376]
+    0336: eb0a013f  cmp x9, x10
+    0337: 9a9f17eb  cset x11, eq
+    0338: f900c38b  str x11, [x28, #384]
+    0339: f940c389  ldr x9, [x28, #384]
+    0340: b4000049  cbz x9, #8
+    0341: 14000008  b #32
+    0342: 90000000  adrp x0, rodata+0xfe
+    0343: 91000000  add x0, x0, rodata+0xfe
+    0344: d2800441  movz x1, #0x22
+    0345: f2a00001  movk x1, #0x0, lsl #16
+    0346: f2c00001  movk x1, #0x0, lsl #32
+    0347: f2e00001  movk x1, #0x0, lsl #48
+    0348: 94000000  bl <__wrela_abort>
+    0349: 14000033  b #204
+    0350: f9409789  ldr x9, [x28, #296]
+    0351: f900c789  str x9, [x28, #392]
+    0352: d2800029  movz x9, #0x1
+    0353: f2a00009  movk x9, #0x0, lsl #16
+    0354: f2c00009  movk x9, #0x0, lsl #32
+    0355: f2e00009  movk x9, #0x0, lsl #48
+    0356: f900cb89  str x9, [x28, #400]
+    0357: f940c789  ldr x9, [x28, #392]
+    0358: f940cb8a  ldr x10, [x28, #400]
+    0359: eb0a013f  cmp x9, x10
+    0360: 9a9f17eb  cset x11, eq
+    0361: f900cf8b  str x11, [x28, #408]
+    0362: f9409b89  ldr x9, [x28, #304]
+    0363: f900d389  str x9, [x28, #416]
+    0364: f9409f89  ldr x9, [x28, #312]
+    0365: f900d789  str x9, [x28, #424]
+    0366: d2800029  movz x9, #0x1
+    0367: f2a00009  movk x9, #0x0, lsl #16
+    0368: f2c00009  movk x9, #0x0, lsl #32
+    0369: f2e00009  movk x9, #0x0, lsl #48
+    0370: f900db89  str x9, [x28, #432]
+    0371: f940cf89  ldr x9, [x28, #408]
+    0372: f940db8a  ldr x10, [x28, #432]
+    0373: 8a0a012b  and x11, x9, x10
+    0374: f900df8b  str x11, [x28, #440]
+    0375: f940df89  ldr x9, [x28, #440]
+    0376: b4000229  cbz x9, #68
+    0377: d2800009  movz x9, #0x0
+    0378: f2a00009  movk x9, #0x0, lsl #16
+    0379: f2c00009  movk x9, #0x0, lsl #32
+    0380: f2e00009  movk x9, #0x0, lsl #48
+    0381: f900e389  str x9, [x28, #448]
+    0382: f940e389  ldr x9, [x28, #448]
+    0383: b4000049  cbz x9, #8
+    0384: 14000008  b #32
+    0385: 90000000  adrp x0, rodata+0x120
+    0386: 91000000  add x0, x0, rodata+0x120
+    0387: d28003c1  movz x1, #0x1e
+    0388: f2a00001  movk x1, #0x0, lsl #16
+    0389: f2c00001  movk x1, #0x0, lsl #32
+    0390: f2e00001  movk x1, #0x0, lsl #48
+    0391: 94000000  bl <__wrela_abort>
+    0392: 14000008  b #32
+    0393: 90000000  adrp x0, rodata+0x52
+    0394: 91000000  add x0, x0, rodata+0x52
+    0395: d2800b41  movz x1, #0x5a
+    0396: f2a00001  movk x1, #0x0, lsl #16
+    0397: f2c00001  movk x1, #0x0, lsl #32
+    0398: f2e00001  movk x1, #0x0, lsl #48
+    0399: 94000000  bl <__wrela_abort>
+    0400: 14000001  b #4
+    0401: aa0003e1  mov x1, x0
+    0402: d2800000  movz x0, #0x0
+    0403: f2a00000  movk x0, #0x0, lsl #16
+    0404: f2c00000  movk x0, #0x0, lsl #32
+    0405: f2e00000  movk x0, #0x0, lsl #48
+    0406: f940eb9e  ldr lr, [x28, #464]
+    0407: d65f03c0  ret
   Rodata
     0: offset=0x0 index 
     1: offset=0x6  out of bounds (length 2)
@@ -1022,8 +1082,7 @@ Program
     3: offset=0x39  out of bounds (length 3)
     4: offset=0x52 assertion failed: match: no arm matched (exhaustiveness already proved this cannot happen)
     5: offset=0xac arithmetic overflow in `*`
-    6: offset=0xc6 await rejected: `Store`'s mailbox was full (M6 does not compose CallError::NotAdmitted, so a full mailbox is fatal here)
-    7: offset=0x13e assertion failed: map_take
-    8: offset=0x158 assertion failed: map rejected
-    9: offset=0x176 assertion failed: try_map_take err
-    10: offset=0x198 assertion failed: try rejected
+    6: offset=0xc6 assertion failed: map_take
+    7: offset=0xe0 assertion failed: map rejected
+    8: offset=0xfe assertion failed: try_map_take err
+    9: offset=0x120 assertion failed: try rejected
