@@ -372,6 +372,8 @@ async fn fetch_part(index: u32) -> u32:
         start_line: 85,
         section: "3. DMA",
         preamble: r#"
+from core.io_error import IoError
+
 pool Payloads
 
 @layout(dma, endian=little)
@@ -389,7 +391,7 @@ struct Queue:
 "#,
         postamble: "",
         params: "queue: Queue, take prepared: Prepared",
-        ret: "Result[unit, unit]",
+        ret: "Result[unit, IoError]",
         ret_ok: "Ok(unit)",
         async_wrapper: true,
         nest_items_into: "",
