@@ -52,20 +52,20 @@ ImageReport v0
   Section name=abort base=0x40502cd0 size=120
   Section name=checkpoint base=0x40502d48 size=336
   Section name=rtcode base=0x40502e98 size=1196
-  Section name=rtdata base=0x40503348 size=1000
-  Section name=devregs base=0x40503730 size=104
-  Section name=pooldata base=0x40503798 size=1024
+  Section name=rtdata base=0x40503348 size=2376
+  Section name=devregs base=0x40503c90 size=104
+  Section name=pooldata base=0x40503cf8 size=1024
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Turn fn=a_quarantined_block_comes_back_after_quiescence frame=616
   Driver name=BlkDriver state=80
-  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=1000
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503730 size=104
-  IrqHostInject base=0x40503730 offset=0x60 status=0xa501 vector=1
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503798 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40503998 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40503798 size=0x200
-  BlkPool name=BlockPayloads device=device#0 base=0x40503998 size=0x200
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2376
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503c90 size=104
+  IrqHostInject base=0x40503c90 offset=0x60 status=0xa501 vector=1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503cf8 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40503ef8 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40503cf8 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x40503ef8 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
-  BlkQueue index=0 size=8 desc=0x40503798 avail=0x40503818 used=0x40503830 doorbell=0x40503878
+  BlkQueue index=0 size=8 desc=0x40503cf8 avail=0x40503d78 used=0x40503d90 doorbell=0x40503dd8
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

@@ -50,9 +50,9 @@ ImageReport v0
   Section name=abort base=0x40501e10 size=120
   Section name=checkpoint base=0x40501e88 size=336
   Section name=rtcode base=0x40501fd8 size=2976
-  Section name=rtdata base=0x40502b78 size=2296
-  Section name=devregs base=0x40503470 size=104
-  Section name=pooldata base=0x405034d8 size=512
+  Section name=rtdata base=0x40502b78 size=4048
+  Section name=devregs base=0x40503b48 size=104
+  Section name=pooldata base=0x40503bb0 size=512
   Entry base=0x40500000
   Actor name=Scale mailbox=4 slot=24 frame=56 state=8
   Actor name=Storage mailbox=4 slot=16 frame=280 state=8
@@ -61,11 +61,11 @@ ImageReport v0
   Turn fn=root_messages_the_driver_directly frame=296
   Turn fn=root_never_reenters_bring_up frame=280
   Driver name=BlkDriver state=80 mailbox=4 slot=24 frame=360
-  Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=2296
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503470 size=104
-  IrqHostInject base=0x40503470 offset=0x60 status=0xa501 vector=1
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405034d8 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x405034d8 size=0x200
+  Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=4048
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503b48 size=104
+  IrqHostInject base=0x40503b48 offset=0x60 status=0xa501 vector=1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503bb0 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40503bb0 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
-  BlkQueue index=0 size=8 desc=0x405034d8 avail=0x40503558 used=0x40503570 doorbell=0x405035b8
+  BlkQueue index=0 size=8 desc=0x40503bb0 avail=0x40503c30 used=0x40503c48 doorbell=0x40503c90
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

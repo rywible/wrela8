@@ -25,12 +25,12 @@ ImageReport v0
   Section name=abort base=0x4050132c size=120
   Section name=checkpoint base=0x405013a4 size=904
   Section name=rtcode base=0x4050172c size=1408
-  Section name=rtdata base=0x40501cb0 size=1288
-  Section name=pooldata base=0x405021b8 size=32
+  Section name=rtdata base=0x40501cb0 size=2296
+  Section name=pooldata base=0x405025a8 size=32
   Entry base=0x40500000
   Actor name=Adder mailbox=4 slot=24 frame=56 state=8
   Turn fn=child_a frame=280
   Turn fn=child_b frame=280
   Turn fn=run_both frame=424
-  Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=1288
-  Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8 base=0x405021b8 size=32 align=8 coherency=coherent device=none
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2296
+  Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8 base=0x405025a8 size=32 align=8 coherency=coherent device=none

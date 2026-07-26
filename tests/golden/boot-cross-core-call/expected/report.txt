@@ -22,12 +22,12 @@ ImageReport v0
   Section name=abort base=0x405004b4 size=120
   Section name=checkpoint base=0x4050052c size=104
   Section name=rtcode base=0x40500594 size=2244
-  Section name=rtdata base=0x40500e58 size=632
+  Section name=rtdata base=0x40500e58 size=1320
   Entry base=0x40500000
   CoreEntry core=1 base=0x40500d4c
   CoreEntry core=2 base=0x40500db4
   Actor name=Off mailbox=4 slot=16 frame=56 state=8
   Turn fn=runs_off_core frame=280
-  Ring kind=request src=0 dst=1 target=Off cap=4 slot=16 bytes=88 base=0x40501050
-  Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40 base=0x405010a8
-  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=632
+  Ring kind=request src=0 dst=1 target=Off cap=4 slot=16 bytes=88 base=0x40501300
+  Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40 base=0x40501358
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1320
