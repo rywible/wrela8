@@ -11,7 +11,7 @@ Program
       0000: Project dst=t1 base=t0 index=0
       0001: Return value=t1
       0002: Return
-  Fn key=use_takes ret=u64 temps=23
+  Fn key=use_takes ret=u64 temps=28
     Temp t0 ty=u64
     Temp t1 ty=u64
     Temp t2 ty=u64
@@ -21,20 +21,25 @@ Program
     Temp t6 ty=[u64; 3]
     Temp t7 ty=u64
     Temp t8 ty=u64
-    Temp t9 ty=usize
+    Temp t9 ty=u64
     Temp t10 ty=usize
-    Temp t11 ty=bool
-    Temp t12 ty=u64
+    Temp t11 ty=usize
+    Temp t12 ty=bool
     Temp t13 ty=u64
-    Temp t14 ty=usize
-    Temp t15 ty=usize
-    Temp t16 ty=u64
-    Temp t17 ty=Box
-    Temp t18 ty=Box
-    Temp t19 ty=u64
-    Temp t20 ty=u64
+    Temp t14 ty=u64
+    Temp t15 ty=u64
+    Temp t16 ty=bool
+    Temp t17 ty=u64
+    Temp t18 ty=u64
+    Temp t19 ty=usize
+    Temp t20 ty=usize
     Temp t21 ty=u64
-    Temp t22 ty=u64
+    Temp t22 ty=Box
+    Temp t23 ty=Box
+    Temp t24 ty=u64
+    Temp t25 ty=u64
+    Temp t26 ty=u64
+    Temp t27 ty=u64
     Body
       0000: ConstInt dst=t0 ty=u64 value=5
       0001: Copy dst=t1 src=t0
@@ -45,23 +50,32 @@ Program
       0006: Copy dst=t6 src=t5
       0007: ConstInt dst=t7 ty=u64 value=0
       0008: Copy dst=t8 src=t7
-      0009: ConstInt dst=t9 ty=usize value=0
-      0010: ConstInt dst=t10 ty=usize value=3
-      0011: Compare op=< ty=usize dst=t11 lhs=t9 rhs=t10
-      0012: JumpIfFalse cond=t11 target=0020
-      0013: IndexGet dst=t12 base=t6 index=t9 len=3
-      0014: ArithChecked op=+ ty=u64 dst=t13 lhs=t8 rhs=t12 abort="arithmetic overflow in `+`"
-      0015: Copy dst=t8 src=t13
-      0016: ConstInt dst=t14 ty=usize value=1
-      0017: ArithWrapping op=+% ty=usize dst=t15 lhs=t9 rhs=t14
-      0018: Copy dst=t9 src=t15
-      0019: Jump target=0011
-      0020: ConstInt dst=t16 ty=u64 value=9
-      0021: MakeAggregate dst=t17 elems=[t16]
-      0022: Copy dst=t18 src=t17
-      0023: Call key=consume dst=t19 args=[t1]
-      0024: Call key=consume_box dst=t20 args=[t18]
-      0025: ArithChecked op=+ ty=u64 dst=t21 lhs=t19 rhs=t20 abort="arithmetic overflow in `+`"
-      0026: ArithChecked op=+ ty=u64 dst=t22 lhs=t21 rhs=t8 abort="arithmetic overflow in `+`"
-      0027: Return value=t22
-      0028: Return
+      0009: ConstInt dst=t9 ty=u64 value=0
+      0010: ConstInt dst=t10 ty=usize value=0
+      0011: ConstInt dst=t11 ty=usize value=3
+      0012: Compare op=< ty=usize dst=t12 lhs=t10 rhs=t11
+      0013: JumpIfFalse cond=t12 target=0029
+      0014: ConstInt dst=t13 ty=u64 value=1
+      0015: ArithWrapping op=+% ty=u64 dst=t14 lhs=t9 rhs=t13
+      0016: Copy dst=t9 src=t14
+      0017: ConstInt dst=t15 ty=u64 value=1000000
+      0018: Compare op=<= ty=u64 dst=t16 lhs=t9 rhs=t15
+      0019: JumpIfFalse cond=t16 target=0021
+      0020: Jump target=0022
+      0021: AssertFail message="loop budget exceeded"
+      0022: IndexGet dst=t17 base=t6 index=t10 len=3
+      0023: ArithChecked op=+ ty=u64 dst=t18 lhs=t8 rhs=t17 abort="arithmetic overflow in `+`"
+      0024: Copy dst=t8 src=t18
+      0025: ConstInt dst=t19 ty=usize value=1
+      0026: ArithWrapping op=+% ty=usize dst=t20 lhs=t10 rhs=t19
+      0027: Copy dst=t10 src=t20
+      0028: Jump target=0012
+      0029: ConstInt dst=t21 ty=u64 value=9
+      0030: MakeAggregate dst=t22 elems=[t21]
+      0031: Copy dst=t23 src=t22
+      0032: Call key=consume dst=t24 args=[t1]
+      0033: Call key=consume_box dst=t25 args=[t23]
+      0034: ArithChecked op=+ ty=u64 dst=t26 lhs=t24 rhs=t25 abort="arithmetic overflow in `+`"
+      0035: ArithChecked op=+ ty=u64 dst=t27 lhs=t26 rhs=t8 abort="arithmetic overflow in `+`"
+      0036: Return value=t27
+      0037: Return

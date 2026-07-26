@@ -11,6 +11,7 @@ pub fn consume(take p: Packet) -> u64:
 
 pub fn use_it(arr: [Packet; 2]) -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     for p in arr:
         total += consume(take p)
     return total

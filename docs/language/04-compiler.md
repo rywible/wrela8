@@ -57,6 +57,11 @@ async loop back edge is a checkpoint or carries a proven
 finite cost; a checkpoint is rejected while a non-suspend-safe access is
 live. Priority and deadline inheritance are derived from the same
 graph, and hard deadlines without sufficient inheritance are rejected.
+Revision 0.1's synchronous discharge of the loop half is the statement
+attribute `@budget(bound=N)` of [02 §8.1](02-language.md): a comptime-known
+integer trip bound with a fail-closed runtime counter — not a predicted
+cost model. Async checkpoint elision under a proven budget, ISR-bound
+discharge, and cycle/latency proofs remain later.
 
 **Hardware.** Capability provenance and roles match on every hardware
 operation; device and vector ownership is exclusive; MMIO partitions never

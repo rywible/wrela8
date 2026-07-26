@@ -91,6 +91,7 @@ resource struct BlockCache:
 
     pub fn touch_all(mut self) -> unit:
         i: usize = 0
+        @budget(bound=1000000)
         while i < 4:
             self.lines[i].touch()
             i += 1
@@ -112,6 +113,7 @@ pub fn flush_dirty(mut cache: BlockCache) -> u64:
     defer log_flushed()
     dirty: u64 = 0
     i: usize = 0
+    @budget(bound=1000000)
     while i < 4:
         if cache.is_dirty(i):
             dirty += 1

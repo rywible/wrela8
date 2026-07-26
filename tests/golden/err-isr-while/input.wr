@@ -23,6 +23,7 @@ pub struct BlkDriver:
         self.irq = take irq
 
     fn on_queue_irq(self):
+        @budget(bound=1000000)
         while true:
             break
 

@@ -752,12 +752,19 @@ fn exec_stmt<'a, 'p>(
                 "match: no arm matched (exhaustiveness already proved this cannot happen)",
             ))
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, budget } => {
             let new_marker = dstack.len();
+            let mut trips: u64 = 0;
             loop {
                 let c = eval_expr(cond, env, dstack, loop_marker, ctx)?;
                 if !as_bool(&c) {
                     break;
+                }
+                if let Some(n) = budget {
+                    trips = trips.saturating_add(1);
+                    if trips > *n {
+                        return Err(ctx.abandon("loop budget exceeded"));
+                    }
                 }
                 ctx.tick_step()?;
                 match scoped_env(env, |env| exec_block(body, env, dstack, new_marker, ctx)) {
@@ -770,8 +777,12 @@ fn exec_stmt<'a, 'p>(
             Ok(())
         }
         TypedStmtKind::For {
-            name, iter, body, ..
-        } => exec_for(name, iter, body, env, dstack, loop_marker, ctx),
+            name,
+            iter,
+            body,
+            budget,
+            ..
+        } => exec_for(name, iter, body, *budget, env, dstack, loop_marker, ctx),
         TypedStmtKind::Break => {
             run_defers(&dstack[loop_marker..], env, ctx)?;
             Err(Unwind::Break)
@@ -848,12 +859,14 @@ fn exec_for<'a, 'p>(
     name: &str,
     iter: &'a TypedForIter,
     body: &'a [TypedStmt],
+    budget: Option<u64>,
     env: &mut Env,
     dstack: &mut Vec<&'a TypedDeferBody>,
     loop_marker: usize,
     ctx: &mut Interp<'p>,
 ) -> R<()> {
     let new_marker = dstack.len();
+    let mut trips: u64 = 0;
     match iter {
         TypedForIter::Range(from, to, inclusive) => {
             let from_v = eval_expr(from, env, dstack, loop_marker, ctx)?;
@@ -868,6 +881,12 @@ fn exec_for<'a, 'p>(
                     }
                 } else if i >= end {
                     break;
+                }
+                if let Some(n) = budget {
+                    trips = trips.saturating_add(1);
+                    if trips > n {
+                        return Err(ctx.abandon("loop budget exceeded"));
+                    }
                 }
                 ctx.tick_step()?;
                 // The loop binding + body share one scope per iteration
@@ -897,6 +916,12 @@ fn exec_for<'a, 'p>(
                 }
             };
             for elem in elems {
+                if let Some(n) = budget {
+                    trips = trips.saturating_add(1);
+                    if trips > n {
+                        return Err(ctx.abandon("loop budget exceeded"));
+                    }
+                }
                 ctx.tick_step()?;
                 let outcome = scoped_env(env, |env| {
                     env_insert(env, name.to_string(), elem);
@@ -2405,6 +2430,7 @@ mod integration_tests {
 
 pub fn sum_and_consume(take arr: [u64; 4]) -> u64:
     total: u64 = 0
+    @budget(bound=4)
     for take x in take arr:
         total = total + x
     return total

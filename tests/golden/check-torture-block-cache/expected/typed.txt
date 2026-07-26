@@ -25,7 +25,7 @@ Program
         Int text=0 ty=u64
       Let name=i ty=usize
         Int text=0 ty=usize
-      While
+      While budget=1000000
         Binary op=< ty=bool
           Local name=i ty=usize
           Int text=4 ty=usize
@@ -207,7 +207,7 @@ Program
       Body
         Let name=i ty=usize
           Int text=0 ty=usize
-        While
+        While budget=1000000
           Binary op=< ty=bool
             Local name=i ty=usize
             Int text=4 ty=usize

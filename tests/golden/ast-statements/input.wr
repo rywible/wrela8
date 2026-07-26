@@ -19,13 +19,16 @@ fn walk(mut counter: u64, xs: [u64; 4]) -> u64:
         case _:
             pass
 
+    @budget(bound=1000000)
     for x in 0 .. 4:
         total += x
 
+    @budget(bound=1000000)
     for take item in take xs:
         total += item
 
     i: u64 = 0
+    @budget(bound=1000000)
     while i < 4:
         total += i
         i += 1

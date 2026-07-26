@@ -13,6 +13,7 @@ pub fn consume(take p: Packet) -> u64:
 # read loan (02-language.md §3.2): legal, and the array is untouched.
 pub fn peek_all(arr: [Packet; 2]) -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     for p in arr:
         total += p.size
     return total
@@ -21,6 +22,7 @@ pub fn peek_all(arr: [Packet; 2]) -> u64:
 # `for take x in take array`. The array is Moved after the loop.
 pub fn consume_all(take arr: [Packet; 2]) -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     for take p in take arr:
         total += consume(take p)
     return total

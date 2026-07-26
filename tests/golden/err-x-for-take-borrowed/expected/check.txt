@@ -1,1 +1,1 @@
-error[access]: `for take` requires the iterable itself be `take`n: write `for take x in take array` — elements cannot be taken one at a time out of an array through a runtime index at 11:5
+error[access]: `for take` requires the iterable itself be `take`n: write `for take x in take array` — elements cannot be taken one at a time out of an array through a runtime index at 12:5

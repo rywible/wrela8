@@ -6,6 +6,7 @@ module examples.mwir_loop
 pub fn sum_to(n: u64) -> u64:
     total: u64 = 0
     i: u64 = 0
+    @budget(bound=1000000)
     while i < n:
         total = total + i
         i = i + 1
@@ -13,6 +14,7 @@ pub fn sum_to(n: u64) -> u64:
 
 pub fn sum_array(values: [u64; 4]) -> u64:
     total: u64 = 0
+    @budget(bound=1000000)
     for v in values:
         total = total +% v
     return total

@@ -1,1 +1,1 @@
-error[comptime]: comptime assert condition references `total`, which is not comptime-visible here (only literals and top-level consts are — a local, a parameter, a loop variable, or a field of one cannot be) at 8:5
+error[comptime]: comptime assert condition references `total`, which is not comptime-visible here (only literals and top-level consts are — a local, a parameter, a loop variable, or a field of one cannot be) at 9:5

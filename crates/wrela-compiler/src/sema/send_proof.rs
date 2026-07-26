@@ -595,7 +595,7 @@ impl Cx<'_> {
                 }
                 self.in_loop(|cx| cx.stmts(body));
             }
-            TypedStmtKind::While { cond, body } => {
+            TypedStmtKind::While { cond, body, .. } => {
                 // The condition is re-evaluated on every iteration too.
                 self.in_loop(|cx| {
                     cx.expr(cond);

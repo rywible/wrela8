@@ -2034,10 +2034,11 @@ fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt,
 }
 
 fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    let budget = resolve_loop_budget(w.budget.as_ref(), w.span, fctx)?;
     let cond = check_expr(&w.cond, Some(&Type::Bool), fctx, mctx)?;
     let body = scoped(fctx, |fctx| check_stmts(&w.body, fctx, mctx))?;
     Ok(TypedStmt {
-        kind: TypedStmtKind::While { cond, body },
+        kind: TypedStmtKind::While { cond, body, budget },
     })
 }
 
@@ -2214,6 +2215,7 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
         bind_local(fctx, &f.name, elem_ty.clone(), f.span)?;
         check_stmts(&f.body, fctx, mctx)
     })?;
+    let budget = resolve_loop_budget(f.budget.as_ref(), f.span, fctx)?;
     Ok(TypedStmt {
         kind: TypedStmtKind::For {
             name: f.name.clone(),
@@ -2221,8 +2223,129 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
             take_binding: f.take_binding,
             iter,
             body,
+            budget,
         },
     })
+}
+
+/// Sync-loop `@budget(bound=N)` discharge (02 §8.1, plans/M11.md decision 721).
+///
+/// - Sync (`!in_async`): attribute required; `N` a positive integer literal;
+///   returns `Some(N)` for the hidden trip counter.
+/// - Async: attribute optional (checkpoint path unchanged); returns `None`
+///   so no trip counter is emitted. A present attribute is still shape-
+///   checked so a typo fails closed.
+fn resolve_loop_budget(
+    budget: Option<&ast::Attr>,
+    loop_span: Span,
+    fctx: &FnCtx,
+) -> Result<Option<u64>, SemaError> {
+    match budget {
+        None => {
+            if fctx.in_async {
+                Ok(None)
+            } else {
+                Err(SemaError::at(
+                    "sema",
+                    "synchronous `for`/`while` requires a preceding `@budget(bound=N)` \
+                     with comptime-known integer N ≥ 1 (02-language.md §8.1)"
+                        .to_string(),
+                    loop_span,
+                ))
+            }
+        }
+        Some(attr) => {
+            let n = parse_budget_bound_attr(attr)?;
+            if fctx.in_async {
+                // Async half stays a gap: keep checkpoint behaviour; do not
+                // emit a trip counter from this attribute yet.
+                Ok(None)
+            } else {
+                Ok(Some(n))
+            }
+        }
+    }
+}
+
+fn parse_budget_bound_attr(attr: &ast::Attr) -> Result<u64, SemaError> {
+    if attr.name != "budget" {
+        return Err(SemaError::at(
+            "sema",
+            format!(
+                "only `@budget(bound=N)` may annotate a loop; found `@{}`",
+                attr.name
+            ),
+            attr.span,
+        ));
+    }
+    if attr.args.len() != 1 {
+        return Err(SemaError::at(
+            "sema",
+            "`@budget` on a loop takes exactly one argument `bound=N` (02-language.md §8.1)"
+                .to_string(),
+            attr.span,
+        ));
+    }
+    let arg = &attr.args[0];
+    match &arg.label {
+        Some(label) if label == "bound" => {}
+        Some(other) => {
+            return Err(SemaError::at(
+                "sema",
+                format!(
+                    "`@budget` on a loop takes `bound=N`; found `{other}=` (02-language.md §8.1)"
+                ),
+                arg.span,
+            ));
+        }
+        None => {
+            return Err(SemaError::at(
+                "sema",
+                "`@budget` on a loop takes `bound=N` (labeled); a positional argument is not the sync-loop discharge (02-language.md §8.1)"
+                    .to_string(),
+                arg.span,
+            ));
+        }
+    }
+    if arg.mode != AccessMode::Read {
+        return Err(SemaError::at(
+            "sema",
+            "`@budget(bound=N)`'s `N` is a comptime integer, not a `mut`/`take` place".to_string(),
+            arg.span,
+        ));
+    }
+    match &arg.value {
+        Expr::Int(span, text) => {
+            let n: i128 = text.parse().map_err(|_| {
+                SemaError::at(
+                    "sema",
+                    format!("`@budget(bound=N)` requires an integer literal; found `{text}`"),
+                    *span,
+                )
+            })?;
+            if n < 1 {
+                return Err(SemaError::at(
+                    "sema",
+                    format!("`@budget(bound=N)` requires N ≥ 1; found {n}"),
+                    *span,
+                ));
+            }
+            u64::try_from(n).map_err(|_| {
+                SemaError::at(
+                    "sema",
+                    format!("`@budget(bound=N)` value {n} does not fit a trip counter"),
+                    *span,
+                )
+            })
+        }
+        other => Err(SemaError::at(
+            "sema",
+            "`@budget(bound=N)` requires a comptime-known integer literal for N \
+             (02-language.md §8.1)"
+                .to_string(),
+            other.span(),
+        )),
+    }
 }
 
 fn check_defer(d: &DeferStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
@@ -10327,7 +10450,7 @@ fn scan_await_cross_stmt(s: &TypedStmt, state: &mut CrossAwaitScan) -> Result<()
             }
             scan_await_cross_stmts(body, state)
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             scan_await_cross_expr(cond, state)?;
             enter_loop_body(body, state);
             scan_await_cross_stmts(body, state)

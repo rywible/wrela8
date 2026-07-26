@@ -53,99 +53,108 @@ Module @1:1 path=examples.statements
         Case @19:9
           Wildcard @19:14
           Pass @20:13
-      For @22:5 name=x
-        Range @22:16 inclusive=false
-          Int @22:14 text=0
-          Int @22:19 text=4
+      Attr @22:5 name=budget
+        Arg @22:13 label=bound
+          Int @22:19 text=1000000
+      For @23:5 name=x
+        Range @23:16 inclusive=false
+          Int @23:14 text=0
+          Int @23:19 text=4
         Body
-          Assign @23:9 op=+=
-            Name @23:9 name=total
-            Name @23:18 name=x
-      For @25:5 name=item take=true
-        Unary @25:22 op=take
-          Name @25:27 name=xs
+          Assign @24:9 op=+=
+            Name @24:9 name=total
+            Name @24:18 name=x
+      Attr @26:5 name=budget
+        Arg @26:13 label=bound
+          Int @26:19 text=1000000
+      For @27:5 name=item take=true
+        Unary @27:22 op=take
+          Name @27:27 name=xs
         Body
-          Assign @26:9 op=+=
-            Name @26:9 name=total
-            Name @26:18 name=item
-      Assign @28:5 op==
-        Name @28:5 name=i
-        TypeName @28:8 name=u64
-        Int @28:14 text=0
-      While @29:5
-        Binary @29:13 op=<
-          Name @29:11 name=i
-          Int @29:15 text=4
+          Assign @28:9 op=+=
+            Name @28:9 name=total
+            Name @28:18 name=item
+      Assign @30:5 op==
+        Name @30:5 name=i
+        TypeName @30:8 name=u64
+        Int @30:14 text=0
+      Attr @31:5 name=budget
+        Arg @31:13 label=bound
+          Int @31:19 text=1000000
+      While @32:5
+        Binary @32:13 op=<
+          Name @32:11 name=i
+          Int @32:15 text=4
         Body
-          Assign @30:9 op=+=
-            Name @30:9 name=total
-            Name @30:18 name=i
-          Assign @31:9 op=+=
-            Name @31:9 name=i
-            Int @31:14 text=1
-          If @32:9
-            Binary @32:14 op===
-              Name @32:12 name=i
-              Int @32:17 text=2
+          Assign @33:9 op=+=
+            Name @33:9 name=total
+            Name @33:18 name=i
+          Assign @34:9 op=+=
+            Name @34:9 name=i
+            Int @34:14 text=1
+          If @35:9
+            Binary @35:14 op===
+              Name @35:12 name=i
+              Int @35:17 text=2
             Then
-              Continue @33:13
-          If @34:9
-            Binary @34:14 op===
-              Name @34:12 name=i
-              Int @34:17 text=3
+              Continue @36:13
+          If @37:9
+            Binary @37:14 op===
+              Name @37:12 name=i
+              Int @37:17 text=3
             Then
-              Break @35:13
-      Assert @37:5
-        Binary @37:18 op=>=
-          Name @37:12 name=total
-          Int @37:21 text=0
-      Assert @38:5
-        Binary @38:18 op=<
-          Name @38:12 name=total
-          Int @38:20 text=1000
+              Break @38:13
+      Assert @40:5
+        Binary @40:18 op=>=
+          Name @40:12 name=total
+          Int @40:21 text=0
+      Assert @41:5
+        Binary @41:18 op=<
+          Name @41:12 name=total
+          Int @41:20 text=1000
         Message
-          Str @38:26 text="total stays bounded"
-      Defer @40:5
-        Call @40:19
-          Name @40:11 name=log_done
-      Defer @41:5
+          Str @41:26 text="total stays bounded"
+      Defer @43:5
+        Call @43:19
+          Name @43:11 name=log_done
+      Defer @44:5
         Body
-          Assign @42:9 op=+=
-            Name @42:9 name=total
-            Int @42:18 text=1
-          Assign @43:9 op=+=
-            Name @43:9 name=total
-            Int @43:18 text=1
-      With @45:5 as=frame
-        Call @45:14
-          Name @45:10 name=pool
-          Arg @45:15 label=capacity
-            Field @45:28 name=KiB
-              Int @45:24 text=256
-        Body
+          Assign @45:9 op=+=
+            Name @45:9 name=total
+            Int @45:18 text=1
           Assign @46:9 op=+=
             Name @46:9 name=total
             Int @46:18 text=1
-      Send @48:5
-        Call @48:22
-          Field @48:16 name=record
-            Name @48:10 name=audit
-          Arg @48:23 label=event mode=take
-            Name @48:34 name=total
-      ComptimeIf @50:5
-        Field @50:24 name=debug
-          Name @50:17 name=target
+      With @48:5 as=frame
+        Call @48:14
+          Name @48:10 name=pool
+          Arg @48:15 label=capacity
+            Field @48:28 name=KiB
+              Int @48:24 text=256
+        Body
+          Assign @49:9 op=+=
+            Name @49:9 name=total
+            Int @49:18 text=1
+      Send @51:5
+        Call @51:22
+          Field @51:16 name=record
+            Name @51:10 name=audit
+          Arg @51:23 label=event mode=take
+            Name @51:34 name=total
+      ComptimeIf @53:5
+        Field @53:24 name=debug
+          Name @53:17 name=target
         Then
-          ComptimeAssert @51:9
-            Binary @51:31 op=>=
-              Name @51:25 name=total
-              Int @51:34 text=0
+          ComptimeAssert @54:9
+            Binary @54:31 op=>=
+              Name @54:25 name=total
+              Int @54:34 text=0
         Else
-          ComptimeAssert @53:9
-            Binary @53:31 op=>=
-              Name @53:25 name=total
-              Int @53:34 text=0
+          ComptimeAssert @56:9
+            Binary @56:31 op=>=
+              Name @56:25 name=total
+              Int @56:34 text=0
             Message
-              Str @53:37 text="release bound"
-      Return @55:5
-        Name @55:12 name=total
+              Str @56:37 text="release bound"
+      Return @58:5
+        Name @58:12 name=total

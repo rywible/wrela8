@@ -2443,7 +2443,7 @@ fn collect_irq_ops_stmt(
                 collect_irq_ops(&arm.body, driver, vector, site, binds, take_irq);
             }
         }
-        TypedStmtKind::While { cond, body } => {
+        TypedStmtKind::While { cond, body, .. } => {
             collect_irq_ops_expr(cond, driver, vector, site, binds, take_irq);
             collect_irq_ops(body, driver, vector, site, binds, take_irq);
         }

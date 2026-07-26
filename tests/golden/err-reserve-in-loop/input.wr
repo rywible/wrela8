@@ -49,6 +49,7 @@ pub struct BlkDriver:
 
     fn many(mut self, n: u32) -> unit:
         i: u32 = 0
+        @budget(bound=1000000)
         while i < n:
             _ = self.queue.reserve_proven(descriptors=3)
             i = i + 1

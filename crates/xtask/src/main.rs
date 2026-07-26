@@ -2068,6 +2068,10 @@ const SEMA_CATEGORIES: &[&str] = &[
     // 02-language.md §9's own vocabulary, deliberately added like `build`
     // above.
     "actor",
+    // plans/M11.md item A / decision 721: sync-loop `@budget(bound=N)`
+    // discharge — `error[sema]` when a synchronous for/while lacks the
+    // attribute (02-language.md §8.1).
+    "sema",
 ];
 
 /// One full run of the pipeline the sema fuzzer exercises: lex, then (on

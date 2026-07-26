@@ -5,6 +5,7 @@ module examples.err_untrusted_bound
 
 fn bad(reported: Untrusted[usize]) -> usize:
     n = 0
+    @budget(bound=1000000)
     for i in 0..reported:
         n = n + i
     return n

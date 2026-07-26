@@ -23,6 +23,7 @@ pub fn test_fails():
 @test
 pub fn test_quota_exceeded():
     total: u64 = 0
+    @budget(bound=1000000)
     while true:
         total = total + 1
 

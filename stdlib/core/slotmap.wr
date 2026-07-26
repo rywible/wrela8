@@ -41,6 +41,7 @@ pub struct SlotMap[T, const N: usize]:
 
     pub fn insert(mut self, take x: T) -> Result[Key, SlotMapFull]:
         i: usize = 0
+        @budget(bound=1000000)
         while i < N:
             if not self.occupied[i] and not self.retired[i]:
                 self.occupied[i] = true
@@ -59,6 +60,7 @@ pub struct SlotMap[T, const N: usize]:
     pub fn try_insert(mut self, take x: T) -> Result[Key, GenerationExhausted]:
         i: usize = 0
         saw_retired: bool = false
+        @budget(bound=1000000)
         while i < N:
             if self.retired[i] and not self.occupied[i]:
                 saw_retired = true
@@ -136,6 +138,7 @@ pub struct SlotMap[T, const N: usize]:
 
     pub fn each_pair(read self, body: fn(Key, read T)):
         i: usize = 0
+        @budget(bound=1000000)
         while i < N:
             if self.occupied[i]:
                 match self.data[i]:
