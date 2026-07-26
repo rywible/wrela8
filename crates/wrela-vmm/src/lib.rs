@@ -3546,9 +3546,9 @@ mod tests {
 
         let tokens = wrela_compiler::syntax::lexer::lex(src).expect("conformance source must lex");
         let module = wrela_compiler::syntax::parser::parse(tokens).expect("must parse");
-        // M10 B2 / A2d: mirror `bin/wrela.rs::test_cmd` — auto-load
+        // M10 B2 / B3 / A2d: mirror `bin/wrela.rs::test_cmd` — auto-load
         // `core.runtime` and force-root its helpers so harness
-        // `bl_call_key("__wrela_line_*")` resolves.
+        // `bl_call_key("__wrela_line_*")` / `__wrela_fmt_dec` resolve.
         let (runtime_key, runtime_loaded) = match loader::load_runtime_module() {
             Ok(v) => v,
             Err(_) => panic!("stdlib/core/runtime.wr must load"),
