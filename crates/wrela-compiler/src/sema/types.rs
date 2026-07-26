@@ -5349,6 +5349,9 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             // (plans/M9.md item E decision 300 / item I decision 470).
             | "Duration"
             | "Instant"
+            // plans/M10.md item E2 / decision 669: 1-based group arena
+            // index; `Option[GroupId]` niche at 0.
+            | "GroupId"
     ) || crate::eval::image_checks::is_sealed_authority_type_name(name)
 }
 
@@ -5411,6 +5414,11 @@ fn resolve_named(
         // minted only by `VirtQueue.recover` but nameable in an
         // annotation (a helper that classifies one takes it by value).
         "CompletionOutcome" => Some(Type::Named("CompletionOutcome".to_string(), vec![])),
+        // plans/M10.md item E2 / decision 669: opaque 1-based group arena
+        // index. Zero-argument Named, like `Image` — not a DeclStruct, so
+        // source cannot forge one by field init (decision 567's niche
+        // stays unconstructible from source until a minting site lands).
+        "GroupId" => Some(Type::Named("GroupId".to_string(), vec![])),
         _ => None,
     };
     if let Some(t) = scalar {

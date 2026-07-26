@@ -667,7 +667,20 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
                     // `struct` / `Option` niche packing.
                     | "TurnId"
                     | "CoreId"
+                    // plans/M10.md item E2 / decision 669: same list.
+                    | "GroupId"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
+        {
+            false
+        }
+        // plans/M10.md item E2 / decision 669: niche-packed `Option[GroupId]`
+        // is one bare word passed by value — not the general by-pointer
+        // `Option` aggregate (decision 611).
+        Type::Option(inner)
+            if matches!(
+                strip_wrappers(inner),
+                Type::Named(name, _) if name == "GroupId"
+            ) =>
         {
             false
         }
@@ -688,6 +701,18 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
 /// (base, then len).
 fn is_bytes_handle(ty: &Type) -> bool {
     matches!(strip_wrappers(ty), Type::Bytes(None))
+}
+
+/// plans/M10.md item E2 / decision 669: `Option[GroupId]` is niche-packed
+/// into one word (`None` = 0). Detected here so MakeEnum / EnumTag /
+/// EnumPayload emit the niche form rather than tag+payload.
+fn is_option_group_id(ty: &Type) -> bool {
+    match strip_wrappers(ty) {
+        Type::Option(inner) => {
+            matches!(strip_wrappers(inner), Type::Named(name, _) if name == "GroupId")
+        }
+        _ => false,
+    }
 }
 
 /// `(bit width, signed)` for the ten integer scalar types — a small,
@@ -992,6 +1017,16 @@ fn enum_payload_offset(
 ) -> Result<usize, CodegenError> {
     const TAG: usize = 8;
     let variants: Vec<Vec<Type>> = match strip_wrappers(base_ty) {
+        // plans/M10.md item E2: niche-packed — payload occupies the same
+        // word as the discriminant (0 = None). Offset 0, not past a tag.
+        Type::Option(inner)
+            if matches!(
+                strip_wrappers(inner),
+                Type::Named(name, _) if name == "GroupId"
+            ) =>
+        {
+            return Ok(0);
+        }
         Type::Option(inner) => vec![Vec::new(), vec![(**inner).clone()]],
         Type::Result(ok, err) => vec![vec![(**ok).clone()], vec![(**err).clone()]],
         // plans/M7.md item Z2: `CallError[E]` (02-language.md §9.4's own
@@ -1724,18 +1759,49 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         }
         Inst::MakeEnum { dst, tag, payload } => {
             let dst_off = ctx.frame.off(*dst);
-            ctx.load_imm(X_A, *tag as i64);
-            ctx.store_slot(X_A, dst_off);
-            let mut cur = 8usize;
-            for p in payload {
-                let sz = ctx.frame.size_of_temp(*p);
-                ctx.copy_slot_to_slot(dst_off + cur, ctx.frame.off(*p), sz);
-                cur += sz;
+            let dst_ty = f.temp_types[dst.0].clone();
+            if is_option_group_id(&dst_ty) {
+                // Niche: None = 0; Some(id) = the GroupId word itself
+                // (1-based, never zero — decision 567 / 669).
+                if *tag == 0 {
+                    ctx.load_imm(X_A, 0);
+                    ctx.store_slot(X_A, dst_off);
+                } else {
+                    let p = payload.first().copied().ok_or_else(|| {
+                        CodegenError::internal("Some(GroupId) MakeEnum with no payload")
+                    })?;
+                    let sz = ctx.frame.size_of_temp(p);
+                    ctx.copy_slot_to_slot(dst_off, ctx.frame.off(p), sz);
+                }
+            } else {
+                ctx.load_imm(X_A, *tag as i64);
+                ctx.store_slot(X_A, dst_off);
+                let mut cur = 8usize;
+                for p in payload {
+                    let sz = ctx.frame.size_of_temp(*p);
+                    ctx.copy_slot_to_slot(dst_off + cur, ctx.frame.off(*p), sz);
+                    cur += sz;
+                }
             }
         }
         Inst::EnumTag { dst, src } => {
-            ctx.load_slot(X_A, ctx.frame.off(*src));
-            ctx.store_slot(X_A, ctx.frame.off(*dst));
+            let src_ty = f.temp_types[src.0].clone();
+            if is_option_group_id(&src_ty) {
+                // tag = (word != 0) ? 1 : 0 — Some vs None.
+                ctx.load_slot(X_A, ctx.frame.off(*src));
+                ctx.push(
+                    encode::enc_cmp_imm(X_A, 0, true),
+                    format!("cmp {}, #0", reg_name(X_A)),
+                );
+                ctx.push(
+                    encode::enc_cset(X_A, Cond::Ne, true),
+                    format!("cset {}, ne", reg_name(X_A)),
+                );
+                ctx.store_slot(X_A, ctx.frame.off(*dst));
+            } else {
+                ctx.load_slot(X_A, ctx.frame.off(*src));
+                ctx.store_slot(X_A, ctx.frame.off(*dst));
+            }
         }
         Inst::EnumPayload { dst, src, index } => {
             let src_ty = f.temp_types[src.0].clone();

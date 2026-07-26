@@ -6084,6 +6084,33 @@ impl TurnId {
     }
 }
 
+/// plans/M10.md item E2 / decision 669: one group's index into the
+/// group arena, encoded the way ambient lineage already encodes it —
+/// `arena_index + 1`, with `0` meaning "no ambient group". That zero is
+/// the `Option[GroupId]` None niche (decision 567's convention, already
+/// the machine's). Same shape as [`TurnId`]: private field, `from_index`
+/// only, so `GroupId(0)` is unconstructible in Rust.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct GroupId(u32);
+
+impl GroupId {
+    pub fn from_index(index: usize) -> GroupId {
+        let biased = u32::try_from(index + 1)
+            .expect("a group arena with over 4 billion slots cannot fit the machine's memory");
+        GroupId(biased)
+    }
+
+    pub fn get(self) -> u32 {
+        debug_assert!(self.0 != 0, "GroupId(0) is the None niche, not an id");
+        self.0
+    }
+
+    pub fn index(self) -> usize {
+        debug_assert!(self.0 != 0, "GroupId(0) is the None niche, not an id");
+        self.0 as usize - 1
+    }
+}
+
 /// One actor's own absolute runtime-table addresses, placed sequentially
 /// from a given base (`rtdata_base` for a real image, or a host-mmap'd
 /// stand-in base for a JIT/HVF test) — the exact byte order

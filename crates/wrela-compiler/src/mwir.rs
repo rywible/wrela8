@@ -1003,6 +1003,20 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             }
             Ok(total)
         }
+        // plans/M10.md item E2 / decision 669: `Option[GroupId]` is one
+        // bare word with the `None` niche at 0 (decision 567's convention).
+        // Against decision 611's general `SLOT + size_of(T)` rule this is a
+        // named exception — hardcoding the one type the milestone needs,
+        // following decision 616's "hardcode the builtin list" pattern
+        // rather than inventing general niche packing.
+        Type::Option(inner)
+            if matches!(
+                &**inner,
+                Type::Named(name, _) if name == "GroupId"
+            ) =>
+        {
+            Ok(SLOT)
+        }
         Type::Option(inner) => Ok(SLOT + size_of(inner, ctx)?),
         Type::Result(ok, err) => Ok(SLOT + size_of(ok, ctx)?.max(size_of(err, ctx)?)),
         // plans/M7.md item E4 / decision 19: `own[P] T` is one 64-bit word
@@ -1095,6 +1109,10 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     // plans/M10.md item D / decision 616 (completing 611).
                     | "TurnId"
                     | "CoreId"
+                    // plans/M10.md item E2 / decision 669: same vehicle —
+                    // one opaque word (1-based arena index; 0 is reserved
+                    // for the `Option[GroupId]` niche).
+                    | "GroupId"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
             // `Actor[T]`/`Rejected[T]` (if ever instantiated) carry their
@@ -1282,6 +1300,32 @@ mod layout_tests {
         let ctx = LayoutCtx::default();
         let t = Type::Option(Box::new(Type::U64));
         assert_eq!(size_of(&t, &ctx), Ok(8 + 8));
+    }
+
+    /// plans/M10.md item E2 / decision 669: the pin that fails if
+    /// `Option[GroupId]` silently widens back to two words. Against
+    /// decision 611's general rule this is a deliberate niche encoding;
+    /// removing the `GroupId` arm above makes this assertion red.
+    #[test]
+    fn option_group_id_is_one_word_with_none_niche() {
+        let ctx = LayoutCtx::default();
+        let gid = Type::Named("GroupId".to_string(), vec![]);
+        assert_eq!(size_of(&gid, &ctx), Ok(8), "GroupId itself is one word");
+        let opt = Type::Option(Box::new(gid));
+        assert_eq!(
+            size_of(&opt, &ctx),
+            Ok(8),
+            "Option[GroupId] must stay one bare word (None niche at 0)"
+        );
+        assert!(
+            !crate::codegen::is_aggregate(&opt),
+            "Option[GroupId] is by-value, not a by-pointer aggregate"
+        );
+        // Contrast: ordinary Option packing is unchanged.
+        assert_eq!(size_of(&Type::Option(Box::new(Type::U32)), &ctx), Ok(16));
+        assert!(crate::codegen::is_aggregate(&Type::Option(Box::new(
+            Type::U32
+        ))));
     }
 
     // plans/M10.md item B4 / decision 595: unbounded `Bytes` is a
