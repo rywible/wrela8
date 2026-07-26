@@ -48,7 +48,9 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // 100 -> 70+27, plans/M10.md item K: extract harness submodule; −3 from
     // deleted empty RuntimeBlock reloc-resolve arms (always-None path).
     ("layout.rs", 70),
-    ("layout/harness.rs", 27),
+    // 27 -> 29, plans/M11.md item E: reinject_runtime_with_rtconfig
+    // (live rtconfig codegen failure / missing deadline key).
+    ("layout/harness.rs", 29),
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     ("eval/interp.rs", 79),
     ("lower.rs", 5),
@@ -156,7 +158,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 198,
+            INTERNAL_ERROR_SITE_COUNT, 200,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

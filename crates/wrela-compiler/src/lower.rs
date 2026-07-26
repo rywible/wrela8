@@ -315,6 +315,10 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     // M10 C: abort print bodies (Reloc::AbortFixed / AbortVal targets).
     "__wrela_abort",
     "__wrela_abort_val",
+    // M11 E: `__wrela_deadline_poll` / `__wrela_deadline_scan` are NOT
+    // always force-rooted — reinject_runtime_with_rtconfig inserts them
+    // only when a group arena exists (avoids blowing code-size budgets
+    // on every runtime-bearing image).
 ];
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
@@ -1017,6 +1021,50 @@ fn placed_array_field_index(
     Ok(Some((
         (**static_base).clone(),
         field.offset,
+        elem_stride,
+        len,
+    )))
+}
+
+/// `STATIC.struct_array[i].field` — scalar through a placed array of
+/// `@layout(runtime)` structs (plans/M11.md item E / decision 786). Reuses
+/// `PlacedIndexGet`/`Set` with `field_offset + subfield_offset` so the
+/// address is `base + array_off + i*stride + field_off`.
+fn placed_struct_array_scalar_field(
+    elem_place: &TypedExpr,
+    field_name: &str,
+    prog: &TypedProgram,
+) -> Result<
+    Option<(
+        TypedExpr, /* static */
+        TypedExpr, /* index */
+        u64,
+        u64,
+        usize,
+    )>,
+    LowerError,
+> {
+    let TypedExprKind::Index(array_place, idx_expr) = &elem_place.kind else {
+        return Ok(None);
+    };
+    let Some((static_expr, array_off, elem_stride, len)) =
+        placed_array_field_index(array_place, prog)?
+    else {
+        return Ok(None);
+    };
+    let elem_layout = match bodies::unwrap_own(elem_place.ty.clone()) {
+        Type::Named(n, _) => n,
+        other => {
+            return Err(LowerError::internal(format!(
+                "placed struct-array element has non-named type {other:?}"
+            )));
+        }
+    };
+    let sub = runtime_layout_field_offset(&elem_layout, field_name, prog)?;
+    Ok(Some((
+        static_expr,
+        (**idx_expr).clone(),
+        array_off + sub,
         elem_stride,
         len,
     )))
@@ -2163,6 +2211,23 @@ fn lower_place_write(
                 });
                 return Ok(());
             }
+            // plans/M11.md item E / decision 786: `GROUPS.slots[i].f = v`.
+            if let Some((static_expr, idx_expr, field_offset, elem_stride, len)) =
+                placed_struct_array_scalar_field(base, fname, b.prog())?
+            {
+                let base_temp = lower_expr(&static_expr, b, env)?;
+                let idx_temp = lower_expr(&idx_expr, b, env)?;
+                b.emit(Inst::PlacedIndexSet {
+                    base: base_temp,
+                    field_offset,
+                    index: idx_temp,
+                    value,
+                    len,
+                    elem_stride,
+                    ty: target.ty.clone(),
+                });
+                return Ok(());
+            }
             // plans/M7.md item G, decision 17: assigning an `InterruptCell`
             // field of `self` must STLR the live driver-state word. Only
             // bare `self.<cell>` has a known live offset; nested chains
@@ -2809,6 +2874,24 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     dst,
                     base: base_temp,
                     offset,
+                    ty: expr.ty.clone(),
+                });
+                return Ok(dst);
+            }
+            // plans/M11.md item E / decision 786: `GROUPS.slots[i].f`.
+            if let Some((static_expr, idx_expr, field_offset, elem_stride, len)) =
+                placed_struct_array_scalar_field(base, name, b.prog())?
+            {
+                let base_temp = lower_expr(&static_expr, b, env)?;
+                let idx_temp = lower_expr(&idx_expr, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::PlacedIndexGet {
+                    dst,
+                    base: base_temp,
+                    field_offset,
+                    index: idx_temp,
+                    len,
+                    elem_stride,
                     ty: expr.ty.clone(),
                 });
                 return Ok(dst);
@@ -4766,15 +4849,23 @@ pub fn t():
             Err(_) => panic!("runtime.wr must load"),
         };
         let root_key = module.path.clone();
+        let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let gen_module = crate::rtconfig::parse_generated(&crate::rtconfig::stub_text())
+            .expect("stub must parse");
         let mut modules = BTreeMap::new();
         modules.insert(root_key.clone(), module);
         modules.insert(runtime_key.clone(), runtime_loaded.module);
+        modules.insert(gen_key.clone(), gen_module);
         let mut paths = BTreeMap::new();
         paths.insert(root_key.clone(), "<test>".to_string());
         paths.insert(
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
         );
+        paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
         let programs = sema::check_program_typed(&modules, &paths).expect("check");
         let by_dot: BTreeMap<String, TypedProgram> = programs
             .into_iter()

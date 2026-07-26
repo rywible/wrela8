@@ -169,6 +169,7 @@ pub(crate) use harness::emitted_a64_census_live_counts;
 use harness::{
     append_rodata, build_entry_stub, inject_boot_init_fn, inject_rt_child_poll_fns,
     inject_rt_cross_core_fns, inject_rt_run_one_fns, inject_rt_select_and_run_fns, push_halt,
+    reinject_runtime_with_rtconfig,
 };
 
 #[cfg(test)]
@@ -407,11 +408,12 @@ pub struct CheckpointBlock {
     pub words: Vec<u32>,
     /// `__wrela_checkpoint_service`'s own word offset within `words`.
     pub checkpoint_service_word: usize,
-    /// `__wrela_deadline_poll`'s own word offset, present only for a build
-    /// that actually has a group arena.
+    /// Always `None` after M11 item E — poll lives in `code`.
     pub deadline_poll_word: Option<usize>,
-    /// `Reloc::Call` sites for ISR / `@task` bodies (word offsets relative
-    /// to the block start when built with `Asm::new(0)`).
+    /// Entry driver should `bl_call_key("__wrela_deadline_poll")`.
+    pub has_deadline_poll: bool,
+    /// `Reloc::Call` sites for ISR / `@task` / deadline-scan bodies (word
+    /// offsets relative to the block start when built with `Asm::new(0)`).
     pub relocs: Vec<Reloc>,
 }
 
@@ -2434,10 +2436,12 @@ pub fn layout_program(
         intern_fallible_init_abort_messages(w, &mut rodata_entries, &mut rodata_cursor);
     }
 
-    // M10 E3/E4/F/F2/H: specialized runtime bodies into code.
+    // M10 E3/E4/F/F2/H + M11 E: specialized runtime bodies into code;
+    // reinject deadline helpers against live RT/GROUPS addresses first.
     let mut program_owned;
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
+        reinject_runtime_with_rtconfig(&mut program_owned, &w.tables)?;
         inject_rt_select_and_run_fns(&mut program_owned, w);
         inject_rt_child_poll_fns(&mut program_owned, w);
         inject_rt_run_one_fns(&mut program_owned, w);
@@ -3475,8 +3479,14 @@ fn collect_placed_statics(
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<Vec<PlacedStatic>, LayoutError> {
     let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
     for prog in programs.values() {
         for (name, s) in &prog.statics {
+            // Imported `@placed` statics are spliced into every importer's
+            // `statics` map (sema); emit each name once.
+            if !seen.insert(name.clone()) {
+                continue;
+            }
             let crate::sema::types::Type::Named(ty_name, _) = &s.ty else {
                 return Err(LayoutError::new(format!(
                     "internal error: placed static `{name}` has non-named type"
@@ -6487,15 +6497,23 @@ pub fn t():
             Err(_) => panic!("runtime.wr must load"),
         };
         let root_key = module.path.clone();
+        let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let gen_module = crate::rtconfig::parse_generated(&crate::rtconfig::stub_text())
+            .expect("stub must parse");
         let mut modules_vec = BTreeMap::new();
         modules_vec.insert(root_key.clone(), module.clone());
         modules_vec.insert(runtime_key.clone(), runtime_loaded.module.clone());
+        modules_vec.insert(gen_key.clone(), gen_module);
         let mut paths = BTreeMap::new();
         paths.insert(root_key.clone(), "<test>".to_string());
         paths.insert(
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
         );
+        paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
         let programs_vec = crate::sema::check_program_typed(&modules_vec, &paths).expect("check");
         let programs: BTreeMap<String, crate::sema::typed::TypedProgram> = programs_vec
             .into_iter()

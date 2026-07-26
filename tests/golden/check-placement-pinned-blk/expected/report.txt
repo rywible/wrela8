@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_placement_pinned_blk.wr sha256=826d504c582a65b41bc1749ef2f3c194e3af21a5b236a7a5391aa5a5ce6b57d7
-  Input path=<generated> sha256=344aeb44910c1e24ac5eb4301d5b645fa9c26722e17a1614c4f23ae2f9f2afa1
+  Input path=<generated> sha256=f62623ead1e3c45d95b8af8bb37c5f2153b2e9725d2a1d5ab13f6d8ed68c3055
   Name value=placement-pinned-blk
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -21,14 +21,20 @@ ImageReport v0
     Child value=actor#0
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
   Placement id=actor#0 type=Probe core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
-    Padding offset=0x0 size=72
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=480
+    Padding offset=0x0 size=40
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Padding offset=0x30 size=24
     Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
     Padding offset=0x68 size=416
     Field name=abort_latch type=u64 offset=0x208 size=8
+  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
+    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=PendingPage kind=runtime endian=little size=24 padding=0
+    Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -48,9 +54,13 @@ ImageReport v0
   Section name=rtdata base=0x40510000 size=192
   Section name=devregs base=0x405100c0 size=8
   Entry base=0x40500000
+  PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=GROUPS type=GroupArena addr=0x40510010 size=96
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
+  PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Probe mailbox=4 slot=16 frame=64 state=8
   Driver name=BlkDriver state=8

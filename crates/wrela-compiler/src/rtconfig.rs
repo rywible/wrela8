@@ -1,13 +1,13 @@
 //! Image runtime config generator (plans/M11.md item D, decisions 700–702 /
-//! 709 / 760–769).
+//! 709 / 760–769; item E, decisions 780–786).
 //!
 //! After `@image` evaluation + placement, the compiler pretty-prints a
 //! hidden facts-only module (`core.__image_runtime`) as source text and
 //! feeds it through the ordinary front end. No AST synthesis, no loops or
-//! decisions in the generated text — consts, one `@layout(runtime)` type,
-//! and one `@placed` static at `RTDATA_BASE`.
+//! decisions in the generated text — consts, `@layout(runtime)` types,
+//! and `@placed` statics at fixed addresses.
 
-use crate::layout::RuntimeTables;
+use crate::layout::{RuntimeTables, place_runtime_tables};
 use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 use wrela_machine::layout::RTDATA_BASE;
@@ -25,12 +25,50 @@ pub const GENERATED_INPUT_PATH: &str = "<generated>";
 /// Dump stage name (decision 701).
 pub const DUMP_STAGE: &str = "rtconfig";
 
+/// Batch-1 stub text so `runtime.wr` can import counts / `RT` / `GROUPS`
+/// before a real image is evaluated (plans/M11.md item E / decision 780).
+/// Addresses are placeholders; live images replace this via [`generate`].
+pub fn stub_text() -> String {
+    let mut tables = RuntimeTables {
+        n_turns: 0,
+        turn_stride: 0,
+        ready_queue_capacity: 1,
+        group_arena_capacity: 0,
+        total_bytes: 128,
+        cores: 1,
+        ..RuntimeTables::default()
+    };
+    tables.stripe_for_cores(1);
+    generate(&tables)
+}
+
 /// Pretty-print the facts-only config module for `tables`.
 ///
 /// `tables.cores` must already reflect `PlacementTable.cores` (call
 /// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
 /// <tables.cores>` with that exact spelling (decision 709 / 761).
+///
+/// Item E (decision 781): structured `TurnArea` / `GroupSlot` overlays —
+/// `RT.turns` at `RTDATA_BASE`, `GROUPS.slots` at the placed group-arena
+/// address. `GROUP_SLOTS = max(GROUP_ARENA_CAPACITY, 1)` so the array
+/// length stays legal when capacity is 0 (decision 581); algorithms loop
+/// on `GROUP_ARENA_CAPACITY`.
 pub fn generate(tables: &RuntimeTables) -> String {
+    let placement = place_runtime_tables(RTDATA_BASE, tables);
+    let n_turns_len = (tables.n_turns as usize).max(1);
+    // Overlay stride is at least 0x48 so `ambient_group` at TURN_RECORD_SIZE
+    // (0x40) always fits for batch-2 typecheck of deadline helpers. Live
+    // reinject still requires `tables.turn_stride >= 0x48` so indexing
+    // matches rtdata packing (decision 781 / 785).
+    let turn_stride = if tables.turn_stride == 0 {
+        128
+    } else {
+        (tables.turn_stride as usize).max(0x48)
+    };
+    let group_cap = tables.group_arena_capacity as usize;
+    let group_slots = group_cap.max(1);
+    let group_addr = placement.group_arena;
+
     let mut out = String::new();
     out.push_str("module __image_runtime\n");
     out.push_str("\n");
@@ -38,6 +76,7 @@ pub fn generate(tables: &RuntimeTables) -> String {
     out.push_str("\n");
     push_const(&mut out, "N_CORES", tables.cores);
     push_const(&mut out, "N_TURNS", tables.n_turns as usize);
+    push_const(&mut out, "N_TURNS_LEN", n_turns_len);
     push_const(&mut out, "N_ACTORS", tables.actors.len());
     push_const(&mut out, "N_DRIVERS", tables.drivers.len());
     push_const(
@@ -45,23 +84,55 @@ pub fn generate(tables: &RuntimeTables) -> String {
         "READY_QUEUE_CAPACITY",
         tables.ready_queue_capacity as usize,
     );
-    push_const(
-        &mut out,
-        "GROUP_ARENA_CAPACITY",
-        tables.group_arena_capacity as usize,
-    );
-    push_const(&mut out, "TURN_STRIDE", tables.turn_stride as usize);
+    push_const(&mut out, "GROUP_ARENA_CAPACITY", group_cap);
+    push_const(&mut out, "GROUP_SLOTS", group_slots);
+    push_const(&mut out, "TURN_STRIDE", turn_stride);
     push_const(&mut out, "RTDATA_BYTES", tables.total_bytes as usize);
     out.push('\n');
-    // Opaque overlay sized to the live `rtdata` reservation. Structured
-    // fields (turns / mailboxes / match ladders) land as E–J migrate
-    // emitters; item D pins the counts and the placed base (decision 762).
+
+    // Turn header the deadline scan reads. Size == TURN_STRIDE so
+    // `RT.turns[i]` indexes the live turn array when reinjected
+    // (decision 781). Fields in ascending offset order (03 §2).
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct TurnArea:\n");
+    out.push_str("    busy: u64\n");
+    out.push_str("    suspended: u64\n");
+    out.push_str("    resume_ready: u64\n");
+    out.push_str("    @offset(0x40) ambient_group: u64\n");
+    if turn_stride > 0x48 {
+        out.push_str(&format!("    @offset({:#x}) _tail: u8\n", turn_stride - 1));
+    }
+    out.push('\n');
+
+    // Group arena slot (codegen::GROUP_SLOT_SIZE == 96). `owner_turn` is a
+    // u32 at +56 (TurnId); children occupy +64..+96.
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct GroupSlot:\n");
+    out.push_str("    in_use: u64\n");
+    out.push_str("    capacity: u64\n");
+    out.push_str("    active_children: u64\n");
+    out.push_str("    deadline_ns: u64\n");
+    out.push_str("    cancelled: u64\n");
+    out.push_str("    parent: u64\n");
+    out.push_str("    join_waiter: u64\n");
+    out.push_str("    @offset(0x38) owner_turn: u32\n");
+    out.push_str("    @offset(0x5f) _tail: u8\n");
+    out.push('\n');
+
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct RuntimeTables:\n");
-    out.push_str("    bytes: [u8; RTDATA_BYTES]\n");
+    out.push_str("    turns: [TurnArea; N_TURNS_LEN]\n");
     out.push('\n');
     out.push_str(&format!("@placed({RTDATA_BASE:#x})\n"));
-    out.push_str("static RT: RuntimeTables\n");
+    out.push_str("pub static RT: RuntimeTables\n");
+    out.push('\n');
+
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct GroupArena:\n");
+    out.push_str("    slots: [GroupSlot; GROUP_SLOTS]\n");
+    out.push('\n');
+    out.push_str(&format!("@placed({group_addr:#x})\n"));
+    out.push_str("pub static GROUPS: GroupArena\n");
     out
 }
 
@@ -109,7 +180,6 @@ pub fn insert_generated_input_line(report: &mut String, digest: &str) {
         report.insert_str(at, &line);
         return;
     }
-    // No inputs (degenerate): after the last Quota line.
     let mut after_quota: Option<usize> = None;
     for (idx, _) in report.match_indices("  Quota ") {
         let end = report[idx..]
@@ -125,11 +195,8 @@ pub fn insert_generated_input_line(report: &mut String, digest: &str) {
     }
 }
 
-/// Batch-2 front end (decision 704 / 723 / 765): parse generated text +
-/// unstripped `runtime.wr`, run the ordinary `check_program_typed`. Does
-/// not merge into the caller's program map — item D keeps the generated
-/// module out of layout/`PlacedStatic` until E–J need `RT` (narrow seam).
-/// Fails closed if the pair does not typecheck.
+/// Batch-2 front end (decision 704 / 723 / 765 / 780): parse generated text +
+/// unstripped `runtime.wr`, run the ordinary `check_program_typed`.
 pub fn typecheck_batch2(generated_text: &str) -> Result<(), String> {
     if contains_forbidden_construct(generated_text) {
         return Err(
@@ -185,9 +252,11 @@ mod tests {
     use crate::layout::RuntimeTables;
 
     fn sample_tables(cores: usize) -> RuntimeTables {
+        // Consistent empty turn set so `place_runtime_tables` (used by
+        // `generate` for GROUPS @placed) does not trip its n_turns assert.
         let mut t = RuntimeTables {
-            n_turns: 3,
-            turn_stride: 128,
+            n_turns: 0,
+            turn_stride: 0,
             ready_queue_capacity: 4,
             group_arena_capacity: 0,
             total_bytes: 1024,
@@ -220,6 +289,14 @@ mod tests {
             "expected @placed at RTDATA_BASE; got:\n{text}"
         );
         assert!(!text.contains("@placed(RTDATA_BASE)"));
+        assert!(
+            text.contains("pub static RT: RuntimeTables\n"),
+            "expected RT static; got:\n{text}"
+        );
+        assert!(
+            text.contains("pub static GROUPS: GroupArena\n"),
+            "expected GROUPS static; got:\n{text}"
+        );
     }
 
     #[test]
@@ -250,5 +327,141 @@ mod tests {
         let text = generate(&sample_tables(2));
         let module = parse_generated(&text).expect("parse");
         assert_eq!(module.path, vec!["__image_runtime".to_string()]);
+    }
+
+    #[test]
+    fn structured_fields_present() {
+        let mut t = sample_tables(1);
+        t.group_arena_capacity = 1;
+        t.total_bytes = 2048;
+        let text = generate(&t);
+        assert!(text.contains("struct TurnArea:\n"));
+        assert!(text.contains("struct GroupSlot:\n"));
+        assert!(text.contains("pub const GROUP_SLOTS: usize = 1\n"));
+        assert!(text.contains("turns: [TurnArea; N_TURNS_LEN]\n"));
+        assert!(text.contains("slots: [GroupSlot; GROUP_SLOTS]\n"));
+    }
+}
+
+#[cfg(test)]
+mod typecheck_live {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn imported_consts_visible_to_eval_and_lower() {
+        let text = stub_text();
+        let gen_mod = parse_generated(&text).unwrap();
+        let (runtime_key, runtime_loaded) = match crate::loader::load_runtime_module() {
+            Ok(v) => v,
+            Err(crate::loader::LoadError::Lex(e)) => panic!("runtime lex: {}", e.message),
+            Err(crate::loader::LoadError::Parse(e)) => panic!("runtime parse: {}", e.message),
+            Err(crate::loader::LoadError::Build(e)) => panic!("runtime build: {}", e.message),
+        };
+        let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let mut modules = BTreeMap::new();
+        modules.insert(gen_key.clone(), gen_mod);
+        modules.insert(runtime_key.clone(), runtime_loaded.module);
+        let mut paths = BTreeMap::new();
+        paths.insert(gen_key.clone(), GENERATED_INPUT_PATH.to_string());
+        paths.insert(runtime_key.clone(), "runtime.wr".into());
+        let programs = crate::sema::check_program_typed(&modules, &paths).expect("typed");
+        let runtime = programs
+            .iter()
+            .find(|(k, _)| k.as_slice() == ["core", "runtime"])
+            .map(|(_, p)| p)
+            .expect("runtime program");
+        assert!(
+            runtime.imported.consts.contains_key("GROUP_ARENA_CAPACITY"),
+            "missing imported const; keys={:?}",
+            runtime.imported.consts.keys().collect::<Vec<_>>()
+        );
+        crate::eval::interp::eval_const(runtime, "GROUP_ARENA_CAPACITY")
+            .expect("eval imported const");
+        // Deadline helpers are reinjected only when a group arena exists
+        // (not always force-rooted); seed them for this lower coverage.
+        let mut only = crate::lower::guest_reachable_keys_closure(
+            &{
+                let map: BTreeMap<String, _> = programs
+                    .iter()
+                    .map(|(k, p)| (k.join("."), p.clone()))
+                    .collect();
+                map
+            },
+            &crate::lower::LowerOpts::default(),
+        );
+        only.insert("__wrela_deadline_poll".into());
+        only.insert("__wrela_deadline_scan".into());
+        assert!(only.contains("__wrela_deadline_poll"), "reachable={only:?}");
+        let opts = crate::lower::LowerOpts {
+            emit_comptime_tests: false,
+            only: Some(only),
+        };
+        crate::lower::lower_program_with(runtime, &opts).expect("lower runtime");
+    }
+
+    #[test]
+    fn turn_area_sized_to_stride() {
+        let mut t = RuntimeTables {
+            n_turns: 3,
+            turn_stride: 1024,
+            ready_queue_capacity: 2,
+            group_arena_capacity: 1,
+            total_bytes: 3352,
+            cores: 1,
+            ..RuntimeTables::default()
+        };
+        t.actors.push(crate::layout::ActorRuntimeLayout {
+            name: "Counter".into(),
+            state_size: 8,
+            mailbox_capacity: 4,
+            slot_size: 32,
+            frame_size: 128,
+        });
+        t.free_turns = vec![("worker".into(), 128), ("test".into(), 128)];
+        t.stripe_for_cores(1);
+        let text = generate(&t);
+        assert!(
+            text.contains("@offset(0x3ff) _tail: u8"),
+            "generated text missing 0x3ff tail: {text}"
+        );
+        let gen_mod = parse_generated(&text).unwrap();
+        let (runtime_key, runtime_loaded) = match crate::loader::load_runtime_module() {
+            Ok(v) => v,
+            Err(crate::loader::LoadError::Lex(e)) => panic!("{}", e.message),
+            Err(crate::loader::LoadError::Parse(e)) => panic!("{}", e.message),
+            Err(crate::loader::LoadError::Build(e)) => panic!("{}", e.message),
+        };
+        let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let mut modules = BTreeMap::new();
+        modules.insert(gen_key.clone(), gen_mod);
+        modules.insert(runtime_key.clone(), runtime_loaded.module);
+        let mut paths = BTreeMap::new();
+        paths.insert(gen_key, GENERATED_INPUT_PATH.to_string());
+        paths.insert(runtime_key, "runtime.wr".into());
+        let programs = crate::sema::check_program_typed(&modules, &paths).expect("typed");
+        let image_rt = programs
+            .iter()
+            .find(|(k, _)| k.as_slice() == ["core", "__image_runtime"])
+            .map(|(_, p)| p)
+            .expect("gen");
+        let turn = image_rt
+            .layouts
+            .iter()
+            .find(|l| l.name == "TurnArea")
+            .expect("TurnArea layout");
+        assert_eq!(turn.size, Some(1024), "TurnArea layout size");
+        let rt = image_rt
+            .layouts
+            .iter()
+            .find(|l| l.name == "RuntimeTables")
+            .expect("RuntimeTables");
+        assert_eq!(rt.size, Some(3072), "RuntimeTables = 3 * 1024");
     }
 }

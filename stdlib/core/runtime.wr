@@ -3,11 +3,18 @@
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
 
-# plans/M11.md item D / decision 765: import the generated facts module.
-# Batch-1 loads strip this import (module text does not exist on disk);
-# batch-2 re-sema with the generator's output. Unused until E–J migrate
-# algorithms onto N_CORES / RT — keep the seam narrow.
-from core.__image_runtime import N_CORES
+# plans/M11.md item D / E: import the generated facts module.
+# Batch-1 injects a stub `core.__image_runtime` (decision 780); live images
+# replace it with `rtconfig::generate` before force-rooting deadline keys.
+from core.__image_runtime import (
+    N_CORES,
+    N_TURNS,
+    N_TURNS_LEN,
+    GROUP_ARENA_CAPACITY,
+    GROUP_SLOTS,
+    RT,
+    GROUPS,
+)
 
 # M10 B2: machine pages the console formatter speaks to (decision 593).
 # Addresses match wrela-machine::layout / console — bytes live in the VMM's
@@ -24,6 +31,7 @@ const DATA_SIZE: usize = 16384
 
 @layout(runtime, endian=little)
 struct MachineInfoPage:
+    @offset(0x28) next_deadline: u64
     @offset(0x48) test_failed: u64
     @offset(0x50) ring_data_bump: u64
     @offset(0x58) ring_desc_bump: u64
@@ -32,6 +40,26 @@ struct MachineInfoPage:
 
 @placed(0x40000000)
 static MACHINE_INFO: MachineInfoPage
+
+# Monotonic clock MMIO (wrela_machine::mmio::CLOCK_MMIO_ADDR) — same trapping
+# load `now()` issues; deadline poll/scan read it as a placed u64.
+@layout(runtime, endian=little)
+struct ClockMmio:
+    now_ns: u64
+
+@placed(0x08000000)
+static CLOCK: ClockMmio
+
+# Per-core pending-vector page (pending::BASE). Array length is the machine
+# VCPU count (3); algorithms index with N_CORES (decision 709).
+const PENDING_WORD_COUNT: usize = 3
+
+@layout(runtime, endian=little)
+struct PendingPage:
+    words: [u64; PENDING_WORD_COUNT]
+
+@placed(0x40007000)
+static PENDING: PendingPage
 
 # Descriptor table as 512 u64 words (256 × 16-byte entries). Word 2i is
 # desc.addr; word 2i+1 packs virtio len:u32 (low) + flags/next:u32 (high).
@@ -284,3 +312,66 @@ pub fn __wrela_abort_val(prefix: Bytes, value: u64, value_signed: u64, suffix: B
     _ = append_newline_literal()
     _ = __wrela_line_commit()
     finish_abort()
+
+# ---------------------------------------------------------------------------
+# M11 item E: deadline poll + scan (decisions 782–783). Generic @budget
+# loops over RT.turns / GROUPS.slots; force-rooted into `code`. The old
+# ImageStatic emitters (`emit_deadline_poll` / `emit_deadline_scan_and_
+# delivery`) are deleted — checkpoint vector0 and the entry driver BL here.
+# ---------------------------------------------------------------------------
+
+# Minimum live deadline → MACHINE_INFO.next_deadline; if already due, raise
+# pending bits on every live core (N_CORES — decision 709).
+pub fn __wrela_deadline_poll():
+    min_dl: u64 = 0
+    i: usize = 0
+    @budget(bound=256)
+    while i < GROUP_ARENA_CAPACITY:
+        if GROUPS.slots[i].in_use != 0:
+            if GROUPS.slots[i].cancelled == 0:
+                dl = GROUPS.slots[i].deadline_ns
+                if dl != 0:
+                    if min_dl == 0:
+                        min_dl = dl
+                    else:
+                        if dl < min_dl:
+                            min_dl = dl
+        i = i +% 1
+    MACHINE_INFO.next_deadline = min_dl
+    if min_dl != 0:
+        if CLOCK.now_ns >= min_dl:
+            c: usize = 0
+            @budget(bound=64)
+            while c < N_CORES:
+                PENDING.words[c] = 1
+                c = c +% 1
+    return
+
+# Vector-0 body: mark expired groups cancelled, then force-resume parked
+# non-owner turns whose ambient group was just cancelled.
+pub fn __wrela_deadline_scan():
+    now = CLOCK.now_ns
+    i: usize = 0
+    @budget(bound=256)
+    while i < GROUP_ARENA_CAPACITY:
+        if GROUPS.slots[i].in_use != 0:
+            if GROUPS.slots[i].cancelled == 0:
+                dl = GROUPS.slots[i].deadline_ns
+                if dl != 0:
+                    if now >= dl:
+                        GROUPS.slots[i].cancelled = 1
+        i = i +% 1
+    t: usize = 0
+    @budget(bound=256)
+    while t < N_TURNS:
+        if RT.turns[t].busy != 0:
+            if RT.turns[t].suspended != 0:
+                ag = RT.turns[t].ambient_group
+                if ag != 0:
+                    gi: usize = (ag -% 1).to[usize]()
+                    if GROUPS.slots[gi].cancelled != 0:
+                        tid: u32 = (t +% 1).to[u32]()
+                        if GROUPS.slots[gi].owner_turn != tid:
+                            RT.turns[t].resume_ready = 1
+        t = t +% 1
+    return

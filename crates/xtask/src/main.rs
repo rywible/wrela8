@@ -5697,6 +5697,16 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                     Ok(()) => {
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in &file_paths {
+                            // plans/M11.md item E / decision 780: stub /
+                            // live `core.__image_runtime` is not on disk —
+                            // digest is inserted after layout (mirrors
+                            // `bin/wrela.rs::build_report`).
+                            if path.to_string_lossy()
+                                == wrela_compiler::rtconfig::GENERATED_INPUT_PATH
+                                || addr.as_str() == wrela_compiler::rtconfig::MODULE_ADDR
+                            {
+                                continue;
+                            }
                             let bytes = std::fs::read(path)
                                 .map_err(|e| format!("read {}: {e}", path.display()))?;
                             inputs.push(report::BuildInput {
@@ -5763,6 +5773,23 @@ fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), 
                                     &modules_by_addr,
                                 ) {
                                     Ok(Some(image_layout)) => {
+                                        if let Some(ref tables) = image_layout.runtime {
+                                            let rt_text =
+                                                wrela_compiler::rtconfig::generate_and_typecheck(
+                                                    tables,
+                                                )
+                                                .map_err(|e| {
+                                                    if e.ends_with('\n') {
+                                                        e
+                                                    } else {
+                                                        format!("{e}\n")
+                                                    }
+                                                })?;
+                                            let digest = report::sha256_hex(rt_text.as_bytes());
+                                            wrela_compiler::rtconfig::insert_generated_input_line(
+                                                &mut text, &digest,
+                                            );
+                                        }
                                         layout::render_layout_section(&mut text, &image_layout);
                                         // plans/M9.md item H: mirror
                                         // `bin/wrela.rs::build_report`.

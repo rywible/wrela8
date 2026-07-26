@@ -238,22 +238,10 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         file: "codegen.rs",
         words: 26,
         category: Category::ImageStatic,
-        note: "decision 670; contains 5 floor-cat2 save/restore words",
+        note: "decision 670; contains 5 floor-cat2 save/restore words; E: BL deadline_scan",
     },
-    EmitterEntry {
-        name: "emit_deadline_scan_and_delivery",
-        file: "codegen.rs",
-        words: 57,
-        category: Category::ImageStatic,
-        note: "decision 670; REF arena_capacity=1, one turn area",
-    },
-    EmitterEntry {
-        name: "emit_deadline_poll",
-        file: "codegen.rs",
-        words: 38,
-        category: Category::ImageStatic,
-        note: "decision 670; REF arena_capacity=1",
-    },
+    // emit_deadline_scan_and_delivery / emit_deadline_poll deleted in M11 E
+    // (force-rooted __wrela_deadline_scan / __wrela_deadline_poll); −57/−38.
     // REF: one actor, state_size=8, no init calls (memset loop).
     EmitterEntry {
         name: "emit_boot_init",
@@ -318,7 +306,7 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 714; // was 593; G +26+57+38
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 619; // was 714; M11 E −57/−38 deadline emitters
 
 pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 0; // was 7; M (L-11) deleted dead harness push_turn_addr_from_id
 
@@ -328,7 +316,7 @@ pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residu
 /// `build_entry_stub` embeds `push_halt`; the JIT-only `build_rt_*`
 /// materializers are NON_INVENTORY, not rows). Useful as a ratchet total;
 /// not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 872; // was 879; M (L-11) −7
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 777; // was 872; M11 E −95
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -340,7 +328,7 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 872; // was 879; M (L-11) −7
 /// Item M (L-11): dead harness `push_turn_addr_from_id` deleted — 3 body
 /// sites + 1 needle in its own doc comment (68→64).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
-    ("codegen.rs", 811),
+    ("codegen.rs", 787), // was 811; E −24 emitters, +6 vector0 LR/x28 save around BL scan
     ("layout.rs", 8),
     ("layout/harness.rs", 64),
 ];
@@ -492,7 +480,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 883,
+            ENCODE_ENC_SITE_COUNT, 859,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -637,18 +625,13 @@ mod tests {
         "layout/harness.rs::build_checkpoint_and_vector_stub",
         // M10 G: thin materialize of `emit_checkpoint_and_vector_stub`.
         "layout/harness.rs::build_checkpoint_and_vector_stub_ex",
-        "codegen.rs::emit_deadline_scan_and_delivery_into",
-        "codegen.rs::emit_deadline_poll_into",
         "layout/harness.rs::install_abort_tail_floor",
     ];
 
     /// Census rows that are real emitters (measured word count) but whose
     /// body does not itself contain `encode::enc_` — thin wrappers that
     /// forward to a counted sibling. Still locked by the live-count test.
-    const WRAPPER_EMITTERS: &[&str] = &[
-        // Item G: public entry forwards to `*_into` (which holds the enc_).
-        "codegen.rs::emit_deadline_scan_and_delivery",
-    ];
+    const WRAPPER_EMITTERS: &[&str] = &[];
 
     #[test]
     fn emitted_a64_census_matches_live_measurements() {

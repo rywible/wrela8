@@ -9,7 +9,7 @@ ImageReport v0
   Input path=core/image_report.wr sha256=7abde3292fbefa4cd47b167ad19ed31ab9e08a7267f0dc3d40b1414b80b416bf
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
   Input path=examples/check_layout_assert_budget_helper.wr sha256=4ed2a9036c2e08ceb0521ba667de8d0d312ea3a25d47b6d1840e398ec748c9bc
-  Input path=<generated> sha256=5164af2d01843cfa351a74f94f5ef9d2bf4ed241b45f8f31e1993e364cbabfc3
+  Input path=<generated> sha256=cc4ef5c45db8548367dcb11d711422c67a5ee3125f3b2e474cf08138bb6a8226
   Name value=layout-assert-budget-helper
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -17,14 +17,20 @@ ImageReport v0
   Supervise index=0 strategy=Restart.OneForOne intensity=(1, 1000000000)
     Child value=actor#0
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=160 bytes_state=8 bytes_mailbox=152 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
-    Padding offset=0x0 size=72
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=480
+    Padding offset=0x0 size=40
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Padding offset=0x30 size=24
     Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
     Padding offset=0x68 size=416
     Field name=abort_latch type=u64 offset=0x208 size=8
+  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
+    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=PendingPage kind=runtime endian=little size=24 padding=0
+    Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -43,9 +49,13 @@ ImageReport v0
   Section name=checkpoint base=0x40502950 size=104
   Section name=rtdata base=0x40510000 size=248
   Entry base=0x40500000
+  PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=GROUPS type=GroupArena addr=0x40510010 size=96
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
+  PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Store mailbox=8 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
