@@ -501,6 +501,28 @@ fn round_up(n: u64, align: u64) -> u64 {
     n.div_ceil(align) * align
 }
 
+/// Steer the placement cursor to `RTDATA_BASE` after the packed
+/// entry/code/rodata/abort/checkpoint (and optional rtcode) run.
+/// Fails closed if that run would overrun the fixed base, or if the
+/// tables alone exceed `RTDATA_SIZE_MAX` (mailbox blowup ceiling).
+/// plans/M11.md item C / decisions 750–753.
+fn steer_rtdata_base(cursor: u64, tables_bytes: u64) -> Result<u64, LayoutError> {
+    if tables_bytes > machine_layout::RTDATA_SIZE_MAX {
+        return Err(LayoutError::new(format!(
+            "rtdata needs {tables_bytes} bytes, which exceeds RTDATA_SIZE_MAX ({})",
+            machine_layout::RTDATA_SIZE_MAX
+        )));
+    }
+    let packed_end = round_up(cursor, 8);
+    if packed_end > machine_layout::RTDATA_BASE {
+        return Err(LayoutError::new(format!(
+            "sections before rtdata end at {packed_end:#x}, past RTDATA_BASE ({:#x})",
+            machine_layout::RTDATA_BASE
+        )));
+    }
+    Ok(machine_layout::RTDATA_BASE)
+}
+
 fn pad_to(blob: &mut Vec<u8>, image_base: u64, target_addr: u64) {
     let want = (target_addr - image_base) as usize;
     debug_assert!(blob.len() <= want);
@@ -1568,20 +1590,24 @@ fn verify_section_sizes(
                 a.name, a_end, b.name, b.base
             )));
         }
-        // The only gaps this module ever inserts are alignment padding —
-        // at most 7 bytes (the widest alignment used, rodata's 8-byte
-        // rule). A larger gap means the section table and the actual
-        // padding logic have drifted apart.
-        if b.base - a_end >= 8 {
+        // Gaps wider than alignment padding are refused, with one
+        // steered exception: `rtdata` sits at the fixed `RTDATA_BASE`
+        // (plans/M11.md item C). Layout advances the cursor to that
+        // address after packing entry..checkpoint; the gap is the
+        // deliberate packing window, not drift. Any other >=8-byte gap
+        // still means the section table and placement have diverged.
+        let gap = b.base - a_end;
+        let steered_rtdata = b.name == "rtdata"
+            && b.base == machine_layout::RTDATA_BASE
+            && a_end <= machine_layout::RTDATA_BASE;
+        if gap >= 8 && !steered_rtdata {
             return Err(LayoutError::new(format!(
-                "internal error: a {}-byte gap between section `{}` and `{}` exceeds every \
-                 alignment this module ever rounds to",
-                b.base - a_end,
-                a.name,
-                b.name
+                "internal error: a {gap}-byte gap between section `{}` and `{}` exceeds every                  alignment this module ever rounds to",
+                a.name, b.name
             )));
         }
     }
+
     let last = sections.last().expect("checked non-empty above");
     let want_len = last.base + last.size - image_base;
     if blob_len != want_len {
@@ -2556,13 +2582,13 @@ pub fn layout_program(
         });
     }
 
-    // --- rtdata (plans/M6.md item C, decision 3): reserved, zeroed bytes
-    // for this image's own static actor runtime tables — absent entirely
-    // when `runtime` is `None` (no actors), never a zero-size placeholder
-    // section. -------------------------------------------------------------
+    // --- rtdata (plans/M6.md item C, decision 3; M11 item C / 722):
+    // reserved, zeroed bytes for this image's own static actor runtime
+    // tables at the fixed `RTDATA_BASE` — absent entirely when `runtime`
+    // is `None` (no actors), never a zero-size placeholder section. ----
     let rtdata_base = if let Some(tables) = runtime.filter(|t| t.total_bytes > 0) {
-        cursor = round_up(cursor, 8);
-        let base = cursor;
+        let base = steer_rtdata_base(cursor, tables.total_bytes)?;
+        cursor = base;
         sections.push(Section {
             name: "rtdata",
             base,
@@ -7877,6 +7903,43 @@ fn two():
             size: 16,
         }];
         assert!(verify_section_sizes(&sections, 0x1000, 8).is_err());
+    }
+
+    #[test]
+    fn verify_section_sizes_accepts_steered_rtdata_gap() {
+        // plans/M11.md item C: the only legal >=8-byte inter-section gap is
+        // the packing window before `rtdata` at `RTDATA_BASE`.
+        let sections = vec![
+            Section {
+                name: "checkpoint",
+                base: machine_layout::IMAGE_BASE,
+                size: 0x100,
+            },
+            Section {
+                name: "rtdata",
+                base: machine_layout::RTDATA_BASE,
+                size: 32,
+            },
+        ];
+        let blob_len = machine_layout::RTDATA_BASE + 32 - machine_layout::IMAGE_BASE;
+        assert!(verify_section_sizes(&sections, machine_layout::IMAGE_BASE, blob_len).is_ok());
+    }
+
+    #[test]
+    fn verify_section_sizes_rejects_unsteered_wide_gap() {
+        let sections = vec![
+            Section {
+                name: "a",
+                base: 0x1000,
+                size: 16,
+            },
+            Section {
+                name: "b",
+                base: 0x1100,
+                size: 16,
+            },
+        ];
+        assert!(verify_section_sizes(&sections, 0x1000, 0x1100 + 16 - 0x1000).is_err());
     }
 
     #[test]
