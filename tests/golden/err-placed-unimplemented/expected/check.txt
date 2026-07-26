@@ -1,1 +1,1 @@
-error[unimplemented]: `@placed` is not implemented yet; 03-hardware.md §3.1 binds it to a module-level `static` of a `@layout(runtime)` type, and this revision of the language has no `static` declaration for it to attach to (02-language.md §13). plans/M10.md item A2 and the runtime migration land it at 14:1
+error[type]: `@placed` is legal only on a module-level `static` of a `@layout(runtime)` type (03-hardware.md §3.1); it is legal nowhere else at 8:1

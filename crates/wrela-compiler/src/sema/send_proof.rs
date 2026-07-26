@@ -669,6 +669,7 @@ impl Cx<'_> {
             | TypedExprKind::Unit
             | TypedExprKind::Local(_)
             | TypedExprKind::Const(_)
+            | TypedExprKind::Static(_)
             | TypedExprKind::PoolName(_) => {}
             TypedExprKind::FnRef(key) => self.note_call(key, true),
             TypedExprKind::Field(base, _) => self.expr(base),

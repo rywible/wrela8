@@ -270,9 +270,19 @@ pub struct DeclConst {
     pub ty: Type,
 }
 
+/// A module-level `static` (03-hardware.md §3.1, plans/M10.md item A2c).
+#[derive(Debug, Clone)]
+pub struct DeclStatic {
+    pub name: String,
+    pub ty: Type,
+    /// The `@placed(ADDR)` address — required (decision 586).
+    pub addr: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum DeclItem {
     Const(DeclConst),
+    Static(DeclStatic),
     Fn(DeclFn),
     Struct(DeclStruct),
     Enum(DeclEnum),
@@ -379,6 +389,9 @@ pub fn declare_with_imports(
         match item {
             Item::Const(c) => {
                 items.push(DeclItem::Const(declare_const(c, &shapes, &module_pools)?))
+            }
+            Item::Static(s) => {
+                items.push(DeclItem::Static(declare_static(s, &shapes, &module_pools)?))
             }
             Item::Fn(f) => items.push(DeclItem::Fn(declare_fn(
                 f,
@@ -3040,40 +3053,29 @@ fn implicit_padding_error(
     )
 }
 
-/// `@placed`, refused everywhere it appears (03-hardware.md §3.1,
-/// plans/M10.md item A, decision 561).
-///
-/// §3.1 gives `@placed(ADDR)` one legal position — a module-level `static`
-/// of a `@layout(runtime)` type — and this revision has no `static`
-/// declaration at all (`static` is not a keyword and `ast::Item` has no
-/// such variant), so *every* position an author can actually write the
-/// attribute in is one §3.1 forbids. The rejection is therefore total, and
-/// it says why rather than reading as a position error.
+/// `@placed`, accepted only on a module-level `static` (03-hardware.md §3.1,
+/// plans/M10.md item A2c). Everywhere else is a named position error —
+/// retargeting the total refusal item A shipped (`err-placed-unimplemented`).
 ///
 /// This exists because unknown attributes are otherwise **silently
 /// ignored** (`sema::bodies::test_attr_kind`'s own note: 02-language.md
 /// §13's "unknown attributes are errors" is not yet enforced anywhere).
-/// Without it, landing §3.1's wording would land a normative rule that
-/// nothing checks and an attribute the compiler drops on the floor — a
-/// fail-open, in the milestone whose subject is removing them. Narrow by
-/// construction: it names exactly one attribute and does not turn on §13's
-/// general rule, which is its own, much larger, item.
+/// Narrow by construction: it names exactly one attribute and does not
+/// turn on §13's general rule.
 ///
 /// Walks every attribute position the ast has (item, member, field,
-/// `comptime if` branch at both scopes) rather than the handful §3.1
-/// mentions — an attribute that is refused in some positions and ignored
-/// in others is the fail-open again, one level down.
+/// `comptime if` branch at both scopes). On `Item::Static` the attribute
+/// is left alone — [`declare_static`] / [`validate_placed_statics`] own
+/// its argument shape, runtime-layout requirement, and uniqueness.
 fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
-    fn refuse(attrs: &[Attr]) -> Result<(), SemaError> {
+    fn refuse_wrong_position(attrs: &[Attr]) -> Result<(), SemaError> {
         let Some(attr) = attrs.iter().find(|a| a.name == "placed") else {
             return Ok(());
         };
         Err(SemaError::at(
-            "unimplemented",
-            "`@placed` is not implemented yet; 03-hardware.md §3.1 binds it to a module-level \
-             `static` of a `@layout(runtime)` type, and this revision of the language has no \
-             `static` declaration for it to attach to (02-language.md §13). plans/M10.md item \
-             A2 and the runtime migration land it"
+            "type",
+            "`@placed` is legal only on a module-level `static` of a `@layout(runtime)` type \
+             (03-hardware.md §3.1); it is legal nowhere else"
                 .to_string(),
             attr.span,
         ))
@@ -3081,12 +3083,12 @@ fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
     fn walk_members(members: &[Member]) -> Result<(), SemaError> {
         for m in members {
             match m {
-                Member::Field(f) => refuse(&f.attrs)?,
-                Member::Fn(f) => refuse(&f.attrs)?,
-                Member::Init(i) => refuse(&i.attrs)?,
-                Member::Pool(p) => refuse(&p.attrs)?,
+                Member::Field(f) => refuse_wrong_position(&f.attrs)?,
+                Member::Fn(f) => refuse_wrong_position(&f.attrs)?,
+                Member::Init(i) => refuse_wrong_position(&i.attrs)?,
+                Member::Pool(p) => refuse_wrong_position(&p.attrs)?,
                 Member::ComptimeIf(c) => {
-                    refuse(&c.attrs)?;
+                    refuse_wrong_position(&c.attrs)?;
                     walk_members(&c.then_branch)?;
                     if let Some(e) = &c.else_branch {
                         walk_members(e)?;
@@ -3099,19 +3101,22 @@ fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
     fn walk_items(items: &[Item]) -> Result<(), SemaError> {
         for item in items {
             match item {
-                Item::Const(c) => refuse(&c.attrs)?,
-                Item::Fn(f) => refuse(&f.attrs)?,
-                Item::Pool(p) => refuse(&p.attrs)?,
+                Item::Static(_) => {
+                    // `@placed` is owned by declare_static / validate_placed_statics.
+                }
+                Item::Const(c) => refuse_wrong_position(&c.attrs)?,
+                Item::Fn(f) => refuse_wrong_position(&f.attrs)?,
+                Item::Pool(p) => refuse_wrong_position(&p.attrs)?,
                 Item::Struct(s) => {
-                    refuse(&s.attrs)?;
+                    refuse_wrong_position(&s.attrs)?;
                     walk_members(&s.members)?;
                 }
                 Item::Enum(e) => {
-                    refuse(&e.attrs)?;
+                    refuse_wrong_position(&e.attrs)?;
                     walk_members(&e.members)?;
                 }
                 Item::ComptimeIf(c) => {
-                    refuse(&c.attrs)?;
+                    refuse_wrong_position(&c.attrs)?;
                     walk_items(&c.then_branch)?;
                     if let Some(e) = &c.else_branch {
                         walk_items(e)?;
@@ -3122,6 +3127,100 @@ fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
         Ok(())
     }
     walk_items(&module.items)
+}
+
+/// After `declare` + `check_layouts`: every `static` must name a
+/// `@layout(runtime)` type, and at most one static may claim each address
+/// (03-hardware.md §3.1, plans/M10.md item A2c).
+pub fn validate_placed_statics(
+    decl_items: &[DeclItem],
+    layouts: &[LayoutType],
+) -> Result<(), SemaError> {
+    let mut by_addr: BTreeMap<u64, String> = BTreeMap::new();
+    for item in decl_items {
+        let DeclItem::Static(s) = item else {
+            continue;
+        };
+        let Type::Named(type_name, targs) = &s.ty else {
+            return Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`static {}` has type `{}`, but `@placed` requires a `@layout(runtime)` type \
+                     (03-hardware.md §3.1)",
+                    s.name,
+                    render_type(&s.ty)
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        };
+        if !targs.is_empty() {
+            return Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`static {}` has type `{}`, but `@placed` requires a non-generic \
+                     `@layout(runtime)` type (03-hardware.md §3.1)",
+                    s.name,
+                    render_type(&s.ty)
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        }
+        let Some(layout) = layouts.iter().find(|l| l.name == *type_name) else {
+            return Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`static {}` has type `{type_name}`, which is not a `@layout` type; \
+                     `@placed` requires a `@layout(runtime)` type (03-hardware.md §3.1)",
+                    s.name
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        };
+        if layout.kind != LayoutKind::Runtime {
+            return Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`static {}` has type `{type_name}` (`@layout({})`), but `@placed` requires \
+                     a `@layout(runtime)` type (03-hardware.md §3.1)",
+                    s.name,
+                    layout.kind.as_str()
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        }
+        if let Some(earlier) = by_addr.insert(s.addr, s.name.clone()) {
+            return Err(SemaError {
+                category: "type",
+                message: format!(
+                    "`static {}` and `static {earlier}` both claim `@placed({:#x})`; \
+                     03-hardware.md §3.1 allows at most one placed static per address",
+                    s.name, s.addr
+                ),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Every `@layout` type declared in `module`, laid out and checked, in
@@ -3138,7 +3237,9 @@ fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
 ///
 /// It also runs `check_placed_attrs` first: `@placed` is a §3.1
 /// layout-class attribute and this is the only whole-module pass that owns
-/// 03 §3.
+/// 03 §3. Acceptance of `@placed` on a `static` (and the runtime-layout /
+/// uniqueness rules) is [`validate_placed_statics`], which needs declare's
+/// resolved types and runs after this pass.
 ///
 /// **A `runtime` layout whose array length is a `const` name comes back
 /// deferred** (`size: None`), not rejected — plans/M10.md item A2b. Decision
@@ -3853,6 +3954,87 @@ fn declare_const(
         // resolve on its own).
         None => Err(unimplemented_at("a const's inferred type is", c.span)),
     }
+}
+
+/// `static NAME: Type` with required `@placed(ADDR)` (03-hardware.md §3.1,
+/// plans/M10.md item A2c / decision 586). Address is an integer literal,
+/// same shape as `@offset`. Runtime-layout and uniqueness checks run in
+/// [`validate_placed_statics`] once the layout table exists.
+fn declare_static(
+    s: &crate::syntax::ast::StaticItem,
+    shapes: &BTreeMap<String, usize>,
+    module_pools: &BTreeSet<String>,
+) -> Result<DeclStatic, SemaError> {
+    let ty = resolve_type(
+        &s.ty,
+        shapes,
+        module_pools,
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        false,
+    )?;
+    let addr = parse_placed_attr_on_static(s)?;
+    Ok(DeclStatic {
+        name: s.name.clone(),
+        ty,
+        addr,
+    })
+}
+
+/// Exactly one `@placed(ADDR)` on a `static`, ADDR an integer literal.
+fn parse_placed_attr_on_static(s: &crate::syntax::ast::StaticItem) -> Result<u64, SemaError> {
+    let mut found: Option<&Attr> = None;
+    for attr in &s.attrs {
+        if attr.name != "placed" {
+            continue;
+        }
+        if found.is_some() {
+            return Err(SemaError::at(
+                "type",
+                format!(
+                    "`static {}` declares `@placed` twice; 03-hardware.md §3.1 binds one address \
+                     per static (plans/M10.md item A2c)",
+                    s.name
+                ),
+                attr.span,
+            ));
+        }
+        found = Some(attr);
+    }
+    let Some(attr) = found else {
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "`static {}` requires `@placed(ADDR)`: 03-hardware.md §3.1 binds a module-level \
+                 static of a `@layout(runtime)` type to a fixed address, and this revision has no \
+                 unplaced static storage (plans/M10.md item A2c, decision 586)",
+                s.name
+            ),
+            s.span,
+        ));
+    };
+    let bad = || {
+        SemaError::at(
+            "type",
+            format!(
+                "`@placed` on `static {}` takes exactly one integer literal (e.g. \
+                 `@placed(0x40000000)`)",
+                s.name
+            ),
+            attr.span,
+        )
+    };
+    let [arg] = attr.args.as_slice() else {
+        return Err(bad());
+    };
+    if arg.label.is_some() {
+        return Err(bad());
+    }
+    let Expr::Int(_, text) = &arg.value else {
+        return Err(bad());
+    };
+    let value = super::bodies::parse_int_literal(text).ok_or_else(bad)?;
+    u64::try_from(value).map_err(|_| bad())
 }
 
 fn declare_fn(
@@ -6171,6 +6353,16 @@ fn render_item(
             out,
             depth,
             &format!("Const {}: {}", c.name, render_type(&c.ty)),
+        ),
+        DeclItem::Static(s) => push_line(
+            out,
+            depth,
+            &format!(
+                "Static {}: {} placed={:#x}",
+                s.name,
+                render_type(&s.ty),
+                s.addr
+            ),
         ),
         DeclItem::Fn(f) => {
             let label = if f.is_async { "AsyncFn" } else { "Fn" };

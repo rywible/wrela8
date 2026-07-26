@@ -1,0 +1,1 @@
+error[type]: `static B` and `static A` both claim `@placed(0x40000000)`; 03-hardware.md §3.1 allows at most one placed static per address

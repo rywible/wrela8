@@ -542,6 +542,7 @@ fn first_runtime_local(e: &TypedExpr) -> Option<&str> {
         | TypedExprKind::Bool(_)
         | TypedExprKind::Unit
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::PoolName(_)
         | TypedExprKind::GroupChild(_) => None,
@@ -834,6 +835,7 @@ fn collect_asserts_expr<'p>(e: &'p TypedExpr, out: &mut Vec<AssertSite<'p>>) {
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_) => {}
         TypedExprKind::Field(base, _) => collect_asserts_expr(base, out),
         TypedExprKind::Index(base, idx) => {

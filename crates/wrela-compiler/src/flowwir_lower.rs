@@ -451,6 +451,30 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
         .ok_or_else(|| FlowError::internal(format!("unknown field `{field_name}`")))
 }
 
+/// Declared offset of `field` in a `@layout(runtime)` type (plans/M10.md
+/// item A2c). Mirrors `lower::runtime_layout_field_offset`.
+fn runtime_layout_field_offset_flow(
+    prog: &TypedProgram,
+    layout: &str,
+    field: &str,
+) -> Result<u64, FlowError> {
+    let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
+        return Err(FlowError::internal(format!(
+            "placed-static field access through `{layout}`, which has no layout table entry"
+        )));
+    };
+    for e in &l.entries {
+        if let crate::sema::types::LayoutEntry::Field(f) = e {
+            if f.name == field {
+                return Ok(f.offset);
+            }
+        }
+    }
+    Err(FlowError::internal(format!(
+        "`{layout}` declares no field `{field}` (the checker already refused this)"
+    )))
+}
+
 fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<usize, FlowError> {
     match enum_name {
         "Option" => match variant {
@@ -2117,6 +2141,26 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Field(base, fname) => {
+            // plans/M10.md item A2c: placed-static named field → MmioWrite.
+            if let TypedExprKind::Static(sname) = &base.kind {
+                let layout_name = match bodies::unwrap_own(base.ty.clone()) {
+                    Type::Named(n, _) => n,
+                    other => {
+                        return Err(FlowError::internal(format!(
+                            "placed static `{sname}` has non-named type {other:?}"
+                        )));
+                    }
+                };
+                let offset = runtime_layout_field_offset_flow(b.prog, &layout_name, fname)?;
+                let base_temp = lower_expr_flat(base, b, env)?;
+                b.emit_mwir(Inst::MmioWrite {
+                    base: base_temp,
+                    offset,
+                    ty: target.ty.clone(),
+                    value,
+                });
+                return Ok(());
+            }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
             let idx = field_index(b.prog, &base_ty, fname)?;
@@ -2211,6 +2255,27 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             None => Err(FlowError::internal(format!("unbound local `{name}`"))),
         },
         TypedExprKind::Field(base, name) => {
+            // plans/M10.md item A2c: placed-static named field → MmioRead.
+            if let TypedExprKind::Static(sname) = &base.kind {
+                let layout_name = match bodies::unwrap_own(base.ty.clone()) {
+                    Type::Named(n, _) => n,
+                    other => {
+                        return Err(FlowError::internal(format!(
+                            "placed static `{sname}` has non-named type {other:?}"
+                        )));
+                    }
+                };
+                let offset = runtime_layout_field_offset_flow(b.prog, &layout_name, name)?;
+                let base_temp = lower_expr_flat(base, b, env)?;
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::MmioRead {
+                    dst,
+                    base: base_temp,
+                    offset,
+                    ty: e.ty.clone(),
+                });
+                return Ok(dst);
+            }
             let base_temp = lower_expr_flat(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
             if let Type::Named(sname, _) = &base_ty {
@@ -2243,6 +2308,19 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 ))
             })?;
             lower_flow_const_value(&v, &e.ty, b)
+        }
+        TypedExprKind::Static(name) => {
+            let addr =
+                b.prog.statics.get(name).map(|s| s.addr).ok_or_else(|| {
+                    FlowError::internal(format!("placed static `{name}` missing"))
+                })?;
+            let dst = b.fresh(Type::U64);
+            b.emit_mwir(Inst::ConstInt {
+                dst,
+                ty: Type::U64,
+                value: addr as i128,
+            });
+            Ok(dst)
         }
         TypedExprKind::Call {
             callee,

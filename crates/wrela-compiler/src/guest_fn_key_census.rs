@@ -137,6 +137,10 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("check-device-reset/expected/mwir.txt", &["BlkDriver.init"]),
     (
+        "check-placed-machine-info/expected/asm.txt",
+        &["read_wall_seed"],
+    ),
+    (
         "check-driver-mode-irq/expected/mwir.txt",
         &[
             "struct:BlkDriver[DriverMode.Irq].drain",

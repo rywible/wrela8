@@ -129,6 +129,10 @@ pub enum TypedExprKind {
     Local(String),
     /// A module-level `const` reference.
     Const(String),
+    /// A module-level placed `static` reference (03-hardware.md §3.1).
+    /// Its value is the base address; only named-field read/write lowers
+    /// (plans/M10.md item A2c / decision 587).
+    Static(String),
     /// A bare fn/method value reference, never called directly here (the
     /// call-shaped forms below cover every direct call).
     FnRef(CalleeKey),
@@ -522,6 +526,13 @@ pub struct TypedConst {
     pub value: TypedExpr,
 }
 
+/// A module-level placed static (03-hardware.md §3.1, plans/M10.md item A2c).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedStatic {
+    pub ty: Type,
+    pub addr: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypedStruct {
     pub name: String,
@@ -662,6 +673,10 @@ pub struct TestDecl {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypedProgram {
     pub consts: BTreeMap<String, TypedConst>,
+    /// Module-level placed statics (plans/M10.md item A2c). Not rendered
+    /// by `dump` — the image report's `PlacedStatic` line is the pinned
+    /// surface.
+    pub statics: BTreeMap<String, TypedStatic>,
     pub fns: BTreeMap<String, TypedFn>,
     pub structs: BTreeMap<String, TypedStruct>,
     /// Every `@test`-attributed module-level fn, in declaration order
@@ -1119,6 +1134,7 @@ fn dump_expr(e: &TypedExpr, depth: usize, out: &mut String) {
         TypedExprKind::Unit => push_line(out, depth, &format!("Unit ty={t}")),
         TypedExprKind::Local(name) => push_line(out, depth, &format!("Local name={name} ty={t}")),
         TypedExprKind::Const(name) => push_line(out, depth, &format!("Const name={name} ty={t}")),
+        TypedExprKind::Static(name) => push_line(out, depth, &format!("Static name={name} ty={t}")),
         TypedExprKind::FnRef(key) => {
             push_line(out, depth, &format!("FnRef key={} ty={t}", key.spelling()))
         }
@@ -1589,6 +1605,7 @@ fn rekey_expr(e: &mut TypedExpr, subs: &BTreeMap<String, String>) {
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::PoolName(_) => {}
         TypedExprKind::FnRef(key) | TypedExprKind::GroupChild(key) => rekey_callee(key, subs),
         TypedExprKind::Field(base, _)

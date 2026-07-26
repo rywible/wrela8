@@ -892,6 +892,6 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 | `@no_promote` | Reject image-lifetime promotion in the annotated scope. |
 | `@detached` | Work independent of any enclosing group (§9.5). |
 
-Revision 0.1 declares no `static`, so the module-level placed static
-[03 §3.1](03-hardware.md) defines `@placed` on is not a construct of this
-language yet and `@placed` is refused wherever it is written.
+A module-level `static NAME: Type` is the construct
+[03 §3.1](03-hardware.md) binds with `@placed(addr)`; `@placed` is legal
+only on such a static of a `@layout(runtime)` type.

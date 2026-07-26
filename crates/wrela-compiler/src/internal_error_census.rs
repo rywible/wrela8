@@ -30,11 +30,11 @@
 /// file — fails the unit test below. The census file itself is excluded
 /// from the scan (it talks about the prefix without emitting one).
 pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
-    // 74 -> 75, plans/M10.md item 0c3: `turns_deref_needs_rtdata`, the one
-    // shared message behind the four `Reloc::TurnsBase`/`TurnStride`
-    // resolution guards (deliberately one site, not four).
-    ("layout.rs", 75),
-    ("eval/interp.rs", 78),
+    // 75 -> 77, plans/M10.md item A2c: two sites in `collect_placed_statics`
+    // (non-named type / missing completed size).
+    ("layout.rs", 77),
+    // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
+    ("eval/interp.rs", 79),
     ("lower.rs", 5),
     ("codegen.rs", 4),
     ("eval/mod.rs", 2),
@@ -140,7 +140,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 175,
+            INTERNAL_ERROR_SITE_COUNT, 178,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

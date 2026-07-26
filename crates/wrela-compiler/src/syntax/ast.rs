@@ -82,10 +82,12 @@ pub struct Import {
     pub names: Vec<ImportName>,
 }
 
-/// One top-level declaration (02-language.md §§4-7, §12).
+/// One top-level declaration (02-language.md §§4-7, §12; 03-hardware.md §3.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Const(ConstItem),
+    /// Module-level placed static (03-hardware.md §3.1, plans/M10.md item A2c).
+    Static(StaticItem),
     Fn(FnItem),
     Struct(StructItem),
     Enum(EnumItem),
@@ -104,6 +106,19 @@ pub struct ConstItem {
     pub attrs: Vec<Attr>,
     pub ty: Option<Type>,
     pub value: Expr,
+}
+
+/// `[pub] static NAME: Type` (03-hardware.md §3.1): a module-level static of
+/// a `@layout(runtime)` type. No initializer — the bytes live at the address
+/// `@placed(ADDR)` binds. plans/M10.md item A2c / decision 586.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticItem {
+    pub span: Span,
+    pub name: String,
+    pub is_pub: bool,
+    pub doc: Option<Doc>,
+    pub attrs: Vec<Attr>,
+    pub ty: Type,
 }
 
 /// A compile-time generic parameter: `T` (type) or `const N: usize` (value).

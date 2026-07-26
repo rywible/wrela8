@@ -1,0 +1,27 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/check_placed_machine_info.wr sha256=c3390a5e898f661c1e8895e309659bd37a9f19a61d69727804f17cd701a0ba99
+  Name value=placed-machine-info
+  Target value=Target.wrela_machine_v1
+  Layout name=MachineInfoPage kind=runtime endian=little size=56 padding=0
+    Field name=revision0 type=u64 offset=0x0 size=8
+    Field name=revision1 type=u64 offset=0x8 size=8
+    Field name=revision2 type=u64 offset=0x10 size=8
+    Field name=revision3 type=u64 offset=0x18 size=8
+    Field name=wall_seed type=u64 offset=0x20 size=8
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Field name=exit_code type=u64 offset=0x30 size=8
+  Section name=pages base=0x40000000 size=28672
+  Section name=stacks base=0x40010000 size=3145728
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=64
+  Section name=abort base=0x40500090 size=120
+  Section name=checkpoint base=0x40500108 size=104
+  Entry base=0x40500000
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=56

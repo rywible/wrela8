@@ -94,7 +94,7 @@ pub fn public_names(module: &Module) -> BTreeSet<String> {
             Item::Fn(f) => (f.name.as_str(), f.is_pub),
             Item::Struct(s) => (s.name.as_str(), s.is_pub),
             Item::Enum(e) => (e.name.as_str(), e.is_pub),
-            Item::Pool(_) | Item::ComptimeIf(_) => continue,
+            Item::Pool(_) | Item::ComptimeIf(_) | Item::Static(_) => continue,
         };
         if is_pub {
             out.insert(name.to_string());

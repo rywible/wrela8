@@ -88,7 +88,7 @@ pub const KEYWORDS: &[&str] = &[
     "and", "assert", "async", "await", "break", "case", "comptime", "const", "continue", "defer",
     "deriving", "elif", "else", "enum", "false", "fn", "for", "from", "if", "import", "in", "init",
     "is", "match", "module", "mut", "not", "or", "own", "pass", "pool", "pub", "read", "resource",
-    "return", "self", "send", "struct", "take", "true", "unit", "while", "with",
+    "return", "self", "send", "static", "struct", "take", "true", "unit", "while", "with",
 ];
 
 /// Multi-character operators, longest first so maximal munch is by order.

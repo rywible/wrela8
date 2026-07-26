@@ -1,0 +1,11 @@
+module examples.err_placed_not_runtime
+
+# plans/M10.md item A2c: `@placed` requires a `@layout(runtime)` type.
+# An ordinary struct (or a dma/mmio/wire layout) is refused.
+
+struct Plain:
+    x: u64
+
+
+@placed(0x40000000)
+static BAD: Plain

@@ -1,0 +1,12 @@
+Module path=examples.check_placed_machine_info
+  Struct MachineInfoPage data
+    field revision0: u64
+    field revision1: u64
+    field revision2: u64
+    field revision3: u64
+    field wall_seed: u64
+    field next_deadline: u64
+    field exit_code: u64
+  Static MACHINE_INFO: MachineInfoPage placed=0x40000000
+  Fn read_wall_seed() -> u64
+  Fn build() -> Image

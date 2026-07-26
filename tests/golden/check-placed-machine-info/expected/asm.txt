@@ -1,0 +1,18 @@
+Program
+  Fn key=read_wall_seed frame=32 bytes
+    0000: d10083ff  sub sp, sp, #32
+    0001: f9000bfe  str lr, [sp, #16]
+    0002: d2800009  movz x9, #0x0
+    0003: f2a80009  movk x9, #0x4000, lsl #16
+    0004: f2c00009  movk x9, #0x0, lsl #32
+    0005: f2e00009  movk x9, #0x0, lsl #48
+    0006: f90003e9  str x9, [sp, #0]
+    0007: f94003e9  ldr x9, [sp, #0]
+    0008: f940112a  ldr x10, [x9, #32]
+    0009: f90007ea  str x10, [sp, #8]
+    0010: f94007e0  ldr x0, [sp, #8]
+    0011: 14000002  b #8
+    0012: 14000001  b #4
+    0013: f9400bfe  ldr lr, [sp, #16]
+    0014: 910083ff  add sp, sp, #32
+    0015: d65f03c0  ret

@@ -126,14 +126,15 @@ them and the address is a checked build output rather than a convention.
 It is legal on exactly one construct: a module-level `static` of a
 `@layout(runtime)` type, with at most one placed static per address. It is
 legal nowhere else — not on a field, a function, a parameter, a local, or
-any other declaration. **Revision 0.1 has no `static` declaration**
-([02 §13](02-language.md)), so the construct `@placed` attaches to does not
-exist in the language yet and the compiler refuses the attribute wherever
-it is written. The rule is stated here rather than held back with the
-construct, because it is the reason the `runtime` kind exists; the shape it
-will take is:
+any other declaration. A `static` has a required type and no initializer;
+`@placed(ADDR)` is required on every `static` in this revision (there is
+no unplaced static storage). Named-field read and write of a placed
+static's scalar fields are loads and stores at constant offsets from
+`ADDR`; indexing into a placed array field is a later rule.
 
-```text
+```wrela
+const N_TURNS: usize = 4
+
 @layout(runtime, endian=little)
 struct TurnArea:
     state: u32
@@ -144,7 +145,7 @@ struct TurnTable:
     rr_cursor: u64
     turns: [TurnArea; N_TURNS]
 
-@placed(0x40500000)
+@placed(0x40000000)
 static TURNS: TurnTable
 ```
 

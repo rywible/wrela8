@@ -643,6 +643,7 @@ fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::PoolName(_) => {}
         TypedExprKind::FnRef(key) | TypedExprKind::GroupChild(key) => {
             out.insert(key.spelling());
@@ -916,6 +917,37 @@ fn mmio_register_offset(
             "`{layout}` declares no register `{register}` (the checker already refused this)"
         ))),
     }
+}
+
+/// Declared offset of `field` in a `@layout(runtime)` type — same table
+/// `check_layouts` produced (plans/M10.md item A2c).
+fn runtime_layout_field_offset(
+    layout: &str,
+    field: &str,
+    prog: &TypedProgram,
+) -> Result<u64, LowerError> {
+    let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
+        return Err(LowerError::internal(format!(
+            "placed-static field access through `{layout}`, which has no layout table entry"
+        )));
+    };
+    for e in &l.entries {
+        if let crate::sema::types::LayoutEntry::Field(f) = e {
+            if f.name == field {
+                return Ok(f.offset);
+            }
+        }
+    }
+    Err(LowerError::internal(format!(
+        "`{layout}` declares no field `{field}` (the checker already refused this)"
+    )))
+}
+
+fn placed_static_addr(prog: &TypedProgram, name: &str) -> Result<u64, LowerError> {
+    prog.statics
+        .get(name)
+        .map(|s| s.addr)
+        .ok_or_else(|| LowerError::internal(format!("placed static `{name}` not in TypedProgram")))
 }
 
 /// Exact `@layout(dma)` byte size of an `own[P] T` payload (or bare `T`).
@@ -1950,6 +1982,27 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Field(base, fname) => {
+            // plans/M10.md item A2c / decision 587: assign through a placed
+            // static's named field — MmioWrite at the layout offset.
+            if let TypedExprKind::Static(sname) = &base.kind {
+                let layout_name = match bodies::unwrap_own(base.ty.clone()) {
+                    Type::Named(n, _) => n,
+                    other => {
+                        return Err(LowerError::internal(format!(
+                            "placed static `{sname}` has non-named type {other:?}"
+                        )));
+                    }
+                };
+                let offset = runtime_layout_field_offset(&layout_name, fname, b.prog())?;
+                let base_temp = lower_expr(base, b, env)?;
+                b.emit(Inst::MmioWrite {
+                    base: base_temp,
+                    offset,
+                    ty: target.ty.clone(),
+                    value,
+                });
+                return Ok(());
+            }
             // plans/M7.md item G, decision 17: assigning an `InterruptCell`
             // field of `self` must STLR the live driver-state word. Only
             // bare `self.<cell>` has a known live offset; nested chains
@@ -2543,10 +2596,45 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             })?;
             emit_const_value(&v, &expr.ty, b)
         }
+        // plans/M10.md item A2c / decision 587: a bare placed static is its
+        // base address. Named-field access uses this temp as the MmioRead/
+        // MmioWrite base.
+        TypedExprKind::Static(name) => {
+            let addr = placed_static_addr(b.prog(), name)?;
+            let dst = b.fresh(Type::U64);
+            b.emit(Inst::ConstInt {
+                dst,
+                ty: Type::U64,
+                value: addr as i128,
+            });
+            Ok(dst)
+        }
         TypedExprKind::FnRef(_) => Err(LowerError::unimplemented(
             "a bare fn/method value reference is",
         )),
         TypedExprKind::Field(base, name) => {
+            // Named field of a placed static: MmioRead at the layout offset
+            // (decision 587 — the Mmio[L] codegen shape, not its API).
+            if let TypedExprKind::Static(sname) = &base.kind {
+                let layout_name = match bodies::unwrap_own(base.ty.clone()) {
+                    Type::Named(n, _) => n,
+                    other => {
+                        return Err(LowerError::internal(format!(
+                            "placed static `{sname}` has non-named type {other:?}"
+                        )));
+                    }
+                };
+                let offset = runtime_layout_field_offset(&layout_name, name, b.prog())?;
+                let base_temp = lower_expr(base, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::MmioRead {
+                    dst,
+                    base: base_temp,
+                    offset,
+                    ty: expr.ty.clone(),
+                });
+                return Ok(dst);
+            }
             let base_temp = lower_expr(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
             // plans/M9.md item E: Duration/Instant are scalar newtypes —

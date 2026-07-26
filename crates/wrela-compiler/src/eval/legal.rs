@@ -620,6 +620,7 @@ fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> 
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::Field(..)
         | TypedExprKind::Index(..)
@@ -767,6 +768,7 @@ fn scan_hardware_expr(e: &TypedExpr, authority: &Authority, scan: &mut BodyScan)
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::PoolName(_)
         | TypedExprKind::GroupChild(_) => {}
@@ -1007,6 +1009,7 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::Field(..)
         | TypedExprKind::Index(..)
@@ -1233,7 +1236,8 @@ fn scan_expr(e: &TypedExpr, scan: &mut BodyScan) {
         | TypedExprKind::Bool(_)
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_) => {}
+        | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_) => {}
         TypedExprKind::FnRef(key) => {
             scan.callees.insert(key.spelling());
         }
@@ -2207,6 +2211,7 @@ fn scan_isr_bind_expr(e: &TypedExpr, roots: &mut BTreeSet<String>) {
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::PoolName(_)
         | TypedExprKind::GroupChild(_) => {}
@@ -2506,6 +2511,7 @@ fn scan_isr_forbidden_expr(e: &TypedExpr, scan: &mut BodyScan) {
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::PoolName(_)
         | TypedExprKind::GroupChild(_) => {}
@@ -2627,6 +2633,7 @@ fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::Field(..)
         | TypedExprKind::Index(..)

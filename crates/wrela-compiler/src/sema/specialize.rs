@@ -198,7 +198,7 @@ fn harvest_conditions_items<'a>(items: &'a [Item], out: &mut Vec<&'a Expr>) {
                 }
             }
             Item::Struct(s) => harvest_conditions_members(&s.members, out),
-            Item::Enum(_) | Item::Pool(_) | Item::Const(_) => {}
+            Item::Enum(_) | Item::Pool(_) | Item::Const(_) | Item::Static(_) => {}
         }
     }
 }
@@ -532,7 +532,7 @@ fn specialize_item(
             out.extend(specialize_items(selected, known_consts, skeleton)?);
             Ok(())
         }
-        Item::Const(_) | Item::Enum(_) | Item::Pool(_) => {
+        Item::Const(_) | Item::Enum(_) | Item::Pool(_) | Item::Static(_) => {
             out.push(item.clone());
             Ok(())
         }

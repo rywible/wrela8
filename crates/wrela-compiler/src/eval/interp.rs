@@ -1476,6 +1476,9 @@ fn eval_expr<'a, 'p>(
             ctx.leave();
             result
         }
+        TypedExprKind::Static(name) => Err(ctx.abandon(format!(
+            "internal error: placed static `{name}` has no comptime value (03-hardware.md §3.1)"
+        ))),
         TypedExprKind::FnRef(key) => Ok(Value::Fn(key.clone())),
         TypedExprKind::Field(base, name) => {
             let bv = eval_expr(base, env, dstack, loop_marker, ctx)?;

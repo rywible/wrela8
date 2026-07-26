@@ -762,6 +762,12 @@ impl Parser {
                 .parse_const_item(start, is_pub, doc, attrs)
                 .map(Item::Const);
         }
+        if self.at_keyword("static") {
+            self.bump();
+            return self
+                .parse_static_item(start, is_pub, doc, attrs)
+                .map(Item::Static);
+        }
         if self.at_keyword("pool") {
             if is_pub {
                 return Err(self.error_here("`pub` is not valid before `pool`"));
@@ -847,6 +853,29 @@ impl Parser {
             value,
         })
     }
+
+    /// `static NAME: Type` — required type, no initializer (03-hardware.md
+    /// §3.1 / plans/M10.md item A2c, decision 586).
+    fn parse_static_item(
+        &mut self,
+        start: Span,
+        is_pub: bool,
+        doc: Option<Doc>,
+        attrs: Vec<Attr>,
+    ) -> Result<StaticItem, ParseError> {
+        let (_, name) = self.expect_ident("a static name")?;
+        self.expect_op(":")?;
+        let ty = self.parse_type()?;
+        self.expect_declaration_terminator()?;
+        Ok(StaticItem {
+            span: start,
+            name,
+            is_pub,
+            doc,
+            attrs,
+            ty,
+        })
+    }
 }
 
 // --- fragments (corpus doc blocks with no `module` header) -------------
@@ -901,6 +930,9 @@ impl Parser {
             return true;
         }
         if self.at_keyword("const") {
+            return true;
+        }
+        if self.at_keyword("static") {
             return true;
         }
         if self.at_keyword("pool") {
@@ -3210,6 +3242,16 @@ fn dump_item(item: &Item, depth: usize, strip: bool, out: &mut String) {
                 dump_type(ty, depth + 1, strip, out);
             }
             dump_expr(&c.value, depth + 1, strip, out);
+        }
+        Item::Static(s) => {
+            let mut header = format!("{} name={}", hdr(strip, "Static", s.span), s.name);
+            if s.is_pub {
+                header.push_str(" pub=true");
+            }
+            push_line(out, depth, &header);
+            dump_doc(&s.doc, depth + 1, strip, out);
+            dump_attrs(&s.attrs, depth + 1, strip, out);
+            dump_type(&s.ty, depth + 1, strip, out);
         }
         Item::Fn(f) => {
             let mut header = format!("{} name={}", hdr(strip, "Fn", f.span), f.name);

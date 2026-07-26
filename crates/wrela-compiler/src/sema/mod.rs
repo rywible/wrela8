@@ -264,6 +264,10 @@ fn check_typed_single_with_decls(
     let symtab = symbols::collect(&specialized)?;
     symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
     let decl_items = types::declare(&specialized)?;
+    // plans/M10.md item A2c: `@placed` on a `static` needs declare's
+    // resolved type and `check_layouts`' table — runtime-layout kind and
+    // at-most-one-per-address.
+    types::validate_placed_statics(&decl_items, &layouts)?;
     // plans/M7.md item C, 03-hardware.md §2: "Minting a layout consumes
     // those byte ranges from the claim; two live layouts can never alias a
     // register." Runs here because it needs both halves — `declare`'s
@@ -709,6 +713,8 @@ fn check_program_typed_tables(
     for (key, module) in &specialized {
         symbols::resolve(module, &symtabs[key], &bindings[key])?;
         let decl_items = types::declare_with_imports(module, &imported_types[key])?;
+        // plans/M10.md item A2c: placed-static rules need declare + layouts.
+        types::validate_placed_statics(&decl_items, &layouts[key])?;
         // plans/M7.md item C: the whole-closure half of the claim
         // partitioning check, per module for the same reason
         // `check_layouts` above is — an `Mmio[L]`'s own `L` must be a

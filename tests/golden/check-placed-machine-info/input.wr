@@ -1,0 +1,31 @@
+module examples.check_placed_machine_info
+
+# plans/M10.md item A2c, decision 593: a module-level `static` of a
+# `@layout(runtime)` type, `@placed` at MACHINE_INFO_BASE (0x40000000),
+# named-field read at a constant offset from the materialized base —
+# the Mmio[L] codegen shape (movz/movk of the address + ldr at offset).
+# Nothing calls this at boot; zero transcript changes.
+
+@layout(runtime, endian=little)
+struct MachineInfoPage:
+    @offset(0x00) revision0: u64
+    @offset(0x08) revision1: u64
+    @offset(0x10) revision2: u64
+    @offset(0x18) revision3: u64
+    @offset(0x20) wall_seed: u64
+    @offset(0x28) next_deadline: u64
+    @offset(0x30) exit_code: u64
+
+
+@placed(0x40000000)
+static MACHINE_INFO: MachineInfoPage
+
+
+fn read_wall_seed() -> u64:
+    return MACHINE_INFO.wall_seed
+
+
+@image
+pub fn build() -> Image:
+    img = Image(name="placed-machine-info", target=Target.wrela_machine_v1)
+    return img.seal()

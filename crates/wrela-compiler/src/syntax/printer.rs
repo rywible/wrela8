@@ -219,6 +219,19 @@ fn print_item(item: &Item, indent: usize, out: &mut String) {
             line.push_str(&print_expr(&c.value, indent));
             push_line(out, indent, &line);
         }
+        Item::Static(s) => {
+            print_doc(&s.doc, indent, out);
+            print_attrs(&s.attrs, indent, out);
+            let mut line = String::new();
+            if s.is_pub {
+                line.push_str("pub ");
+            }
+            line.push_str("static ");
+            line.push_str(&s.name);
+            line.push_str(": ");
+            line.push_str(&print_type(&s.ty, indent));
+            push_line(out, indent, &line);
+        }
         Item::Fn(f) => {
             print_doc(&f.doc, indent, out);
             print_attrs(&f.attrs, indent, out);

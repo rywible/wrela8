@@ -1,0 +1,1 @@
+error[type]: `static BAD` has type `Plain`, which is not a `@layout` type; `@placed` requires a `@layout(runtime)` type (03-hardware.md §3.1)

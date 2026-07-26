@@ -276,6 +276,9 @@ pub(crate) struct ModuleCtx {
     pub(crate) enums: BTreeMap<String, EnumInfo>,
     pub(crate) fns: BTreeMap<String, FnInfo>,
     pub(crate) consts: BTreeMap<String, Type>,
+    /// Module-level placed statics (03-hardware.md §3.1, plans/M10.md item
+    /// A2c): name → (type, `@placed` address).
+    pub(crate) statics: BTreeMap<String, StaticInfo>,
     /// Every `@layout` type this module declares, by name (plans/M7.md
     /// item C): `check_mmio_access` needs a register's declared direction,
     /// width and offset, and `types::check_layouts` is the one pass that
@@ -306,6 +309,14 @@ pub(crate) struct ModuleCtx {
     /// depth)`. Layout/report read this from `TypedProgram` (copied at
     /// the end of `check`) so the ring geometry has one source of truth.
     pub(crate) virtqueue_configures: RefCell<Vec<(String, u16)>>,
+}
+
+/// One placed static's resolved type (plans/M10.md item A2c). Address lives
+/// on `DeclStatic` / `TypedStatic`; ModuleCtx only needs the type for name
+/// resolution in bodies.
+#[derive(Debug, Clone)]
+pub(crate) struct StaticInfo {
+    pub(crate) ty: Type,
 }
 
 impl ModuleCtx {
@@ -351,6 +362,7 @@ pub(crate) fn build_module_ctx(
     let mut enums = BTreeMap::new();
     let mut fns = BTreeMap::new();
     let mut consts = BTreeMap::new();
+    let mut statics = BTreeMap::new();
     let mut const_values = BTreeMap::new();
 
     let ast_items: Vec<&Item> = module
@@ -471,6 +483,9 @@ pub(crate) fn build_module_ctx(
                 consts.insert(c.name.clone(), d.ty.clone());
                 const_values.insert(c.name.clone(), c.value.clone());
             }
+            (Item::Static(s), types::DeclItem::Static(d)) => {
+                statics.insert(s.name.clone(), StaticInfo { ty: d.ty.clone() });
+            }
             (Item::Pool(p), types::DeclItem::Pool(_)) => {
                 module_pools.insert(p.name.clone());
             }
@@ -502,6 +517,7 @@ pub(crate) fn build_module_ctx(
         enums,
         fns,
         consts,
+        statics,
         const_values,
         layouts,
         generics_queue: RefCell::new(BTreeMap::new()),
@@ -839,6 +855,15 @@ pub(crate) fn check(
                     TypedConst {
                         ty: d.ty.clone(),
                         value,
+                    },
+                );
+            }
+            (Item::Static(_), types::DeclItem::Static(d)) => {
+                program.statics.insert(
+                    d.name.clone(),
+                    crate::sema::typed::TypedStatic {
+                        ty: d.ty.clone(),
+                        addr: d.addr,
                     },
                 );
             }
@@ -3011,6 +3036,12 @@ fn synth_name(
         return Ok(TypedExpr {
             ty: ty.clone(),
             kind: TypedExprKind::Const(name.to_string()),
+        });
+    }
+    if let Some(info) = mctx.statics.get(name) {
+        return Ok(TypedExpr {
+            ty: info.ty.clone(),
+            kind: TypedExprKind::Static(name.to_string()),
         });
     }
     if let Some(f) = mctx.fns.get(name) {
@@ -10356,6 +10387,7 @@ fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<()
         | TypedExprKind::Unit
         | TypedExprKind::Local(_)
         | TypedExprKind::Const(_)
+        | TypedExprKind::Static(_)
         | TypedExprKind::FnRef(_)
         | TypedExprKind::PoolName(_)
         | TypedExprKind::GroupChild(_) => Ok(()),

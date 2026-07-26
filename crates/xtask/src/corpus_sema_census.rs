@@ -54,9 +54,11 @@ pub struct CorpusSemaPin {
 }
 
 /// Measured 2026-07-25 through J2d: **18 ok, 5 disagreements** out of 23
-/// parseable-for-sema blocks. The five disagreements are deliberate gaps
-/// (J2b rulings / decision 523); J3 gates on this pin, not on zero.
-/// Re-keyed by content 2026-07-26 (item A3); classifications unchanged.
+/// parseable-for-sema blocks; **+1 ok** at plans/M10.md item A2c (03 §3.1
+/// example fence is now ```wrela) → **19 ok, 5 disagreements** out of 24.
+/// The five disagreements are deliberate gaps (J2b rulings / decision 523);
+/// J3 gates on this pin, not on zero. Re-keyed by content 2026-07-26
+/// (item A3); classifications unchanged except the new A2c row.
 pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
     CorpusSemaPin {
         key: "8949ad8e2912",
@@ -178,21 +180,28 @@ pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
         kind: "ok",
         gap: None,
     },
+    // plans/M10.md item A2c: §3.1 example is now ```wrela (was ```text).
+    CorpusSemaPin {
+        key: "4ab31cc43898",
+        loc: "docs/language/03-hardware.md:136",
+        kind: "ok",
+        gap: None,
+    },
     CorpusSemaPin {
         key: "5bbef735fe9c",
-        loc: "docs/language/03-hardware.md:222",
+        loc: "docs/language/03-hardware.md:227",
         kind: "ok",
         gap: None,
     },
     CorpusSemaPin {
         key: "f0f2c62e8a44",
-        loc: "docs/language/03-hardware.md:266",
+        loc: "docs/language/03-hardware.md:271",
         kind: "ok",
         gap: None,
     },
     CorpusSemaPin {
         key: "19e016849751",
-        loc: "docs/language/03-hardware.md:300",
+        loc: "docs/language/03-hardware.md:305",
         kind: "ok",
         gap: None,
     },

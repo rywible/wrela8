@@ -80,6 +80,7 @@ pub fn collect(module: &Module) -> Result<SymbolTable, SemaError> {
 fn item_name(item: &Item) -> Option<(&str, Span)> {
     match item {
         Item::Const(c) => Some((c.name.as_str(), c.span)),
+        Item::Static(s) => Some((s.name.as_str(), s.span)),
         Item::Fn(f) => Some((f.name.as_str(), f.span)),
         Item::Struct(s) => Some((s.name.as_str(), s.span)),
         Item::Enum(e) => Some((e.name.as_str(), e.span)),
@@ -114,12 +115,22 @@ fn resolve_item(
 ) -> Result<(), SemaError> {
     match item {
         Item::Const(c) => resolve_const(c, symtab, imports),
+        Item::Static(s) => resolve_static(s, symtab, imports),
         Item::Fn(f) => resolve_fn(f, symtab, imports),
         Item::Struct(s) => resolve_struct(s, symtab, imports),
         Item::Enum(e) => resolve_enum(e, symtab, imports),
         Item::Pool(_) => Ok(()),
         Item::ComptimeIf(_) => Ok(()), // comptime evaluation is item C's job
     }
+}
+
+fn resolve_static(
+    s: &crate::syntax::ast::StaticItem,
+    symtab: &SymbolTable,
+    imports: &ImportBindings,
+) -> Result<(), SemaError> {
+    let mut r = Resolver::new(symtab, imports);
+    r.resolve_type(&s.ty)
 }
 
 fn resolve_const(

@@ -230,6 +230,20 @@ pub struct ImageLayout {
     /// `mmio::RELEASE_MMIO_ADDR`. Empty for every single-core image, which
     /// is why no pre-C1 report golden gains a line.
     pub core_entries: Vec<(usize, u64)>,
+    /// plans/M10.md item A2c / decision 588: every `@placed` static in the
+    /// build closure, name-sorted. Empty when the image declares none —
+    /// so no pre-A2c report golden gains a line.
+    pub placed_statics: Vec<PlacedStatic>,
+}
+
+/// One `@placed` static as the image report publishes it (03-hardware.md
+/// §3.1: "the address is a checked build output rather than a convention").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedStatic {
+    pub name: String,
+    pub ty: String,
+    pub addr: u64,
+    pub size: u64,
 }
 
 /// One virtio-blk queue as the report and the VMM both see it
@@ -3307,6 +3321,7 @@ pub fn layout_program(
         blk: None, // filled by attach_blk_report after layout
         irq_host_injects,
         core_entries,
+        placed_statics: Vec::new(), // filled by try_layout_program from TypedPrograms
     })
 }
 
@@ -3663,9 +3678,46 @@ pub fn try_layout_program(
     .and_then(|mut layout| {
         // plans/M7.md item E1: BlkDevice/BlkQueue from configure + pools.
         attach_blk_report(&mut layout, graph, programs)?;
+        // plans/M10.md item A2c / decision 588: publish every placed static.
+        layout.placed_statics = collect_placed_statics(programs)?;
         Ok(Some(layout))
     })
     .or_else(|e| Err(e.message))
+}
+
+/// Every `@placed` static across the build closure, name-sorted, with the
+/// layout type's completed size (plans/M10.md item A2c).
+fn collect_placed_statics(
+    programs: &BTreeMap<String, TypedProgram>,
+) -> Result<Vec<PlacedStatic>, LayoutError> {
+    let mut out = Vec::new();
+    for prog in programs.values() {
+        for (name, s) in &prog.statics {
+            let crate::sema::types::Type::Named(ty_name, _) = &s.ty else {
+                return Err(LayoutError::new(format!(
+                    "internal error: placed static `{name}` has non-named type"
+                )));
+            };
+            let size = prog
+                .layouts
+                .iter()
+                .find(|l| l.name == *ty_name)
+                .and_then(|l| l.size)
+                .ok_or_else(|| {
+                    LayoutError::new(format!(
+                        "internal error: placed static `{name}` type `{ty_name}` has no completed size"
+                    ))
+                })?;
+            out.push(PlacedStatic {
+                name: name.clone(),
+                ty: ty_name.clone(),
+                addr: s.addr,
+                size,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 // ===========================================================================
@@ -5083,7 +5135,11 @@ pub fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
                         }
                     }
                 }
-                Item::Const(_) | Item::Enum(_) | Item::Pool(_) | Item::ComptimeIf(_) => {}
+                Item::Const(_)
+                | Item::Enum(_)
+                | Item::Pool(_)
+                | Item::ComptimeIf(_)
+                | Item::Static(_) => {}
             }
         }
     }
@@ -5553,6 +5609,20 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
     // moves; core 0's own entry stays the `Entry base=` line above.
     for (core, base) in &layout.core_entries {
         push_line(out, 1, &format!("CoreEntry core={core} base={base:#x}"));
+    }
+
+    // plans/M10.md item A2c / decision 588: one line per `@placed` static.
+    // Absent entirely when the image declares none, so no pre-A2c report
+    // golden moves.
+    for s in &layout.placed_statics {
+        push_line(
+            out,
+            1,
+            &format!(
+                "PlacedStatic name={} type={} addr={:#x} size={}",
+                s.name, s.ty, s.addr, s.size
+            ),
+        );
     }
 
     // --- plans/M6.md item C, decision 3: per-actor runtime-table
@@ -10345,6 +10415,7 @@ pub fn layout_test_image(
         blk: None, // filled by attach_blk_report after layout
         irq_host_injects,
         core_entries,
+        placed_statics: Vec::new(),
     })
 }
 
@@ -11573,6 +11644,7 @@ fn two():
             device_regs: Vec::new(),
             irq_host_injects: Vec::new(),
             core_entries: Vec::new(),
+            placed_statics: Vec::new(),
             pools: vec![
                 PoolPlacement {
                     backing: backing("Control", 0x10, 8, Some(0)),
