@@ -6022,6 +6022,10 @@ fn emit_group_create(
     deadline: Option<Temp>,
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
+    // plans/M10.md item 0c2: this fn's own `program.fns` key — the
+    // `Reloc::TurnIdImm` key for "this turn", which is the value
+    // `OFF_GROUP_OWNER_TURN` now carries in place of `X_FRAME`.
+    fn_key: &str,
 ) -> Result<(), CodegenError> {
     const X_ARENA: u8 = 15;
     const X_CAND: u8 = 16;
@@ -6186,16 +6190,22 @@ fn emit_group_create(
                 reg_name(X_CAND)
             ),
         );
-        for off in [
-            OFF_GROUP_ACTIVE_CHILDREN,
-            OFF_GROUP_CANCELLED,
-            OFF_GROUP_JOIN_WAITER,
-        ] {
+        for off in [OFF_GROUP_ACTIVE_CHILDREN, OFF_GROUP_CANCELLED] {
             ctx.push(
                 encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
                 format!("str xzr, [{}, #{off}]", reg_name(X_CAND)),
             );
         }
+        // plans/M10.md item 0c2: `join_waiter` is now an
+        // `Option[TurnId]` — a `u32`, so the hygiene zeroing clears the
+        // four bytes the field actually occupies and not the four bytes of
+        // unused padding above it. `wzr` rather than `xzr` is the honest
+        // width; the niche (decision 567) makes `0` still mean "nobody
+        // waiting", so this zero test keeps its meaning exactly.
+        ctx.push(
+            encode::enc_str_w_imm(X_ZR, X_CAND, OFF_GROUP_JOIN_WAITER as u16),
+            format!("str wzr, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_CAND)),
+        );
         for c in 0..GROUP_MAX_CHILDREN {
             for off in [group_child_tag_off(c), group_child_payload_off(c)] {
                 ctx.push(
@@ -6220,17 +6230,31 @@ fn emit_group_create(
                 reg_name(X_CAND)
             ),
         );
-        // The owning frame (02-language.md §9.5's own "parent"): this
-        // turn's persistent area, which is exactly `X_FRAME`. Every
-        // cancellation observation site compares against it to decide
-        // whether a cancelled group terminates the observing activation (a
-        // child started into the group) or merely hands it a `CallError`
-        // (the `with`-block's own body).
+        // The owning turn (02-language.md §9.5's own "parent"): this fn's
+        // own turn, which used to be written as `X_FRAME` — the raw
+        // address of that turn's persistent area. plans/M10.md item 0c2
+        // makes it the turn's **`TurnId`**, a `u32` at +56, because both
+        // readers only ever compare it for equality and neither needs an
+        // address: `emit_group_cancelled_flags` below compares against
+        // this fn's own id, and `layout::emit_deadline_scan_and_delivery`
+        // against the build-time id of the turn its unrolled arm is about.
+        // Every cancellation observation site still decides the same
+        // thing — whether a cancelled group terminates the observing
+        // activation (a child started into the group) or merely hands it a
+        // `CallError` (the `with`-block's own body).
+        let word = ctx.cur_word();
+        ctx.load_imm(X_D, 0);
+        for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+            w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_D));
+        }
+        ctx.relocs.push(Reloc::TurnIdImm {
+            word,
+            key: fn_key.to_string(),
+        });
         ctx.push(
-            encode::enc_str_x_imm(X_FRAME, X_CAND, OFF_GROUP_OWNER_TURN as u16),
+            encode::enc_str_w_imm(X_D, X_CAND, OFF_GROUP_OWNER_TURN as u16),
             format!(
-                "str {}, [{}, #{OFF_GROUP_OWNER_TURN}]",
-                reg_name(X_FRAME),
+                "str w{X_D}, [{}, #{OFF_GROUP_OWNER_TURN}]",
                 reg_name(X_CAND)
             ),
         );
@@ -6782,7 +6806,7 @@ fn emit_flow_op(
             group_temp,
             capacity,
             deadline,
-        } => emit_group_create(*group_temp, *capacity, *deadline, ctx, gctx),
+        } => emit_group_create(*group_temp, *capacity, *deadline, ctx, gctx, fn_key),
         FlowInst::GroupStart {
             group_temp,
             callee_key,
@@ -6810,15 +6834,17 @@ fn emit_flow_op(
 ///
 /// - `X_C = 1` iff this turn has an ambient group AND that group's own
 ///   `cancelled` word is set, else `0`;
-/// - `X_D = 1` iff that same group's `owner_turn` is this turn's own
-///   persistent area (`X_FRAME`), else `0` — the child-vs-owner
-///   distinction `OFF_GROUP_OWNER_TURN`'s own doc comment explains.
+/// - `X_D = 1` iff that same group's `owner_turn` is this turn — since
+///   plans/M10.md item 0c2 a `TurnId` compared against this fn's own
+///   relocated id, not an address compared against `X_FRAME` — else `0`:
+///   the child-vs-owner distinction `OFF_GROUP_OWNER_TURN`'s own doc
+///   comment explains.
 ///
 /// Clobbers `X_A`/`X_B`/`X_E`. A no-op producing `X_C = X_D = 0` when the
 /// whole build has no group arena at all, which is what keeps every
 /// pre-item-F async golden byte-identical (`emit_checkpoint_cancellation_test`
 /// below has the full reasoning); callers must not emit it in that case.
-fn emit_group_cancelled_flags(ctx: &mut FnCtx) {
+fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str) {
     ctx.push(
         encode::enc_movz(X_C, 0, 0, true),
         format!("movz {}, #0", reg_name(X_C)),
@@ -6874,17 +6900,28 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx) {
         encode::enc_cset(X_C, Cond::Ne, true),
         format!("cset {}, ne", reg_name(X_C)),
     );
+    // plans/M10.md item 0c2: `owner_turn` is a `TurnId` (a `u32` at +56),
+    // so this is a 32-bit load compared against this fn's own relocated
+    // `TurnId` immediate instead of a 64-bit load compared against
+    // `X_FRAME`. Equality only — no index→address step is needed or
+    // wanted here. `ldr w`/`cmp w`: an `x` load would fold the adjacent
+    // word in as high bits.
     ctx.push(
-        encode::enc_ldr_x_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
-        format!(
-            "ldr {}, [{}, #{OFF_GROUP_OWNER_TURN}]",
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
+        encode::enc_ldr_w_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
+        format!("ldr w{X_A}, [{}, #{OFF_GROUP_OWNER_TURN}]", reg_name(X_B)),
     );
+    let word = ctx.cur_word();
+    ctx.load_imm(X_E, 0);
+    for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+        w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_E));
+    }
+    ctx.relocs.push(Reloc::TurnIdImm {
+        word,
+        key: fn_key.to_string(),
+    });
     ctx.push(
-        encode::enc_cmp_reg(X_A, X_FRAME, true),
-        format!("cmp {}, {}", reg_name(X_A), reg_name(X_FRAME)),
+        encode::enc_cmp_reg(X_A, X_E, false),
+        format!("cmp w{X_A}, w{X_E}"),
     );
     ctx.push(
         encode::enc_cset(X_D, Cond::Eq, true),
@@ -6893,7 +6930,7 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx) {
     ctx.patch_skip(skip_no_group, SkipKind::Cbz(X_A));
 }
 
-fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx) {
+fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx, fn_key: &str) {
     if gctx.arena_capacity == 0 {
         // No `with group(...)` exists anywhere in this build — a whole-
         // program fact (`layout::RuntimeTables::group_arena_capacity`),
@@ -6914,7 +6951,7 @@ fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx) {
     // `TURN_STATUS_COMPLETED` with a garbage reply and its group's own
     // child slot harvested as `Ok`, exactly as if it had finished.
     let cancelled_tail = ctx.word_offsets.len() - 1;
-    emit_group_cancelled_flags(ctx);
+    emit_group_cancelled_flags(ctx, fn_key);
     // Terminate this activation iff the ambient group is cancelled AND
     // this turn is not that group's own owner (`OFF_GROUP_OWNER_TURN`'s
     // own doc comment): a `g.start`ed child's frame never resumes
@@ -7295,17 +7332,27 @@ fn emit_await_suspend(
             // round-trip at all.
             emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             ctx.patch_skip(skip_park, SkipKind::Cbnz(X_C));
             // Park for real: register as this group's own join waiter.
+            // plans/M10.md item 0c2: by `TurnId` (a `u32` at +48), not by
+            // the raw `X_FRAME` address it used to store — the one reader
+            // (`layout::build_group_child_poll`) derefs it, and does so
+            // through `push_turn_addr_from_id`, the single index→address
+            // rule.
+            let word = ctx.cur_word();
+            ctx.load_imm(X_A, 0);
+            for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+                w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_A));
+            }
+            ctx.relocs.push(Reloc::TurnIdImm {
+                word,
+                key: fn_key.to_string(),
+            });
             ctx.push(
-                encode::enc_str_x_imm(X_FRAME, X_B, OFF_GROUP_JOIN_WAITER as u16),
-                format!(
-                    "str {}, [{}, #{OFF_GROUP_JOIN_WAITER}]",
-                    reg_name(X_FRAME),
-                    reg_name(X_B)
-                ),
+                encode::enc_str_w_imm(X_A, X_B, OFF_GROUP_JOIN_WAITER as u16),
+                format!("str w{X_A}, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_B)),
             );
             ctx.load_imm(X_A, resume_state as i64);
             ctx.store_slot(X_A, ctx.frame.off(state_temp));
@@ -7387,7 +7434,7 @@ fn emit_await_suspend(
                 w += 8;
             }
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             ctx.patch_skip(need_park, SkipKind::Cbz(X_A));
             // Park until drain sets resume_ready.
@@ -7630,6 +7677,7 @@ fn emit_compose_staged_reply(
 /// — an `ActorCall` resume whose own ambient group is now cancelled never
 /// gets to use its stale composed `Ok(reply)`; it terminates instead, "the
 /// cancelled frame never resumes"), then jump on to the resumed state.
+#[allow(clippy::too_many_arguments)]
 fn emit_await_resume(
     resume_state: usize,
     result_temp: Temp,
@@ -7637,6 +7685,10 @@ fn emit_await_resume(
     f: &MwirFn,
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
+    // plans/M10.md item 0c2: the `Reloc::TurnIdImm` key
+    // `emit_group_cancelled_flags` below needs — this fn's own turn is
+    // what a group's `owner_turn` is now compared against.
+    fn_key: &str,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match what {
@@ -7681,7 +7733,7 @@ fn emit_await_resume(
                 );
                 ctx.store_slot(X_A, result_off);
                 ctx.checkpoint();
-                emit_checkpoint_cancellation_test(ctx, gctx);
+                emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
                 ctx.b_unconditional(state_flat_base[resume_state]);
                 return Ok(());
             }
@@ -7752,7 +7804,7 @@ fn emit_await_resume(
                         result_off + enum_payload_offset(composed_ty, 0, ctx.layout)?;
                     let op_payload_off =
                         call_error_off + enum_payload_offset(composed_err_ty, 0, ctx.layout)?;
-                    emit_group_cancelled_flags(ctx);
+                    emit_group_cancelled_flags(ctx, fn_key);
                     ctx.load_imm(X_A, CALL_ERROR_TAG_CANCELLED as i64);
                     ctx.store_slot(X_A, call_error_off);
                     let mut w = op_payload_off;
@@ -7800,7 +7852,7 @@ fn emit_await_resume(
                 // the value is composed and then immediately discarded by
                 // the termination test below, which is cheaper than
                 // branching around it.
-                emit_group_cancelled_flags(ctx);
+                emit_group_cancelled_flags(ctx, fn_key);
                 ctx.push(
                     encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
                     format!(
@@ -7834,7 +7886,7 @@ fn emit_await_resume(
                 }
             }
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
@@ -7845,7 +7897,7 @@ fn emit_await_resume(
             emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
             emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
@@ -7866,7 +7918,7 @@ fn emit_await_resume(
                 w += 8;
             }
             ctx.checkpoint();
-            emit_checkpoint_cancellation_test(ctx, gctx);
+            emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             Ok(())
         }
@@ -7900,7 +7952,7 @@ fn emit_transition(
             // count, never mid-instruction).
             if target_flat <= flat_idx {
                 ctx.checkpoint();
-                emit_checkpoint_cancellation_test(ctx, gctx);
+                emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             }
             ctx.b_unconditional(target_flat);
             Ok(())
@@ -7975,6 +8027,7 @@ fn emit_flat_entry(
             f,
             ctx,
             gctx,
+            fn_key,
             state_flat_base,
         ),
     }
