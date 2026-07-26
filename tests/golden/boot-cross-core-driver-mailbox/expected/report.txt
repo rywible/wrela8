@@ -23,11 +23,14 @@ ImageReport v0
     Child value=actor#0
   Placement id=driver#0 type=Stub core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Placement id=actor#0 type=Probe core=1 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
-    Padding offset=0x0 size=80
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
+    Padding offset=0x0 size=72
+    Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
+    Padding offset=0x68 size=416
+    Field name=abort_latch type=u64 offset=0x208 size=8
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -60,27 +63,27 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=12604
-  Section name=rodata base=0x40503190 size=470
-  Section name=abort base=0x40503368 size=120
-  Section name=checkpoint base=0x405033e0 size=104
-  Section name=rtcode base=0x40503448 size=3928
-  Section name=rtdata base=0x405043a0 size=2096
-  Section name=devregs base=0x40504bd0 size=8
+  Section name=code base=0x40500050 size=14048
+  Section name=rodata base=0x40503730 size=470
+  Section name=abort base=0x40503908 size=120
+  Section name=checkpoint base=0x40503980 size=104
+  Section name=rtcode base=0x405039e8 size=3928
+  Section name=rtdata base=0x40504940 size=2096
+  Section name=devregs base=0x40505170 size=8
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4050425c
-  CoreEntry core=2 base=0x405042c4
+  CoreEntry core=1 base=0x405047fc
+  CoreEntry core=2 base=0x40504864
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
-  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Probe mailbox=4 slot=16 frame=272 state=8
   Turn fn=cross_core_send_into_driver_mailbox frame=464
   Driver name=Stub state=8 mailbox=4 slot=16 frame=64
-  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x40504ac0
-  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x40504b18
-  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40504b70
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40504b98
+  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x40505060
+  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x405050b8
+  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40505110
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40505138
   Turns count=3 stride=512 bytes=1536
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2096
-  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40504bd0 size=8
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40505170 size=8

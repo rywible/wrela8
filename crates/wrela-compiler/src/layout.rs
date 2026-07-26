@@ -369,8 +369,12 @@ fn push_load_imm(words: &mut Vec<u32>, reg: u8, value: i64) {
     words.push(encode::enc_movk(reg, h3, 48, true));
 }
 
-/// The shared halt sequence every placeholder stub (entry, both abort
-/// symbols) ends in — module doc's own "shared halt sequence" paragraph.
+/// The shared halt sequence the entry stub and the build-image abort
+/// landings end in — module doc's own "shared halt sequence" paragraph.
+/// plans/M10.md item C / decision 655: the named `build_abort_stub`
+/// helpers are gone; build images keep only this minimal halt so
+/// `Reloc::AbortFixed`/`AbortVal` still have a landing address (the test
+/// print path lives in force-rooted `__wrela_abort` / `__wrela_abort_val`).
 fn push_halt(words: &mut Vec<u32>, exit_code: u64) {
     push_load_imm(words, SCRATCH_A, exit_code as i64);
     let exit_code_addr = machine_layout::MACHINE_INFO_BASE + machine_info::OFF_EXIT_CODE;
@@ -387,12 +391,6 @@ fn build_entry_stub() -> Vec<u32> {
     push_load_imm(&mut words, SCRATCH_A, sp_top as i64);
     words.push(encode::enc_add_imm(X_SP, SCRATCH_A, 0, true)); // `mov sp, x9`
     push_halt(&mut words, EXIT_CODE_NO_RUNTIME);
-    words
-}
-
-fn build_abort_stub(exit_code: u64) -> Vec<u32> {
-    let mut words = Vec::new();
-    push_halt(&mut words, exit_code);
     words
 }
 
@@ -2801,8 +2799,14 @@ pub fn layout_program(
         .collect();
     let runtime: Option<&RuntimeTables> = wiring.as_ref().map(|w| &w.tables);
 
-    let abort_fixed_words = build_abort_stub(EXIT_CODE_ABORT_FIXED);
-    let abort_val_words = build_abort_stub(EXIT_CODE_ABORT_VAL);
+    // plans/M10.md item C / decision 655: delete the named abort-stub
+    // builders. Build images still need a landing address for
+    // Reloc::AbortFixed/AbortVal (assert / bounds); keep a minimal halt
+    // with distinct exit codes for post-mortem, not the test print path.
+    let mut abort_fixed_words = Vec::new();
+    push_halt(&mut abort_fixed_words, EXIT_CODE_ABORT_FIXED);
+    let mut abort_val_words = Vec::new();
+    push_halt(&mut abort_val_words, EXIT_CODE_ABORT_VAL);
     // plans/M6.md item F: the checkpoint block's own vector-0 body is the
     // real deadline scan whenever this build has a group arena, so it needs
     // already-placed `rtdata` addresses — which are not known until after
@@ -2848,7 +2852,6 @@ pub fn layout_program(
                 &sizing_device_regs,
                 &sizing_pools,
                 0,
-                None, // AbortFixed reloc — abort lives in another section
             )
         })
         .transpose()?;
@@ -3069,7 +3072,7 @@ pub fn layout_program(
     // the identical shape the checkpoint block above uses.
     let runtime_block = match (&wiring, &placement) {
         (Some(w), Some(pl)) => {
-            let real = build_runtime_block(w, pl, &device_regs, &pools, 0, None)?;
+            let real = build_runtime_block(w, pl, &device_regs, &pools, 0)?;
             if real.words.len() != rtcode_words_len {
                 return Err(LayoutError::new(
                     "internal error: the runtime block's own word count changed between its \
@@ -8037,15 +8040,11 @@ pub fn resolve_runtime_test_args(
 /// derivation. Item W's own doc comment on `ActorInit` records what this
 /// used to be (a zero-argument-only call, and a rejection for everything
 /// else) and why it is not that any more.
-/// `abort_fixed_local`: when `Some(abs_word)`, a fallible `init`'s `Err`
-/// path `bl_to`s that harness-local `__wrela_abort` (the test image —
-/// same section, absolute word index already known). When `None`, the
-/// path emits `Reloc::AbortFixed` instead (the ordinary `layout_program`
-/// image, whose abort lives in a different section). Either way the
-/// guest loads the interned message into `x0`/`x1` first; the test
-/// harness abort prints it, and the build-path stub ignores it and
-/// exits — the same contract an `assert` failure inside `init` already
-/// has on each flavor.
+/// A fallible `init`'s `Err` path emits `Reloc::AbortFixed` (plans/M10.md
+/// item C: resolves to force-rooted `__wrela_abort` on test images, and
+/// to the minimal halt landing on build images). The guest loads the
+/// interned message into `x0`/`x1` first — the same contract an `assert`
+/// failure inside `init` already has on each flavor.
 #[allow(clippy::too_many_arguments)]
 fn build_boot_init(
     actor_addrs: &[ActorAddrs],
@@ -8057,7 +8056,6 @@ fn build_boot_init(
     device_regs: &[DeviceRegs],
     pools: &[PoolPlacement],
     start: usize,
-    abort_fixed_local: Option<usize>,
 ) -> Result<Asm, LayoutError> {
     let mut a = Asm::new(start);
     // Called via `bl_to` from `build_entry_driver` and itself calls out
@@ -8145,13 +8143,9 @@ fn build_boot_init(
             // `init` failed; the BootError variant is not recovered.
             a.load_rodata_addr_at(0, msg_off);
             a.load_imm(1, msg_len as u64);
-            if let Some(abort_abs) = abort_fixed_local {
-                a.bl_to(abort_abs);
-            } else {
-                let w = a.abs();
-                a.push(encode::enc_bl(0));
-                a.relocs.push(Reloc::AbortFixed { word: w });
-            }
+            let w = a.abs();
+            a.push(encode::enc_bl(0));
+            a.relocs.push(Reloc::AbortFixed { word: w });
             a.patch_cbz(ok_fixup, 9);
         } else {
             a.bl_call_key(&call.key);
@@ -8491,7 +8485,6 @@ fn build_runtime_block(
     device_regs: &[DeviceRegs],
     pools: &[PoolPlacement],
     start: usize,
-    abort_fixed_local: Option<usize>,
 ) -> Result<RuntimeBlock, LayoutError> {
     let glue = build_runtime_glue_block(
         &wiring.tables,
@@ -8518,7 +8511,6 @@ fn build_runtime_block(
         device_regs,
         pools,
         boot_init_start,
-        abort_fixed_local,
     )?;
     words.extend(boot_init.words.iter().copied());
     relocs.extend(boot_init.relocs.iter().cloned());
@@ -8620,7 +8612,7 @@ fn build_runtime_block(
 //    summary line — is now `line_begin`, one or more `ring_append`
 //    calls, `line_commit`: exactly one descriptor, regardless of how
 //    many pieces compose the line. `build_entry_driver`/
-//    `build_abort_fixed`/`build_abort_val` (below) all follow this
+//    `__wrela_abort`/`__wrela_abort_val` (force-rooted wrela) all follow this
 //    pattern; an abort continues (never restarts) the line the entry
 //    driver's own prefix already began, so a `FAILED` line is still one
 //    descriptor covering "test <name>: FAILED ...\n" in full.
@@ -8845,13 +8837,6 @@ impl Asm {
         self.bl_call_key("__wrela_console_append_bytes");
     }
 
-    /// plans/M10.md item B4: like [`Self::bl_console_append_bytes`] but
-    /// `x0`/`x1` already hold `(base, len)` — copies `x1` into `x2`.
-    fn bl_console_append_bytes_xy(&mut self) {
-        self.push(encode::enc_mov_reg(2, 1, true));
-        self.bl_call_key("__wrela_console_append_bytes");
-    }
-
     /// plans/M10.md item B4: `BL __wrela_console_append_line_buf`.
     /// Pre: `x0` holds the byte length written into `OFF_TEST_LINE_BUF`.
     fn bl_console_append_line_buf(&mut self) {
@@ -8947,6 +8932,12 @@ fn append_rodata(rodata: &mut Vec<Vec<u8>>, cursor: &mut usize, bytes: Vec<u8>) 
 /// `machine_info::OFF_TEST_FAILED` and long-jump to the landing pad's own
 /// continuation address (module doc's own "landing pad" section) — never
 /// `RET`. Clobbers `x9`/`x10`.
+///
+/// plans/M10.md item C: live abort print clears latch / increments fail in
+/// wrela (`finish_abort`) then `bl`s `__wrela_abort_tail` (floor category 4
+/// `LDR`+`BR`, decision 650). Kept for the unit-test latch probe and for
+/// the hand-asm builders retained until C's delete commit.
+#[cfg(test)]
 fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
     // Clear latch before the continuation jump so a later green test never
     // observes a stale "already aborting" bit from a prior abort.
@@ -8962,115 +8953,59 @@ fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
     a.push(encode::enc_br(9));
 }
 
-/// `__wrela_abort(x0=msg_ptr, x1=msg_len) -> noreturn` — the test-image
-/// variant (module doc's "Item E instead adds a second ... `__wrela_abort`"
-/// paragraph): appends `FAILED ` (shared literal) then the caller's own
-/// fixed message, then a newline, to the *already-open* report line
-/// `build_entry_driver`'s own prefix append began (module doc's own "one
-/// descriptor per LINE" section — an abort continues that line, it never
-/// begins a new one), commits it as the one descriptor covering the whole
-/// `test <name>: FAILED ...\n` line, then runs the landing pad's own tail
-/// (above). `msg_ptr`/`msg_len` are stashed on the stack across the two
-/// `__wrela_ring_append` calls that need it (`x0`-`x18` are all
-/// caller-saved under this ABI, module doc above — nothing survives a
-/// `BL` on its own).
-///
-/// plans/M10.md item B1 / decision 591: a one-word re-entrancy latch at
-/// `OFF_ABORT_LATCH` routes a second entry (bounds failure inside the
-/// console print path) straight to the halt tail without printing again.
-fn build_abort_fixed(
-    addrs: &HarnessAddrs,
-    start: usize,
-    failed_word_off: usize,
-    newline_off: usize,
-) -> Asm {
-    // M10 B5: console append/commit live only as force-rooted wrela
-    // (`bl_call_key`); hand-asm builders deleted.
-    let mut a = Asm::new(start);
-    // Latch check before any SP work — re-entry must not touch the stack.
-    a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    let reenter = a.skip_placeholder(); // cbnz x10 → shared_tail
-    a.push(encode::enc_movz(10, 1, 0, true));
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-
-    a.push(encode::enc_sub_imm(31, 31, 16, true)); // sub sp, sp, #16
-    a.push(encode::enc_str_x_imm(0, 31, 0));
-    a.push(encode::enc_str_x_imm(1, 31, 8));
-
-    a.load_rodata_addr_at(0, failed_word_off);
-    a.bl_console_append_bytes(7);
-
-    a.push(encode::enc_ldr_x_imm(0, 31, 0));
-    a.push(encode::enc_ldr_x_imm(1, 31, 8));
-    a.bl_console_append_bytes_xy();
-
-    a.load_rodata_addr_at(0, newline_off);
-    a.bl_console_append_bytes(1);
-
-    a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
-    a.bl_call_key("__wrela_line_commit");
-    a.patch_cbnz(reenter, 10);
-    push_abort_tail(&mut a, addrs);
-    a
-}
-
-/// `__wrela_abort_val(x0=prefix_ptr, x1=prefix_len, x2=value,
-/// x3=value_signed, x4=suffix_ptr, x5=suffix_len) -> noreturn` — the
-/// test-image variant: appends `FAILED `, the prefix, `value` rendered as
-/// decimal (via `__wrela_fmt_dec`), the suffix, then a newline, onto the
-/// already-open line (same "continue, don't restart" rule as
-/// `build_abort_fixed` above), commits it as one descriptor, then the
-/// landing-pad tail. All six incoming args are stashed on the stack up
-/// front (48 bytes) and reloaded around each of the four
-/// `__wrela_ring_append`/one `__wrela_fmt_dec` calls that clobber them.
-///
-/// Same re-entrancy latch as `build_abort_fixed` (decision 591).
-fn build_abort_val(
-    addrs: &HarnessAddrs,
-    start: usize,
-    failed_word_off: usize,
-    newline_off: usize,
-) -> Asm {
-    // M10 B5: fmt_dec / console append / commit are force-rooted wrela only.
-    let mut a = Asm::new(start);
-    a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    let reenter = a.skip_placeholder(); // cbnz x10 → shared_tail
-    a.push(encode::enc_movz(10, 1, 0, true));
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-
-    a.push(encode::enc_sub_imm(31, 31, 48, true));
-    for (i, reg) in [0u8, 1, 2, 3, 4, 5].into_iter().enumerate() {
-        a.push(encode::enc_str_x_imm(reg, 31, (i * 8) as u16));
+/// plans/M10.md item C / decision 650: floor category 4 long-jump only —
+/// materialize `OFF_TEST_CONTINUATION`, `LDR x9, [x9]`, `BR x9`. Overwrites
+/// the compiled `__wrela_abort_tail` stub so test images never `ret` from
+/// abort.
+fn build_abort_tail_codegen_fn() -> crate::codegen::CodegenFn {
+    let addr = machine_layout::MACHINE_INFO_BASE + mi::OFF_TEST_CONTINUATION;
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let bits = addr;
+    let h0 = (bits & 0xFFFF) as u16;
+    let h1 = ((bits >> 16) & 0xFFFF) as u16;
+    let h2 = ((bits >> 32) & 0xFFFF) as u16;
+    let h3 = ((bits >> 48) & 0xFFFF) as u16;
+    words.push((
+        encode::enc_movz(9, h0, 0, true),
+        format!("movz x9, #{h0:#x}"),
+    ));
+    words.push((
+        encode::enc_movk(9, h1, 16, true),
+        format!("movk x9, #{h1:#x}, lsl #16"),
+    ));
+    words.push((
+        encode::enc_movk(9, h2, 32, true),
+        format!("movk x9, #{h2:#x}, lsl #32"),
+    ));
+    words.push((
+        encode::enc_movk(9, h3, 48, true),
+        format!("movk x9, #{h3:#x}, lsl #48"),
+    ));
+    words.push((encode::enc_ldr_x_imm(9, 9, 0), "ldr x9, [x9]".to_string()));
+    words.push((encode::enc_br(9), "br x9".to_string()));
+    crate::codegen::CodegenFn {
+        frame_size: 0,
+        code: words,
+        relocs: Vec::new(),
     }
-
-    a.load_rodata_addr_at(0, failed_word_off);
-    a.bl_console_append_bytes(7);
-
-    a.push(encode::enc_ldr_x_imm(0, 31, 0));
-    a.push(encode::enc_ldr_x_imm(1, 31, 8));
-    a.bl_console_append_bytes_xy(); // prefix
-
-    a.push(encode::enc_ldr_x_imm(0, 31, 16));
-    a.push(encode::enc_ldr_x_imm(1, 31, 24));
-    a.bl_call_key("__wrela_fmt_dec"); // x0 = len, written into OFF_TEST_LINE_BUF
-    a.bl_console_append_line_buf();
-
-    a.push(encode::enc_ldr_x_imm(0, 31, 32));
-    a.push(encode::enc_ldr_x_imm(1, 31, 40));
-    a.bl_console_append_bytes_xy(); // suffix
-
-    a.load_rodata_addr_at(0, newline_off);
-    a.bl_console_append_bytes(1);
-
-    a.push(encode::enc_add_imm(31, 31, 48, true));
-    a.bl_call_key("__wrela_line_commit");
-    a.patch_cbnz(reenter, 10);
-    push_abort_tail(&mut a, addrs);
-    a
 }
 
+/// Replace the compiled `__wrela_abort_tail` stub with the floor long-jump.
+/// Inlined by `with_force_rooted_runtime` today.
+fn install_abort_tail_floor(program: &mut CodegenProgram) -> Result<(), LayoutError> {
+    if program.fns.contains_key("__wrela_abort") || program.fns.contains_key("__wrela_abort_val") {
+        if !program.fns.contains_key("__wrela_abort_tail") {
+            return Err(LayoutError::new(
+                "internal error: force-rooted abort needs `__wrela_abort_tail` in the emit set",
+            ));
+        }
+        program.fns.insert(
+            "__wrela_abort_tail".to_string(),
+            build_abort_tail_codegen_fn(),
+        );
+    }
+    Ok(())
+}
 /// The runtime test image's own entry driver (module doc's "Why the entry
 /// driver needs no runtime loop at all"): installs core 0's stack pointer,
 /// zeroes every harness counter, then one straight-line block per
@@ -9080,7 +9015,7 @@ fn build_abort_val(
 /// covering the whole `test <name>: ok\n` text) and increment the passed
 /// counter on an ordinary return (an abort anywhere inside that `BL`'s own
 /// call tree instead continues and commits *this same* line itself —
-/// `build_abort_fixed`/`build_abort_val`'s own doc — then lands directly at
+/// `__wrela_abort`/`__wrela_abort_val`'s own doc — then lands directly at
 /// the top of the *next* block, module doc's own landing-pad section) —
 /// then the one merged summary line (begin/append/append/append/append/
 /// commit, identically) and the exit-code/halt tail. `x8` is set to the
@@ -9094,7 +9029,6 @@ fn build_entry_driver(
     addrs: &HarnessAddrs,
     start: usize,
     harness_base: u64,
-    abort_fixed_start: usize,
     runtime_tests: &[String],
     // The park-and-resume additions: which tests are async (compiled
     // state machines whose calls return TURN_STATUS_* — a sync test's
@@ -9374,7 +9308,9 @@ fn build_entry_driver(
                 // pending either — no progress is possible, ever.
                 a.load_rodata_addr_at(0, ddl_off);
                 a.load_imm(1, DEADLOCK_MSG.len() as u64);
-                a.bl_to(abort_fixed_start); // noreturn (landing pad)
+                // M10 C: force-rooted `__wrela_abort` (hand-asm builders
+                // remain in-tree until the delete commit).
+                a.bl_call_key("__wrela_abort"); // noreturn (landing pad)
                 let reenter = a.abs();
                 a.patch_cbnz(skip_reenter, 10);
                 debug_assert_eq!(reenter, a.abs());
@@ -9579,10 +9515,9 @@ pub fn check_transcript_bound(
 /// `Rodata` entries and every ordinary compiled fn's `Call`/`Rodata`/
 /// `AbortFixed`/`AbortVal` — resolves through the identical `patch_bl`/
 /// `patch_adrp_add` this file's item-D half already proved;
-/// `AbortFixed`/`AbortVal` targets are simply this section's own
-/// `abort_fixed_start`/`abort_val_start` words instead of a separate
-/// section, since the test image's `__wrela_abort`/`__wrela_abort_val`
-/// symbols *are* these words.
+/// `AbortFixed`/`AbortVal` targets are force-rooted `__wrela_abort` /
+/// `__wrela_abort_val` in the `code` section (plans/M10.md item C); the
+/// floor category 4 long-jump is `__wrela_abort_tail` (hand-asm).
 ///
 /// `Err` for a genuine internal inconsistency, **or** for a program whose
 /// worst-case transcript provably cannot fit (`check_transcript_bound`,
@@ -9628,30 +9563,36 @@ fn with_force_rooted_runtime(program: &CodegenProgram) -> Result<CodegenProgram,
         .copied()
         .filter(|k| !program.fns.contains_key(*k))
         .collect();
-    if missing.is_empty() {
-        return Ok(program.clone());
-    }
-    let runtime_cg = codegen_runtime_force_roots().map_err(|m| {
-        LayoutError::new(format!(
-            "internal error: could not codegen force-rooted runtime helpers ({missing:?}): {m}"
-        ))
-    })?;
-    let mut out = program.clone();
-    let rodata_byte_base: usize = out.rodata.iter().map(Vec::len).sum();
-    for (key, mut f) in runtime_cg.fns {
-        if out.fns.contains_key(&key) {
-            continue;
-        }
-        if rodata_byte_base != 0 {
-            for r in &mut f.relocs {
-                if let Reloc::Rodata { byte_offset, .. } = r {
-                    *byte_offset += rodata_byte_base;
+    let mut out = if missing.is_empty() {
+        program.clone()
+    } else {
+        let runtime_cg = codegen_runtime_force_roots().map_err(|m| {
+            LayoutError::new(format!(
+                "internal error: could not codegen force-rooted runtime helpers ({missing:?}): {m}"
+            ))
+        })?;
+        let mut merged = program.clone();
+        let rodata_byte_base: usize = merged.rodata.iter().map(Vec::len).sum();
+        for (key, mut f) in runtime_cg.fns {
+            if merged.fns.contains_key(&key) {
+                continue;
+            }
+            if rodata_byte_base != 0 {
+                for r in &mut f.relocs {
+                    if let Reloc::Rodata { byte_offset, .. } = r {
+                        *byte_offset += rodata_byte_base;
+                    }
                 }
             }
+            merged.fns.insert(key, f);
         }
-        out.fns.insert(key, f);
-    }
-    out.rodata.extend(runtime_cg.rodata);
+        merged.rodata.extend(runtime_cg.rodata);
+        merged
+    };
+    // plans/M10.md item C / decision 650: overwrite the compiled
+    // `__wrela_abort_tail` stub with the floor category 4 `LDR`+`BR`.
+    // Test images must never `ret` from abort.
+    install_abort_tail_floor(&mut out)?;
     Ok(out)
 }
 
@@ -9749,11 +9690,6 @@ pub fn layout_test_image(
     let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
     let mut rodata_cursor: usize = rodata.iter().map(Vec::len).sum();
 
-    // Shared literals used by both abort bodies, interned once, before
-    // either is built (both need their byte offsets).
-    let failed_word_off = append_rodata(&mut rodata, &mut rodata_cursor, b"FAILED ".to_vec());
-    let abort_newline_off = append_rodata(&mut rodata, &mut rodata_cursor, b"\n".to_vec());
-
     // plans/M6.md item D: the real boot wiring C's own sub-note deferred —
     // `RuntimeTables` (item C's own static sizing pass, unchanged) plus
     // each actor's own dispatch-key list (`"{Actor}.{method}"`, the exact
@@ -9771,23 +9707,16 @@ pub fn layout_test_image(
         None => None,
     };
     // plans/M7.md item E1: intern fallible-`init` abort messages before
-    // either runtime-block assembly pass (same pool as the shared
-    // `FAILED `/newline literals above).
+    // either runtime-block assembly pass.
     if let Some(w) = wiring.as_mut() {
         intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
     }
     let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());
 
-    let abort_fixed_start = 0usize;
-    let abort_fixed_asm = build_abort_fixed(
-        &addrs,
-        abort_fixed_start,
-        failed_word_off,
-        abort_newline_off,
-    );
-    let abort_val_start = abort_fixed_start + abort_fixed_asm.words.len();
-    let abort_val_asm =
-        build_abort_val(&addrs, abort_val_start, failed_word_off, abort_newline_off);
+    // plans/M10.md item C: abort print bodies are force-rooted wrela in
+    // `code` (`__wrela_abort` / `__wrela_abort_val`); harness no longer
+    // begins with hand-asm abort. Checkpoint is first.
+    let checkpoint_start = 0usize;
     // plans/M6.md item E: `__wrela_checkpoint_service` + its own
     // `__wrela_vector0_service` sibling, the exact same real routine pair
     // `layout_program`'s own `build_checkpoint_and_vector_stub` builds for
@@ -9796,7 +9725,6 @@ pub fn layout_test_image(
     // fns (`program.fns`, below) can carry `Reloc::CheckpointService`
     // exactly like `Reloc::AbortFixed`/`AbortVal`, and the entry driver's
     // own park-resume path (below) calls the service directly too.
-    let checkpoint_start = abort_val_start + abort_val_asm.words.len();
     // plans/M6.md item F: built twice (shape-only, then with real `rtdata`
     // addresses), exactly like the runtime glue block below — the vector-0
     // body is now the real deadline scan whenever this build has a group
@@ -9861,7 +9789,6 @@ pub fn layout_test_image(
                 &sizing_device_regs,
                 &sizing_pools,
                 glue_start,
-                Some(abort_fixed_start),
             )
         })
         .transpose()?;
@@ -9883,7 +9810,6 @@ pub fn layout_test_image(
         &addrs,
         entry_start,
         image_base,
-        abort_fixed_start,
         runtime_tests,
         async_tests,
         rt_run_one_start,
@@ -9898,11 +9824,9 @@ pub fn layout_test_image(
 
     let mut harness_words: Vec<u32> = Vec::new();
     let mut harness_relocs: Vec<Reloc> = Vec::new();
-    for asm in [abort_fixed_asm, abort_val_asm, checkpoint_asm] {
-        debug_assert_eq!(asm.start, harness_words.len());
-        harness_relocs.extend(asm.relocs);
-        harness_words.extend(asm.words);
-    }
+    debug_assert_eq!(checkpoint_asm.start, harness_words.len());
+    harness_relocs.extend(checkpoint_asm.relocs);
+    harness_words.extend(checkpoint_asm.words);
     debug_assert_eq!(glue_start, harness_words.len());
     if let Some(b) = &dummy_block {
         harness_words.extend(b.words.iter().copied());
@@ -10015,14 +9939,8 @@ pub fn layout_test_image(
                     harness_words[checkpoint_start + i] = *word;
                 }
             }
-            let real_block = build_runtime_block(
-                w,
-                &placement,
-                &device_regs,
-                &early_pools,
-                glue_start,
-                Some(abort_fixed_start),
-            )?;
+            let real_block =
+                build_runtime_block(w, &placement, &device_regs, &early_pools, glue_start)?;
             if real_block.words.len() != runtime_words_len {
                 return Err(LayoutError::new(
                     "internal error: the runtime block's own word count changed between its \
@@ -10175,9 +10093,32 @@ pub fn layout_test_image(
                 let addr = turn_area_addr(key)?;
                 patch_load_imm_words(&mut harness_words, *word, addr);
             }
-            Reloc::AbortFixed { .. }
-            | Reloc::AbortVal { .. }
-            | Reloc::CheckpointService { .. }
+            Reloc::AbortFixed { word } => {
+                // plans/M10.md item C: fallible-init Err path in boot_init.
+                let target_base = *fn_word_base.get("__wrela_abort").ok_or_else(|| {
+                    LayoutError::new(
+                        "internal error: harness AbortFixed needs `__wrela_abort` but it was \
+                         never codegen'd"
+                            .to_string(),
+                    )
+                })?;
+                let this_addr = harness_base + (*word as u64) * 4;
+                let target_addr = code_base + (target_base as u64) * 4;
+                patch_bl(&mut harness_words, *word, this_addr, target_addr)?;
+            }
+            Reloc::AbortVal { word } => {
+                let target_base = *fn_word_base.get("__wrela_abort_val").ok_or_else(|| {
+                    LayoutError::new(
+                        "internal error: harness AbortVal needs `__wrela_abort_val` but it was \
+                         never codegen'd"
+                            .to_string(),
+                    )
+                })?;
+                let this_addr = harness_base + (*word as u64) * 4;
+                let target_addr = code_base + (target_base as u64) * 4;
+                patch_bl(&mut harness_words, *word, this_addr, target_addr)?;
+            }
+            Reloc::CheckpointService { .. }
             | Reloc::TurnIdImm { .. }
             | Reloc::TurnsBase { .. }
             | Reloc::TurnStride { .. }
@@ -10186,8 +10127,8 @@ pub fn layout_test_image(
             | Reloc::WakePending { .. }
             | Reloc::MailboxAddr { .. } => {
                 return Err(LayoutError::new(
-                    "internal error: the harness section itself must never emit an \
-                     AbortFixed/AbortVal/CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
+                    "internal error: the harness section itself must never emit a \
+                     CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
                      GroupArenaBase/IrqVector/WakePending/MailboxAddr reloc",
                 ));
             }
@@ -10239,13 +10180,30 @@ pub fn layout_test_image(
                     patch_adrp_add(&mut code_words, base + word_adrp, this_addr, target_addr)?;
                 }
                 Reloc::AbortFixed { word } => {
+                    // plans/M10.md item C: resolve to force-rooted
+                    // `__wrela_abort` in `code` (print + finish_abort +
+                    // floor BR via `__wrela_abort_tail`).
+                    let target_base = fn_word_base.get("__wrela_abort").ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: Reloc::AbortFixed needs `__wrela_abort` but it was \
+                             never codegen'd"
+                                .to_string(),
+                        )
+                    })?;
                     let this_addr = code_base + ((base + word) * 4) as u64;
-                    let target_addr = harness_base + (abort_fixed_start as u64) * 4;
+                    let target_addr = code_base + (*target_base as u64) * 4;
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::AbortVal { word } => {
+                    let target_base = fn_word_base.get("__wrela_abort_val").ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: Reloc::AbortVal needs `__wrela_abort_val` but it was \
+                             never codegen'd"
+                                .to_string(),
+                        )
+                    })?;
                     let this_addr = code_base + ((base + word) * 4) as u64;
-                    let target_addr = harness_base + (abort_val_start as u64) * 4;
+                    let target_addr = code_base + (*target_base as u64) * 4;
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::CheckpointService { word } => {
@@ -11369,8 +11327,7 @@ pub struct Store:
             }),
             None,
         ];
-        let asm =
-            build_boot_init(&addrs, &[], &[8, 8], &[], &calls, &[], &[], &[], 0, None).unwrap();
+        let asm = build_boot_init(&addrs, &[], &[8, 8], &[], &calls, &[], &[], &[], 0).unwrap();
         let bl_word = asm.relocs.iter().find_map(|r| match r {
             Reloc::Call { word, key } if key == "A.init" => Some(*word),
             _ => None,
@@ -11906,6 +11863,52 @@ fn two():
         let tests = vec!["one_test".to_string()];
         assert!(check_transcript_bound(&program, &tests).is_err());
     }
+
+    /// plans/M10.md item C / decision 600 (note 599): a `wrela build`
+    /// image's AbortFixed/AbortVal landings are halt-only — they never
+    /// call the console append/commit path. Console overflow there is
+    /// unreachable; extending `check_transcript_bound` to `layout_program`
+    /// would check a transcript shape build images do not produce.
+    #[test]
+    fn layout_program_abort_landings_are_halt_only() {
+        let mut expected_fixed = Vec::new();
+        push_halt(&mut expected_fixed, EXIT_CODE_ABORT_FIXED);
+        let mut expected_val = Vec::new();
+        push_halt(&mut expected_val, EXIT_CODE_ABORT_VAL);
+
+        let mut fns = BTreeMap::new();
+        fns.insert(
+            "f".to_string(),
+            crate::codegen::CodegenFn {
+                frame_size: 0,
+                code: vec![(encode::enc_ret(30), "ret".to_string())],
+                relocs: Vec::new(),
+            },
+        );
+        let program = CodegenProgram {
+            fns,
+            rodata: Vec::new(),
+        };
+        let layout = layout_program(&program, None).unwrap();
+        let abort = layout
+            .sections
+            .iter()
+            .find(|s| s.name == "abort")
+            .expect("abort section");
+        let abort_bytes = (expected_fixed.len() + expected_val.len()) * 4;
+        assert_eq!(abort.size, abort_bytes as u64);
+
+        let off = (abort.base - machine_layout::IMAGE_BASE) as usize;
+        let mut expected = Vec::new();
+        for w in expected_fixed.iter().chain(expected_val.iter()) {
+            expected.extend_from_slice(&w.to_le_bytes());
+        }
+        assert_eq!(
+            &layout.blob[off..off + expected.len()],
+            expected.as_slice(),
+            "build-image abort landings must be push_halt, not the print path"
+        );
+    }
 }
 
 // ===========================================================================
@@ -12099,6 +12102,10 @@ mod harness_jit {
     /// `__wrela_abort` with the latch already set skips printing and
     /// lands at the shared halt/continuation tail. First entry sets the
     /// latch and clears it in that same tail.
+    ///
+    /// plans/M10.md item C: print bodies are wrela; this probe keeps the
+    /// latch+tail shape in hand-asm so the unit test does not need a
+    /// full force-rooted runtime JIT.
     #[test]
     fn abort_reentrancy_latch_skips_print_on_second_entry() {
         let ram = HostRam::new(4096 * 4);
@@ -12108,18 +12115,22 @@ mod harness_jit {
             data_base: ram.base() + 4096 * 2,
             exit_mmio_addr: 0,
         };
-        // Combined page: [ret stub][abort_fixed][landing ret]
-        // Console append/commit are force-rooted wrela (not on this page);
-        // re-entry never reaches them. Abort starts at word 1; continuation
-        // lands at the final `ret`.
+        // Combined page: [ret stub][latch probe][landing ret]
+        // Probe mirrors `__wrela_abort`'s latch check + `finish_abort` /
+        // `push_abort_tail` without calling console helpers.
         let ret = encode::enc_ret(30);
         let abort_start = 1usize;
-        let abort = build_abort_fixed(&addrs, abort_start, 0, 0);
-        // Rodata relocs for FAILED/newline are unresolved here — re-entry
-        // never reaches them. First entry would need real rodata; we only
-        // exercise the latch-set path's early exit.
+        let mut a = Asm::new(abort_start);
+        a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
+        a.push(encode::enc_ldr_x_imm(10, 9, 0));
+        let reenter = a.skip_placeholder(); // cbnz x10 → shared_tail
+        a.push(encode::enc_movz(10, 1, 0, true));
+        a.push(encode::enc_str_x_imm(10, 9, 0));
+        // (no print — first-entry body would call console helpers here)
+        a.patch_cbnz(reenter, 10);
+        push_abort_tail(&mut a, &addrs);
         let mut words = vec![ret];
-        words.extend(abort.words.iter().copied());
+        words.extend(a.words.iter().copied());
         let land_off = words.len();
         words.push(ret);
         let page = ExecPage::new(&words);
