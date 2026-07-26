@@ -5,6 +5,11 @@
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
+//!              (from M1, also parse). `corpus --sema` (plans/M9.md item
+//!              J1) additionally sema-checks every parseable block,
+//!              classifies failures as noise vs doc/compiler
+//!              disagreement, and reports the count without failing —
+//!              off by default; bare `corpus` and `check` are unchanged.
 //!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async]
 //!              [--iters N] [--seed S]; deterministic in-tree fuzzer
 //!              (plans/M1.md items B/E, plans/M2.md item I, plans/M3.md
@@ -193,7 +198,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("check") => check(),
         Some("golden") => golden(args.iter().any(|a| a == "--update")),
-        Some("corpus") => corpus(),
+        Some("corpus") => corpus(&args[1..]),
         Some("roundtrip") => roundtrip(),
         Some("report-determinism") => report_determinism(),
         Some("ledger") => ledger(),
@@ -218,7 +223,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -263,7 +268,7 @@ fn check() -> Result<(), String> {
     golden(false)?;
     report_determinism()?;
     diff_eval_smoke()?;
-    corpus()?;
+    corpus(&[])?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
     fuzz_sema_smoke()?;
@@ -419,7 +424,22 @@ fn extract_example_files() -> Result<Vec<DocBlock>, String> {
 /// fragment (an illustrative snippet, not a complete construct) and stays
 /// lex-only. `docs.examples.wrela-blocks-parse` is the ledger clause for
 /// the parse half; `docs.examples.wrela-blocks-lex` already covered lexing.
-fn corpus() -> Result<(), String> {
+///
+/// plans/M9.md item J1: `corpus --sema` additionally sema-checks every
+/// parseable block and reports noise vs disagreement counts without
+/// failing. Off by default — bare `corpus` output stays byte-identical.
+fn corpus(args: &[String]) -> Result<(), String> {
+    let mut sema = false;
+    for a in args {
+        match a.as_str() {
+            "--sema" => sema = true,
+            other => {
+                return Err(format!(
+                    "corpus: unknown argument `{other}` (want `corpus` or `corpus --sema`)"
+                ));
+            }
+        }
+    }
     let out_dir = root().join("target/corpus");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
     let (blocks, mut failures) = extract_doc_blocks()?;
@@ -427,6 +447,7 @@ fn corpus() -> Result<(), String> {
     let mut lexed = 0usize;
     let mut parsed = 0usize;
     let mut fragments = 0usize;
+    let mut sema_rows: Vec<CorpusSemaRow> = Vec::new();
     for b in blocks.into_iter().chain(examples) {
         std::fs::write(out_dir.join(&b.name), &b.body)
             .map_err(|e| format!("write corpus {}: {e}", b.name))?;
@@ -450,7 +471,12 @@ fn corpus() -> Result<(), String> {
             continue;
         }
         match wrela_compiler::syntax::parser::parse_any(tokens) {
-            Ok(_) => parsed += 1,
+            Ok(parsed_ast) => {
+                parsed += 1;
+                if sema {
+                    sema_rows.push(corpus_sema_one(&b, parsed_ast)?);
+                }
+            }
             Err(e) => failures.push(format!(
                 "{}:{}: parse error at block line {}:{}: {}",
                 b.doc.display(),
@@ -461,14 +487,320 @@ fn corpus() -> Result<(), String> {
             )),
         }
     }
-    if failures.is_empty() {
-        println!("corpus: lexed {lexed}, parsed {parsed}, fragments skipped {fragments}");
-        Ok(())
-    } else {
+    if !failures.is_empty() {
         for f in &failures {
             eprintln!("{f}");
         }
-        Err(format!("corpus: {} failure(s)", failures.len()))
+        return Err(format!("corpus: {} failure(s)", failures.len()));
+    }
+    println!("corpus: lexed {lexed}, parsed {parsed}, fragments skipped {fragments}");
+    if sema {
+        print_corpus_sema_report(&sema_rows);
+    }
+    Ok(())
+}
+
+/// One `--sema` outcome (plans/M9.md item J1). `kind` is the mechanical
+/// category; see `classify_corpus_sema_failure`.
+#[derive(Debug)]
+struct CorpusSemaRow {
+    loc: String,
+    section: String,
+    kind: CorpusSemaKind,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CorpusSemaKind {
+    Ok,
+    /// Incomplete-by-nature: undeclared helper names, missing imported
+    /// modules an aspirational example names, etc.
+    Noise,
+    /// Genuine doc/compiler disagreement (or unclassifiable — fail closed).
+    Disagreement,
+}
+
+/// Sema-check one parseable corpus block. Fragments are wrapped so
+/// declarations stay at module scope and statements sit inside a
+/// synthetic `fn _corpus_snippet()` (decision 501). Import-bearing
+/// modules load through `loader::load_closure` on the real file path so
+/// path-agreement and missing-module errors surface honestly (decision
+/// 503).
+fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, String> {
+    let loc = format!("{}:{}", display_repo_path(&b.doc), b.start_line);
+    let section = nearest_doc_section(&b.doc, b.start_line);
+    let marker = corpus_incomplete_marker(&b.body);
+    let result = match parsed_ast {
+        Parsed::Module(module) => {
+            if module.imports.is_empty() {
+                let path = synthetic_module_path(&module);
+                sema::check(&module, &path).map_err(|e| format!("[{}] {}", e.category, e.message))
+            } else {
+                // Real on-disk example (or a future markdown-embedded
+                // module materialized next to its doc): load the closure
+                // from the block's own file path so module/path agreement
+                // is checked against the name the tree actually ships.
+                corpus_sema_load_file(&b.doc)
+            }
+        }
+        Parsed::Fragment(entries) => {
+            let wrapped = wrap_corpus_fragment(&entries);
+            let tokens = lexer::lex(&wrapped).map_err(|e| {
+                format!(
+                    "{}:{}: --sema wrap re-lex failed: {}",
+                    b.doc.display(),
+                    b.start_line,
+                    e.message
+                )
+            })?;
+            let module = parser::parse(tokens).map_err(|e| {
+                format!(
+                    "{}:{}: --sema wrap re-parse failed: {}",
+                    b.doc.display(),
+                    b.start_line,
+                    e.message
+                )
+            })?;
+            sema::check(&module, "corpus/snippet.wr")
+                .map_err(|e| format!("[{}] {}", e.category, e.message))
+        }
+    };
+    match result {
+        Ok(()) => {
+            if let Some(reason) = marker {
+                // Marker present but the block checks clean — still
+                // report as ok; the marker is stale and J2 should drop it.
+                Ok(CorpusSemaRow {
+                    loc,
+                    section,
+                    kind: CorpusSemaKind::Ok,
+                    detail: format!("ok (stale corpus:incomplete marker: {reason})"),
+                })
+            } else {
+                Ok(CorpusSemaRow {
+                    loc,
+                    section,
+                    kind: CorpusSemaKind::Ok,
+                    detail: "ok".into(),
+                })
+            }
+        }
+        Err(detail) => {
+            let kind = if marker.is_some() {
+                CorpusSemaKind::Noise
+            } else {
+                classify_corpus_sema_failure(&detail)
+            };
+            let detail = match marker {
+                Some(reason) => format!("{detail} [corpus:incomplete: {reason}]"),
+                None => detail,
+            };
+            Ok(CorpusSemaRow {
+                loc,
+                section,
+                kind,
+                detail,
+            })
+        }
+    }
+}
+
+fn corpus_sema_load_file(path: &Path) -> Result<(), String> {
+    // Prefer a repo-relative path so the loader's path-agreement
+    // diagnostic names the tree path a human greps, not `/private/tmp/...`.
+    let rel = path.strip_prefix(root()).unwrap_or(path);
+    let loaded = loader::load_closure(rel).map_err(|e| match e {
+        loader::LoadError::Lex(e) => format!("[lex] {}", e.message),
+        loader::LoadError::Parse(e) => format!("[parse] {}", e.message),
+        loader::LoadError::Build(e) => format!("[{}] {}", e.category, e.message),
+    })?;
+    let mut modules = BTreeMap::new();
+    let mut paths = BTreeMap::new();
+    for (key, loaded_mod) in &loaded.modules {
+        modules.insert(key.clone(), loaded_mod.module.clone());
+        paths.insert(key.clone(), loaded_mod.file.display().to_string());
+    }
+    sema::check_program(&modules, &paths).map_err(|e| format!("[{}] {}", e.category, e.message))
+}
+
+/// Mechanical failure classifier (plans/M9.md decision 502).
+///
+/// Noise (incomplete-by-nature):
+/// - `error[name]` / `error[type]` whose message begins with `unknown name`
+///   or `unknown type` — the snippet references a helper the surrounding
+///   prose named but the block never declared or imported;
+/// - `module \`...\` not found: no such file` — an aspirational import
+///   closure the tree does not ship.
+///
+/// Everything else is a disagreement. Unclassifiable errors count as
+/// disagreements (overcounting is safe; undercounting is not).
+fn classify_corpus_sema_failure(detail: &str) -> CorpusSemaKind {
+    if detail.starts_with("[name] unknown name `")
+        || detail.starts_with("[type] unknown type `")
+        || detail.contains(" not found: no such file")
+    {
+        CorpusSemaKind::Noise
+    } else {
+        CorpusSemaKind::Disagreement
+    }
+}
+
+/// Optional first-line marker: `# corpus:incomplete: <reason>`.
+/// Greppable; every use must justify the reason in the J1 report.
+fn corpus_incomplete_marker(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("# corpus:incomplete:") {
+            return Some(rest.trim().to_string());
+        }
+        return None;
+    }
+    None
+}
+
+/// Wrap a ```wrela fragment into a checkable module: item declarations at
+/// module scope, statement entries inside `fn _corpus_snippet():`.
+fn wrap_corpus_fragment(entries: &[parser::FragmentEntry]) -> String {
+    use parser::FragmentEntry;
+    let mut items = Vec::new();
+    let mut stmts = Vec::new();
+    for e in entries {
+        match e {
+            FragmentEntry::Item(i) => items.push(i.clone()),
+            FragmentEntry::Stmt(s) => stmts.push(s.clone()),
+        }
+    }
+    let mut out = String::from("module corpus.snippet\n\n");
+    if !items.is_empty() {
+        let frag: Vec<_> = items.into_iter().map(FragmentEntry::Item).collect();
+        out.push_str(&printer::pretty_fragment(&frag));
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if !stmts.is_empty() {
+        out.push_str("fn _corpus_snippet():\n");
+        let frag: Vec<_> = stmts.into_iter().map(FragmentEntry::Stmt).collect();
+        let pretty = printer::pretty_fragment(&frag);
+        for line in pretty.lines() {
+            if line.is_empty() {
+                out.push('\n');
+            } else {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+fn synthetic_module_path(module: &Module) -> String {
+    let last = module
+        .path
+        .last()
+        .cloned()
+        .unwrap_or_else(|| "snippet".into());
+    if module.path.len() > 1 {
+        format!(
+            "{}/{last}.wr",
+            module.path[..module.path.len() - 1].join("/")
+        )
+    } else {
+        format!("{last}.wr")
+    }
+}
+
+fn display_repo_path(path: &Path) -> String {
+    path.strip_prefix(root())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// Nearest ATX heading above `start_line` (1-based body line), for the
+/// disagreement enumeration. Falls back to the file stem when the block
+/// is a whole `.wr` example with no markdown headings. Headings inside
+/// fenced code blocks are ignored (a `# comment` in a ```text diagram
+/// is not a section title).
+fn nearest_doc_section(doc: &Path, start_line: usize) -> String {
+    let Ok(text) = std::fs::read_to_string(doc) else {
+        return doc
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
+    };
+    if doc.extension().is_some_and(|x| x == "wr") {
+        return doc
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("example.wr")
+            .to_string();
+    }
+    let mut section = String::from("(top)");
+    let mut in_fence = false;
+    for (i, line) in text.lines().enumerate() {
+        let line_no = i + 1;
+        if line_no >= start_line {
+            break;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+            if (1..=6).contains(&hashes) {
+                let title = trimmed[hashes..].trim();
+                // Require the markdown space after the hashes so a
+                // mid-prose `#comment` is not treated as a heading.
+                if !title.is_empty() && trimmed.as_bytes().get(hashes).is_some_and(|b| *b == b' ') {
+                    section = title.to_string();
+                }
+            }
+        }
+    }
+    section
+}
+
+fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
+    let ok = rows.iter().filter(|r| r.kind == CorpusSemaKind::Ok).count();
+    let noise = rows
+        .iter()
+        .filter(|r| r.kind == CorpusSemaKind::Noise)
+        .count();
+    let disagreements = rows
+        .iter()
+        .filter(|r| r.kind == CorpusSemaKind::Disagreement)
+        .count();
+    println!(
+        "corpus sema: checked {}, ok {ok}, noise {noise}, disagreements {disagreements}",
+        rows.len()
+    );
+    if disagreements > 0 {
+        println!("corpus sema disagreements:");
+        for r in rows
+            .iter()
+            .filter(|r| r.kind == CorpusSemaKind::Disagreement)
+        {
+            println!("  {} (§ {})", r.loc, r.section);
+            println!("    {}", r.detail);
+        }
+    }
+    if noise > 0 {
+        println!("corpus sema noise:");
+        for r in rows.iter().filter(|r| r.kind == CorpusSemaKind::Noise) {
+            println!("  {} (§ {}): {}", r.loc, r.section, r.detail);
+        }
     }
 }
 

@@ -137,6 +137,12 @@ tests = ["xtask:corpus", "golden/ast-virtio"]
 note = "every docs/language ```wrela block and every docs/language/examples/*.wr file parses (xtask corpus reports lexed/parsed/fragments-skipped counts) except a block whose body contains the literal substring `...` (a doc fragment, lex-only); the virtio-storage.wr worked example parses in full and its exact ast dump is pinned by golden/ast-virtio (an intentional duplicate of the example file — the corpus covers the original)"
 
 [[clause]]
+id = "docs.examples.wrela-blocks-sema"
+doc = "02-language.md#1"
+status = "gap"
+note = "plans/M9.md item J / shape decision 3: every parseable docs/language ```wrela block and docs/language/examples/*.wr file sema-checks. J1 (2026-07-25, decisions 500–506) landed measurement only: `cargo xtask corpus --sema` wraps fragments, classifies unknown-name/missing-module failures as noise, reports the disagreement count, and exits 0 — off by default, bare `corpus`/`check` unchanged. Measured at landing: 1 disagreement (`virtio-storage.wr` hyphen vs `examples.virtio_storage`), 15 noise, 8 ok out of 24 parseable. J2 fixes each disagreement; J3 flips this clause to `test` and wires `--sema` into `check`."
+
+[[clause]]
 id = "syntax.diagnostics.parse-errors"
 doc = "02-language.md#8"
 status = "test"
