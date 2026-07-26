@@ -4437,9 +4437,12 @@ fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncReach) {
             .cloned()
             .collect();
         let is_async_image = !async_tests.is_empty();
+        let mut programs: BTreeMap<String, sema::typed::TypedProgram> = BTreeMap::new();
+        programs.insert(module.path.join("."), program.clone());
         let boot = layout::BootCtx {
             graph: &graph,
             modules: &modules,
+            programs: &programs,
             layout_ctx: &layout_ctx,
             async_frames: &async_frames,
             group_child_index: &group_child_index,
@@ -7271,6 +7274,7 @@ fn build_runtime_test_image(
     let boot = layout::BootCtx {
         graph: &graph,
         modules,
+        programs,
         layout_ctx: &layout_ctx,
         async_frames: &async_frames,
         group_child_index: &group_child_index,

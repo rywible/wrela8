@@ -2544,7 +2544,7 @@ fn device_register_windows(
     let Some(b) = boot else {
         return Ok(Vec::new());
     };
-    let layouts = closure_layout_types(b.modules)?;
+    let layouts = closure_layout_types(b.modules, b.programs)?;
     let decls = closure_decl_items(b.modules)?;
 
     let mut out: Vec<(usize, String, String, u64)> = Vec::new();
@@ -2688,20 +2688,33 @@ fn closure_decl_items(
 /// Every `@layout` type in a build closure, by name — `layout_program`'s
 /// own input to `eval::image_checks::pool_backings`. Built from the raw
 /// `ast::Module` closure the same way `bin/wrela.rs` builds the report's
-/// exact-bytes section, rather than threaded through `BootCtx` from the
-/// typed programs: `types::check_layouts` is a pure function of one
-/// specialized module, so the checker's table (`TypedProgram::layouts`)
-/// and this one are the same table computed twice, never two rules.
+/// exact-bytes section: `types::check_layouts` is a pure function of one
+/// specialized module, then `types::complete_layouts` finishes any
+/// `runtime` layout whose array length is a `const` name (plans/M10.md
+/// item E1, carried from A2b / decision 581). Without that second pass a
+/// deferred layout has `size: None` and every `require_size` consumer
+/// rejects rather than lying — correct, but unusable the moment a
+/// `runtime` table with a const length reaches this path (E3/E4).
 fn closure_layout_types(
     modules: &BTreeMap<String, Module>,
+    programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<BTreeMap<String, crate::sema::types::LayoutType>, LayoutError> {
     let mut out = BTreeMap::new();
-    for module in modules.values() {
+    for (key, module) in modules {
         let specialized = crate::sema::specialize::specialize(module)
             .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?;
-        for l in crate::sema::types::check_layouts(&specialized)
-            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?
-        {
+        let mut layouts = crate::sema::types::check_layouts(&specialized)
+            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?;
+        let Some(program) = programs.get(key) else {
+            return Err(LayoutError::new(format!(
+                "internal error: module `{key}` is in the build closure without a typed program, \
+                 so `complete_layouts` cannot resolve a `@layout(runtime)` const array length \
+                 (plans/M10.md item E1)"
+            )));
+        };
+        crate::sema::types::complete_layouts(&specialized, program, &mut layouts)
+            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?;
+        for l in layouts {
             out.insert(l.name.clone(), l);
         }
     }
@@ -2719,7 +2732,7 @@ fn image_pool_backings(
     let Some(b) = boot else {
         return Ok(BTreeMap::new());
     };
-    let layouts = closure_layout_types(b.modules)?;
+    let layouts = closure_layout_types(b.modules, b.programs)?;
     crate::eval::image_checks::pool_backings(b.graph, &layouts).map_err(|e| {
         LayoutError::new(format!(
             "internal error: a pool declaration this image's own graph check accepted cannot be \
@@ -3781,6 +3794,7 @@ pub fn try_layout_program(
         Some(BootCtx {
             graph,
             modules,
+            programs,
             layout_ctx,
             async_frames: &async_frames,
             group_child_index: &group_child_index,
@@ -8407,7 +8421,7 @@ impl RuntimeWiring {
         // struct is ordinary, legal code (`Pair.init(lo, hi)` in
         // `golden/boot-actor-reply-struct`) and is none of this pass's
         // business.
-        let layouts = closure_layout_types(boot.modules)?;
+        let layouts = closure_layout_types(boot.modules, boot.programs)?;
         let backings =
             crate::eval::image_checks::pool_backings(boot.graph, &layouts).map_err(|e| {
                 LayoutError::new(format!(
@@ -9537,6 +9551,12 @@ pub fn check_transcript_bound(
 pub struct BootCtx<'a> {
     pub graph: &'a ImageGraph,
     pub modules: &'a BTreeMap<String, Module>,
+    /// Typed programs for the same closure — needed so
+    /// `closure_layout_types` can run `complete_layouts` (plans/M10.md
+    /// item E1 / A2b carry): a `@layout(runtime)` array length that is a
+    /// `const` name has no size until after const evaluation, and that
+    /// evaluation's results live here.
+    pub programs: &'a BTreeMap<String, TypedProgram>,
     pub layout_ctx: &'a LayoutCtx,
     /// `codegen::async_frame_sizes`' result for this same build — every
     /// async fn's own persistent frame bytes, the park-and-resume
@@ -10361,6 +10381,57 @@ mod tests {
             code: words.iter().map(|w| (*w, String::new())).collect(),
             relocs: Vec::new(),
         }
+    }
+
+    /// plans/M10.md item E1: `closure_layout_types` must run
+    /// `complete_layouts`, not only `check_layouts`. Without that pass a
+    /// `@layout(runtime)` whose array length is a `const` name stays
+    /// deferred (`size: None`) and `require_size` rejects — fail-closed,
+    /// but wrong once such a layout reaches this path. The case below is
+    /// exactly 03 §3.1's shape (`[TurnArea; N_TURNS]`); it fails the
+    /// `require_size` assertion if the completion call is removed.
+    #[test]
+    fn closure_layout_types_completes_runtime_const_lengths() {
+        let src = "\
+module examples.e1_closure_layout_complete
+
+const N_TURNS: u32 = 4
+
+@layout(runtime, endian=little)
+struct TurnArea:
+    state: u32
+    waiter: u32
+
+@layout(runtime, endian=little)
+struct TurnTable:
+    rr_cursor: u64
+    turns: [TurnArea; N_TURNS]
+";
+        let tokens = crate::syntax::lexer::lex(src).expect("lex");
+        let module = crate::syntax::parser::parse(tokens).expect("parse");
+        let key = module.path.join(".");
+        let program = crate::sema::check_typed(&module, "<e1>").expect("check");
+        let mut modules = BTreeMap::new();
+        modules.insert(key.clone(), module);
+        let mut programs = BTreeMap::new();
+        programs.insert(key, program);
+
+        // Without the fix this call still returns Ok, but TurnTable has
+        // `size: None` and the require_size below is the pin that goes red.
+        let layouts = closure_layout_types(&modules, &programs)
+            .expect("closure_layout_types completes rather than rejecting");
+        let table = layouts
+            .get("TurnTable")
+            .expect("TurnTable is in the closure");
+        // 8 (rr_cursor) + 4 * 8 (TurnArea = u32+u32): same bytes
+        // `golden/check-layout-runtime-const-len` pins via the dump path.
+        assert_eq!(
+            table
+                .require_size("closure_layout_types after E1")
+                .expect("completed"),
+            40
+        );
+        assert_eq!(table.size, Some(40));
     }
 
     #[test]

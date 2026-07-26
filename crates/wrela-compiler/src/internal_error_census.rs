@@ -37,7 +37,9 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // 82 -> 87, plans/M10.md item C: AbortFixed/AbortVal resolve to
     // force-rooted `__wrela_abort`/`__wrela_abort_val` (harness + code),
     // plus `__wrela_abort_tail` floor install guard.
-    ("layout.rs", 87),
+    // 87 -> 88, plans/M10.md item E1: module in closure without typed
+    // program (completion pass needs one).
+    ("layout.rs", 88),
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     ("eval/interp.rs", 79),
     ("lower.rs", 5),
@@ -145,7 +147,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 188,
+            INTERNAL_ERROR_SITE_COUNT, 189,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

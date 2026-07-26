@@ -1737,6 +1737,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let boot = layout::BootCtx {
         graph: &graph,
         modules: &modules,
+        programs: &checked.programs,
         layout_ctx: &layout_ctx,
         async_frames: &async_frames,
         group_child_index: &group_child_index,

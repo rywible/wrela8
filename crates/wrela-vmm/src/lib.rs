@@ -3681,6 +3681,7 @@ mod tests {
         let boot = layout::BootCtx {
             graph: &graph,
             modules: &modules,
+            programs: &programs,
             layout_ctx: &layout_ctx,
             async_frames: &async_frames,
             group_child_index: &group_child_index,
@@ -3732,6 +3733,8 @@ mod tests {
             wrela_compiler::sema::check_typed(&module, "<conformance>").expect("must check");
         let mut modules = BTreeMap::new();
         modules.insert(module.path.join("."), module.clone());
+        let mut programs = BTreeMap::new();
+        programs.insert(module.path.join("."), program.clone());
         let layout_ctx = layout::merge_layout_ctx(&modules).expect("layout ctx");
         let mwir_program = wrela_compiler::lower::lower_program(&program).expect("sync lower");
         let flow_program =
@@ -3763,6 +3766,7 @@ mod tests {
         let boot = layout::BootCtx {
             graph: &graph,
             modules: &modules,
+            programs: &programs,
             layout_ctx: &layout_ctx,
             async_frames: &async_frames,
             group_child_index: &group_child_index,
