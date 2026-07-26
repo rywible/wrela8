@@ -429,9 +429,16 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
         Type::Named(name, targs)
             if targs.is_empty() && crate::sema::stdlib_enums::is_auto_visible(name) =>
         {
+            // plans/M9.md item QQ: `shape_of` returns `TyShape`, not
+            // `Result` — threading fallibility through usefulness /
+            // flatten / render would rewrite the whole match algorithm.
+            // `stdlib_enums::prepare` runs at every check entry before
+            // `matches::check`, so a corrupt stdlib already diagnosed
+            // there; this expect is "prepare held", not "ignore errors".
             TyShape::Sum(
                 crate::sema::stdlib_enums::variant_strs(name)
-                    .expect("guarded by the arm's own condition")
+                    .expect("stdlib_enums::prepare runs before matches")
+                    .expect("guarded by is_auto_visible")
                     .iter()
                     .map(|v| ((*v).to_string(), Vec::new()))
                     .collect(),

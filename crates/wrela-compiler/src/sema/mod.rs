@@ -47,6 +47,7 @@ pub mod typed;
 pub mod types;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::syntax::ast::{Module, Span};
 
@@ -243,6 +244,9 @@ fn check_typed_single_with_decls(
     module: &Module,
     path: &str,
 ) -> Result<(typed::TypedProgram, Vec<types::DeclItem>), SemaError> {
+    // plans/M9.md item QQ: load auto-visible stdlib enums via the same
+    // two-candidate rule as the loader, before specialize reads them.
+    prepare_stdlib_enums_for_file(path, module)?;
     let specialized = specialize::specialize(module)?;
     // plans/M7.md item B: the `@layout` exact-bytes pass runs before name
     // resolution — see `types::check_layouts`' own section note for the
@@ -486,6 +490,35 @@ fn load_time_module_as_sema() -> Result<(Vec<String>, crate::loader::LoadedModul
     })
 }
 
+/// plans/M9.md item QQ: pick a package root from the closure and load
+/// the five auto-visible stdlib enums from the same `stdlib/core/` the
+/// loader would use for `from core.X` imports.
+fn prepare_stdlib_enums_for_closure(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+) -> Result<(), SemaError> {
+    for (key, module) in modules {
+        if key.first().map(|s| s.as_str()) == Some("core") {
+            continue;
+        }
+        let Some(path) = paths.get(key) else {
+            continue;
+        };
+        match crate::loader::anchor_package_root(Path::new(path), &module.path, module.span) {
+            Ok(pkgroot) => return stdlib_enums::prepare(&pkgroot, module.span),
+            Err(_) => continue,
+        }
+    }
+    stdlib_enums::prepare_toolchain(Span::default())
+}
+
+fn prepare_stdlib_enums_for_file(path: &str, module: &Module) -> Result<(), SemaError> {
+    match crate::loader::anchor_package_root(Path::new(path), &module.path, module.span) {
+        Ok(pkgroot) => stdlib_enums::prepare(&pkgroot, module.span),
+        Err(_) => stdlib_enums::prepare_toolchain(module.span),
+    }
+}
+
 /// The whole-program entry (plans/M4.md item A, decision 2): `modules`
 /// is `crate::loader::load_closure`'s own output (module address ->
 /// file + parsed `Module`, already in BTree order by construction), and
@@ -590,6 +623,10 @@ fn check_program_typed_tables(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, CheckDumpTables), SemaError> {
+    // plans/M9.md item QQ: before specialize (which reads Target/Restart
+    // in comptime-if conditions), load the five auto-visible enums from
+    // the same `stdlib/core/` the loader would pick for this package.
+    prepare_stdlib_enums_for_closure(modules, paths)?;
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
     let mut layouts: BTreeMap<Vec<String>, Vec<types::LayoutType>> = BTreeMap::new();
     for (key, module) in modules {

@@ -385,7 +385,7 @@ pub(crate) fn subst_field_type(
 /// `const` in a module that passed `mod.rs::check`'s earlier passes
 /// already type-checks; this function only ever runs *during* that same
 /// module's own checking.
-fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
+fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedProgram, SemaError> {
     let mut program = crate::sema::typed::TypedProgram::default();
     for (name, ty) in &mctx.consts {
         let Some(raw) = mctx.const_values.get(name) else {
@@ -437,13 +437,14 @@ fn build_consts_program(mctx: &ModuleCtx) -> crate::sema::typed::TypedProgram {
     // plans/M7.md item G / plans/M9.md item I: stdlib enums for
     // const-generic arguments (`DriverMode.Irq`).
     for name in ["Target", "Restart", "DriverMode"] {
-        if let Some(vs) = crate::sema::stdlib_enums::variant_strs(name) {
+        // plans/M9.md item QQ: load failures are `error[build]`.
+        if let Some(vs) = crate::sema::stdlib_enums::variant_strs(name)? {
             program.enums.entry(name.to_string()).or_insert_with(|| {
                 TypedEnum::from_variants(vs.iter().map(|v| v.to_string()).collect())
             });
         }
     }
-    program
+    Ok(program)
 }
 
 /// True when an expression contains any `Expr::Index` node anywhere —
@@ -551,7 +552,8 @@ fn value_to_const_arg_expr(
                 _ => {
                     // plans/M7.md item G / plans/M9.md item I: stdlib
                     // enums (`DriverMode`) are not in `mctx.enums`.
-                    if let Some(vs) = crate::sema::stdlib_enums::variant_strs(enum_name) {
+                    // plans/M9.md item QQ: load failures are `error[build]`.
+                    if let Some(vs) = crate::sema::stdlib_enums::variant_strs(enum_name)? {
                         vs.get(*idx).map(|v| v.to_string()).ok_or_else(|| {
                             unimplemented_at("this const generic argument is", span)
                         })?
@@ -586,7 +588,7 @@ fn eval_const_expr(e: &Expr, expected: Option<&Type>, mctx: &ModuleCtx) -> Resul
         Type::Named(name, _) => Some(name.clone()),
         _ => None,
     };
-    let program = build_consts_program(mctx);
+    let program = build_consts_program(mctx)?;
     let value =
         crate::eval::interp::eval_standalone(&program, &typed, "<generic argument>".to_string())
             .map_err(crate::eval::to_sema_error)?;

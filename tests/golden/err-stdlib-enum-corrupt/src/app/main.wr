@@ -1,0 +1,7 @@
+module app.main
+
+# plans/M9.md item QQ: bare Target forces stdlib_enums to load; a corrupt
+# sibling stdlib/core/target.wr must be error[build], not a panic and not
+# a silent fallthrough to the toolchain tree.
+pub fn sample() -> Target:
+    return Target.wrela_machine_v1

@@ -1,0 +1,4 @@
+module target
+
+pub enum Target:
+    @@@ not wrela @@@

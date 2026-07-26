@@ -419,7 +419,8 @@ fn check_comptime_vocabulary(
         // `Restart.*` in a condition (fieldless prelude enum variants).
         Expr::Field(base, span, variant) => match base.as_ref() {
             Expr::Name(_, ename) => {
-                if stdlib_enums::variant_strs(ename)
+                // plans/M9.md item QQ: load failures are `error[build]`.
+                if stdlib_enums::variant_strs(ename)?
                     .is_some_and(|vs| vs.contains(&variant.as_str()))
                 {
                     Ok(())
@@ -900,7 +901,8 @@ fn eval_bound_condition(cond: &Expr, mctx: &ModuleCtx) -> Result<bool, SemaError
     let typed_cond = bodies::check_expr(cond, Some(&Type::Bool), &mut fctx, mctx)?;
     let mut program = TypedProgram::default();
     for name in ["Target", "Restart", "DriverMode"] {
-        if let Some(vs) = stdlib_enums::variant_strs(name) {
+        // plans/M9.md item QQ: load failures are `error[build]`.
+        if let Some(vs) = stdlib_enums::variant_strs(name)? {
             program.enums.insert(
                 name.to_string(),
                 crate::sema::typed::TypedEnum::from_variants(

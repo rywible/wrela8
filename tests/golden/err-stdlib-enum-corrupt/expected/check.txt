@@ -1,0 +1,1 @@
+error[build]: stdlib enum `Target` failed to parse (stdlib/core/target.wr): expected an attribute name, found `@` at 1:1

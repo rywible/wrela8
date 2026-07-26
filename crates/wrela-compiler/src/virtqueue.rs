@@ -552,6 +552,7 @@ mod tests {
         // position in `stdlib_enums` (from `stdlib/core/completion_outcome.wr`),
         // never an independent number.
         let variants = crate::sema::stdlib_enums::variant_strs("CompletionOutcome")
+            .expect("stdlib enums load")
             .expect("`CompletionOutcome` is a stdlib enum");
         assert_eq!(variants, &["Completed", "NotCompleted", "Unknown"]);
         assert_eq!(variants[OUTCOME_COMPLETED as usize], "Completed");

@@ -127,7 +127,11 @@ fn parse_file(file: &Path) -> Result<Module, LoadError> {
 /// directory level (innermost first), and returns whatever directory
 /// remains once every segment is consumed — the package root this file
 /// implies. See the module doc comment above for the exact rule.
-fn anchor_package_root(
+///
+/// `pub(crate)` so `sema` can recover the package root for
+/// [`stdlib_core_root`] when preparing auto-visible stdlib enums
+/// (plans/M9.md item QQ).
+pub(crate) fn anchor_package_root(
     file: &Path,
     module_path: &[String],
     span: Span,
@@ -197,11 +201,21 @@ fn module_file_path(root: &Path, module_path: &[String]) -> PathBuf {
     p
 }
 
-/// Locates the toolchain's `stdlib/core/` tree — see the module doc
-/// comment above for the exact two-candidate priority this implements.
-/// Returns a named `error[build]` when the chosen candidate is missing
-/// (plans/M9.md item A2: golden/err-stdlib-missing).
-fn core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
+/// The toolchain's baked-in `stdlib/core/` (plans/M9.md item A2 / QQ).
+/// Used when no package root is available and as the second candidate of
+/// [`stdlib_core_root`].
+pub fn toolchain_stdlib_core() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core")
+}
+
+/// Locates `stdlib/core/` — see the module doc comment above for the
+/// exact two-candidate priority this implements. Returns a named
+/// `error[build]` when the chosen candidate is missing (plans/M9.md
+/// item A2: golden/err-stdlib-missing).
+///
+/// `pub` so `sema::stdlib_enums` shares this exact rule rather than a
+/// second hardcoded toolchain path (plans/M9.md item QQ).
+pub fn stdlib_core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
     if let Some(parent) = pkgroot.parent() {
         let sibling_stdlib = parent.join("stdlib");
         if sibling_stdlib.is_dir() {
@@ -219,7 +233,7 @@ fn core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
             ));
         }
     }
-    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core");
+    let toolchain = toolchain_stdlib_core();
     if !toolchain.is_dir() {
         return Err(build_error(
             "stdlib not found: toolchain `stdlib/core/` is missing".to_string(),
@@ -227,6 +241,11 @@ fn core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
         ));
     }
     Ok(toolchain)
+}
+
+/// Locates the toolchain's `stdlib/core/` tree — see [`stdlib_core_root`].
+fn core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
+    stdlib_core_root(pkgroot, span)
 }
 
 /// Resolves one `from path import ...` statement's `path` to the module
@@ -386,7 +405,7 @@ pub fn ensure_time_module(
 /// needs the time surface without a user-facing import).
 pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
     let key: Vec<String> = TIME_MODULE_KEY.iter().map(|s| (*s).to_string()).collect();
-    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core");
+    let toolchain = toolchain_stdlib_core();
     let file = toolchain.join("time.wr");
     if !file.is_file() {
         return Err(build_error(

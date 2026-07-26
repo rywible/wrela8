@@ -809,8 +809,15 @@ pub(crate) fn check(
         // tag compare, with no lowering-side special case.
         "CompletionOutcome",
     ] {
-        let variants = crate::sema::stdlib_enums::variant_strs(name)
-            .expect("stdlib enum names are in the fixed AUTO_VISIBLE table")
+        // plans/M9.md item QQ: load failures are `error[build]`, not panic.
+        let variants = crate::sema::stdlib_enums::variant_strs(name)?
+            .ok_or_else(|| {
+                SemaError::at(
+                    "build",
+                    format!("stdlib enum `{name}` missing from the auto-visible table"),
+                    Span::default(),
+                )
+            })?
             .iter()
             .map(|v| v.to_string())
             .collect();
@@ -2615,8 +2622,10 @@ fn variant_payload_types_for(
                     ));
                 }
             }
-            let variants = crate::sema::stdlib_enums::variant_strs(name)
-                .expect("guarded by the arm's own condition");
+            // plans/M9.md item QQ: load failures are `error[build]`, not panic.
+            let variants = crate::sema::stdlib_enums::variant_strs(name)?.ok_or_else(|| {
+                type_error(format!("enum `{name}` has no variant `{variant}`"), span)
+            })?;
             if variants.contains(&variant) {
                 Ok(vec![])
             } else {
@@ -3096,7 +3105,8 @@ fn check_field_expr(
             // `bname` is not a real module struct/enum, so a module that
             // declares its own `Target`/`Restart` shadows this fallback
             // exactly like it would any other prelude name.
-            if let Some(variants) = crate::sema::stdlib_enums::variant_strs(bname.as_str()) {
+            // plans/M9.md item QQ: load failures are `error[build]`, not panic.
+            if let Some(variants) = crate::sema::stdlib_enums::variant_strs(bname.as_str())? {
                 if variants.contains(&name) {
                     return Ok(TypedExpr {
                         ty: Type::Named(bname.clone(), vec![]),
