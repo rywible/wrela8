@@ -1406,6 +1406,38 @@ fn resolve_mailbox_ring_addrs(
     None
 }
 
+/// plans/M10.md item E3 (decision 620): force-root one specialized
+/// `rt_run_one <core>` body per live core into `program.fns`. Call after
+/// `RuntimeWiring::derive` (rings + actor cores known) and before the
+/// code section is laid out.
+fn inject_rt_run_one_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+    let roots = mailbox_root_names(&wiring.tables);
+    for core in 0..wiring.tables.cores {
+        let select_actors: Vec<String> = roots
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| wiring.actor_cores.get(*i).copied().unwrap_or(0) == core)
+            .map(|(_, n)| n.clone())
+            .collect();
+        let child_poll_keys: Vec<String> = if core == 0 {
+            wiring.group_child_index.keys().cloned().collect()
+        } else {
+            Vec::new()
+        };
+        let has_drain = wiring.tables.rings.iter().any(|r| r.dst == core);
+        let spec = crate::codegen::RtRunOneSpec {
+            core,
+            select_actors,
+            child_poll_keys,
+            has_drain,
+        };
+        let key = crate::codegen::rt_run_one_symbol(core);
+        program
+            .fns
+            .insert(key, crate::codegen::emit_rt_run_one(&spec));
+    }
+}
+
 /// One mailbox root's own `(capacity, slot size)` — a declared actor's, or
 /// (plans/M8.md item D) a messageable `@driver`'s. The one lookup
 /// `cross_core_rings` needs, so a ring feeding a driver's mailbox is sized
@@ -2787,6 +2819,16 @@ pub fn layout_program(
         None => None,
     };
 
+    // M10 E3: specialized `rt_run_one <core>` into code (decision 620).
+    let mut program_owned;
+    let program = if let Some(w) = wiring.as_ref() {
+        program_owned = program.clone();
+        inject_rt_run_one_fns(&mut program_owned, w);
+        &program_owned
+    } else {
+        program
+    };
+
     let entry_words = build_entry_stub();
 
     let mut code_words: Vec<u32> = Vec::new();
@@ -3288,6 +3330,23 @@ pub fn layout_program(
                     };
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                // M10 E3 / decision 621
+                Reloc::RrCursor { word, core } => {
+                    let p = placement.as_ref().ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a Reloc::RrCursor exists but this image has no \
+                             runtime placement",
+                        )
+                    })?;
+                    let addr = p.rr_cursors.get(*core).copied().ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::RrCursor names core {core}, but this image \
+                             only placed {} rr_cursor(s)",
+                            p.rr_cursors.len()
+                        ))
+                    })?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -3353,11 +3412,12 @@ pub fn layout_program(
                 | Reloc::GroupArenaBase { .. }
                 | Reloc::IrqVector { .. }
                 | Reloc::WakePending { .. }
-                | Reloc::MailboxAddr { .. } => {
+                | Reloc::MailboxAddr { .. }
+                | Reloc::RrCursor { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
                          AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/TurnsBase/TurnStride/\
-                         GroupArenaBase/IrqVector/WakePending/MailboxAddr reloc",
+                         GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor reloc",
                     ));
                 }
             }
@@ -7240,6 +7300,7 @@ fn build_rt_select_and_run_core(
 /// one a fixed, unique poll site). The entry driver loops this between a
 /// root turn's own suspend points; "nothing ready" with the root still
 /// incomplete is the deadlock condition (`DEADLOCK_MSG`).
+#[allow(dead_code)] // M10 E3: kept until E4's joint delete commit; JIT suite still calls it.
 fn build_rt_run_one(
     select_starts: &[usize],
     child_poll_starts: &[usize],
@@ -7517,7 +7578,7 @@ fn build_rt_drain(
 /// consult `machine_info::OFF_NEXT_DEADLINE`: that word is core 0's park
 /// deadline, and no turn can arm a deadline on a secondary core while no
 /// message can reach one — item C2 gives a woken secondary both.
-fn build_secondary_core_entry(core: usize, rt_run_one_core: usize, start: usize) -> Asm {
+fn build_secondary_core_entry(core: usize, start: usize) -> Asm {
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(core) + machine_layout::CORE_STACK_SIZE;
     a.load_imm(9, sp_top);
@@ -7528,7 +7589,8 @@ fn build_secondary_core_entry(core: usize, rt_run_one_core: usize, start: usize)
     a.push(encode::enc_str_x_imm(9, 10, 0));
 
     let loop_top = a.abs();
-    a.bl_to(rt_run_one_core);
+    // M10 E3: specialized body in `code` (decision 620).
+    a.bl_call_key(&crate::codegen::rt_run_one_symbol(core));
     {
         // cbnz x0, .loop_top — a slice ran; try again before parking.
         let this = a.abs();
@@ -7703,13 +7765,12 @@ pub const DEADLOCK_MSG: &str =
 struct RuntimeGlue {
     asms: Vec<Asm>,
     symbols: BTreeMap<String, usize>,
-    /// Core 0's own `rt_run_one` absolute word index (the entry driver's
-    /// scheduler-tick target). Present whenever any glue exists at all.
-    rt_run_one_start: usize,
     /// plans/M8.md item C1: each secondary core's own entry block
     /// (`build_secondary_core_entry`), absolute word index, in core order
     /// `1..tables.cores`. Empty for every single-core image — which is
     /// what keeps their bytes unchanged.
+    /// M10 E3: `rt_run_one` lives in `code` under `rt_run_one_symbol(core)`;
+    /// the entry driver / secondary entries `bl_call_key` it.
     core_entry_starts: Vec<usize>,
 }
 
@@ -7762,7 +7823,6 @@ fn build_runtime_glue_block(
             mb.frame_size,
         ));
     }
-    let mut select_starts = Vec::with_capacity(roots.len());
     let mut cursor = start;
     // --- plans/M8.md item C2: the cross-core ring routines --------------
     //
@@ -7822,7 +7882,7 @@ fn build_runtime_glue_block(
         }
     }
 
-    for (i, (_name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
+    for (i, (name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
         let (_, dispatch_keys) = &actor_dispatch[i];
 
         // M10 D / decision 615: per-actor mailbox admission lives in the
@@ -7847,10 +7907,11 @@ fn build_runtime_glue_block(
             select_start,
         );
         cursor += select_asm.words.len();
-        select_starts.push(select_start);
+        // M10 E3: register under a synthetic key so specialized
+        // `rt_run_one` can `Reloc::Call` it (decision 620).
+        symbols.insert(crate::codegen::rt_select_and_run_symbol(name), select_start);
         asms.push(select_asm);
     }
-    let mut child_poll_starts = Vec::with_capacity(group_child_index.len());
     for (callee_key, &child_index) in group_child_index {
         let Some(&child_turn_addr) = placement.free_turns.get(callee_key) else {
             // A callee this pass never sized a free-turn area for — an
@@ -7871,24 +7932,18 @@ fn build_runtime_glue_block(
             poll_start,
         );
         cursor += poll_asm.words.len();
-        child_poll_starts.push(poll_start);
+        // M10 E3: synthetic key for specialized `rt_run_one` (decision 620).
+        symbols.insert(crate::codegen::rt_child_poll_symbol(callee_key), poll_start);
         asms.push(poll_asm);
     }
-    // plans/M8.md item C1: one `rt_run_one` per live core, each scanning
-    // exactly the actors placed on it (04 §2: "one per core, over the
-    // actors placed there"). With `cores == 1` every actor is on core 0 by
-    // the single-core floor, so core 0's routine is word-for-word the one
-    // this fn emitted before C1 — that identity is what keeps every M5-M7
-    // boot transcript byte-identical, and it is asserted by the goldens
-    // rather than assumed here.
-    //
+    // plans/M8.md item C1 / C2: drains, then secondary-core entries.
     // Group child polls stay on core 0: a `with group(...)` child is a
     // free turn, and the only free turns that run are the root test turn's
-    // own, which is core 0's (06 §3: boot and the root turns are the entry
-    // core's). Item C2 revisits this the moment a turn can run elsewhere.
-    // plans/M8.md item C2: one inbound-ring drain per core that has any
-    // inbound lane, placed after the per-actor enqueue routines it calls.
-    let mut drain_starts: BTreeMap<usize, usize> = BTreeMap::new();
+    // own, which is core 0's (06 §3).
+    //
+    // M10 E3: `rt_run_one` itself lives in `code` as a specialized
+    // compiled body (`emit_rt_run_one`); hand-asm `build_rt_run_one` is
+    // kept for the macOS JIT suite and deleted in E4's joint commit.
     for core in 0..tables.cores {
         let empty_req: Vec<(RingAddrs, u64, u64, String)> = Vec::new();
         let empty_rep: Vec<(RingAddrs, u64)> = Vec::new();
@@ -7912,35 +7967,15 @@ fn build_runtime_glue_block(
             start_here,
         );
         cursor += asm.words.len();
-        drain_starts.insert(core, start_here);
+        symbols.insert(crate::codegen::rt_drain_symbol(core), start_here);
         asms.push(asm);
     }
-    let mut rt_run_one_starts = Vec::with_capacity(tables.cores);
-    for core in 0..tables.cores {
-        let core_selects: Vec<usize> = select_starts
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| actor_cores.get(*i).copied().unwrap_or(0) == core)
-            .map(|(_, &s)| s)
-            .collect();
-        let core_polls: &[usize] = if core == 0 { &child_poll_starts } else { &[] };
-        let start_here = cursor;
-        let run_one_asm = build_rt_run_one(
-            &core_selects,
-            core_polls,
-            drain_starts.get(&core).copied(),
-            placement.rr_cursors[core],
-            start_here,
-        );
-        cursor += run_one_asm.words.len();
-        rt_run_one_starts.push(start_here);
-        asms.push(run_one_asm);
-    }
-    // Each secondary core's own entry block, after every routine it calls.
+    // Each secondary core's own entry block, after every routine it calls
+    // via `bl_call_key` (M10 E3: `rt_run_one <core>` in `code`).
     let mut core_entry_starts = Vec::new();
     for core in 1..tables.cores {
         let start_here = cursor;
-        let entry_asm = build_secondary_core_entry(core, rt_run_one_starts[core], start_here);
+        let entry_asm = build_secondary_core_entry(core, start_here);
         cursor += entry_asm.words.len();
         core_entry_starts.push(start_here);
         asms.push(entry_asm);
@@ -7949,7 +7984,6 @@ fn build_runtime_glue_block(
     RuntimeGlue {
         asms,
         symbols,
-        rt_run_one_start: rt_run_one_starts[0],
         core_entry_starts,
     }
 }
@@ -8495,7 +8529,7 @@ impl RuntimeWiring {
 /// The assembled runtime block: `build_runtime_glue_block`'s routines
 /// followed by `build_boot_init`'s, one contiguous run of words starting at
 /// word index `start` within whichever section the caller places it in.
-/// Every index here (`symbols`, `rt_run_one_start`, `boot_init_start`, and
+/// Every index here (`symbols`, `boot_init_start`, and
 /// each reloc's own `word`) is section-relative in exactly that sense.
 ///
 /// Word counts never depend on `placement`'s address *values* (every
@@ -8508,7 +8542,6 @@ struct RuntimeBlock {
     words: Vec<u32>,
     relocs: Vec<Reloc>,
     symbols: BTreeMap<String, usize>,
-    rt_run_one_start: usize,
     /// plans/M8.md item C1: `(core, section-relative word index)` for every
     /// secondary core's own entry block. Empty for a single-core image.
     core_entry_starts: Vec<(usize, usize)>,
@@ -8559,7 +8592,6 @@ fn build_runtime_block(
         words,
         relocs,
         symbols: glue.symbols,
-        rt_run_one_start: glue.rt_run_one_start,
         core_entry_starts: glue
             .core_entry_starts
             .iter()
@@ -9074,12 +9106,15 @@ fn build_entry_driver(
     // The park-and-resume additions: which tests are async (compiled
     // state machines whose calls return TURN_STATUS_* — a sync test's
     // return value must never be misread as a status), and where the
-    // scheduler tick lives. `rt_run_one_start` is `None` only when no
+    // scheduler tick lives. `has_rt_run_one` is false only when no
     // runtime glue exists at all — in which case no test can be async
     // either (an async test is itself a flow fn, which forces the glue
     // block into existence via its own free-turn area).
     async_tests: &std::collections::BTreeSet<String>,
-    rt_run_one_start: Option<usize>,
+    // M10 E3: when true, the scheduler tick is `bl_call_key("rt_run_one 0")`
+    // into the specialized body in `code` (decision 620). False only when
+    // no runtime glue exists at all.
+    has_rt_run_one: bool,
     // plans/M6.md item E: `__wrela_checkpoint_service`'s own harness-
     // absolute word index (module doc on `build_checkpoint_and_vector_stub`)
     // — the park-resume path below calls it directly (06 §4: "the guest
@@ -9246,8 +9281,10 @@ fn build_entry_driver(
         // A sync test never enters this loop: its return value in x0 is
         // an ordinary value, not a status word.
         if async_tests.contains(name) {
-            let rt_run_one = rt_run_one_start
-                .expect("an async test forces the runtime glue block into existence");
+            assert!(
+                has_rt_run_one,
+                "an async test forces the runtime glue block into existence"
+            );
             let ddl_off =
                 deadlock_off.expect("deadlock message interned whenever async tests exist");
             let mut continue_after_loop = false;
@@ -9279,7 +9316,8 @@ fn build_entry_driver(
                 crate::codegen::OFF_TURN_RESUME_READY as u16,
             ));
             let skip_reenter = a.skip_placeholder(); // cbnz x10, .reenter
-            a.bl_to(rt_run_one);
+            // M10 E3: specialized `rt_run_one 0` in `code` (decision 620).
+            a.bl_call_key(&crate::codegen::rt_run_one_symbol(0));
             {
                 // cbnz x0, .drive_top (backward — a slice ran; try again)
                 let this = a.abs();
@@ -9711,12 +9749,23 @@ pub fn layout_test_image(
     // M10 B2: harness bl_call_keys force-rooted console helpers. Callers
     // that already lowered `core.runtime` are a no-op; others get them
     // injected here so the reloc never fails closed on a missing symbol.
-    let program = with_force_rooted_runtime(program)?;
-    let program = &program;
-    check_transcript_bound(program, runtime_tests)?;
+    let mut program = with_force_rooted_runtime(program)?;
+    check_transcript_bound(&program, runtime_tests)?;
 
     let image_base = machine_layout::IMAGE_BASE;
     let addrs = HarnessAddrs::production();
+
+    // plans/M6.md item D: the real boot wiring — derived *before* the code
+    // section is laid out so M10 E3 can inject specialized `rt_run_one`
+    // bodies into `program.fns` (decision 620).
+    let mut wiring: Option<RuntimeWiring> = match &boot {
+        Some(b) => RuntimeWiring::derive(b, &program)?,
+        None => None,
+    };
+    if let Some(w) = wiring.as_ref() {
+        inject_rt_run_one_fns(&mut program, w);
+    }
+    let program = &program;
 
     let mut code_words: Vec<u32> = Vec::new();
     let mut fn_word_base: BTreeMap<String, usize> = BTreeMap::new();
@@ -9737,22 +9786,6 @@ pub fn layout_test_image(
     let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
     let mut rodata_cursor: usize = rodata.iter().map(Vec::len).sum();
 
-    // plans/M6.md item D: the real boot wiring C's own sub-note deferred —
-    // `RuntimeTables` (item C's own static sizing pass, unchanged) plus
-    // each actor's own dispatch-key list (`"{Actor}.{method}"`, the exact
-    // `program.fns` keys `build_rt_select_and_run_symbolic`'s own
-    // `Reloc::Call`-based dispatch chain targets — a sync method's real
-    // compiled body and an async method's real compiled state machine are
-    // both just ordinary `program.fns` entries now, no color-based
-    // special-casing anywhere in this fn). `None` when `boot` is absent or
-    // the build declares no actors — every pre-M6 call site's own
-    // behavior, byte-identical. Derived by `RuntimeWiring::derive`, the
-    // one copy `layout_program` uses too (that fn's own module block above
-    // has the full reasoning).
-    let mut wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b, program)?,
-        None => None,
-    };
     // plans/M7.md item E1: intern fallible-`init` abort messages before
     // either runtime-block assembly pass.
     if let Some(w) = wiring.as_mut() {
@@ -9840,7 +9873,7 @@ pub fn layout_test_image(
         })
         .transpose()?;
     let runtime_words_len = dummy_block.as_ref().map(|b| b.words.len()).unwrap_or(0);
-    let rt_run_one_start = dummy_block.as_ref().map(|b| b.rt_run_one_start);
+    let has_rt_run_one = dummy_block.is_some();
     let boot_init_start_opt = dummy_block.as_ref().map(|b| b.boot_init_start);
     // plans/M8.md item C1: word indices only (identical across both
     // assembly passes, asserted below), so they are known here — before
@@ -9859,7 +9892,7 @@ pub fn layout_test_image(
         image_base,
         runtime_tests,
         async_tests,
-        rt_run_one_start,
+        has_rt_run_one,
         checkpoint_service_word,
         deadline_poll_word,
         &mut rodata,
@@ -10172,11 +10205,12 @@ pub fn layout_test_image(
             | Reloc::GroupArenaBase { .. }
             | Reloc::IrqVector { .. }
             | Reloc::WakePending { .. }
-            | Reloc::MailboxAddr { .. } => {
+            | Reloc::MailboxAddr { .. }
+            | Reloc::RrCursor { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit a \
                      CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
-                     GroupArenaBase/IrqVector/WakePending/MailboxAddr reloc",
+                     GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor reloc",
                 ));
             }
         }
@@ -10336,6 +10370,23 @@ pub fn layout_test_image(
                         crate::codegen::MailboxField::Tail => addrs.tail,
                         crate::codegen::MailboxField::Count => addrs.count,
                     };
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                // M10 E3 / decision 621
+                Reloc::RrCursor { word, core } => {
+                    let p = real_placement.as_ref().ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a Reloc::RrCursor exists but this image has no \
+                             runtime placement",
+                        )
+                    })?;
+                    let addr = p.rr_cursors.get(*core).copied().ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::RrCursor names core {core}, but this image \
+                             only placed {} rr_cursor(s)",
+                            p.rr_cursors.len()
+                        ))
+                    })?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
             }
