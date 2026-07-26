@@ -10345,6 +10345,10 @@ fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<()
         TypedExprKind::Await(inner) => {
             scan_await_cross_expr(inner, state)?;
             state.seen_await = true;
+            // A name bound from an earlier await does not span *that*
+            // await, but it does span this one, so the exemption is
+            // per-suspension and cannot accumulate.
+            state.after_await.clear();
             Ok(())
         }
         TypedExprKind::Send(inner) => scan_await_cross_expr(inner, state),
