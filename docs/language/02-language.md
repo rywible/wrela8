@@ -482,10 +482,20 @@ inclusive), fixed arrays (including consuming `for take x in take xs`), and
 the container operations of [05 §7](05-library.md). There is deliberately no
 user-defined iteration protocol in 0.1. The iterable is evaluated once; the
 binding is fresh each iteration; `break`/`continue`/`return`/`?` run all
-exited cleanup before transferring control. A `for` or `while` in an `async
-fn` checkpoints at its back edge unless annotated with a proven
-`@budget(bound=...)`; every loop in a synchronous `fn` needs a provable
-finite bound ([04 §2](04-compiler.md)).
+exited cleanup before transferring control.
+
+A `for` or `while` in an `async fn` checkpoints at its back edge unless
+annotated with a proven `@budget(bound=...)`. Every loop in a synchronous
+`fn` needs a finite bound ([04 §2](04-compiler.md)). Revision 0.1 discharges
+the synchronous half by requiring a statement attribute
+`@budget(bound=N)` immediately preceding the `for` or `while`, where `N` is
+a comptime-known integer ≥ 1 (an integer literal). Acceptance emits a
+hidden trip counter that aborts if the loop body runs more than `N` times —
+a fail-closed runtime bound, not a cost model. A synchronous `for`/`while`
+without that attribute is `error[sema]`. Async checkpoint behaviour and
+ISR-bound loop rejection are unchanged by this discharge; proving a budget
+that replaces an async checkpoint, and cycle/latency proofs, remain later
+work ([04 §2](04-compiler.md)).
 
 `pass` is an explicit no-op. `defer` and `with` are §10. `send` is §9.
 
@@ -888,9 +898,15 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 | `@placed(addr)` | Binds a module-level `static` of a `@layout(runtime)` type to a fixed address ([03 §3.1](03-hardware.md)). |
 | `@layout_assert` | Post-layout build assertion over `ImageReport`. |
 | `@test` / `@test(runtime)` / `@test(exhaustive)` | Test declaration (§12.2). |
-| `@budget(...)` | Proven work/memory bound on a function or the loop it precedes. |
+| `@budget(...)` | Proven work/memory bound on a function or the loop it precedes. In statement position, `@budget(bound=N)` with comptime-known integer `N` ≥ 1 must immediately precede a `for` or `while` (§8.1). |
 | `@no_promote` | Reject image-lifetime promotion in the annotated scope. |
 | `@detached` | Work independent of any enclosing group (§9.5). |
+
+Of the built-ins, only `@budget(...)` may be a statement attribute, and in
+that position it must immediately precede `for` or `while` at the same
+indentation. Other statement attributes, and a loop-position `@budget` on a
+non-loop, are errors. Function-level `@budget` (call-graph / memory bound)
+is named here but is not the §8.1 sync-loop discharge.
 
 A module-level `static NAME: Type` is the construct
 [03 §3.1](03-hardware.md) binds with `@placed(addr)`; `@placed` is legal
