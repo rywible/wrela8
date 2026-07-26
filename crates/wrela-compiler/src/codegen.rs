@@ -1021,7 +1021,7 @@ struct FnCtx<'a> {
     slot_base: u8,
     /// A fixed byte bias added to every slot offset: `0` for sync fns;
     /// `TURN_RECORD_SIZE` for async fns (the frame slots sit immediately
-    /// past the 48-byte turn record within the turn area).
+    /// past the turn record within the turn area).
     slot_bias: usize,
 }
 
@@ -5357,6 +5357,13 @@ const RT_ENQUEUE_PREFIX: &str = "rt_enqueue ";
 //                     so the word is 0 until the first aggregate-reply
 //                     suspend writes it; the record's own boot state is
 //                     still fully deterministic.)
+//   +56 reply_tag     plans/M10.md item J (decision 559): the reply
+//                     channel's own tag — `0` = Ok (payload in `reply`),
+//                     else a `CallError` variant index (`Cancelled` = 1,
+//                     `NotAdmitted` = 3) with any payload in `reply`.
+//                     The group arena's `(tag, payload)` shape, on the
+//                     turn record; retires `BRK_ACTOR_TURN_CANCELLED`.
+//
 pub const OFF_TURN_BUSY: u64 = 0;
 pub const OFF_TURN_SUSPENDED: u64 = 8;
 pub const OFF_TURN_RESUME_READY: u64 = 16;
@@ -5364,7 +5371,15 @@ pub const OFF_TURN_REPLY: u64 = 24;
 pub const OFF_TURN_WAKER: u64 = 32;
 pub const OFF_TURN_CUR_METHOD: u64 = 40;
 pub const OFF_TURN_REPLY_SLOT: u64 = 48;
-pub const TURN_RECORD_SIZE: u64 = 56;
+/// plans/M10.md item J (decision 559): the reply channel's own tag word —
+/// `(tag, reply)` like the group arena's `(tag, payload)` pairs. `0` =
+/// `Ok` (payload in `OFF_TURN_REPLY`); a nonzero value is a `CallError`
+/// variant index (`Cancelled` = 1, `NotAdmitted` = 3) with any payload in
+/// `OFF_TURN_REPLY` (`Admission` for `NotAdmitted`). Written by
+/// `.deliver` / `rt_drain` / `rt_xreply` and by a rejected `await`
+/// enqueue; read by `emit_await_resume`.
+pub const OFF_TURN_REPLY_TAG: u64 = 56;
+pub const TURN_RECORD_SIZE: u64 = 64;
 
 // A compiled async fn's own return-status ABI (distinct from a sync fn's,
 // which returns its value in x0 with no status — the dispatch arms in
@@ -5471,6 +5486,16 @@ pub const GROUP_NO_PARENT: u64 = u64::MAX;
 /// `CallError` arm builds exactly that order, which is what every
 /// `EnumTag` comparison a `match` lowers to is numbered against.
 pub const CALL_ERROR_TAG_CANCELLED: u64 = 1;
+/// `CallError[E]`'s own `NotAdmitted` variant tag — same order as
+/// `CALL_ERROR_TAG_CANCELLED`. Also the nonzero `OFF_TURN_REPLY_TAG`
+/// value that delivers "never ran: mailbox full" (plans/M10.md item J).
+pub const CALL_ERROR_TAG_NOT_ADMITTED: u64 = 3;
+/// `Admission`'s opaque reason code for mailbox-full (05-library.md §2's
+/// `Full | Restarting | StaleRequest | DeadlineUnmeetable` — first
+/// variant, plans/M10.md decision 666). One `u64`; no fields yet.
+pub const ADMISSION_FULL: u64 = 0;
+/// `OFF_TURN_REPLY_TAG` = Ok (group-arena shape: tag 0 = Ok).
+pub const REPLY_TAG_OK: u64 = 0;
 
 pub fn group_child_tag_off(child_index: usize) -> u64 {
     OFF_GROUP_CHILDREN_BASE + (child_index as u64) * 16
@@ -5486,13 +5511,6 @@ pub fn group_child_payload_off(child_index: usize) -> u64 {
 /// real composition. No required M6 conformance boot ever fills a mailbox
 /// on an awaited call.
 pub const BRK_AWAIT_ACTOR_REJECTED: u16 = 0xACD3;
-
-/// plans/M6.md item F: an *actor* turn that reports `TURN_STATUS_CANCELLED`
-/// to `rt_select_and_run`. Unreachable at M6 by construction (that routine's
-/// own comment has the proof) and deliberately fail-closed rather than
-/// approximated — the turn record has one scalar reply word and no error
-/// channel, so there is nothing honest to deliver to the awaiting turn.
-pub const BRK_ACTOR_TURN_CANCELLED: u16 = 0xACD5;
 
 fn actor_of_method_key(key: &str) -> &str {
     key.split('.').next().unwrap_or(key)
@@ -6525,7 +6543,7 @@ fn emit_group_start(
 
     // Write the ambient lineage into the child's own persistent frame
     // (Temp(0)/Temp(1) — always the first two slots past the child's own
-    // 48-byte turn record header) before ever calling it.
+    // turn record header) before ever calling it.
     let word = ctx.cur_word();
     ctx.load_imm(X_C, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
@@ -7426,23 +7444,48 @@ fn emit_await_suspend(
                 &rt_enqueue_symbol(&actor),
                 Some(fn_key), // waker = this turn, by `TurnId`.
             )?;
-            // A rejected admission aborts. plans/M6.md item H3: it used
-            // to abort as a bare `BRK`, which is a real EL1 exception
-            // into a vector table this machine never installs, so the
-            // operator saw a raw `esr=... pc=0x200` dump and no hint of
-            // the cause. Fail closed *legibly* instead — the ordinary
-            // abort path already prints a message over the console ring
-            // before halting, and this is a condition a plain program
-            // can reach (fill a mailbox with consumed-`Result` sends,
-            // then `await`). The real fix is 02 §9.4's
-            // `CallError::NotAdmitted` composition, which does not exist
-            // (see this arm's ledger note on
-            // `actors.calls.callerror-composition`).
-            let skip = ctx.emit_skip(SkipKind::Cbz(0));
-            ctx.abort_fixed(&format!(
-                "await rejected: `{actor}`'s mailbox was full (M6 does not compose CallError::NotAdmitted, so a full mailbox is fatal here)"
-            ));
-            ctx.patch_skip(skip, SkipKind::Cbz(0));
+            // plans/M10.md item J: a rejected admission delivers
+            // `Err(CallError.NotAdmitted(Admission.Full))` through the
+            // reply tag rather than aborting. Handoff receipts have no
+            // `CallError` channel — keep the legible abort there.
+            let composed_ty = &f.temp_types[result_temp.0];
+            if is_handoff_receipt_reply(composed_ty) {
+                let skip = ctx.emit_skip(SkipKind::Cbz(0));
+                ctx.abort_fixed(&format!(
+                    "await rejected: `{actor}`'s mailbox was full (a handoff `Receipt` has no \
+                     CallError channel for NotAdmitted)"
+                ));
+                ctx.patch_skip(skip, SkipKind::Cbz(0));
+            } else {
+                // Admitted (x0 == 0) skips the reject arm and parks;
+                // rejected falls through, composes NotAdmitted, resumes.
+                let skip_admitted = ctx.emit_skip(SkipKind::Cbz(0));
+                ctx.load_imm(X_B, CALL_ERROR_TAG_NOT_ADMITTED as i64);
+                ctx.push(
+                    encode::enc_str_x_imm(X_B, X_FRAME, OFF_TURN_REPLY_TAG as u16),
+                    format!(
+                        "str {}, [{}, #{OFF_TURN_REPLY_TAG}]",
+                        reg_name(X_B),
+                        reg_name(X_FRAME)
+                    ),
+                );
+                ctx.load_imm(X_A, ADMISSION_FULL as i64);
+                ctx.push(
+                    encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+                    format!(
+                        "str {}, [{}, #{OFF_TURN_REPLY}]",
+                        reg_name(X_A),
+                        reg_name(X_FRAME)
+                    ),
+                );
+                let result_off = ctx.frame.off(result_temp);
+                let result_size = ctx.frame.size_of_temp(result_temp);
+                emit_compose_from_reply_tag(ctx, result_off, result_size);
+                ctx.checkpoint();
+                emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
+                ctx.b_unconditional(state_flat_base[resume_state]);
+                ctx.patch_skip(skip_admitted, SkipKind::Cbz(0));
+            }
             // Park: suspended = 1, status = suspended, return to the
             // scheduler (the real park — control genuinely leaves this
             // fn; every other ready actor can now run).
@@ -7854,9 +7897,44 @@ fn emit_compose_staged_reply(
     Ok(())
 }
 
+/// plans/M10.md item J: compose `result_temp` from the turn record's
+/// `(OFF_TURN_REPLY_TAG, OFF_TURN_REPLY)` pair. `tag == 0` → `Ok(reply)`;
+/// nonzero → `Err(CallError)` whose variant index is the tag and whose
+/// payload (when any) is the reply word (`Admission` for `NotAdmitted`).
+/// Same shape the group arena already uses for `(tag, payload)`.
+///
+/// `X_A` enters holding the reply word; `X_B` holding the tag. Clobbers
+/// `X_A`/`X_B`.
+fn emit_compose_from_reply_tag(ctx: &mut FnCtx, result_off: usize, result_size: usize) {
+    // `cbnz tag` skips the Ok arm when the tag is a CallError variant.
+    let skip_err = ctx.emit_skip(SkipKind::Cbnz(X_B));
+    ctx.store_slot(X_A, result_off + 8);
+    let mut w = 16;
+    while w < result_size {
+        ctx.store_slot(X_ZR, result_off + w);
+        w += 8;
+    }
+    ctx.store_slot(X_ZR, result_off);
+    let skip_done = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(skip_err, SkipKind::Cbnz(X_B));
+    // Err: +8 = CallError.tag, +16 = payload (Admission / zero).
+    ctx.store_slot(X_B, result_off + 8);
+    if result_size >= 24 {
+        ctx.store_slot(X_A, result_off + 16);
+    }
+    w = 24;
+    while w < result_size {
+        ctx.store_slot(X_ZR, result_off + w);
+        w += 8;
+    }
+    ctx.load_imm(X_A, 1); // Result.Err
+    ctx.store_slot(X_A, result_off);
+    ctx.patch_skip(skip_done, SkipKind::Cond(Cond::Al));
+}
+
 /// The resume half (module doc's step 3) — the dispatch chain's landing
-/// site for `resume_state`: for `ActorCall`, compose `Ok(reply)` into
-/// `result_temp` from the turn record's own reply slot; for `GroupJoin`
+/// site for `resume_state`: for `ActorCall`, compose from the turn
+/// record's `(reply_tag, reply)` pair; for `GroupJoin`
 /// (parked, now woken — either a real child completion or the join
 /// waiter's own group getting cancelled and forcibly resumed, item F #3's
 /// "make cancelled suspended turns ready-to-resume"), recompose from the
@@ -8016,34 +8094,13 @@ fn emit_await_resume(
                     )?;
                     ctx.patch_skip(skip_ok, SkipKind::Cbnz(X_C));
                 }
-            } else if gctx.arena_capacity == 0 {
-                // No group exists anywhere in this build, so no await can
-                // ever resolve `Cancelled` — emit exactly the pre-item-F
-                // sequence, byte-identical (`emit_checkpoint_cancellation_test`'s
-                // own reasoning).
-                ctx.push(
-                    encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
-                    format!(
-                        "ldr {}, [{}, #{OFF_TURN_REPLY}]",
-                        reg_name(X_A),
-                        reg_name(X_FRAME)
-                    ),
-                );
-                ctx.store_slot(X_A, result_off + 8); // payload = the delivered reply
-                ctx.load_imm(X_A, 0);
-                ctx.store_slot(X_A, result_off); // tag = Ok
             } else {
-                // 02-language.md §9.5: "Cancellation becomes observable at
-                // `await` and checkpoints." An await inside a cancelled
-                // group resolves `Err(CallError::Cancelled)`, not the reply
-                // that happened to arrive — for the group's own owner this
-                // is the ONLY way it ever observes the cancellation (its
-                // frame is deliberately not terminated,
-                // `OFF_GROUP_OWNER_TURN`'s own doc comment); for a child
-                // the value is composed and then immediately discarded by
-                // the termination test below, which is cheaper than
-                // branching around it.
-                emit_group_cancelled_flags(ctx, fn_key);
+                // plans/M10.md item J: compose from `(reply_tag, reply)`.
+                // Ambient group cancel still wins over a delivered `Ok`
+                // (02 §9.5 — the owner's only observation of cancel).
+                if gctx.arena_capacity != 0 {
+                    emit_group_cancelled_flags(ctx, fn_key);
+                }
                 ctx.push(
                     encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
                     format!(
@@ -8052,29 +8109,29 @@ fn emit_await_resume(
                         reg_name(X_FRAME)
                     ),
                 );
-                ctx.load_imm(X_B, CALL_ERROR_TAG_CANCELLED as i64);
                 ctx.push(
-                    encode::enc_cmp_imm(X_C, 0, true),
-                    format!("cmp {}, #0", reg_name(X_C)),
-                );
-                ctx.push(
-                    encode::enc_csel(X_A, X_A, X_B, Cond::Eq, true),
+                    encode::enc_ldr_x_imm(X_B, X_FRAME, OFF_TURN_REPLY_TAG as u16),
                     format!(
-                        "csel {}, {}, {}, eq",
-                        reg_name(X_A),
-                        reg_name(X_A),
-                        reg_name(X_B)
+                        "ldr {}, [{}, #{OFF_TURN_REPLY_TAG}]",
+                        reg_name(X_B),
+                        reg_name(X_FRAME)
                     ),
                 );
-                // `X_C` is already 0 (`Ok`) / 1 (`Err`) — the same encoding
-                // the `Result` tag uses (`value::RESULT_OK`/`RESULT_ERR`).
-                ctx.store_slot(X_C, result_off);
-                ctx.store_slot(X_A, result_off + 8);
-                let mut w = 16;
-                while w < result_size {
-                    ctx.store_slot(X_ZR, result_off + w);
-                    w += 8;
+                if gctx.arena_capacity != 0 {
+                    // If cancelled and the delivered tag is Ok, force
+                    // Cancelled. A delivered Cancelled/NotAdmitted stands.
+                    let skip_force = ctx.emit_skip(SkipKind::Cbz(X_C));
+                    ctx.push(
+                        encode::enc_cmp_imm(X_B, 0, true),
+                        format!("cmp {}, #0", reg_name(X_B)),
+                    );
+                    let skip_keep = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
+                    ctx.load_imm(X_B, CALL_ERROR_TAG_CANCELLED as i64);
+                    ctx.load_imm(X_A, 0);
+                    ctx.patch_skip(skip_keep, SkipKind::Cond(Cond::Ne));
+                    ctx.patch_skip(skip_force, SkipKind::Cbz(X_C));
                 }
+                emit_compose_from_reply_tag(ctx, result_off, result_size);
             }
             ctx.checkpoint();
             emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
@@ -8395,7 +8452,7 @@ fn emit_flowwir_fn(
 
 /// Every async fn's own persistent frame byte count (its `Frame::size` —
 /// the statically reserved slots its activation lives in, past the
-/// 48-byte turn record), keyed exactly like `FlowWirProgram::fns` — the
+/// 64-byte turn record), keyed exactly like `FlowWirProgram::fns` — the
 /// one fact `layout::compute_runtime_tables` needs from this module to
 /// size each turn area, computed by the identical `build_frame_flow` the
 /// real emission uses so the two can never disagree.
@@ -8843,7 +8900,7 @@ mod tests {
     /// A frame of exactly 4040 bytes is legal for a sync fn (bias 0, and
     /// `4040 <= 4095`) and must be *refused* for an async one, whose every
     /// slot reference is biased past the `TURN_RECORD_SIZE`-byte turn
-    /// record: `4040 + 56 = 4096` is one past the field, where the surplus
+    /// record: `4040 + 64 = 4104` is past the field, where the surplus
     /// bit lands in `enc_add_imm`'s `shift` and quietly assembles a
     /// different instruction. Checking `size` alone let exactly this
     /// through.
@@ -8875,7 +8932,7 @@ mod tests {
             panic!("the same frame must be refused once biased past the turn record");
         };
         assert!(
-            err.message.contains("4039"),
+            err.message.contains("4031"),
             "the diagnostic names the biased ceiling: {}",
             err.message
         );
@@ -8889,7 +8946,7 @@ mod tests {
             )],
             ..f
         };
-        let ok = build_frame(&smaller, &layout, 0, bias).expect("fits under 4039 with the bias");
+        let ok = build_frame(&smaller, &layout, 0, bias).expect("fits under 4031 with the bias");
         assert!(ok.size + bias <= 4095);
     }
 

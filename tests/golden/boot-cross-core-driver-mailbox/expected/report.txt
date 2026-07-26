@@ -26,23 +26,23 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=2176
-  Section name=rodata base=0x405008d0 size=510
+  Section name=code base=0x40500050 size=2416
+  Section name=rodata base=0x405009c0 size=271
   Section name=abort base=0x40500ad0 size=120
   Section name=checkpoint base=0x40500b48 size=104
-  Section name=rtcode base=0x40500bb0 size=4236
-  Section name=rtdata base=0x40501c40 size=2096
-  Section name=devregs base=0x40502470 size=8
+  Section name=rtcode base=0x40500bb0 size=4352
+  Section name=rtdata base=0x40501cb0 size=2096
+  Section name=devregs base=0x405024e0 size=8
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40501af8
-  CoreEntry core=2 base=0x40501b60
-  Actor name=Probe mailbox=4 slot=16 frame=264 state=8
-  Turn fn=cross_core_send_into_driver_mailbox frame=456
-  Driver name=Stub state=8 mailbox=4 slot=16 frame=56
-  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x40502360
-  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x405023b8
-  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40502410
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502438
+  CoreEntry core=1 base=0x40501b6c
+  CoreEntry core=2 base=0x40501bd4
+  Actor name=Probe mailbox=4 slot=16 frame=272 state=8
+  Turn fn=cross_core_send_into_driver_mailbox frame=464
+  Driver name=Stub state=8 mailbox=4 slot=16 frame=64
+  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x405023d0
+  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x40502428
+  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40502480
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x405024a8
   Turns count=3 stride=512 bytes=1536
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2096
-  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40502470 size=8
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x405024e0 size=8
