@@ -456,17 +456,36 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
             // but a wildcard/binding pattern; treat it as opaque.
             None => TyShape::Opaque,
         },
+        // plans/M9.md item J2c: a generic-instantiated user enum
+        // (`Lookup[u32]`) is an ordinary closed sum once substituted —
+        // the same `instantiate_enum` pattern typing already calls. The
+        // old fall-through treated every non-empty `targs` Named as
+        // `Opaque`, so a fully-covered match falsely demanded `_`.
+        Type::Named(name, targs) if !targs.is_empty() => match mctx.enums.get(name) {
+            Some(_) => match crate::sema::generics::instantiate_enum(
+                mctx,
+                name,
+                targs,
+                Span { line: 0, col: 0 },
+            ) {
+                Ok(decl) => TyShape::Sum(
+                    decl.variants
+                        .iter()
+                        .map(|v| (v.name.clone(), bodies::decl_variant_payload_types(v)))
+                        .collect(),
+                ),
+                // Bodies already accepted this scrutinee type; a failure
+                // here would be a producer bug. Stay opaque rather than
+                // panic — exhaustiveness then demands `_` (fail closed).
+                Err(_) => TyShape::Opaque,
+            },
+            None => TyShape::Opaque,
+        },
         Type::Tuple(elems) => TyShape::Tuple(elems.clone()),
         Type::Array(elem, len_expr) => match bodies::literal_array_len(len_expr) {
             Some(n) if n >= 0 => TyShape::Array(vec![(**elem).clone(); n as usize]),
             _ => TyShape::Opaque,
         },
-        // A generic-instantiated `Type::Named` (non-empty `targs`) can
-        // only reach here behind a wildcard/binding pattern — a `Variant`
-        // pattern against one already fails closed in
-        // `bodies::check_pattern` (`error[unimplemented]`), which this
-        // pass always runs *before* touching the pattern's shape (see
-        // `check_match_stmt`/`check_is_pattern`).
         _ => TyShape::Opaque,
     }
 }

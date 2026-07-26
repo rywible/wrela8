@@ -188,6 +188,8 @@ const N: usize = 1
     // 02 §7.2 — Lookup enum with IoError + match. Prefer the real stdlib
     // `IoError` via import (J1c); the fragment wrap routes import-bearing
     // wraps through `loader::load_closure` so `from core…` resolves.
+    // J2c: fence is Result-typed (Failed/Err is load-bearing); Absent was
+    // `return None` (internal Option/Result mix — decision below).
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         start_line: 370,
@@ -198,12 +200,9 @@ from core.io_error import IoError
         postamble: r#"
 fn lookup(key: u32) -> Lookup[u32]:
     return Lookup.Absent
-
-fn use(value: u32):
-    return unit
 "#,
         params: "key: u32",
-        ret: "Option[u32]",
+        ret: "Result[u32, IoError]",
         ret_ok: "",
         async_wrapper: false,
         nest_items_into: "",
@@ -228,6 +227,9 @@ fn use(index: usize):
         nest_items_into: "",
     },
     // 02 §8.1 — match Found/Absent. Lookup[T] instantiation.
+    // J2c: Found assigns into a mut `value` param (the fence's `value =
+    // item`); Absent returns; fall-through returns `Some(value)` so the
+    // wrapper matches §8.1's definite-initialization merge shape.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         start_line: 473,
@@ -241,9 +243,9 @@ fn lookup(key: u32) -> Lookup[u32]:
     return Lookup.Absent
 "#,
         postamble: "",
-        params: "key: u32",
+        params: "key: u32, mut value: u32",
         ret: "Option[u32]",
-        ret_ok: "",
+        ret_ok: "Some(value)",
         async_wrapper: false,
         nest_items_into: "",
     },

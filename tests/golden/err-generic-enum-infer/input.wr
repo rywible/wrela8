@@ -1,0 +1,9 @@
+module examples.err_generic_enum_infer
+
+enum Lookup[T]:
+    Found(T)
+    Absent
+
+pub fn no_expected() -> unit:
+    x = Lookup.Absent
+    return unit

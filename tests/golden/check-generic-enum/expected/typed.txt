@@ -1,0 +1,58 @@
+Program
+  Fn name=classify ret=u32
+    Param name=x mode=read ty=Lookup[u32]
+    Body
+      Match
+        Local name=x ty=Lookup[u32]
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup[u32]
+            Binding name=value ty=u32
+          Return
+            Local name=value ty=u32
+        Case
+          VariantPattern enum=Lookup variant=Absent ty=Lookup[u32]
+          Return
+            Int text=0 ty=u32
+        Case
+          VariantPattern enum=Lookup variant=Failed ty=Lookup[u32]
+            Wildcard ty=IoError
+          Return
+            Int text=1 ty=u32
+  Fn name=make_absent ret=Lookup[u32]
+    Body
+      Return
+        EnumConstruct enum=Lookup variant=Absent ty=Lookup[u32]
+  Fn name=make_failed ret=Lookup[u32]
+    Body
+      Return
+        EnumConstruct enum=Lookup variant=Failed ty=Lookup[u32]
+          EnumConstruct enum=IoError variant=OutOfRange ty=IoError
+  Fn name=make_found ret=Lookup[u32]
+    Param name=x mode=read ty=u32
+    Body
+      Return
+        EnumConstruct enum=Lookup variant=Found ty=Lookup[u32]
+          Local name=x ty=u32
+  Fn name=round_trip ret=Lookup[u32]
+    Param name=x mode=read ty=Lookup[u32]
+    Body
+      Match
+        Local name=x ty=Lookup[u32]
+        Case
+          VariantPattern enum=Lookup variant=Found ty=Lookup[u32]
+            Binding name=value ty=u32
+          Return
+            EnumConstruct enum=Lookup variant=Found ty=Lookup[u32]
+              Local name=value ty=u32
+        Case
+          VariantPattern enum=Lookup variant=Absent ty=Lookup[u32]
+          Return
+            EnumConstruct enum=Lookup variant=Absent ty=Lookup[u32]
+        Case
+          VariantPattern enum=Lookup variant=Failed ty=Lookup[u32]
+            Binding name=error ty=IoError
+          Return
+            EnumConstruct enum=Lookup variant=Failed ty=Lookup[u32]
+              Local name=error ty=IoError
+  Instantiation key=enum:Lookup[u32]
+    Enum

@@ -1,0 +1,1 @@
+error[type]: cannot infer type arguments for `Lookup` variant construction at 8:16

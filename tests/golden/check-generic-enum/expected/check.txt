@@ -1,0 +1,12 @@
+Module path=examples.check_generic_enum
+  Enum IoError data
+    variant OutOfRange
+  Enum Lookup[T] data
+    variant Found(T)
+    variant Absent
+    variant Failed(IoError)
+  Fn make_absent() -> Lookup[u32]
+  Fn make_found(x: read u32) -> Lookup[u32]
+  Fn make_failed() -> Lookup[u32]
+  Fn classify(x: read Lookup[u32]) -> u32
+  Fn round_trip(x: read Lookup[u32]) -> Lookup[u32]

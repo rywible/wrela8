@@ -1,0 +1,36 @@
+module examples.check_generic_enum
+
+enum IoError:
+    OutOfRange
+
+enum Lookup[T]:
+    Found(T)
+    Absent
+    Failed(IoError)
+
+pub fn make_absent() -> Lookup[u32]:
+    return Lookup.Absent
+
+pub fn make_found(x: u32) -> Lookup[u32]:
+    return Lookup.Found(x)
+
+pub fn make_failed() -> Lookup[u32]:
+    return Lookup.Failed(IoError.OutOfRange)
+
+pub fn classify(x: Lookup[u32]) -> u32:
+    match x:
+        case .Found(value):
+            return value
+        case .Absent:
+            return 0
+        case .Failed(_):
+            return 1
+
+pub fn round_trip(x: Lookup[u32]) -> Lookup[u32]:
+    match x:
+        case .Found(value):
+            return .Found(value)
+        case .Absent:
+            return .Absent
+        case .Failed(error):
+            return .Failed(error)

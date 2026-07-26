@@ -19,7 +19,9 @@
 /// Measured 2026-07-25 (J1b; unchanged under J1c): 14 ok, 10 disagreements
 /// out of 24. J2a (2026-07-25): aspirational `virtio_storage.wr` scoped
 /// out of corpus-sema; §9.5 `read` → `read_file`; §6 ISR fence shows
-/// `irq.bind` — 16 ok, 7 disagreements out of 23. The J1 "noise"
+/// `irq.bind` — 16 ok, 7 disagreements out of 23. J2c (2026-07-25):
+/// generic-enum variant construction + exhaustiveness — `:370` / `:473`
+/// flip to ok → **17 ok, 6 disagreements** out of 23. The J1 "noise"
 /// keyhole is gone — every former noise block has a context stub in
 /// `corpus_sema_context.rs` or is counted as a disagreement.
 pub const CORPUS_SEMA_CENSUS: &[(&str, &str)] = &[
@@ -31,11 +33,11 @@ pub const CORPUS_SEMA_CENSUS: &[(&str, &str)] = &[
     ("docs/language/02-language.md:314", "ok"),
     ("docs/language/02-language.md:331", "ok"),
     ("docs/language/02-language.md:348", "ok"),
-    ("docs/language/02-language.md:370", "disagreement"),
+    ("docs/language/02-language.md:370", "ok"),
     ("docs/language/02-language.md:396", "ok"),
     ("docs/language/02-language.md:410", "ok"),
     ("docs/language/02-language.md:458", "ok"),
-    ("docs/language/02-language.md:473", "disagreement"),
+    ("docs/language/02-language.md:473", "ok"),
     ("docs/language/02-language.md:530", "disagreement"),
     ("docs/language/02-language.md:604", "disagreement"),
     ("docs/language/02-language.md:656", "disagreement"),

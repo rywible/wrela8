@@ -35,12 +35,16 @@
 //! through an already-typed value) now resolves the concrete
 //! instantiation and enqueues it (item H, `generics.rs` owns
 //! substitution + the queue + the actual per-instantiation checking,
-//! `mod.rs::check` runs it last). What still fails closed via
+//! `mod.rs::check` runs it last). Generic-enum *variant* construction
+//! under an expected instantiated type (`Lookup.Absent` → `Lookup[u32]`)
+//! is included (plans/M9.md item J2c). What still fails closed via
 //! `unimplemented_at("generic instantiation is", ...)` is item H's own
-//! documented scope boundary: a generic *method* (its own `[...]`,
-//! beyond its struct's, if any — never instantiated), a bare reference to
-//! a generic type/fn as a first-class value without calling it, and a
-//! generic-argument shape deeper than this item resolves.
+//! documented scope boundary: a generic *method*'s own type parameters
+//! (beyond its struct's, if any — never instantiated; ledger gap
+//! `sema.generics.method-params`), associated functions on a still-
+//! generic enum type name, a bare reference to a generic type/fn as a
+//! first-class value without calling it, and a generic-argument shape
+//! deeper than this item resolves.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2794,7 +2798,7 @@ fn synth_expr(
             kind: TypedExprKind::Unit,
         }),
         Expr::Name(span, name) => synth_name(*span, name, expected, fctx, mctx),
-        Expr::Field(base, span, name) => check_field_expr(base, *span, name, fctx, mctx),
+        Expr::Field(base, span, name) => check_field_expr(base, *span, name, expected, fctx, mctx),
         Expr::Index(base, span, args) => synth_index(base, *span, args, fctx, mctx),
         Expr::Call(callee, span, args) => check_call(callee, *span, args, expected, fctx, mctx),
         Expr::Unary(span, UnaryOp::Neg, inner) => {
@@ -3028,6 +3032,7 @@ fn check_field_expr(
     base: &Expr,
     span: Span,
     name: &str,
+    expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
@@ -3056,13 +3061,15 @@ fn check_field_expr(
                 ));
             }
             if let Some(e) = mctx.enums.get(bname.as_str()) {
-                if !e.generics.is_empty() {
-                    return Err(unimplemented_at("generic instantiation is", span));
-                }
                 // plans/M9.md item B2: associated fns share the `Type.name`
                 // spelling with fieldless variants. Look them up first so
                 // a method never surfaces as "no variant".
                 if let Some((_, d)) = e.assoc_fn(name) {
+                    // Associated fns on a generic enum (and method-owned
+                    // type params) stay item H / J2b's deferred boundary.
+                    if !e.generics.is_empty() || !d.generics.is_empty() {
+                        return Err(unimplemented_at("generic instantiation is", span));
+                    }
                     let key = CalleeKey::Method(bname.clone(), name.to_string());
                     return Ok(TypedExpr {
                         ty: fn_value_type(d),
@@ -3075,14 +3082,25 @@ fn check_field_expr(
                         span,
                     ));
                 }
-                if let Some(dv) = e.variants.iter().find(|v| v.name == name) {
+                if e.variants.iter().any(|v| v.name == name) {
+                    // plans/M9.md item J2c: generic-enum variant construction
+                    // via expected type (`return Lookup.Absent` under
+                    // `Lookup[u32]`). `instantiate_enum` already existed;
+                    // this path simply refused before.
+                    let (targs, decl) =
+                        resolve_enum_for_variant_construction(bname, e, expected, span, mctx)?;
+                    let dv = decl
+                        .variants
+                        .iter()
+                        .find(|v| v.name == name)
+                        .expect("name membership checked above");
                     if matches!(dv.payload, DeclVariantPayload::None) {
                         // plans/M9.md item DD / decision 9: the local
                         // lookup key (`bname`), not `e.name` (the
                         // exporter's spelling). Same rule as
                         // `check_struct_construction` — one spelling.
                         return Ok(TypedExpr {
-                            ty: Type::Named(bname.clone(), vec![]),
+                            ty: Type::Named(bname.clone(), targs),
                             kind: TypedExprKind::EnumConstruct {
                                 enum_name: bname.clone(),
                                 variant: name.to_string(),
@@ -4435,7 +4453,7 @@ fn check_call(
         }
         Expr::Name(_, name) => check_call_by_name(name, span, args, expected, fctx, mctx),
         Expr::Field(base, fspan, name) => {
-            check_call_by_field(base, *fspan, name, span, args, fctx, mctx)
+            check_call_by_field(base, *fspan, name, span, args, expected, fctx, mctx)
         }
         other => {
             let callee_t = check_expr(other, None, fctx, mctx)?;
@@ -5130,6 +5148,7 @@ fn check_call_by_field(
     name: &str,
     call_span: Span,
     args: &[Arg],
+    expected: Option<&Type>,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
@@ -5179,13 +5198,12 @@ fn check_call_by_field(
                 ));
             }
             if let Some(e) = mctx.enums.get(bname.as_str()) {
-                if !e.generics.is_empty() {
-                    return Err(unimplemented_at("generic instantiation is", call_span));
-                }
                 // plans/M9.md item B2: associated fn before variant — a
                 // call `Color.from(...)` is a method, not "no variant".
                 if let Some((af, d)) = e.assoc_fn(name) {
-                    if !d.generics.is_empty() {
+                    // Generic enum assoc fns / method-owned type params:
+                    // still the documented H / J2b boundary.
+                    if !e.generics.is_empty() || !d.generics.is_empty() {
                         return Err(unimplemented_at("generic instantiation is", call_span));
                     }
                     let typed_args =
@@ -5200,14 +5218,24 @@ fn check_call_by_field(
                         },
                     });
                 }
-                if let Some(dv) = e.variants.iter().find(|v| v.name == name) {
+                if e.variants.iter().any(|v| v.name == name) {
+                    // plans/M9.md item J2c: `Lookup.Found(x)` under expected
+                    // `Lookup[u32]` — instantiate, then check payload args
+                    // against the substituted variant.
+                    let (targs, decl) =
+                        resolve_enum_for_variant_construction(bname, e, expected, call_span, mctx)?;
+                    let dv = decl
+                        .variants
+                        .iter()
+                        .find(|v| v.name == name)
+                        .expect("name membership checked above");
                     let payload_types = decl_variant_payload_types(dv);
                     let typed_args =
                         check_variant_args(&payload_types, args, call_span, fctx, mctx)?;
                     // plans/M9.md item DD / decision 9: local key, not
                     // `e.name` — see the fieldless arm in `check_field_expr`.
                     return Ok(TypedExpr {
-                        ty: Type::Named(bname.clone(), vec![]),
+                        ty: Type::Named(bname.clone(), targs),
                         kind: TypedExprKind::EnumConstruct {
                             enum_name: bname.clone(),
                             variant: name.to_string(),
@@ -10663,6 +10691,45 @@ fn check_positional_args(
         out.push(check_expr(&a.value, Some(ty), fctx, mctx)?);
     }
     Ok(out)
+}
+
+/// Resolves the concrete declaration used when constructing
+/// `Enum.Variant` / `Enum.Variant(...)` (plans/M9.md item J2c).
+///
+/// Non-generic enums keep their declared shape (`targs` empty). Generic
+/// enums take type arguments from `expected` (`return Lookup.Absent`
+/// under `Lookup[u32]`) and run them through `generics::instantiate_enum`
+/// — the same mechanism pattern typing already used. Missing or
+/// mismatched expected type is a precise `error[type]`; associated
+/// functions / method-owned type params on a generic enum still refuse
+/// elsewhere with the existing `unimplemented` boundary.
+fn resolve_enum_for_variant_construction<'a>(
+    enum_name: &str,
+    info: &'a EnumInfo,
+    expected: Option<&Type>,
+    span: Span,
+    mctx: &ModuleCtx,
+) -> Result<(Vec<types::TypeArg>, std::borrow::Cow<'a, types::DeclEnum>), SemaError> {
+    if info.generics.is_empty() {
+        return Ok((vec![], std::borrow::Cow::Borrowed(&info.decl)));
+    }
+    match expected {
+        Some(Type::Named(n, args)) if n == enum_name => {
+            let decl = generics::instantiate_enum(mctx, enum_name, args, span)?;
+            Ok((args.clone(), std::borrow::Cow::Owned(decl)))
+        }
+        Some(other) => Err(type_error(
+            format!(
+                "expected `{}`, found a `{enum_name}` variant",
+                types::render_type(other)
+            ),
+            span,
+        )),
+        None => Err(type_error(
+            format!("cannot infer type arguments for `{enum_name}` variant construction"),
+            span,
+        )),
+    }
 }
 
 /// Enum variant construction (`Enum.Variant(...)`, leading-dot
