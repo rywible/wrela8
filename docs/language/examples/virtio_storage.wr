@@ -2,7 +2,9 @@
 #
 # ASPIRATIONAL — not a boot claim. Imports modules the stdlib does not yet
 # ship. Demonstrates ownership and scheduling shape for a didactic
-# write-back extent filesystem (not crash-consistent).
+# write-back extent filesystem (not crash-consistent). Corpus lex/parse
+# only until those imports exist (plans/M9.md decision 516); sema would
+# only restate `module core.bytes not found`.
 #
 # A multi-client Storage should use the service slot idiom (02 §9.7): short
 # admitting turns, a bounded in-flight SlotMap, slot.resolve(take receipt).

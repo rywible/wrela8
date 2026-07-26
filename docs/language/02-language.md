@@ -818,7 +818,7 @@ Exactly one reachable `@image fn` returns the `Image`. It is evaluated only
 by the compiler and declares the whole runtime graph: devices, drivers,
 actors, pools, mailbox capacities, supervision, baked artifacts, and
 post-layout checks. See the worked example
-([virtio-storage.wr](examples/virtio-storage.wr)) and the builder contracts
+([virtio_storage.wr](examples/virtio_storage.wr)) and the builder contracts
 in [05 §9](05-library.md).
 
 ```wrela

@@ -17,9 +17,11 @@
 /// by the `--sema` report, and `kind` is `ok` or `disagreement`.
 ///
 /// Measured 2026-07-25 (J1b; unchanged under J1c): 14 ok, 10 disagreements
-/// out of 24. The J1 "noise" keyhole is gone — every former noise block
-/// has a context stub in `corpus_sema_context.rs` or is counted as a
-/// disagreement.
+/// out of 24. J2a (2026-07-25): aspirational `virtio_storage.wr` scoped
+/// out of corpus-sema (lex/parse only) after the hyphen/underscore path
+/// fix — 14 ok, 9 disagreements out of 23. The J1 "noise" keyhole is
+/// gone — every former noise block has a context stub in
+/// `corpus_sema_context.rs` or is counted as a disagreement.
 pub const CORPUS_SEMA_CENSUS: &[(&str, &str)] = &[
     ("docs/language/02-language.md:43", "ok"),
     ("docs/language/02-language.md:150", "ok"),
@@ -44,5 +46,4 @@ pub const CORPUS_SEMA_CENSUS: &[(&str, &str)] = &[
     ("docs/language/03-hardware.md:180", "disagreement"),
     ("docs/language/03-hardware.md:224", "ok"),
     ("docs/language/03-hardware.md:258", "ok"),
-    ("docs/language/examples/virtio-storage.wr:1", "disagreement"),
 ];

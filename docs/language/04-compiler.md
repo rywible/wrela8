@@ -332,7 +332,7 @@ retired); machine implementations additionally pass the machine conformance
 suite of [06 §10](06-machine.md). The archived draft's enumerated test
 catalogue ([archive](../archive/v0.1-draft/08-build-contract.md)) remains
 the working checklist; the worked example
-([virtio-storage.wr](examples/virtio-storage.wr)) is a required
+([virtio_storage.wr](examples/virtio_storage.wr)) is a required
 integration-shape test once the corresponding library APIs exist.
 Structural properties (direct calls, static frames, scoped-pool reset,
 exitless I/O) are not benchmark claims. The flagship's claims are named

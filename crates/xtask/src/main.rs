@@ -489,7 +489,11 @@ fn corpus(args: &[String]) -> Result<(), String> {
         match wrela_compiler::syntax::parser::parse_any(tokens) {
             Ok(parsed_ast) => {
                 parsed += 1;
-                if sema {
+                // Aspirational whole-file examples (header marks ASPIRATIONAL)
+                // stay lex/parse-only: they import modules the stdlib does
+                // not ship. Sema would only restate the missing-module fact
+                // (plans/M9.md item J2a / decision 516).
+                if sema && !example_is_aspirational(&b) {
                     sema_rows.push(corpus_sema_one(&b, parsed_ast)?);
                 }
             }
@@ -539,6 +543,10 @@ fn collect_corpus_sema_rows() -> Result<Vec<CorpusSemaRow>, String> {
         if b.body.contains("...") {
             continue;
         }
+        // Same aspirational skip as `corpus --sema` (decision 516).
+        if example_is_aspirational(&b) {
+            continue;
+        }
         let tokens = lexer::lex(&b.body).map_err(|e| {
             format!(
                 "{}:{}: corpus sema pin lex: {}",
@@ -554,6 +562,32 @@ fn collect_corpus_sema_rows() -> Result<Vec<CorpusSemaRow>, String> {
         rows.push(corpus_sema_one(&b, parsed_ast)?);
     }
     Ok(rows)
+}
+
+/// Whole-file `docs/language/examples/*.wr` whose header marks
+/// `ASPIRATIONAL` — lex/parse corpus only until the imported modules ship
+/// (plans/M9.md decision 516). Markdown ```wrela fences are never
+/// aspirational under this predicate.
+fn example_is_aspirational(b: &DocBlock) -> bool {
+    let rel = display_repo_path(&b.doc);
+    if !rel.starts_with("docs/language/examples/") || !rel.ends_with(".wr") {
+        return false;
+    }
+    // Only the file header (comments before `module`) — not a later
+    // occurrence inside the body.
+    for line in b.body.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with("module ") {
+            return false;
+        }
+        if t.starts_with('#') && t.contains("ASPIRATIONAL") {
+            return true;
+        }
+    }
+    false
 }
 
 /// One `--sema` outcome (plans/M9.md item J1b). `kind` is ok or

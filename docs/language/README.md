@@ -18,7 +18,7 @@ reproducible to the pixel.
 | [04 — The compiler contract](04-compiler.md) | implementers | Every proof, inference, report, and as-if rule. |
 | [05 — Library contracts](05-library.md) | both | Standard types the invariants depend on. |
 | [06 — The wrela machine](06-machine.md) | implementers | The versioned virtual platform: CPU, boot, interrupts, devices, hosts. |
-| [examples/virtio-storage.wr](examples/virtio-storage.wr) | both | Worked end-to-end appliance (aspirational). |
+| [examples/virtio_storage.wr](examples/virtio_storage.wr) | both | Worked end-to-end appliance (aspirational). |
 
 The organizing rule: **chapter 02 is everything a user must hold in their
 head; chapter 04 is everything the compiler must prove so that chapter 02
