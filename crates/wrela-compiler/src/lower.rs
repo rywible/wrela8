@@ -307,6 +307,8 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     // M10 B2: console line_begin / line_commit (harness bl_call_key targets).
     "__wrela_line_begin",
     "__wrela_line_commit",
+    // M10 B3: decimal renderer (harness bl_call_key target).
+    "__wrela_fmt_dec",
 ];
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
@@ -4694,6 +4696,11 @@ pub fn t():
         assert!(
             reachable.contains("__wrela_line_commit"),
             "force-root must seed line_commit: {reachable:?}"
+        );
+        // M10 B3
+        assert!(
+            reachable.contains("__wrela_fmt_dec"),
+            "force-root must seed fmt_dec: {reachable:?}"
         );
         let lower_opts = LowerOpts {
             emit_comptime_tests: false,

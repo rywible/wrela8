@@ -1,4 +1,4 @@
-# plans/M10.md item A2d / B2 / D
+# plans/M10.md item A2d / B2 / B3 / D
 # Always-loaded runtime module. Names are not auto-visible (decision 584);
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
@@ -73,3 +73,245 @@ pub fn __wrela_line_commit() -> u64:
     MACHINE_INFO.ring_desc_bump = new_idx
     CONSOLE_RING.doorbell = 1
     return 0
+
+# M10 B3: `__wrela_fmt_dec` — dumb digit render into OFF_TEST_LINE_BUF.
+# Hand-asm stays until B5; callers switch to `bl_call_key`. Digit extract
+# and reverse are fully unrolled call sequences (decision 597): a `while`
+# back-edge would splice `__wrela_checkpoint_service` onto console
+# formatting. Named u8 fields avoid index bounds-check aborts; helpers
+# keep the div/mod cold paths from being cloned twenty times.
+
+@layout(runtime, endian=little)
+struct TestLineBuf:
+    @offset(0) b0: u8
+    @offset(1) b1: u8
+    @offset(2) b2: u8
+    @offset(3) b3: u8
+    @offset(4) b4: u8
+    @offset(5) b5: u8
+    @offset(6) b6: u8
+    @offset(7) b7: u8
+    @offset(8) b8: u8
+    @offset(9) b9: u8
+    @offset(10) b10: u8
+    @offset(11) b11: u8
+    @offset(12) b12: u8
+    @offset(13) b13: u8
+    @offset(14) b14: u8
+    @offset(15) b15: u8
+    @offset(16) b16: u8
+    @offset(17) b17: u8
+    @offset(18) b18: u8
+    @offset(19) b19: u8
+    @offset(20) b20: u8
+
+# MACHINE_INFO_BASE + OFF_TEST_LINE_BUF (0x40000000 + 0x100).
+@placed(0x40000100)
+static TEST_LINE_BUF: TestLineBuf
+
+fn ascii_digit(d: u64) -> u8:
+    if d == 0:
+        return 48
+    if d == 1:
+        return 49
+    if d == 2:
+        return 50
+    if d == 3:
+        return 51
+    if d == 4:
+        return 52
+    if d == 5:
+        return 53
+    if d == 6:
+        return 54
+    if d == 7:
+        return 55
+    if d == 8:
+        return 56
+    if d == 9:
+        return 57
+    return 48
+
+fn store_at(pos: usize, ch: u8):
+    if pos == 0:
+        TEST_LINE_BUF.b0 = ch
+        return
+    if pos == 1:
+        TEST_LINE_BUF.b1 = ch
+        return
+    if pos == 2:
+        TEST_LINE_BUF.b2 = ch
+        return
+    if pos == 3:
+        TEST_LINE_BUF.b3 = ch
+        return
+    if pos == 4:
+        TEST_LINE_BUF.b4 = ch
+        return
+    if pos == 5:
+        TEST_LINE_BUF.b5 = ch
+        return
+    if pos == 6:
+        TEST_LINE_BUF.b6 = ch
+        return
+    if pos == 7:
+        TEST_LINE_BUF.b7 = ch
+        return
+    if pos == 8:
+        TEST_LINE_BUF.b8 = ch
+        return
+    if pos == 9:
+        TEST_LINE_BUF.b9 = ch
+        return
+    if pos == 10:
+        TEST_LINE_BUF.b10 = ch
+        return
+    if pos == 11:
+        TEST_LINE_BUF.b11 = ch
+        return
+    if pos == 12:
+        TEST_LINE_BUF.b12 = ch
+        return
+    if pos == 13:
+        TEST_LINE_BUF.b13 = ch
+        return
+    if pos == 14:
+        TEST_LINE_BUF.b14 = ch
+        return
+    if pos == 15:
+        TEST_LINE_BUF.b15 = ch
+        return
+    if pos == 16:
+        TEST_LINE_BUF.b16 = ch
+        return
+    if pos == 17:
+        TEST_LINE_BUF.b17 = ch
+        return
+    if pos == 18:
+        TEST_LINE_BUF.b18 = ch
+        return
+    if pos == 19:
+        TEST_LINE_BUF.b19 = ch
+        return
+    if pos == 20:
+        TEST_LINE_BUF.b20 = ch
+        return
+    return
+
+fn load_at(pos: usize) -> u8:
+    if pos == 0:
+        return TEST_LINE_BUF.b0
+    if pos == 1:
+        return TEST_LINE_BUF.b1
+    if pos == 2:
+        return TEST_LINE_BUF.b2
+    if pos == 3:
+        return TEST_LINE_BUF.b3
+    if pos == 4:
+        return TEST_LINE_BUF.b4
+    if pos == 5:
+        return TEST_LINE_BUF.b5
+    if pos == 6:
+        return TEST_LINE_BUF.b6
+    if pos == 7:
+        return TEST_LINE_BUF.b7
+    if pos == 8:
+        return TEST_LINE_BUF.b8
+    if pos == 9:
+        return TEST_LINE_BUF.b9
+    if pos == 10:
+        return TEST_LINE_BUF.b10
+    if pos == 11:
+        return TEST_LINE_BUF.b11
+    if pos == 12:
+        return TEST_LINE_BUF.b12
+    if pos == 13:
+        return TEST_LINE_BUF.b13
+    if pos == 14:
+        return TEST_LINE_BUF.b14
+    if pos == 15:
+        return TEST_LINE_BUF.b15
+    if pos == 16:
+        return TEST_LINE_BUF.b16
+    if pos == 17:
+        return TEST_LINE_BUF.b17
+    if pos == 18:
+        return TEST_LINE_BUF.b18
+    if pos == 19:
+        return TEST_LINE_BUF.b19
+    if pos == 20:
+        return TEST_LINE_BUF.b20
+    return 48
+
+# One LSD extract step. If mag is already 0, no-op.
+fn extract_one(mut mag: u64, mut pos: usize):
+    if mag == 0:
+        return
+    store_at(pos, ascii_digit(mag % 10))
+    mag = mag / 10
+    pos = pos +% 1
+    return
+
+# One reverse-swap step. If lo >= hi, no-op.
+fn reverse_one(mut lo: usize, mut hi: usize):
+    if lo < hi:
+        t = load_at(lo)
+        store_at(lo, load_at(hi))
+        store_at(hi, t)
+        lo = lo +% 1
+        hi = hi -% 1
+    return
+
+# ABI: x0=value bits, x1=is_signed (nonzero => signed), x0=len. Magnitude
+# via wrapping negation (decision 652); never checked. Not Format (598).
+pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
+    mag = value
+    neg = false
+    if is_signed != 0:
+        # MSB set <=> negative as i64. Use `>> 63` (LSR) — ordered
+        # compare is always signed in this backend and is wrong for the
+        # upper half of u64 (codegen Compare invariant).
+        if (value >> 63) != 0:
+            neg = true
+            mag = 0 -% value
+    pos: usize = 0
+    if neg:
+        store_at(0, 45)
+        pos = 1
+    digits_start = pos
+    if mag == 0:
+        store_at(pos, 48)
+        return (pos +% 1).to[u64]()
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    extract_one(mut mag, mut pos)
+    lo = digits_start
+    hi = pos -% 1
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    reverse_one(mut lo, mut hi)
+    return pos.to[u64]()

@@ -36,6 +36,28 @@ ImageReport v0
     Field name=doorbell type=u64 offset=0x1a08 size=8
   Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
     Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
+    Field name=b0 type=u8 offset=0x0 size=1
+    Field name=b1 type=u8 offset=0x1 size=1
+    Field name=b2 type=u8 offset=0x2 size=1
+    Field name=b3 type=u8 offset=0x3 size=1
+    Field name=b4 type=u8 offset=0x4 size=1
+    Field name=b5 type=u8 offset=0x5 size=1
+    Field name=b6 type=u8 offset=0x6 size=1
+    Field name=b7 type=u8 offset=0x7 size=1
+    Field name=b8 type=u8 offset=0x8 size=1
+    Field name=b9 type=u8 offset=0x9 size=1
+    Field name=b10 type=u8 offset=0xa size=1
+    Field name=b11 type=u8 offset=0xb size=1
+    Field name=b12 type=u8 offset=0xc size=1
+    Field name=b13 type=u8 offset=0xd size=1
+    Field name=b14 type=u8 offset=0xe size=1
+    Field name=b15 type=u8 offset=0xf size=1
+    Field name=b16 type=u8 offset=0x10 size=1
+    Field name=b17 type=u8 offset=0x11 size=1
+    Field name=b18 type=u8 offset=0x12 size=1
+    Field name=b19 type=u8 offset=0x13 size=1
+    Field name=b20 type=u8 offset=0x14 size=1
   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
     Padding offset=0x0 size=96
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
@@ -53,26 +75,27 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=2448
-  Section name=rodata base=0x405009e0 size=96
-  Section name=abort base=0x40500a40 size=120
-  Section name=checkpoint base=0x40500ab8 size=104
-  Section name=rtcode base=0x40500b20 size=224
-  Section name=rtdata base=0x40500c00 size=48
-  Section name=devregs base=0x40500c30 size=104
-  Section name=pooldata base=0x40500c98 size=2560
+  Section name=code base=0x40500050 size=9000
+  Section name=rodata base=0x40502378 size=175
+  Section name=abort base=0x40502428 size=120
+  Section name=checkpoint base=0x405024a0 size=104
+  Section name=rtcode base=0x40502508 size=224
+  Section name=rtdata base=0x405025e8 size=48
+  Section name=devregs base=0x40502618 size=104
+  Section name=pooldata base=0x40502680 size=2560
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
+  PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=32
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500c30 size=104
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40500c98 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=4 slot_bytes=512 base=0x40500e98 size=2048 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40500c98 size=0x200
-  BlkPool name=BlockPayloads device=device#0 base=0x40500e98 size=0x800
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40502618 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40502680 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=4 slot_bytes=512 base=0x40502880 size=2048 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40502680 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x40502880 size=0x800
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
-  BlkQueue index=0 size=8 desc=0x40500c98 avail=0x40500d18 used=0x40500d30 doorbell=0x40500d78
+  BlkQueue index=0 size=8 desc=0x40502680 avail=0x40502700 used=0x40502718 doorbell=0x40502760
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
