@@ -1017,7 +1017,6 @@ pub fn lower_program_with(
     };
     let mut fns: BTreeMap<String, MwirFn> = BTreeMap::new();
 
-
     for (name, f) in &program.fns {
         if program.image_fn.as_deref() == Some(name.as_str()) {
             continue;
@@ -1162,34 +1161,6 @@ fn lower_struct_members(
         }
     }
     Ok(())
-}
-
-fn scan_time_prelude_in_stmts(stmts: &[TypedStmt], out: &mut std::collections::BTreeSet<String>) {
-    for s in stmts {
-        scan_time_prelude_in_stmt(s, out);
-    }
-}
-
-fn scan_time_prelude_in_stmt(stmt: &TypedStmt, out: &mut std::collections::BTreeSet<String>) {
-    // Dump the statement's Debug form and look for Call keys — dumb but
-    // covers every nested shape without mirroring the whole TypedStmt
-    // grammar. False positives only over-emit a tiny time constructor
-    // or Duration/Instant method.
-    let text = format!("{:?}", stmt);
-    for name in crate::loader::TIME_PRELUDE_NAMES {
-        // CalleeKey::Fn debug is typically `Fn("seconds")`.
-        if text.contains(&format!("Fn(\"{name}\")")) {
-            out.insert((*name).to_string());
-        }
-    }
-    // Method calls: CalleeKey::Method("Instant", "less_than") — seed
-    // `"Instant."` / `"Duration."` so the imported-struct emit gate can
-    // pull the whole method set for that type.
-    for ty in ["Duration", "Instant"] {
-        if text.contains(&format!("Method(\"{ty}\"")) {
-            out.insert(format!("{ty}."));
-        }
-    }
 }
 
 /// plans/M9.md item B2: same keying as `lower_struct_members` —
