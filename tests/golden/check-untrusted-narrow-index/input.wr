@@ -1,0 +1,8 @@
+module examples.check_untrusted_narrow_index
+
+# plans/M9.md item G1 / decision 356: checked-narrow, then index — the
+# legal twin of `err-untrusted-index`.
+
+fn good(reported: Untrusted[usize], arr: [u32; 4]) -> Result[u32, unit]:
+    i = reported.checked_le(3)?
+    return Ok(arr[i])

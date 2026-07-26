@@ -1,0 +1,2 @@
+Module path=examples.check_untrusted_try
+  Fn narrow(reported: read Untrusted[usize], bound: read usize) -> Result[usize, unit]

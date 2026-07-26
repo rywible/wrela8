@@ -1,0 +1,8 @@
+module examples.check_untrusted_try
+
+# plans/M9.md item G1 / decision 356: 03 §8's own spelling with `?` —
+# the legal twin of the coercion refusals.
+
+fn narrow(reported: Untrusted[usize], bound: usize) -> Result[usize, unit]:
+    written = reported.checked_le(bound)?
+    return Ok(written)

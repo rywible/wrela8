@@ -27,7 +27,7 @@
 /// from the scan (it talks about the prefix without emitting one).
 pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     ("layout.rs", 71),
-    ("eval/interp.rs", 76),
+    ("eval/interp.rs", 78),
     ("lower.rs", 5),
     ("codegen.rs", 4),
     ("eval/mod.rs", 2),
@@ -133,7 +133,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 169,
+            INTERNAL_ERROR_SITE_COUNT, 171,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

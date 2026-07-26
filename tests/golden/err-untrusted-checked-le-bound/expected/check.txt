@@ -1,0 +1,1 @@
+error[type]: `Untrusted[T]` cannot be used as a plain `usize` until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8); expected `usize`, found `Untrusted[usize]` at 7:32

@@ -359,6 +359,8 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         "check-string-bound/expected/mwir.txt",
         &["occupied", "byte0", "byte1", "probe", "guest_string"],
     ),
+    ("check-untrusted-narrow-index/expected/asm.txt", &["good"]),
+    ("check-untrusted-narrow-index/expected/mwir.txt", &["good"]),
     (
         "check-untrusted-narrowing/expected/asm.txt",
         &["narrow", "use_ok"],
@@ -367,6 +369,8 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         "check-untrusted-narrowing/expected/mwir.txt",
         &["narrow", "use_ok"],
     ),
+    ("check-untrusted-try/expected/asm.txt", &["narrow"]),
+    ("check-untrusted-try/expected/mwir.txt", &["narrow"]),
     (
         "mwir-arith/expected/mwir.txt",
         &["checked_add", "checked_div", "mixed", "wrapping_add"],

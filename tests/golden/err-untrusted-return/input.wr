@@ -1,0 +1,7 @@
+module examples.err_untrusted_return
+
+# plans/M9.md item G1 / decision 356: returning an `Untrusted[T]` where
+# a plain `T` is expected refuses by the marked-value coercion wording.
+
+fn bad(reported: Untrusted[usize]) -> usize:
+    return reported

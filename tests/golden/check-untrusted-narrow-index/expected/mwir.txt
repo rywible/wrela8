@@ -1,0 +1,39 @@
+Program
+  Fn key=good ret=Result[u32, unit] temps=15 params=[t0,t1]
+    Temp t0 ty=Untrusted[usize]
+    Temp t1 ty=[u32; 4]
+    Temp t2 ty=usize
+    Temp t3 ty=bool
+    Temp t4 ty=Result[usize, unit]
+    Temp t5 ty=unit
+    Temp t6 ty=u64
+    Temp t7 ty=u64
+    Temp t8 ty=bool
+    Temp t9 ty=usize
+    Temp t10 ty=unit
+    Temp t11 ty=Result[u32, unit]
+    Temp t12 ty=usize
+    Temp t13 ty=u32
+    Temp t14 ty=Result[u32, unit]
+    Body
+      0000: ConstInt dst=t2 ty=usize value=3
+      0001: Compare op=<= ty=usize dst=t3 lhs=t0 rhs=t2
+      0002: JumpIfFalse cond=t3 target=0005
+      0003: MakeEnum dst=t4 tag=0 payload=[t0]
+      0004: Jump target=0007
+      0005: ConstUnit dst=t5
+      0006: MakeEnum dst=t4 tag=1 payload=[t5]
+      0007: EnumTag dst=t6 src=t4
+      0008: ConstInt dst=t7 ty=u64 value=0
+      0009: Compare op=== ty=u64 dst=t8 lhs=t6 rhs=t7
+      0010: JumpIfFalse cond=t8 target=0013
+      0011: EnumPayload dst=t9 src=t4 index=0
+      0012: Jump target=0016
+      0013: EnumPayload dst=t10 src=t4 index=0
+      0014: MakeEnum dst=t11 tag=1 payload=[t10]
+      0015: Return value=t11
+      0016: Copy dst=t12 src=t9
+      0017: IndexGet dst=t13 base=t1 index=t12 len=4
+      0018: MakeEnum dst=t14 tag=0 payload=[t13]
+      0019: Return value=t14
+      0020: Return

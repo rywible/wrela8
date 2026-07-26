@@ -1,0 +1,17 @@
+Program
+  Fn name=good ret=Result[u32, unit]
+    Param name=reported mode=read ty=Untrusted[usize]
+    Param name=arr mode=read ty=[u32; 4]
+    Body
+      Let name=i ty=usize
+        Try ty=usize
+          Intrinsic key=Untrusted.checked_le type_arg=usize ty=Result[usize, unit]
+            Receiver
+              Local name=reported ty=Untrusted[usize]
+            Arg label=bound
+              Int text=3 ty=usize
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u32, unit]
+          Index ty=u32
+            Local name=arr ty=[u32; 4]
+            Local name=i ty=usize

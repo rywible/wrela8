@@ -1,0 +1,2 @@
+Module path=examples.check_untrusted_narrow_index
+  Fn good(reported: read Untrusted[usize], arr: read [u32; 4]) -> Result[u32, unit]

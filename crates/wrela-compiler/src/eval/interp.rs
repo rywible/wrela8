@@ -2164,6 +2164,36 @@ fn eval_intrinsic<'a, 'p>(
         "Array.map_take" | "Array.try_map_take" => {
             eval_array_map_take(key, receiver, args, env, dstack, loop_marker, ctx)
         }
+        // plans/M9.md item G1 decision 352: `Untrusted[T]` is a transparent
+        // newtype; `checked_le` is a pure compare → `Result[T, unit]`.
+        // Legal for comptime (no hardware effect); without this arm a
+        // reachable call would hit the unknown-intrinsic producer-bug
+        // fallback. The two producer-bug guards below are unreachable
+        // from ordinary source: sema's `check_untrusted_narrowing`
+        // always emits a receiver and a `bound`-labeled arg (census
+        // bump 70→72 in `internal_error_census.rs`).
+        "Untrusted.checked_le" => {
+            let Some(recv) = receiver else {
+                return Err(
+                    ctx.abandon("internal error: `Untrusted.checked_le` is missing its receiver")
+                );
+            };
+            let Some((_, bound_expr)) = args.iter().find(|(l, _)| l == "bound") else {
+                return Err(ctx.abandon(
+                    "internal error: `Untrusted.checked_le` is missing its `bound` argument",
+                ));
+            };
+            let payload = eval_expr(recv, env, dstack, loop_marker, ctx)?;
+            let bound = eval_expr(bound_expr, env, dstack, loop_marker, ctx)?;
+            let le = value::eval_compare(BinOp::Le, &payload, &bound);
+            let result = if le {
+                Value::Enum(value::RESULT_OK, vec![payload])
+            } else {
+                Value::Enum(value::RESULT_ERR, vec![Value::Unit])
+            };
+            ctx.charge(result.weight())?;
+            Ok(result)
+        }
         other => Err(ctx.abandon(format!(
             "internal error: unknown/runtime-only builder intrinsic `{other}` reached the \
              comptime evaluator"
@@ -2561,5 +2591,27 @@ const RESULT: u64 = always_fails()
                 "  while evaluating `always_fails`".to_string(),
             ]
         );
+    }
+
+    /// plans/M9.md item G1 decision 352: `Untrusted.checked_le` evaluates
+    /// as a pure compare. No comptime mint of `Untrusted` exists (sealed;
+    /// live producer is runtime `written_len`), so bind transparent
+    /// payload bits through `eval_test_case` — the same vehicle
+    /// exhaustive tests use for parameterized bodies.
+    #[test]
+    fn untrusted_checked_le_ok_and_err() {
+        let program = typed_program(
+            "module examples.eval_untrusted_checked_le
+
+fn narrow(reported: Untrusted[usize], bound: usize) -> Result[usize, unit]:
+    return reported.checked_le(bound)
+",
+        );
+        let ok = eval_test_case(&program, "narrow", &[Value::Usize(5), Value::Usize(10)])
+            .expect("checked_le(5, 10) must succeed");
+        assert_eq!(ok, Value::Enum(value::RESULT_OK, vec![Value::Usize(5)]));
+        let err = eval_test_case(&program, "narrow", &[Value::Usize(11), Value::Usize(10)])
+            .expect("checked_le(11, 10) must return Err, not abandon");
+        assert_eq!(err, Value::Enum(value::RESULT_ERR, vec![Value::Unit]));
     }
 }

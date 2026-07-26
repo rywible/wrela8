@@ -1,0 +1,1 @@
+error[type]: `Untrusted[T]` cannot be used as a comparison until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8) at 8:21

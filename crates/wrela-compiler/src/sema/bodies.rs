@@ -3952,14 +3952,20 @@ fn build_binop_expr(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     use BinOp::*;
-    // plans/M7.md item H2a: an `Untrusted[T]` has no arithmetic form —
-    // ordinary use with an unmarked value (or another marked one) is a
-    // rejection naming the narrowing transition, never a coercion that
-    // preserves taint. Archive 05 §8's "arithmetic preserves untrusted"
-    // reading is deliberately not taken: 03 §8 says the value cannot be
-    // used until checked-narrowed.
+    // plans/M7.md item H2a / plans/M9.md item G1 decision 351: an
+    // `Untrusted[T]` has no arithmetic or comparison form — ordinary use
+    // with an unmarked value (or another marked one) is a rejection
+    // naming the narrowing transition, never a coercion that preserves
+    // taint. Archive 05 §8's "arithmetic preserves untrusted" reading is
+    // deliberately not taken: 03 §8 says the value cannot be used until
+    // checked-narrowed. Comparisons get their own use-kind so the
+    // diagnostic does not call `<`/`==` "arithmetic".
     if is_untrusted_type(&l.ty) || is_untrusted_type(&r.ty) {
-        return Err(untrusted_use_error("an arithmetic operand", span));
+        let use_kind = match op {
+            Eq | Ne | Lt | Le | Gt | Ge => "a comparison",
+            _ => "an arithmetic operand",
+        };
+        return Err(untrusted_use_error(use_kind, span));
     }
     let ty = l.ty.clone();
     match op {
@@ -5814,24 +5820,24 @@ pub fn is_mmio_access_intrinsic(key: &str) -> bool {
     matches!(key, "Mmio.read" | "Mmio.write")
 }
 
-// --- plans/M7.md item H2a: `Untrusted[T]` + checked narrowing (03 §8) ----
+// --- plans/M7.md item H2a / plans/M9.md item G1: `Untrusted[T]` --------
 //
 // One marked-value mechanism, three policies (03-hardware.md §8 /
-// 05-library.md §6). Only `Untrusted[T]` is live at M7; `Validated` /
-// `Secret` are refused by name at resolve time (`types::resolve_named`).
-// The wrapper is sealed: no source-visible constructor, no ordinary use
-// as an index / length / allocation size / bound / arithmetic operand,
+// 05-library.md §6). `Untrusted[T]` is live; `Validated` / `Secret` are
+// refused by name at resolve time (`types::resolve_named`) — M9 G2/G3
+// deferrals (decisions 353–355), not unknown-type misses. The wrapper is
+// sealed: no source-visible constructor, no ordinary use as an index /
+// length / allocation size / bound / arithmetic operand / comparison,
 // and exactly one implemented narrowing — `checked_le(bound)` — which
-// yields `Result[T, unit]` and lowers to a real compare + branch.
+// yields `Result[T, unit]`, lowers to a real compare + branch, and
+// evaluates as a pure compare at comptime (decision 352).
 //
 // ## Where a marked value comes from
 //
 // `IoCompletion[P].written_len` is the live producer (plans/M7.md item E4 /
 // decision 22) — `golden/boot-blk-roundtrip` exercises both `checked_le`
-// outcomes on a real used-ring length. Item G declined the ISR
-// interrupt-status fork (status stays plain `u32`). A source-visible
-// `Untrusted.mark` constructor stays rejected. `Validated` / `Secret`
-// remain out of M7's honest-scope line.
+// outcomes on a real used-ring length. A source-visible `Untrusted.mark`
+// constructor stays rejected.
 
 /// `Untrusted[<inner>]`.
 pub(crate) fn untrusted_type(inner: Type) -> Type {

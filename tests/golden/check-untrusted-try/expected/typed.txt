@@ -1,0 +1,15 @@
+Program
+  Fn name=narrow ret=Result[usize, unit]
+    Param name=reported mode=read ty=Untrusted[usize]
+    Param name=bound mode=read ty=usize
+    Body
+      Let name=written ty=usize
+        Try ty=usize
+          Intrinsic key=Untrusted.checked_le type_arg=usize ty=Result[usize, unit]
+            Receiver
+              Local name=reported ty=Untrusted[usize]
+            Arg label=bound
+              Local name=bound ty=usize
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[usize, unit]
+          Local name=written ty=usize
