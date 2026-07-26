@@ -8,11 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/image_report.wr sha256=7abde3292fbefa4cd47b167ad19ed31ab9e08a7267f0dc3d40b1414b80b416bf
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
-<<<<<<< HEAD
-  Input path=examples/check_layout_assert_budget_helper.wr sha256=214af608663ca4a3bfb836999c8a683393ff0e281b0a96aa5724a3d340bb9b99
-=======
-  Input path=examples/check_layout_assert_budget_helper.wr sha256=2c8dbc578d6bb2a385ee4c0214a452fd2e3c4818d1778b908388de78b90e0f29
->>>>>>> m10-item-b3
+  Input path=examples/check_layout_assert_budget_helper.wr sha256=a690e24ccac412cfc04c09a969ba1736843143fc0606a3c982282ebc4dbcc8b2
   Name value=layout-assert-budget-helper
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -57,21 +53,12 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-<<<<<<< HEAD
-  Section name=code base=0x40500050 size=1552
-  Section name=rodata base=0x40500660 size=69
-  Section name=abort base=0x405006a8 size=120
-  Section name=checkpoint base=0x40500720 size=104
-  Section name=rtcode base=0x40500788 size=720
-  Section name=rtdata base=0x40500a58 size=248
-=======
   Section name=code base=0x40500050 size=8104
   Section name=rodata base=0x40501ff8 size=148
   Section name=abort base=0x4050208c size=120
   Section name=checkpoint base=0x40502104 size=104
   Section name=rtcode base=0x4050216c size=720
   Section name=rtdata base=0x40502440 size=248
->>>>>>> m10-item-b3
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
