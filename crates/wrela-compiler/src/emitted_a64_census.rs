@@ -69,6 +69,41 @@
 //! - **not_yet_migrated** — owned by a named remaining item (F, F2, G, H,
 //!   I, K)
 //! - **unclassified** — could not be confidently placed; still counted
+//!
+//! ## Two independent locks (neither replaces the other)
+//!
+//! 1. **Per-function word counts** ([`EMITTED_A64_ENTRIES`] vs the live
+//!    measure helpers) — catches an existing emitter that *grows*,
+//!    *shrinks*, or is *removed*.
+//! 2. **Per-file `encode::enc_` site counts** ([`ENCODE_ENC_SITES_BY_FILE`]
+//!    vs a source-tree scan) — catches a *brand-new* emission site, even
+//!    when nobody added it to the measure lists. Modelled on
+//!    [`crate::internal_error_census`]: the live number is read from the
+//!    files on disk, so silence requires updating the lock.
+//!
+//! ### Test-module exclusion (site scan only)
+//!
+//! `layout.rs` / `codegen.rs` carry large `#[cfg(test)]` /
+//! `#[cfg(all(test, …))]` modules (`tests`, `harness_jit`,
+//! `rt_child_poll_tests`, …) that call `encode::enc_*` heavily for the
+//! macOS JIT harness. Those regions are stripped before counting, by
+//! brace-matching from a cfg-test attribute immediately followed (blank
+//! lines allowed) by `mod NAME {`. How this can go wrong: a test module
+//! attributed with a form we do not recognise (e.g. `#[cfg(any(test,
+//! feature = "…"))]`, or `cfg(test)` on a parent `mod` that wraps
+//! production code) would be counted or skipped incorrectly; an
+//! always-compiled `mod` that only looks like a test would be counted.
+//! Individual `#[cfg(test)]` *functions* outside those modules (e.g.
+//! `push_abort_tail`) are **kept** — they are emission sites in the crate.
+//!
+//! ### What the site scan still cannot catch
+//!
+//! An emitter built entirely by calling existing helpers (`push_load_imm`,
+//! `Asm::load_imm`, …) without a new `encode::enc_*` token in source adds
+//! no site and does not trip this lock. The per-function word-count lock
+//! still catches growth of a *named* inventory entry; a wholly new
+//! helper-only emitter that is never registered in the measure lists is
+//! the residual hole. Stated rather than papered over.
 
 /// One locked hand-emitter. `words` is the live length under REF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,6 +343,25 @@ pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
 pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 948; // 41 + 176 + 708 + 23
 
+/// Per-file counts of the contiguous `encode::enc_` substring under
+/// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
+/// `#[cfg(all(test, …))]` modules (see module docs) and excluding this
+/// census file (it documents the needle). Measured 2026-07-26. Adding a
+/// call site in a listed file without bumping its count — or introducing
+/// the needle in a new file — fails the unit test below.
+pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 478), ("layout.rs", 328)];
+
+/// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
+pub const ENCODE_ENC_SITE_COUNT: usize = {
+    let mut n = 0;
+    let mut i = 0;
+    while i < ENCODE_ENC_SITES_BY_FILE.len() {
+        n += ENCODE_ENC_SITES_BY_FILE[i].1;
+        i += 1;
+    }
+    n
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +370,137 @@ mod tests {
 
     fn src_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    /// The emission-site needle, assembled so this file's own docs that
+    /// spell it as two halves are not the only exclusion — we also skip
+    /// this file by name below (it still contains contiguous forms in
+    /// older comments and in `scan_enc_fns`).
+    fn encode_enc_needle() -> String {
+        format!("{}{}", "encode::", "enc_")
+    }
+
+    /// Drop `#[cfg(test)]` / `#[cfg(all(test, …))]` module bodies so the
+    /// JIT harness and unit-test stand-ins do not own the lock.
+    fn strip_cfg_test_modules(text: &str) -> String {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut out: Vec<&str> = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let stripped = lines[i].trim_start();
+            let is_cfg_test =
+                stripped.starts_with("#[cfg(test)]") || stripped.starts_with("#[cfg(all(test");
+            if is_cfg_test {
+                let mut j = i;
+                while j < lines.len() && lines[j].trim_start().starts_with("#[") {
+                    j += 1;
+                }
+                while j < lines.len() && lines[j].trim().is_empty() {
+                    j += 1;
+                }
+                let is_mod = j < lines.len()
+                    && lines[j]
+                        .trim_start()
+                        .trim_start_matches("pub ")
+                        .starts_with("mod ");
+                if is_mod {
+                    let mut k = j;
+                    let mut depth: isize = 0;
+                    let mut started = false;
+                    while k < lines.len() {
+                        depth += lines[k].chars().filter(|&c| c == '{').count() as isize;
+                        depth -= lines[k].chars().filter(|&c| c == '}').count() as isize;
+                        if lines[k].contains('{') {
+                            started = true;
+                        }
+                        k += 1;
+                        if started && depth == 0 {
+                            break;
+                        }
+                    }
+                    i = k;
+                    continue;
+                }
+            }
+            out.push(lines[i]);
+            i += 1;
+        }
+        let mut s = out.join("\n");
+        if text.ends_with('\n') {
+            s.push('\n');
+        }
+        s
+    }
+
+    fn scan_encode_enc_sites(
+        dir: &std::path::Path,
+        needle: &str,
+        out: &mut BTreeMap<String, usize>,
+    ) {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+            panic!("read {}: {e}", dir.display());
+        });
+        for entry in entries {
+            let entry = entry.expect("read_dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                scan_encode_enc_sites(&path, needle, out);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(src_root())
+                .expect("file under src/")
+                .to_string_lossy()
+                .replace('\\', "/");
+            // This census file documents the needle; it is not a producer.
+            if rel == "emitted_a64_census.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("read {}: {e}", path.display());
+            });
+            let production = strip_cfg_test_modules(&text);
+            let n = production.matches(needle).count();
+            if n == 0 {
+                continue;
+            }
+            out.insert(rel, n);
+        }
+    }
+
+    #[test]
+    fn encode_enc_site_count_matches_the_written_down_census() {
+        let needle = encode_enc_needle();
+        let mut live: BTreeMap<String, usize> = BTreeMap::new();
+        scan_encode_enc_sites(&src_root(), &needle, &mut live);
+
+        let expected: BTreeMap<String, usize> = ENCODE_ENC_SITES_BY_FILE
+            .iter()
+            .map(|(f, n)| ((*f).to_string(), *n))
+            .collect();
+
+        assert_eq!(
+            live, expected,
+            "encode::enc_ emission-site census drifted.\n\
+             Update ENCODE_ENC_SITES_BY_FILE in emitted_a64_census.rs in the \
+             same commit that adds or removes a call site \
+             (plans/M10.md item F0 — addition lock).\n\
+             live={live:?}\n\
+             expected={expected:?}"
+        );
+
+        let total: usize = live.values().sum();
+        assert_eq!(
+            total, ENCODE_ENC_SITE_COUNT,
+            "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
+        );
+        assert_eq!(
+            ENCODE_ENC_SITE_COUNT, 806,
+            "the written-down total is part of the ratchet; bump it deliberately"
+        );
     }
 
     /// Module-level (`^fn` / `^pub fn` / `^pub(crate) fn`) names whose body
