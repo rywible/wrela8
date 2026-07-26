@@ -2586,6 +2586,17 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 return Ok(dst);
             }
             let base_temp = lower_expr_flat(base, b, env)?;
+            // plans/M10.md item B4: unbounded `Bytes` packed-byte index.
+            if matches!(bodies::unwrap_own(base.ty.clone()), Type::Bytes(None)) {
+                let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::BytesIndexGet {
+                    dst,
+                    base: base_temp,
+                    index: idx_temp,
+                });
+                return Ok(dst);
+            }
             let idx_temp = lower_expr_flat(idx_expr, b, env)?;
             let len = eval_array_len(&base.ty)?;
             let dst = b.fresh(e.ty.clone());

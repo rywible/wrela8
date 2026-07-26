@@ -71,6 +71,11 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         "asm-placed-index/expected/asm.txt",
         &["read_mark", "write_mark"],
     ),
+    // plans/M10.md item B4 / decisions 595–596: unbounded Bytes (base, len).
+    (
+        "asm-bytes-param/expected/asm.txt",
+        &["first_byte"],
+    ),
     (
         "asm-calls/expected/asm.txt",
         &["add_one", "combo", "double"],

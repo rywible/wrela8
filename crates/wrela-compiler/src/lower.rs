@@ -2764,6 +2764,18 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             }
             let base_temp = lower_expr(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
+            // plans/M10.md item B4 / decisions 595–596: unbounded `Bytes`
+            // parameter — packed-byte index through the (base, len) handle.
+            if matches!(base_ty, Type::Bytes(None)) {
+                let idx_temp = lower_expr(idx_expr, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::BytesIndexGet {
+                    dst,
+                    base: base_temp,
+                    index: idx_temp,
+                });
+                return Ok(dst);
+            }
             // plans/M9.md item C1: `String[..N][i]` with a literal index
             // projects slot `1+i` after a compile-time capacity check.
             // Dynamic indices (and occupied-length runtime checks beyond

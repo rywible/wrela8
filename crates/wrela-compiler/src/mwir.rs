@@ -340,6 +340,16 @@ pub enum Inst {
         elem_stride: u64,
         ty: Type,
     },
+    /// Packed-byte load through an unbounded `Bytes` parameter handle
+    /// (plans/M10.md item B4 / decisions 595–596). `base` holds the
+    /// two-word `(addr, len)` handle; bounds-checked against the handle's
+    /// own `len` word; loads one packed byte via `ldrb` (not a slot
+    /// stride — packed is what rodata / the console device use).
+    BytesIndexGet {
+        dst: Temp,
+        base: Temp,
+        index: Temp,
+    },
 
     // --- enums ---------------------------------------------------------
     /// Builds an enum value: `tag` is the variant's own declaration-order
@@ -1009,7 +1019,11 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             })?;
             Ok(SLOT * usize::try_from(n).map_err(|_| "Bytes length out of range".to_string())?)
         }
-        Type::Bytes(None) => Err("bare (unbounded) `Bytes` has no static size".to_string()),
+        // plans/M10.md item B4 / decisions 595–596: an unbounded `Bytes`
+        // parameter is a two-word packed-byte handle `(base, len)` — not a
+        // slot-per-byte value. Source cannot observe the address; only
+        // indexing / console append consume it. 16 bytes, always.
+        Type::Bytes(None) => Ok(SLOT * 2),
         // plans/M9.md item C1: `String[..N]` is one length word plus `N`
         // byte slots (each a SLOT, matching `Bytes[N]`'s slot-per-byte
         // convention). Rejected alternative: dense `align8(8+N)` packing
@@ -1267,6 +1281,14 @@ mod layout_tests {
         assert_eq!(size_of(&t, &ctx), Ok(8 + 8));
     }
 
+    // plans/M10.md item B4 / decision 595: unbounded `Bytes` is a
+    // two-word (base, len) handle.
+    #[test]
+    fn bare_bytes_handle_is_two_words() {
+        let ctx = LayoutCtx::default();
+        assert_eq!(size_of(&Type::Bytes(None), &ctx), Ok(16));
+    }
+
     #[test]
     fn instantiated_generic_struct_fails_closed() {
         let ctx = LayoutCtx::default();
@@ -1426,6 +1448,9 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
              value={value} len={len} elem_stride={elem_stride} ty={}",
             types::render_type(ty)
         ),
+        Inst::BytesIndexGet { dst, base, index } => {
+            format!("BytesIndexGet dst={dst} base={base} index={index}")
+        },
         Inst::QueuePrepare {
             dst,
             queue,
