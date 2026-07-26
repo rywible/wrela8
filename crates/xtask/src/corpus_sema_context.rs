@@ -200,10 +200,13 @@ from core.io_error import IoError
         postamble: r#"
 fn lookup(key: u32) -> Lookup[u32]:
     return Lookup.Absent
+
+fn use(value: u32):
+    return unit
 "#,
         params: "key: u32",
-        ret: "Result[u32, IoError]",
-        ret_ok: "",
+        ret: "Result[Option[u32], IoError]",
+        ret_ok: "Ok(None)",
         async_wrapper: false,
         nest_items_into: "",
     },

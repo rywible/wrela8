@@ -374,9 +374,9 @@ enum Lookup[T]:
 
 match lookup(key):
     case .Found(value):
-        return Ok(value)
+        use(value)
     case .Absent:
-        return Err(IoError.OutOfRange)
+        return Ok(None)
     case .Failed(error):
         return Err(error)
 ```
