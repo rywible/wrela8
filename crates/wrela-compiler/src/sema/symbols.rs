@@ -6,7 +6,8 @@
 //! the same name is an error at the second occurrence.
 //!
 //! `resolve` then walks every body and checks that every identifier binds
-//! to the prelude (prelude.rs), a module declaration, or a local
+//! to a name resolvable without import (`symbols::is_resolvable_without_import`,
+//! plans/M9.md item I), a module declaration, an import, or a local
 //! introduced by assignment/parameter/pattern binding/for binding/closure
 //! param (02-language.md §3.2): unknown names and shadowed outer locals
 //! are errors. Type names in annotations resolve through the exact same
@@ -329,9 +330,11 @@ impl<'a> Resolver<'a> {
 
     /// Resolves a read-position identifier — a local in the current or
     /// any enclosing scope, a module declaration, an imported name
-    /// (plans/M4.md item A), or the prelude (02-language.md §3.2, §2).
-    /// Also used for type names in annotations, per the item A brief
-    /// (item B refines type checking; item A of M4 does not extend
+    /// (plans/M4.md item A), or a name that resolves with no import
+    /// (02-language.md §2 fixed prelude, compiler type names, intrinsic
+    /// bare names, auto-visible stdlib enums, time prelude — plans/M9.md
+    /// item I). Also used for type names in annotations, per the item A
+    /// brief (item B refines type checking; item A of M4 does not extend
     /// `types::declare`'s own type-name resolution to imports — an
     /// imported `struct`/`enum` name used *as a type annotation* still
     /// resolves here but fails at `declare` with the ordinary
@@ -347,7 +350,7 @@ impl<'a> Resolver<'a> {
         if self.imports.contains_key(name) {
             return Ok(());
         }
-        if super::prelude::is_builtin(name) {
+        if is_resolvable_without_import(name) {
             return Ok(());
         }
         Err(SemaError::at(
@@ -671,4 +674,29 @@ impl<'a> Resolver<'a> {
             ClosureBody::Suite(stmts) => self.resolve_stmts(stmts),
         }
     }
+}
+
+/// 02-language.md §2's fixed prelude — always in scope with no import.
+/// Language builtins, not stdlib modules (plans/M9.md item I decision 471):
+/// `Type::Option` / `Type::Result` and the `Some`/`None`/`Ok`/`Err`/`panic`
+/// arms in `bodies` are load-bearing across `?`, CallError composition,
+/// and eval tags; always-loading option/result modules would put
+/// `Module path=` into every check dump (decision 79's trap).
+const FIXED_PRELUDE: &[&str] = &["Option", "Some", "None", "Result", "Ok", "Err", "panic"];
+
+/// Does `name` resolve with no import and no local binding?
+///
+/// Distributed across the homes that already own each surface
+/// (plans/M9.md item I) — not a renamed `prelude.rs`:
+/// - [`FIXED_PRELUDE`] — 02 §2
+/// - [`super::types::is_builtin_type_name`] — compiler type names
+/// - [`super::intrinsics::is_bare_resolvable`] — bare intrinsic / `with` names
+/// - [`super::stdlib_enums::is_auto_visible`] — five stdlib enums
+/// - [`crate::loader::TIME_PRELUDE_NAMES`] — time constructors (decision 470)
+pub fn is_resolvable_without_import(name: &str) -> bool {
+    FIXED_PRELUDE.contains(&name)
+        || super::types::is_builtin_type_name(name)
+        || super::intrinsics::is_bare_resolvable(name)
+        || super::stdlib_enums::is_auto_visible(name)
+        || crate::loader::TIME_PRELUDE_NAMES.contains(&name)
 }

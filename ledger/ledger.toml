@@ -1758,7 +1758,7 @@ Opened by plans/M9.md item CC (decisions 68–71 for the evaluator; backend gene
 id = "library.stdlib.loaded"
 doc = "02-language.md#2"
 status = "test"
-tests = ["golden/check-stdlib-loaded", "golden/err-stdlib-missing"]
+tests = ["golden/check-stdlib-loaded", "golden/err-stdlib-missing", "golden/check-stdlib-prelude-enums"]
 note = """plans/M9.md item A2: the stdlib is loaded as ordinary wrela source.
 
 **What moved.** `IoError` left `sema/prelude.rs` (`HARDWARE_SURFACE`, `builtin_enum_variants`, the per-module `TypedProgram::enums` injection, and `types::resolve_named`'s special arm) and now lives at `stdlib/core/io_error.wr` as `pub enum IoError: OutOfRange` — declaration order preserved bit-for-bit (one unit variant, tag 0). Source that constructs `IoError.OutOfRange` writes `from core.io_error import IoError` (02-language.md §2: the fixed prelude is `Option`/`Result`/`panic`; everything else is imported). Compiler-synthesized `Type::Named("IoError")` sites (`IoCompletion.status`, `reject`'s expected type) keep working by name; `mwir::size_of` still special-cases the unit-tag layout for programs that never import it.
@@ -1767,7 +1767,9 @@ note = """plans/M9.md item A2: the stdlib is loaded as ordinary wrela source.
 
 **Fail-closed when the tree is missing.** Sibling `stdlib/` without a `core/` subdirectory shadows the toolchain fallback and yields `error[build]: stdlib not found: sibling stdlib/ exists but has no core/ directory` (golden/err-stdlib-missing) — a named diagnostic, not a panic and not `internal error:`. The toolchain-missing half is the same diagnostic with different wording; reachable if the baked-in path is deleted, unit-tested via `core_root`'s Result.
 
-**CLI stages that used to refuse imports.** `--stage=typed`/`mwir`/`flowwir`/`asm` and `wrela test` now share `check_closure` with `check`/`image`/`report`. `golden/err-import-typed-stage` retired; `check_typed`'s API-level fail-closed remains (`unit:check_typed_rejects_imports`). `lower::variant_index` / `flowwir_lower::variant_index` now read `prog.imported.enums` the way `eval::interp` already did after A1b — without that, an imported `IoError.OutOfRange` failed closed as a "generic enum instantiation"."""
+**CLI stages that used to refuse imports.** `--stage=typed`/`mwir`/`flowwir`/`asm` and `wrela test` now share `check_closure` with `check`/`image`/`report`. `golden/err-import-typed-stage` retired; `check_typed`'s API-level fail-closed remains (`unit:check_typed_rejects_imports`). `lower::variant_index` / `flowwir_lower::variant_index` now read `prog.imported.enums` the way `eval::interp` already did after A1b — without that, an imported `IoError.OutOfRange` failed closed as a "generic enum instantiation".
+
+**plans/M9.md item I (2026-07-25):** `sema/prelude.rs` deleted. Five more enums (`Target`/`Restart`/`BootError`/`DriverMode`/`CompletionOutcome`) live in `stdlib/core/*.wr`; variant order is read by `sema::stdlib_enums` (auto-visible without import so goldens stay put; explicit import pinned by golden/check-stdlib-prelude-enums). Option/Result stay language builtins (02 §2). Intrinsic bare names resolve via `intrinsics::is_bare_resolvable`; compiler type names via `types::is_builtin_type_name`."""
 
 [[clause]]
 id = "library.from.conversion"

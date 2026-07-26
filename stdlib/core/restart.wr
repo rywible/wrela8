@@ -1,0 +1,8 @@
+# plans/M9.md item I: 02-language.md §11 restart-policy vocabulary.
+# Declaration order is load-bearing for variant tags.
+module restart
+
+pub enum Restart:
+    OneForOne
+    OneForAll
+    RestForOne

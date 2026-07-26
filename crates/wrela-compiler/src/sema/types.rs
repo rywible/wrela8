@@ -4156,6 +4156,67 @@ fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
     }
 }
 
+/// Compiler-known type names that resolve with no import
+/// (plans/M9.md item I). These are the annotation-position half of what
+/// `sema/prelude.rs` used to list; each name already has its real
+/// definition in [`resolve_named`] (or in `eval::image_checks` for
+/// sealed-authority types). Value-only names (`Some`, `group`, …) are
+/// *not* here — see `symbols::is_resolvable_without_import`.
+pub fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        // 02 §6.1 scalars + `Str` (literal surface).
+        "bool"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "char"
+            | "unit"
+            | "never"
+            | "Str"
+            // 02 §2 fixed prelude types.
+            | "Option"
+            | "Result"
+            // Literal / string surface (02 §1.1 / §6.2).
+            | "Static"
+            | "Bytes"
+            | "String"
+            // Image builder opaque type (05 §9).
+            | "Image"
+            // Actor / hardware / MMIO / marked-value / interrupt surface.
+            | "Actor"
+            | "BootError"
+            | "VirtQueue"
+            | "QueuePermit"
+            | "QueueOp"
+            | "Receipt"
+            | "IoCompletion"
+            | "CompletionOutcome"
+            | "Target"
+            | "Restart"
+            | "DriverMode"
+            | "ReadOnly"
+            | "WriteOnly"
+            | "Untrusted"
+            | "Validated"
+            | "Secret"
+            | "InterruptCell"
+            // Time types stay annotation-resolvable without an import
+            // (plans/M9.md item E decision 300 / item I decision 470).
+            | "Duration"
+            | "Instant"
+    ) || crate::eval::image_checks::is_sealed_authority_type_name(name)
+}
+
 fn resolve_named(
     n: &NamedType,
     shapes: &BTreeMap<String, usize>,

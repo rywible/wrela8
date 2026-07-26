@@ -1302,8 +1302,9 @@ pub(crate) fn is_reserved_actor_arg(label: &str) -> bool {
 /// One list, in one place, deliberately (plans/M7.md item A): it is read
 /// by `layout::build_boot_init_calls` (which must fail closed on exactly
 /// the parameters this pass accepts by substitution), by
-/// `sema::prelude::is_builtin` (so the names are in scope with no import),
-/// by `sema::types::resolve_named` (which mints the type), and by
+/// `sema::symbols::is_resolvable_without_import` (so the names are in
+/// scope with no import), by `sema::types::resolve_named` (which mints
+/// the type), and by
 /// `sema::types::check_layouts` (03 §3 forbids a capability inside a
 /// layout). Several copies could disagree; one cannot.
 ///

@@ -789,14 +789,13 @@ pub(crate) fn check(
     // to name one that never got bound — see `TypedProgram::declared_pools`'s
     // own doc comment.
     program.declared_pools = mctx.module_pools.clone();
-    // plans/M4.md item B: the builder surface's own two fixed prelude
-    // enums (`sema::prelude::builtin_enum_variants`) are injected into
-    // every module's own `TypedProgram` unconditionally — the dumbest
-    // way to make `eval::interp::variant_index` (which already falls
-    // back to `TypedProgram::enums` for anything past `Option`/`Result`)
-    // index `Target`/`Restart` constructions with no evaluator-side
-    // special case at all. Harmless for a module that never mentions
-    // either name (this field is not part of the `--stage=typed` dump).
+    // plans/M4.md item B / plans/M9.md item I: the five stdlib enums
+    // (`sema::stdlib_enums`) are injected into every module's own
+    // `TypedProgram` unconditionally — the dumbest way to make
+    // `eval::interp::variant_index` index `Target`/`Restart`/…
+    // constructions with no evaluator-side special case. Variant
+    // order comes from `stdlib/core/*.wr`. Harmless for a module that
+    // never mentions them (this field is not part of the typed dump).
     for name in [
         "Target",
         "Restart",
@@ -810,8 +809,8 @@ pub(crate) fn check(
         // tag compare, with no lowering-side special case.
         "CompletionOutcome",
     ] {
-        let variants = crate::sema::prelude::builtin_enum_variants(name)
-            .expect("prelude enum names are in the fixed builtin_enum_variants table")
+        let variants = crate::sema::stdlib_enums::variant_strs(name)
+            .expect("stdlib enum names are in the fixed AUTO_VISIBLE table")
             .iter()
             .map(|v| v.to_string())
             .collect();
@@ -2598,15 +2597,15 @@ fn variant_payload_types_for(
                 )),
             }
         }
-        // plans/M8.md item G: a *prelude* enum (`CompletionOutcome`,
-        // `IoError`, `BootError`, `DriverMode`, `Target`, `Restart`) has no
-        // `DeclEnum` in `mctx.enums` at all — its variants live in the one
-        // fixed `prelude::builtin_enum_variants` table. Every one of them
-        // is fieldless, so the payload answer is always the empty vector;
-        // this arm exists so `match o: case .Unknown:` type-checks the same
-        // way a module-declared enum's does, with no per-enum special case.
+        // plans/M8.md item G / plans/M9.md item I: an auto-visible stdlib
+        // enum (`CompletionOutcome`, `BootError`, `DriverMode`, `Target`,
+        // `Restart`) may have no `DeclEnum` in `mctx.enums` — its variants
+        // live in `sema::stdlib_enums`. Every one of them is fieldless, so
+        // the payload answer is always the empty vector; this arm exists so
+        // `match o: case .Unknown:` type-checks the same way a module-
+        // declared enum's does, with no per-enum special case.
         Type::Named(name, targs)
-            if targs.is_empty() && crate::sema::prelude::builtin_enum_variants(name).is_some() =>
+            if targs.is_empty() && crate::sema::stdlib_enums::is_auto_visible(name) =>
         {
             if let Some(n) = enum_name {
                 if n != name {
@@ -2616,7 +2615,7 @@ fn variant_payload_types_for(
                     ));
                 }
             }
-            let variants = crate::sema::prelude::builtin_enum_variants(name)
+            let variants = crate::sema::stdlib_enums::variant_strs(name)
                 .expect("guarded by the arm's own condition");
             if variants.contains(&variant) {
                 Ok(vec![])
@@ -3097,7 +3096,7 @@ fn check_field_expr(
             // `bname` is not a real module struct/enum, so a module that
             // declares its own `Target`/`Restart` shadows this fallback
             // exactly like it would any other prelude name.
-            if let Some(variants) = crate::sema::prelude::builtin_enum_variants(bname.as_str()) {
+            if let Some(variants) = crate::sema::stdlib_enums::variant_strs(bname.as_str()) {
                 if variants.contains(&name) {
                     return Ok(TypedExpr {
                         ty: Type::Named(bname.clone(), vec![]),
@@ -9801,7 +9800,7 @@ fn scan_group_starts_expr<'a>(e: &'a Expr, gname: &str, out: &mut Vec<&'a [Arg]>
 /// for a milestone that will never come. Before this split, every
 /// non-`group` constructor was blamed on `with pool` by name, which was a
 /// wrong answer for `with anything_else(...)`; `pool` itself never
-/// reached here at all (`sema::prelude::ACTOR_SURFACE`'s own note).
+/// reached here at all (`intrinsics::is_bare_resolvable` / item I).
 fn check_with(w: &WithStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let Expr::Call(ctor, _cspan, cargs) = &w.expr else {
         return Err(unimplemented_at("`with` is", w.span));

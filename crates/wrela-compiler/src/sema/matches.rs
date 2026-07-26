@@ -420,17 +420,17 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
                 ),
             ])
         }
-        // plans/M8.md item G: a prelude enum (`CompletionOutcome` and the
-        // rest of `prelude::builtin_enum_variants`) is a closed, fieldless
-        // sum with no `DeclEnum` behind it — so exhaustiveness over
-        // `CompletionOutcome` is checked by exactly the machinery every
-        // module-declared enum gets, and a missing `Unknown` arm is
-        // reported by the same message.
+        // plans/M8.md item G / plans/M9.md item I: an auto-visible stdlib
+        // enum (`CompletionOutcome` and the rest of `stdlib_enums`) is a
+        // closed, fieldless sum that may have no `DeclEnum` behind it —
+        // so exhaustiveness over `CompletionOutcome` is checked by exactly
+        // the machinery every module-declared enum gets, and a missing
+        // `Unknown` arm is reported by the same message.
         Type::Named(name, targs)
-            if targs.is_empty() && crate::sema::prelude::builtin_enum_variants(name).is_some() =>
+            if targs.is_empty() && crate::sema::stdlib_enums::is_auto_visible(name) =>
         {
             TyShape::Sum(
-                crate::sema::prelude::builtin_enum_variants(name)
+                crate::sema::stdlib_enums::variant_strs(name)
                     .expect("guarded by the arm's own condition")
                     .iter()
                     .map(|v| ((*v).to_string(), Vec::new()))

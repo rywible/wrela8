@@ -17,4 +17,12 @@ and maps the remaining segments onto this directory (sibling
 
 Names that [02 §2](../docs/language/02-language.md) lists as the fixed
 prelude (`Option` / `Result` / `panic`) stay always in scope with no
-import. Everything else in this tree is imported.
+import — they are language builtins, not modules in this tree
+(plans/M9.md item I). The five builder/hardware enums (`Target`,
+`Restart`, `BootError`, `DriverMode`, `CompletionOutcome`) live here as
+ordinary wrela and are auto-visible without an import for golden
+stability; explicit `from core.<mod> import …` still compiles them
+through the ordinary pipeline. Time constructors
+(`ns`/`us`/`ms`/`seconds`/`minutes`/`hours`, plus `Duration`/`Instant`)
+keep the same auto-visibility (item E decision 300 / item I decision
+470). Everything else in this tree is imported.

@@ -1,0 +1,7 @@
+# plans/M9.md item I: 03-hardware.md §7 driver-mode const-generic vocabulary.
+# Declaration order is load-bearing for variant tags.
+module driver_mode
+
+pub enum DriverMode:
+    Irq
+    Poll

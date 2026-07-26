@@ -16,9 +16,11 @@
 //!   construct sema does not check yet reports `error[unimplemented]:
 //!   <what> is not checked yet at L:C` instead of silently accepting it.
 //!
-//! Item A lands collect + resolve and the builtin prelude (prelude.rs);
-//! every later pass is a stub (a no-op) until its own item lands, so
-//! `check` below only calls what item A actually implements.
+//! Item A lands collect + resolve and the name-resolution surface
+//! (`symbols::is_resolvable_without_import`; the old `prelude.rs`
+//! placeholder was deleted at plans/M9.md item I); every later pass is a
+//! stub (a no-op) until its own item lands, so `check` below only calls
+//! what item A actually implements.
 
 pub mod access;
 pub mod bodies;
@@ -34,10 +36,12 @@ pub mod imports;
 pub mod intrinsics;
 pub mod matches;
 pub mod paths;
-pub mod prelude;
 pub mod reserve_proof;
 pub mod send_proof;
 pub mod specialize;
+/// plans/M9.md item I: five formerly-prelude enums loaded from
+/// `stdlib/core/*.wr` (variant order for tags / exhaustiveness).
+pub mod stdlib_enums;
 pub mod symbols;
 pub mod typed;
 pub mod types;

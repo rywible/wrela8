@@ -310,7 +310,7 @@ pub fn validate_completion_length(
 
 /// 03-hardware.md §9's `CompletionOutcome`, as the tag a recovered receipt
 /// yields. The numbers are **positions in
-/// `sema::prelude::builtin_enum_variants("CompletionOutcome")`** — the same
+/// `sema::stdlib_enums::variant_strs("CompletionOutcome")`** — the same
 /// order `lower::variant_index` compares a `case .Unknown:` arm against —
 /// and `outcome_tags_match_the_prelude_enum_order` below is the oracle that
 /// keeps the two from drifting apart. There is no second enum here on
@@ -547,11 +547,12 @@ mod tests {
     }
 
     #[test]
-    fn outcome_tags_match_the_prelude_enum_order() {
+    fn outcome_tags_match_the_stdlib_enum_order() {
         // The one place the encoding and the source enum meet: a tag is a
-        // position in `builtin_enum_variants`, never an independent number.
-        let variants = crate::sema::prelude::builtin_enum_variants("CompletionOutcome")
-            .expect("`CompletionOutcome` is a prelude enum");
+        // position in `stdlib_enums` (from `stdlib/core/completion_outcome.wr`),
+        // never an independent number.
+        let variants = crate::sema::stdlib_enums::variant_strs("CompletionOutcome")
+            .expect("`CompletionOutcome` is a stdlib enum");
         assert_eq!(variants, &["Completed", "NotCompleted", "Unknown"]);
         assert_eq!(variants[OUTCOME_COMPLETED as usize], "Completed");
         assert_eq!(variants[OUTCOME_NOT_COMPLETED as usize], "NotCompleted");

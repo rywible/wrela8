@@ -1,0 +1,9 @@
+# plans/M9.md item I: 03-hardware.md §9 CompletionOutcome, verbatim.
+# Declaration order is load-bearing twice over: lower::variant_index tags
+# and matches::shape_of missing-arm order.
+module completion_outcome
+
+pub enum CompletionOutcome:
+    Completed
+    NotCompleted
+    Unknown

@@ -32,18 +32,13 @@
 //!
 //! ## What this covers, and what it does not
 //!
-//! Covered: intrinsic **keys** — *meaning*. Not covered:
-//! `sema::prelude`'s bare **names** — *resolution*. They are different
-//! surfaces and they are not in bijection. `prelude::is_builtin` decides
-//! whether `Foo` resolves at all with no import (`Actor`, `u32`,
-//! `Bytes`, `Validated` — most of which are types, and several of which
-//! resolve only so that a fail-closed rejection can name them). This
-//! file decides whether a *call* gets compiler-supplied meaning. A name
-//! can be in one and not the other in both directions: `Target` is a
-//! prelude name with no intrinsic key; `Mmio.read` is an intrinsic key
-//! that is not a prelude name (it is only ever reached through a typed
-//! receiver). plans/M9.md item I owns shrinking `prelude.rs`; this file
-//! owns holding the intrinsic surface still while it happens.
+//! Covered: intrinsic **keys** — *meaning*. Bare-name **resolution** for
+//! the subset that appears as identifiers is [`is_bare_resolvable`]
+//! (plans/M9.md item I). They are different surfaces and not in
+//! bijection: `Target` is a stdlib enum with no intrinsic key; `Mmio.read`
+//! is an intrinsic key that is not a bare name. This file owns holding
+//! the intrinsic *key* surface still; item I deleted the old
+//! `prelude.rs` placeholder that used to conflate the two.
 //!
 //! ## How the list is checked (see the test module below)
 //!
@@ -363,6 +358,20 @@ pub const UNPRODUCED_CONSUMER_KEYS: &[(&str, &str)] = &[
         "Same as `poll_sources` — rejected in sema before any node is built.",
     ),
 ];
+
+/// Bare names that must resolve with no import so `symbols::resolve`
+/// reaches the intrinsic / `with`-constructor arms in `bodies`
+/// (plans/M9.md item I). Intrinsic *keys* (meaning) live in
+/// [`IMAGE_BUILDER_SURFACE`] / [`EXCEPTIONS`] above; these are the
+/// subset that also appear as bare identifiers in source. Not in
+/// bijection with the key surface: `group` / `pool` are `with`-
+/// constructors, not intrinsic keys.
+pub fn is_bare_resolvable(name: &str) -> bool {
+    matches!(
+        name,
+        "Image" | "RestartIntensity" | "now" | "wake" | "group" | "pool"
+    )
+}
 
 /// The whole written-down surface: 05 §9's builder names plus the
 /// exception set, sorted, deduplicated by assertion rather than silently.
