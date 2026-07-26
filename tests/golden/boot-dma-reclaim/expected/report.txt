@@ -59,6 +59,7 @@ ImageReport v0
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Turn fn=a_quarantined_block_comes_back_after_quiescence frame=616
   Driver name=BlkDriver state=80
+  Turns count=2 stride=1024 bytes=2048
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2376
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503c90 size=104
   IrqHostInject base=0x40503c90 offset=0x60 status=0xa501 vector=1

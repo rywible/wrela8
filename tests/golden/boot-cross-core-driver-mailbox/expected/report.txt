@@ -43,5 +43,6 @@ ImageReport v0
   Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x40502320
   Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40502378
   Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x405023a0
+  Turns count=3 stride=512 bytes=1536
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2096
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x405023d8 size=8

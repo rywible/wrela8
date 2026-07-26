@@ -39,6 +39,7 @@ ImageReport v0
   Section name=pooldata base=0x40500288 size=256
   Entry base=0x40500000
   Driver name=BlkDriver state=8
+  Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=24
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40500280 size=8
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=16 slot_bytes=16 base=0x40500288 size=256 align=8 coherency=coherent device=device#0

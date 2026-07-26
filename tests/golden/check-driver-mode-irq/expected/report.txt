@@ -32,6 +32,7 @@ ImageReport v0
   Section name=devregs base=0x405005c8 size=8
   Entry base=0x40500000
   Driver name=BlkDriver[DriverMode.Irq] state=32
+  Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver[DriverMode.Irq] base=0x405005c8 size=8
   IrqHostInject base=0x405005c8 offset=0x60 status=0xa501 vector=1

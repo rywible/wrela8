@@ -45,6 +45,7 @@ ImageReport v0
   Entry base=0x40500000
   Driver name=BlkDriver state=8
   Driver name=OtherDriver state=8
+  Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=2 ready_queue=1 group_arena=0 bytes=32
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x405002d0 size=8
   DeviceRegs device=device#1 type=OtherHw driver=OtherDriver base=0x405002d8 size=8

@@ -51,6 +51,7 @@ ImageReport v0
   Actor name=CacheActor mailbox=8 slot=16 frame=56 state=24
   Actor name=StatsActor mailbox=4 slot=24 frame=56 state=24
   Driver name=StorageDriver state=16
+  Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=496
   DeviceRegs device=device#0 type=BlockHw driver=StorageDriver base=0x40500d80 size=8
   Pool name=CacheBuffers kind=image payload=u32 slots=8 slot_bytes=4096 base=0x40500d88 size=32768 align=8 coherency=coherent device=none

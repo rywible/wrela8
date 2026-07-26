@@ -45,6 +45,7 @@ ImageReport v0
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Actor name=Worker mailbox=8 slot=16 frame=472 state=16
   Turn fn=pool_backed_image frame=632
+  Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=3496
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40502618 size=128 align=8 coherency=coherent device=device#0
   Pool name=Scratch kind=image payload=u32 slots=4 slot_bytes=64 base=0x40502698 size=256 align=8 coherency=coherent device=none

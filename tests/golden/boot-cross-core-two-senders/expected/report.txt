@@ -42,4 +42,5 @@ ImageReport v0
   Turn fn=two_senders_one_ring frame=472
   Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120 base=0x40502810
   Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72 base=0x40502888
+  Turns count=4 stride=512 bytes=2048
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2680

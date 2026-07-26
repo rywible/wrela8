@@ -46,4 +46,5 @@ ImageReport v0
   Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40503180
   Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x405031b8
   Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x405031e0
+  Turns count=4 stride=512 bytes=2048
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=3256

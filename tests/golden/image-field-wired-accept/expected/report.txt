@@ -31,4 +31,5 @@ ImageReport v0
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Actor name=Worker mailbox=8 slot=16 frame=56 state=16
+  Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=552
