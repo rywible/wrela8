@@ -58,9 +58,9 @@
 //! - An `elif` chain, or an `if`'s own condition, containing an `await`.
 //! - A `defer` body containing an `await`.
 //! - An `|` (or) pattern (mirrors `lower.rs`'s own identical gap).
-//! - Assigning through, or reading, a nested field/index chain more than
-//!   one level deep, unless reached through a `let`-bound self-path
-//!   (mirrors `lower.rs`'s own identical restriction).
+//! - Assigning an `InterruptCell` through a nested field/index chain
+//!   (mirrors `lower.rs`; ordinary nested field/index assignment and
+//!   nested `mut` places are live — plans/M9.md item MM).
 //! - Every generic instantiation (no async generic exists in the M6
 //!   surface — `lower_program` does not even walk
 //!   `TypedProgram::instantiations`).
@@ -1095,7 +1095,15 @@ fn build_await_kind(
             let target_temp = lower_expr_flat(recv, b, env)?;
             let method_key = callee.spelling();
             let f = resolve_callee_fn(b.prog, callee)?;
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            let arg_temps = lower_aligned_args(f, args, b, env, &mut nested_mut_writebacks)?;
+            // Actor-call / await args are message payloads — nested `mut`
+            // write-back has no frame to land in after the suspension.
+            if !nested_mut_writebacks.is_empty() {
+                return Err(FlowError::unimplemented(
+                    "passing a nested `mut` place as an awaited actor-call argument is",
+                ));
+            }
             Ok((
                 AwaitKind::ActorCall {
                     target_temp,
@@ -1163,30 +1171,22 @@ fn build_await_kind(
 /// own `self`/earlier params the way an ordinary in-process call's might;
 /// no required golden exercises a defaulted message argument, so this is
 /// a disclosed simplification, not a proven equivalence.
-fn lower_aligned_args(
+fn lower_aligned_args<'a>(
     f: &TypedFn,
-    args: &[Option<TypedExpr>],
+    args: &'a [Option<TypedExpr>],
     b: &mut FlowBuilder,
     env: &mut FEnv,
+    nested_mut_writebacks: &mut Vec<(&'a TypedExpr, Temp)>,
 ) -> Result<Vec<Temp>, FlowError> {
     let mut out = Vec::with_capacity(args.len());
     for (param, slot) in f.params.iter().zip(args.iter()) {
         let t = match slot {
             Some(e) if param.mode == AccessMode::Mut => {
-                let TypedExprKind::Local(name) = &e.kind else {
-                    return Err(FlowError::unimplemented(
-                        "passing a `mut` argument through a nested field/index place \
-                         inside an async body is",
-                    ));
-                };
-                match env_lookup(env, name) {
-                    Some(Binding::Temp(t)) => t,
-                    _ => {
-                        return Err(FlowError::internal(format!(
-                            "unbound (or self-path) local `{name}` as `mut` argument"
-                        )));
-                    }
+                let (t, wb) = lower_mut_arg_place(e, b, env)?;
+                if let Some(place) = wb {
+                    nested_mut_writebacks.push((place, t));
                 }
+                t
             }
             Some(e) => lower_expr_flat(e, b, env)?,
             None if param.mode == AccessMode::Mut => {
@@ -1245,21 +1245,12 @@ fn lower_flow_call(
     let mode = f.receiver.as_ref().map(|(m, _)| *m);
     match (receiver, mode) {
         (Some(recv_expr), Some(AccessMode::Mut)) => {
-            let TypedExprKind::Local(recv_name) = &recv_expr.kind else {
-                return Err(FlowError::unimplemented(
-                    "calling a `mut self` method through a nested field/index receiver \
-                     inside an async body is",
-                ));
-            };
-            let self_temp = match env_lookup(env, recv_name) {
-                Some(Binding::Temp(t)) => t,
-                _ => {
-                    return Err(FlowError::internal(format!(
-                        "unbound (or self-path) local `{recv_name}` as mut receiver"
-                    )));
-                }
-            };
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let (self_temp, recv_wb) = lower_mut_arg_place(recv_expr, b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            if let Some(place) = recv_wb {
+                nested_mut_writebacks.push((place, self_temp));
+            }
+            let arg_temps = lower_aligned_args(f, args, b, env, &mut nested_mut_writebacks)?;
             let write_backs = flow_call_write_backs(f, Some(self_temp), &arg_temps);
             let mut call_args = vec![self_temp];
             call_args.extend(arg_temps);
@@ -1270,11 +1261,15 @@ fn lower_flow_call(
                 key,
                 args: call_args,
             });
+            for (place, t) in nested_mut_writebacks {
+                lower_place_write(place, t, b, env)?;
+            }
             Ok(dst)
         }
         (Some(recv_expr), Some(AccessMode::Read | AccessMode::Take)) => {
             let recv_temp = lower_expr_flat(recv_expr, b, env)?;
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            let arg_temps = lower_aligned_args(f, args, b, env, &mut nested_mut_writebacks)?;
             let write_backs = flow_call_write_backs(f, Some(recv_temp), &arg_temps);
             let mut call_args = vec![recv_temp];
             call_args.extend(arg_temps);
@@ -1285,10 +1280,14 @@ fn lower_flow_call(
                 key,
                 args: call_args,
             });
+            for (place, t) in nested_mut_writebacks {
+                lower_place_write(place, t, b, env)?;
+            }
             Ok(dst)
         }
         _ => {
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            let arg_temps = lower_aligned_args(f, args, b, env, &mut nested_mut_writebacks)?;
             let write_backs = flow_call_write_backs(f, None, &arg_temps);
             let dst = b.fresh(f.ret.clone());
             b.emit_mwir(Inst::Call {
@@ -1297,6 +1296,9 @@ fn lower_flow_call(
                 key,
                 args: arg_temps,
             });
+            for (place, t) in nested_mut_writebacks {
+                lower_place_write(place, t, b, env)?;
+            }
             Ok(dst)
         }
     }
@@ -2071,6 +2073,29 @@ fn lower_pattern_test(
 
 // --- places (assignment targets) -------------------------------------------
 
+/// Materialize `place` into a temp for in-place mutation. Bare local →
+/// its own temp (`needs_writeback = false`); field/index chain → a copy
+/// that must be written back (plans/M9.md item MM; mirrors `lower.rs`).
+fn materialize_place_mut(
+    place: &TypedExpr,
+    b: &mut FlowBuilder,
+    env: &mut FEnv,
+) -> Result<(Temp, bool), FlowError> {
+    match &place.kind {
+        TypedExprKind::Local(name) => match env_lookup(env, name) {
+            Some(Binding::Temp(t)) => Ok((t, false)),
+            _ => Err(FlowError::internal(format!(
+                "unbound (or self-path, not a temp) local `{name}` in place position"
+            ))),
+        },
+        TypedExprKind::Field(..) | TypedExprKind::Index(..) => {
+            let t = lower_expr_flat(place, b, env)?;
+            Ok((t, true))
+        }
+        _ => Err(FlowError::internal("expression is not an assignable place")),
+    }
+}
+
 fn lower_place_write(
     target: &TypedExpr,
     value: Temp,
@@ -2092,19 +2117,7 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Field(base, fname) => {
-            let TypedExprKind::Local(base_name) = &base.kind else {
-                return Err(FlowError::unimplemented(
-                    "assigning through a nested field/index chain (more than one level) is",
-                ));
-            };
-            let base_temp = match env_lookup(env, base_name) {
-                Some(Binding::Temp(t)) => t,
-                _ => {
-                    return Err(FlowError::internal(format!(
-                        "unbound (or self-path, not a temp) local `{base_name}` in place position"
-                    )));
-                }
-            };
+            let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
             let idx = field_index(b.prog, &base_ty, fname)?;
             b.emit_mwir(Inst::SetField {
@@ -2112,9 +2125,51 @@ fn lower_place_write(
                 index: idx,
                 value,
             });
+            if needs_writeback {
+                lower_place_write(base, base_temp, b, env)?;
+            }
+            Ok(())
+        }
+        TypedExprKind::Index(base, idx_expr) => {
+            let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
+            let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+            let len = eval_array_len(&base.ty)?;
+            b.emit_mwir(Inst::IndexSet {
+                base: base_temp,
+                index: idx_temp,
+                value,
+                len,
+            });
+            if needs_writeback {
+                lower_place_write(base, base_temp, b, env)?;
+            }
             Ok(())
         }
         _ => Err(FlowError::unimplemented("assigning to this place is")),
+    }
+}
+
+/// Nested `mut` place → scratch temp + write-back obligation after the
+/// call (plans/M9.md item MM; mirrors `lower.rs::lower_mut_arg_place`).
+fn lower_mut_arg_place<'a>(
+    expr: &'a TypedExpr,
+    b: &mut FlowBuilder,
+    env: &mut FEnv,
+) -> Result<(Temp, Option<&'a TypedExpr>), FlowError> {
+    match &expr.kind {
+        TypedExprKind::Local(name) => match env_lookup(env, name) {
+            Some(Binding::Temp(t)) => Ok((t, None)),
+            _ => Err(FlowError::internal(format!(
+                "unbound (or self-path) local `{name}` as `mut` argument"
+            ))),
+        },
+        TypedExprKind::Field(..) | TypedExprKind::Index(..) => {
+            let t = lower_expr_flat(expr, b, env)?;
+            Ok((t, Some(expr)))
+        }
+        _ => Err(FlowError::internal(
+            "expression is not an assignable `mut` place",
+        )),
     }
 }
 
@@ -2261,7 +2316,13 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             let target = lower_expr_flat(recv, b, env)?;
             let method_key = callee.spelling();
             let f = resolve_callee_fn(b.prog, callee)?;
-            let arg_temps = lower_aligned_args(f, args, b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            let arg_temps = lower_aligned_args(f, args, b, env, &mut nested_mut_writebacks)?;
+            if !nested_mut_writebacks.is_empty() {
+                return Err(FlowError::unimplemented(
+                    "passing a nested `mut` place as a `send` argument is",
+                ));
+            }
             let dst = b.fresh(e.ty.clone());
             b.emit(FlowInst::Send {
                 dst,

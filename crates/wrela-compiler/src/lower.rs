@@ -128,13 +128,14 @@
 //!   alternative that actually matched may survive) — doing this right
 //!   needs real per-alternative branching this item's required goldens
 //!   never exercise; recorded rather than risked.
-//! - **Assigning through, or calling a `mut self` method through, a
-//!   nested field/index chain** (`self.inner.field = ...`,
-//!   `self.inner.method()`) — only a chain rooted directly at a bare
-//!   local (`self.field = ...`, `c.method()`) is implemented. A deeper
-//!   chain needs a real multi-level place representation this item's
-//!   flat, single-offset `Inst::SetField`/`self_write_back` shape does
-//!   not carry; none of the required goldens need one.
+//! - **Assigning an `InterruptCell` through a nested field/index chain**
+//!   (deeper than bare `self.cell = ...`) — the live-driver-state STLR
+//!   path only knows a single field offset of `self` (plans/M7.md item G,
+//!   decision 17). Nested `InterruptCell` places stay refused by name
+//!   rather than silently writing a frame copy. Ordinary nested
+//!   field/index assignment (`self.data[i] = v`, `self.a.b = v`) and
+//!   nested `mut self` / `mut` argument places are live (plans/M9.md
+//!   item MM).
 //! - **Indexing a `Bytes` value**, and **an array/`Bytes` length that is
 //!   not a literal or a plain module `const` reference** (`eval_array_len`
 //!   below) — the evaluator supports both narrowly; this item's own
@@ -1898,10 +1899,38 @@ fn lower_pattern_test(
 
 // --- places (assignment targets) ---------------------------------------
 
-/// Writes `value` into `target`'s own place — only a bare local
-/// (`Local`), or a field/index rooted *directly* at one, is implemented
-/// (module doc's own fail-closed enumeration: a deeper chain needs a
-/// real multi-level place this item does not build).
+/// Materialize `place` into a temp that a subsequent `SetField` /
+/// `IndexSet` / `mut` write-back can mutate. A bare local is its own
+/// frame slot (`needs_writeback = false`); a field/index chain is
+/// projected out as a copy that the caller must write back through
+/// `lower_place_write` after mutating (`needs_writeback = true`).
+/// plans/M9.md item MM: dumb RMW — no address caching, no CSE.
+fn materialize_place_mut(
+    place: &TypedExpr,
+    b: &mut FnBuilder,
+    env: &mut LEnv,
+) -> Result<(Temp, bool), LowerError> {
+    match &place.kind {
+        TypedExprKind::Local(name) => {
+            let t = env_lookup(env, name).ok_or_else(|| {
+                LowerError::internal(format!("unbound local `{name}` in place position"))
+            })?;
+            Ok((t, false))
+        }
+        TypedExprKind::Field(..) | TypedExprKind::Index(..) => {
+            let t = lower_expr(place, b, env)?;
+            Ok((t, true))
+        }
+        _ => Err(LowerError::internal(
+            "expression is not an assignable place",
+        )),
+    }
+}
+
+/// Writes `value` into `target`'s place — bare local, or an arbitrary
+/// depth chain of field/index projections (plans/M9.md item MM). Nested
+/// places project out, mutate, and write the modified aggregate back;
+/// a bare-local base is mutated in place via `SetField`/`IndexSet`.
 fn lower_place_write(
     target: &TypedExpr,
     value: Temp,
@@ -1917,29 +1946,31 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Field(base, fname) => {
-            let TypedExprKind::Local(base_name) = &base.kind else {
-                return Err(LowerError::unimplemented(
-                    "assigning through a nested field/index chain (more than one level) is",
-                ));
-            };
-            let base_temp = env_lookup(env, base_name)
-                .ok_or_else(|| LowerError::internal(format!("unbound local `{base_name}`")))?;
-            let base_ty = bodies::unwrap_own(base.ty.clone());
-            let idx = field_index(b.prog(), &base_ty, fname)?;
             // plans/M7.md item G, decision 17: assigning an `InterruptCell`
-            // field of `self` must STLR the live driver-state word. The
-            // frame copy alone is not enough — a later `mut self` epilogue
-            // would otherwise be the only writer, and an ISR mid-turn
-            // would race it.
-            if base_name == "self" && bodies::is_interrupt_cell_type(&target.ty) {
+            // field of `self` must STLR the live driver-state word. Only
+            // bare `self.<cell>` has a known live offset; nested chains
+            // refuse rather than write a frame copy and skip the STLR.
+            if bodies::is_interrupt_cell_type(&target.ty) {
+                let TypedExprKind::Local(base_name) = &base.kind else {
+                    return Err(LowerError::unimplemented(
+                        "assigning an `InterruptCell` through a nested field/index chain is",
+                    ));
+                };
+                if base_name != "self" {
+                    return Err(LowerError::unimplemented(
+                        "assigning an `InterruptCell` on a non-`self` place is",
+                    ));
+                }
+                let base_temp = env_lookup(env, base_name)
+                    .ok_or_else(|| LowerError::internal(format!("unbound local `{base_name}`")))?;
+                let base_ty = bodies::unwrap_own(base.ty.clone());
+                let idx = field_index(b.prog(), &base_ty, fname)?;
                 let field_off = interrupt_cell_field_off(b, &base_ty, idx)?;
                 b.emit(Inst::InterruptCellStoreRelease {
                     field_off,
                     width: 4,
                     value,
                 });
-                // Keep the frame slot in sync for any non-atomic Project
-                // of the same field before the next load_acquire.
                 b.emit(Inst::SetField {
                     base: base_temp,
                     index: idx,
@@ -1947,21 +1978,21 @@ fn lower_place_write(
                 });
                 return Ok(());
             }
+            let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
+            let base_ty = bodies::unwrap_own(base.ty.clone());
+            let idx = field_index(b.prog(), &base_ty, fname)?;
             b.emit(Inst::SetField {
                 base: base_temp,
                 index: idx,
                 value,
             });
+            if needs_writeback {
+                lower_place_write(base, base_temp, b, env)?;
+            }
             Ok(())
         }
         TypedExprKind::Index(base, idx_expr) => {
-            let TypedExprKind::Local(base_name) = &base.kind else {
-                return Err(LowerError::unimplemented(
-                    "assigning through a nested field/index chain (more than one level) is",
-                ));
-            };
-            let base_temp = env_lookup(env, base_name)
-                .ok_or_else(|| LowerError::internal(format!("unbound local `{base_name}`")))?;
+            let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let idx_temp = lower_expr(idx_expr, b, env)?;
             let len = eval_array_len(&base.ty)?;
             b.emit(Inst::IndexSet {
@@ -1970,6 +2001,9 @@ fn lower_place_write(
                 value,
                 len,
             });
+            if needs_writeback {
+                lower_place_write(base, base_temp, b, env)?;
+            }
             Ok(())
         }
         _ => Err(LowerError::internal(
@@ -1981,19 +2015,30 @@ fn lower_place_write(
 // --- calls ----------------------------------------------------------------
 
 /// Lowers one `mut`-mode call-site operand to the place temp that will
-/// also appear in `Inst::Call::write_backs`. Only a bare local is
-/// implemented — matching `mut self`'s own restriction — because a
-/// field/index place needs a multi-level address this pass does not
-/// build (plans/M9.md item CC, decision 73). Sema already rejected
-/// non-places; this is the residual addressability boundary.
-fn lower_mut_arg_place(expr: &TypedExpr, env: &LEnv) -> Result<Temp, LowerError> {
-    let TypedExprKind::Local(name) = &expr.kind else {
-        return Err(LowerError::unimplemented(
-            "passing a `mut` argument through a nested field/index place is",
-        ));
-    };
-    env_lookup(env, name)
-        .ok_or_else(|| LowerError::internal(format!("unbound local `{name}` as `mut` argument")))
+/// also appear in `Inst::Call::write_backs`. Nested field/index places
+/// project out as a scratch temp; the caller must write that temp back
+/// through `lower_place_write` after the call (plans/M9.md item MM). A
+/// bare local is mutated in place — no write-back place.
+fn lower_mut_arg_place<'a>(
+    expr: &'a TypedExpr,
+    b: &mut FnBuilder,
+    env: &mut LEnv,
+) -> Result<(Temp, Option<&'a TypedExpr>), LowerError> {
+    match &expr.kind {
+        TypedExprKind::Local(name) => {
+            let t = env_lookup(env, name).ok_or_else(|| {
+                LowerError::internal(format!("unbound local `{name}` as `mut` argument"))
+            })?;
+            Ok((t, None))
+        }
+        TypedExprKind::Field(..) | TypedExprKind::Index(..) => {
+            let t = lower_expr(expr, b, env)?;
+            Ok((t, Some(expr)))
+        }
+        _ => Err(LowerError::internal(
+            "expression is not an assignable `mut` place",
+        )),
+    }
 }
 
 /// Evaluates a call's own argument slots against the callee's declared
@@ -2005,13 +2050,16 @@ fn lower_mut_arg_place(expr: &TypedExpr, env: &LEnv) -> Result<Temp, LowerError>
 /// default may reference either, `sema::bodies::check_params_with_defaults`'s
 /// own typing order, mirrored here one stage later. A `mut` parameter's
 /// supplied operand lowers through `lower_mut_arg_place` so the temp
-/// passed is the place itself (required for epilogue write-back).
-fn bind_args(
+/// passed is the place itself (required for epilogue write-back). Nested
+/// `mut` places return a post-call write-back obligation in
+/// `nested_mut_writebacks` (plans/M9.md item MM).
+fn bind_args<'a>(
     f: &TypedFn,
-    args: &[Option<TypedExpr>],
+    args: &'a [Option<TypedExpr>],
     self_temp: Option<Temp>,
     b: &mut FnBuilder,
     caller_env: &mut LEnv,
+    nested_mut_writebacks: &mut Vec<(&'a TypedExpr, Temp)>,
 ) -> Result<Vec<Temp>, LowerError> {
     let mut callee_env: LEnv = vec![BTreeMap::new()];
     if let Some(st) = self_temp {
@@ -2020,7 +2068,13 @@ fn bind_args(
     let mut out = Vec::with_capacity(args.len());
     for (param, slot) in f.params.iter().zip(args.iter()) {
         let t = match slot {
-            Some(e) if param.mode == AccessMode::Mut => lower_mut_arg_place(e, caller_env)?,
+            Some(e) if param.mode == AccessMode::Mut => {
+                let (t, wb) = lower_mut_arg_place(e, b, caller_env)?;
+                if let Some(place) = wb {
+                    nested_mut_writebacks.push((place, t));
+                }
+                t
+            }
             Some(e) => lower_expr(e, b, caller_env)?,
             None if param.mode == AccessMode::Mut => {
                 return Err(LowerError::unimplemented(
@@ -2112,14 +2166,13 @@ fn lower_call(
     let mode = f.receiver.as_ref().map(|(m, _)| *m);
     match (receiver, mode) {
         (Some(recv_expr), Some(AccessMode::Mut)) => {
-            let TypedExprKind::Local(recv_name) = &recv_expr.kind else {
-                return Err(LowerError::unimplemented(
-                    "calling a `mut self` method through a nested field/index receiver is",
-                ));
-            };
-            let self_temp = env_lookup(env, recv_name)
-                .ok_or_else(|| LowerError::internal(format!("unbound local `{recv_name}`")))?;
-            let arg_temps = bind_args(f, args, Some(self_temp), b, env)?;
+            let (self_temp, recv_wb) = lower_mut_arg_place(recv_expr, b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            if let Some(place) = recv_wb {
+                nested_mut_writebacks.push((place, self_temp));
+            }
+            let arg_temps =
+                bind_args(f, args, Some(self_temp), b, env, &mut nested_mut_writebacks)?;
             let write_backs = call_write_backs(f, Some(self_temp), &arg_temps);
             let mut call_args = vec![self_temp];
             call_args.extend(arg_temps);
@@ -2130,11 +2183,16 @@ fn lower_call(
                 key,
                 args: call_args,
             });
+            for (place, t) in nested_mut_writebacks {
+                lower_place_write(place, t, b, env)?;
+            }
             Ok(dst)
         }
         (Some(recv_expr), Some(AccessMode::Read | AccessMode::Take)) => {
             let recv_temp = lower_expr(recv_expr, b, env)?;
-            let arg_temps = bind_args(f, args, Some(recv_temp), b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            let arg_temps =
+                bind_args(f, args, Some(recv_temp), b, env, &mut nested_mut_writebacks)?;
             let write_backs = call_write_backs(f, Some(recv_temp), &arg_temps);
             let mut call_args = vec![recv_temp];
             call_args.extend(arg_temps);
@@ -2145,10 +2203,14 @@ fn lower_call(
                 key,
                 args: call_args,
             });
+            for (place, t) in nested_mut_writebacks {
+                lower_place_write(place, t, b, env)?;
+            }
             Ok(dst)
         }
         _ => {
-            let arg_temps = bind_args(f, args, None, b, env)?;
+            let mut nested_mut_writebacks = Vec::new();
+            let arg_temps = bind_args(f, args, None, b, env, &mut nested_mut_writebacks)?;
             let write_backs = call_write_backs(f, None, &arg_temps);
             let dst = b.fresh(f.ret.clone());
             b.emit(Inst::Call {
@@ -2157,6 +2219,9 @@ fn lower_call(
                 key,
                 args: arg_temps,
             });
+            for (place, t) in nested_mut_writebacks {
+                lower_place_write(place, t, b, env)?;
+            }
             Ok(dst)
         }
     }
@@ -2184,7 +2249,8 @@ fn lower_init_call(
         .map(|(_, t)| t.clone())
         .ok_or_else(|| LowerError::internal("`init` has no receiver type"))?;
     let self_temp = b.fresh(self_ty);
-    let arg_temps = bind_args(f, args, Some(self_temp), b, env)?;
+    let mut nested_mut_writebacks = Vec::new();
+    let arg_temps = bind_args(f, args, Some(self_temp), b, env, &mut nested_mut_writebacks)?;
     let write_backs = call_write_backs(f, Some(self_temp), &arg_temps);
     let mut call_args = vec![self_temp];
     call_args.extend(arg_temps);
@@ -2195,6 +2261,9 @@ fn lower_init_call(
         key: key.to_string(),
         args: call_args,
     });
+    for (place, t) in nested_mut_writebacks {
+        lower_place_write(place, t, b, env)?;
+    }
     match &f.ret {
         Type::Unit => Ok(self_temp),
         Type::Result(_, _) => {
@@ -3377,13 +3446,13 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         {
             Err(LowerError::unimplemented(&format!("`{key}` ({owner}) is")))
         }
-        TypedExprKind::Intrinsic { key, .. }
-            if key == "Array.map_take" || key == "Array.try_map_take" =>
-        {
-            Err(LowerError::unimplemented(
-                "`Array.map_take` / `Array.try_map_take` at runtime (comptime eval is live; \
-                 guest lowering is plans/M9.md item F3 follow-up) is",
-            ))
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            args,
+            ..
+        } if key == "Array.map_take" || key == "Array.try_map_take" => {
+            lower_array_map_take(key, receiver.as_deref(), args, &expr.ty, b, env)
         }
         TypedExprKind::Intrinsic { .. } => Err(LowerError::unimplemented(
             "an `@image` builder intrinsic (reachable only inside the one `@image` fn, which is never lowered) is",
@@ -4026,9 +4095,9 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
                 .get(enum_name)
                 .or_else(|| prog.imported.enums.get(enum_name))
                 .ok_or_else(|| {
-                    LowerError::unimplemented(
-                        "constructing/matching a generic enum instantiation's variant is",
-                    )
+                    LowerError::unimplemented(format!(
+                        "constructing/matching a generic enum instantiation's variant (`{enum_name}.{variant}`) is",
+                    ))
                 })?;
             en.variants
                 .iter()
@@ -4050,6 +4119,184 @@ fn int_bits(ty: &Type) -> Result<u32, LowerError> {
             "shift on a non-integer type ({other:?})"
         ))),
     }
+}
+
+/// plans/M9.md item MM / F3: lower sealed `[T; N].map_take` /
+/// `try_map_take`. N is compile-time known, so the walk unrolls — each
+/// element is taken via `IndexGet`, passed `take` to the named mapper,
+/// and collected into a `MakeAggregate`. `try_map_take` branches on each
+/// `Result` tag; an `Err` becomes the whole expression's `Err` (data
+/// reclaim is frame drop, matching the evaluator).
+fn lower_array_map_take(
+    key: &str,
+    receiver: Option<&TypedExpr>,
+    args: &[(String, TypedExpr)],
+    result_ty: &Type,
+    b: &mut FnBuilder,
+    env: &mut LEnv,
+) -> Result<Temp, LowerError> {
+    let recv = receiver.ok_or_else(|| {
+        LowerError::internal(format!(
+            "`{key}` reached lowering without an array receiver"
+        ))
+    })?;
+    let Type::Array(elem_ty, _) = bodies::unwrap_own(recv.ty.clone()) else {
+        return Err(LowerError::internal(format!(
+            "`{key}` receiver is not an array"
+        )));
+    };
+    let len = eval_array_len(&recv.ty)?;
+    let arr = lower_expr(recv, b, env)?;
+    let (_, mapper_expr) = args.first().ok_or_else(|| {
+        LowerError::internal(format!("`{key}` reached lowering without a mapper"))
+    })?;
+    let TypedExprKind::FnRef(mapper_key) = &mapper_expr.kind else {
+        return Err(LowerError::unimplemented(
+            "`Array.map_take` / `Array.try_map_take` with a non-named-fn mapper is",
+        ));
+    };
+    let mapper_spelling = mapper_key.spelling();
+    let is_try = key == "Array.try_map_take";
+
+    if !is_try {
+        let Type::Array(out_elem, _) = result_ty else {
+            return Err(LowerError::internal(
+                "`Array.map_take` result is not an array",
+            ));
+        };
+        let mut outs = Vec::with_capacity(len);
+        for i in 0..len {
+            let idx_t = b.fresh(Type::Usize);
+            b.emit(Inst::ConstInt {
+                dst: idx_t,
+                ty: Type::Usize,
+                value: i as i128,
+            });
+            let elem_t = b.fresh((*elem_ty).clone());
+            b.emit(Inst::IndexGet {
+                dst: elem_t,
+                base: arr,
+                index: idx_t,
+                len,
+            });
+            let out_t = b.fresh((**out_elem).clone());
+            b.emit(Inst::Call {
+                dst: out_t,
+                write_backs: vec![],
+                key: mapper_spelling.clone(),
+                args: vec![elem_t],
+            });
+            outs.push(out_t);
+        }
+        let dst = b.fresh(result_ty.clone());
+        b.emit(Inst::MakeAggregate { dst, elems: outs });
+        return Ok(dst);
+    }
+
+    // try_map_take: Result[[U; N], E]
+    let Type::Result(ok_arr_ty, err_ty) = result_ty else {
+        return Err(LowerError::internal(
+            "`Array.try_map_take` result is not a Result",
+        ));
+    };
+    let Type::Array(out_elem, _) = ok_arr_ty.as_ref() else {
+        return Err(LowerError::internal(
+            "`Array.try_map_take` Ok payload is not an array",
+        ));
+    };
+    let result = b.fresh(result_ty.clone());
+    let mut ok_elems = Vec::with_capacity(len);
+    let mut err_entry_fixups: Vec<(usize, Temp)> = Vec::new();
+    for i in 0..len {
+        let idx_t = b.fresh(Type::Usize);
+        b.emit(Inst::ConstInt {
+            dst: idx_t,
+            ty: Type::Usize,
+            value: i as i128,
+        });
+        let elem_t = b.fresh((*elem_ty).clone());
+        b.emit(Inst::IndexGet {
+            dst: elem_t,
+            base: arr,
+            index: idx_t,
+            len,
+        });
+        let mapped_ty = Type::Result(Box::new((**out_elem).clone()), Box::new((**err_ty).clone()));
+        let mapped = b.fresh(mapped_ty);
+        b.emit(Inst::Call {
+            dst: mapped,
+            write_backs: vec![],
+            key: mapper_spelling.clone(),
+            args: vec![elem_t],
+        });
+        let tag_t = b.fresh(Type::U64);
+        b.emit(Inst::EnumTag {
+            dst: tag_t,
+            src: mapped,
+        });
+        let ok_const = b.fresh(Type::U64);
+        b.emit(Inst::ConstInt {
+            dst: ok_const,
+            ty: Type::U64,
+            value: value::RESULT_OK as i128,
+        });
+        let is_ok = b.fresh(Type::Bool);
+        b.emit(Inst::Compare {
+            dst: is_ok,
+            op: BinOp::Eq,
+            ty: Type::U64,
+            lhs: tag_t,
+            rhs: ok_const,
+        });
+        let err_fixup = b.emit(Inst::JumpIfFalse {
+            cond: is_ok,
+            target: usize::MAX,
+        });
+        err_entry_fixups.push((err_fixup, mapped));
+        let payload = b.fresh((**out_elem).clone());
+        b.emit(Inst::EnumPayload {
+            dst: payload,
+            src: mapped,
+            index: 0,
+        });
+        ok_elems.push(payload);
+    }
+    let arr_out = b.fresh((**ok_arr_ty).clone());
+    b.emit(Inst::MakeAggregate {
+        dst: arr_out,
+        elems: ok_elems,
+    });
+    b.emit(Inst::MakeEnum {
+        dst: result,
+        tag: value::RESULT_OK,
+        payload: vec![arr_out],
+    });
+    let success_end_fixup = b.emit(Inst::Jump { target: usize::MAX });
+
+    let mut err_end_fixups = Vec::new();
+    for (entry_fixup, mapped) in err_entry_fixups {
+        let err_pos = b.here();
+        b.patch_jump(entry_fixup, err_pos);
+        let err_payload = b.fresh((**err_ty).clone());
+        b.emit(Inst::EnumPayload {
+            dst: err_payload,
+            src: mapped,
+            index: 0,
+        });
+        b.emit(Inst::MakeEnum {
+            dst: result,
+            tag: value::RESULT_ERR,
+            payload: vec![err_payload],
+        });
+        let j = b.emit(Inst::Jump { target: usize::MAX });
+        err_end_fixups.push(j);
+    }
+    let end_pos = b.here();
+    b.patch_jump(success_end_fixup, end_pos);
+    for j in err_end_fixups {
+        b.patch_jump(j, end_pos);
+    }
+    Ok(result)
 }
 
 /// `base`'s own array length, resolved at lowering time — a literal, or
