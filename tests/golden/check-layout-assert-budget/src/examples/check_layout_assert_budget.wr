@@ -4,7 +4,7 @@ module examples.check_layout_assert_budget
 # program's real guest code. Before the fix, declaring this fn grew
 # `code` 128 -> 656 and the assert failed; after, code stays guest-only
 # (plans/M10.md item A2d adds the force-rooted probe, 128 -> 156;
-# item B2 force-roots `__wrela_line_begin`/`__wrela_line_commit` → 1340).
+# item D adds specialized `rt_enqueue Store`, 156 -> 368).
 # Pins that `@layout_assert` bodies are host-only.
 from core.image_report import ImageReport
 
@@ -20,7 +20,7 @@ pub struct Store:
 
 @layout_assert
 fn budget(report: ImageReport):
-    assert report.code_size < 1500, "code budget is 1500 bytes"
+    assert report.code_size < 400, "code budget is 400 bytes"
 
 @image
 pub fn build() -> Image:

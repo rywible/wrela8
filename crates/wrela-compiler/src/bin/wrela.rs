@@ -1174,72 +1174,95 @@ fn dump(args: &[String]) -> ExitCode {
         // so force-rooted `core.runtime` helpers enter the emit set —
         // root-only lower never sees them. Builds a whole-closure
         // LayoutCtx and dumps the merged codegen program.
-        "asm" => match lex_result {
-            Ok(tokens) => {
-                let parse_start = Instant::now();
-                let parsed = parser::parse(tokens);
-                parse_time = parse_start.elapsed();
-                let dump_start = Instant::now();
-                match parsed {
-                    Ok(module) => match check_closure(&path, module) {
-                        Ok(checked) => {
-                            let reachable = lower::guest_reachable_keys_closure(
-                                &checked.programs,
-                                &lower::LowerOpts::default(),
-                            );
-                            let lower_opts = lower::LowerOpts {
-                                emit_comptime_tests: false,
-                                only: Some(reachable),
-                            };
-                            let mut mwir_programs = Vec::with_capacity(checked.programs.len());
-                            let mut flow_fns = BTreeMap::new();
-                            let mut lower_err: Option<String> = None;
-                            for typed in checked.programs.values() {
-                                match lower::lower_program_with(typed, &lower_opts) {
-                                    Ok(p) => mwir_programs.push(p),
-                                    Err(e) => {
-                                        lower_err = Some(e.message);
-                                        break;
+        "asm" => {
+            match lex_result {
+                Ok(tokens) => {
+                    let parse_start = Instant::now();
+                    let parsed = parser::parse(tokens);
+                    parse_time = parse_start.elapsed();
+                    let dump_start = Instant::now();
+                    match parsed {
+                        Ok(module) => match check_closure(&path, module) {
+                            Ok(checked) => {
+                                let reachable = lower::guest_reachable_keys_closure(
+                                    &checked.programs,
+                                    &lower::LowerOpts::default(),
+                                );
+                                let lower_opts = lower::LowerOpts {
+                                    emit_comptime_tests: false,
+                                    only: Some(reachable),
+                                };
+                                let mut mwir_programs = Vec::with_capacity(checked.programs.len());
+                                let mut flow_fns = BTreeMap::new();
+                                let mut lower_err: Option<String> = None;
+                                for typed in checked.programs.values() {
+                                    match lower::lower_program_with(typed, &lower_opts) {
+                                        Ok(p) => mwir_programs.push(p),
+                                        Err(e) => {
+                                            lower_err = Some(e.message);
+                                            break;
+                                        }
+                                    }
+                                    match wrela_compiler::flowwir_lower::lower_program_with(
+                                        typed,
+                                        &lower_opts,
+                                    ) {
+                                        Ok(p) => flow_fns.extend(p.fns),
+                                        Err(e) => {
+                                            lower_err = Some(e.message);
+                                            break;
+                                        }
                                     }
                                 }
-                                match wrela_compiler::flowwir_lower::lower_program_with(
-                                    typed,
-                                    &lower_opts,
-                                ) {
-                                    Ok(p) => flow_fns.extend(p.fns),
-                                    Err(e) => {
-                                        lower_err = Some(e.message);
-                                        break;
-                                    }
-                                }
-                            }
-                            if let Some(msg) = lower_err {
-                                print_line_diagnostic(&format!("error[unimplemented]: {msg}"));
-                            } else {
-                                let mwir_program = layout::merge_mwir_programs(mwir_programs);
-                                let flow_program =
-                                    wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
-                                match layout::merge_layout_ctx(&checked.modules) {
-                                    Ok(mut layout_ctx) => {
-                                        layout::enrich_layout_ctx_with_instantiations(
-                                            &mut layout_ctx,
-                                            &checked.programs,
-                                        );
-                                        match layout::actor_method_index_tables(
-                                            &checked.modules,
-                                            &layout_ctx,
-                                        ) {
-                                            Ok(method_index) => {
-                                                let group_arena_capacity =
-                                                    layout::count_with_group_sites(
-                                                        &checked.modules,
-                                                    );
-                                                match wrela_compiler::codegen::codegen_program_with_async(
+                                if let Some(msg) = lower_err {
+                                    print_line_diagnostic(&format!("error[unimplemented]: {msg}"));
+                                } else {
+                                    let mwir_program = layout::merge_mwir_programs(mwir_programs);
+                                    let flow_program =
+                                        wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
+                                    match layout::merge_layout_ctx(&checked.modules) {
+                                        Ok(mut layout_ctx) => {
+                                            layout::enrich_layout_ctx_with_instantiations(
+                                                &mut layout_ctx,
+                                                &checked.programs,
+                                            );
+                                            match layout::actor_method_index_tables(
+                                                &checked.modules,
+                                                &layout_ctx,
+                                            ) {
+                                                Ok(method_index) => {
+                                                    let group_arena_capacity =
+                                                        layout::count_with_group_sites(
+                                                            &checked.modules,
+                                                        );
+                                                    // M10 D: specialized enqueue keys when an
+                                                    // `@image` graph is available.
+                                                    let enqueue_specs = {
+                                                        let root = &checked.programs[&checked.root];
+                                                        match &root.image_fn {
+                                                        Some(name) => {
+                                                            match eval::interp::eval_image(
+                                                                root, name,
+                                                            ) {
+                                                                Ok(graph) => layout::mailbox_enqueue_specs(
+                                                                    &graph,
+                                                                    &checked.modules,
+                                                                    &layout_ctx,
+                                                                )
+                                                                .unwrap_or_default(),
+                                                                Err(_) => Vec::new(),
+                                                            }
+                                                        }
+                                                        None => Vec::new(),
+                                                    }
+                                                    };
+                                                    match wrela_compiler::codegen::codegen_program_with_async(
                                                     &mwir_program,
                                                     &flow_program,
                                                     &layout_ctx,
                                                     &method_index,
                                                     group_arena_capacity,
+                                                    &enqueue_specs,
                                                 ) {
                                                     Ok(codegen_program) => print!(
                                                         "{}",
@@ -1252,29 +1275,30 @@ fn dump(args: &[String]) -> ExitCode {
                                                         e.message
                                                     )),
                                                 }
+                                                }
+                                                Err(e) => print_line_diagnostic(&format!(
+                                                    "error[unimplemented]: {}",
+                                                    e.message
+                                                )),
                                             }
-                                            Err(e) => print_line_diagnostic(&format!(
-                                                "error[unimplemented]: {}",
-                                                e.message
-                                            )),
                                         }
+                                        Err(e) => print_sema_error(&e),
                                     }
-                                    Err(e) => print_sema_error(&e),
                                 }
                             }
-                        }
-                        Err(()) => {}
-                    },
-                    Err(e) => print_parse_error(&e),
+                            Err(()) => {}
+                        },
+                        Err(e) => print_parse_error(&e),
+                    }
+                    dump_time = dump_start.elapsed();
                 }
-                dump_time = dump_start.elapsed();
+                Err(e) => {
+                    let dump_start = Instant::now();
+                    print_lex_error(&e);
+                    dump_time = dump_start.elapsed();
+                }
             }
-            Err(e) => {
-                let dump_start = Instant::now();
-                print_lex_error(&e);
-                dump_time = dump_start.elapsed();
-            }
-        },
+        }
         "image" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -1647,12 +1671,23 @@ fn test_cmd(args: &[String]) -> ExitCode {
         }
     };
     let group_arena_capacity = layout::count_with_group_sites(&modules);
+    let enqueue_specs = match layout::mailbox_enqueue_specs(&graph, &modules, &layout_ctx) {
+        Ok(s) => s,
+        Err(msg) => {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            print_line_diagnostic(&format!("error[build]: {msg}"));
+            return ExitCode::FAILURE;
+        }
+    };
     let codegen_program = match codegen::codegen_program_with_async(
         &mwir_program,
         &flow_program,
         &layout_ctx,
         &method_index,
         group_arena_capacity,
+        &enqueue_specs,
     ) {
         Ok(p) => p,
         Err(e) => {

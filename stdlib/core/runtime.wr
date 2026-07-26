@@ -1,4 +1,4 @@
-# plans/M10.md item A2d / B2
+# plans/M10.md item A2d / B2 / D
 # Always-loaded runtime module. Names are not auto-visible (decision 584);
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
@@ -40,6 +40,10 @@ struct ConsoleDataPage:
 @placed(0x40003000)
 static CONSOLE_DATA: ConsoleDataPage
 
+# Force-root seed (A2d / decision 583). Per-actor mailbox admission
+# (`rt_enqueue <Actor>`) is synthesized into CodegenProgram under
+# specialized keys (item D / decisions 613–615) — not spelled here,
+# because the key contains a space no wrela identifier may carry.
 pub fn __wrela_runtime_probe():
     return
 

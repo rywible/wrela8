@@ -4,10 +4,10 @@ module examples.check_layout_assert_budget_helper
 # but a helper only reachable from the assert still emitted and grew
 # code (measured 128 -> 188) so a true budget failed. After H3 the
 # helper is unreachable from guest roots and stays out. plans/M10.md
-# item A2d force-roots `__wrela_runtime_probe` (+28 bytes → 156);
-# item B2 adds `__wrela_line_begin`/`__wrela_line_commit` (→ 1340). The
-# cap sits above that floor so H3's "assert-only helper stays out" still
-# fails closed if the helper re-enters the emit set.
+# item A2d force-roots `__wrela_runtime_probe` (+28 bytes → 156); item D
+# adds specialized `rt_enqueue Store` (→ 368). The cap sits above that
+# floor so H3's "assert-only helper stays out" still fails closed if the
+# helper re-enters the emit set.
 from core.image_report import ImageReport
 
 @actor
@@ -25,7 +25,7 @@ fn under_budget(size: u64, cap: u64) -> bool:
 
 @layout_assert
 fn budget(report: ImageReport):
-    assert under_budget(size=report.code_size, cap=1500), "code budget is 1500 bytes"
+    assert under_budget(size=report.code_size, cap=400), "code budget is 400 bytes"
 
 @image
 pub fn build() -> Image:
