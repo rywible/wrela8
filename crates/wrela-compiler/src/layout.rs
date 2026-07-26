@@ -3048,6 +3048,22 @@ pub fn layout_program(
                         })?;
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                Reloc::TurnIdImm { word, key: fn_key } => {
+                    // plans/M10.md item 0c1: the same owner-resolution rule
+                    // as `TurnFrameAddr` above, stopping one step earlier —
+                    // at the index rather than the address it scales to.
+                    let id = placement
+                        .as_ref()
+                        .zip(runtime_live)
+                        .and_then(|(p, t)| p.turn_id_for(fn_key, t))
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: async fn `{fn_key}` needs a turn id but this \
+                                 image's runtime tables never sized one"
+                            ))
+                        })?;
+                    patch_load_imm_words(&mut all_code_words, base + word, id.get() as u64);
+                }
                 Reloc::GroupArenaBase { word } => {
                     let addr = placement.as_ref().map(|p| p.group_arena).ok_or_else(|| {
                         LayoutError::new(
@@ -3131,12 +3147,13 @@ pub fn layout_program(
                 Reloc::AbortVal { .. }
                 | Reloc::CheckpointService { .. }
                 | Reloc::TurnFrameAddr { .. }
+                | Reloc::TurnIdImm { .. }
                 | Reloc::GroupArenaBase { .. }
                 | Reloc::IrqVector { .. }
                 | Reloc::WakePending { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
-                         AbortVal/CheckpointService/TurnFrameAddr/GroupArenaBase/\
+                         AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/GroupArenaBase/\
                          IrqVector/WakePending reloc",
                     ));
                 }
@@ -3844,21 +3861,44 @@ pub struct RingAddrs {
     pub count: u64,
 }
 
-/// A reply slot: the destination turn-record address, then the reply word.
+/// A reply slot: the destination turn's own `TurnId` (a `u32`, plans/M10.md
+/// item 0c1 — the low half of word 0, whose upper half is unused padding),
+/// then the reply word. `REPLY_SLOT_SIZE` is unchanged by that item: an
+/// index is strictly narrower than the address it replaced.
 const REPLY_SLOT_SIZE: u64 = 16;
 
-/// plans/M8.md item C2, decision 30: the waker word a cross-core send
-/// carries has the **originating core + 1** in its top three bits, so a
-/// completing turn can tell a local waker (tag 0, every same-core send and
-/// every single-core image) from one whose turn record lives on another
-/// core. Guest-physical addresses are all below 2^31 in this machine's
-/// layout, so the top bits are free by construction; `+1` rather than the
-/// bare core index is what makes "no tag" and "from core 0" distinct.
-const WAKER_CORE_SHIFT: u8 = 61;
-const WAKER_CORE_MASK: u64 = 0b111u64 << WAKER_CORE_SHIFT;
+/// plans/M8.md item C2, decision 30 / plans/M10.md item 0c1, decision 557:
+/// the **originating core + 1**, so a completing turn can tell a local
+/// waker (0 — every same-core send and every single-core image) from one
+/// whose turn record lives on another core.
+///
+/// This used to be `(src_core + 1) << 61`, OR'd into the waker's own
+/// 64-bit turn-area address and masked back off with a `load_imm`+`bic`
+/// pair at every read. Item 0c1 splits that one word into two adjacent
+/// `u32` fields — `waker_turn` at `OFF_TURN_WAKER` and `waker_core` at
+/// `OFF_TURN_WAKER + 4` — so the core travels in its own field, in its own
+/// register (`x4` at the `rt_enqueue` ABI), and the untagging disappears
+/// entirely. `+1` rather than the bare core index is still what makes "no
+/// tag" and "from core 0" distinct, and it is the same `Option`-niche
+/// convention `TurnId` itself uses.
+fn waker_core_tag(src_core: usize) -> u16 {
+    (src_core as u16) + 1
+}
 
-fn waker_tag(src_core: usize) -> u64 {
-    ((src_core as u64) + 1) << WAKER_CORE_SHIFT
+/// The one index→address rule, emitted (plans/M10.md item 0c1): `id_reg`
+/// holds an `Option[TurnId]` already known nonzero, and comes back holding
+/// `turns_base + ((id - 1) << log2_stride)` — `RuntimePlacement::turn_addr`
+/// made of instructions. `scratch` is clobbered.
+///
+/// Two words of arithmetic past the base's own `load_imm`, not ROADMAP's
+/// "single shifted-register add": `encode::enc_add_reg` is shift-0 only and
+/// buying an `enc_add_reg_lsl` here would be an unmeasured optimization
+/// (CLAUDE.md's cleverness budget applies to the compiler too).
+fn push_turn_addr_from_id(a: &mut Asm, id_reg: u8, scratch: u8, turns_base: u64, log2_stride: u8) {
+    a.load_imm(scratch, turns_base);
+    a.push(encode::enc_sub_imm(id_reg, id_reg, 1, true));
+    a.push(encode::enc_lsl_imm(id_reg, id_reg, log2_stride, true));
+    a.push(encode::enc_add_reg(id_reg, scratch, id_reg, true));
 }
 
 /// plans/M8.md item C2: the reply ring was full. Unreachable by
@@ -5903,6 +5943,19 @@ impl RuntimePlacement {
         self.turns_base + (id.index() as u64) * self.turn_stride
     }
 
+    /// `log2(turn_stride)` — the shift `push_turn_addr_from_id` scales an
+    /// index by, and the whole reason item 0a made the stride a power of
+    /// two. `0` for an image with no turns, which then never indexes (no
+    /// `rt_*` routine is emitted at all).
+    pub fn log2_turn_stride(&self) -> u8 {
+        if self.turn_stride == 0 {
+            0
+        } else {
+            debug_assert!(self.turn_stride.is_power_of_two());
+            self.turn_stride.trailing_zeros() as u8
+        }
+    }
+
     /// The `TurnId` of async fn `key`'s turn (`turn_owner`'s own rule): an
     /// actor method's turn is its actor's; a messageable driver's `pub async
     /// fn` parks in the driver's one turn (plans/M8.md item D —
@@ -6072,18 +6125,21 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     }
 }
 
-/// `rt_enqueue_actor(x0=method_idx, x1=arg0, x2=arg1, x3=waker)
-/// -> x0 (0=admitted, 1=rejected — the `send`/call admission
+/// `rt_enqueue_actor(x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn,
+/// x4=waker_core) -> x0 (0=admitted, 1=rejected — the `send`/call admission
 /// outcome, 02 §9.4's `NotAdmitted`/`Rejected` path, the minimal
 /// encoding of it)`. Admission alone — never selection, never dispatch,
 /// never readiness: a bounded ring insert, FIFO by construction (always
 /// appended at `tail`, always drained from `head` by
 /// `rt_select_and_run`) — 04 §2's "admission occupies one logical
 /// mailbox slot until selection; selection is FIFO per mailbox by
-/// admission order". `waker` (the awaiting turn's own turn-area address,
-/// or 0 for a one-way `send`) is stored into the slot's second word and
-/// carried to selection, where the dispatched turn's completion delivers
-/// its reply there. Admission is deliberately independent of the
+/// admission order". The waker — plans/M10.md item 0c1: the awaiting
+/// turn's own **`Option[TurnId]`** in `x3` (0 for a one-way `send`) plus
+/// its `Option[CoreId]` in `x4` (0 = local), not the raw turn-area address
+/// with a core tag in its top bits that it used to be — is stored into the
+/// two `u32` halves of the slot's second word and carried to selection,
+/// where the dispatched turn's completion delivers its reply there.
+/// Admission is deliberately independent of the
 /// target's `busy` flag: a message to a busy(-suspended) actor QUEUES —
 /// decision 4's non-reentrancy lives entirely in selection, never here.
 /// A full ring (`count == capacity`) is rejected without touching
@@ -6102,7 +6158,7 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
 /// the slot, so this makes the two halves symmetric and removes the one
 /// raw address that crossed this call boundary.
 ///
-/// Register use (leaf fn, owns every register it touches, never `x0..x3`
+/// Register use (leaf fn, owns every register it touches, never `x0..x4`
 /// until the outcome/scratch reuse below): `x9`/`x10` = count addr/value,
 /// then reused as scratch after the branch; `x11` = capacity, then a
 /// scratch; `x12`/`x13` = tail addr/value; `x14`/`x15` = slot-size scratch,
@@ -6151,7 +6207,16 @@ pub fn build_ring_enqueue(
     a.push(encode::enc_add_reg(15, 15, 14, true));
 
     a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.method_idx = method_idx
-    a.push(encode::enc_str_x_imm(3, 15, 8)); // slot.waker = waker
+    // plans/M10.md item 0c1 (decision 557): the slot's one waker word is
+    // now two adjacent `u32` fields — `waker_turn` (an `Option[TurnId]`,
+    // `x3`) at +8 and `waker_core` (an `Option[CoreId]`, `x4`) at +12 —
+    // carried through to the selected turn's record at `OFF_TURN_WAKER`/
+    // `OFF_TURN_WAKER + 4` unchanged in shape. `slot_size` does not move:
+    // both fields live inside the word the tagged address occupied, which
+    // is the whole point of the two-`u32` encoding (a second 64-bit word
+    // would have cost 8 bytes on every mailbox slot image-wide).
+    a.push(encode::enc_str_w_imm(3, 15, 8)); // slot.waker_turn = w3
+    a.push(encode::enc_str_w_imm(4, 15, 12)); // slot.waker_core = w4
 
     // The arguments arrive **by value** in `x1`/`x2` (plans/M10.md item
     // D0, decision 610), so the store count is a build-time constant of
@@ -6239,7 +6304,7 @@ fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capaci
 
 /// plans/M8.md item C2: `__rt_xsend_<src>_<Actor>` — a **cross-core send**,
 /// with byte-for-byte the ABI `__rt_enqueue_<Actor>` has
-/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker -> x0` =
+/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn, x4=waker_core -> x0` =
 /// 0 admitted / 1 rejected). That identity is the whole design: codegen
 /// emits one symbolic call for every `send`/`await` and never learns
 /// whether the edge crosses a core, so 04 §3's "cross-core actor edges keep
@@ -6248,10 +6313,10 @@ fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capaci
 ///
 /// Three steps, in order:
 ///
-/// 1. **Tag the waker** with the sending core (`waker_tag`, decision 30) —
-///    skipped for `waker == 0`, a one-way `send`, which expects no reply.
-///    The tag is what lets the completing turn on the far core tell a local
-///    waker from one whose turn record lives back here.
+/// 1. **Tag the waker** with the sending core (`waker_core_tag`, decision
+///    30) — skipped for `waker_turn == 0`, a one-way `send`, which expects
+///    no reply. The tag is what lets the completing turn on the far core
+///    tell a local waker from one whose turn record lives back here.
 /// 2. **Enqueue into the request ring** — literally `build_ring_enqueue`,
 ///    the same routine a mailbox admission uses, against this edge's ring.
 ///    A full ring returns 1 and touches nothing, exactly as a full mailbox
@@ -6274,11 +6339,16 @@ fn build_rt_xsend(
     a.push(encode::enc_sub_imm(31, 31, 16, true));
     a.push(encode::enc_str_x_imm(30, 31, 0));
 
-    let skip_notag = a.skip_placeholder(); // cbz x3, .notag
-    a.load_imm(9, waker_tag(src_core));
-    a.push(encode::enc_orr_reg(3, 3, 9, true));
+    // plans/M10.md item 0c1: the tag is a whole field now, so "tagging" is
+    // one `movz` into `x4` instead of a `load_imm` of a shifted constant
+    // OR'd into the address in `x3`. `x3` (the `Option[TurnId]`) is left
+    // exactly as the caller passed it; a waker-less `send` (`w3 == 0`)
+    // leaves `x4` as the caller's own zero, so "no waker" stays a single
+    // zero test on one field.
+    let skip_notag = a.skip_placeholder(); // cbz w3, .notag
+    a.push(encode::enc_movz(4, waker_core_tag(src_core), 0, false));
     let notag = a.abs();
-    a.patch_cbz(skip_notag, 3);
+    a.patch_cbz_w(skip_notag, 3);
     debug_assert_eq!(notag, a.abs());
 
     a.bl_to(ring_enqueue_start);
@@ -6295,8 +6365,11 @@ fn build_rt_xsend(
     a
 }
 
-/// plans/M8.md item C2: `__rt_xreply_<src>_<dst>(x0 = destination turn-area
-/// address, x1 = reply word)` — the **reply half** of a cross-core edge.
+/// plans/M8.md item C2: `__rt_xreply_<src>_<dst>(x0 = destination
+/// `TurnId`, x1 = reply word)` — the **reply half** of a cross-core edge.
+/// plans/M10.md item 0c1 moved `x0` from a raw turn-area address to the
+/// index: this routine never dereferences it, it only publishes it into a
+/// slot the destination core's own drain reads.
 /// A reply is an edge in the other direction and travels the same way a
 /// request does: a bounded ring plus a wake, never a store straight into
 /// another core's turn record.
@@ -6330,8 +6403,12 @@ fn build_rt_xreply(addrs: &RingAddrs, capacity: u64, dst_core: usize, start: usi
     a.push(encode::enc_mul(14, 13, 14, true));
     a.load_imm(15, addrs.ring);
     a.push(encode::enc_add_reg(15, 15, 14, true));
-    a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.turn_area = x0
-    a.push(encode::enc_str_x_imm(1, 15, 8)); // slot.reply     = x1
+    // plans/M10.md item 0c1: word 0 is the destination turn's `TurnId`, a
+    // `u32` — no core field beside it, because a reply ring's consumer *is*
+    // the destination core by construction (`RingLayout::dst`). The upper
+    // half of the word is unused padding; `REPLY_SLOT_SIZE` is unchanged.
+    a.push(encode::enc_str_w_imm(0, 15, 0)); // slot.turn = w0 (TurnId)
+    a.push(encode::enc_str_x_imm(1, 15, 8)); // slot.reply = x1
 
     push_ring_advance(&mut a, 13, 12, addrs.tail, capacity);
 
@@ -6403,6 +6480,13 @@ pub fn build_rt_select_and_run(
     slot_size: u64,
     dispatch: &[(usize, bool)],
     frame_area_size: u64,
+    // plans/M10.md item 0c1: the turn array's own base and log2 stride —
+    // the two build-time constants `push_turn_addr_from_id` needs to turn
+    // the `Option[TurnId]` a waker now is back into an address. For a real
+    // image these are `RuntimePlacement::turns_base` /
+    // `log2_turn_stride()`; a JIT/HVF harness passes its own stand-in pair.
+    turns_base: u64,
+    log2_stride: u8,
     start: usize,
 ) -> Vec<u32> {
     let colors: Vec<(bool, bool)> = dispatch
@@ -6416,6 +6500,8 @@ pub fn build_rt_select_and_run(
         &colors,
         frame_area_size,
         &[],
+        turns_base,
+        log2_stride,
         start,
         |a, idx| a.bl_to(dispatch[idx].0),
     )
@@ -6442,6 +6528,8 @@ fn build_rt_select_and_run_symbolic(
     // and for every actor no other core sends to — such an actor's
     // delivery path keeps its pre-C2 bytes exactly.
     xreply: &[(usize, usize)],
+    turns_base: u64,
+    log2_stride: u8,
     start: usize,
 ) -> Asm {
     let colors: Vec<(bool, bool)> = dispatch
@@ -6455,6 +6543,8 @@ fn build_rt_select_and_run_symbolic(
         &colors,
         frame_area_size,
         xreply,
+        turns_base,
+        log2_stride,
         start,
         |a, idx| a.bl_call_key(&dispatch[idx].0),
     )
@@ -6489,6 +6579,9 @@ fn build_rt_select_and_run_core(
     // means "no cross-core waker can reach this actor" and emits not one
     // extra instruction.
     xreply: &[(usize, usize)],
+    // plans/M10.md item 0c1: see `build_rt_select_and_run`.
+    turns_base: u64,
+    log2_stride: u8,
     start: usize,
     mut call_dispatch: impl FnMut(&mut Asm, usize),
 ) -> Asm {
@@ -6569,10 +6662,17 @@ fn build_rt_select_and_run_core(
     a.push(encode::enc_add_reg(13, 9, 13, true)); // x13 = slot addr
 
     a.push(encode::enc_ldr_x_imm(15, 13, 0)); // x15 = method_idx
-    a.push(encode::enc_ldr_x_imm(10, 13, 8)); // x10 = waker
+    // plans/M10.md item 0c1: the slot's waker word is two `u32` fields —
+    // `waker_turn` at +8, `waker_core` at +12 — copied field-for-field into
+    // the turn record's own pair at `OFF_TURN_WAKER`/`+4`. `ldr w`, never
+    // `ldr x`: an `x` load here would fold the core into the index's high
+    // bits and reinvent the tagging this item deleted.
+    a.push(encode::enc_ldr_w_imm(10, 13, 8)); // w10 = waker_turn
+    a.push(encode::enc_ldr_w_imm(14, 13, 12)); // w14 = waker_core
     a.load_imm(9, addrs.turn);
     a.push(encode::enc_str_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16));
-    a.push(encode::enc_str_x_imm(10, 9, OFF_TURN_WAKER as u16));
+    a.push(encode::enc_str_w_imm(10, 9, OFF_TURN_WAKER as u16));
+    a.push(encode::enc_str_w_imm(14, 9, OFF_TURN_WAKER as u16 + 4));
     // plans/M6.md item F: a freshly selected turn starts with *no* ambient
     // lineage (02-language.md §9.5 — a message carries no group; a turn's
     // lineage is its own task root's, and an actor turn's root is the
@@ -6655,15 +6755,33 @@ fn build_rt_select_and_run_core(
             // record's own (stored at fresh selection, still there on a
             // resume — it is only cleared at delivery), and the parked
             // caller wrote `OFF_TURN_REPLY_SLOT` immediately before
-            // enqueueing this very message. `x9`/`x10` only: `x0` (self),
+            // enqueueing this very message. `x9`..`x13` only: `x0` (self),
             // `x1`/`x2` (args) and `x15` (method index) are all live
             // across this preamble.
+            //
+            // plans/M10.md item 0c1 (decision 565): two index→address
+            // conversions, because neither word is an address any more.
+            // The waker is an `Option[TurnId]`, and `OFF_TURN_REPLY_SLOT`
+            // is a `(TurnId, byte offset within that turn area)` pair — a
+            // frame-interior reference, whose offset is the *caller's*
+            // per-fn `Frame::reply_stage_off` and so cannot be recovered
+            // from an index alone.
             a.load_imm(9, addrs.turn);
-            a.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_WAKER as u16));
-            let skip_have_waker = a.skip_placeholder(); // cbnz x10, .have_waker
+            a.push(encode::enc_ldr_w_imm(10, 9, OFF_TURN_WAKER as u16));
+            let skip_have_waker = a.skip_placeholder(); // cbnz w10, .have_waker
             a.push(encode::enc_brk(BRK_REPLY_SLOT_NO_WAKER));
-            a.patch_cbnz(skip_have_waker, 10);
-            a.push(encode::enc_ldr_x_imm(8, 10, OFF_TURN_REPLY_SLOT as u16));
+            a.patch_cbnz_w(skip_have_waker, 10);
+            // x10 = the waker's own turn area.
+            push_turn_addr_from_id(&mut a, 10, 11, turns_base, log2_stride);
+            a.push(encode::enc_ldr_w_imm(8, 10, OFF_TURN_REPLY_SLOT as u16));
+            a.push(encode::enc_ldr_w_imm(
+                11,
+                10,
+                OFF_TURN_REPLY_SLOT as u16 + 4,
+            ));
+            // x8 = that turn area + the staging slot's own interior offset.
+            push_turn_addr_from_id(&mut a, 8, 12, turns_base, log2_stride);
+            a.push(encode::enc_add_reg(8, 8, 11, true));
         }
         call_dispatch(&mut a, idx);
         if is_async {
@@ -6728,25 +6846,28 @@ fn build_rt_select_and_run_core(
     }
     debug_assert_eq!(deliver, a.abs());
     a.load_imm(10, addrs.turn);
-    a.push(encode::enc_ldr_x_imm(11, 10, OFF_TURN_WAKER as u16));
-    let skip_no_waker = a.skip_placeholder(); // cbz x11, .no_waker
-    // plans/M8.md item C2: a waker whose top bits carry a core tag
+    a.push(encode::enc_ldr_w_imm(11, 10, OFF_TURN_WAKER as u16));
+    let skip_no_waker = a.skip_placeholder(); // cbz w11, .no_waker
+    // plans/M8.md item C2: a waker whose `waker_core` field is nonzero
     // (decision 30) names a turn record on **another** core, so its reply
     // goes back the way the request came — over that core pair's own reply
     // ring — instead of being stored straight into a remote turn record.
     // Emitted only for an actor that a cross-core edge can actually reach;
     // every single-core image, and every actor no other core messages,
     // keeps the untouched two-store delivery below, word for word.
+    //
+    // plans/M10.md item 0c1: the core is its own `u32` field at
+    // `OFF_TURN_WAKER + 4`, so this is one `ldr w` and a `cbz w` — the
+    // `lsr`/`load_imm`/`bic` untag chain is gone, and `x11` stays a pure
+    // `TurnId` all the way to the remote arm's `x0`.
     let mut to_after_remote: Vec<usize> = Vec::new();
     if !xreply.is_empty() {
-        a.push(encode::enc_lsr_imm(13, 11, WAKER_CORE_SHIFT, true));
-        let skip_local = a.skip_placeholder(); // cbz x13, .local
-        a.load_imm(12, WAKER_CORE_MASK);
-        a.push(encode::enc_bic_reg(11, 11, 12, true)); // untag
+        a.push(encode::enc_ldr_w_imm(13, 10, OFF_TURN_WAKER as u16 + 4));
+        let skip_local = a.skip_placeholder(); // cbz w13, .local
         for (remote_core, routine) in xreply {
-            a.push(encode::enc_cmp_imm(13, (*remote_core as u16) + 1, true));
+            a.push(encode::enc_cmp_imm(13, (*remote_core as u16) + 1, false));
             let skip_arm = a.skip_placeholder(); // b.ne .next_arm
-            a.push(encode::enc_mov_reg(0, 11, true)); // x0 = turn area
+            a.push(encode::enc_mov_reg(0, 11, false)); // w0 = waker TurnId
             a.push(encode::enc_mov_reg(1, 9, true)); // x1 = reply
             a.bl_to(*routine);
             to_after_remote.push(a.skip_placeholder()); // b .after_remote
@@ -6756,14 +6877,17 @@ fn build_rt_select_and_run_core(
         }
         a.push(encode::enc_brk(BRK_XREPLY_UNKNOWN_CORE));
         let local = a.abs();
-        a.patch_cbz(skip_local, 13);
+        a.patch_cbz_w(skip_local, 13);
         debug_assert_eq!(local, a.abs());
     }
+    // .local: the one deref of a local waker — index→address, then the two
+    // stores exactly as they were.
+    push_turn_addr_from_id(&mut a, 11, 12, turns_base, log2_stride);
     a.push(encode::enc_str_x_imm(9, 11, OFF_TURN_REPLY as u16));
     a.push(encode::enc_movz(12, 1, 0, true));
     a.push(encode::enc_str_x_imm(12, 11, OFF_TURN_RESUME_READY as u16));
     let no_waker = a.abs();
-    a.patch_cbz(skip_no_waker, 11);
+    a.patch_cbz_w(skip_no_waker, 11);
     for m in &to_after_remote {
         let this = a.start + m;
         let delta = (no_waker as i64 - this as i64) * 4;
@@ -6776,7 +6900,12 @@ fn build_rt_select_and_run_core(
         a.load_imm(10, addrs.turn);
     }
     a.push(encode::enc_str_x_imm(31, 10, 0)); // busy = 0 (xzr)
-    a.push(encode::enc_str_x_imm(31, 10, OFF_TURN_WAKER as u16)); // waker = 0 (hygiene)
+    // waker = 0 (hygiene). Deliberately still ONE 64-bit `str xzr`: the two
+    // `u32` fields plans/M10.md item 0c1 introduced (`waker_turn` at +32,
+    // `waker_core` at +36) are the two halves of exactly this word, so one
+    // store clears both. Two `str wzr` would be two words to say the same
+    // thing, and `None` is 0 for both fields by the same niche convention.
+    a.push(encode::enc_str_x_imm(31, 10, OFF_TURN_WAKER as u16));
     a.push(encode::enc_movz(0, 1, 0, true)); // ran a turn(-slice)
 
     // --- .epilogue (every exit; x0 already holds the report) -----------
@@ -6923,6 +7052,10 @@ fn build_rt_drain(
     request_lanes: &[(RingAddrs, u64, u64, usize)],
     // (ring addrs, capacity)
     reply_lanes: &[(RingAddrs, u64)],
+    // plans/M10.md item 0c1: see `build_rt_select_and_run`. The reply lane
+    // is the one place this routine dereferences a `TurnId`.
+    turns_base: u64,
+    log2_stride: u8,
     start: usize,
 ) -> Asm {
     use crate::codegen::{OFF_TURN_REPLY, OFF_TURN_RESUME_READY};
@@ -6947,8 +7080,13 @@ fn build_rt_drain(
         a.push(encode::enc_mul(12, 11, 12, true));
         a.load_imm(13, addrs.ring);
         a.push(encode::enc_add_reg(13, 13, 12, true));
-        a.push(encode::enc_ldr_x_imm(14, 13, 0)); // destination turn area
+        // plans/M10.md item 0c1: word 0 is the destination `TurnId`, a
+        // `u32`; `x12` (the slot offset, dead from here) is the scratch the
+        // index→address block borrows, and `push_ring_advance` below
+        // reloads it anyway.
+        a.push(encode::enc_ldr_w_imm(14, 13, 0)); // destination TurnId
         a.push(encode::enc_ldr_x_imm(15, 13, 8)); // reply word
+        push_turn_addr_from_id(&mut a, 14, 12, turns_base, log2_stride);
         a.push(encode::enc_str_x_imm(15, 14, OFF_TURN_REPLY as u16));
         a.push(encode::enc_movz(16, 1, 0, true));
         a.push(encode::enc_str_x_imm(16, 14, OFF_TURN_RESUME_READY as u16));
@@ -6993,7 +7131,12 @@ fn build_rt_drain(
         a.load_imm(13, addrs.ring);
         a.push(encode::enc_add_reg(13, 13, 12, true));
         a.push(encode::enc_ldr_x_imm(0, 13, 0)); // method_idx
-        a.push(encode::enc_ldr_x_imm(3, 13, 8)); // waker (core-tagged)
+        // plans/M10.md item 0c1: the waker travels as two `u32` fields, and
+        // BOTH must be reloaded on every lap — `x4` left stale from a
+        // previous lane would deliver this message's reply to the wrong
+        // core, which is the one new failure mode the `x4` ABI introduces.
+        a.push(encode::enc_ldr_w_imm(3, 13, 8)); // waker_turn
+        a.push(encode::enc_ldr_w_imm(4, 13, 12)); // waker_core
         // Absent argument registers are zeroed rather than left holding
         // whatever the drain loop last put there: the destination
         // mailbox's slot may be wider than this ring's, in which case the
@@ -7389,6 +7532,8 @@ fn build_runtime_glue_block(
             dispatch_keys,
             *frame_size,
             xreply,
+            placement.turns_base,
+            placement.log2_turn_stride(),
             select_start,
         );
         cursor += select_asm.words.len();
@@ -7448,7 +7593,14 @@ fn build_runtime_glue_block(
             })
             .collect();
         let start_here = cursor;
-        let asm = build_rt_drain(core, &resolved, reps, start_here);
+        let asm = build_rt_drain(
+            core,
+            &resolved,
+            reps,
+            placement.turns_base,
+            placement.log2_turn_stride(),
+            start_here,
+        );
         cursor += asm.words.len();
         drain_starts.insert(core, start_here);
         asms.push(asm);
@@ -8454,6 +8606,26 @@ impl Asm {
         let this = self.start + marker;
         let delta = (target as i64 - this as i64) * 4;
         self.words[marker] = encode::enc_cbnz(reg, delta as i32, true);
+    }
+
+    /// The 32-bit forms, for the `u32` fields plans/M10.md item 0c1
+    /// introduced (`waker_turn`/`waker_core`, a reply-ring slot's
+    /// destination `TurnId`). `cbz w`/`cbnz w` tests exactly the four bytes
+    /// the field occupies — an `x` test here would fold the *adjacent*
+    /// field in as high bits, which is precisely the confusion decision
+    /// 557's two-`u32` encoding exists to avoid.
+    fn patch_cbz_w(&mut self, marker: usize, reg: u8) {
+        let target = self.abs();
+        let this = self.start + marker;
+        let delta = (target as i64 - this as i64) * 4;
+        self.words[marker] = encode::enc_cbz(reg, delta as i32, false);
+    }
+
+    fn patch_cbnz_w(&mut self, marker: usize, reg: u8) {
+        let target = self.abs();
+        let this = self.start + marker;
+        let delta = (target as i64 - this as i64) * 4;
+        self.words[marker] = encode::enc_cbnz(reg, delta as i32, false);
     }
 }
 
@@ -9780,6 +9952,26 @@ pub fn layout_test_image(
             ))
         })
     };
+    // plans/M10.md item 0c1: the same resolution one step earlier — the
+    // `TurnId` itself, for a `Reloc::TurnIdImm`. Same unreachability
+    // argument as `turn_area_addr` above, since `turn_area_for` *is*
+    // `turn_id_for` scaled by the stride.
+    let turn_id_imm = |key: &str| -> Result<u64, LayoutError> {
+        let (Some(tables), Some(placement)) = (&runtime_tables, &real_placement) else {
+            return Err(LayoutError::new(format!(
+                "internal error: async fn `{key}` needs a turn id but this image has no \
+                 runtime tables"
+            )));
+        };
+        placement
+            .turn_id_for(key, tables)
+            .map(|id| id.get() as u64)
+            .ok_or_else(|| {
+                LayoutError::new(format!(
+                    "internal error: async fn `{key}`'s own turn id was never sized"
+                ))
+            })
+    };
 
     let mut sections = vec![
         Section {
@@ -9871,12 +10063,13 @@ pub fn layout_test_image(
             Reloc::AbortFixed { .. }
             | Reloc::AbortVal { .. }
             | Reloc::CheckpointService { .. }
+            | Reloc::TurnIdImm { .. }
             | Reloc::GroupArenaBase { .. }
             | Reloc::IrqVector { .. }
             | Reloc::WakePending { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit an \
-                     AbortFixed/AbortVal/CheckpointService/GroupArenaBase/IrqVector/\
+                     AbortFixed/AbortVal/CheckpointService/TurnIdImm/GroupArenaBase/IrqVector/\
                      WakePending reloc",
                 ));
             }
@@ -9948,6 +10141,13 @@ pub fn layout_test_image(
                     // area's real `rtdata` address.
                     let addr = turn_area_addr(fn_key)?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                Reloc::TurnIdImm { word, key: fn_key } => {
+                    // plans/M10.md item 0c1: this turn's own `TurnId`, as
+                    // the waker of every message it awaits and as the owner
+                    // half of its `OFF_TURN_REPLY_SLOT` pair.
+                    let id = turn_id_imm(fn_key)?;
+                    patch_load_imm_words(&mut code_words, base + word, id);
                 }
                 Reloc::GroupArenaBase { word } => {
                     let addr = real_placement
@@ -11550,11 +11750,13 @@ mod harness_jit {
             f()
         }
 
-        fn call4_at(&self, byte_offset: usize, a0: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+        /// plans/M10.md item 0c1: `rt_enqueue`'s ABI grew an `x4`
+        /// (`Option[CoreId]`), so the admission tests need five arguments.
+        fn call5_at(&self, byte_offset: usize, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
             assert!(byte_offset < self.len);
-            let f: extern "C" fn(u64, u64, u64, u64) -> u64 =
+            let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
                 unsafe { std::mem::transmute(self.ptr.add(byte_offset)) };
-            f(a0, a1, a2, a3)
+            f(a0, a1, a2, a3, a4)
         }
     }
 
@@ -11889,7 +12091,7 @@ mod harness_jit {
     // park-and-resume fn contract (`codegen::OFF_TURN_*`) by hand.
 
     use crate::codegen::{
-        OFF_TURN_BUSY, OFF_TURN_REPLY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED, TURN_RECORD_SIZE,
+        OFF_TURN_BUSY, OFF_TURN_REPLY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED,
         TURN_STATUS_COMPLETED, TURN_STATUS_SUSPENDED,
     };
 
@@ -11913,6 +12115,17 @@ mod harness_jit {
     }
 
     impl ActorFixture {
+        /// plans/M10.md item 0c1: a stand-in two-element turn array —
+        /// element 0 is the actor's own turn, element 1 the waker record —
+        /// at a power-of-two stride, exactly the shape
+        /// `place_runtime_tables` lays down. `Reloc`-free: these tests hand
+        /// the base and log2 stride straight to `build_rt_select_and_run`.
+        const TURN_STRIDE: u64 = 64;
+        const LOG2_TURN_STRIDE: u8 = 6;
+        /// The waker's own `TurnId` — 1-based, so element 1 is id 2. This is
+        /// what an admission now passes in `x3`, in place of the address.
+        const WAKER_ID: u64 = 2;
+
         fn new(capacity: u64, slot_size: u64) -> ActorFixture {
             let state_size: u64 = 8;
             let ram = HostRam::new(4096);
@@ -11927,8 +12140,16 @@ mod harness_jit {
                 count: head + 16,
                 turn: head + 24,
             };
-            let waker = addrs.turn + TURN_RECORD_SIZE + 64; // detached record, well past the turn area
+            // Turn-array element 1 (`WAKER_ID`), one stride past the
+            // actor's own — a detached record past the turn area proper
+            // (`TURN_RECORD_SIZE` is 56, the stride 64).
+            let waker = addrs.turn + Self::TURN_STRIDE;
             ActorFixture { ram, addrs, waker }
+        }
+
+        /// The turn array's base — element 0 is this actor's own turn.
+        fn turns_base(&self) -> u64 {
+            self.addrs.turn
         }
 
         fn rel(&self, addr: u64) -> u64 {
@@ -11965,6 +12186,8 @@ mod harness_jit {
             slot_size,
             &[(method0_start, false), (method1_start, false)],
             crate::codegen::TURN_RECORD_SIZE,
+            f.turns_base(),
+            ActorFixture::LOG2_TURN_STRIDE,
             select_start,
         ));
 
@@ -11976,12 +12199,12 @@ mod harness_jit {
         // item D0, decision 610); this slot is 24 bytes, so only `x1` is
         // stored.
         assert_eq!(
-            page.call4_at(enqueue_off, 0, 10, 0, f.waker),
+            page.call5_at(enqueue_off, 0, 10, 0, ActorFixture::WAKER_ID, 0),
             0,
             "first enqueue admitted"
         );
         assert_eq!(
-            page.call4_at(enqueue_off, 1, 20, 0, f.waker),
+            page.call5_at(enqueue_off, 1, 20, 0, ActorFixture::WAKER_ID, 0),
             0,
             "second enqueue admitted"
         );
@@ -11991,7 +12214,7 @@ mod harness_jit {
         // (02 §9.4: an outcome that did not consume arguments hands them
         // back — the minimal encoding is simply "never mutated").
         assert_eq!(
-            page.call4_at(enqueue_off, 0, 30, 0, f.waker),
+            page.call5_at(enqueue_off, 0, 30, 0, ActorFixture::WAKER_ID, 0),
             1,
             "ring full -> rejected"
         );
@@ -12058,14 +12281,16 @@ mod harness_jit {
             slot_size,
             &[(method0_start, false)],
             crate::codegen::TURN_RECORD_SIZE,
+            f.turns_base(),
+            ActorFixture::LOG2_TURN_STRIDE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
 
         assert_eq!(
-            page.call4_at(enqueue_start * 4, 0, 7, 0, 0),
+            page.call5_at(enqueue_start * 4, 0, 7, 0, 0, 0),
             0,
-            "send admitted (waker = 0)"
+            "send admitted (waker_turn = 0)"
         );
         assert_eq!(page.call0_at(select_start * 4), 1, "the send's turn ran");
         assert_eq!(
@@ -12100,6 +12325,8 @@ mod harness_jit {
             slot_size,
             &[(method0_start, false)],
             crate::codegen::TURN_RECORD_SIZE,
+            f.turns_base(),
+            ActorFixture::LOG2_TURN_STRIDE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
@@ -12127,7 +12354,9 @@ mod harness_jit {
         let addrs = f.addrs;
         // Hand-seed one message (method 0, waker = the stand-in record).
         f.write(addrs.ring, 0);
-        f.write(addrs.ring + 8, f.waker);
+        // plans/M10.md item 0c1: the slot's waker word is
+        // `(waker_turn: u32, waker_core: u32)` — id 2, core 0 (local).
+        f.write(addrs.ring + 8, ActorFixture::WAKER_ID);
         f.write(addrs.tail, 1);
         f.write(addrs.count, 1);
 
@@ -12145,6 +12374,8 @@ mod harness_jit {
             slot_size,
             &[(method0_start, false)],
             crate::codegen::TURN_RECORD_SIZE,
+            f.turns_base(),
+            ActorFixture::LOG2_TURN_STRIDE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
@@ -12215,12 +12446,14 @@ mod harness_jit {
             slot_size,
             &[(method0_start, true)],
             crate::codegen::TURN_RECORD_SIZE,
+            f.turns_base(),
+            ActorFixture::LOG2_TURN_STRIDE,
             select_start,
         ));
         let page = ExecPage::new(&combined);
 
         assert_eq!(
-            page.call4_at(enqueue_start * 4, 0, 0, 0, f.waker),
+            page.call5_at(enqueue_start * 4, 0, 0, 0, ActorFixture::WAKER_ID, 0),
             0,
             "admitted"
         );
@@ -12280,13 +12513,20 @@ mod harness_jit {
         let a0 = region(0);
         let a1 = region(1);
         let cursor_addr = base + 4096 - 8;
-        let waker0 = base + 2048;
-        let waker1 = base + 2048 + 128;
+        // plans/M10.md item 0c1: a stand-in two-element turn array holding
+        // the two waker records — element 0 (`TurnId` 1) and element 1
+        // (`TurnId` 2), at a power-of-two stride. The actors' own turn areas
+        // are addressed as build-time constants and need not be in it.
+        const LOG2_TURN_STRIDE: u8 = 7;
+        let turns_base = base + 2048;
+        let waker0 = turns_base;
+        let waker1 = turns_base + (1 << LOG2_TURN_STRIDE);
 
-        // Hand-seed one no-arg message per actor.
-        for (a, w) in [(a0, waker0), (a1, waker1)] {
+        // Hand-seed one no-arg message per actor. The slot's waker word is
+        // `(waker_turn: u32, waker_core: u32)`; both cores are 0 (local).
+        for (a, id) in [(a0, 1u64), (a1, 2u64)] {
             ram.write_u64(a.ring - base, 0);
-            ram.write_u64(a.ring + 8 - base, w);
+            ram.write_u64(a.ring + 8 - base, id);
             ram.write_u64(a.tail - base, 1);
             ram.write_u64(a.count - base, 1);
         }
@@ -12306,6 +12546,8 @@ mod harness_jit {
             slot_size,
             &[(m0_start, false)],
             crate::codegen::TURN_RECORD_SIZE,
+            turns_base,
+            LOG2_TURN_STRIDE,
             sel0_start,
         ));
         let sel1_start = combined.len();
@@ -12315,6 +12557,8 @@ mod harness_jit {
             slot_size,
             &[(m1_start, false)],
             crate::codegen::TURN_RECORD_SIZE,
+            turns_base,
+            LOG2_TURN_STRIDE,
             sel1_start,
         ));
         let run_one_start = combined.len();

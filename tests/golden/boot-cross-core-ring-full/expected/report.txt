@@ -17,18 +17,18 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=1500
-  Section name=rodata base=0x40500630 size=242
-  Section name=abort base=0x40500724 size=120
-  Section name=checkpoint base=0x4050079c size=104
-  Section name=rtcode base=0x40500804 size=2256
-  Section name=rtdata base=0x405010d8 size=1240
+  Section name=code base=0x40500050 size=1532
+  Section name=rodata base=0x40500650 size=242
+  Section name=abort base=0x40500744 size=120
+  Section name=checkpoint base=0x405007bc size=104
+  Section name=rtcode base=0x40500824 size=2296
+  Section name=rtdata base=0x40501120 size=1240
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40500fc8
-  CoreEntry core=2 base=0x40501030
+  CoreEntry core=1 base=0x40501010
+  CoreEntry core=2 base=0x40501078
   Actor name=Tally mailbox=1 slot=24 frame=56 state=8
   Turn fn=ring_full_rejects frame=472
-  Ring kind=request src=0 dst=1 target=Tally cap=1 slot=24 bytes=48 base=0x40501558
-  Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40 base=0x40501588
+  Ring kind=request src=0 dst=1 target=Tally cap=1 slot=24 bytes=48 base=0x405015a0
+  Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40 base=0x405015d0
   Turns count=2 stride=512 bytes=1024
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1240

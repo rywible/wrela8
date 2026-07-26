@@ -3211,6 +3211,10 @@ mod tests {
         // is private to that crate — not worth exposing for one test).
         fn build_entry(
             sp_top: u64,
+            // plans/M10.md item 0c1: the admission names the waker by its
+            // `TurnId`; reading the delivered reply back out still needs the
+            // record's address, so the entry carries both.
+            waker_id: u64,
             waker_addr: u64,
             enqueue_word_idx: usize,
             select_word_idx: usize,
@@ -3225,7 +3229,11 @@ mod tests {
                 w.push(encode::enc_movz(0, method_idx, 0, true));
                 w.extend(load_imm_words(1, value));
                 w.push(encode::enc_mov_reg(2, 31, true)); // mov x2, xzr
-                w.extend(load_imm_words(3, waker_addr));
+                // plans/M10.md item 0c1: the waker is `(x3 = Option[TurnId],
+                // x4 = Option[CoreId])`, not a turn-area address. Core 0 is
+                // local here, so `x4 = 0`.
+                w.extend(load_imm_words(3, waker_id));
+                w.extend(load_imm_words(4, 0));
                 let this = w.len();
                 let delta = (enqueue_word_idx as i64 - this as i64) * 4;
                 w.push(encode::enc_bl(delta as i32));
@@ -3265,7 +3273,14 @@ mod tests {
 
         // Pass 1: placeholder indices, to learn `entry`'s own word count
         // (length is provably addr-value-independent, module doc above).
-        let entry_len = build_entry(sp_top, 0, 0, 0).len();
+        let entry_len = build_entry(sp_top, 0, 0, 0, 0).len();
+        // plans/M10.md item 0c1: a stand-in two-element turn array — the
+        // actor's own turn at element 0, the waker record at element 1 —
+        // at a power-of-two stride, the shape `place_runtime_tables` lays
+        // down. `WAKER_ID` is 1-based, so element 1 is id 2.
+        const LOG2_TURN_STRIDE: u8 = 6;
+        const TURN_STRIDE: u64 = 1 << LOG2_TURN_STRIDE;
+        const WAKER_ID: u64 = 2;
         let placeholder = ActorAddrs {
             state: 0,
             ring: 0,
@@ -3281,6 +3296,8 @@ mod tests {
             slot_size,
             &[(0, false), (0, false)],
             wrela_compiler::codegen::TURN_RECORD_SIZE,
+            0,
+            LOG2_TURN_STRIDE,
             0,
         )
         .len();
@@ -3300,12 +3317,18 @@ mod tests {
             count: rtdata_base + state_size + capacity * slot_size + 16,
             turn: rtdata_base + state_size + capacity * slot_size + 24,
         };
-        let turn_area_end = addrs.turn + wrela_compiler::codegen::TURN_RECORD_SIZE;
-        let waker_addr = turn_area_end; // a detached stand-in waker record
+        let turns_base = addrs.turn; // element 0 is the actor's own turn
+        let waker_addr = turns_base + TURN_STRIDE; // element 1 (`WAKER_ID`)
         let rtdata_bytes =
             (waker_addr + wrela_compiler::codegen::TURN_RECORD_SIZE - rtdata_base) as usize;
 
-        let entry = build_entry(sp_top, waker_addr, enqueue_word_idx, select_word_idx);
+        let entry = build_entry(
+            sp_top,
+            WAKER_ID,
+            waker_addr,
+            enqueue_word_idx,
+            select_word_idx,
+        );
         assert_eq!(
             entry.len(),
             entry_len,
@@ -3318,6 +3341,8 @@ mod tests {
             slot_size,
             &[(method0_word_idx, false), (method1_word_idx, false)],
             wrela_compiler::codegen::TURN_RECORD_SIZE,
+            turns_base,
+            LOG2_TURN_STRIDE,
             select_word_idx,
         );
 
@@ -3385,6 +3410,8 @@ mod tests {
             w.extend(load_imm_words(1, 0));
             w.extend(load_imm_words(2, 0));
             w.extend(load_imm_words(3, 0));
+            // plans/M10.md item 0c1: `x4 = Option[CoreId]`, 0 = local.
+            w.extend(load_imm_words(4, 0));
             let this = w.len();
             let delta = (enqueue_word_idx as i64 - this as i64) * 4;
             w.push(encode::enc_bl(delta as i32));
@@ -3404,6 +3431,10 @@ mod tests {
         }
 
         let entry_len = build_entry(0, 0, 0).len();
+        // plans/M10.md item 0c1: this test's one admission is waker-less
+        // (`x3 = 0`), so nothing ever indexes the turn array; the stride is
+        // still needed to build the routine at all.
+        const LOG2_TURN_STRIDE: u8 = 6;
         let placeholder = ActorAddrs {
             state: 0,
             ring: 0,
@@ -3419,6 +3450,8 @@ mod tests {
             slot_size,
             &[(0, false)],
             wrela_compiler::codegen::TURN_RECORD_SIZE,
+            0,
+            LOG2_TURN_STRIDE,
             0,
         )
         .len();
@@ -3449,6 +3482,8 @@ mod tests {
             slot_size,
             &[(method0_word_idx, false)],
             wrela_compiler::codegen::TURN_RECORD_SIZE,
+            addrs.turn,
+            LOG2_TURN_STRIDE,
             select_word_idx,
         );
 

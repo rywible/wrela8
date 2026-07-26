@@ -461,6 +461,22 @@ pub enum Reloc {
     /// actor) or the fn's own dedicated free-turn area (every other
     /// async fn — `@test(runtime)` roots foremost).
     TurnFrameAddr { word: usize, key: String },
+    /// plans/M10.md item 0c1 (decisions 557/567): the four-word `load_imm`
+    /// starting at `word` materializes the **`TurnId`** of the turn area
+    /// `key` owns — the 1-based index of its element in the one contiguous
+    /// `RT.turns` array, not its address. Identical shape and resolution to
+    /// `TurnFrameAddr` above (same `key`, same `RuntimePlacement`
+    /// owner-resolution rule, via `turn_id_for` rather than
+    /// `turn_area_for`), and deliberately a fixed 4-word `load_imm` like
+    /// every other relocated constant even though the value fits in one
+    /// `movz`: the two-pass sizing this module and `layout.rs` both run
+    /// depends on a reloc's width being independent of its value.
+    ///
+    /// Codegen only ever *stores* or *compares* a `TurnId`; it never
+    /// dereferences one (only `layout.rs`'s hand-assembled routines do,
+    /// through `push_turn_addr_from_id`), which is why no `TurnsBase`
+    /// companion reloc is needed.
+    TurnIdImm { word: usize, key: String },
     /// The four-word `load_imm` starting at `word` materializes the
     /// absolute base address of the whole-image group arena (plans/M6.md
     /// item F, `layout::RuntimeTables::group_arena_capacity`-many
@@ -5114,27 +5130,52 @@ const RT_ENQUEUE_PREFIX: &str = "rt_enqueue ";
 //   +24 reply         the delivered scalar reply value (read by the fn's
 //                     own per-await resume stub, composed into
 //                     `Ok(reply)` there).
-//   +32 waker         the turn area address of whichever turn awaits
-//                     THIS turn's completion (0 = none: a `send`, or the
-//                     root). The waker is the suspended turn's identity:
-//                     at M6 turn identity and turn-area address are in
-//                     static bijection (one area per entity, all placed
-//                     at build time), so the address itself is the
-//                     dumbest correct representation — an index would
-//                     need a runtime index->address table nothing else
-//                     requires. Recorded in the ledger clause.
+//   +32 waker_turn    `Option[TurnId]` (a `u32`): which turn awaits THIS
+//                     turn's completion, as its 1-based index into the one
+//                     contiguous `RT.turns` array — 0 = none (a `send`, or
+//                     the root). plans/M10.md item 0c1, decisions 557/567:
+//                     this used to be the waker's turn-area *address*, with
+//                     `(src_core + 1) << 61` OR'd into its top three bits,
+//                     untagged with a `load_imm`+`bic` pair at every read.
+//                     The index needs no runtime table — `turns_base` and
+//                     the pow2 `turn_stride` are both whole-image build-time
+//                     constants (`RuntimePlacement::turn_addr`), which is
+//                     what item 0a/0b bought.
+//   +36 waker_core    `Option[CoreId]` (a `u32`): 0 = local (every
+//                     same-core send, every single-core image), else the
+//                     originating core + 1. The former top-bit tag, in its
+//                     own field. These two `u32`s are the two halves of the
+//                     ONE 64-bit word the tagged address occupied — never a
+//                     second word, which would have cost 8 bytes on every
+//                     mailbox slot and every cross-core request-ring slot
+//                     image-wide, because the pair rides the whole
+//                     `xsend -> ring -> mailbox -> turn record` chain.
+//                     Accessed with `ldr w`/`str w` throughout: an `x`
+//                     access on either would fold the other in as high bits
+//                     and reinvent the bit-twiddling this deleted.
 //   +40 cur_method    the in-flight method's dispatch index (actors
 //                     only) — saved at fresh selection so the resume
 //                     path can re-enter the same compiled method.
-//   +48 reply_slot    plans/M7.md item Z1 (decision 9a): the address of
-//                     THIS turn's own reply staging slot (`Frame::
-//                     reply_stage_off`, an area-interior address) while
-//                     it is parked on an actor `await` whose declared
-//                     reply is an *aggregate* — the value the callee's
-//                     dispatch hands its method in `x8`, this machine's
-//                     aggregate-return-pointer register, so the callee
-//                     writes its declared reply straight into the
-//                     awaiting frame and nothing is copied at delivery.
+//   +48 reply_slot    plans/M7.md item Z1 (decision 9a): THIS turn's own
+//   +52               reply staging slot while it is parked on an actor
+//                     `await` whose declared reply is an aggregate —
+//                     plans/M10.md item 0c1, decision 565: two adjacent
+//                     `u32`s, `(TurnId at +48, byte offset within that turn
+//                     area at +52)`, in the one word an absolute
+//                     frame-interior address used to occupy. It is NOT a
+//                     bare `TurnId` and cannot be: the offset is
+//                     `Frame::reply_stage_off + slot_bias`, assigned per fn
+//                     in `build_frame`, and the reader is the callee's
+//                     dispatch arm — a different fn, which can know nothing
+//                     of its caller's frame layout. An index plus a named
+//                     intra-area offset is what indexing a *field of* an
+//                     array element is; no bit packing anywhere.
+//
+//                     The pair is what the callee's dispatch resolves back
+//                     into `x8`, this machine's aggregate-return-pointer
+//                     register, so the callee writes its declared reply
+//                     straight into the awaiting frame and nothing is
+//                     copied at delivery.
 //                     `reply` (+24) still carries every scalar reply,
 //                     unchanged and byte-for-byte identically.
 //
@@ -5754,10 +5795,10 @@ impl FnCtx<'_> {
 /// Loads `arg_temps` (at most 2 — the by-value ABI below carries exactly
 /// two argument registers) into `x1`/`x2` and calls `symbol` —
 /// `rt_enqueue_<Actor>`'s own real ABI
-/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker`), shared verbatim by
-/// `Send` (waker = 0: one-way, nobody to resume, the sender never
-/// suspends) and `Await{ActorCall}` (waker = this turn's own area
-/// address, already live in `X_FRAME`).
+/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn, x4=waker_core`),
+/// shared verbatim by `Send` (waker = 0: one-way, nobody to resume, the
+/// sender never suspends) and `Await{ActorCall}` (waker = this turn's own
+/// `TurnId`, a relocated immediate — plans/M10.md item 0c1, decision 557).
 ///
 /// plans/M10.md item D0, decision 610: the arguments used to travel as
 /// `x1 = args_ptr` (the address of an owned 2-word frame scratch pair)
@@ -5774,7 +5815,12 @@ fn emit_marshal_and_call(
     arg_temps: &[Temp],
     ctx: &mut FnCtx,
     symbol: &str,
-    waker_is_self_turn: bool,
+    // `Some(this fn's own key)` for an `Await{ActorCall}` — the waker is
+    // this turn, named by its `TurnId`; `None` for a `send`, which has no
+    // waker at all. plans/M10.md item 0c1: this used to be a plain `bool`
+    // and the waker used to be `X_FRAME` itself (the turn area's address),
+    // which is exactly the raw reference item 0 exists to delete.
+    waker_self_key: Option<&str>,
 ) -> Result<(), CodegenError> {
     if arg_temps.len() > 2 {
         return Err(CodegenError::unimplemented(
@@ -5791,14 +5837,28 @@ fn emit_marshal_and_call(
             ),
         }
     }
-    if waker_is_self_turn {
-        ctx.push(
-            encode::enc_mov_reg(3, X_FRAME, true),
-            format!("mov x3, {}", reg_name(X_FRAME)),
-        );
-    } else {
-        ctx.load_imm(3, 0);
+    match waker_self_key {
+        Some(fn_key) => {
+            let word = ctx.cur_word();
+            ctx.load_imm(3, 0);
+            for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+                w.1 = format!("turn-id[{i}] x3 <{fn_key}>");
+            }
+            ctx.relocs.push(Reloc::TurnIdImm {
+                word,
+                key: fn_key.to_string(),
+            });
+        }
+        // A `send` has no waker: `x3 = 0` is the `Option[TurnId]` niche,
+        // the same zero test every reader already performs.
+        None => ctx.load_imm(3, 0),
     }
+    // plans/M10.md item 0c1: `x4 = Option[CoreId]`, always 0 here. A
+    // same-core admission is local by definition, and a cross-core one goes
+    // through `__rt_xsend_*`, which overwrites `x4` with its own source
+    // core. Set unconditionally rather than left to the callee: a stale
+    // `x4` would deliver this turn's reply to the wrong core.
+    ctx.load_imm(4, 0);
     ctx.load_imm(0, method_idx as i64);
     ctx.bl_symbolic_call(symbol);
     Ok(())
@@ -5844,7 +5904,7 @@ fn emit_send(
         arg_temps,
         ctx,
         &rt_enqueue_symbol(&actor),
-        false, // one-way: no reply slot, no waker — the sender never suspends.
+        None, // one-way: no reply slot, no waker — the sender never suspends.
     )?;
     let dst_off = ctx.frame.off(dst);
     ctx.store_slot(0, dst_off); // x0 already holds rt_enqueue's own outcome.
@@ -7099,6 +7159,10 @@ fn emit_await_suspend(
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
+    // plans/M10.md item 0c1: this fn's own `program.fns` key — the
+    // `Reloc::TurnIdImm` key for "this turn", which is both the waker of
+    // every message it awaits and the owner of its own reply staging slot.
+    fn_key: &str,
     state_temp: Temp,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
@@ -7125,13 +7189,43 @@ fn emit_await_suspend(
                          (`build_frame_flow`/`flow_reply_stage_size` disagree with this site)",
                     )
                 })?;
-                ctx.addr_of_slot(X_A, stage_off);
+                // plans/M10.md item 0c1 (decision 565): this is the one
+                // reference that does NOT reduce to a bare `TurnId`. The
+                // value is *frame-interior* — `turn_base + slot_bias +
+                // stage_off` — and `stage_off` is `Frame::reply_stage_off`,
+                // assigned per fn in `build_frame`, while the reader is the
+                // callee's dispatch arm, a different fn entirely. So it is
+                // stored as two adjacent `u32`s in the one word it always
+                // occupied: this turn's `TurnId` at `OFF_TURN_REPLY_SLOT`,
+                // and the byte offset *within that turn area* at +4.
+                // `TURN_RECORD_SIZE` and every frame offset are unchanged.
+                let word = ctx.cur_word();
+                ctx.load_imm(X_A, 0);
+                for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
+                    w.1 = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_A));
+                }
+                ctx.relocs.push(Reloc::TurnIdImm {
+                    word,
+                    key: fn_key.to_string(),
+                });
                 ctx.push(
-                    encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16),
+                    encode::enc_str_w_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16),
                     format!(
-                        "str {}, [{}, #{OFF_TURN_REPLY_SLOT}]",
-                        reg_name(X_A),
+                        "str w{X_A}, [{}, #{OFF_TURN_REPLY_SLOT}]",
                         reg_name(X_FRAME)
+                    ),
+                );
+                let interior = (stage_off + ctx.slot_bias) as u16;
+                ctx.push(
+                    encode::enc_movz(X_A, interior, 0, false),
+                    format!("movz w{X_A}, #{interior:#x}"),
+                );
+                ctx.push(
+                    encode::enc_str_w_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16 + 4),
+                    format!(
+                        "str w{X_A}, [{}, #{}]",
+                        reg_name(X_FRAME),
+                        OFF_TURN_REPLY_SLOT + 4
                     ),
                 );
             }
@@ -7140,7 +7234,7 @@ fn emit_await_suspend(
                 arg_temps,
                 ctx,
                 &rt_enqueue_symbol(&actor),
-                true, // waker = this turn's own area (X_FRAME).
+                Some(fn_key), // waker = this turn, by `TurnId`.
             )?;
             // A rejected admission aborts. plans/M6.md item H3: it used
             // to abort as a bare `BRK`, which is a real EL1 exception
@@ -7787,6 +7881,7 @@ fn emit_transition(
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
+    fn_key: &str,
     state_temp: Temp,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
@@ -7836,6 +7931,7 @@ fn emit_transition(
             ctx,
             method_index,
             gctx,
+            fn_key,
             state_temp,
             state_flat_base,
         ),
@@ -7864,6 +7960,7 @@ fn emit_flat_entry(
             ctx,
             method_index,
             gctx,
+            fn_key,
             state_temp,
             state_flat_base,
         ),
@@ -8322,6 +8419,18 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::TurnFrameAddr word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::TurnIdImm { word, .. } => {
+                    // A four-word `load_imm` — identical shape/reasoning to
+                    // `Reloc::TurnFrameAddr` above; its target (a `TurnId`)
+                    // is likewise a layout-time fact.
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::TurnIdImm word {word} (a 4-word load_imm) is \
                              out of range (code has {} word(s))",
                             f.code.len()
                         ));
