@@ -14,3 +14,25 @@ edition = "2024"
 # Keep this list short. A dependency is a liability the whole stack inherits.
 [workspace.dependencies]
 toml = "0.8"
+
+# A release build keeps every internal invariant live. This is not a
+# tuning knob — it is CLAUDE.md's "fail closed" rule applied to the one
+# place a stripped assertion is worse than a crash: the aarch64 encoder
+# and `layout.rs`'s placement bookkeeping state their invariants as
+# `debug_assert!`, and with those compiled out an out-of-range immediate
+# does not fail, it ORs into a neighbouring instruction field and ships a
+# silently different instruction inside a sealed image (`encode.rs`'s own
+# `ldr_str_imm`/`word_offset` doc comments: "so a bad offset fails loudly
+# at encode time rather than silently truncating" — a promise the default
+# release profile quietly withdraws). `overflow-checks` is here for the
+# same reason: this compiler's address/offset arithmetic is `usize`/`u64`
+# throughout, and a wrapped offset is a wrong image, not a slow one.
+#
+# The cost is irrelevant at this scale: `wrela` is a single-threaded batch
+# compiler whose whole golden corpus lexes+parses inside one locked
+# `xtask bench compiler` threshold. Cheapness is bought with a profile
+# (ROADMAP.md's cleverness budget), and no profile has been produced that
+# asks for these back.
+[profile.release]
+debug-assertions = true
+overflow-checks = true

@@ -51,7 +51,7 @@ fn note_dump_diagnostic() {
 /// Renders one `sema::SemaError` exactly the way `print_sema_error` prints
 /// it (decision 1's one-line diagnostic, or item H's one multi-line
 /// exception, decision 2), as an owned `String` ending in `\n` per line —
-/// the shared text both `print_sema_error` (stdout, `dump`/`test`) and
+/// the shared text both `print_sema_error` (`dump`/`test`) and
 /// `build_report`/`build_cmd` (plans/M4.md item E: `wrela build`'s own
 /// diagnostic output, which must print in "the exact existing one-line
 /// style") need, without printing anything themselves.
@@ -78,27 +78,39 @@ fn render_sema_error(e: &sema::SemaError) -> String {
 /// the generic-instantiation chain sets both, printing its own already-
 /// indented `required by`/`instantiated at` lines below the primary one.
 fn print_sema_error(e: &sema::SemaError) {
-    print!("{}", render_sema_error(e));
+    eprint!("{}", render_sema_error(e));
     note_dump_diagnostic();
 }
 
 /// Prints one `lexer::LexError`: `error[lex]: <message> at <line>:<col>`.
 fn print_lex_error(e: &lexer::LexError) {
-    println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+    eprintln!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
     note_dump_diagnostic();
 }
 
 /// Prints one `parser::ParseError`: `error[parse]: <message> at <line>:<col>`.
 fn print_parse_error(e: &parser::ParseError) {
-    println!("error[parse]: {} at {}:{}", e.message, e.line, e.col);
+    eprintln!("error[parse]: {} at {}:{}", e.message, e.line, e.col);
     note_dump_diagnostic();
 }
 
 /// One-line `error[unimplemented]: …` / `error[build]: …` that does not
 /// go through `print_sema_error` — still counts as a dump diagnostic
 /// (plans/M9.md item NN).
+///
+/// **Diagnostics go to stderr** (plans/M9.md item RR). Every diagnostic
+/// this binary emits funnels through this fn, `print_sema_error`,
+/// `print_lex_error` or `print_parse_error`, and all four write to
+/// stderr: a stage dump's *output* is stdout, and an error is not output.
+/// On stdout, `wrela dump --stage=asm f.wr > f.s` wrote the diagnostic
+/// into `f.s` and left stderr empty, so a failed compile produced a
+/// plausible-looking artifact and any wrapper watching stderr saw
+/// nothing. The pinned diagnostic goldens are unaffected: the golden
+/// runner compares stdout followed by stderr, so a case whose whole
+/// expectation is one `error[…]` line reads byte-identically either way
+/// (see `xtask`'s `golden`).
 fn print_line_diagnostic(line: &str) {
-    println!("{line}");
+    eprintln!("{line}");
     note_dump_diagnostic();
 }
 
@@ -534,7 +546,7 @@ fn run_report_stage(
     match build_report(programs, file_paths, modules) {
         Ok(r) => print!("{}", r.text),
         Err(diag) => {
-            print!("{diag}");
+            eprint!("{diag}");
             note_dump_diagnostic();
         }
     }
@@ -1381,10 +1393,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!(
+            print_line_diagnostic(&format!(
                 "error[unimplemented]: the runtime test tier could not lower this program: {}",
                 e.message
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -1398,11 +1410,11 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!(
+            print_line_diagnostic(&format!(
                 "error[unimplemented]: the runtime test tier could not lower this program's \
                  async fns: {}",
                 e.message
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -1412,7 +1424,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!("error[unimplemented]: {}", e.message);
+            print_line_diagnostic(&format!("error[unimplemented]: {}", e.message));
             return ExitCode::FAILURE;
         }
     };
@@ -1427,7 +1439,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!("error[build]: {msg}");
+            print_line_diagnostic(&format!("error[build]: {msg}"));
             return ExitCode::FAILURE;
         }
     };
@@ -1444,10 +1456,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!(
+            print_line_diagnostic(&format!(
                 "error[unimplemented]: the runtime test tier could not compile this program: {}",
                 e.message
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -1461,11 +1473,11 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!(
+            print_line_diagnostic(&format!(
                 "error[unimplemented]: the runtime test tier could not size this program's \
                  async frames: {}",
                 e.message
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -1480,7 +1492,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!("error[unimplemented]: {}", e.message);
+            print_line_diagnostic(&format!("error[unimplemented]: {}", e.message));
             return ExitCode::FAILURE;
         }
     };
@@ -1503,10 +1515,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!(
+            print_line_diagnostic(&format!(
                 "error[build]: the runtime test tier could not lay out the test image: {}",
                 e.message
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -1516,7 +1528,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!("error[build]: {}", e.message);
+            print_line_diagnostic(&format!("error[build]: {}", e.message));
             return ExitCode::FAILURE;
         }
     }
@@ -1525,9 +1537,9 @@ fn test_cmd(args: &[String]) -> ExitCode {
         for l in &comptime_lines {
             println!("{l}");
         }
-        println!(
+        print_line_diagnostic(&format!(
             "error[unimplemented]: the runtime test tier needs the wrela VMM (macOS/HVF at M5)"
-        );
+        ));
         return ExitCode::FAILURE;
     };
 
@@ -1579,10 +1591,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!(
+            print_line_diagnostic(&format!(
                 "error[build]: could not run the wrela VMM ({}): {e}",
                 vmm_path.display()
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -1592,10 +1604,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
             for l in &comptime_lines {
                 println!("{l}");
             }
-            println!(
+            print_line_diagnostic(&format!(
                 "error[build]: the wrela VMM did not boot the test image: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
-            );
+            ));
             return ExitCode::FAILURE;
         }
     }
@@ -1626,10 +1638,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
         for l in &comptime_lines {
             println!("{l}");
         }
-        println!(
+        print_line_diagnostic(&format!(
             "error[build]: the wrela VMM's own transcript is not well-formed (expected {} test line(s) then a summary):\n{transcript}",
             runtime_tests.len()
-        );
+        ));
         return ExitCode::FAILURE;
     };
 
@@ -1793,7 +1805,7 @@ fn build_cmd(args: &[String]) -> ExitCode {
     let r = match build_report(&programs, &file_paths, &modules_by_addr) {
         Ok(r) => r,
         Err(diag) => {
-            print!("{diag}");
+            eprint!("{diag}");
             return ExitCode::FAILURE;
         }
     };

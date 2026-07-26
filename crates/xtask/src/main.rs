@@ -5212,12 +5212,17 @@ fn golden(update: bool) -> Result<(), String> {
                 // `--update`, the fresh stdout) is itself an `error[…]`
                 // line — otherwise a success-case dump that crashed is
                 // still a harness failure.
-                let stdout = String::from_utf8_lossy(&out.stdout);
+                // Item RR: the fresh text is stdout then stderr, same as
+                // the expectation built below — a dump that failed before
+                // printing anything puts its whole diagnostic on stderr,
+                // so reading stdout alone would no longer see it.
+                let mut fresh = String::from_utf8_lossy(&out.stdout).into_owned();
+                fresh.push_str(&String::from_utf8_lossy(&out.stderr));
                 let expected_is_diagnostic = std::fs::read_to_string(&exp)
                     .map(|t| t.lines().next().is_some_and(|l| l.starts_with("error[")))
                     .unwrap_or(false)
                     || (update
-                        && stdout
+                        && fresh
                             .lines()
                             .next()
                             .is_some_and(|l| l.starts_with("error[")));
@@ -5230,7 +5235,17 @@ fn golden(update: bool) -> Result<(), String> {
                     continue;
                 }
             }
-            let actual = String::from_utf8_lossy(&out.stdout).into_owned();
+            // plans/M9.md item RR: diagnostics moved from stdout to
+            // stderr (`bin/wrela.rs`'s `print_line_diagnostic` doc has
+            // the why), so an expectation is "everything the tool wrote",
+            // stdout first. Every stage that succeeds writes nothing to
+            // stderr, so the ~565 non-diagnostic goldens are unchanged
+            // byte for byte; a diagnostic case's text simply arrives on
+            // the other stream and concatenates into the same expectation
+            // it always had. `--timings` is the one thing that would
+            // interleave here, and no golden passes it.
+            let mut actual = String::from_utf8_lossy(&out.stdout).into_owned();
+            actual.push_str(&String::from_utf8_lossy(&out.stderr));
             cases += 1;
             if update {
                 std::fs::write(&exp, &actual)

@@ -4,8 +4,9 @@
 //! `Target`, `Restart`, `BootError`, `DriverMode`, and `CompletionOutcome`
 //! used to live only in `sema/prelude::builtin_enum_variants`. Their
 //! declarations now sit in the toolchain stdlib; this module loads those
-//! files once and exposes their variant order so every consumer that used
-//! to hardcode the table reads the same source of truth.
+//! files once per `stdlib/core/` tree and exposes their variant order so
+//! every consumer that used to hardcode the table reads the same source
+//! of truth.
 //!
 //! ## Why they are not always in the build closure
 //!
@@ -29,7 +30,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use crate::sema::SemaError;
 use crate::syntax::ast::{Item, Module, Span};
@@ -59,12 +60,34 @@ pub(crate) struct Table {
     strs: BTreeMap<String, Vec<&'static str>>,
 }
 
-/// Preferred `stdlib/core/` for this process, set by [`prepare`] before
-/// the first table load. One `wrela` invocation has one package root;
-/// unit tests that need a custom tree call [`load_table`] directly.
+/// Preferred `stdlib/core/` for the check currently running, set by
+/// [`prepare`] before each table load. Unit tests that need a custom tree
+/// call [`load_table`] directly.
 static CORE_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-static TABLE: OnceLock<Result<Table, String>> = OnceLock::new();
+/// Loaded tables, **keyed by the `stdlib/core/` they came from**
+/// (plans/M9.md item RR).
+///
+/// This was a bare `OnceLock<Result<Table, String>>`, which made the
+/// first `prepare` in a process the only one that could ever choose a
+/// tree: later calls set `CORE_ROOT` and then got the *first* root's
+/// table back from `get_or_init`, still reporting `Ok`. That silently
+/// withdrew item A2's rule — a sibling `stdlib/` wins over the toolchain
+/// tree — for every file after the first in any process that checks more
+/// than one, and `xtask` is exactly that process: `corpus --sema` walks
+/// every doc block and example, and the sema/eval/lower/async/imports
+/// fuzz lanes each run `check_typed` thousands of times. A wrong table is
+/// not a wrong message, it is wrong `lower::variant_index` tags and wrong
+/// `matches::shape_of` exhaustiveness, with no diagnostic anywhere.
+///
+/// Keying by root fixes both halves at once: a different root loads its
+/// own table, and **failures are not cached**, so a corrupt tree no
+/// longer poisons every later check in the process (the old `Err` arm was
+/// permanent). Entries are leaked to keep the `&'static` returns
+/// [`variants`]/[`variant_strs`] already promise — the same `Box::leak`
+/// discipline [`load_table`] uses for the variant strings, and bounded by
+/// the number of distinct package roots one process ever sees.
+static TABLES: Mutex<BTreeMap<PathBuf, &'static Table>> = Mutex::new(BTreeMap::new());
 
 /// Resolve `stdlib/core/` the same way the loader does for this package
 /// root, then load the five enum files. Must run before any
@@ -85,37 +108,51 @@ pub fn prepare_toolchain(span: Span) -> Result<(), SemaError> {
     table_result(span).map(|_| ())
 }
 
-fn table_result(span: Span) -> Result<&'static Table, SemaError> {
-    let r = TABLE.get_or_init(|| {
-        let core = CORE_ROOT
-            .lock()
-            .expect("stdlib_enums CORE_ROOT lock")
-            .clone()
-            .unwrap_or_else(crate::loader::toolchain_stdlib_core);
-        load_table(&core).map_err(|e| e.message)
-    });
-    match r {
-        Ok(t) => Ok(t),
-        Err(msg) => Err(SemaError::at("build", msg.clone(), span)),
+/// The cache lookup, against an **explicit** root — the whole of the
+/// keying rule, with no ambient state read anywhere inside it.
+/// `table_result` is the one place `CORE_ROOT` turns into one of these
+/// calls, which is also what lets the unit tests exercise the keying
+/// without touching a global other tests in this crate mutate.
+pub(crate) fn table_for(core: &Path, span: Span) -> Result<&'static Table, SemaError> {
+    let mut tables = TABLES.lock().expect("stdlib_enums TABLES lock");
+    if let Some(t) = tables.get(core) {
+        return Ok(t);
     }
+    // Errors deliberately do not enter the cache: the next `prepare` for
+    // this same root should re-read the tree and re-diagnose, not inherit
+    // a verdict from a run that may have raced a half-written file.
+    let table = load_table(core).map_err(|e| SemaError::at("build", e.message, span))?;
+    let leaked: &'static Table = Box::leak(Box::new(table));
+    tables.insert(core.to_path_buf(), leaked);
+    Ok(leaked)
+}
+
+fn table_result(span: Span) -> Result<&'static Table, SemaError> {
+    let core = CORE_ROOT
+        .lock()
+        .expect("stdlib_enums CORE_ROOT lock")
+        .clone()
+        .unwrap_or_else(crate::loader::toolchain_stdlib_core);
+    table_for(&core, span)
 }
 
 fn ensure_table() -> Result<&'static Table, SemaError> {
-    if TABLE.get().is_none()
-        && CORE_ROOT
-            .lock()
-            .expect("stdlib_enums CORE_ROOT lock")
-            .is_none()
+    // No `prepare` yet — toolchain fallback (matches the pre-QQ shape for
+    // callers outside the check entry points). `table_result` applies the
+    // same fallback for an unset root, so this only has to cover the
+    // *stateful* half: leaving `CORE_ROOT` set so a later call agrees.
+    if CORE_ROOT
+        .lock()
+        .expect("stdlib_enums CORE_ROOT lock")
+        .is_none()
     {
-        // No prepare yet — toolchain fallback (matches the pre-QQ shape
-        // for callers outside the check entry points).
         prepare_toolchain(Span::default())?;
     }
     table_result(Span::default())
 }
 
 /// Load the five enums from `core`. `pub(crate)` for unit tests that
-/// corrupt a temp tree without going through the process-wide OnceLock.
+/// corrupt a temp tree without going through the process-wide cache.
 pub(crate) fn load_table(core: &Path) -> Result<Table, SemaError> {
     let mut by_name = BTreeMap::new();
     for &(enum_name, stem) in ENUM_FILES {
@@ -249,8 +286,8 @@ mod tests {
 
     /// plans/M9.md item QQ: a corrupt stdlib enum file is `error[build]`,
     /// not a panic. Calls [`load_table`] on a temp tree so the process-wide
-    /// OnceLock (already warm from other tests) is not involved — the
-    /// golden `err-stdlib-enum-corrupt` covers the CLI path.
+    /// cache (already warm from other tests) is not involved — the golden
+    /// `err-stdlib-enum-corrupt` covers the CLI path.
     #[test]
     fn corrupt_enum_file_is_build_error_not_panic() {
         let tmp = std::env::temp_dir().join(format!(
@@ -310,6 +347,98 @@ mod tests {
             table.by_name.get("Target").map(|v| v.as_slice()),
             Some(["SiblingOnly".to_string(), "AlsoSibling".to_string()].as_slice())
         );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn target_variants(t: &Table) -> &[String] {
+        t.by_name.get("Target").expect("Target loaded")
+    }
+
+    /// plans/M9.md item RR: the table cache is keyed by `stdlib/core/`, so
+    /// a second root in the same process gets its own table instead of
+    /// silently reusing the first one's variant order.
+    ///
+    /// This is the regression lock for the `OnceLock` shape this module
+    /// used to have: under it the second lookup still returned `Ok` while
+    /// answering from tree A, which is not a wrong message but wrong
+    /// `lower::variant_index` tags and wrong `matches::shape_of`
+    /// exhaustiveness, with no diagnostic anywhere.
+    ///
+    /// Goes through [`table_for`] rather than [`prepare`] deliberately:
+    /// `prepare` writes the process-global `CORE_ROOT`, which tests
+    /// elsewhere in this crate also write, and `cargo test` runs them
+    /// concurrently in one process. `table_for` *is* the keying rule —
+    /// `table_result` adds only the global read — so this locks the thing
+    /// that regressed without racing anything.
+    #[test]
+    fn the_cache_is_keyed_by_root() {
+        let tmp =
+            std::env::temp_dir().join(format!("wrela-stdlib-enums-rekey-{}", std::process::id()));
+        let mut cores = Vec::new();
+        for (dir, variant) in [("a", "OnlyInA"), ("b", "OnlyInB")] {
+            let core = tmp.join(dir).join("stdlib/core");
+            fs::create_dir_all(&core).expect("mkdir core");
+            for stem in ["restart", "boot_error", "driver_mode", "completion_outcome"] {
+                let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
+                fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
+            }
+            fs::write(
+                core.join("target.wr"),
+                format!("module target\n\npub enum Target:\n    {variant}\n"),
+            )
+            .expect("write Target");
+            cores.push(core);
+        }
+
+        let a = table_for(&cores[0], Span::default()).expect("tree a loads");
+        assert_eq!(target_variants(a), ["OnlyInA".to_string()]);
+
+        let b = table_for(&cores[1], Span::default()).expect("tree b loads");
+        assert_eq!(
+            target_variants(b),
+            ["OnlyInB".to_string()],
+            "the second root must win — a cached first root is the bug this locks"
+        );
+
+        // Back to the first: served from the cache, same answer as before.
+        let a_again = table_for(&cores[0], Span::default()).expect("tree a from cache");
+        assert_eq!(target_variants(a_again), ["OnlyInA".to_string()]);
+        assert!(
+            std::ptr::eq(a, a_again),
+            "a second lookup of the same root must hit the cache, not reload"
+        );
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// plans/M9.md item RR: a failed load must not be cached. The old
+    /// `OnceLock<Result<..>>` stored the `Err`, so one corrupt tree
+    /// poisoned every later lookup in the process.
+    #[test]
+    fn a_failed_load_is_not_cached() {
+        let tmp =
+            std::env::temp_dir().join(format!("wrela-stdlib-enums-nocache-{}", std::process::id()));
+        let core = tmp.join("stdlib/core");
+        fs::create_dir_all(&core).expect("mkdir core");
+        for stem in ["restart", "boot_error", "driver_mode", "completion_outcome"] {
+            let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
+            fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
+        }
+        let target = core.join("target.wr");
+        fs::write(
+            &target,
+            "module target\n\npub enum Target:\n    @@@ nope @@@\n",
+        )
+        .expect("write corrupt");
+        let err = table_for(&core, Span::default()).expect_err("corrupt tree must fail");
+        assert_eq!(err.category, "build");
+
+        // Repair the same tree and look it up again: the fix must take.
+        fs::write(&target, "module target\n\npub enum Target:\n    Repaired\n")
+            .expect("write repaired");
+        let ok = table_for(&core, Span::default()).expect("repaired tree loads");
+        assert_eq!(target_variants(ok), ["Repaired".to_string()]);
+
         fs::remove_dir_all(&tmp).ok();
     }
 }

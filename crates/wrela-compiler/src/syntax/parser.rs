@@ -63,6 +63,42 @@ pub struct ParseError {
 /// close).
 const MAX_EXPR_DEPTH: u32 = 100;
 
+/// The deepest nesting of *indented statement blocks* a single parse may
+/// build (`parse_stmts_until_dedent`'s own guard) — `MAX_EXPR_DEPTH`'s
+/// sibling for the second of this parser's two recursive descents
+/// (plans/M9.md item RR). The expression guard bounds only the precedence
+/// chain; a body of nested `if`/`while`/`for`/`match` suites recurses
+/// through `parse_stmt` -> `parse_suite` -> `parse_stmts_until_dedent`
+/// instead and was unbounded, so ~800 levels aborted the process with a
+/// native stack overflow — not a diagnostic, and not something the fuzz
+/// lanes can even observe, since every one of their guards is
+/// `std::panic::catch_unwind` and a stack-overflow abort does not unwind.
+///
+/// Same empirical method as `MAX_EXPR_DEPTH`, measured the same way:
+/// `wrela dump --stage=ast` on a chain of nested `if true:` suites stayed
+/// clean past 400 and aborted before 800, and the downstream walks that
+/// recurse over the same shape (`sema::bodies::check_stmt`, the AST dump,
+/// the pretty-printer) give out earlier than the parser does — `--stage=check`
+/// aborted around 600. 100 keeps a comfortable margin below the *earliest*
+/// of those ceilings while sitting far above any hand-written body.
+const MAX_BLOCK_DEPTH: u32 = 100;
+
+/// The deepest nesting of *type syntax* a single parse may build
+/// (`parse_type`'s own guard) — the third recursive descent, and the one
+/// whose downstream consumers give out first (plans/M9.md item RR).
+/// `Option[Option[...]]` nested ~300 deep parsed fine but aborted
+/// `sema::types::resolve_type` with a native stack overflow, and the
+/// parser itself aborted before 1600; `render_type`, `size_of` and the
+/// layout walks all recurse over the identical shape. Bounding the
+/// *source* depth here is what bounds every one of them at once: no later
+/// pass can be handed a type the parser refused to build. Generic
+/// instantiation can still synthesize types deeper than the source spells
+/// them, which is `sema::bodies::MAX_GENERIC_DEPTH`'s separate job.
+///
+/// 100 by the same margin argument as its two siblings; the deepest type
+/// in the whole doc/example corpus is nowhere close.
+const MAX_TYPE_DEPTH: u32 = 100;
+
 pub fn parse(tokens: Vec<Token>) -> Result<Module, ParseError> {
     Parser::new(tokens).parse_module()
 }
@@ -137,6 +173,18 @@ struct Parser {
     /// exactly once per level, so counting there bounds native recursion
     /// depth regardless of which construct is doing the nesting.
     expr_depth: u32,
+    /// Live nesting depth of indented statement blocks
+    /// (`parse_stmts_until_dedent`'s own guard, `MAX_BLOCK_DEPTH`) — every
+    /// nested suite in the language reaches its statements through that
+    /// one function, so counting there bounds native recursion depth
+    /// regardless of which compound statement is doing the nesting.
+    block_depth: u32,
+    /// Live nesting depth of type syntax (`parse_type`'s own guard,
+    /// `MAX_TYPE_DEPTH`) — every nested type position (a generic argument,
+    /// an array element, a tuple component, `own[P] T`'s inner type, an
+    /// `fn(...)` parameter or return) re-enters `parse_type` exactly once
+    /// per level.
+    type_depth: u32,
     /// Nesting depth of single-line inline suites (`parse_inline_stmt_seq`):
     /// a `:` followed by real content on the same physical line, with no
     /// `Newline` token ever going to appear (module doc comment above —
@@ -162,6 +210,8 @@ impl Parser {
             tokens,
             pos: 0,
             expr_depth: 0,
+            block_depth: 0,
+            type_depth: 0,
             inline_depth: 0,
         }
     }
@@ -1426,7 +1476,24 @@ impl Parser {
 // --- types (02-language.md §6) ------------------------------------------
 
 impl Parser {
+    /// Guarded entry for type nesting (`MAX_TYPE_DEPTH`'s own doc
+    /// comment): every nested type position re-enters here exactly once
+    /// per level, so counting on entry/exit bounds native recursion depth
+    /// in this pass *and* in every later pass that walks the same shape.
+    /// The grammar lives in `parse_type_body`, unchanged below; this
+    /// wrapper only ever adds the counter (`parse_unary`'s own shape).
     fn parse_type(&mut self) -> Result<Type, ParseError> {
+        self.type_depth += 1;
+        if self.type_depth > MAX_TYPE_DEPTH {
+            self.type_depth -= 1;
+            return Err(self.error_here(format!("type nesting depth exceeded {MAX_TYPE_DEPTH}")));
+        }
+        let result = self.parse_type_body();
+        self.type_depth -= 1;
+        result
+    }
+
+    fn parse_type_body(&mut self) -> Result<Type, ParseError> {
         let span = self.peek_span();
         if self.at_op("[") {
             self.bump();
@@ -2425,7 +2492,26 @@ impl Parser {
 impl Parser {
     /// Loops `parse_stmt` until `Dedent`, without consuming it — used right
     /// after an `Indent` this function's caller already consumed.
+    ///
+    /// Guarded entry for block nesting (`MAX_BLOCK_DEPTH`'s own doc
+    /// comment): every nested suite in the language reaches its statements
+    /// through here exactly once per level, so counting on entry/exit
+    /// bounds native recursion depth regardless of which compound
+    /// statement is doing the nesting. The loop itself lives in
+    /// `parse_stmts_until_dedent_body`, unchanged below; this wrapper only
+    /// ever adds the counter (`parse_unary`'s own shape).
     fn parse_stmts_until_dedent(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        self.block_depth += 1;
+        if self.block_depth > MAX_BLOCK_DEPTH {
+            self.block_depth -= 1;
+            return Err(self.error_here(format!("block nesting depth exceeded {MAX_BLOCK_DEPTH}")));
+        }
+        let result = self.parse_stmts_until_dedent_body();
+        self.block_depth -= 1;
+        result
+    }
+
+    fn parse_stmts_until_dedent_body(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut stmts = Vec::new();
         while !self.at_kind(TokenKind::Dedent) {
             if self.at_kind(TokenKind::Eof) {

@@ -20,6 +20,22 @@
 //! `sf` bit: `true` selects the 64-bit (`X`) form, `false` the 32-bit
 //! (`W`) form, for every instruction that has both.
 //!
+//! **Every range/alignment guard below is an unconditional `assert!`, not
+//! a `debug_assert!`.** These are not redundant sanity checks that a
+//! release build can afford to drop: an out-of-range `imm12`, an
+//! unaligned branch distance or an over-wide shift does not merely
+//! produce a wrong *number* here — the offending bits OR into a
+//! neighbouring instruction field and the function returns a valid
+//! encoding of a **different instruction**, which then ships inside a
+//! sealed, digest-validated image with nothing downstream able to notice.
+//! Stripped guards would make the "fails loudly at encode time rather
+//! than silently truncating" promise in the doc comments below true only
+//! in debug builds. The workspace `[profile.release]` also turns
+//! `debug-assertions` back on for the same reason (see `Cargo.toml`); the
+//! `assert!`s here are deliberately independent of that setting, because
+//! this is the one module where a stray `--config` must not be able to
+//! trade correctness for a handful of cycles.
+//!
 //! Subset covered (plans/M5.md decision 5 + item A): loads/stores
 //! (unsigned-immediate LDR/STR/LDRB/STRB, signed-offset LDP/STP),
 //! MOVZ/MOVK/MOVN, the MOV-register alias, ADD/SUB immediate and register
@@ -116,7 +132,7 @@ impl Cond {
 }
 
 fn reg(r: u8) -> u32 {
-    debug_assert!(r <= 31, "register out of range: {r}");
+    assert!(r <= 31, "register out of range: {r}");
     r as u32
 }
 
@@ -136,12 +152,12 @@ fn sf_bit(sf: bool) -> u32 {
 // time rather than silently truncating.
 
 fn ldr_str_imm(size: u32, opc: u32, imm12: u32, rn: u8, rt: u8) -> u32 {
-    debug_assert!(imm12 < 4096, "imm12 out of range: {imm12}");
+    assert!(imm12 < 4096, "imm12 out of range: {imm12}");
     (size << 30) | (0b111001 << 24) | (opc << 22) | (imm12 << 10) | (reg(rn) << 5) | reg(rt)
 }
 
 fn scaled_offset(byte_offset: u16, scale: u16) -> u32 {
-    debug_assert!(
+    assert!(
         byte_offset % scale == 0,
         "offset {byte_offset} not a multiple of {scale}"
     );
@@ -279,11 +295,11 @@ fn ldp_stp(opc: u32, l: u32, imm7: u32, rt2: u8, rn: u8, rt: u8) -> u32 {
 }
 
 fn signed_scaled_offset(byte_offset: i16, scale: i16, half_range: i16) -> u32 {
-    debug_assert!(
+    assert!(
         byte_offset % scale == 0,
         "offset {byte_offset} not a multiple of {scale}"
     );
-    debug_assert!(
+    assert!(
         (-half_range..half_range).contains(&byte_offset),
         "offset {byte_offset} out of the imm7 range"
     );
@@ -349,7 +365,7 @@ pub fn enc_ldp_w(rt: u8, rt2: u8, rn: u8, byte_offset: i16) -> u32 {
 // the mnemonic's own `, lsl #N` suffix does.
 
 fn move_wide(sf: bool, opc: u32, shift: u8, imm16: u16, rd: u8) -> u32 {
-    debug_assert!(
+    assert!(
         matches!(shift, 0 | 16 | 32 | 48),
         "shift must be 0, 16, 32, or 48: {shift}"
     );
@@ -399,7 +415,7 @@ pub fn enc_movn(rd: u8, imm16: u16, shift: u8, sf: bool) -> u32 {
 // forced to the zero register (`31`) and the result discarded.
 
 fn add_sub_imm(sf: bool, op: u32, s: u32, imm12: u16, rn: u8, rd: u8) -> u32 {
-    debug_assert!(imm12 < 4096, "imm12 out of range: {imm12}");
+    assert!(imm12 < 4096, "imm12 out of range: {imm12}");
     (sf_bit(sf) << 31)
         | (op << 30)
         | (s << 29)
@@ -689,7 +705,7 @@ fn width_of(sf: bool) -> u32 {
 pub fn enc_lsl_imm(rd: u8, rn: u8, shift: u8, sf: bool) -> u32 {
     let width = width_of(sf);
     let shift = shift as u32;
-    debug_assert!(shift < width, "shift out of range: {shift}");
+    assert!(shift < width, "shift out of range: {shift}");
     let immr = (width - shift) % width;
     let imms = width - 1 - shift;
     bitfield(sf, 0b10, immr, imms, rn, rd)
@@ -699,7 +715,7 @@ pub fn enc_lsl_imm(rd: u8, rn: u8, shift: u8, sf: bool) -> u32 {
 pub fn enc_lsr_imm(rd: u8, rn: u8, shift: u8, sf: bool) -> u32 {
     let width = width_of(sf);
     let shift = shift as u32;
-    debug_assert!(shift < width, "shift out of range: {shift}");
+    assert!(shift < width, "shift out of range: {shift}");
     bitfield(sf, 0b10, shift, width - 1, rn, rd)
 }
 
@@ -707,7 +723,7 @@ pub fn enc_lsr_imm(rd: u8, rn: u8, shift: u8, sf: bool) -> u32 {
 pub fn enc_asr_imm(rd: u8, rn: u8, shift: u8, sf: bool) -> u32 {
     let width = width_of(sf);
     let shift = shift as u32;
-    debug_assert!(shift < width, "shift out of range: {shift}");
+    assert!(shift < width, "shift out of range: {shift}");
     bitfield(sf, 0b00, shift, width - 1, rn, rd)
 }
 
@@ -722,9 +738,9 @@ pub fn enc_asr_imm(rd: u8, rn: u8, shift: u8, sf: bool) -> u32 {
 // Rt[4:0]` — `op` picks `CBZ`(`0`)/`CBNZ`(`1`).
 
 fn word_offset(byte_offset: i32, bits: u32) -> u32 {
-    debug_assert!(byte_offset % 4 == 0, "branch offset not 4-byte aligned");
+    assert!(byte_offset % 4 == 0, "branch offset not 4-byte aligned");
     let half_range = 1i64 << (bits + 1); // imm field counts words; +-2^(bits+1) bytes
-    debug_assert!(
+    assert!(
         (-half_range..half_range).contains(&(byte_offset as i64)),
         "branch offset out of range"
     );
@@ -1190,5 +1206,51 @@ mod tests {
         }
         assert_eq!(bytes.len(), words.len() * 4);
         assert_eq!(&bytes[0..4], &0xf90003e0u32.to_le_bytes());
+    }
+
+    /// plans/M9.md item RR: the encoder's guards are unconditional
+    /// `assert!`s, and nothing in this module may quietly relax them back
+    /// to `debug_assert!`. Grepping this file's own source is the same
+    /// self-audit shape `sema::intrinsics` uses to keep its surface list
+    /// honest — a reviewer editing a guard has to edit this test too.
+    #[test]
+    fn every_guard_in_this_module_is_unconditional() {
+        let src = include_str!("encode.rs");
+        let offenders: Vec<&str> = src
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("debug_assert!") || l.starts_with("debug_assert_eq!"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a stripped guard here does not produce a wrong number, it produces a valid \
+             encoding of a different instruction (module doc). Offending line(s): {offenders:?}"
+        );
+        // The guards exist at all — a future refactor that deletes them
+        // outright would otherwise pass the check above vacuously.
+        assert!(
+            src.matches("assert!(").count() >= 12,
+            "the range/alignment guards are gone, not merely weakened"
+        );
+    }
+
+    /// The workspace keeps `debug-assertions` on in release for the same
+    /// reason (`Cargo.toml`'s own comment): `layout.rs` states 51 more
+    /// placement invariants as `debug_assert!`, and those *are* profile-
+    /// dependent. This locks the profile so a release build cannot go back
+    /// to stripping them.
+    #[test]
+    fn the_release_profile_keeps_assertions_live() {
+        let manifest = include_str!("../../../Cargo.toml");
+        let release = manifest
+            .split("[profile.release]")
+            .nth(1)
+            .expect("workspace Cargo.toml declares [profile.release]");
+        for setting in ["debug-assertions = true", "overflow-checks = true"] {
+            assert!(
+                release.contains(setting),
+                "[profile.release] must keep `{setting}` (Cargo.toml's own comment has the why)"
+            );
+        }
     }
 }

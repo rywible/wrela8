@@ -693,10 +693,18 @@ fn round_up_16(n: usize) -> usize {
 /// `reply_stage_size` is 0 for every sync fn and for any async fn with no
 /// aggregate-reply `await` site (`build_frame_flow` derives the real
 /// number); a nonzero value reserves `Frame::reply_stage_off`.
+///
+/// `slot_bias` is the same number `FnCtx::slot_bias` will carry — 0 for a
+/// sync fn (slots start at `sp`) and `TURN_RECORD_SIZE` for an async one
+/// (slots start past the turn record). It is a *parameter* rather than
+/// something this fn assumes, because the imm12 ceiling below is a bound
+/// on what `addr_of_slot` finally encodes, and that is `off + slot_bias`,
+/// not `off`.
 fn build_frame(
     f: &MwirFn,
     layout: &LayoutCtx,
     reply_stage_size: usize,
+    slot_bias: usize,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
     let mut temp_offset = Vec::with_capacity(f.temp_types.len());
@@ -738,10 +746,22 @@ fn build_frame(
     let lr_off = offset;
     offset += 8;
     let size = round_up_16(offset);
-    if size > 4095 {
-        return Err(CodegenError::unimplemented(
-            "frames larger than 4095 bytes (the ADD/SUB-immediate imm12 range)",
-        ));
+    // The imm12 ceiling is on the immediate that actually gets encoded,
+    // and for an async fn every slot reference is biased past the turn
+    // record: `addr_of_slot` hands `off + slot_bias` straight to
+    // `enc_add_imm`, whose field holds 0..4095. Bounding `size` alone let
+    // an async frame of, say, 4064 bytes through while its highest
+    // aggregate slot encoded as 4064+56 — past the field, where the
+    // surplus bits land in `shift`/`S`/`op` and quietly assemble a
+    // different instruction (`encode.rs`'s module doc). `size` rather
+    // than `size - 1` keeps the bound obviously safe rather than exactly
+    // tight: no offset this frame hands out can reach `size`.
+    if size + slot_bias > 4095 {
+        return Err(CodegenError::unimplemented(&format!(
+            "frames larger than {} bytes (the ADD/SUB-immediate imm12 range, less this fn's \
+             own {slot_bias}-byte slot bias)",
+            4095 - slot_bias
+        )));
     }
     Ok(Frame {
         temp_offset,
@@ -4852,7 +4872,7 @@ fn emit_fn(
     rodata: &mut RodataPool,
 ) -> Result<CodegenFn, CodegenError> {
     // A sync fn never awaits, so it never stages a reply (0).
-    let frame = build_frame(f, layout, 0)?;
+    let frame = build_frame(f, layout, 0, 0)?;
 
     let empty: [usize; 0] = [];
     let mut probe_pro = FnCtx {
@@ -5466,7 +5486,12 @@ fn build_frame_flow(
         temp_types,
         body: Vec::new(),
     };
-    let frame = build_frame(&synthetic, layout, flow_reply_stage_size(f, layout)?)?;
+    let frame = build_frame(
+        &synthetic,
+        layout,
+        flow_reply_stage_size(f, layout)?,
+        TURN_RECORD_SIZE as usize,
+    )?;
     Ok((frame, state_temp, scratch0, scratch1))
 }
 
@@ -8395,7 +8420,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0, 0).expect("build_frame");
         // Every scalar is one 8-byte slot regardless of its own declared
         // width (mwir's own "no packing, ever" rule) — offsets are a
         // plain running sum, never sub-word-aligned.
@@ -8422,7 +8447,7 @@ mod tests {
         layout
             .structs
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
-        let frame = build_frame(&f, &layout, 0).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0, 0).expect("build_frame");
         // temps: t0 (Point, 16 bytes) at [0,16); self_ptr at 16; ret_ptr
         // at 24 (the receiver's own aggregate type is also the return
         // type here, but the two slots are still distinct — self_write_
@@ -8450,11 +8475,11 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let none = build_frame(&f, &layout, 0).expect("build_frame");
+        let none = build_frame(&f, &layout, 0, 0).expect("build_frame");
         assert_eq!(none.reply_stage_off, None);
         assert_eq!(none.lr_off, 8);
         assert_eq!(none.size, 16);
-        let staged = build_frame(&f, &layout, 24).expect("build_frame");
+        let staged = build_frame(&f, &layout, 24, 0).expect("build_frame");
         assert_eq!(staged.reply_stage_off, Some(8));
         assert_eq!(staged.lr_off, 32);
         assert_eq!(staged.size, 48);
@@ -8473,7 +8498,63 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        assert!(build_frame(&f, &layout, 0).is_err());
+        assert!(build_frame(&f, &layout, 0, 0).is_err());
+    }
+
+    /// plans/M9.md item RR: the imm12 ceiling is on `off + slot_bias`, the
+    /// number `addr_of_slot` actually encodes — not on `size` alone.
+    ///
+    /// A frame of exactly 4040 bytes is legal for a sync fn (bias 0, and
+    /// `4040 <= 4095`) and must be *refused* for an async one, whose every
+    /// slot reference is biased past the `TURN_RECORD_SIZE`-byte turn
+    /// record: `4040 + 56 = 4096` is one past the field, where the surplus
+    /// bit lands in `enc_add_imm`'s `shift` and quietly assembles a
+    /// different instruction. Checking `size` alone let exactly this
+    /// through.
+    #[test]
+    fn an_async_frame_is_bounded_by_imm12_less_the_slot_bias() {
+        // 503 * 8 = 4024 bytes of temp, + 8 for `lr` = 4032, rounded to
+        // 4032; one more 8-byte temp puts it at 4040.
+        let f = MwirFn {
+            receiver: None,
+            params: vec![],
+            ret: Type::Unit,
+            temp_types: vec![Type::Array(
+                Box::new(Type::U64),
+                Box::new(ast::Expr::Int(ast::Span::default(), "504".to_string())),
+            )],
+            body: vec![Inst::Return { value: None }],
+        };
+        let layout = LayoutCtx::default();
+
+        let sync = build_frame(&f, &layout, 0, 0).expect("legal for a sync frame");
+        assert_eq!(sync.size, 4048);
+
+        let bias = TURN_RECORD_SIZE as usize;
+        assert!(
+            sync.size + bias > 4095,
+            "this fixture must straddle the boundary to be a regression lock"
+        );
+        let Err(err) = build_frame(&f, &layout, 0, bias) else {
+            panic!("the same frame must be refused once biased past the turn record");
+        };
+        assert!(
+            err.message.contains("4039"),
+            "the diagnostic names the biased ceiling: {}",
+            err.message
+        );
+
+        // And the largest frame that still fits with the bias applied is
+        // accepted, so the bound is not merely conservative-by-accident.
+        let smaller = MwirFn {
+            temp_types: vec![Type::Array(
+                Box::new(Type::U64),
+                Box::new(ast::Expr::Int(ast::Span::default(), "500".to_string())),
+            )],
+            ..f
+        };
+        let ok = build_frame(&smaller, &layout, 0, bias).expect("fits under 4039 with the bias");
+        assert!(ok.size + bias <= 4095);
     }
 
     // --- end-to-end: exact word sequences for tiny fns ------------------

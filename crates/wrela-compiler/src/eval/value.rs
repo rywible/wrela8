@@ -543,8 +543,14 @@ fn decode_escapes(s: &str, _char_ctx: bool) -> Vec<char> {
             Some('t') => out.push('\t'),
             Some('0') => out.push('\0'),
             Some('u') => {
-                // `\u{H..H}` — the lexer already validated shape/digit
-                // count; this just decodes it.
+                // `\u{H..H}` — the lexer already validated shape, digit
+                // count *and* that the value is a Unicode scalar
+                // (`lex_escape`); this just decodes it. Both steps below
+                // are infallible for any escape that got past the lexer,
+                // and they say so rather than substituting: the previous
+                // `unwrap_or(0)`/`unwrap_or('\u{FFFD}')` pair turned an
+                // out-of-range or surrogate escape into a *different*
+                // character with no diagnostic anywhere in the pipeline.
                 chars.next(); // '{'
                 let mut hex = String::new();
                 for h in chars.by_ref() {
@@ -553,8 +559,11 @@ fn decode_escapes(s: &str, _char_ctx: bool) -> Vec<char> {
                     }
                     hex.push(h);
                 }
-                let cp = u32::from_str_radix(&hex, 16).unwrap_or(0);
-                out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                let cp = u32::from_str_radix(&hex, 16)
+                    .expect("lexer validated `\\u{...}` as one to six hex digits");
+                out.push(
+                    char::from_u32(cp).expect("lexer validated `\\u{...}` as a Unicode scalar"),
+                );
             }
             Some(other) => out.push(other),
             None => {}

@@ -10085,19 +10085,78 @@ fn check_deadline_expr(
 /// access" §9.2 restricts. A value bound from the await itself
 /// (`completion = await receipt`; 03 §3) is in the post-await set and
 /// is allowed; an external argument / pre-await local that spans is not.
+///
+/// **Loop back edges** (plans/M9.md item RR): a forward scan alone is not
+/// conservative over a loop. In
+///
+/// ```text
+/// while i < n:
+///     total = total + input.value   # <- runs again after the await below
+///     r = await self.peer.get()
+/// ```
+///
+/// `input.value` sits lexically *before* the only `await`, so a pure
+/// forward scan never has `seen_await` set when it reaches the access —
+/// yet every iteration after the first reads `input` on the far side of
+/// the previous iteration's suspension, which is exactly what §9.2
+/// forbids (the unrolled two-iteration spelling of the same program is
+/// rejected). So a `while`/`for` whose body can suspend enters that body
+/// with `seen_await` already set and the post-await exemption cleared:
+/// the back edge is treated as a suspension the whole body follows.
+/// `loop_body_suspends` answers "can this body suspend" by replaying this
+/// same scan in `probe` mode, so there is exactly one walk to keep in
+/// step with the grammar rather than a second shadow traversal.
+///
+/// This keeps the over-reject/never-under-reject direction the rest of
+/// the approximation promises: a body that provably runs once still pays
+/// the loop rule, which is the safe side.
 struct CrossAwaitScan {
     seen_await: bool,
     /// Locals bound after `seen_await` became true — they do not span
     /// any suspension observed so far on this forward scan.
     after_await: BTreeSet<String>,
+    /// `loop_body_suspends`'s own mode: walk purely to discover whether a
+    /// suspension is reachable, reporting nothing. Two effects, both
+    /// required for the probe to be a *predicate* rather than a second
+    /// checker: the `Field` arm never raises (a probe must not decide the
+    /// diagnostic — the real scan that follows does, with the right
+    /// state), and the loop arms skip their own probe (the answer to "does
+    /// this body contain an await" does not depend on the back-edge rule,
+    /// and skipping keeps a nest of `d` loops linear instead of `2^d`).
+    probe: bool,
 }
 
 fn check_cross_await(body: &[TypedStmt]) -> Result<(), SemaError> {
     let mut state = CrossAwaitScan {
         seen_await: false,
         after_await: BTreeSet::new(),
+        probe: false,
     };
     scan_await_cross_stmts(body, &mut state)
+}
+
+/// Can `body` reach a suspension? Replays the ordinary scan in `probe`
+/// mode, which cannot fail, so the `Err` arm is genuinely unreachable
+/// rather than swallowed.
+fn loop_body_suspends(body: &[TypedStmt]) -> bool {
+    let mut probe = CrossAwaitScan {
+        seen_await: false,
+        after_await: BTreeSet::new(),
+        probe: true,
+    };
+    let scanned = scan_await_cross_stmts(body, &mut probe);
+    debug_assert!(scanned.is_ok(), "a probe-mode scan never reports");
+    probe.seen_await
+}
+
+/// Shared by the `While` and `For` arms: model the loop's back edge
+/// before walking the body (this fn's own `CrossAwaitScan` doc comment).
+fn enter_loop_body(body: &[TypedStmt], state: &mut CrossAwaitScan) {
+    if state.probe || !loop_body_suspends(body) {
+        return;
+    }
+    state.seen_await = true;
+    state.after_await.clear();
 }
 
 fn scan_await_cross_stmts(
@@ -10199,6 +10258,13 @@ fn scan_await_cross_stmt(s: &TypedStmt, state: &mut CrossAwaitScan) -> Result<()
                 }
                 TypedForIter::Expr(e) => scan_await_cross_expr(e, state)?,
             }
+            enter_loop_body(body, state);
+            // The loop variable is rebound by the header on every
+            // iteration, *before* the body runs — so it never spans the
+            // back edge, and it belongs in the exemption set even when
+            // `enter_loop_body` just cleared it. An `await` inside the
+            // body still clears it again, which is right: past that
+            // suspension this iteration's binding does span.
             if state.seen_await {
                 state.after_await.insert(name.clone());
             }
@@ -10206,6 +10272,7 @@ fn scan_await_cross_stmt(s: &TypedStmt, state: &mut CrossAwaitScan) -> Result<()
         }
         TypedStmtKind::While { cond, body } => {
             scan_await_cross_expr(cond, state)?;
+            enter_loop_body(body, state);
             scan_await_cross_stmts(body, state)
         }
         TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => Ok(()),
@@ -10282,7 +10349,7 @@ fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<()
         | TypedExprKind::PoolName(_)
         | TypedExprKind::GroupChild(_) => Ok(()),
         TypedExprKind::Field(base, _) => {
-            if state.seen_await {
+            if state.seen_await && !state.probe {
                 if let Some(root) = root_local_name(e) {
                     if root != "self" && !state.after_await.contains(root) {
                         // No real `L:C` is available here (decision 1:

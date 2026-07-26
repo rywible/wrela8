@@ -1,0 +1,38 @@
+module examples.err_await_external_path_loop
+
+# plans/M9.md item RR: the loop-carried spelling of
+# `err-await-external-path`. `input.value` sits lexically BEFORE the only
+# `await`, so a purely forward scan never has a suspension in view when it
+# reaches the access — but the back edge means every iteration after the
+# first reads `input` on the far side of the previous iteration's
+# suspension, which is exactly what 02-language.md §9.2 forbids. The
+# unrolled two-iteration spelling of this same program is
+# `err-await-external-path`; both must be rejected identically.
+
+struct Payload:
+    value: u64
+
+@actor
+pub struct Upstream:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Store:
+    upstream: Actor[Upstream]
+
+    pub async fn combine(mut self, input: Payload) -> u64:
+        total: u64 = 0
+        i: u64 = 0
+        while i < 2:
+            total = total + input.value
+            fetched = await self.upstream.get()
+            match fetched:
+                case .Ok(v):
+                    total = total + v
+                case .Err(_):
+                    pass
+            i = i + 1
+        return total

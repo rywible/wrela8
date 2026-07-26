@@ -1,0 +1,10 @@
+Module path=examples.check_await_loop_post_suspension_local
+  Struct Payload data
+    field value: u64
+  Struct Upstream resource
+    field value: u64
+    fn get(read self) -> u64
+  Struct Store resource
+    field upstream: Actor[Upstream]
+    field base: Payload
+    async fn combine(mut self, input: read Payload) -> u64

@@ -751,6 +751,7 @@ impl<'s> Lexer<'s> {
                 }
                 self.bump();
                 let mut digits = 0u32;
+                let mut value = 0u32;
                 loop {
                     match self.peek() {
                         Some(b'}') => break,
@@ -761,6 +762,9 @@ impl<'s> Lexer<'s> {
                                     self.error("`\\u{...}` escape allows at most six hex digits")
                                 );
                             }
+                            // At most six hex digits, so this tops out at
+                            // 0xFF_FFFF and cannot overflow `u32`.
+                            value = value * 16 + (b as char).to_digit(16).expect("hex digit");
                             self.bump();
                         }
                         None | Some(b'\n') => {
@@ -775,6 +779,28 @@ impl<'s> Lexer<'s> {
                 }
                 if digits == 0 {
                     return Err(self.error("`\\u{...}` escape requires at least one hex digit"));
+                }
+                // 02-language.md §1.1: "A character literal holds one
+                // Unicode scalar." Six hex digits reach 0xFF_FFFF, well
+                // past the 0x10_FFFF maximum, and the surrogate range
+                // D800..=DFFF is not a scalar value either — so shape and
+                // digit count alone do not make an escape legal. Without
+                // this check both `\u{110000}` and `\u{D800}` reached
+                // `eval::value::decode_escapes`, whose `char::from_u32`
+                // fallback silently substituted U+FFFD: two distinct
+                // source literals compiled to the same character, and an
+                // `assert '\u{110000}' == '\u{FFFD}'` passed. Fail closed
+                // here instead, at the one place the escape's shape is
+                // already being validated.
+                if char::from_u32(value).is_none() {
+                    let what = if (0xD800..=0xDFFF).contains(&value) {
+                        "a surrogate"
+                    } else {
+                        "above the U+10FFFF maximum"
+                    };
+                    return Err(self.error(format!(
+                        "`\\u{{{value:X}}}` is not a Unicode scalar value ({what})"
+                    )));
                 }
                 self.bump(); // closing `}`
                 Ok(())

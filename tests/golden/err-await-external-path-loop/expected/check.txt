@@ -1,0 +1,1 @@
+error[actor]: `input`-rooted access cannot span an `await` — only a self-rooted path may (02-language.md §9.2)

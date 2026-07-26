@@ -1,0 +1,1 @@
+error[lex]: `\u{110000}` is not a Unicode scalar value (above the U+10FFFF maximum) at 1:11
