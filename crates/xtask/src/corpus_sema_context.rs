@@ -1,4 +1,4 @@
-//! Per-block declaration stubs for `corpus --sema` (plans/M9.md item J1b).
+//! Per-block declaration stubs for `corpus --sema` (plans/M9.md items J1b/J1c).
 //!
 //! Keyed by repo-relative doc path and the block's first body line — the
 //! same coordinates the `--sema` report prints. Each stub may only declare
@@ -8,6 +8,11 @@
 //! The stubs live here (not in the markdown) so rendered docs stay
 //! unchanged. A human reading this file is the audit surface for "what
 //! did we assume the prose had already introduced?".
+//!
+//! Method-shaped fence items (`fn …(self, …)`) cannot sit at module scope.
+//! `nest_items_into` names a type declared in the preamble; the harness
+//! splices the fence's own item text into that type. Fence content is never
+//! discarded — J1c deleted `drop_fragment_items` for exactly that reason.
 
 /// One block's injected declarations / wrapper shape.
 pub struct CorpusSemaContext {
@@ -17,10 +22,14 @@ pub struct CorpusSemaContext {
     #[allow(dead_code)]
     pub section: &'static str,
     /// Declarations inserted into the wrapped module before the fragment's
-    /// own items (types the snippet names but does not define).
+    /// own items (types the snippet names but does not define). When
+    /// `nest_items_into` is set, this must leave that type's body open
+    /// (fields / earlier methods) so the harness can splice fence items
+    /// as further members before `postamble`.
     pub preamble: &'static str,
     /// Helpers inserted after the fragment's items (so they may reference
-    /// types the fragment itself declares).
+    /// types the fragment itself declares). When nesting, indented members
+    /// that continue the same type body after the spliced fence items.
     pub postamble: &'static str,
     /// Parameter list for `fn _corpus_snippet(...)` (no surrounding parens).
     pub params: &'static str,
@@ -34,10 +43,12 @@ pub struct CorpusSemaContext {
     /// When true, the wrapper is `async fn` (needed for `await` / `send` /
     /// `with group`).
     pub async_wrapper: bool,
-    /// When true, fragment `Item` entries are dropped because the preamble
-    /// already carries them (method-shaped fragments that must live on a
-    /// type the preamble declares — fragment wrap cannot nest them).
-    pub drop_fragment_items: bool,
+    /// When non-empty, fence `Item` entries are members of this type (must
+    /// appear as `struct <name>` or `enum <name>` in the preamble). The
+    /// harness indents and splices the fence's own item text into the type
+    /// body between preamble and postamble. Empty = items stay at module
+    /// scope (decision 501).
+    pub nest_items_into: &'static str,
 }
 
 /// Look up the stub for a doc block. `doc` is repo-relative.
@@ -47,9 +58,9 @@ pub fn lookup(doc: &str, start_line: usize) -> Option<&'static CorpusSemaContext
         .find(|c| c.doc == doc && c.start_line == start_line)
 }
 
-/// Every currently-noisy block from J1, plus any later additions. Absence
-/// from this table means the block is checked as-written (the 8 J1 `ok`
-/// blocks, and `.wr` examples).
+/// Every currently-contextualized block, plus any later additions. Absence
+/// from this table means the block is checked as-written (the J1 `ok`
+/// blocks without stubs, and `.wr` examples).
 pub const CORPUS_SEMA_CONTEXTS: &[CorpusSemaContext] = &[
     // 02 §3.1 — `take current` then reassign. Names: Packet, current.
     CorpusSemaContext {
@@ -69,7 +80,7 @@ resource struct Packet:
         ret: "",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §4 — image pool + net_pool.get + nic.transmit.
     CorpusSemaContext {
@@ -95,7 +106,7 @@ struct NetPool:
         ret: "Result[unit, unit]",
         ret_ok: "Ok(unit)",
         async_wrapper: true,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §4 — scoped pool. Names: Node, compose. `with pool` itself is the
     // load-bearing surface (known unimplemented).
@@ -115,7 +126,7 @@ fn compose(mut scene: Node):
         ret: "",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §5.1 — access modes on call sites.
     CorpusSemaContext {
@@ -145,7 +156,7 @@ fn submit(queue: u32, take payload: Packet):
         ret: "",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §7.1 — BlockCache.init + map_take. Names: CacheLine, N, Payloads,
     // DmaBlock. CacheLine.invalid must accept the taken element.
@@ -172,17 +183,17 @@ const N: usize = 1
         ret: "",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
-    // 02 §7.2 — Lookup enum with IoError + match. IoError is the name the
-    // snippet uses; lookup/use come after the fragment's enum (postamble).
+    // 02 §7.2 — Lookup enum with IoError + match. Prefer the real stdlib
+    // `IoError` via import (J1c); the fragment wrap routes import-bearing
+    // wraps through `loader::load_closure` so `from core…` resolves.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         start_line: 370,
         section: "7.2 Enums and matching",
         preamble: r#"
-enum IoError:
-    OutOfRange
+from core.io_error import IoError
 "#,
         postamble: r#"
 fn lookup(key: u32) -> Lookup[u32]:
@@ -195,7 +206,7 @@ fn use(value: u32):
         ret: "Option[u32]",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §7.2 — `is .Some` sugar.
     CorpusSemaContext {
@@ -214,7 +225,7 @@ fn use(index: usize):
         ret: "",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §8.1 — match Found/Absent. Lookup[T] instantiation.
     CorpusSemaContext {
@@ -234,13 +245,11 @@ fn lookup(key: u32) -> Lookup[u32]:
         ret: "Option[u32]",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
-    // 02 §8.3 — closures as scoped access. The doc's `fn entry` is a
-    // method (has `self`, called as `table.entry`); fragment wrap would
-    // lift it to a free fn, so the preamble carries Table with the same
-    // entry body the fence shows, and only the call statement is kept
-    // from the fragment (drop_fragment_items).
+    // 02 §8.3 — closures as scoped access. Fence `fn entry` is a method on
+    // Table; nest it into the preamble's Table (fields + resolve), keep the
+    // trailing call statement for `_corpus_snippet`.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         start_line: 530,
@@ -260,17 +269,13 @@ struct Table:
 
     fn resolve(self, key: Key) -> Result[usize, MissingKey]:
         return Ok(0)
-
-    fn entry[R](mut self, key: Key, body: fn(mut Item) -> R) -> Result[R, MissingKey]:
-        index = self.resolve(key)?
-        return Ok(body(mut self.items[index]))
 "#,
         postamble: "",
         params: "mut table: Table, key: Key",
         ret: "Result[u32, MissingKey]",
         ret_ok: "Ok(count)",
         async_wrapper: false,
-        drop_fragment_items: true,
+        nest_items_into: "Table",
     },
     // 02 §9.3 — await codec.compress with take. CallError is not
     // source-nameable, so `?` on the await cannot convert.
@@ -295,7 +300,7 @@ struct Codec:
         ret: "Result[unit, unit]",
         ret_ok: "Ok(unit)",
         async_wrapper: true,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §9.4 — send / match send. take of a non-own resource in a message.
     // The fence uses `event` twice as parallel illustrations; one binding.
@@ -333,7 +338,7 @@ fn stash(take event: Event):
         ret: "",
         ret_ok: "",
         async_wrapper: true,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 02 §9.5 — with group. Method name `read` is a keyword and cannot be
     // declared; Storage is provided without it so the call surfaces
@@ -355,7 +360,7 @@ async fn fetch_part(index: u32) -> u32:
         ret: "Result[unit, unit]",
         ret_ok: "Ok(unit)",
         async_wrapper: true,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
     // 03 §3 — publish / await receipt / completion.status.
     CorpusSemaContext {
@@ -383,12 +388,10 @@ struct Queue:
         ret: "Result[unit, unit]",
         ret_ok: "Ok(unit)",
         async_wrapper: true,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
-    // 03 §6 — ISR body. Nested onto BlkDriver (drop_fragment_items) with
-    // the field/const names the body uses. No irq.bind / @image — those
-    // names are not in the snippet; wake-outside-ISR is the honest
-    // residual without inventing wiring the fence never wrote.
+    // 03 §6 — ISR body. Nest the fence's `fn on_queue_irq` into BlkDriver;
+    // drain_used (not in the fence) continues the type in the postamble.
     CorpusSemaContext {
         doc: "docs/language/03-hardware.md",
         start_line: 180,
@@ -406,25 +409,17 @@ const INT_CONFIG: u32 = 2
 struct BlkDriver:
     irq_regs: Mmio[VirtioIrqMmio]
     pending: InterruptCell[u32]
-
-    fn on_queue_irq(self):
-        status = self.irq_regs.interrupt_status.read()
-        handled = status & (INT_VRING | INT_CONFIG)
-        if handled != 0:
-            self.pending.fetch_or_release(handled)
-            self.irq_regs.interrupt_ack.write(handled)
-            wake(BlkDriver.drain_used)
-
+"#,
+        postamble: r#"
     @task
     fn drain_used(mut self):
         return unit
 "#,
-        postamble: "",
         params: "",
         ret: "",
         ret_ok: "",
         async_wrapper: false,
-        drop_fragment_items: true,
+        nest_items_into: "BlkDriver",
     },
     // 03 §8 — Untrusted narrowing. Checks clean with Completion + buffer.
     CorpusSemaContext {
@@ -444,6 +439,6 @@ struct Buf:
         ret: "Result[usize, unit]",
         ret_ok: "Ok(written)",
         async_wrapper: false,
-        drop_fragment_items: false,
+        nest_items_into: "",
     },
 ];

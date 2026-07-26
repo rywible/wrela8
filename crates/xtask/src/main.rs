@@ -6,13 +6,16 @@
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
 //!              (from M1, also parse). `corpus --sema` (plans/M9.md items
-//!              J1/J1b) additionally sema-checks every parseable block
+//!              J1/J1b/J1c) additionally sema-checks every parseable block
 //!              (with per-block declaration stubs so first-error noise
-//!              cannot hide disagreements), reports ok vs disagreement
-//!              without failing on the disagreement count, and ratchets
-//!              the per-block classification so an `ok` block decaying
-//!              fails loudly — off by default for the report; `check`
-//!              always runs the pin (J3 flips the disagreement gate).
+//!              cannot hide disagreements; method-shaped fence items nest
+//!              into a preamble type rather than being replaced by a
+//!              hand-copy), reports ok vs disagreement without failing on
+//!              the disagreement count, and ratchets the per-block
+//!              classification so an `ok` block decaying fails loudly —
+//!              off by default for the report; `check` always runs the pin
+//!              (J3 flips the disagreement gate). A standing guard refuses
+//!              any wrap that discards fence item text.
 //!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async]
 //!              [--iters N] [--seed S]; deterministic in-tree fuzzer
 //!              (plans/M1.md items B/E, plans/M2.md item I, plans/M3.md
@@ -582,12 +585,13 @@ impl CorpusSemaKind {
 }
 
 /// Sema-check one parseable corpus block. Fragments are wrapped so
-/// declarations stay at module scope and statements sit inside a
-/// synthetic `fn _corpus_snippet()` (decision 501), with an optional
-/// per-block preamble from `corpus_sema_context` (decision J1b).
-/// Import-bearing modules load through `loader::load_closure` on the real
-/// file path so path-agreement and missing-module errors surface honestly
-/// (decision 503).
+/// declarations stay at module scope (or nest into a preamble type —
+/// decision J1c) and statements sit inside a synthetic
+/// `fn _corpus_snippet()` (decision 501), with an optional per-block
+/// preamble from `corpus_sema_context` (decision J1b). Import-bearing
+/// modules — and import-bearing fragment wraps — load through
+/// `loader::load_closure` so path-agreement and missing-module errors
+/// surface honestly (decision 503).
 fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, String> {
     let loc = format!("{}:{}", display_repo_path(&b.doc), b.start_line);
     let section = nearest_doc_section(&b.doc, b.start_line);
@@ -603,25 +607,14 @@ fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, St
             }
         }
         Parsed::Fragment(entries) => {
-            let wrapped = wrap_corpus_fragment(&entries, ctx);
-            let tokens = lexer::lex(&wrapped).map_err(|e| {
-                format!(
-                    "{}:{}: --sema wrap re-lex failed: {}",
-                    b.doc.display(),
-                    b.start_line,
-                    e.message
-                )
-            })?;
-            let module = parser::parse(tokens).map_err(|e| {
-                format!(
-                    "{}:{}: --sema wrap re-parse failed: {}",
-                    b.doc.display(),
-                    b.start_line,
-                    e.message
-                )
-            })?;
-            sema::check(&module, "corpus/snippet.wr")
-                .map_err(|e| format!("[{}] {}", e.category, e.message))
+            // Wrap / preservation / re-lex / re-parse failures are harness
+            // bugs (propagate via `?`). Only the subsequent sema/loader
+            // diagnostic becomes a disagreement row.
+            let wrapped = wrap_corpus_fragment(&entries, ctx)
+                .map_err(|e| format!("{}:{}: {e}", b.doc.display(), b.start_line))?;
+            assert_fragment_items_preserved(&entries, &wrapped, &loc)?;
+            corpus_sema_check_wrapped_sema(&wrapped)
+                .map_err(|e| format!("{}:{}: {e}", b.doc.display(), b.start_line))?
         }
     };
     match result {
@@ -659,24 +652,40 @@ fn corpus_sema_load_file(path: &Path) -> Result<(), String> {
 }
 
 /// Wrap a ```wrela fragment into a checkable module: optional preamble,
-/// item declarations at module scope, optional postamble, statement
-/// entries inside `fn _corpus_snippet()` (shape configurable via context).
+/// item declarations at module scope or nested into a preamble type
+/// (`nest_items_into`), optional postamble, statement entries inside
+/// `fn _corpus_snippet()` (shape configurable via context).
+///
+/// Fence items are never discarded. Nesting is the only alternative to
+/// module scope; a context that cannot nest honestly must not ship a
+/// hand-copy (plans/M9.md item J1c).
 fn wrap_corpus_fragment(
     entries: &[parser::FragmentEntry],
     ctx: Option<&corpus_sema_context::CorpusSemaContext>,
-) -> String {
+) -> Result<String, String> {
     use parser::FragmentEntry;
-    let drop_items = ctx.map(|c| c.drop_fragment_items).unwrap_or(false);
+    let nest_into = ctx.map(|c| c.nest_items_into).unwrap_or("");
     let mut items = Vec::new();
     let mut stmts = Vec::new();
     for e in entries {
         match e {
-            FragmentEntry::Item(i) => {
-                if !drop_items {
-                    items.push(i.clone());
-                }
-            }
+            FragmentEntry::Item(i) => items.push(i.clone()),
             FragmentEntry::Stmt(s) => stmts.push(s.clone()),
+        }
+    }
+    if !nest_into.is_empty() {
+        let preamble = ctx.map(|c| c.preamble).unwrap_or("");
+        let as_struct = format!("struct {nest_into}");
+        let as_enum = format!("enum {nest_into}");
+        if !preamble.contains(&as_struct) && !preamble.contains(&as_enum) {
+            return Err(format!(
+                "corpus sema: nest_items_into=`{nest_into}` but preamble has no `struct`/`enum` of that name — refuse rather than check a copy"
+            ));
+        }
+        if items.is_empty() {
+            return Err(format!(
+                "corpus sema: nest_items_into=`{nest_into}` but the fence has no items to nest — refuse rather than check a copy"
+            ));
         }
     }
     let mut out = String::from("module corpus.snippet\n\n");
@@ -689,14 +698,30 @@ fn wrap_corpus_fragment(
     }
     if !items.is_empty() {
         let frag: Vec<_> = items.into_iter().map(FragmentEntry::Item).collect();
-        out.push_str(&printer::pretty_fragment(&frag));
+        let pretty = printer::pretty_fragment(&frag);
+        if nest_into.is_empty() {
+            out.push_str(&pretty);
+        } else {
+            // Indent every line one level so the fence items continue the
+            // open type body left by the preamble.
+            for line in pretty.lines() {
+                if line.is_empty() {
+                    out.push('\n');
+                } else {
+                    out.push_str("    ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
         if !out.ends_with('\n') {
             out.push('\n');
         }
         out.push('\n');
     }
     if let Some(c) = ctx {
-        let postamble = c.postamble.trim();
+        let postamble = c.postamble.trim_end_matches('\n');
+        let postamble = postamble.strip_prefix('\n').unwrap_or(postamble);
         if !postamble.is_empty() {
             out.push_str(postamble);
             out.push_str("\n\n");
@@ -744,7 +769,68 @@ fn wrap_corpus_fragment(
             }
         }
     }
-    out
+    Ok(out)
+}
+
+/// Standing guard (J1c): every fence `Item` must appear in the wrap.
+/// Trim-equal line match so nesting indent does not count as a rewrite.
+/// Failure is a harness error (fails `check`), not a disagreement row —
+/// silent decoupling is exactly what the corpus exists to catch.
+fn assert_fragment_items_preserved(
+    entries: &[parser::FragmentEntry],
+    wrapped: &str,
+    loc: &str,
+) -> Result<(), String> {
+    use parser::FragmentEntry;
+    for e in entries {
+        let FragmentEntry::Item(item) = e else {
+            continue;
+        };
+        let pretty = printer::pretty_fragment(&[FragmentEntry::Item(item.clone())]);
+        for line in pretty.lines() {
+            let needle = line.trim();
+            if needle.is_empty() {
+                continue;
+            }
+            let found = wrapped.lines().any(|w| w.trim() == needle);
+            if !found {
+                return Err(format!(
+                    "corpus sema: fence item content missing from wrap at {loc} \
+                     (silent decoupling): `{needle}`"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Lex/parse a wrapped fragment, then sema-check it. Outer `Err` = harness
+/// failure (re-lex / re-parse / temp I/O). Inner `Err` = disagreement
+/// diagnostic from sema or the loader.
+fn corpus_sema_check_wrapped_sema(wrapped: &str) -> Result<Result<(), String>, String> {
+    let tokens =
+        lexer::lex(wrapped).map_err(|e| format!("--sema wrap re-lex failed: {}", e.message))?;
+    let module =
+        parser::parse(tokens).map_err(|e| format!("--sema wrap re-parse failed: {}", e.message))?;
+    if module.imports.is_empty() {
+        return Ok(sema::check(&module, "corpus/snippet.wr")
+            .map_err(|e| format!("[{}] {}", e.category, e.message)));
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "wrela-corpus-sema-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let corpus_dir = dir.join("corpus");
+    std::fs::create_dir_all(&corpus_dir).map_err(|e| format!("--sema wrap temp dir: {e}"))?;
+    let path = corpus_dir.join("snippet.wr");
+    std::fs::write(&path, wrapped).map_err(|e| format!("--sema wrap temp write: {e}"))?;
+    let result = corpus_sema_load_file(&path);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(result)
 }
 
 fn synthetic_module_path(module: &Module) -> String {

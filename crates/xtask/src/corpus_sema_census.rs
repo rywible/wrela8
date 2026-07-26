@@ -1,5 +1,5 @@
 //! **Census of corpus `--sema` per-block classifications** (plans/M9.md
-//! item J1b).
+//! items J1b/J1c).
 //!
 //! Patterned on `guest_fn_key_census` / `internal_error_census`: a count
 //! of disagreements is gameable (ok blocks can all decay while a gate that
@@ -10,14 +10,16 @@
 //!
 //! Update deliberately after reviewing a live `cargo xtask corpus --sema`
 //! report. The disagreement *count* is not a gate here (J3); classification
-//! drift is.
+//! drift is. J1c's `assert_fragment_items_preserved` is a separate
+//! fail-closed guard (fence text must appear in the wrap).
 
 /// `(repo-relative loc, kind)` where `loc` is `path:start_line` as printed
 /// by the `--sema` report, and `kind` is `ok` or `disagreement`.
 ///
-/// Measured 2026-07-25 (J1b): 14 ok, 10 disagreements out of 24. The J1
-/// "noise" keyhole is gone — every former noise block has a context stub
-/// in `corpus_sema_context.rs` or is counted as a disagreement.
+/// Measured 2026-07-25 (J1b; unchanged under J1c): 14 ok, 10 disagreements
+/// out of 24. The J1 "noise" keyhole is gone — every former noise block
+/// has a context stub in `corpus_sema_context.rs` or is counted as a
+/// disagreement.
 pub const CORPUS_SEMA_CENSUS: &[(&str, &str)] = &[
     ("docs/language/02-language.md:43", "ok"),
     ("docs/language/02-language.md:150", "ok"),
