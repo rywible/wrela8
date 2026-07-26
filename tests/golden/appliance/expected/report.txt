@@ -81,9 +81,9 @@ ImageReport v0
   Section name=rodata base=0x405036d0 size=199
   Section name=abort base=0x40503798 size=120
   Section name=checkpoint base=0x40503810 size=104
-  Section name=rtdata base=0x40503878 size=496
-  Section name=devregs base=0x40503a68 size=8
-  Section name=pooldata base=0x40503a70 size=32768
+  Section name=rtdata base=0x40510000 size=496
+  Section name=devregs base=0x405101f0 size=8
+  Section name=pooldata base=0x405101f8 size=32768
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -94,5 +94,5 @@ ImageReport v0
   Driver name=StorageDriver state=16
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=496
-  DeviceRegs device=device#0 type=BlockHw driver=StorageDriver base=0x40503a68 size=8
-  Pool name=CacheBuffers kind=image payload=u32 slots=8 slot_bytes=4096 base=0x40503a70 size=32768 align=8 coherency=coherent device=none
+  DeviceRegs device=device#0 type=BlockHw driver=StorageDriver base=0x405101f0 size=8
+  Pool name=CacheBuffers kind=image payload=u32 slots=8 slot_bytes=4096 base=0x405101f8 size=32768 align=8 coherency=coherent device=none

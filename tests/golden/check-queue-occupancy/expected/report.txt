@@ -72,9 +72,9 @@ ImageReport v0
   Section name=rodata base=0x40502fc0 size=226
   Section name=abort base=0x405030a4 size=120
   Section name=checkpoint base=0x4050311c size=104
-  Section name=rtdata base=0x40503188 size=48
-  Section name=devregs base=0x405031b8 size=104
-  Section name=pooldata base=0x40503220 size=4096
+  Section name=rtdata base=0x40510000 size=48
+  Section name=devregs base=0x40510030 size=104
+  Section name=pooldata base=0x40510098 size=4096
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -83,9 +83,9 @@ ImageReport v0
   Driver name=BlkDriver state=32
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405031b8 size=104
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=256 slot_bytes=16 base=0x40503220 size=4096 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40503220 size=0x1000
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40510030 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=256 slot_bytes=16 base=0x40510098 size=4096 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40510098 size=0x1000
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
-  BlkQueue index=0 size=128 desc=0x40503220 avail=0x40503a20 used=0x40503b28 doorbell=0x40503f30
+  BlkQueue index=0 size=128 desc=0x40510098 avail=0x40510898 used=0x405109a0 doorbell=0x40510da8
   BlkAccounting descriptors_per_op=3 queue_depth=128 occupancy_bound=42

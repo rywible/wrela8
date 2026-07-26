@@ -27,8 +27,9 @@ use super::{
     intern_fallible_init_abort_messages, mailbox_root_names, merge_layout_ctx, merge_mwir_programs,
     pad_to, patch_adrp_add, patch_bl, patch_load_imm_words, place_device_regs, place_pools,
     place_pools_unchecked, place_runtime_tables, resolve_cross_core_edge,
-    resolve_mailbox_actor_addrs, round_up, turns_deref_needs_rtdata, unresolved_call_target,
-    verify_device_windows, verify_pool_windows, verify_section_sizes, wake_needs_rtdata,
+    resolve_mailbox_actor_addrs, round_up, steer_rtdata_base, turns_deref_needs_rtdata,
+    unresolved_call_target, verify_device_windows, verify_pool_windows, verify_section_sizes,
+    wake_needs_rtdata,
 };
 
 #[cfg(test)]
@@ -1918,15 +1919,16 @@ pub fn layout_test_image(
         cursor += rodata_bytes.len() as u64;
     }
 
-    // plans/M6.md item C, decision 3: the `rtdata` section, sized exactly
-    // `tables.total_bytes` — this image shape's own final section, mirroring
-    // `layout_program`'s identical convention.
-    let rtdata_base = runtime_tables.as_ref().map(|tables| {
-        cursor = round_up(cursor, 8);
-        let base = cursor;
-        cursor += tables.total_bytes;
-        base
-    });
+    // plans/M6.md item C, decision 3; M11 item C / 722: the `rtdata`
+    // section at the fixed `RTDATA_BASE`, sized exactly `tables.total_bytes`
+    // — mirroring `layout_program`'s identical convention.
+    let rtdata_base = if let Some(tables) = runtime_tables.as_ref() {
+        let base = steer_rtdata_base(cursor, tables.total_bytes)?;
+        cursor = base + tables.total_bytes;
+        Some(base)
+    } else {
+        None
+    };
 
     // plans/M7.md item D: the same `pooldata` reservation `layout_program`
     // makes, for the same reason — a test image that declares a pool

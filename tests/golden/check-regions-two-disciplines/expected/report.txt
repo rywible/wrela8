@@ -61,8 +61,8 @@ ImageReport v0
   Section name=rodata base=0x405046b0 size=396
   Section name=abort base=0x4050483c size=120
   Section name=checkpoint base=0x405048b4 size=904
-  Section name=rtdata base=0x40504c40 size=2296
-  Section name=pooldata base=0x40505538 size=32
+  Section name=rtdata base=0x40510000 size=2296
+  Section name=pooldata base=0x405108f8 size=32
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -74,4 +74,4 @@ ImageReport v0
   Turn fn=run_both frame=432
   Turns count=4 stride=512 bytes=2048
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2296
-  Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8 base=0x40505538 size=32 align=8 coherency=coherent device=none
+  Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8 base=0x405108f8 size=32 align=8 coherency=coherent device=none

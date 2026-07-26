@@ -49,6 +49,9 @@ pub const VCPUS: usize = 3;
 /// 0x4001_0000  STACKS_BASE         (3 MiB)   3 per-core stacks, 1 MiB each
 /// 0x4031_0000  .. 0x4050_0000               reserved (stack growth room)
 /// 0x4050_0000  IMAGE_BASE          (rest)    sealed image, loaded flat
+/// 0x4051_0000  RTDATA_BASE                  in-image rtdata packing base
+///                                            (code/rodata/abort/checkpoint
+///                                            pack below; see RTDATA_SIZE_MAX)
 /// ```
 ///
 /// (`console::RING_BASE`'s own region grew from 4 KiB to 8 KiB, and
@@ -106,6 +109,26 @@ pub mod layout {
     /// (documented in the module-level map above) for pages a later
     /// milestone might add without having to move the image itself.
     pub const IMAGE_BASE: u64 = 0x4050_0000;
+
+    /// In-image base of the `rtdata` section (static actor runtime tables).
+    /// Fixed packing address so layout checks a placed size against
+    /// `compute_runtime_tables` rather than bump-allocating after code
+    /// (plans/M11.md item C / decisions 722, 750). Sized from the measured
+    /// peak `code+rodata+abort+checkpoint` over the golden corpus (28014
+    /// bytes; span from `IMAGE_BASE` through checkpoint end = 0x6dc4 /
+    /// 28100) plus deliberate headroom to a round 64 KiB packing window:
+    /// `IMAGE_BASE + 0x1_0000` = `0x4051_0000`. Guest-visible pages,
+    /// stacks, and entry are unchanged — not a `MACHINE_REVISION` bump.
+    pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x1_0000; // 0x4051_0000
+
+    /// Fail-closed ceiling on the `rtdata` section's byte size. Mailbox
+    /// capacity is an image-authored integer with no other bound; a
+    /// pathological `mailbox=SETTLED` (71142) produced ~1.1 MiB of
+    /// tables. Builds that demand more than this many zeroed `rtdata`
+    /// bytes fail at layout rather than reserving unbounded image DRAM.
+    /// 256 KiB admits every golden today (peak 6664) with headroom for
+    /// migration growth (plans/M11.md decision 751).
+    pub const RTDATA_SIZE_MAX: u64 = 256 << 10; // 256 KiB
 }
 
 /// The machine-info page's field layout (06 §3: "machine revision,
@@ -719,6 +742,19 @@ mod tests {
         assert!(layout::IMAGE_BASE < dram_end);
         // Sanity: there is a real image budget left, not a sliver.
         assert!(dram_end - layout::IMAGE_BASE > 512 * (1 << 20));
+    }
+
+    #[test]
+    fn rtdata_base_is_the_64kib_packing_window() {
+        assert_eq!(layout::RTDATA_BASE, layout::IMAGE_BASE + 0x1_0000);
+        assert_eq!(layout::RTDATA_BASE, 0x4051_0000);
+        // Measured peak span IMAGE_BASE..checkpoint-end over goldens is
+        // 0x6dc4; the packing window must clear it with headroom.
+        assert!(layout::RTDATA_BASE - layout::IMAGE_BASE > 0x6dc4);
+        assert_eq!(layout::RTDATA_SIZE_MAX, 256 << 10);
+        assert!(
+            layout::RTDATA_BASE + layout::RTDATA_SIZE_MAX < layout::DRAM_BASE + layout::DRAM_SIZE
+        );
     }
 
     #[test]

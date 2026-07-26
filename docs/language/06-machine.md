@@ -34,6 +34,16 @@ machine only needs to be what the stdlib drivers speak.
 - One fixed guest-physical layout, published here per machine revision:
   image load base, per-core stacks, device shared-memory windows, and the
   framebuffer region at fixed addresses.
+- Within the sealed image, the actor runtime-tables section (`rtdata`)
+  begins at a fixed packing base **`RTDATA_BASE = IMAGE_BASE + 64 KiB`**
+  (`0x4051_0000`). `entry` / `code` / `rodata` / `abort` / `checkpoint`
+  pack below that base; layout steers the cursor there rather than
+  bump-allocating after code. A build whose packed sections would overrun
+  `RTDATA_BASE`, or whose `rtdata` alone exceeds **`RTDATA_SIZE_MAX`
+  (256 KiB)**, fails closed at layout — mailbox capacity is otherwise an
+  unbounded image-authored integer. This is an in-image packing constant;
+  guest-visible pages, stacks, and entry are unchanged, so it is not a
+  machine-revision bump.
 - The flagship profile is **1 GiB**. The image report's peak-memory ceiling
   must fit the profile or the build fails; the VMM allocates exactly the
   reservation (hugepage-backed, never overcommitted, no balloon device).
