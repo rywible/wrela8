@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_admission_order.wr sha256=3449664d139c8e99095986d5f97a355490dd4a279330ce785090cbf2d986dd0c
+  Input path=<generated> sha256=8f8bfbdc285529ebc32a369b3695d145ae0a0fa3fd064a19aa2cc875c31fe69f
   Name value=cross-core-admission-order
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink

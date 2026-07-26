@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_field_wired_accept.wr sha256=6dbfe7a0a44640e9c2abae467db78937a6035e6fb3bc4697356ea2a19100a7e3
+  Input path=<generated> sha256=86d31f615639f9228584cb1369680e848cecf1213e1201ad0be17d9a980107fe
   Name value=field-wired
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Ledger

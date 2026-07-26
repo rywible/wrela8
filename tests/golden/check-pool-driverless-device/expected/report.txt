@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_driverless_device.wr sha256=db7117382c936c2135637bbfba74d0da805c314b17c09e99680a71e593845d9e
+  Input path=<generated> sha256=97c9f0756d8bbef39d0bff59ae058d470e1be73875c564c2bb440f5ac9a3ff19
   Name value=pool-driverless
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw

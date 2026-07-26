@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_dma_reclaim.wr sha256=c5a38f126369021643110ceae068ea8eaad013843a8ce4dd396bf493287c1437
+  Input path=<generated> sha256=e4be6788aa1f4bcd24fb1eb814fc43af0e34abc55e6452f4804bbcaa41682361
   Name value=boot-dma-reclaim
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

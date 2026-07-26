@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_actor_smoke.wr sha256=e0b2fa7b243ea503bb71343ed33a946312b9fd228e073efa7bc6023f1ad3c55b
+  Input path=<generated> sha256=b24dcdf9d054f4d62409a0dbdc421cd0926863791e91fc22674dd360432aed25
   Name value=boot-actor-smoke
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store

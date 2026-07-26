@@ -9,6 +9,7 @@ ImageReport v0
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
   Input path=examples/boot_receipt_handoff.wr sha256=9929c4ff996066e364d14bb1e3377ecd6f9b5bab38e9b9c2e2e44729e196fd0c
+  Input path=<generated> sha256=151d7751f752c50ee12b1f9ba30f747b70423155edb43887e0cb2f9512925cb3
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

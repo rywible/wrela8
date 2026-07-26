@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_basic.wr sha256=5ade76bddcdb88c460aa74e9523a154c7ffdd4e486504fc7dedf9ca3dc9052bd
+  Input path=<generated> sha256=5e0c86a6bc3bac89ccc824cab4dd0d807dfe941e461c842fe4fd293a641dfbd2
   Name value=basic-appliance
   Target value=Target.wrela_machine_v1
   Device index=0 type=NicHw

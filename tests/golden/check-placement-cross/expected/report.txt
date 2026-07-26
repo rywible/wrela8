@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_placement_cross.wr sha256=ff94018ac653bc52a9521f3bc52b7fa8757f8ca8996a5974a4f4c4a660c69fb4
+  Input path=<generated> sha256=a3513ffa17a2cb778c696a0a86e7a23ed166771f8b85ca5188bf4ccd6595d814
   Name value=placement-cross
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Light

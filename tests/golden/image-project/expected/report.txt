@@ -9,6 +9,7 @@ ImageReport v0
   Input path=actor.wr sha256=4b7a743e7f1ce408b38d01780e9c122cf81ead61b0922eac45cbbe9bef5ac1f5
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
   Input path=image.wr sha256=263c210d393d4eeff3d0be674cb2ec0f215d9246b2eff1da6b12a25d9bd34094
+  Input path=<generated> sha256=5e0c86a6bc3bac89ccc824cab4dd0d807dfe941e461c842fe4fd293a641dfbd2
   Name value=project-appliance
   Target value=Target.wrela_machine_v1
   Driver index=0 type=Blk

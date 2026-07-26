@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_own_handles.wr sha256=32d671797005fb84cd59806588eb0ae69a610d8d92927c877357f4eb3519b36c
+  Input path=<generated> sha256=7eca291a04e622fe5a5caa6f3ad039b40b59f51adba92b598a935317b17151d7
   Name value=boot-own-handles
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw

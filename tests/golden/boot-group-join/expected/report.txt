@@ -7,6 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_group_join.wr sha256=e495a8ca4119006c24ab631351570d232864b00ff853c2b5c0b6d231c0c92fab
+  Input path=<generated> sha256=89e463fe6b320b94cd8f4052412a7113efe0229ec8ed56a08d290d7762fe22e5
   Name value=boot-group-join
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Doubler

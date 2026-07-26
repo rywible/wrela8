@@ -42,6 +42,7 @@ pub mod lower;
 pub mod mwir;
 pub mod placement;
 pub mod report;
+pub mod rtconfig;
 pub mod sema;
 pub mod syntax;
 pub mod virtqueue;

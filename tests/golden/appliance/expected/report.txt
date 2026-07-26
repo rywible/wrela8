@@ -11,6 +11,7 @@ ImageReport v0
   Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
   Input path=image.wr sha256=5778ef86a97edc7c4856fd70f343db253e77283c61dda63b4ca8a024d43ccddc
   Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee
+  Input path=<generated> sha256=d8d7d850f03d1bd60524dee3e579e7f77c0b22f1a1565cc63949a893d274827b
   Name value=storage-appliance
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
