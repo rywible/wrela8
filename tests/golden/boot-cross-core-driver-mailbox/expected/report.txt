@@ -26,22 +26,22 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=2128
-  Section name=rodata base=0x405008a0 size=510
-  Section name=abort base=0x40500aa0 size=120
-  Section name=checkpoint base=0x40500b18 size=104
-  Section name=rtcode base=0x40500b80 size=4340
-  Section name=rtdata base=0x40501c78 size=1368
-  Section name=devregs base=0x405021d0 size=8
+  Section name=code base=0x40500050 size=2104
+  Section name=rodata base=0x40500888 size=510
+  Section name=abort base=0x40500a88 size=120
+  Section name=checkpoint base=0x40500b00 size=104
+  Section name=rtcode base=0x40500b68 size=4156
+  Section name=rtdata base=0x40501ba8 size=1336
+  Section name=devregs base=0x405020e0 size=8
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40501b30
-  CoreEntry core=2 base=0x40501b98
-  Actor name=Probe mailbox=4 slot=16 frame=280 state=8
-  Turn fn=cross_core_send_into_driver_mailbox frame=472
+  CoreEntry core=1 base=0x40501a60
+  CoreEntry core=2 base=0x40501ac8
+  Actor name=Probe mailbox=4 slot=16 frame=264 state=8
+  Turn fn=cross_core_send_into_driver_mailbox frame=456
   Driver name=Stub state=8 mailbox=4 slot=16 frame=56
-  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x405020c0
-  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x40502118
-  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40502170
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502198
-  Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=1368
-  DeviceRegs device=device#0 type=Hw driver=Stub base=0x405021d0 size=8
+  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x40501fd0
+  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x40502028
+  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40502080
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x405020a8
+  Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=1336
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x405020e0 size=8

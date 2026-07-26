@@ -3211,7 +3211,6 @@ mod tests {
         // is private to that crate — not worth exposing for one test).
         fn build_entry(
             sp_top: u64,
-            arg_scratch_addr: u64,
             waker_addr: u64,
             enqueue_word_idx: usize,
             select_word_idx: usize,
@@ -3220,13 +3219,12 @@ mod tests {
             w.extend(load_imm_words(9, sp_top));
             w.push(encode::enc_add_imm(31, 9, 0, true));
 
+            // plans/M10.md item D0 (decision 610): arguments by value —
+            // `x1 = arg0`, `x2 = arg1`. No scratch blob, no `nargs`.
             let enqueue_call = |w: &mut Vec<u32>, method_idx: u16, value: u64, save_to: u8| {
-                w.extend(load_imm_words(9, arg_scratch_addr));
-                w.extend(load_imm_words(10, value));
-                w.push(encode::enc_str_x_imm(10, 9, 0));
                 w.push(encode::enc_movz(0, method_idx, 0, true));
-                w.extend(load_imm_words(1, arg_scratch_addr));
-                w.push(encode::enc_movz(2, 1, 0, true));
+                w.extend(load_imm_words(1, value));
+                w.push(encode::enc_mov_reg(2, 31, true)); // mov x2, xzr
                 w.extend(load_imm_words(3, waker_addr));
                 let this = w.len();
                 let delta = (enqueue_word_idx as i64 - this as i64) * 4;
@@ -3267,7 +3265,7 @@ mod tests {
 
         // Pass 1: placeholder indices, to learn `entry`'s own word count
         // (length is provably addr-value-independent, module doc above).
-        let entry_len = build_entry(sp_top, 0, 0, 0, 0).len();
+        let entry_len = build_entry(sp_top, 0, 0, 0).len();
         let placeholder = ActorAddrs {
             state: 0,
             ring: 0,
@@ -3304,16 +3302,10 @@ mod tests {
         };
         let turn_area_end = addrs.turn + wrela_compiler::codegen::TURN_RECORD_SIZE;
         let waker_addr = turn_area_end; // a detached stand-in waker record
-        let arg_scratch_addr = waker_addr + wrela_compiler::codegen::TURN_RECORD_SIZE;
-        let rtdata_bytes = (arg_scratch_addr + 8 - rtdata_base) as usize;
+        let rtdata_bytes =
+            (waker_addr + wrela_compiler::codegen::TURN_RECORD_SIZE - rtdata_base) as usize;
 
-        let entry = build_entry(
-            sp_top,
-            arg_scratch_addr,
-            waker_addr,
-            enqueue_word_idx,
-            select_word_idx,
-        );
+        let entry = build_entry(sp_top, waker_addr, enqueue_word_idx, select_word_idx);
         assert_eq!(
             entry.len(),
             entry_len,
@@ -3379,20 +3371,18 @@ mod tests {
         let mut aborting_method = Vec::new();
         push_halt(&mut aborting_method, 9, 10, ABANDON_EXIT_CODE);
 
-        fn build_entry(
-            sp_top: u64,
-            arg_scratch_addr: u64,
-            enqueue_word_idx: usize,
-            select_word_idx: usize,
-        ) -> Vec<u32> {
+        fn build_entry(sp_top: u64, enqueue_word_idx: usize, select_word_idx: usize) -> Vec<u32> {
             let mut w = Vec::new();
             w.extend(load_imm_words(9, sp_top));
             w.push(encode::enc_add_imm(31, 9, 0, true));
 
-            // enqueue(method_idx=0, args_ptr=arg_scratch, nargs=0,
-            // waker=0 — a one-way message; nothing awaits it)
+            // enqueue(method_idx=0, arg0=0, arg1=0, waker=0 — a one-way
+            // message to a no-arg method; nothing awaits it). Arguments
+            // travel by value in `x1`/`x2` (plans/M10.md item D0,
+            // decision 610); this slot is 16 bytes wide, so the callee
+            // stores neither.
             w.extend(load_imm_words(0, 0));
-            w.extend(load_imm_words(1, arg_scratch_addr));
+            w.extend(load_imm_words(1, 0));
             w.extend(load_imm_words(2, 0));
             w.extend(load_imm_words(3, 0));
             let this = w.len();
@@ -3413,7 +3403,7 @@ mod tests {
             w
         }
 
-        let entry_len = build_entry(0, 0, 0, 0).len();
+        let entry_len = build_entry(0, 0, 0).len();
         let placeholder = ActorAddrs {
             state: 0,
             ring: 0,
@@ -3447,10 +3437,10 @@ mod tests {
             count: rtdata_base + state_size + capacity * slot_size + 16,
             turn: rtdata_base + state_size + capacity * slot_size + 24,
         };
-        let arg_scratch_addr = addrs.turn + wrela_compiler::codegen::TURN_RECORD_SIZE;
-        let rtdata_bytes = (arg_scratch_addr + 8 - rtdata_base) as usize;
+        let rtdata_bytes =
+            (addrs.turn + wrela_compiler::codegen::TURN_RECORD_SIZE - rtdata_base) as usize;
 
-        let entry = build_entry(sp_top, arg_scratch_addr, enqueue_word_idx, select_word_idx);
+        let entry = build_entry(sp_top, enqueue_word_idx, select_word_idx);
         assert_eq!(entry.len(), entry_len);
         let enqueue_words = build_rt_enqueue(&addrs, capacity, slot_size, enqueue_word_idx);
         let select_words = build_rt_select_and_run(

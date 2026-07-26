@@ -27,23 +27,23 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=2648
-  Section name=rodata base=0x40500aa8 size=665
-  Section name=abort base=0x40500d44 size=120
-  Section name=checkpoint base=0x40500dbc size=104
-  Section name=rtcode base=0x40500e24 size=6268
-  Section name=rtdata base=0x405026a0 size=2232
+  Section name=code base=0x40500050 size=2592
+  Section name=rodata base=0x40500a70 size=665
+  Section name=abort base=0x40500d0c size=120
+  Section name=checkpoint base=0x40500d84 size=104
+  Section name=rtcode base=0x40500dec size=6004
+  Section name=rtdata base=0x40502560 size=2184
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4050256c
-  CoreEntry core=2 base=0x405025d4
+  CoreEntry core=1 base=0x4050242c
+  CoreEntry core=2 base=0x40502494
   Actor name=Sink mailbox=8 slot=24 frame=56 state=8
-  Actor name=Near mailbox=4 slot=16 frame=312 state=8
-  Actor name=Far mailbox=4 slot=16 frame=168 state=8
-  Turn fn=admission_order_across_two_cores frame=488
-  Ring kind=request src=0 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502cb8
-  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40502d90
-  Ring kind=request src=2 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502de8
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502ec0
-  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x40502ef8
-  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502f20
-  Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2232
+  Actor name=Near mailbox=4 slot=16 frame=296 state=8
+  Actor name=Far mailbox=4 slot=16 frame=152 state=8
+  Turn fn=admission_order_across_two_cores frame=472
+  Ring kind=request src=0 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502b48
+  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40502c20
+  Ring kind=request src=2 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502c78
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502d50
+  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x40502d88
+  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502db0
+  Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2184

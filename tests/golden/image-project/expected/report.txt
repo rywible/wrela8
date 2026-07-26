@@ -30,11 +30,11 @@ ImageReport v0
   Section name=code base=0x40500050 size=268
   Section name=abort base=0x4050015c size=120
   Section name=checkpoint base=0x405001d4 size=104
-  Section name=rtcode base=0x4050023c size=1024
-  Section name=rtdata base=0x40500640 size=392
-  Section name=pooldata base=0x405007c8 size=256
+  Section name=rtcode base=0x4050023c size=984
+  Section name=rtdata base=0x40500618 size=392
+  Section name=pooldata base=0x405007a0 size=256
   Entry base=0x40500000
   Actor name=Store mailbox=16 slot=16 frame=56 state=16
   Driver name=Blk state=16
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=392
-  Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x405007c8 size=256 align=8 coherency=coherent device=none
+  Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x405007a0 size=256 align=8 coherency=coherent device=none

@@ -5872,8 +5872,8 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     }
 }
 
-/// `rt_enqueue_actor(x0=method_idx, x1=args_ptr, x2=nargs_words,
-/// x3=waker) -> x0 (0=admitted, 1=rejected — the `send`/call admission
+/// `rt_enqueue_actor(x0=method_idx, x1=arg0, x2=arg1, x3=waker)
+/// -> x0 (0=admitted, 1=rejected — the `send`/call admission
 /// outcome, 02 §9.4's `NotAdmitted`/`Rejected` path, the minimal
 /// encoding of it)`. Admission alone — never selection, never dispatch,
 /// never readiness: a bounded ring insert, FIFO by construction (always
@@ -5887,17 +5887,27 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
 /// target's `busy` flag: a message to a busy(-suspended) actor QUEUES —
 /// decision 4's non-reentrancy lives entirely in selection, never here.
 /// A full ring (`count == capacity`) is rejected without touching
-/// `tail`/`count` at all — the caller's own `args_ptr` blob is left
-/// exactly where it was, mirroring 02 §9.4's "an outcome that did not
-/// consume [arguments] hands them back" at this ABI granularity (a real
+/// `tail`/`count` at all — the caller's own arguments are left exactly
+/// where they were (in its own registers, now that they never left
+/// them), mirroring 02 §9.4's "an outcome that did not consume
+/// [arguments] hands them back" at this ABI granularity (a real
 /// `NotAdmitted(..)` payload carry-back is item G's job).
+///
+/// The arguments are **by value in `x1`/`x2`** — plans/M10.md item D0,
+/// decision 610. They used to be `x1 = args_ptr` (the address of a
+/// 2-word scratch pair in the caller's own frame) plus `x2 =
+/// nargs_words`, copied out by a runtime loop. Nothing reachable ever
+/// passed more than two words, and the *consumer* half of this ABI
+/// (`build_rt_select_and_run`) already loaded exactly `x1`/`x2` out of
+/// the slot, so this makes the two halves symmetric and removes the one
+/// raw address that crossed this call boundary.
 ///
 /// Register use (leaf fn, owns every register it touches, never `x0..x3`
 /// until the outcome/scratch reuse below): `x9`/`x10` = count addr/value,
 /// then reused as scratch after the branch; `x11` = capacity, then a
 /// scratch; `x12`/`x13` = tail addr/value; `x14`/`x15` = slot-size scratch,
-/// then the computed slot address; `x16`/`x17`/`x18` = the copy loop's
-/// dst/src/remaining-count cursors.
+/// then the computed slot address. `x28` (`X_FRAME`) is never touched —
+/// `emit_await_suspend` keeps using it across this `bl`.
 pub fn build_rt_enqueue(
     addrs: &ActorAddrs,
     capacity: u64,
@@ -5943,20 +5953,24 @@ pub fn build_ring_enqueue(
     a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.method_idx = method_idx
     a.push(encode::enc_str_x_imm(3, 15, 8)); // slot.waker = waker
 
-    a.push(encode::enc_add_imm(16, 15, 16, true)); // dst cursor = slot + 16 (past idx+waker)
-    a.push(encode::enc_mov_reg(17, 1, true)); // src cursor = args_ptr
-    a.push(encode::enc_mov_reg(18, 2, true)); // remaining = nargs_words
-    let loop_top = a.abs();
-    let skip_loop = a.skip_placeholder(); // cbz x18, .copied
-    a.push(encode::enc_ldr_x_imm(9, 17, 0));
-    a.push(encode::enc_str_x_imm(9, 16, 0));
-    a.push(encode::enc_add_imm(17, 17, 8, true));
-    a.push(encode::enc_add_imm(16, 16, 8, true));
-    a.push(encode::enc_sub_imm(18, 18, 1, true));
-    a.b_to(loop_top);
-    let copied = a.abs();
-    a.patch_cbz(skip_loop, 18);
-    debug_assert_eq!(copied, a.abs());
+    // The arguments arrive **by value** in `x1`/`x2` (plans/M10.md item
+    // D0, decision 610), so the store count is a build-time constant of
+    // this per-ring specialization rather than a runtime `nargs` the
+    // caller has to compute. It is written as *the same expression*
+    // `build_rt_select_and_run` uses to load them back out
+    // (`arg_words` there, search this file) — producer and consumer
+    // agreeing by construction, not by two constants that happen to
+    // match. The `saturating_sub`/`.min(2)` is load-bearing at both
+    // ends: the smallest legal slot is `slot_size = 16` (a no-arg
+    // message), where storing a fixed word would write past this ring
+    // slot into the next one.
+    let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
+    if arg_words >= 1 {
+        a.push(encode::enc_str_x_imm(1, 15, 16)); // slot.arg0 = x1
+    }
+    if arg_words >= 2 {
+        a.push(encode::enc_str_x_imm(2, 15, 24)); // slot.arg1 = x2
+    }
 
     // tail = (tail + 1) % capacity
     a.push(encode::enc_add_imm(13, 13, 1, true));
@@ -6025,7 +6039,7 @@ fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capaci
 
 /// plans/M8.md item C2: `__rt_xsend_<src>_<Actor>` — a **cross-core send**,
 /// with byte-for-byte the ABI `__rt_enqueue_<Actor>` has
-/// (`x0=method_idx, x1=args_ptr, x2=nargs_words, x3=waker -> x0` =
+/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker -> x0` =
 /// 0 admitted / 1 rejected). That identity is the whole design: codegen
 /// emits one symbolic call for every `send`/`await` and never learns
 /// whether the edge crosses a core, so 04 §3's "cross-core actor edges keep
@@ -6742,7 +6756,22 @@ fn build_rt_drain(
     }
 
     for (addrs, capacity, slot_size, enqueue_start) in request_lanes {
-        let arg_words = (slot_size - 16) / 8;
+        // plans/M10.md item D0 (decision 610): the destination mailbox's
+        // own `rt_enqueue` now takes its arguments **by value** in
+        // `x1`/`x2`, so this lane loads them out of the request-ring slot
+        // instead of handing over `slot + 16` as a pointer *into the
+        // cross-core ring*. Same expression as both the enqueue's stores
+        // and dispatch's loads, `.min(2)` included.
+        //
+        // Disclosed, not silent: this clamp is new **here**. This lane
+        // used to pass an unclamped `(slot_size - 16) / 8`, so a request
+        // ring whose slot reserves 3+ argument words would have had them
+        // all copied — and then dispatch, which has always clamped to 2,
+        // would never have loaded the rest. Unreachable today (no
+        // reachable call site passes more than two words, enforced at
+        // `codegen.rs`'s `emit_marshal_and_call`); unifying the two
+        // expressions for real is item F2's job (decision 659).
+        let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
         let top = a.abs();
         a.load_imm(9, addrs.count);
         a.push(encode::enc_ldr_x_imm(10, 9, 0));
@@ -6755,8 +6784,20 @@ fn build_rt_drain(
         a.push(encode::enc_add_reg(13, 13, 12, true));
         a.push(encode::enc_ldr_x_imm(0, 13, 0)); // method_idx
         a.push(encode::enc_ldr_x_imm(3, 13, 8)); // waker (core-tagged)
-        a.push(encode::enc_add_imm(1, 13, 16, true)); // args_ptr
-        a.load_imm(2, arg_words);
+        // Absent argument registers are zeroed rather than left holding
+        // whatever the drain loop last put there: the destination
+        // mailbox's slot may be wider than this ring's, in which case the
+        // enqueue stores a register this lane never loaded.
+        if arg_words >= 1 {
+            a.push(encode::enc_ldr_x_imm(1, 13, 16)); // x1 = arg0
+        } else {
+            a.push(encode::enc_mov_reg(1, 31, true)); // mov x1, xzr
+        }
+        if arg_words >= 2 {
+            a.push(encode::enc_ldr_x_imm(2, 13, 24)); // x2 = arg1
+        } else {
+            a.push(encode::enc_mov_reg(2, 31, true)); // mov x2, xzr
+        }
         a.bl_to(*enqueue_start);
         // Rejected: the target mailbox is full. Leave the message in the
         // ring (back-pressure) and stop this lane — never a drop.
@@ -11658,17 +11699,16 @@ mod harness_jit {
         let enqueue_off = enqueue_start * 4;
         let select_off = select_start * 4;
 
-        let arg10: u64 = 10;
-        let arg20: u64 = 20;
-        let arg30: u64 = 30;
-
+        // Arguments by value, `x1` = arg0 / `x2` = arg1 (plans/M10.md
+        // item D0, decision 610); this slot is 24 bytes, so only `x1` is
+        // stored.
         assert_eq!(
-            page.call4_at(enqueue_off, 0, &arg10 as *const u64 as u64, 1, f.waker),
+            page.call4_at(enqueue_off, 0, 10, 0, f.waker),
             0,
             "first enqueue admitted"
         );
         assert_eq!(
-            page.call4_at(enqueue_off, 1, &arg20 as *const u64 as u64, 1, f.waker),
+            page.call4_at(enqueue_off, 1, 20, 0, f.waker),
             0,
             "second enqueue admitted"
         );
@@ -11678,7 +11718,7 @@ mod harness_jit {
         // (02 §9.4: an outcome that did not consume arguments hands them
         // back — the minimal encoding is simply "never mutated").
         assert_eq!(
-            page.call4_at(enqueue_off, 0, &arg30 as *const u64 as u64, 1, f.waker),
+            page.call4_at(enqueue_off, 0, 30, 0, f.waker),
             1,
             "ring full -> rejected"
         );
@@ -11749,9 +11789,8 @@ mod harness_jit {
         ));
         let page = ExecPage::new(&combined);
 
-        let arg: u64 = 7;
         assert_eq!(
-            page.call4_at(enqueue_start * 4, 0, &arg as *const u64 as u64, 1, 0),
+            page.call4_at(enqueue_start * 4, 0, 7, 0, 0),
             0,
             "send admitted (waker = 0)"
         );

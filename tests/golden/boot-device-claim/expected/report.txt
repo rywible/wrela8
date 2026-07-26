@@ -33,16 +33,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=3176
-  Section name=rodata base=0x40500cb8 size=759
-  Section name=abort base=0x40500fb0 size=120
-  Section name=checkpoint base=0x40501028 size=104
-  Section name=rtcode base=0x40501090 size=1032
-  Section name=rtdata base=0x40501498 size=968
-  Section name=devregs base=0x40501860 size=272
+  Section name=code base=0x40500050 size=3128
+  Section name=rodata base=0x40500c88 size=759
+  Section name=abort base=0x40500f80 size=120
+  Section name=checkpoint base=0x40500ff8 size=104
+  Section name=rtcode base=0x40501060 size=996
+  Section name=rtdata base=0x40501448 size=952
+  Section name=devregs base=0x40501800 size=272
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
-  Turn fn=device_claimed_image frame=632
+  Turn fn=device_claimed_image frame=616
   Driver name=BlkDriver state=32
-  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=968
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501860 size=272
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=952
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501800 size=272
