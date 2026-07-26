@@ -836,6 +836,7 @@ tests = [
   "golden/err-fstring-in-isr",
   "golden/err-fstring-bound-overflow",
   "golden/err-string-concat-overflow",
+  "golden/err-string-capacity-build-limit",
 ]
 note = """02-language.md §1.1 / 05-library.md §6: `f\"...\"` type-checks every interpolation and sums literal bytes plus each operand's `max_formatted_len` into `String[..N]`. plans/M9.md item D (decisions 260–264).
 
@@ -849,7 +850,7 @@ note = """02-language.md §1.1 / 05-library.md §6: `f\"...\"` type-checks every
 
 **Guest tier (plans/M9.md item D3, decision 320).** Same `check-format-fstring-guest` pins f-string lowering in a guest-reachable `@actor` method (mwir `FormatScalar`/`StringConcat`, boot `19`).
 
-**plans/M9.md item K1 (decisions 540–544).** A summed / concatenated capacity must be layout-representable: `8*(1+N)` fits in `usize` (`string_capacity_fits`). Pre-fix accepted i128 sums (including `2^60+2^60`) and then panicked at lowering (`capacity overflow`). Pinned: `golden/err-fstring-bound-overflow`, `golden/err-string-concat-overflow`. Literal `String[..N]` annotations and Format bounds use the same gate."""
+**plans/M9.md item K1 (decisions 540–544).** A summed / concatenated capacity must be layout-representable: `8*(1+N)` fits in `usize` (`string_capacity_fits`). Pre-fix accepted i128 sums (including `2^60+2^60`) and then panicked at lowering (`capacity overflow`). Pinned: `golden/err-fstring-bound-overflow`, `golden/err-string-concat-overflow`. Literal `String[..N]` annotations and Format bounds use the same gate.\n\n**Corrected 2026-07-26 by `cargo xtask fuzz lower --seed 101` (iteration 6134), during M9's closing deep soak.** K1's predicate checked that `8 * (1 + N)` does not overflow `usize`, which admits `N = 2^60`: the byte count is computable, and then `lower::emit_string_aggregate` calls `Vec::with_capacity(1 + N)` and Rust aborts with `capacity overflow` — a bare panic, not an `internal error:` diagnostic, so K1's own fail-open was still open through a door it did not cover. The fuzzer found it by truncating `err-fstring-bound-overflow` so the *declared* `String[..2^60]` survived without the concat sum K1 did guard. The rule is now a **build limit** (`MAX_STRING_CAPACITY = 65_536`), reusing the number and the reasoning `[elem; N]` already carries — a `String[..N]` is one length word plus `N` byte slots, so `N` is an element count in exactly the sense an array's is; at the limit the aggregate is 512 KiB. Pinned at the declaration site by `golden/err-string-capacity-build-limit`. **Both pre-existing goldens had silently become tests of the wrong error** — the declaration-site limit fires before their sums do — so both were re-based onto individually-legal operands (40000) whose sum (80000) exceeds the limit; their pinned messages are unchanged and only their line numbers moved. That re-basing is the point worth keeping: tightening a guard can make an older guard's golden vacuous, and nothing in the harness would have said so."""
 
 [[clause]]
 id = "comptime.eval.no-panics"
