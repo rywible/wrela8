@@ -1,0 +1,5 @@
+# plans/M10.md item A2d
+module runtime
+
+pub fn __wrela_runtime_probe():
+    return

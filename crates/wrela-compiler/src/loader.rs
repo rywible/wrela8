@@ -78,7 +78,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::sema::SemaError;
-use crate::syntax::ast::{Module, Span};
+use crate::syntax::ast::{Expr, Item, Member, Module, Span};
 use crate::syntax::{lexer, parser};
 
 /// One failure while loading the closure: a lex/parse error from some
@@ -339,6 +339,13 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
         ensure_time_module(&pkgroot, &mut modules)?;
     }
 
+    // plans/M10.md item A2d / decision 582: every runtime-bearing image
+    // loads `core.runtime` without a user import. Dump/report omission of
+    // the auto-injected module is decision 667 — not lazy load.
+    if closure_is_runtime_bearing(&modules) {
+        ensure_runtime_module(&pkgroot, &mut modules)?;
+    }
+
     Ok(LoadedProgram {
         root: root_key,
         modules,
@@ -418,6 +425,137 @@ pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
     Ok((key, LoadedModule { file, module }))
 }
 
+/// Loader key for `stdlib/core/runtime.wr` — the `core` alias prefix plus
+/// the file's own `module runtime` address (plans/M10.md item A2d).
+pub const RUNTIME_MODULE_KEY: &[&str] = &["core", "runtime"];
+
+/// Package-root-relative report path for auto-injected `core.runtime`
+/// (`report::address_to_relative_path` of the dotted address).
+pub const RUNTIME_INPUT_PATH: &str = "core/runtime.wr";
+
+/// True when any loaded module is runtime-bearing (plans/M10.md item A2d /
+/// decision 582): `@test(runtime)`, free/method `async fn`, `@actor`, or
+/// `@driver`.
+pub fn closure_is_runtime_bearing(modules: &BTreeMap<Vec<String>, LoadedModule>) -> bool {
+    modules
+        .values()
+        .any(|m| module_is_runtime_bearing(&m.module))
+}
+
+/// True when `module` declares a runtime surface that needs `core.runtime`
+/// in the image (plans/M10.md item A2d / decision 582).
+pub fn module_is_runtime_bearing(module: &Module) -> bool {
+    items_are_runtime_bearing(&module.items)
+}
+
+fn items_are_runtime_bearing(items: &[Item]) -> bool {
+    for item in items {
+        match item {
+            Item::Fn(f) => {
+                if f.is_async || fn_is_runtime_test(f) {
+                    return true;
+                }
+            }
+            Item::Struct(s) => {
+                if s.attrs
+                    .iter()
+                    .any(|a| a.name == "actor" || a.name == "driver")
+                {
+                    return true;
+                }
+                for member in &s.members {
+                    if members_are_runtime_bearing(member) {
+                        return true;
+                    }
+                }
+            }
+            Item::ComptimeIf(c) => {
+                if items_are_runtime_bearing(&c.then_branch) {
+                    return true;
+                }
+                if let Some(else_branch) = &c.else_branch {
+                    if items_are_runtime_bearing(else_branch) {
+                        return true;
+                    }
+                }
+            }
+            Item::Const(_) | Item::Static(_) | Item::Enum(_) | Item::Pool(_) => {}
+        }
+    }
+    false
+}
+
+fn members_are_runtime_bearing(member: &Member) -> bool {
+    match member {
+        Member::Fn(f) => f.is_async || fn_is_runtime_test(f),
+        Member::ComptimeIf(c) => {
+            c.then_branch.iter().any(members_are_runtime_bearing)
+                || c.else_branch
+                    .as_ref()
+                    .is_some_and(|b| b.iter().any(members_are_runtime_bearing))
+        }
+        Member::Field(_) | Member::Init(_) | Member::Pool(_) => false,
+    }
+}
+
+fn fn_is_runtime_test(f: &crate::syntax::ast::FnItem) -> bool {
+    f.attrs.iter().any(|a| {
+        a.name == "test"
+            && a.args.iter().any(|arg| {
+                arg.label.is_none()
+                    && matches!(&arg.value, Expr::Name(_, name) if name == "runtime")
+            })
+    })
+}
+
+/// Ensures `core.runtime` is present in `modules`. Idempotent when the
+/// closure already imported it explicitly (plans/M10.md item A2d).
+pub fn ensure_runtime_module(
+    pkgroot: &Path,
+    modules: &mut BTreeMap<Vec<String>, LoadedModule>,
+) -> Result<(), LoadError> {
+    let key: Vec<String> = RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    if modules.contains_key(&key) {
+        return Ok(());
+    }
+    let (resolved_key, file, expected_root) = import_target(pkgroot, &key, Span::default())?;
+    debug_assert_eq!(resolved_key, key);
+    if !file.is_file() {
+        return Err(build_error(
+            format!("module `{}` not found: no such file", key.join(".")),
+            Span::default(),
+        ));
+    }
+    let module = parse_file(&file)?;
+    check_agrees(&file, &module, &expected_root)?;
+    modules.insert(key, LoadedModule { file, module });
+    Ok(())
+}
+
+/// Parses toolchain `stdlib/core/runtime.wr` into a standalone loaded
+/// module (plans/M10.md item A2d: no-import runtime-bearing images still
+/// need the module in the programs map).
+pub fn load_runtime_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
+    let key: Vec<String> = RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let toolchain = toolchain_stdlib_core();
+    let file = toolchain.join("runtime.wr");
+    if !file.is_file() {
+        return Err(build_error(
+            "stdlib not found: toolchain `stdlib/core/runtime.wr` is missing".to_string(),
+            Span::default(),
+        ));
+    }
+    let module = parse_file(&file)?;
+    check_agrees(&file, &module, &toolchain)?;
+    Ok((key, LoadedModule { file, module }))
+}
+
 #[cfg(test)]
 mod time_prelude_tests {
     use super::*;
@@ -430,6 +568,37 @@ mod time_prelude_tests {
         };
         assert_eq!(key, vec!["core".to_string(), "time".to_string()]);
         assert_eq!(loaded.module.path, vec!["time".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod runtime_module_tests {
+    use super::*;
+
+    #[test]
+    fn load_runtime_module_parses() {
+        let (key, loaded) = match load_runtime_module() {
+            Ok(v) => v,
+            Err(_) => panic!("runtime.wr exists"),
+        };
+        assert_eq!(key, vec!["core".to_string(), "runtime".to_string()]);
+        assert_eq!(loaded.module.path, vec!["runtime".to_string()]);
+    }
+
+    #[test]
+    fn runtime_test_fn_is_runtime_bearing() {
+        let src = "module m\n\n@test(runtime)\npub fn t():\n    return\n";
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        assert!(module_is_runtime_bearing(&module));
+    }
+
+    #[test]
+    fn plain_image_is_not_runtime_bearing() {
+        let src = "module m\n\n@image\npub fn build() -> Image:\n    return Image(name=\"x\", target=Target.wrela_machine_v1).seal()\n";
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        assert!(!module_is_runtime_bearing(&module));
     }
 }
 

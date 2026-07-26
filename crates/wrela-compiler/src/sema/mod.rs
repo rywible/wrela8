@@ -466,10 +466,22 @@ fn render_check_dump(
     let time_explicitly_imported = modules
         .values()
         .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
+    let runtime_key: Vec<String> = crate::loader::RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let runtime_explicitly_imported = modules
+        .values()
+        .any(|m| m.imports.iter().any(|imp| imp.path == runtime_key));
 
     let mut out = String::new();
     for (key, module) in modules {
         if key == &time_key && !time_explicitly_imported {
+            continue;
+        }
+        // plans/M10.md item A2d / decision 667: omit auto-injected
+        // `core.runtime` from check dumps unless some module imported it.
+        if key == &runtime_key && !runtime_explicitly_imported {
             continue;
         }
         // DeclItems are already classified; specialize only for the path

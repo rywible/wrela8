@@ -132,8 +132,13 @@ struct CheckedClosure {
 /// module's typed program has every imported decl spliced in, so
 /// `lower`/`mwir`/`test` over `programs[root]` see the same surface a
 /// single-file prelude name used to provide.
+///
+/// plans/M10.md item A2d / decision 582: a no-import but runtime-bearing
+/// root still loads `core.runtime` into the programs map (kept, not
+/// discarded like the time-prelude inject). Names stay non-auto-visible
+/// (decision 584).
 fn check_closure(path: &str, module: Module) -> Result<CheckedClosure, ()> {
-    if module.imports.is_empty() {
+    if module.imports.is_empty() && !loader::module_is_runtime_bearing(&module) {
         match sema::check_typed(&module, path) {
             Ok(program) => {
                 let addr = module.path.join(".");
@@ -151,6 +156,13 @@ fn check_closure(path: &str, module: Module) -> Result<CheckedClosure, ()> {
                 print_sema_error(&e);
                 Err(())
             }
+        }
+    } else if module.imports.is_empty() {
+        // Runtime-bearing, no user imports: splice `core.runtime` into a
+        // two-module closure and keep both TypedPrograms.
+        match load_runtime_bearing_singleton(path, module) {
+            Ok(c) => Ok(c),
+            Err(()) => Err(()),
         }
     } else {
         match loader::load_closure(Path::new(path)) {
@@ -198,6 +210,84 @@ fn check_closure(path: &str, module: Module) -> Result<CheckedClosure, ()> {
                 print_sema_error(&e);
                 Err(())
             }
+        }
+    }
+}
+
+/// No-import runtime-bearing root: load `core.runtime` (and `core.time`
+/// when the root mentions a time-prelude name), check as a multi-module
+/// closure, keep root + runtime TypedPrograms (plans/M10.md item A2d).
+/// `core.time` is loaded only for the prelude inject then discarded from
+/// the returned maps — same discipline as `check_typed_with_time_prelude`
+/// — so no-import reports do not gain a surprise `Input path=core/time.wr`.
+fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CheckedClosure, ()> {
+    let (runtime_key, runtime_loaded) = match loader::load_runtime_module() {
+        Ok(v) => v,
+        Err(loader::LoadError::Lex(e)) => {
+            print_lex_error(&e);
+            return Err(());
+        }
+        Err(loader::LoadError::Parse(e)) => {
+            print_parse_error(&e);
+            return Err(());
+        }
+        Err(loader::LoadError::Build(e)) => {
+            print_sema_error(&e);
+            return Err(());
+        }
+    };
+    let root_key = module.path.clone();
+    let runtime_path = runtime_loaded.file.display().to_string();
+    let mut modules_by_key = BTreeMap::new();
+    modules_by_key.insert(root_key.clone(), module.clone());
+    modules_by_key.insert(runtime_key.clone(), runtime_loaded.module);
+    let mut paths = BTreeMap::new();
+    paths.insert(root_key.clone(), path.to_string());
+    paths.insert(runtime_key.clone(), runtime_path);
+    let time_key: Option<Vec<String>> = if loader::module_mentions_time(&module) {
+        let (time_key, time_loaded) = match loader::load_time_module() {
+            Ok(v) => v,
+            Err(loader::LoadError::Lex(e)) => {
+                print_lex_error(&e);
+                return Err(());
+            }
+            Err(loader::LoadError::Parse(e)) => {
+                print_parse_error(&e);
+                return Err(());
+            }
+            Err(loader::LoadError::Build(e)) => {
+                print_sema_error(&e);
+                return Err(());
+            }
+        };
+        let time_path = time_loaded.file.display().to_string();
+        paths.insert(time_key.clone(), time_path);
+        modules_by_key.insert(time_key.clone(), time_loaded.module);
+        Some(time_key)
+    } else {
+        None
+    };
+    match sema::check_program_typed(&modules_by_key, &paths) {
+        Ok(mut progs) => {
+            if let Some(tk) = &time_key {
+                progs.remove(tk);
+                modules_by_key.remove(tk);
+            }
+            let programs: BTreeMap<String, TypedProgram> =
+                progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
+            let modules: BTreeMap<String, Module> = modules_by_key
+                .into_iter()
+                .map(|(k, m)| (k.join("."), m))
+                .collect();
+            Ok(CheckedClosure {
+                root: root_key.join("."),
+                programs,
+                modules,
+            })
+        }
+        Err(e) => {
+            print_sema_error(&e);
+            Err(())
         }
     }
 }
@@ -414,11 +504,29 @@ fn build_report(
                     Ok(()) => {
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in file_paths {
+                            let rel = report::address_to_relative_path(addr);
+                            // plans/M10.md item A2d / decision 667: omit
+                            // auto-injected `core.runtime` from BuildInput
+                            // unless some module explicitly imported it —
+                            // keeps ~83 boot reports byte-identical on the
+                            // load. Explicit import stays honest.
+                            if rel == loader::RUNTIME_INPUT_PATH {
+                                let runtime_key: Vec<String> = loader::RUNTIME_MODULE_KEY
+                                    .iter()
+                                    .map(|s| (*s).to_string())
+                                    .collect();
+                                let explicit = modules
+                                    .values()
+                                    .any(|m| m.imports.iter().any(|imp| imp.path == runtime_key));
+                                if !explicit {
+                                    continue;
+                                }
+                            }
                             let bytes = std::fs::read(path).map_err(|e| {
                                 format!("error[build]: cannot read `{}`: {e}\n", path.display())
                             })?;
                             inputs.push(report::BuildInput {
-                                path: report::address_to_relative_path(addr),
+                                path: rel,
                                 digest: report::sha256_hex(&bytes),
                             });
                         }
@@ -580,6 +688,99 @@ fn run_report_stage(
         Err(diag) => {
             eprint!("{diag}");
             note_dump_diagnostic();
+        }
+    }
+}
+
+/// Single-file / whole-closure / runtime-bearing load for report/build/
+/// image stages (plans/M10.md item A2d): no imports and not runtime-
+/// bearing → one module; no imports but runtime-bearing → root +
+/// `core.runtime`; any import → `load_closure` (which itself ensures
+/// runtime when needed).
+fn load_build_closure(
+    path: &str,
+    module: Module,
+) -> Result<
+    (
+        BTreeMap<String, TypedProgram>,
+        BTreeMap<String, PathBuf>,
+        BTreeMap<String, Module>,
+    ),
+    (),
+> {
+    if module.imports.is_empty() && !loader::module_is_runtime_bearing(&module) {
+        match sema::check_typed(&module, path) {
+            Ok(program) => {
+                let addr = module.path.join(".");
+                let mut programs = BTreeMap::new();
+                let mut file_paths = BTreeMap::new();
+                let mut modules_by_addr = BTreeMap::new();
+                file_paths.insert(addr.clone(), Path::new(path).to_path_buf());
+                modules_by_addr.insert(addr.clone(), module);
+                programs.insert(addr, program);
+                Ok((programs, file_paths, modules_by_addr))
+            }
+            Err(e) => {
+                print_sema_error(&e);
+                Err(())
+            }
+        }
+    } else if module.imports.is_empty() {
+        let checked = load_runtime_bearing_singleton(path, module)?;
+        let mut file_paths = BTreeMap::new();
+        file_paths.insert(checked.root.clone(), Path::new(path).to_path_buf());
+        if checked.programs.contains_key("core.runtime") {
+            if let Ok((_, runtime_loaded)) = loader::load_runtime_module() {
+                file_paths.insert("core.runtime".to_string(), runtime_loaded.file);
+            }
+        }
+        Ok((checked.programs, file_paths, checked.modules))
+    } else {
+        match loader::load_closure(Path::new(path)) {
+            Ok(loaded) => {
+                let paths: BTreeMap<Vec<String>, String> = loaded
+                    .modules
+                    .iter()
+                    .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                    .collect();
+                let file_paths: BTreeMap<String, PathBuf> = loaded
+                    .modules
+                    .iter()
+                    .map(|(k, m)| (k.join("."), m.file.clone()))
+                    .collect();
+                let modules: BTreeMap<Vec<String>, _> = loaded
+                    .modules
+                    .into_iter()
+                    .map(|(k, m)| (k, m.module))
+                    .collect();
+                let modules_by_addr: BTreeMap<String, Module> = modules
+                    .iter()
+                    .map(|(k, m)| (k.join("."), m.clone()))
+                    .collect();
+                match sema::check_program_typed(&modules, &paths) {
+                    Ok(progs) => {
+                        let programs: BTreeMap<String, TypedProgram> =
+                            progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
+                        Ok((programs, file_paths, modules_by_addr))
+                    }
+                    Err(e) => {
+                        print_sema_error(&e);
+                        Err(())
+                    }
+                }
+            }
+            Err(loader::LoadError::Lex(e)) => {
+                print_lex_error(&e);
+                Err(())
+            }
+            Err(loader::LoadError::Parse(e)) => {
+                print_parse_error(&e);
+                Err(())
+            }
+            Err(loader::LoadError::Build(e)) => {
+                print_sema_error(&e);
+                Err(())
+            }
         }
     }
 }
@@ -831,33 +1032,44 @@ fn dump(args: &[String]) -> ExitCode {
                             // A multi-module closure prefixes each program
                             // so a stdlib-defined name is visible in the
                             // dump (golden/check-stdlib-loaded).
-                            if checked.programs.len() == 1 {
-                                print!("{}", sema::dump_typed(&checked.programs[&checked.root]));
+                            // plans/M10.md item A2d / decision 667: after
+                            // omitting auto-injected `core.runtime` (and
+                            // `core.time`), a singleton root keeps the
+                            // no-prefix shape.
+                            let time_key: Vec<String> =
+                                ["core", "time"].iter().map(|s| (*s).to_string()).collect();
+                            let time_explicit = checked
+                                .modules
+                                .values()
+                                .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
+                            let runtime_key: Vec<String> = ["core", "runtime"]
+                                .iter()
+                                .map(|s| (*s).to_string())
+                                .collect();
+                            let runtime_explicit = checked
+                                .modules
+                                .values()
+                                .any(|m| m.imports.iter().any(|imp| imp.path == runtime_key));
+                            let mut visible: Vec<(String, &TypedProgram)> = Vec::new();
+                            for (addr, program) in &checked.programs {
+                                let label = checked
+                                    .modules
+                                    .get(addr)
+                                    .map(|m| m.path.join("."))
+                                    .unwrap_or_else(|| addr.clone());
+                                if label == "time" && !time_explicit {
+                                    continue;
+                                }
+                                if label == "runtime" && !runtime_explicit {
+                                    continue;
+                                }
+                                visible.push((label, program));
+                            }
+                            if visible.len() == 1 {
+                                print!("{}", sema::dump_typed(visible[0].1));
                             } else {
                                 let mut out = String::new();
-                                // plans/M9.md item E: omit auto-injected
-                                // `core.time` from the typed dump unless
-                                // some module explicitly imported it —
-                                // same rule as `sema::dump_program`.
-                                let time_key: Vec<String> =
-                                    ["core", "time"].iter().map(|s| (*s).to_string()).collect();
-                                let time_explicit = checked
-                                    .modules
-                                    .values()
-                                    .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
-                                for (addr, program) in &checked.programs {
-                                    // Prefer the module's declared path
-                                    // (matches `--stage=check`'s dump) so a
-                                    // `core`-aliased stdlib file prints as
-                                    // `io_error`, not `core.io_error`.
-                                    let label = checked
-                                        .modules
-                                        .get(addr)
-                                        .map(|m| m.path.join("."))
-                                        .unwrap_or_else(|| addr.clone());
-                                    if label == "time" && !time_explicit {
-                                        continue;
-                                    }
+                                for (label, program) in visible {
                                     out.push_str(&format!("Module path={label}\n"));
                                     out.push_str(&sema::dump_typed(program));
                                 }
@@ -1056,46 +1268,11 @@ fn dump(args: &[String]) -> ExitCode {
                 // into "dump".
                 let dump_start = Instant::now();
                 match parsed {
-                    // plans/M4.md item B: the same single-file/whole-
-                    // closure fork `check` above already makes — an
-                    // `@image` fn's own module may or may not import
-                    // anything else.
-                    Ok(module) if module.imports.is_empty() => {
-                        match sema::check_typed(&module, &path) {
-                            Ok(program) => {
-                                let mut programs = BTreeMap::new();
-                                programs.insert(module.path.join("."), program);
-                                run_image_stage(&programs);
-                            }
-                            Err(e) => print_sema_error(&e),
-                        }
-                    }
-                    Ok(_) => match loader::load_closure(Path::new(&path)) {
-                        Ok(loaded) => {
-                            let paths: BTreeMap<Vec<String>, String> = loaded
-                                .modules
-                                .iter()
-                                .map(|(k, m)| (k.clone(), m.file.display().to_string()))
-                                .collect();
-                            let modules: BTreeMap<Vec<String>, _> = loaded
-                                .modules
-                                .into_iter()
-                                .map(|(k, m)| (k, m.module))
-                                .collect();
-                            match sema::check_program_typed(&modules, &paths) {
-                                Ok(programs) => {
-                                    let programs: BTreeMap<String, TypedProgram> = programs
-                                        .into_iter()
-                                        .map(|(k, p)| (k.join("."), p))
-                                        .collect();
-                                    run_image_stage(&programs);
-                                }
-                                Err(e) => print_sema_error(&e),
-                            }
-                        }
-                        Err(loader::LoadError::Lex(e)) => print_lex_error(&e),
-                        Err(loader::LoadError::Parse(e)) => print_parse_error(&e),
-                        Err(loader::LoadError::Build(e)) => print_sema_error(&e),
+                    // plans/M4.md item B / M10.md item A2d: single-file,
+                    // runtime-bearing singleton, or whole-closure.
+                    Ok(module) => match load_build_closure(&path, module) {
+                        Ok((programs, _, _)) => run_image_stage(&programs),
+                        Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
                 }
@@ -1117,58 +1294,13 @@ fn dump(args: &[String]) -> ExitCode {
                 // above; everything folds into "dump".
                 let dump_start = Instant::now();
                 match parsed {
-                    // The identical single-file/whole-closure fork
-                    // `check`/`image` above already make.
-                    Ok(module) if module.imports.is_empty() => {
-                        match sema::check_typed(&module, &path) {
-                            Ok(program) => {
-                                let mut programs = BTreeMap::new();
-                                let mut file_paths = BTreeMap::new();
-                                let mut modules_by_addr = BTreeMap::new();
-                                let addr = module.path.join(".");
-                                file_paths.insert(addr.clone(), Path::new(&path).to_path_buf());
-                                modules_by_addr.insert(addr.clone(), module);
-                                programs.insert(addr, program);
-                                run_report_stage(&programs, &file_paths, &modules_by_addr);
-                            }
-                            Err(e) => print_sema_error(&e),
+                    // The identical single-file / runtime-bearing /
+                    // whole-closure fork `image` above already makes.
+                    Ok(module) => match load_build_closure(&path, module) {
+                        Ok((programs, file_paths, modules_by_addr)) => {
+                            run_report_stage(&programs, &file_paths, &modules_by_addr);
                         }
-                    }
-                    Ok(_) => match loader::load_closure(Path::new(&path)) {
-                        Ok(loaded) => {
-                            let paths: BTreeMap<Vec<String>, String> = loaded
-                                .modules
-                                .iter()
-                                .map(|(k, m)| (k.clone(), m.file.display().to_string()))
-                                .collect();
-                            let file_paths: BTreeMap<String, std::path::PathBuf> = loaded
-                                .modules
-                                .iter()
-                                .map(|(k, m)| (k.join("."), m.file.clone()))
-                                .collect();
-                            let modules: BTreeMap<Vec<String>, _> = loaded
-                                .modules
-                                .into_iter()
-                                .map(|(k, m)| (k, m.module))
-                                .collect();
-                            let modules_by_addr: BTreeMap<String, Module> = modules
-                                .iter()
-                                .map(|(k, m)| (k.join("."), m.clone()))
-                                .collect();
-                            match sema::check_program_typed(&modules, &paths) {
-                                Ok(programs) => {
-                                    let programs: BTreeMap<String, TypedProgram> = programs
-                                        .into_iter()
-                                        .map(|(k, p)| (k.join("."), p))
-                                        .collect();
-                                    run_report_stage(&programs, &file_paths, &modules_by_addr);
-                                }
-                                Err(e) => print_sema_error(&e),
-                            }
-                        }
-                        Err(loader::LoadError::Lex(e)) => print_lex_error(&e),
-                        Err(loader::LoadError::Parse(e)) => print_parse_error(&e),
-                        Err(loader::LoadError::Build(e)) => print_sema_error(&e),
+                        Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
                 }
@@ -1768,76 +1900,11 @@ fn build_cmd(args: &[String]) -> ExitCode {
         }
     };
 
-    // The identical single-file/whole-closure fork `--stage=check`/`image`/
-    // `report` above already make.
-    let (programs, file_paths, modules_by_addr): (
-        BTreeMap<String, TypedProgram>,
-        BTreeMap<String, PathBuf>,
-        BTreeMap<String, Module>,
-    ) = if module.imports.is_empty() {
-        match sema::check_typed(&module, &path) {
-            Ok(program) => {
-                let addr = module.path.join(".");
-                let mut programs = BTreeMap::new();
-                let mut file_paths = BTreeMap::new();
-                let mut modules_by_addr = BTreeMap::new();
-                file_paths.insert(addr.clone(), Path::new(&path).to_path_buf());
-                modules_by_addr.insert(addr.clone(), module);
-                programs.insert(addr, program);
-                (programs, file_paths, modules_by_addr)
-            }
-            Err(e) => {
-                print_sema_error(&e);
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        match loader::load_closure(Path::new(&path)) {
-            Ok(loaded) => {
-                let paths: BTreeMap<Vec<String>, String> = loaded
-                    .modules
-                    .iter()
-                    .map(|(k, m)| (k.clone(), m.file.display().to_string()))
-                    .collect();
-                let file_paths: BTreeMap<String, PathBuf> = loaded
-                    .modules
-                    .iter()
-                    .map(|(k, m)| (k.join("."), m.file.clone()))
-                    .collect();
-                let modules: BTreeMap<Vec<String>, _> = loaded
-                    .modules
-                    .into_iter()
-                    .map(|(k, m)| (k, m.module))
-                    .collect();
-                let modules_by_addr: BTreeMap<String, Module> = modules
-                    .iter()
-                    .map(|(k, m)| (k.join("."), m.clone()))
-                    .collect();
-                match sema::check_program_typed(&modules, &paths) {
-                    Ok(progs) => {
-                        let programs: BTreeMap<String, TypedProgram> =
-                            progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
-                        (programs, file_paths, modules_by_addr)
-                    }
-                    Err(e) => {
-                        print_sema_error(&e);
-                        return ExitCode::FAILURE;
-                    }
-                }
-            }
-            Err(loader::LoadError::Lex(e)) => {
-                print_lex_error(&e);
-                return ExitCode::FAILURE;
-            }
-            Err(loader::LoadError::Parse(e)) => {
-                print_parse_error(&e);
-                return ExitCode::FAILURE;
-            }
-            Err(loader::LoadError::Build(e)) => {
-                print_sema_error(&e);
-                return ExitCode::FAILURE;
-            }
-        }
+    // The identical single-file / runtime-bearing / whole-closure fork
+    // `--stage=image`/`report` above already make.
+    let (programs, file_paths, modules_by_addr) = match load_build_closure(&path, module) {
+        Ok(v) => v,
+        Err(()) => return ExitCode::FAILURE,
     };
 
     let r = match build_report(&programs, &file_paths, &modules_by_addr) {
