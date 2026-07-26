@@ -1639,6 +1639,7 @@ doc = "05-library.md#5"
 status = "test"
 tests = [
   "golden/check-duration-arith",
+  "golden/check-time-prelude-types",
   "golden/err-duration-overflow",
   "golden/err-now-in-comptime",
   "golden/err-now-in-isr",
@@ -1649,6 +1650,8 @@ tests = [
 note = """05-library.md §5: `Duration` constructors are ordinary phase-neutral functions; Instant is opaque and monotonic; `now() -> Instant` is a sealed effect forbidden in comptime and ISR context and recorded/replayed.
 
 **plans/M9.md item E (2026-07-25, decisions 300–309).** The doc-vs-code defect: `ms`/`seconds` were compiler intrinsic arms while `ns`/`us`/`minutes`/`hours` did not exist. E deletes those two arms (AA surface 44→42) and lands all six constructors plus `Duration`/`Instant` methods in `stdlib/core/time.wr`. Names stay prelude-visible via `IMAGE_BUILDER`/`ACTOR_SURFACE` so ~194 `seconds(...)` goldens need no import reshape (decision 300); item I still owns whether that auto-visibility survives deleting `prelude.rs`.
+
+**plans/M9.md item LL (2026-07-25, decisions 330–334).** Type-position prelude visibility for `Duration`/`Instant` (const annotation, fn param/return, struct field, local) is the same inject `check_program_typed` already did for value-position constructors — but `--stage=check`'s dump re-ran `declare` without that table and panicked. Fix: `check_dump` / `check_program_dump` render from the DeclItems check produced; dump sites return `SemaError` instead of `expect`. Pinned by `golden/check-time-prelude-types` (check dump + value test). **Docs gap (not invented as a clause):** 02-language.md §2 still says the fixed prelude is `Option`/`Result`/`panic` and "Everything else is imported" — it does not name time constructors or `Duration`/`Instant` as prelude-visible. Item I owns reconciling that sentence with decision 300 when `prelude.rs` dies.
 
 **Constructors.** Ordinary checked `*` overflow — `error[comptime]: arithmetic overflow in '*'` while evaluating `ms` (`golden/err-duration-overflow`). Arith pinned by value in `golden/check-duration-arith` (equality against `ns(...)`, not `.nanos` peeks).
 

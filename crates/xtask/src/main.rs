@@ -1314,8 +1314,8 @@ fn run_sema_pipeline_once(input: &str) -> SemaPipelineOutcome {
             // cites the path verbatim (decision 2), but the fuzzer's
             // determinism check only compares two runs of the *same*
             // input against each other, so any fixed placeholder works.
-            Ok(module) => match sema::check(&module, "<fuzz>") {
-                Ok(()) => SemaPipelineOutcome::Ok(sema::dump(&module)),
+            Ok(module) => match sema::check_dump(&module, "<fuzz>") {
+                Ok(dump) => SemaPipelineOutcome::Ok(dump),
                 Err(e) => SemaPipelineOutcome::SemaErr {
                     category: e.category,
                     message: e.message,

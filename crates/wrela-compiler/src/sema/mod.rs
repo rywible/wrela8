@@ -205,27 +205,7 @@ fn check_typed_with_time_prelude(
     module: &Module,
     path: &str,
 ) -> Result<typed::TypedProgram, SemaError> {
-    let (time_key, time_loaded) = crate::loader::load_time_module().map_err(|e| match e {
-        crate::loader::LoadError::Build(e) => e,
-        crate::loader::LoadError::Lex(e) => SemaError {
-            category: "lex",
-            message: e.message,
-            line: e.line,
-            col: e.col,
-            extra_lines: vec![],
-            omit_location: false,
-            missing_method: None,
-        },
-        crate::loader::LoadError::Parse(e) => SemaError {
-            category: "parse",
-            message: e.message,
-            line: e.line,
-            col: e.col,
-            extra_lines: vec![],
-            omit_location: false,
-            missing_method: None,
-        },
-    })?;
+    let (time_key, time_loaded) = load_time_module_as_sema()?;
     let root_key = module.path.clone();
     let time_path = time_loaded.file.display().to_string();
     let mut modules = BTreeMap::new();
@@ -245,6 +225,20 @@ fn check_typed_with_time_prelude(
 }
 
 fn check_typed_single(module: &Module, path: &str) -> Result<typed::TypedProgram, SemaError> {
+    check_typed_single_with_decls(module, path).map(|(p, _)| p)
+}
+
+/// Same as `check_typed_single`, then render the check dump from the
+/// DeclItems that pass produced (plans/M9.md item LL).
+fn check_typed_single_dump(module: &Module, path: &str) -> Result<String, SemaError> {
+    let (_program, decl_items) = check_typed_single_with_decls(module, path)?;
+    dump_with_imports(module, &types::ImportedTypes::new(), Some(&decl_items))
+}
+
+fn check_typed_single_with_decls(
+    module: &Module,
+    path: &str,
+) -> Result<(typed::TypedProgram, Vec<types::DeclItem>), SemaError> {
     let specialized = specialize::specialize(module)?;
     // plans/M7.md item B: the `@layout` exact-bytes pass runs before name
     // resolution — see `types::check_layouts`' own section note for the
@@ -317,7 +311,7 @@ fn check_typed_single(module: &Module, path: &str) -> Result<typed::TypedProgram
     // descriptor-capacity proof — same shape as `send_proof`, same
     // placement (after the typed program exists, before any consumer).
     reserve_proof::check(&one)?;
-    Ok(program)
+    Ok((program, decl_items))
 }
 
 /// The `--stage=typed` dump (decision 2): delegates entirely to
@@ -332,42 +326,160 @@ pub fn dump_typed(program: &typed::TypedProgram) -> String {
 /// then one two-space-indented line per module-level declaration, no
 /// spans, resolved types spelled fully (types.rs's `render_items` owns
 /// every declaration's exact grammar — item A's dump was names only;
-/// item B graduates it to full resolved signatures). Only call this
-/// after `check` returns `Ok` — `specialize`/`declare` are re-run here
-/// (dumb, no state threaded from `check`) and the result unwrapped,
-/// since success is already guaranteed by the caller's contract.
+/// item B graduates it to full resolved signatures).
+///
+/// plans/M9.md item LL: prefer [`check_dump`] / [`check_program_dump`] —
+/// those render from the DeclItems the successful check actually used.
+/// This entry still exists for callers that already checked; it returns
+/// `Err` on a declare mismatch instead of panicking (a dump that can
+/// disagree with check must surface as a diagnostic, never `expect`).
 /// plans/M3.md item D: specializing first (exactly like `check_typed`)
 /// means this dump shows only the selected branch of any `comptime if`
 /// — the golden-visible surface the M3-D task names explicitly.
-pub fn dump(module: &Module) -> String {
+pub fn dump(module: &Module) -> Result<String, SemaError> {
+    // Same time-prelude routing as `check_typed`: a module that names
+    // Duration/Instant/seconds/… needs `core.time` in the declare table.
+    let text = crate::syntax::printer::pretty(module);
+    let needs_time = text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| tok == "now" || crate::loader::TIME_PRELUDE_NAMES.contains(&tok));
+    if needs_time {
+        let (time_key, time_loaded) = load_time_module_as_sema()?;
+        let mut modules = BTreeMap::new();
+        modules.insert(module.path.clone(), module.clone());
+        modules.insert(time_key, time_loaded.module);
+        return dump_program(&modules);
+    }
     dump_with_imports(module, &types::ImportedTypes::new(), None)
+}
+
+/// Check one module and render the `--stage=check` dump from the same
+/// DeclItems / ImportedTypes the check used (plans/M9.md item LL).
+/// Preferred over `check` + `dump`: a re-derived dump can silently
+/// disagree with sema (the Duration-in-type-position panic).
+pub fn check_dump(module: &Module, path: &str) -> Result<String, SemaError> {
+    if let Some(import) = module.imports.first() {
+        return Err(unimplemented_at(
+            "imports through the single-module entry (`--stage=typed`, `wrela test`) are",
+            import.span,
+        ));
+    }
+    let text = crate::syntax::printer::pretty(module);
+    let needs_time = text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| tok == "now" || crate::loader::TIME_PRELUDE_NAMES.contains(&tok));
+    if needs_time {
+        let (time_key, time_loaded) = load_time_module_as_sema()?;
+        let root_key = module.path.clone();
+        let time_path = time_loaded.file.display().to_string();
+        let mut modules = BTreeMap::new();
+        modules.insert(root_key.clone(), module.clone());
+        modules.insert(time_key.clone(), time_loaded.module);
+        let mut paths = BTreeMap::new();
+        paths.insert(root_key, path.to_string());
+        paths.insert(time_key, time_path);
+        return check_program_dump(&modules, &paths);
+    }
+    // Single-module path: check first, then dump from the DeclItems that
+    // same specialize/declare produced (threaded via `check_typed_single_dump`).
+    check_typed_single_dump(module, path)
+}
+
+/// Check a whole closure and render the check dump from the DeclItems /
+/// ImportedTypes that check produced (plans/M9.md item LL).
+pub fn check_program_dump(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+) -> Result<String, SemaError> {
+    let (_programs, tables) = check_program_typed_tables(modules, paths)?;
+    render_check_dump(modules, &tables)
 }
 
 /// `dump` for one module of a build closure (plans/M9.md item A1):
 /// `imported` is the same imported-type arity table `declare_with_imports`
 /// was given — without it, re-running `declare` here would fail on a
-/// signature naming an imported type, in a function whose contract is
-/// "only called after check returns Ok". `classification` carries
+/// signature naming an imported type. `classification` carries
 /// `classify_closure`'s whole-closure answer for this module's own
 /// declarations, so the dump prints the same `data`/`resource` word sema
 /// used rather than the module-local approximation a fresh `declare`
 /// would recompute.
+///
+/// plans/M9.md item LL: returns `Err` instead of panicking when declare
+/// disagrees with a prior check — ordinary input must never `expect`.
 fn dump_with_imports(
     module: &Module,
     imported: &types::ImportedTypes,
     classification: Option<&[types::DeclItem]>,
-) -> String {
-    let specialized =
-        specialize::specialize(module).expect("dump is only called after check returns Ok");
+) -> Result<String, SemaError> {
+    let specialized = specialize::specialize(module)?;
     let decl_items = match classification {
         Some(items) => items.to_vec(),
-        None => types::declare_with_imports(&specialized, imported)
-            .expect("dump is only called after check returns Ok"),
+        None => types::declare_with_imports(&specialized, imported)?,
     };
     let effects = access::infer_effects(&specialized, &decl_items, imported);
     let mut out = format!("Module path={}\n", specialized.path.join("."));
     types::render_items(&decl_items, &effects, &mut out);
-    out
+    Ok(out)
+}
+
+/// Declaration tables a successful whole-program check produced — the
+/// check-stage dump must render from these, not re-declare (item LL).
+struct CheckDumpTables {
+    decl_items_map: BTreeMap<Vec<String>, Vec<types::DeclItem>>,
+    imported_types: BTreeMap<Vec<String>, types::ImportedTypes>,
+}
+
+fn render_check_dump(
+    modules: &BTreeMap<Vec<String>, Module>,
+    tables: &CheckDumpTables,
+) -> Result<String, SemaError> {
+    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let time_explicitly_imported = modules
+        .values()
+        .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
+
+    let mut out = String::new();
+    for (key, module) in modules {
+        if key == &time_key && !time_explicitly_imported {
+            continue;
+        }
+        // DeclItems are already classified; specialize only for the path
+        // line + effect inference. Uses the tables check produced — never
+        // a fresh declare (item LL).
+        out.push_str(&dump_with_imports(
+            module,
+            &tables.imported_types[key],
+            Some(&tables.decl_items_map[key]),
+        )?);
+    }
+    Ok(out)
+}
+
+fn load_time_module_as_sema() -> Result<(Vec<String>, crate::loader::LoadedModule), SemaError> {
+    crate::loader::load_time_module().map_err(|e| match e {
+        crate::loader::LoadError::Build(e) => e,
+        crate::loader::LoadError::Lex(e) => SemaError {
+            category: "lex",
+            message: e.message,
+            line: e.line,
+            col: e.col,
+            extra_lines: vec![],
+            omit_location: false,
+            missing_method: None,
+        },
+        crate::loader::LoadError::Parse(e) => SemaError {
+            category: "parse",
+            message: e.message,
+            line: e.line,
+            col: e.col,
+            extra_lines: vec![],
+            omit_location: false,
+            missing_method: None,
+        },
+    })
 }
 
 /// The whole-program entry (plans/M4.md item A, decision 2): `modules`
@@ -464,6 +576,16 @@ pub fn check_program_typed(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<BTreeMap<Vec<String>, typed::TypedProgram>, SemaError> {
+    check_program_typed_tables(modules, paths).map(|(programs, _)| programs)
+}
+
+/// Same as `check_program_typed`, also returning the DeclItems /
+/// ImportedTypes that check used so the check-stage dump can render
+/// from them (plans/M9.md item LL).
+fn check_program_typed_tables(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, CheckDumpTables), SemaError> {
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
     let mut layouts: BTreeMap<Vec<String>, Vec<types::LayoutType>> = BTreeMap::new();
     for (key, module) in modules {
@@ -701,7 +823,13 @@ pub fn check_program_typed(
     // plans/M7.md item E2: whole-closure half of the reserve proof.
     reserve_proof::check(&by_name)?;
 
-    Ok(programs)
+    Ok((
+        programs,
+        CheckDumpTables {
+            decl_items_map,
+            imported_types,
+        },
+    ))
 }
 
 /// plans/M9.md item A1b: fills every module's `TypedProgram::imported`
@@ -1225,12 +1353,14 @@ fn inject_time_prelude_types(
 }
 
 /// The multi-module `--stage=check` dump (plans/M4.md item A): every
-/// module's own dump (`dump` above, unchanged), concatenated in
-/// `modules`'s own BTree order — an imported name is bound, never
-/// declared, so it never appears in *its importer's* own block, exactly
-/// like the single-module dump already never mentions an import
-/// statement at all.
-pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> String {
+/// module's own dump concatenated in `modules`'s own BTree order — an
+/// imported name is bound, never declared, so it never appears in *its
+/// importer's* own block.
+///
+/// plans/M9.md item LL: prefer [`check_program_dump`] (threads the tables
+/// check used). This entry still re-derives, but injects the time-prelude
+/// types the same way check does, and returns `Err` instead of panicking.
+pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> Result<String, SemaError> {
     // plans/M9.md item A1: the dump re-derives `specialize`/`declare` the
     // same dumb way `dump` above always has, so it needs the same two
     // whole-closure inputs `check_program_typed` computed — the imported
@@ -1238,15 +1368,10 @@ pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> String {
     // not resolve here at all) and `classify_closure`'s answer (or a
     // struct with an imported resource field would print `data` here and
     // be a resource everywhere else).
-    let specialized: BTreeMap<Vec<String>, Module> = modules
-        .iter()
-        .map(|(k, m)| {
-            (
-                k.clone(),
-                specialize::specialize(m).expect("dump is only called after check returns Ok"),
-            )
-        })
-        .collect();
+    let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
+    for (k, m) in modules {
+        specialized.insert(k.clone(), specialize::specialize(m)?);
+    }
     let closure_shapes = imports::closure_type_shapes(
         &specialized
             .iter()
@@ -1257,46 +1382,26 @@ pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> String {
     let mut decl_items_map: BTreeMap<Vec<String>, Vec<types::DeclItem>> = BTreeMap::new();
     let mut imported_types: BTreeMap<Vec<String>, types::ImportedTypes> = BTreeMap::new();
     for (key, module) in &specialized {
-        let imported = imports::imported_type_shapes(module, &closure_shapes);
-        decl_items_map.insert(
-            key.clone(),
-            types::declare_with_imports(module, &imported)
-                .expect("dump is only called after check returns Ok"),
-        );
+        let mut imported = imports::imported_type_shapes(module, &closure_shapes);
+        // plans/M9.md item E / LL: same inject check_program_typed uses —
+        // without it, `: Duration` in type position fails declare here.
+        inject_time_prelude_types(&mut imported, &closure_shapes);
+        decl_items_map.insert(key.clone(), types::declare_with_imports(module, &imported)?);
         imported_targets.insert(
             key.clone(),
             imports::imported_type_targets(module, &closure_shapes),
         );
         imported_types.insert(key.clone(), imported);
     }
-    types::classify_closure(&mut decl_items_map, &imported_targets)
-        .expect("dump is only called after check returns Ok");
+    types::classify_closure(&mut decl_items_map, &imported_targets)?;
 
-    // plans/M9.md item E: `core.time` is auto-loaded for prelude-visible
-    // constructors without a source import. Showing `Module path=time` in
-    // every project check dump that mentions `seconds` would reshape the
-    // golden review surface the same way requiring an import would —
-    // omit it from the dump unless some module explicitly imported it.
-    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    let time_explicitly_imported = modules
-        .values()
-        .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
-
-    let mut out = String::new();
-    for (key, module) in modules {
-        if key == &time_key && !time_explicitly_imported {
-            continue;
-        }
-        out.push_str(&dump_with_imports(
-            module,
-            &imported_types[key],
-            Some(&decl_items_map[key]),
-        ));
-    }
-    out
+    render_check_dump(
+        modules,
+        &CheckDumpTables {
+            decl_items_map,
+            imported_types,
+        },
+    )
 }
 
 #[cfg(test)]

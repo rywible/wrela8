@@ -1,0 +1,43 @@
+module examples.check_time_prelude_types
+
+# plans/M9.md item LL: Duration/Instant are prelude-visible in *type*
+# position (const annotation, fn param/return, struct field, local), not
+# only as constructor call expressions. Pins `--stage=check` — the stage
+# that panicked when declare was re-run without the injected type table.
+
+const ONE_SEC: Duration = seconds(1)
+const HALF_SEC: Duration = ms(500)
+const TEN_MS: Duration = ms(10)
+
+struct Timing:
+    delay: Duration
+
+struct Stamp:
+    at: Instant
+
+fn hold(d: Duration) -> Duration:
+    local: Duration = d
+    return local
+
+fn larger(a: Duration, b: Duration) -> Duration:
+    if a.less_than(b):
+        return b
+    return a
+
+# Instant in param/return type position. Body only forwards — minting an
+# Instant outside core.time is residue (library.time); not required here.
+fn echo_instant(t: Instant) -> Instant:
+    return t
+
+fn delay_of(t: Timing) -> Duration:
+    return t.delay
+
+@test
+fn type_position_ok():
+    comptime assert ONE_SEC.less_than(HALF_SEC) == false, "1s is not < 500ms"
+    comptime assert hold(ms(1)).less_than(seconds(1)), "hold preserves Duration"
+    comptime assert larger(ms(1), seconds(1)) == seconds(1), "larger picks seconds"
+    comptime assert delay_of(Timing(delay = TEN_MS)).less_than(ONE_SEC), "field is Duration"
+
+pub fn check() -> bool:
+    return true

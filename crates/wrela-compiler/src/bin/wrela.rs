@@ -629,10 +629,12 @@ fn dump(args: &[String]) -> ExitCode {
                     // import loads its whole closure through the loader
                     // instead, since resolving even one import needs the
                     // package root and every module it reaches.
-                    Ok(module) if module.imports.is_empty() => match sema::check(&module, &path) {
-                        Ok(()) => print!("{}", sema::dump(&module)),
-                        Err(e) => print_sema_error(&e),
-                    },
+                    Ok(module) if module.imports.is_empty() => {
+                        match sema::check_dump(&module, &path) {
+                            Ok(text) => print!("{text}"),
+                            Err(e) => print_sema_error(&e),
+                        }
+                    }
                     Ok(_) => match loader::load_closure(Path::new(&path)) {
                         Ok(program) => {
                             let paths: BTreeMap<Vec<String>, String> = program
@@ -645,8 +647,8 @@ fn dump(args: &[String]) -> ExitCode {
                                 .into_iter()
                                 .map(|(k, m)| (k, m.module))
                                 .collect();
-                            match sema::check_program(&modules, &paths) {
-                                Ok(()) => print!("{}", sema::dump_program(&modules)),
+                            match sema::check_program_dump(&modules, &paths) {
+                                Ok(text) => print!("{text}"),
                                 Err(e) => print_sema_error(&e),
                             }
                         }

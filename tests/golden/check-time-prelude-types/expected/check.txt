@@ -1,0 +1,14 @@
+Module path=examples.check_time_prelude_types
+  Const ONE_SEC: Duration
+  Const HALF_SEC: Duration
+  Const TEN_MS: Duration
+  Struct Timing data
+    field delay: Duration
+  Struct Stamp data
+    field at: Instant
+  Fn hold(d: read Duration) -> Duration
+  Fn larger(a: read Duration, b: read Duration) -> Duration
+  Fn echo_instant(t: read Instant) -> Instant
+  Fn delay_of(t: read Timing) -> Duration
+  Fn type_position_ok() -> unit
+  Fn check() -> bool
