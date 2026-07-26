@@ -2,8 +2,13 @@
 //! golden suite can pin it: `wrela dump --stage=<stage> <file.wr>`.
 //!
 //! Dumps print to stdout — including errors, which are themselves stable,
-//! golden-testable output. Exit code 0 means "dump produced" (possibly an
-//! error dump); nonzero means the CLI itself was misused.
+//! golden-testable output. Exit code 0 means the dump completed without a
+//! diagnostic; nonzero means a diagnostic was printed (lex/parse/sema/
+//! build/unimplemented) **or** the CLI itself was misused. Plans/M9.md
+//! item NN: the previous "exit 0 even for an error dump" convention lied
+//! to every script and CI harness that called `dump`; goldens compare
+//! stdout and accept a nonzero exit when the pinned expectation is itself
+//! a diagnostic (see `xtask`'s golden runner).
 //!
 //! `--timings` (ROADMAP.md's compiler measurement lane, M1) adds one more
 //! line, to STDERR only, so it never touches a golden: per-phase wall
@@ -12,6 +17,7 @@
 //! sampling, no counters, just a clock a batch pipeline already has phase
 //! boundaries for.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -29,6 +35,18 @@ use wrela_compiler::syntax::{lexer, parser, printer};
 use wrela_compiler::{codegen, lower};
 
 const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
+
+// Set by every diagnostic printer while `dump` runs; cleared at the
+// start of each `dump` invocation. Plans/M9.md item NN: `dump` exits
+// nonzero when this is set. `test`/`build` ignore it (they already
+// return `FAILURE` on their own diagnostic paths).
+thread_local! {
+    static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
+}
+
+fn note_dump_diagnostic() {
+    DUMP_HAD_DIAGNOSTIC.with(|c| c.set(true));
+}
 
 /// Renders one `sema::SemaError` exactly the way `print_sema_error` prints
 /// it (decision 1's one-line diagnostic, or item H's one multi-line
@@ -61,16 +79,27 @@ fn render_sema_error(e: &sema::SemaError) -> String {
 /// indented `required by`/`instantiated at` lines below the primary one.
 fn print_sema_error(e: &sema::SemaError) {
     print!("{}", render_sema_error(e));
+    note_dump_diagnostic();
 }
 
 /// Prints one `lexer::LexError`: `error[lex]: <message> at <line>:<col>`.
 fn print_lex_error(e: &lexer::LexError) {
     println!("error[lex]: {} at {}:{}", e.message, e.line, e.col);
+    note_dump_diagnostic();
 }
 
 /// Prints one `parser::ParseError`: `error[parse]: <message> at <line>:<col>`.
 fn print_parse_error(e: &parser::ParseError) {
     println!("error[parse]: {} at {}:{}", e.message, e.line, e.col);
+    note_dump_diagnostic();
+}
+
+/// One-line `error[unimplemented]: …` / `error[build]: …` that does not
+/// go through `print_sema_error` — still counts as a dump diagnostic
+/// (plans/M9.md item NN).
+fn print_line_diagnostic(line: &str) {
+    println!("{line}");
+    note_dump_diagnostic();
 }
 
 /// One fully-checked build closure (plans/M4.md item A's single-file /
@@ -241,7 +270,7 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
         .filter_map(|(module, p)| p.image_fn.as_ref().map(|f| (module, f)))
         .collect();
     match candidates.len() {
-        0 => println!("error[build]: no `@image` fn found in the build closure"),
+        0 => print_line_diagnostic("error[build]: no `@image` fn found in the build closure"),
         1 => {
             let (module, fn_name) = candidates[0];
             let program = &programs[module];
@@ -265,10 +294,10 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
                 .iter()
                 .map(|(module, fn_name)| format!("{module}::{fn_name}"))
                 .collect();
-            println!(
+            print_line_diagnostic(&format!(
                 "error[build]: more than one `@image` fn reachable in the build closure ({})",
                 names.join(", ")
-            );
+            ));
         }
     }
 }
@@ -504,11 +533,20 @@ fn run_report_stage(
 ) {
     match build_report(programs, file_paths, modules) {
         Ok(r) => print!("{}", r.text),
-        Err(diag) => print!("{diag}"),
+        Err(diag) => {
+            print!("{diag}");
+            note_dump_diagnostic();
+        }
     }
 }
 
 fn dump(args: &[String]) -> ExitCode {
+    // plans/M9.md item NN: every diagnostic printer sets this; clear at
+    // the start of each dump so a prior `test`/`build` call in-process
+    // cannot leak a stale bit (the CLI is one-shot today, but the rule
+    // is cheap and local).
+    DUMP_HAD_DIAGNOSTIC.with(|c| c.set(false));
+
     let mut stage = None;
     let mut path = None;
     let mut timings = false;
@@ -811,7 +849,10 @@ fn dump(args: &[String]) -> ExitCode {
                                 Ok(mwir_program) => {
                                     print!("{}", wrela_compiler::mwir::dump(&mwir_program))
                                 }
-                                Err(e) => println!("error[unimplemented]: {}", e.message),
+                                Err(e) => print_line_diagnostic(&format!(
+                                    "error[unimplemented]: {}",
+                                    e.message
+                                )),
                             }
                         }
                         Err(()) => {}
@@ -848,7 +889,10 @@ fn dump(args: &[String]) -> ExitCode {
                                 Ok(flowwir_program) => {
                                     print!("{}", wrela_compiler::flowwir::dump(&flowwir_program))
                                 }
-                                Err(e) => println!("error[unimplemented]: {}", e.message),
+                                Err(e) => print_line_diagnostic(&format!(
+                                    "error[unimplemented]: {}",
+                                    e.message
+                                )),
                             }
                         }
                         Err(()) => {}
@@ -911,25 +955,33 @@ fn dump(args: &[String]) -> ExitCode {
                                                                         &codegen_program
                                                                     )
                                                                 ),
-                                                                Err(e) => println!(
-                                                                    "error[unimplemented]: {}",
-                                                                    e.message
+                                                                Err(e) => print_line_diagnostic(
+                                                                    &format!(
+                                                                        "error[unimplemented]: {}",
+                                                                        e.message
+                                                                    ),
                                                                 ),
                                                             }
                                                         }
-                                                        Err(e) => println!(
+                                                        Err(e) => print_line_diagnostic(&format!(
                                                             "error[unimplemented]: {}",
                                                             e.message
-                                                        ),
+                                                        )),
                                                     }
                                                 }
                                                 Err(e) => print_sema_error(&e),
                                             }
                                         }
-                                        Err(e) => println!("error[unimplemented]: {}", e.message),
+                                        Err(e) => print_line_diagnostic(&format!(
+                                            "error[unimplemented]: {}",
+                                            e.message
+                                        )),
                                     }
                                 }
-                                Err(e) => println!("error[unimplemented]: {}", e.message),
+                                Err(e) => print_line_diagnostic(&format!(
+                                    "error[unimplemented]: {}",
+                                    e.message
+                                )),
                             }
                         }
                         Err(()) => {}
@@ -1082,7 +1134,9 @@ fn dump(args: &[String]) -> ExitCode {
             // Fail closed: stages that do not exist yet say so loudly
             // instead of producing a fake dump.
             let dump_start = Instant::now();
-            println!("error[unimplemented]: stage `{other}` is not implemented");
+            print_line_diagnostic(&format!(
+                "error[unimplemented]: stage `{other}` is not implemented"
+            ));
             dump_time = dump_start.elapsed();
         }
     }
@@ -1102,7 +1156,11 @@ fn dump(args: &[String]) -> ExitCode {
         );
     }
 
-    ExitCode::SUCCESS
+    if DUMP_HAD_DIAGNOSTIC.with(|c| c.get()) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Parses `eval::run_tests`'s own pinned final line, `"<N> passed, <M>
@@ -1598,10 +1656,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
 /// already makes), checks it, then reuses `build_report`'s own shared
 /// pipeline tail (one-`@image` discovery, `eval_image`, `check_sealed`, the
 /// input digests, `report::render`) — the same function `run_report_stage`
-/// calls, so the two surfaces can never silently drift apart. Unlike
-/// `dump` (exit 0 by convention, even for an error dump — this file's own
-/// module doc), `wrela build` exits nonzero on any diagnostic: there is no
-/// artifact for a caller relying on a real exit code to inspect. On
+/// calls, so the two surfaces can never silently drift apart. Like
+/// `dump` after plans/M9.md item NN, `wrela build` exits nonzero on any
+/// diagnostic: there is no artifact for a caller relying on a real exit
+/// code to inspect. On
 /// success it writes `<image-name>.report.txt` next to the root file (or
 /// into `--out-dir`, if given) and prints a few fixed summary lines to
 /// stdout (decision 8's own "pick dumb facts": the image's name and
