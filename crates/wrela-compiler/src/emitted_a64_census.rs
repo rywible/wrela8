@@ -68,8 +68,10 @@
 //!   623 / 630 / 633 / 680 (`emit_rt_enqueue`, `emit_rt_run_one`,
 //!   `emit_rt_child_poll`, `emit_rt_select_and_run`, cross-core quartet,
 //!   `emit_boot_init`)
-//! - **not_yet_migrated** — owned by a named remaining item (G, K;
-//!   F/F2/H/I examined or migrated)
+//! - **not_yet_migrated** — owned by a named remaining item. **Empty
+//!   since item M** (every migration item done or closed as a stated
+//!   residue; L-11 deleted the last row's dead code); kept so a future
+//!   addition lands loudly
 //! - **unclassified** — could not be confidently placed, **or** an
 //!   examined stated residue (item I's `build_entry_driver`) still counted
 //!
@@ -261,13 +263,12 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         note: "decision 680; memset zero-fill (681); was layout build_boot_init",
     },
     // --- not yet migrated ------------------------------------------------
-    EmitterEntry {
-        name: "push_turn_addr_from_id",
-        file: "layout/harness.rs",
-        words: 7,
-        category: Category::NotYetMigrated,
-        note: "shared index→address; remaining harness paths",
-    },
+    // Empty since item M (sweep find L-11): the last row, harness
+    // `push_turn_addr_from_id`, was dead production code (only caller was
+    // the census measure fn; the live rule is
+    // `codegen::push_turn_addr_from_id`, a backend helper) — deleted.
+    // The category stays so a future hand-asm addition has a place to
+    // land loudly instead of hiding in Unclassified.
     // --- unclassified ----------------------------------------------------
     // Micro-helper used by both floor and migratable paths; not itself a
     // floor category and not owned by one migration item.
@@ -319,14 +320,15 @@ pub const FLOOR_WORDS: usize = 26;
 
 pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 714; // was 593; G +26+57+38
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 7; // was 128; G −26−57−38
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 0; // was 7; M (L-11) deleted dead harness push_turn_addr_from_id
 
 pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residue)
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
-/// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
-/// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 879; // unchanged; G moves not-yet→image-static
+/// `build_entry_stub` embeds `push_halt`; the JIT-only `build_rt_*`
+/// materializers are NON_INVENTORY, not rows). Useful as a ratchet total;
+/// not "unique words in one image".
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 872; // was 879; M (L-11) −7
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -335,10 +337,12 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 879; // unchanged; G moves not-yet→
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
 /// Item G: checkpoint/deadline moved layout→codegen (811 / 76).
+/// Item M (L-11): dead harness `push_turn_addr_from_id` deleted — 3 body
+/// sites + 1 needle in its own doc comment (68→64).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
     ("codegen.rs", 811),
     ("layout.rs", 8),
-    ("layout/harness.rs", 68),
+    ("layout/harness.rs", 64),
 ];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
@@ -488,7 +492,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 887,
+            ENCODE_ENC_SITE_COUNT, 883,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

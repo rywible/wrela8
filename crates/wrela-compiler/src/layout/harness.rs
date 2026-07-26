@@ -469,28 +469,6 @@ pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &Runtime
         .fns
         .insert(key, crate::codegen::emit_boot_init(&spec));
 }
-/// The one index→address rule, emitted (plans/M10.md item 0c1): `id_reg`
-/// holds an `Option[TurnId]` already known nonzero, and comes back holding
-/// `turns_base + ((id - 1) << log2_stride)` — `RuntimePlacement::turn_addr`
-/// made of instructions. `scratch` is clobbered.
-///
-/// Two words of arithmetic past the base's own `load_imm`, not ROADMAP's
-/// "single shifted-register add": `encode::enc_add_reg` is shift-0 only and
-/// buying an `enc_add_reg_lsl` here would be an unmeasured optimization
-/// (CLAUDE.md's cleverness budget applies to the compiler too).
-#[allow(dead_code)] // census + G still measure/use this helper
-pub(super) fn push_turn_addr_from_id(
-    a: &mut Asm,
-    id_reg: u8,
-    scratch: u8,
-    turns_base: u64,
-    log2_stride: u8,
-) {
-    a.load_imm(scratch, turns_base);
-    a.push(encode::enc_sub_imm(id_reg, id_reg, 1, true));
-    a.push(encode::enc_lsl_imm(id_reg, id_reg, log2_stride, true));
-    a.push(encode::enc_add_reg(id_reg, scratch, id_reg, true));
-}
 /// `rt_enqueue_actor(x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn,
 /// x4=waker_core) -> x0 (0=admitted, 1=rejected — the `send`/call admission
 /// outcome, 02 §9.4's `NotAdmitted`/`Rejected` path, the minimal
@@ -2551,7 +2529,6 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     // Group child poll: one child at index 0.
     // Secondary core entry: core=1.
     const TURNS_BASE: u64 = 0x4050_1000;
-    const LOG2_STRIDE: u8 = 6;
     let ring = RingAddrs {
         ring: 0x4050_2000,
         head: 0x4050_2100,
@@ -2582,13 +2559,12 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
 
     // M10 G: checkpoint + deadline emitters measured in
     // codegen::emitted_a64_census_specialization_live_counts.
+    // M10 M (sweep find L-11): harness `push_turn_addr_from_id` was dead
+    // production code — its only caller was this measure function; the
+    // live index→address rule is `codegen::push_turn_addr_from_id`.
+    // Deleted, row removed from the census.
 
     // Helpers measured in isolation (delta on a fresh Asm).
-    {
-        let mut a = Asm::new(0);
-        push_turn_addr_from_id(&mut a, 14, 12, TURNS_BASE, LOG2_STRIDE);
-        insert(&mut out, "push_turn_addr_from_id", a.words.len());
-    }
     {
         let mut w = Vec::new();
         push_load_imm(&mut w, 9, 0x1234);

@@ -5832,10 +5832,13 @@ impl RuntimePlacement {
         self.turns_base + (id.index() as u64) * self.turn_stride
     }
 
-    /// `log2(turn_stride)` — the shift `push_turn_addr_from_id` scales an
+    /// `log2(turn_stride)` — the shift the index→address rule scales an
     /// index by, and the whole reason item 0a made the stride a power of
     /// two. `0` for an image with no turns, which then never indexes (no
-    /// `rt_*` routine is emitted at all).
+    /// `rt_*` routine is emitted at all). (The one live emitter of the
+    /// rule, `codegen::push_turn_addr_from_id`, multiplies by a relocated
+    /// stride instead — see its doc; the dead harness twin that used this
+    /// shift was deleted in M10 item M, sweep find L-11.)
     pub fn log2_turn_stride(&self) -> u8 {
         if self.turn_stride == 0 {
             0
