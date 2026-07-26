@@ -1,0 +1,8 @@
+Module path=examples.check_duration_field_image
+  Struct Timing data
+    field delay: Duration
+  Struct Store resource
+    field t: Timing
+    init(mut self) -> unit
+    fn budget_ns(read self) -> u64
+  Fn build() -> Image

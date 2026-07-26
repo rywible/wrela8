@@ -1,0 +1,32 @@
+module examples.check_duration_field_image
+
+# plans/M9.md item PP: a `Duration` in *type position* on a struct field
+# has to survive the whole way to image layout, not just `check`. Before
+# PP taught `build_layout_ctx` item E's time-prelude inject, this program
+# passed check/typed/layout-types/mwir and then failed `wrela build` with
+# `error[type]: unknown type `Duration``: `check_typed` knew the injected
+# name and the layout declare did not. Found by `xtask fuzz async`
+# (seed=3, iteration 4441) as `merge_layout_ctx failed after check_typed
+# already accepted this program`; `check-time-prelude-types` could not
+# catch it because it pins only the check dump and a value test.
+
+struct Timing:
+    delay: Duration
+
+@actor
+pub struct Store:
+    t: Timing
+
+    init(mut self):
+        self.t = Timing(delay=ms(10))
+
+    pub fn budget_ns(read self) -> u64:
+        return 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="duration-field-image", target=Target.wrela_machine_v1)
+    s = img.actor(Store, mailbox=8)
+    img.supervise(children=[s], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    return img.seal()

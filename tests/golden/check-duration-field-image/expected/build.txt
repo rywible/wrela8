@@ -1,0 +1,3 @@
+build: name=duration-field-image target=Target.wrela_machine_v1
+build: devices=0 drivers=0 actors=1 pools=0
+build: report written to target/golden-build-tmp/check-duration-field-image/duration-field-image.report.txt

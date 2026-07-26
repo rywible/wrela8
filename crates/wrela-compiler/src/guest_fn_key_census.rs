@@ -48,6 +48,13 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         "asm-arith/expected/asm.txt",
         &["checked_add", "checked_div", "mixed", "wrapping_add"],
     ),
+    // plans/M9.md item PP: `ms` is the load-bearing key here. A `Duration`
+    // field only reaches codegen if the layout declare knows the injected
+    // time-prelude type, which is exactly what this case regressed on.
+    (
+        "check-duration-field-image/expected/asm.txt",
+        &["Store.budget_ns", "Store.init", "ms"],
+    ),
     (
         "asm-async-basic/expected/asm.txt",
         &["Caller.run", "Counter.get"],
