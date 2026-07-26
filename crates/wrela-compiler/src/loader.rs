@@ -336,7 +336,12 @@ pub fn closure_mentions_time(modules: &BTreeMap<Vec<String>, LoadedModule>) -> b
     modules.values().any(|m| module_mentions_time(&m.module))
 }
 
-fn module_mentions_time(module: &Module) -> bool {
+/// True when `module`'s pretty-printed source mentions a time-prelude
+/// name or `now` (plans/M9.md item E / PP). Shared by the loader's lazy
+/// `core.time` splice and by `mwir::build_layout_ctx`'s matching type
+/// inject — the two must agree on the predicate, or a module `check_typed`
+/// accepts via the prelude can still fail declare one layer down.
+pub fn module_mentions_time(module: &Module) -> bool {
     // Pretty-print and scan tokens — cheaper and less brittle than
     // mirroring every Expr/Stmt variant, and false positives from a
     // comment spelling `seconds` only cost a harmless stdlib load.

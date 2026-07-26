@@ -864,6 +864,14 @@ pub struct LayoutCtx {
 /// own doc comment) — call once per module; only plain (non-generic)
 /// top-level `struct`/`enum` declarations contribute (the disclosed
 /// generic-instantiation gap above).
+///
+/// plans/M9.md item PP: when the module mentions a time-prelude name,
+/// inject `Duration`/`Instant` arity 0 into the imported-type table the
+/// same way `sema::check_typed` does via `inject_time_prelude_types`.
+/// Without this, `build_layout_ctx(&module, empty)` is not a subset of
+/// what `check_typed` just accepted (NN carry-out 2 / LL residue) — a
+/// `: Duration` field fails declare here after the check path spliced
+/// `core.time`.
 pub fn build_layout_ctx(
     module: &crate::syntax::ast::Module,
     imported: &types::ImportedTypes,
@@ -871,7 +879,13 @@ pub fn build_layout_ctx(
     use crate::sema::types::{DeclEnum, DeclItem, DeclMember, DeclStruct, DeclVariantPayload};
 
     let specialized = crate::sema::specialize::specialize(module)?;
-    let items = types::declare_with_imports(&specialized, imported)?;
+    let mut imported = imported.clone();
+    if crate::loader::module_mentions_time(module) {
+        for name in ["Duration", "Instant"] {
+            imported.entry(name.to_string()).or_insert(0);
+        }
+    }
+    let items = types::declare_with_imports(&specialized, &imported)?;
     let mut ctx = LayoutCtx::default();
     for item in items {
         match item {

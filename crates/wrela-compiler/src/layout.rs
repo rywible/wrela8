@@ -3203,10 +3203,18 @@ fn closure_imported_types(
     Ok(specialized
         .iter()
         .map(|(addr, m)| {
-            (
-                addr.clone(),
-                crate::sema::imports::imported_type_shapes(m, &shapes),
-            )
+            let mut imported = crate::sema::imports::imported_type_shapes(m, &shapes);
+            // plans/M9.md item PP: same Duration/Instant inject
+            // `build_layout_ctx` / `check_typed` perform. Without it,
+            // `merge_actor_pub_methods` (and any other declare-with-
+            // closure-imports path) fails on a prelude-only `: Duration`
+            // after check already accepted.
+            if crate::loader::module_mentions_time(m) {
+                for name in ["Duration", "Instant"] {
+                    imported.entry(name.to_string()).or_insert(0);
+                }
+            }
+            (addr.clone(), imported)
         })
         .collect())
 }
