@@ -1,5 +1,6 @@
 //! Image runtime config generator (plans/M11.md item D, decisions 700–702 /
-//! 709 / 760–769; item E, decisions 780–786; item F, decisions 790–796).
+//! 709 / 760–769; item E, decisions 780–786; item F, decisions 790–796;
+//! item G, decisions 800–809).
 //!
 //! After `@image` evaluation + placement, the compiler pretty-prints a
 //! hidden facts-only module (`core.__image_runtime`) as source text and
@@ -7,7 +8,7 @@
 //! decisions in the generated text — consts, `@layout(runtime)` types,
 //! `@placed` statics, and exhaustive `match` ladders over comptime indices.
 
-use crate::layout::{RuntimeTables, place_runtime_tables};
+use crate::layout::{RingKind, RuntimeTables, place_runtime_tables};
 use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 use wrela_machine::layout::RTDATA_BASE;
@@ -23,7 +24,27 @@ pub struct ChildSiteFact {
     pub turn_index: usize,
 }
 
-/// Image-specific facts beyond [`RuntimeTables`] (item F / decision 790).
+/// One cross-core ring's placed facts (plans/M11.md item G / decision 800).
+#[derive(Debug, Clone)]
+pub struct RingFact {
+    pub kind: RingKind,
+    pub src: usize,
+    pub dst: usize,
+    pub capacity: u64,
+    pub slot_size: u64,
+    pub ring_base: u64,
+    pub head: u64,
+    pub tail: u64,
+    pub count: u64,
+    /// Request lane: image handle word of the target mailbox root
+    /// (decision 801 — handle identity, not type-alone).
+    pub target_handle: Option<u64>,
+    /// Request lane: mailbox-root name for `rt_enqueue` remap until item J.
+    pub target_actor: Option<String>,
+}
+
+/// Image-specific facts beyond [`RuntimeTables`] (item F / decision 790;
+/// item G / decision 800).
 /// Empty vectors yield match ladders that always return 0 (stub / dump).
 #[derive(Debug, Clone, Default)]
 pub struct RtconfigExtras {
@@ -34,6 +55,12 @@ pub struct RtconfigExtras {
     pub drain_by_core: Vec<bool>,
     /// `g.start` sites in `BTreeMap` key order (same as former inject).
     pub child_sites: Vec<ChildSiteFact>,
+    /// Cross-core rings in `RuntimeTables::rings` / placement order.
+    pub rings: Vec<RingFact>,
+    /// Mailbox-root handle word per root (same order as enqueue stubs).
+    pub enqueue_handles: Vec<u64>,
+    /// Mailbox-root names parallel to `enqueue_handles` (remap targets).
+    pub enqueue_actors: Vec<String>,
 }
 
 /// Hidden module address (decision 701). Loader key is `["core", "__image_runtime"]`;
@@ -49,12 +76,17 @@ pub const GENERATED_INPUT_PATH: &str = "<generated>";
 /// Dump stage name (decision 701).
 pub const DUMP_STAGE: &str = "rtconfig";
 
-/// Fixed stub pools (decision 791): `runtime.wr` always imports every
+/// Fixed stub pools (decision 791 / 802): `runtime.wr` always imports every
 /// stub so spliced match-ladder bodies can Call them. Counts are hard
 /// ceilings — generator fails closed if an image needs more.
 pub const SELECT_STUB_COUNT: usize = 32;
-pub const DRAIN_STUB_COUNT: usize = 3; // == VCPUS
 pub const RESUME_STUB_COUNT: usize = 16;
+/// Cross-core ring / xsend / xreply pool (decision 802). Matches the
+/// handwritten trampoline pools in `runtime.wr`.
+pub const RING_POOL_COUNT: usize = 8;
+pub const ENQUEUE_STUB_COUNT: usize = 32;
+/// Sentinel edge index from match ladders when no ring matches (decision 801).
+pub const NO_EDGE: usize = 255;
 
 /// Batch-1 stub text so `runtime.wr` can import counts / `RT` / `GROUPS`
 /// before a real image is evaluated (plans/M11.md item E / decision 780).
@@ -83,8 +115,63 @@ pub fn stub_text() -> String {
 /// Item F (decisions 790–792): `SCHED` stripe; child tag/payload fields;
 /// match ladders + fixed stub pools from `tables.select_by_core` /
 /// `drain_by_core` / `child_sites` (filled by `RuntimeWiring::derive`).
+/// Item G (decisions 800–802): ring overlays + handle-identity ladders.
 pub fn generate(tables: &RuntimeTables) -> String {
-    let extras = RtconfigExtras {
+    let extras = extras_from_tables(tables);
+    generate_with(tables, &extras)
+}
+
+/// Build [`RtconfigExtras`] from stamped `RuntimeTables` fields (shared by
+/// dump `generate` and live reinject — decision 800).
+pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
+    let placement = place_runtime_tables(RTDATA_BASE, tables);
+    let mut rings = Vec::new();
+    for (i, r) in tables.rings.iter().enumerate() {
+        let addrs = placement
+            .rings
+            .get(i)
+            .copied()
+            .unwrap_or(crate::layout::RingAddrs {
+                ring: RTDATA_BASE,
+                head: RTDATA_BASE,
+                tail: RTDATA_BASE,
+                count: RTDATA_BASE,
+            });
+        let (target_handle, target_actor) = match r.kind {
+            RingKind::Request => {
+                let actor = r.actor.clone().unwrap_or_default();
+                let handle = tables
+                    .ring_target_handles
+                    .get(i)
+                    .copied()
+                    .or_else(|| {
+                        tables
+                            .enqueue_handles
+                            .iter()
+                            .zip(tables.enqueue_actors.iter())
+                            .find(|(_, n)| *n == &actor)
+                            .map(|(h, _)| *h)
+                    })
+                    .unwrap_or(0);
+                (Some(handle), Some(actor))
+            }
+            RingKind::Reply => (None, None),
+        };
+        rings.push(RingFact {
+            kind: r.kind,
+            src: r.src,
+            dst: r.dst,
+            capacity: r.capacity,
+            slot_size: r.slot_size,
+            ring_base: addrs.ring,
+            head: addrs.head,
+            tail: addrs.tail,
+            count: addrs.count,
+            target_handle,
+            target_actor,
+        });
+    }
+    RtconfigExtras {
         select_by_core: tables.select_by_core.clone(),
         drain_by_core: tables.drain_by_core.clone(),
         child_sites: tables
@@ -96,27 +183,32 @@ pub fn generate(tables: &RuntimeTables) -> String {
                 turn_index: *turn_index,
             })
             .collect(),
-    };
-    generate_with(tables, &extras)
+        rings,
+        enqueue_handles: tables.enqueue_handles.clone(),
+        enqueue_actors: tables.enqueue_actors.clone(),
+    }
 }
 
-/// Pretty-print the facts-only config module for `tables` + item-F extras.
+/// Pretty-print the facts-only config module for `tables` + item-F/G extras.
 ///
 /// `tables.cores` must already reflect `PlacementTable.cores` (call
 /// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
 /// <tables.cores>` with that exact spelling (decision 709 / 761).
 ///
 /// Item E (decision 781): structured `TurnArea` / `GroupSlot` overlays.
-/// Item F (decisions 790–792): `SchedCore` / `RT.sched` for RR cursors;
+/// Item F (decisions 790–792): `SchedCore` / `SCHED` for RR cursors;
 /// child tag/payload fields; match ladders + placeholder stubs that layout
-/// remaps onto `rt_select_and_run` / `rt_drain` / resume callees.
+/// remaps onto `rt_select_and_run` / resume callees.
+/// Item G (decisions 800–802): ring overlays + handle-identity / drain
+/// lane ladders; enqueue stubs remapped to `rt_enqueue` until item J.
 pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let n_turns_len = (tables.n_turns as usize).max(1);
     // Overlay stride is at least 0x48 so `ambient_group` at TURN_RECORD_SIZE
     // (0x40) always fits for batch-2 typecheck of deadline helpers. Live
     // reinject still requires `tables.turn_stride >= 0x48` so indexing
-    // matches rtdata packing (decision 781 / 785).
+    // matches rtdata packing (decision 781 / 785). G adds `reply_tag` at
+    // 0x38 (OFF_TURN_REPLY_TAG) so drain can write it through RT.turns.
     let turn_stride = if tables.turn_stride == 0 {
         128
     } else {
@@ -124,9 +216,18 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     };
     let group_cap = tables.group_arena_capacity as usize;
     let group_slots = group_cap.max(1);
-    let group_addr = placement.group_arena;
+    // When the arena is empty, `place_runtime_tables` still returns a
+    // `group_arena` cursor equal to the first ring's base (0-byte arena).
+    // Overlay GROUPS at a non-colliding placeholder so RING*_DATA can own
+    // the real ring addresses (decision 800) — same move as empty-sched.
+    let group_addr = if group_cap == 0 {
+        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX - (RING_POOL_COUNT as u64) * 64 - 96
+    } else {
+        placement.group_arena
+    };
     let n_cores = tables.cores;
     let ready_cap = tables.ready_queue_capacity as usize;
+    let n_rings = extras.rings.len();
 
     // Flatten select actors for stub numbering (stable across cores).
     let mut select_flat: Vec<(usize, usize, String)> = Vec::new();
@@ -142,12 +243,17 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         select_flat.len()
     );
     assert!(
-        n_cores <= DRAIN_STUB_COUNT,
-        "image needs {n_cores} drain stubs; pool is {DRAIN_STUB_COUNT} (decision 791)"
-    );
-    assert!(
         n_child <= RESUME_STUB_COUNT,
         "image needs {n_child} resume stubs; pool is {RESUME_STUB_COUNT} (decision 791)"
+    );
+    assert!(
+        n_rings <= RING_POOL_COUNT,
+        "image needs {n_rings} rings; pool is {RING_POOL_COUNT} (decision 802)"
+    );
+    assert!(
+        extras.enqueue_actors.len() <= ENQUEUE_STUB_COUNT,
+        "image needs {} enqueue stubs; pool is {ENQUEUE_STUB_COUNT} (decision 802)",
+        extras.enqueue_actors.len()
     );
 
     let mut out = String::new();
@@ -168,20 +274,22 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "N_CHILD_SITES", n_child);
     push_const(&mut out, "N_SELECT_STUBS", select_flat.len());
     push_const(&mut out, "SELECT_STUB_COUNT", SELECT_STUB_COUNT);
-    push_const(&mut out, "DRAIN_STUB_COUNT", DRAIN_STUB_COUNT);
     push_const(&mut out, "RESUME_STUB_COUNT", RESUME_STUB_COUNT);
+    push_const(&mut out, "N_RINGS", n_rings);
+    push_const(&mut out, "RING_POOL_COUNT", RING_POOL_COUNT);
+    push_const(&mut out, "ENQUEUE_STUB_COUNT", ENQUEUE_STUB_COUNT);
+    push_const(&mut out, "NO_EDGE", NO_EDGE);
     out.push('\n');
 
-    // Turn header. `reply` at +24 is OFF_TURN_REPLY — async epilogue stores
-    // the completing scalar there so child_poll can read it after resume
-    // (decision 793). Size == TURN_STRIDE so `RT.turns[i]` indexes live
-    // turns when reinjected (decision 781).
+    // Turn header. `reply` at +24 is OFF_TURN_REPLY; `reply_tag` at +0x38
+    // is OFF_TURN_REPLY_TAG (drain writes both — decision 803).
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct TurnArea:\n");
     out.push_str("    busy: u64\n");
     out.push_str("    suspended: u64\n");
     out.push_str("    resume_ready: u64\n");
     out.push_str("    reply: u64\n");
+    out.push_str("    @offset(0x38) reply_tag: u64\n");
     out.push_str("    @offset(0x40) ambient_group: u64\n");
     if turn_stride > 0x48 {
         out.push_str(&format!("    @offset({:#x}) _tail: u8\n", turn_stride - 1));
@@ -222,14 +330,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("pub static RT: RuntimeTables\n");
     out.push('\n');
 
-    // Scheduler stripe sits after turns + actor/driver mailboxes (not
-    // contiguous with `RT.turns`) — separate @placed at sched_base
-    // (decision 790). `rr_cursors[0]` is the first core's cursor word,
-    // which follows that core's ready[] in SchedCore.
-    //
-    // Stub / empty turn sets place sched at `base` in `place_runtime_tables`;
-    // the overlay still reserves `N_TURNS_LEN` turns at RTDATA_BASE, so use
-    // a non-colliding placeholder after that array for typecheck.
     let sched_base = if tables.n_turns == 0 {
         RTDATA_BASE + (n_turns_len as u64) * (turn_stride as u64)
     } else {
@@ -254,21 +354,56 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("pub static GROUPS: GroupArena\n");
     out.push('\n');
 
-    // Fixed stub pools (decision 791): always emitted so `runtime.wr` can
-    // import every name. Live remaps overwrite Call targets; unused stubs
-    // stay as `return 0`.
+    // Cross-core ring overlays (decision 800). Pool is fixed so runtime.wr
+    // can import every RING*_CTL / RING*_DATA name; unused slots sit at a
+    // non-colliding placeholder past the overlay turn array.
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct RingCtl:\n");
+    out.push_str("    head: u64\n");
+    out.push_str("    tail: u64\n");
+    out.push_str("    count: u64\n");
+    out.push('\n');
+    let ring_placeholder =
+        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX - (RING_POOL_COUNT as u64) * 64;
+    for i in 0..RING_POOL_COUNT {
+        let (words, data_addr, ctl_addr) = if let Some(r) = extras.rings.get(i) {
+            let words = ((r.capacity * r.slot_size) / 8).max(1) as usize;
+            (words, r.ring_base, r.head)
+        } else {
+            (
+                1usize,
+                ring_placeholder + (i as u64) * 64,
+                ring_placeholder + (i as u64) * 64 + 32,
+            )
+        };
+        push_const(&mut out, &format!("RING{i}_WORDS"), words);
+        out.push_str("@layout(runtime, endian=little)\n");
+        out.push_str(&format!("struct Ring{i}Data:\n"));
+        out.push_str(&format!("    words: [u64; RING{i}_WORDS]\n"));
+        out.push('\n');
+        out.push_str(&format!("@placed({data_addr:#x})\n"));
+        out.push_str(&format!("pub static RING{i}_DATA: Ring{i}Data\n"));
+        out.push('\n');
+        out.push_str(&format!("@placed({ctl_addr:#x})\n"));
+        out.push_str(&format!("pub static RING{i}_CTL: RingCtl\n"));
+        out.push('\n');
+    }
+
+    // Fixed stub pools (decision 791 / 802).
     for i in 0..SELECT_STUB_COUNT {
         out.push_str(&format!("pub fn __select_{i}() -> u64:\n"));
         out.push_str("    return 0\n");
         out.push('\n');
     }
-    for core in 0..DRAIN_STUB_COUNT {
-        out.push_str(&format!("pub fn __drain_{core}() -> u64:\n"));
+    for i in 0..RESUME_STUB_COUNT {
+        out.push_str(&format!("pub fn __resume_{i}() -> u64:\n"));
         out.push_str("    return 0\n");
         out.push('\n');
     }
-    for i in 0..RESUME_STUB_COUNT {
-        out.push_str(&format!("pub fn __resume_{i}() -> u64:\n"));
+    for i in 0..ENQUEUE_STUB_COUNT {
+        out.push_str(&format!(
+            "pub fn __enqueue_{i}(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:\n"
+        ));
         out.push_str("    return 0\n");
         out.push('\n');
     }
@@ -306,20 +441,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("            return 0\n");
     out.push('\n');
 
-    out.push_str("pub fn __wrela_try_drain(core: usize) -> u64:\n");
-    out.push_str("    match core:\n");
-    for (core, has) in extras.drain_by_core.iter().enumerate() {
-        out.push_str(&format!("        case {core}:\n"));
-        if *has {
-            out.push_str(&format!("            return __drain_{core}()\n"));
-        } else {
-            out.push_str("            return 0\n");
-        }
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return 0\n");
-    out.push('\n');
-
     out.push_str("pub fn __wrela_resume_child(site: usize) -> u64:\n");
     out.push_str("    match site:\n");
     for i in 0..n_child {
@@ -348,12 +469,286 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     }
     out.push_str("        case _:\n");
     out.push_str("            return 0\n");
+    out.push('\n');
+
+    // --- item G: ring / handle-identity ladders (decision 801) ------------
+    emit_ring_u64_ladder(&mut out, "capacity", extras, |r| r.capacity);
+    emit_ring_usize_ladder(&mut out, "slot_words", extras, |r| {
+        (r.slot_size / 8) as usize
+    });
+    emit_ring_usize_ladder(&mut out, "dst_core", extras, |r| r.dst);
+    emit_ring_usize_ladder(&mut out, "src_core", extras, |r| r.src);
+    emit_ring_usize_ladder(&mut out, "kind", extras, |r| match r.kind {
+        RingKind::Request => 0,
+        RingKind::Reply => 1,
+    });
+    emit_ring_usize_ladder(&mut out, "target_handle", extras, |r| {
+        r.target_handle.unwrap_or(0) as usize
+    });
+
+    // CTL field accessors
+    out.push_str("pub fn __wrela_ring_get_head(edge: usize) -> u64:\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return RING{i}_CTL.head\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_ring_set_head(edge: usize, v: u64):\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            RING{i}_CTL.head = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_ring_get_tail(edge: usize) -> u64:\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return RING{i}_CTL.tail\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_ring_set_tail(edge: usize, v: u64):\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            RING{i}_CTL.tail = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_ring_get_count(edge: usize) -> u64:\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return RING{i}_CTL.count\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_ring_set_count(edge: usize, v: u64):\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            RING{i}_CTL.count = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_ring_load_word(edge: usize, wi: usize) -> u64:\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return RING{i}_DATA.words[wi]\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_ring_store_word(edge: usize, wi: usize, v: u64):\n");
+    out.push_str("    match edge:\n");
+    for i in 0..RING_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            RING{i}_DATA.words[wi] = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    // Handle-identity xsend edge lookup (decision 801).
+    out.push_str("pub fn __wrela_xsend_edge(handle: usize, src_core: usize) -> usize:\n");
+    out.push_str("    match src_core:\n");
+    let mut xsend_by_src: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
+        std::collections::BTreeMap::new();
+    for (ei, r) in extras.rings.iter().enumerate() {
+        if r.kind == RingKind::Request {
+            let h = r.target_handle.unwrap_or(0) as usize;
+            xsend_by_src.entry(r.src).or_default().push((h, ei));
+        }
+    }
+    for (src, arms) in &xsend_by_src {
+        out.push_str(&format!("        case {src}:\n"));
+        out.push_str("            match handle:\n");
+        for (h, ei) in arms {
+            out.push_str(&format!("                case {h}:\n"));
+            out.push_str(&format!("                    return {ei}\n"));
+        }
+        out.push_str("                case _:\n");
+        out.push_str(&format!("                    return {NO_EDGE}\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str(&format!("            return {NO_EDGE}\n"));
+    out.push('\n');
+
+    // xreply edge by (src, dst).
+    out.push_str("pub fn __wrela_xreply_edge(src_core: usize, dst_core: usize) -> usize:\n");
+    out.push_str("    match src_core:\n");
+    let mut xreply_by_src: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
+        std::collections::BTreeMap::new();
+    for (ei, r) in extras.rings.iter().enumerate() {
+        if r.kind == RingKind::Reply {
+            xreply_by_src.entry(r.src).or_default().push((r.dst, ei));
+        }
+    }
+    for (src, arms) in &xreply_by_src {
+        out.push_str(&format!("        case {src}:\n"));
+        out.push_str("            match dst_core:\n");
+        for (dst, ei) in arms {
+            out.push_str(&format!("                case {dst}:\n"));
+            out.push_str(&format!("                    return {ei}\n"));
+        }
+        out.push_str("                case _:\n");
+        out.push_str(&format!("                    return {NO_EDGE}\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str(&format!("            return {NO_EDGE}\n"));
+    out.push('\n');
+
+    // Per-core drain lane lists (reply first, then request — decision 803).
+    let mut reply_by_dst: Vec<Vec<usize>> = vec![Vec::new(); n_cores];
+    let mut request_by_dst: Vec<Vec<usize>> = vec![Vec::new(); n_cores];
+    for (ei, r) in extras.rings.iter().enumerate() {
+        if r.dst >= n_cores {
+            continue;
+        }
+        match r.kind {
+            RingKind::Reply => reply_by_dst[r.dst].push(ei),
+            RingKind::Request => request_by_dst[r.dst].push(ei),
+        }
+    }
+    out.push_str("pub fn __wrela_drain_reply_count(core: usize) -> usize:\n");
+    out.push_str("    match core:\n");
+    for (core, lanes) in reply_by_dst.iter().enumerate() {
+        out.push_str(&format!("        case {core}:\n"));
+        out.push_str(&format!("            return {}\n", lanes.len()));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_drain_reply_edge(core: usize, slot: usize) -> usize:\n");
+    out.push_str("    match core:\n");
+    for (core, lanes) in reply_by_dst.iter().enumerate() {
+        out.push_str(&format!("        case {core}:\n"));
+        if lanes.is_empty() {
+            out.push_str(&format!("            return {NO_EDGE}\n"));
+        } else {
+            out.push_str("            match slot:\n");
+            for (slot, ei) in lanes.iter().enumerate() {
+                out.push_str(&format!("                case {slot}:\n"));
+                out.push_str(&format!("                    return {ei}\n"));
+            }
+            out.push_str("                case _:\n");
+            out.push_str(&format!("                    return {NO_EDGE}\n"));
+        }
+    }
+    out.push_str("        case _:\n");
+    out.push_str(&format!("            return {NO_EDGE}\n"));
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_drain_request_count(core: usize) -> usize:\n");
+    out.push_str("    match core:\n");
+    for (core, lanes) in request_by_dst.iter().enumerate() {
+        out.push_str(&format!("        case {core}:\n"));
+        out.push_str(&format!("            return {}\n", lanes.len()));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_drain_request_edge(core: usize, slot: usize) -> usize:\n");
+    out.push_str("    match core:\n");
+    for (core, lanes) in request_by_dst.iter().enumerate() {
+        out.push_str(&format!("        case {core}:\n"));
+        if lanes.is_empty() {
+            out.push_str(&format!("            return {NO_EDGE}\n"));
+        } else {
+            out.push_str("            match slot:\n");
+            for (slot, ei) in lanes.iter().enumerate() {
+                out.push_str(&format!("                case {slot}:\n"));
+                out.push_str(&format!("                    return {ei}\n"));
+            }
+            out.push_str("                case _:\n");
+            out.push_str(&format!("                    return {NO_EDGE}\n"));
+        }
+    }
+    out.push_str("        case _:\n");
+    out.push_str(&format!("            return {NO_EDGE}\n"));
+    out.push('\n');
+
+    // Enqueue by handle identity (decision 801).
+    out.push_str(
+        "pub fn __wrela_try_enqueue(handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:\n",
+    );
+    out.push_str("    match handle:\n");
+    for (i, h) in extras.enqueue_handles.iter().enumerate() {
+        out.push_str(&format!("        case {h}:\n"));
+        out.push_str(&format!(
+            "            return __enqueue_{i}(method, arg0, arg1, waker_turn, waker_core)\n"
+        ));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 1\n");
 
     out
 }
 
+fn emit_ring_u64_ladder(
+    out: &mut String,
+    field: &str,
+    extras: &RtconfigExtras,
+    f: impl Fn(&RingFact) -> u64,
+) {
+    out.push_str(&format!(
+        "pub fn __wrela_ring_{field}(edge: usize) -> u64:\n"
+    ));
+    out.push_str("    match edge:\n");
+    for (i, r) in extras.rings.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {}\n", f(r)));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+}
+
+fn emit_ring_usize_ladder(
+    out: &mut String,
+    field: &str,
+    extras: &RtconfigExtras,
+    f: impl Fn(&RingFact) -> usize,
+) {
+    out.push_str(&format!(
+        "pub fn __wrela_ring_{field}(edge: usize) -> usize:\n"
+    ));
+    out.push_str("    match edge:\n");
+    for (i, r) in extras.rings.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {}\n", f(r)));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+}
+
 /// Call-key remaps from generated stubs onto ImageStatic / resume targets
-/// (decision 791). Applied to reinjected runtime codegen before insert.
+/// (decision 791 / 802). Applied to reinjected runtime codegen before insert.
 pub fn stub_call_remaps(extras: &RtconfigExtras) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut stub_i = 0usize;
@@ -366,16 +761,14 @@ pub fn stub_call_remaps(extras: &RtconfigExtras) -> Vec<(String, String)> {
             stub_i += 1;
         }
     }
-    for (core, has) in extras.drain_by_core.iter().enumerate() {
-        if *has {
-            out.push((
-                format!("__drain_{core}"),
-                crate::codegen::rt_drain_symbol(core),
-            ));
-        }
-    }
     for (i, site) in extras.child_sites.iter().enumerate() {
         out.push((format!("__resume_{i}"), site.callee_key.clone()));
+    }
+    for (i, name) in extras.enqueue_actors.iter().enumerate() {
+        out.push((
+            format!("__enqueue_{i}"),
+            crate::codegen::rt_enqueue_symbol(name),
+        ));
     }
     out
 }

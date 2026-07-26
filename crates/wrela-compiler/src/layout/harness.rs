@@ -27,9 +27,9 @@ use super::{
     intern_fallible_init_abort_messages, mailbox_root_names, merge_layout_ctx, merge_mwir_programs,
     pad_to, patch_adrp_add, patch_bl, patch_load_imm_words, place_device_regs, place_pools,
     place_pools_unchecked, place_runtime_tables, resolve_cross_core_edge,
-    resolve_mailbox_actor_addrs, round_up, steer_rtdata_base, turns_deref_needs_rtdata,
-    unresolved_call_target, verify_device_windows, verify_pool_windows, verify_section_sizes,
-    wake_needs_rtdata,
+    resolve_mailbox_actor_addrs, resolve_xreply_edge, round_up, steer_rtdata_base,
+    turns_deref_needs_rtdata, unresolved_call_target, verify_device_windows, verify_pool_windows,
+    verify_section_sizes, wake_needs_rtdata,
 };
 
 #[cfg(test)]
@@ -256,91 +256,11 @@ pub(super) fn inject_rt_select_and_run_fns(program: &mut CodegenProgram, wiring:
     }
 }
 
-/// plans/M10.md item F2 (decision 633): force-root specialized cross-core
-/// bodies — `rt_xsend` / `rt_xreply` / `rt_drain` / `rt_secondary_core_entry`
-/// — into `program.fns`. Call after `RuntimeWiring::derive` and before the
-/// code section is laid out.
+/// plans/M10.md item F2 (decision 633) / M11 G (decision 805): force-root
+/// specialized secondary-core entry bodies. Cross-core xsend/xreply/drain
+/// live in generic wrela trampolines (`__wrela_xsend_*` / `__wrela_xreply_*`
+/// / `__wrela_rt_drain`) — no longer injected here.
 pub(super) fn inject_rt_cross_core_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
-    let roots = mailbox_root_names(&wiring.tables);
-    for (ri, ring) in wiring.tables.rings.iter().enumerate() {
-        match ring.kind {
-            RingKind::Reply => {
-                let spec = crate::codegen::RtXreplySpec {
-                    src_core: ring.src,
-                    dst_core: ring.dst,
-                    ring_index: ri,
-                    capacity: ring.capacity,
-                };
-                let key = crate::codegen::rt_xreply_symbol(ring.src, ring.dst);
-                program
-                    .fns
-                    .insert(key, crate::codegen::emit_rt_xreply(&spec));
-            }
-            RingKind::Request => {
-                let actor = ring.actor.clone().unwrap_or_default();
-                let spec = crate::codegen::RtXsendSpec {
-                    src_core: ring.src,
-                    dst_core: ring.dst,
-                    actor: actor.clone(),
-                    ring_index: ri,
-                    capacity: ring.capacity,
-                    slot_size: ring.slot_size,
-                };
-                let key = crate::codegen::rt_xsend_symbol(ring.src, &actor);
-                program
-                    .fns
-                    .insert(key, crate::codegen::emit_rt_xsend(&spec));
-            }
-        }
-    }
-
-    let mut request_lanes: BTreeMap<usize, Vec<crate::codegen::RtDrainRequestLane>> =
-        BTreeMap::new();
-    let mut reply_lanes: BTreeMap<usize, Vec<crate::codegen::RtDrainReplyLane>> = BTreeMap::new();
-    for (ri, ring) in wiring.tables.rings.iter().enumerate() {
-        match ring.kind {
-            RingKind::Reply => {
-                reply_lanes
-                    .entry(ring.dst)
-                    .or_default()
-                    .push(crate::codegen::RtDrainReplyLane {
-                        ring_index: ri,
-                        capacity: ring.capacity,
-                    });
-            }
-            RingKind::Request => {
-                let actor = ring.actor.clone().unwrap_or_default();
-                if !roots.iter().any(|n| n == &actor) {
-                    continue;
-                }
-                request_lanes.entry(ring.dst).or_default().push(
-                    crate::codegen::RtDrainRequestLane {
-                        ring_index: ri,
-                        capacity: ring.capacity,
-                        slot_size: ring.slot_size,
-                        actor,
-                    },
-                );
-            }
-        }
-    }
-    for core in 0..wiring.tables.cores {
-        let reqs = request_lanes.remove(&core).unwrap_or_default();
-        let reps = reply_lanes.remove(&core).unwrap_or_default();
-        if reqs.is_empty() && reps.is_empty() {
-            continue;
-        }
-        let spec = crate::codegen::RtDrainSpec {
-            core,
-            request_lanes: reqs,
-            reply_lanes: reps,
-        };
-        let key = crate::codegen::rt_drain_symbol(core);
-        program
-            .fns
-            .insert(key, crate::codegen::emit_rt_drain(&spec));
-    }
-
     for core in 1..wiring.tables.cores {
         let spec = crate::codegen::RtSecondaryCoreEntrySpec { core };
         let key = crate::codegen::rt_secondary_core_entry_symbol(core);
@@ -1704,27 +1624,53 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_select_count",
         "__wrela_try_select",
         "__wrela_try_drain",
+        "__wrela_rt_drain",
+        "__wrela_rt_xsend",
+        "__wrela_rt_xreply",
         "__wrela_resume_child",
         "__wrela_child_turn_index",
         "__wrela_child_slot",
+        "__wrela_try_enqueue",
+        "__wrela_ring_capacity",
+        "__wrela_ring_slot_words",
+        "__wrela_ring_dst_core",
+        "__wrela_ring_src_core",
+        "__wrela_ring_target_handle",
+        "__wrela_ring_get_head",
+        "__wrela_ring_set_head",
+        "__wrela_ring_get_tail",
+        "__wrela_ring_set_tail",
+        "__wrela_ring_get_count",
+        "__wrela_ring_set_count",
+        "__wrela_ring_load_word",
+        "__wrela_ring_store_word",
+        "__wrela_drain_reply_count",
+        "__wrela_drain_reply_edge",
+        "__wrela_drain_request_count",
+        "__wrela_drain_request_edge",
+        "__wrela_xsend_edge",
+        "__wrela_xreply_edge",
     ] {
         only.insert(key.to_string());
     }
-    // Item F stubs live in the generated module; seed every `__select_*` /
-    // `__drain_*` / `__resume_*` so match-ladder Calls lower.
+    // Item F/G stubs live in the generated module; seed every `__select_*` /
+    // `__resume_*` / `__enqueue_*` so match-ladder Calls lower. Trampolines
+    // `__wrela_xsend_*` / `__wrela_xreply_*` live in runtime.wr.
     for typed in programs.values() {
         for name in typed.fns.keys() {
             if name.starts_with("__select_")
-                || name.starts_with("__drain_")
                 || name.starts_with("__resume_")
+                || name.starts_with("__enqueue_")
+                || name.starts_with("__wrela_xsend_")
+                || name.starts_with("__wrela_xreply_")
             {
                 only.insert(name.clone());
             }
         }
         for name in typed.imported.fns.keys() {
             if name.starts_with("__select_")
-                || name.starts_with("__drain_")
                 || name.starts_with("__resume_")
+                || name.starts_with("__enqueue_")
                 || name.starts_with("__wrela_")
             {
                 only.insert(name.clone());
@@ -1775,45 +1721,64 @@ pub(super) fn reinject_runtime_with_rtconfig(
             "internal error: could not codegen runtime helpers against live rtconfig: {m}"
         ))
     })?;
-    let extras = crate::rtconfig::RtconfigExtras {
-        select_by_core: tables.select_by_core.clone(),
-        drain_by_core: tables.drain_by_core.clone(),
-        child_sites: tables
-            .child_sites
-            .iter()
-            .map(
-                |(callee_key, child_index, turn_index)| crate::rtconfig::ChildSiteFact {
-                    callee_key: callee_key.clone(),
-                    child_index: *child_index,
-                    turn_index: *turn_index,
-                },
-            )
-            .collect(),
-    };
+    let extras = crate::rtconfig::extras_from_tables(tables);
     let remaps = crate::rtconfig::stub_call_remaps(&extras);
     let rodata_byte_base: usize = program.rodata.iter().map(Vec::len).sum();
 
-    // Keys that need live RT/GROUPS/sched addresses or match ladders.
+    // Keys that need live RT/GROUPS/sched/ring addresses or match ladders.
     // Console/abort helpers already bind MACHINE_INFO / CONSOLE_* and must
     // not be duplicated into rodata.
-    let mut keys: Vec<&str> = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
     // Deadline helpers need ambient_group at 0x40 and a live group arena.
     if tables.group_arena_capacity > 0 && tables.turn_stride >= 0x48 {
-        keys.push("__wrela_deadline_poll");
-        keys.push("__wrela_deadline_scan");
+        keys.push("__wrela_deadline_poll".into());
+        keys.push("__wrela_deadline_scan".into());
     }
     // Scheduler tick + child poll (item F) — always when wiring exists.
-    keys.push("__wrela_rt_run_one");
-    keys.push("__wrela_child_poll");
+    keys.push("__wrela_rt_run_one".into());
+    keys.push("__wrela_child_poll".into());
     // Match ladders / stub wrappers (Calls remapped onto ImageStatic keys).
-    keys.push("__wrela_select_count");
-    keys.push("__wrela_try_select");
-    keys.push("__wrela_try_drain");
-    keys.push("__wrela_resume_child");
-    keys.push("__wrela_child_turn_index");
-    keys.push("__wrela_child_slot");
+    keys.push("__wrela_select_count".into());
+    keys.push("__wrela_try_select".into());
+    keys.push("__wrela_try_drain".into());
+    keys.push("__wrela_rt_drain".into());
+    keys.push("__wrela_rt_xsend".into());
+    keys.push("__wrela_rt_xreply".into());
+    keys.push("__wrela_resume_child".into());
+    keys.push("__wrela_child_turn_index".into());
+    keys.push("__wrela_child_slot".into());
+    keys.push("__wrela_try_enqueue".into());
+    // Ring accessors + drain lane ladders (item G).
+    for k in [
+        "__wrela_ring_capacity",
+        "__wrela_ring_slot_words",
+        "__wrela_ring_dst_core",
+        "__wrela_ring_src_core",
+        "__wrela_ring_target_handle",
+        "__wrela_ring_get_head",
+        "__wrela_ring_set_head",
+        "__wrela_ring_get_tail",
+        "__wrela_ring_set_tail",
+        "__wrela_ring_get_count",
+        "__wrela_ring_set_count",
+        "__wrela_ring_load_word",
+        "__wrela_ring_store_word",
+        "__wrela_drain_reply_count",
+        "__wrela_drain_reply_edge",
+        "__wrela_drain_request_count",
+        "__wrela_drain_request_edge",
+        "__wrela_xsend_edge",
+        "__wrela_xreply_edge",
+    ] {
+        keys.push(k.into());
+    }
+    // Fixed trampoline pools (decision 802).
+    for i in 0..crate::rtconfig::RING_POOL_COUNT {
+        keys.push(format!("__wrela_xsend_{i}"));
+        keys.push(format!("__wrela_xreply_{i}"));
+    }
 
-    for key in keys {
+    for key in &keys {
         let Some(mut f) = runtime_cg.fns.get(key).cloned() else {
             // Child poll / ladders may be absent from the reachability set
             // when N_CHILD_SITES == 0 and nothing references them — only
@@ -1833,7 +1798,7 @@ pub(super) fn reinject_runtime_with_rtconfig(
                 }
             }
         }
-        program.fns.insert(key.to_string(), f);
+        program.fns.insert(key.clone(), f);
     }
     let _ = runtime_cg.rodata;
     Ok(())
@@ -2299,10 +2264,14 @@ pub fn layout_test_image(
                     // collide, and why nothing enforces against it yet).
                     // The `else` arm is the audit's one genuinely
                     // user-reachable find — `unresolved_call_target`.
-                    // plans/M8.md item C2: see `layout_program`'s twin —
-                    // a cross-core edge resolves to its own `__rt_xsend_*`.
+                    // plans/M8.md item C2 / M11 G: see `layout_program`'s twin —
+                    // cross-core enqueue → `__wrela_xsend_<edge>`;
+                    // `rt_xreply` → `__wrela_xreply_<edge>` (decision 804).
                     let redirect = resolve_cross_core_edge(key, target, wiring.as_ref())?;
-                    let target = redirect.as_deref().unwrap_or(target.as_str());
+                    let xreply = wiring.as_ref().and_then(|w| resolve_xreply_edge(target, w));
+                    let target_owned: String =
+                        redirect.or(xreply).unwrap_or_else(|| target.clone());
+                    let target = target_owned.as_str();
                     let this_addr = code_base + ((base + word) * 4) as u64;
                     let target_addr = if let Some(target_base) = fn_word_base.get(target) {
                         code_base + (*target_base as u64) * 4

@@ -8,7 +8,8 @@ module examples.check_layout_assert_budget_helper
 # adds specialized `rt_enqueue Store` (→ 368); item B3 force-roots
 # `__wrela_fmt_dec` (+helpers → 8104); item B4 adds append helpers
 # (→ 10104; item C adds `__wrela_abort`/`__wrela_abort_val` → 11548;
-# M11 F migrates run_one/child_poll → measured 16440). The cap sits
+# M11 F migrates run_one/child_poll → measured 16440;
+# M11 G migrates xsend/xreply/drain → measured 34408). The cap sits
 # above that floor so H3's "assert-only helper stays out" still fails
 # closed if the helper re-enters the emit set.
 from core.image_report import ImageReport
@@ -28,7 +29,7 @@ fn under_budget(size: u64, cap: u64) -> bool:
 
 @layout_assert
 fn budget(report: ImageReport):
-    assert under_budget(size=report.code_size, cap=18000), "code budget is 18000 bytes"
+    assert under_budget(size=report.code_size, cap=40000), "code budget is 40000 bytes"
 
 @image
 pub fn build() -> Image:

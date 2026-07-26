@@ -183,30 +183,8 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::ImageStatic,
         note: "decision 630; per-actor specialized select/dispatch (item F)",
     },
-    // REF: one request ring cap=4 slot=32 (inlined enqueue; decision 637).
-    EmitterEntry {
-        name: "emit_rt_xsend",
-        file: "codegen.rs",
-        words: 69,
-        category: Category::ImageStatic,
-        note: "decision 633; per-edge specialized cross-core send (item F2)",
-    },
-    // REF: one reply ring cap=4.
-    EmitterEntry {
-        name: "emit_rt_xreply",
-        file: "codegen.rs",
-        words: 58,
-        category: Category::ImageStatic,
-        note: "decision 633; per-edge specialized cross-core reply (item F2)",
-    },
-    // REF: core 0, one request lane + one reply lane.
-    EmitterEntry {
-        name: "emit_rt_drain",
-        file: "codegen.rs",
-        words: 126,
-        category: Category::ImageStatic,
-        note: "decision 633; per-core specialized inbound drain (item F2)",
-    },
+    // emit_rt_xsend / emit_rt_xreply / emit_rt_drain deleted in M11 G
+    // (force-rooted __wrela_rt_xsend / xreply / drain); −69/−58/−126.
     // REF: core 1. Includes 5 floor-cat1 SP-install words inside the body.
     // M11 F: +1 movz x0,#core before BL __wrela_rt_run_one (26→27).
     EmitterEntry {
@@ -293,7 +271,7 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 499; // was 619; M11 F −46/−75, +1 secondary core arg
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 246; // was 499; M11 G −69/−58/−126
 
 pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 0; // was 7; M (L-11) deleted dead harness push_turn_addr_from_id
 
@@ -303,7 +281,7 @@ pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residu
 /// `build_entry_stub` embeds `push_halt`; the JIT-only `build_rt_*`
 /// materializers are NON_INVENTORY, not rows). Useful as a ratchet total;
 /// not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 657; // was 777; M11 F −121 +1 secondary
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 404; // was 657; M11 G −253
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -316,8 +294,9 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 657; // was 777; M11 F −121 +1 seco
 /// sites + 1 needle in its own doc comment (68→64).
 /// M11 F: run_one/child_poll emitters deleted (codegen 787→728); harness
 /// +1 movz before BL __wrela_rt_run_one (64→65).
+/// M11 G: xsend/xreply/drain emitters deleted (codegen 728→605).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
-    ("codegen.rs", 728), // was 787; F −59 from deleted emitters
+    ("codegen.rs", 605), // was 728; G −123 from deleted emitters
     ("layout.rs", 8),
     ("layout/harness.rs", 65), // was 64; F +1 core-arg movz
 ];
@@ -469,7 +448,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 801,
+            ENCODE_ENC_SITE_COUNT, 678,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

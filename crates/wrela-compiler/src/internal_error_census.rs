@@ -47,7 +47,9 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // undeclared driver) in layout_program + layout_test_image.
     // 100 -> 70+27, plans/M10.md item K: extract harness submodule; −3 from
     // deleted empty RuntimeBlock reloc-resolve arms (always-None path).
-    ("layout.rs", 70),
+    // 70 -> 71, plans/M11.md item G: ring trampoline pool overflow
+    // (`edge >= RING_POOL_COUNT`) in `resolve_cross_core_edge`.
+    ("layout.rs", 71),
     // 27 -> 29, plans/M11.md item E: reinject_runtime_with_rtconfig
     // (live rtconfig codegen failure / missing deadline key).
     ("layout/harness.rs", 29),
@@ -158,7 +160,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 200,
+            INTERNAL_ERROR_SITE_COUNT, 201,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
