@@ -7590,7 +7590,7 @@ fn diff_eval_smoke() -> Result<(), String> {
 
 // --- bench: guest lane + profile (plans/M5.md item F, decision 14) ---------
 //
-// `cargo xtask bench guest`: boots `tests/golden/boot-hello`'s own test
+// `cargo xtask bench guest`: boots `tests/golden/boot-actors`' own test
 // image (built once, outside the timed loop — only the *boot* itself is
 // the measured workload, not compilation) via the codesigned `wrela-vmm`
 // binary, `--record`ed every time so the exact per-boot counts
@@ -7599,17 +7599,26 @@ fn diff_eval_smoke() -> Result<(), String> {
 // replay counts" half of decision 14 without a second, separately-timed
 // invocation. Same warmup+timed shape as every other bench lane, its own
 // locked median in `bench/thresholds.toml`'s `[guest]` table.
+//
+// Workload change (plans/M10.md decision 661): `boot-hello` declares no
+// actors, so its measured wall time is almost entirely `hv_vm_create` +
+// 1 GiB zeroing and cannot see a scheduler regression. `boot-actors` is
+// the locked guest lane for M10's before/after: two actors, mailbox
+// FIFO, await park/resume, non-reentrancy — already in the corpus, short,
+// and scheduler-exercising. Absolute lock kept (not per-entry): one fixed
+// workload, nothing to dilute.
 
 const BENCH_GUEST_WARMUP_ITERS: usize = 2;
 const BENCH_GUEST_TIMED_ITERS: usize = 5;
 
 fn guest_bench_threshold_us() -> Result<u128, String> {
-    bench_threshold_us("guest", "boot_hello_median_us")
+    bench_threshold_us("guest", "boot_actors_median_us")
 }
 
 /// Builds `tests/golden/boot-hello`'s own `@test(runtime)` image once —
-/// shared by `bench_guest_lane` and `profile`, below, so the "which
-/// program, which tests" decision lives in exactly one place.
+/// shared by `repro` / `profile`. The guest bench lane uses
+/// `boot-actors` instead (decision 661); this helper stays on
+/// `boot-hello` so those other consumers are not moved by the lock.
 fn boot_hello_test_image() -> Result<(Vec<u8>, String), String> {
     golden_test_image("boot-hello")
 }
@@ -7651,7 +7660,7 @@ fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), String> {
 
 fn bench_guest_lane() -> Result<(), String> {
     let vmm = build_and_sign_vmm()?;
-    let (img_bytes, report_text) = boot_hello_test_image()?;
+    let (img_bytes, report_text) = golden_test_image("boot-actors")?;
 
     let tmp_dir = root().join("target/bench-guest-tmp");
     if tmp_dir.exists() {
@@ -7715,10 +7724,10 @@ fn bench_guest_lane() -> Result<(), String> {
     // identical exit codes/exit counts — anything else is a real
     // nondeterminism bug (the generated runtime or the VMM), never
     // ordinary machine noise. plans/M6.md item E: the choice-sequence
-    // recorder's own count joins this exact-count set (`boot-hello` has
-    // no actors/deadlines, so its own choice count is just its clock-read
-    // count today — the identical fact `clock_log_len` used to name,
-    // generalized).
+    // recorder's own count joins this exact-count set. `boot-actors`
+    // exercises the scheduler (mailbox admissions, await park/resume),
+    // so its choice count is a real scheduler-path signal, not just
+    // clock reads.
     let first_transcript = transcripts[0].clone();
     for (i, t) in transcripts.iter().enumerate() {
         if *t != first_transcript {
@@ -7749,7 +7758,7 @@ fn bench_guest_lane() -> Result<(), String> {
 
     println!(
         "bench guest: {BENCH_GUEST_WARMUP_ITERS} warmup + {BENCH_GUEST_TIMED_ITERS} timed boot(s) \
-         of tests/golden/boot-hello"
+         of tests/golden/boot-actors"
     );
     println!(
         "bench guest: wall time: min={}us median={}us max={}us",
@@ -7835,9 +7844,9 @@ fn profile() -> Result<(), String> {
     let codegen_time = codegen_start.elapsed();
 
     let image_start = Instant::now();
-    // plans/M6.md item D: `None` — `bench guest` always times `boot-hello`
-    // (no actors); a real actor-bearing guest bench case is named, future
-    // work.
+    // plans/M6.md item D: `None` — `profile`'s guest half still boots
+    // `boot-hello` (no actors). The locked `bench guest` lane moved to
+    // `boot-actors` (plans/M10.md decision 661).
     let image_layout = layout::layout_test_image(
         &codegen_program,
         &runtime_names,
@@ -8420,7 +8429,7 @@ fn eval_bench_threshold_us() -> Result<u128, String> {
 /// full timer resolution however small a per-entry median becomes; the
 /// divided number is computed for the printout only. The `[build]` and
 /// `[guest]` lanes keep absolute locks on purpose — each times one fixed
-/// workload (the example appliance, one `boot-hello` boot), so there is no
+/// workload (the example appliance; one `boot-actors` boot), so there is no
 /// corpus to divide by and nothing to dilute.
 fn enforce_per_entry_lock(
     lane: &str,
