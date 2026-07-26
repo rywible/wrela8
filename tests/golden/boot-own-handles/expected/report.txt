@@ -26,16 +26,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=1664
-  Section name=rodata base=0x405006d0 size=427
-  Section name=abort base=0x4050087c size=120
-  Section name=checkpoint base=0x405008f4 size=104
-  Section name=rtcode base=0x4050095c size=968
-  Section name=rtdata base=0x40500d28 size=736
-  Section name=pooldata base=0x40501008 size=16
+  Section name=code base=0x40500050 size=1648
+  Section name=rodata base=0x405006c0 size=427
+  Section name=abort base=0x4050086c size=120
+  Section name=checkpoint base=0x405008e4 size=104
+  Section name=rtcode base=0x4050094c size=928
+  Section name=rtdata base=0x40500cf0 size=720
+  Section name=pooldata base=0x40500fc0 size=16
   Entry base=0x40500000
   Actor name=Holder mailbox=8 slot=16 frame=56 state=16
-  Turn fn=own_handle_addresses_pool_slot frame=488
-  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=736
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=16 base=0x40501008 size=16 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockPayloads device=device#0 base=0x40501008 size=0x10
+  Turn fn=own_handle_addresses_pool_slot frame=472
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=720
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=16 base=0x40500fc0 size=16 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockPayloads device=device#0 base=0x40500fc0 size=0x10

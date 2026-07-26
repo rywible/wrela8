@@ -5456,28 +5456,23 @@ fn flatten(f: &FlowWirFn) -> (Vec<usize>, Vec<usize>, Vec<FlatEntry>) {
     (state_flat_base, resume_target, flat)
 }
 
-/// Builds the `Frame` for a FlowWir fn: `f.frame.temp_types` plus three
-/// dedicated extra `u64` slots this file's own codegen needs beyond what
-/// `flowwir_lower.rs` allocated — `state_temp` (the dispatch header's own
-/// "which state" slot, module doc above) and a 2-word `arg_scratch`
-/// buffer (`Send`/`Await{ActorCall}`'s own marshaling area: `rt_enqueue`'s
-/// real ABI takes a *pointer* to a contiguous args blob, `layout.rs`'s own
-/// module doc, not individual register values — and an async fn's own
-/// `arg_temps` are ordinary, independently-allocated frame slots with no
-/// guaranteed adjacency, so a small owned, always-contiguous scratch pair
-/// is the dumbest correct marshaling area). Reuses `build_frame` verbatim
-/// (never forked) via a synthetic `MwirFn` shape carrying exactly these
-/// temps.
-fn build_frame_flow(
-    f: &FlowWirFn,
-    layout: &LayoutCtx,
-) -> Result<(Frame, Temp, Temp, Temp), CodegenError> {
+/// Builds the `Frame` for a FlowWir fn: `f.frame.temp_types` plus the one
+/// dedicated extra `u64` slot this file's own codegen needs beyond what
+/// `flowwir_lower.rs` allocated — `state_temp`, the dispatch header's own
+/// "which state" slot (module doc above). Reuses `build_frame` verbatim
+/// (never forked) via a synthetic `MwirFn` shape carrying exactly that
+/// temp.
+///
+/// plans/M10.md item D0 (decision 610/612) deleted the 2-word
+/// `arg_scratch` pair that used to sit next to it: `rt_enqueue`'s ABI
+/// took a *pointer* to a contiguous args blob, so an async fn's own
+/// independently-allocated `arg_temps` had to be copied into an owned,
+/// always-contiguous marshaling area first. The ABI now carries the
+/// arguments **by value** in `x1`/`x2`, so there is nothing to make
+/// contiguous, and every async frame is 16 bytes smaller.
+fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), CodegenError> {
     let mut temp_types = f.frame.temp_types.clone();
     let state_temp = Temp(temp_types.len());
-    temp_types.push(Type::U64);
-    let scratch0 = Temp(temp_types.len());
-    temp_types.push(Type::U64);
-    let scratch1 = Temp(temp_types.len());
     temp_types.push(Type::U64);
     let synthetic = MwirFn {
         receiver: f.receiver,
@@ -5492,7 +5487,7 @@ fn build_frame_flow(
         flow_reply_stage_size(f, layout)?,
         TURN_RECORD_SIZE as usize,
     )?;
-    Ok((frame, state_temp, scratch0, scratch1))
+    Ok((frame, state_temp))
 }
 
 /// plans/M7.md item Z1 (decision 9b): how many bytes this fn's own reply
@@ -5756,36 +5751,46 @@ impl FnCtx<'_> {
     }
 }
 
-/// Marshals `arg_temps` (at most 2, item C's own hand-assembled-dispatch
-/// floor — `layout.rs`'s own module doc) into the dedicated scratch pair
-/// and calls `symbol` — `rt_enqueue_<Actor>`'s own real ABI
-/// (`x0=method_idx, x1=args_ptr, x2=nargs_words, x3=waker`), shared
-/// verbatim by `Send` (waker = 0: one-way, nobody to resume, the sender
-/// never suspends) and `Await{ActorCall}` (waker = this turn's own area
+/// Loads `arg_temps` (at most 2 — the by-value ABI below carries exactly
+/// two argument registers) into `x1`/`x2` and calls `symbol` —
+/// `rt_enqueue_<Actor>`'s own real ABI
+/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker`), shared verbatim by
+/// `Send` (waker = 0: one-way, nobody to resume, the sender never
+/// suspends) and `Await{ActorCall}` (waker = this turn's own area
 /// address, already live in `X_FRAME`).
+///
+/// plans/M10.md item D0, decision 610: the arguments used to travel as
+/// `x1 = args_ptr` (the address of an owned 2-word frame scratch pair)
+/// plus `x2 = nargs_words`, and `build_ring_enqueue` copied `x2` words
+/// out of that pointer. They now travel **by value**, which makes this
+/// half of the ABI match the consumer half — dispatch has always loaded
+/// `x1`/`x2` straight out of the mailbox slot (`layout.rs`'s
+/// `build_rt_select_and_run`). Absent arguments are written as an
+/// explicit zero rather than left undefined: the callee stores whatever
+/// these registers hold into the slot, and a deterministic zero is
+/// strictly better than the stale bytes of the slot's previous occupant.
 fn emit_marshal_and_call(
     method_idx: usize,
     arg_temps: &[Temp],
     ctx: &mut FnCtx,
     symbol: &str,
-    scratch0: Temp,
-    scratch1: Temp,
     waker_is_self_turn: bool,
 ) -> Result<(), CodegenError> {
     if arg_temps.len() > 2 {
         return Err(CodegenError::unimplemented(
-            "more than 2 scalar message args (item C's own hand-assembled mailbox-slot floor)",
+            "more than 2 scalar message args (the by-value mailbox admission ABI carries x1/x2 only)",
         ));
     }
-    let scratch_offs = [ctx.frame.off(scratch0), ctx.frame.off(scratch1)];
-    for (i, t) in arg_temps.iter().enumerate() {
-        ctx.load_slot(X_A, ctx.frame.off(*t));
-        ctx.store_slot(X_A, scratch_offs[i]);
+    for reg in [1u8, 2u8] {
+        match arg_temps.get(reg as usize - 1) {
+            Some(t) => ctx.load_slot(reg, ctx.frame.off(*t)),
+            // `mov xN, xzr` — 1 word, no `load_imm` 4-word movz/movk run.
+            None => ctx.push(
+                encode::enc_mov_reg(reg, X_ZR, true),
+                format!("mov x{reg}, xzr"),
+            ),
+        }
     }
-    if !arg_temps.is_empty() {
-        ctx.addr_of_slot(1, scratch_offs[0]);
-    }
-    ctx.load_imm(2, arg_temps.len() as i64);
     if waker_is_self_turn {
         ctx.push(
             encode::enc_mov_reg(3, X_FRAME, true),
@@ -5832,8 +5837,6 @@ fn emit_send(
     arg_temps: &[Temp],
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
-    scratch0: Temp,
-    scratch1: Temp,
 ) -> Result<(), CodegenError> {
     let (actor, idx) = lookup_method_idx(method_key, method_index)?;
     emit_marshal_and_call(
@@ -5841,8 +5844,6 @@ fn emit_send(
         arg_temps,
         ctx,
         &rt_enqueue_symbol(&actor),
-        scratch0,
-        scratch1,
         false, // one-way: no reply slot, no waker — the sender never suspends.
     )?;
     let dst_off = ctx.frame.off(dst);
@@ -6676,8 +6677,6 @@ fn emit_flow_op(
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
     fn_key: &str,
-    scratch0: Temp,
-    scratch1: Temp,
 ) -> Result<(), CodegenError> {
     match op {
         FlowInst::Mwir(inst) => emit_one(inst, f, ctx),
@@ -6718,15 +6717,7 @@ fn emit_flow_op(
             target: _,
             method_key,
             arg_temps,
-        } => emit_send(
-            *dst,
-            method_key,
-            arg_temps,
-            ctx,
-            method_index,
-            scratch0,
-            scratch1,
-        ),
+        } => emit_send(*dst, method_key, arg_temps, ctx, method_index),
         FlowInst::GroupCreate {
             group_temp,
             capacity,
@@ -7109,8 +7100,6 @@ fn emit_await_suspend(
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
     state_temp: Temp,
-    scratch0: Temp,
-    scratch1: Temp,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match what {
@@ -7151,8 +7140,6 @@ fn emit_await_suspend(
                 arg_temps,
                 ctx,
                 &rt_enqueue_symbol(&actor),
-                scratch0,
-                scratch1,
                 true, // waker = this turn's own area (X_FRAME).
             )?;
             // A rejected admission aborts. plans/M6.md item H3: it used
@@ -7322,7 +7309,6 @@ fn emit_await_suspend(
             ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
             ctx.load_slot(X_LR, ctx.frame.lr_off);
             ctx.push(encode::enc_ret(X_LR), "ret".to_string());
-            let _ = (scratch0, scratch1);
             Ok(())
         }
     }
@@ -7802,8 +7788,6 @@ fn emit_transition(
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
     state_temp: Temp,
-    scratch0: Temp,
-    scratch1: Temp,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match t {
@@ -7853,8 +7837,6 @@ fn emit_transition(
             method_index,
             gctx,
             state_temp,
-            scratch0,
-            scratch1,
             state_flat_base,
         ),
     }
@@ -7871,14 +7853,10 @@ fn emit_flat_entry(
     gctx: &GroupCtx,
     fn_key: &str,
     state_temp: Temp,
-    scratch0: Temp,
-    scratch1: Temp,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match entry {
-        FlatEntry::Op(op) => {
-            emit_flow_op(op, f, ctx, method_index, gctx, fn_key, scratch0, scratch1)
-        }
+        FlatEntry::Op(op) => emit_flow_op(op, f, ctx, method_index, gctx, fn_key),
         FlatEntry::Trans(t) => emit_transition(
             t,
             flat_idx,
@@ -7887,8 +7865,6 @@ fn emit_flat_entry(
             method_index,
             gctx,
             state_temp,
-            scratch0,
-            scratch1,
             state_flat_base,
         ),
         FlatEntry::AwaitResume {
@@ -7940,7 +7916,7 @@ fn emit_flowwir_fn(
              case; this one is not implemented)",
         ));
     }
-    let (frame, state_temp, scratch0, scratch1) = build_frame_flow(f, layout)?;
+    let (frame, state_temp) = build_frame_flow(f, layout)?;
     let (state_flat_base, resume_target, flat) = flatten(f);
     let total = flat.len();
 
@@ -8004,8 +7980,6 @@ fn emit_flowwir_fn(
             gctx,
             fn_key,
             state_temp,
-            scratch0,
-            scratch1,
             &state_flat_base,
         )?;
         counts.push(probe.words.len());
@@ -8061,8 +8035,6 @@ fn emit_flowwir_fn(
             gctx,
             fn_key,
             state_temp,
-            scratch0,
-            scratch1,
             &state_flat_base,
         )?;
     }
@@ -8092,7 +8064,7 @@ pub fn async_frame_sizes(
 ) -> Result<BTreeMap<String, u64>, CodegenError> {
     let mut out = BTreeMap::new();
     for (key, f) in &flow.fns {
-        let (frame, _, _, _) = build_frame_flow(f, layout)?;
+        let (frame, _) = build_frame_flow(f, layout)?;
         out.insert(key.clone(), frame.size as u64);
     }
     Ok(out)

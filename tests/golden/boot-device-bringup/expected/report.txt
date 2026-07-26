@@ -36,22 +36,22 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=2976
-  Section name=rodata base=0x40500bf0 size=491
-  Section name=abort base=0x40500ddc size=120
-  Section name=checkpoint base=0x40500e54 size=104
-  Section name=rtcode base=0x40500ebc size=1096
-  Section name=rtdata base=0x40501308 size=968
-  Section name=devregs base=0x405016d0 size=104
-  Section name=pooldata base=0x40501738 size=512
+  Section name=code base=0x40500050 size=2928
+  Section name=rodata base=0x40500bc0 size=491
+  Section name=abort base=0x40500dac size=120
+  Section name=checkpoint base=0x40500e24 size=104
+  Section name=rtcode base=0x40500e8c size=1060
+  Section name=rtdata base=0x405012b0 size=952
+  Section name=devregs base=0x40501668 size=104
+  Section name=pooldata base=0x405016d0 size=512
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
-  Turn fn=bringup_reached_running frame=632
+  Turn fn=bringup_reached_running frame=616
   Driver name=BlkDriver state=32
-  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=968
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405016d0 size=104
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40501738 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40501738 size=0x200
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=952
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501668 size=104
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405016d0 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x405016d0 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
-  BlkQueue index=0 size=8 desc=0x40501738 avail=0x405017b8 used=0x405017d0 doorbell=0x40501818
+  BlkQueue index=0 size=8 desc=0x405016d0 avail=0x40501750 used=0x40501768 doorbell=0x405017b0
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
