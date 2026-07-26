@@ -1586,15 +1586,14 @@ fn inject_rt_cross_core_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring
                 if !roots.iter().any(|n| n == &actor) {
                     continue;
                 }
-                request_lanes
-                    .entry(ring.dst)
-                    .or_default()
-                    .push(crate::codegen::RtDrainRequestLane {
+                request_lanes.entry(ring.dst).or_default().push(
+                    crate::codegen::RtDrainRequestLane {
                         ring_index: ri,
                         capacity: ring.capacity,
                         slot_size: ring.slot_size,
                         actor,
-                    });
+                    },
+                );
             }
         }
     }
@@ -4402,24 +4401,6 @@ pub struct RingAddrs {
 /// half rather than growing the ring.
 const REPLY_SLOT_SIZE: u64 = 16;
 
-/// plans/M8.md item C2, decision 30 / plans/M10.md item 0c1, decision 557:
-/// the **originating core + 1**, so a completing turn can tell a local
-/// waker (0 — every same-core send and every single-core image) from one
-/// whose turn record lives on another core.
-///
-/// This used to be `(src_core + 1) << 61`, OR'd into the waker's own
-/// 64-bit turn-area address and masked back off with a `load_imm`+`bic`
-/// pair at every read. Item 0c1 splits that one word into two adjacent
-/// `u32` fields — `waker_turn` at `OFF_TURN_WAKER` and `waker_core` at
-/// `OFF_TURN_WAKER + 4` — so the core travels in its own field, in its own
-/// register (`x4` at the `rt_enqueue` ABI), and the untagging disappears
-/// entirely. `+1` rather than the bare core index is still what makes "no
-/// tag" and "from core 0" distinct, and it is the same `Option`-niche
-/// convention `TurnId` itself uses.
-fn waker_core_tag(src_core: usize) -> u16 {
-    (src_core as u16) + 1
-}
-
 /// The one index→address rule, emitted (plans/M10.md item 0c1): `id_reg`
 /// holds an `Option[TurnId]` already known nonzero, and comes back holding
 /// `turns_base + ((id - 1) << log2_stride)` — `RuntimePlacement::turn_addr`
@@ -4429,21 +4410,13 @@ fn waker_core_tag(src_core: usize) -> u16 {
 /// "single shifted-register add": `encode::enc_add_reg` is shift-0 only and
 /// buying an `enc_add_reg_lsl` here would be an unmeasured optimization
 /// (CLAUDE.md's cleverness budget applies to the compiler too).
+#[allow(dead_code)] // census + G still measure/use this helper
 fn push_turn_addr_from_id(a: &mut Asm, id_reg: u8, scratch: u8, turns_base: u64, log2_stride: u8) {
     a.load_imm(scratch, turns_base);
     a.push(encode::enc_sub_imm(id_reg, id_reg, 1, true));
     a.push(encode::enc_lsl_imm(id_reg, id_reg, log2_stride, true));
     a.push(encode::enc_add_reg(id_reg, scratch, id_reg, true));
 }
-
-/// plans/M8.md item C2: the reply ring was full. Unreachable by
-/// construction rather than by hope — a reply ring `d -> s` is sized to
-/// the number of turn areas on core `s` (`reply_ring_capacity`), each of
-/// which can have at most one outstanding `await` (non-reentrancy caps
-/// in-flight activations at one per turn area), so there can never be more
-/// undelivered replies bound for `s` than the ring holds. Same class and
-/// same treatment as the dissolved aggregate-no-waker trap (item F).
-const BRK_XREPLY_RING_FULL: u16 = 0xACD7;
 
 // M10 F dissolved `BRK_XREPLY_UNKNOWN_CORE` (0xACD8): specialized
 // `emit_rt_select_and_run` dense-matches `xreply_remotes` (decision 557
@@ -6744,104 +6717,37 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
 /// scratch; `x12`/`x13` = tail addr/value; `x14`/`x15` = slot-size scratch,
 /// then the computed slot address. `x28` (`X_FRAME`) is never touched —
 /// `emit_await_suspend` keeps using it across this `bl`.
+/// M10 item F2: hand-asm `build_ring_enqueue` deleted. Specialized twin is
+/// `codegen::emit_rt_enqueue` (decision 613 / 637). This helper materializes
+/// that body for same-buffer JIT/HVF harnesses — patches `MailboxAddr`
+/// against the stand-in addresses the harness already knows.
 pub fn build_rt_enqueue(
     addrs: &ActorAddrs,
     capacity: u64,
     slot_size: u64,
-    start: usize,
+    _start: usize,
 ) -> Vec<u32> {
-    build_ring_enqueue(&addrs.mailbox(), capacity, slot_size, start)
-}
-
-/// `build_rt_enqueue`'s whole body, over any bounded ring — a mailbox
-/// (above) or a cross-core request ring (plans/M8.md item C2). Every word
-/// of the admission machinery is shared: a cross-core send is *the same
-/// bounded-ring insert*, into a different ring, which is what makes 04 §3's
-/// "cross-core actor edges keep identical message semantics" a structural
-/// fact here rather than a claim two implementations have to keep true.
-pub fn build_ring_enqueue(
-    addrs: &RingAddrs,
-    capacity: u64,
-    slot_size: u64,
-    start: usize,
-) -> Vec<u32> {
-    let mut a = Asm::new(start);
-
-    a.load_imm(9, addrs.count);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    a.load_imm(11, capacity);
-    a.push(encode::enc_cmp_reg(10, 11, true));
-    let skip_ok = a.skip_placeholder(); // b.lt .ok
-    a.push(encode::enc_movz(0, 1, 0, true)); // rejected
-    let to_end = a.skip_placeholder(); // b .end (unconditional, patched below)
-    let ok = a.abs();
-    a.patch_cond(skip_ok, Cond::Lt);
-    debug_assert_eq!(ok, a.abs());
-
-    // .ok: slot = ring + tail * slot_size
-    a.load_imm(12, addrs.tail);
-    a.push(encode::enc_ldr_x_imm(13, 12, 0));
-    a.load_imm(14, slot_size);
-    a.push(encode::enc_mul(14, 13, 14, true));
-    a.load_imm(15, addrs.ring);
-    a.push(encode::enc_add_reg(15, 15, 14, true));
-
-    a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.method_idx = method_idx
-    // plans/M10.md item 0c1 (decision 557): the slot's one waker word is
-    // now two adjacent `u32` fields — `waker_turn` (an `Option[TurnId]`,
-    // `x3`) at +8 and `waker_core` (an `Option[CoreId]`, `x4`) at +12 —
-    // carried through to the selected turn's record at `OFF_TURN_WAKER`/
-    // `OFF_TURN_WAKER + 4` unchanged in shape. `slot_size` does not move:
-    // both fields live inside the word the tagged address occupied, which
-    // is the whole point of the two-`u32` encoding (a second 64-bit word
-    // would have cost 8 bytes on every mailbox slot image-wide).
-    a.push(encode::enc_str_w_imm(3, 15, 8)); // slot.waker_turn = w3
-    a.push(encode::enc_str_w_imm(4, 15, 12)); // slot.waker_core = w4
-
-    // The arguments arrive **by value** in `x1`/`x2` (plans/M10.md item
-    // D0, decision 610), so the store count is a build-time constant of
-    // this per-ring specialization rather than a runtime `nargs` the
-    // caller has to compute. It is written as *the same expression*
-    // `build_rt_select_and_run` uses to load them back out
-    // (`arg_words` there, search this file) — producer and consumer
-    // agreeing by construction, not by two constants that happen to
-    // match. The `saturating_sub`/`.min(2)` is load-bearing at both
-    // ends: the smallest legal slot is `slot_size = 16` (a no-arg
-    // message), where storing a fixed word would write past this ring
-    // slot into the next one.
-    let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
-    if arg_words >= 1 {
-        a.push(encode::enc_str_x_imm(1, 15, 16)); // slot.arg0 = x1
+    use crate::codegen::{MailboxField, Reloc, emit_rt_enqueue};
+    let f = emit_rt_enqueue("__jit_actor", capacity, slot_size);
+    let mut words: Vec<u32> = f.code.iter().map(|(w, _)| *w).collect();
+    let mb = addrs.mailbox();
+    for reloc in &f.relocs {
+        match reloc {
+            Reloc::MailboxAddr { word, field, .. } => {
+                let value = match field {
+                    MailboxField::Ring => mb.ring,
+                    MailboxField::Head => mb.head,
+                    MailboxField::Tail => mb.tail,
+                    MailboxField::Count => mb.count,
+                    MailboxField::State => addrs.state,
+                    MailboxField::Turn => addrs.turn,
+                };
+                patch_load_imm_words(&mut words, *word, value);
+            }
+            other => panic!("unexpected reloc in JIT enqueue materialize: {other:?}"),
+        }
     }
-    if arg_words >= 2 {
-        a.push(encode::enc_str_x_imm(2, 15, 24)); // slot.arg1 = x2
-    }
-
-    // tail = (tail + 1) % capacity
-    a.push(encode::enc_add_imm(13, 13, 1, true));
-    a.load_imm(9, capacity);
-    a.push(encode::enc_cmp_reg(13, 9, true));
-    let skip_nowrap = a.skip_placeholder(); // b.lt .nowrap
-    a.push(encode::enc_movz(13, 0, 0, true));
-    let nowrap = a.abs();
-    a.patch_cond(skip_nowrap, Cond::Lt);
-    debug_assert_eq!(nowrap, a.abs());
-    a.load_imm(12, addrs.tail);
-    a.push(encode::enc_str_x_imm(13, 12, 0));
-
-    // count += 1
-    a.load_imm(9, addrs.count);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    a.push(encode::enc_add_imm(10, 10, 1, true));
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-
-    a.push(encode::enc_movz(0, 0, 0, true)); // admitted
-    let end = a.abs();
-    let this = a.start + to_end;
-    let delta = (end as i64 - this as i64) * 4;
-    a.words[to_end] = encode::enc_b(delta as i32);
-    a.push(encode::enc_ret(30));
-    a.words
+    words
 }
 
 /// Raises core `core`'s own pending word (`pending::core_word_addr`), bit
@@ -6857,158 +6763,6 @@ pub fn build_ring_enqueue(
 /// ("wakes are idempotent; the runtime park primitive has mask-arm-recheck
 /// semantics"). A core woken for a ring drains its rings because its loop
 /// always does, not because a bit told it to.
-#[allow(dead_code)]  // F2: deleted in the follow-up commit
-fn push_raise_pending(a: &mut Asm, core: usize) {
-    a.load_imm(9, wrela_machine::pending::core_word_addr(core));
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    a.push(encode::enc_movz(11, 1, 0, true));
-    a.push(encode::enc_orr_reg(10, 10, 11, true));
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-}
-
-/// Emits `head`/`tail` advance-and-wrap for a bounded ring: `reg` holds
-/// the current index, `addr_reg` is scratch, `cursor_addr` is the head or
-/// tail word's own address. Shared by every drain lane below so the wrap
-/// arithmetic exists once.
-#[allow(dead_code)]  // F2: deleted in the follow-up commit
-fn push_ring_advance(a: &mut Asm, reg: u8, scratch: u8, cursor_addr: u64, capacity: u64) {
-    a.push(encode::enc_add_imm(reg, reg, 1, true));
-    a.load_imm(scratch, capacity);
-    a.push(encode::enc_cmp_reg(reg, scratch, true));
-    let skip_nowrap = a.skip_placeholder(); // b.lt .nowrap
-    a.push(encode::enc_movz(reg, 0, 0, true));
-    let nowrap = a.abs();
-    a.patch_cond(skip_nowrap, Cond::Lt);
-    debug_assert_eq!(nowrap, a.abs());
-    a.load_imm(scratch, cursor_addr);
-    a.push(encode::enc_str_x_imm(reg, scratch, 0));
-}
-
-/// plans/M8.md item C2: `__rt_xsend_<src>_<Actor>` — a **cross-core send**,
-/// with byte-for-byte the ABI `__rt_enqueue_<Actor>` has
-/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn, x4=waker_core -> x0` =
-/// 0 admitted / 1 rejected). That identity is the whole design: codegen
-/// emits one symbolic call for every `send`/`await` and never learns
-/// whether the edge crosses a core, so 04 §3's "cross-core actor edges keep
-/// identical message semantics" holds by construction rather than by two
-/// code paths agreeing.
-///
-/// Three steps, in order:
-///
-/// 1. **Tag the waker** with the sending core (`waker_core_tag`, decision
-///    30) — skipped for `waker_turn == 0`, a one-way `send`, which expects
-///    no reply. The tag is what lets the completing turn on the far core
-///    tell a local waker from one whose turn record lives back here.
-/// 2. **Enqueue into the request ring** — literally `build_ring_enqueue`,
-///    the same routine a mailbox admission uses, against this edge's ring.
-///    A full ring returns 1 and touches nothing, exactly as a full mailbox
-///    does (02 §9.4's `NotAdmitted`/`Rejected` path): the sender's own
-///    already-emitted rejection handling fires unchanged, and no message is
-///    ever silently dropped or truncated.
-/// 3. **Wake the owning core** — raise its pending word. Ordered *after*
-///    the enqueue, so a core woken by this store always finds the message
-///    already published.
-///
-/// The wake is skipped on rejection: nothing was published, so there is
-/// nothing to wake for.
-#[allow(dead_code)]  // F2: deleted in the follow-up commit
-fn build_rt_xsend(
-    ring_enqueue_start: usize,
-    src_core: usize,
-    dst_core: usize,
-    start: usize,
-) -> Asm {
-    let mut a = Asm::new(start);
-    a.push(encode::enc_sub_imm(31, 31, 16, true));
-    a.push(encode::enc_str_x_imm(30, 31, 0));
-
-    // plans/M10.md item 0c1: the tag is a whole field now, so "tagging" is
-    // one `movz` into `x4` instead of a `load_imm` of a shifted constant
-    // OR'd into the address in `x3`. `x3` (the `Option[TurnId]`) is left
-    // exactly as the caller passed it; a waker-less `send` (`w3 == 0`)
-    // leaves `x4` as the caller's own zero, so "no waker" stays a single
-    // zero test on one field.
-    let skip_notag = a.skip_placeholder(); // cbz w3, .notag
-    a.push(encode::enc_movz(4, waker_core_tag(src_core), 0, false));
-    let notag = a.abs();
-    a.patch_cbz_w(skip_notag, 3);
-    debug_assert_eq!(notag, a.abs());
-
-    a.bl_to(ring_enqueue_start);
-    let skip_out = a.skip_placeholder(); // cbnz x0, .out (rejected)
-    push_raise_pending(&mut a, dst_core);
-    a.push(encode::enc_movz(0, 0, 0, true)); // admitted
-    let out = a.abs();
-    a.patch_cbnz(skip_out, 0);
-    debug_assert_eq!(out, a.abs());
-
-    a.push(encode::enc_ldr_x_imm(30, 31, 0));
-    a.push(encode::enc_add_imm(31, 31, 16, true));
-    a.push(encode::enc_ret(30));
-    a
-}
-
-/// plans/M8.md item C2: `__rt_xreply_<src>_<dst>(x0 = destination
-/// `TurnId` in the low half / reply tag in the high half, x1 = reply
-/// word)` — the **reply half** of a cross-core edge.
-/// plans/M10.md item 0c1 moved `x0` from a raw turn-area address to the
-/// index; item J packs the reply tag into the high half of the same
-/// word (decision 665), so the ring slot stays 16 bytes.
-/// This routine never dereferences the TurnId, it only publishes the
-/// packed word into a slot the destination core's own drain reads.
-/// A reply is an edge in the other direction and travels the same way a
-/// request does: a bounded ring plus a wake, never a store straight into
-/// another core's turn record.
-///
-/// Its own lane, separate from the request ring (decision 29). A request
-/// ring legitimately back-pressures — a full mailbox on the far side leaves
-/// messages sitting in it — and a reply has nowhere to go back to, so
-/// sharing one ring would let a stalled request lane strand a reply. Sized
-/// so full is unreachable (`reply_ring_capacity`), with a `BRK` rather than
-/// a rejection if it ever is: there is no caller to hand a rejection to.
-///
-/// A leaf routine (no `BL`), so it clobbers no link register and needs no
-/// frame: `x9..x15` scratch, `x0`/`x1` its arguments.
-#[allow(dead_code)]  // F2: deleted in the follow-up commit
-fn build_rt_xreply(addrs: &RingAddrs, capacity: u64, dst_core: usize, start: usize) -> Asm {
-    let mut a = Asm::new(start);
-
-    a.load_imm(9, addrs.count);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    a.load_imm(11, capacity);
-    a.push(encode::enc_cmp_reg(10, 11, true));
-    let skip_ok = a.skip_placeholder(); // b.lt .ok
-    a.push(encode::enc_brk(BRK_XREPLY_RING_FULL));
-    let ok = a.abs();
-    a.patch_cond(skip_ok, Cond::Lt);
-    debug_assert_eq!(ok, a.abs());
-
-    // slot = ring + tail * REPLY_SLOT_SIZE
-    a.load_imm(12, addrs.tail);
-    a.push(encode::enc_ldr_x_imm(13, 12, 0));
-    a.load_imm(14, REPLY_SLOT_SIZE);
-    a.push(encode::enc_mul(14, 13, 14, true));
-    a.load_imm(15, addrs.ring);
-    a.push(encode::enc_add_reg(15, 15, 14, true));
-    // plans/M10.md item J (decision 665): word 0 is
-    // `TurnId | (reply_tag << 32)` — TurnId in the low half (0c1), tag in
-    // the high half that 0c1 left as unused padding. `REPLY_SLOT_SIZE`
-    // stays 16.
-    a.push(encode::enc_str_x_imm(0, 15, 0)); // slot.turn_and_tag = x0
-    a.push(encode::enc_str_x_imm(1, 15, 8)); // slot.reply = x1
-
-    push_ring_advance(&mut a, 13, 12, addrs.tail, capacity);
-
-    a.load_imm(9, addrs.count);
-    a.push(encode::enc_ldr_x_imm(10, 9, 0));
-    a.push(encode::enc_add_imm(10, 10, 1, true));
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-
-    push_raise_pending(&mut a, dst_core);
-    a.push(encode::enc_ret(30));
-    a
-}
-
 /// M10 item F: hand-asm `build_rt_select_and_run*` deleted. Specialized
 /// twin is `codegen::emit_rt_select_and_run` (decision 630). This helper
 /// materializes that body for same-buffer JIT/HVF harnesses that still
@@ -7086,214 +6840,6 @@ pub fn build_rt_select_and_run(
     words
 }
 
-#[allow(dead_code)]  // F2: deleted in the follow-up commit
-fn build_rt_drain(
-    core: usize,
-    // (ring addrs, capacity, slot size, that mailbox root's actor name —
-    // M10 D: `bl_call_key(rt_enqueue_symbol(actor))` into the compiled body)
-    request_lanes: &[(RingAddrs, u64, u64, String)],
-    // (ring addrs, capacity)
-    reply_lanes: &[(RingAddrs, u64)],
-    // plans/M10.md item 0c1: see `build_rt_select_and_run`. The reply lane
-    // is the one place this routine dereferences a `TurnId`.
-    turns_base: u64,
-    log2_stride: u8,
-    start: usize,
-) -> Asm {
-    use crate::codegen::{OFF_TURN_REPLY, OFF_TURN_REPLY_TAG, OFF_TURN_RESUME_READY};
-    let mut a = Asm::new(start);
-    a.push(encode::enc_sub_imm(31, 31, 16, true));
-    a.push(encode::enc_str_x_imm(30, 31, 0));
-    a.push(encode::enc_str_x_imm(31, 31, 8)); // moved = 0 (xzr)
-
-    if core != 0 {
-        a.load_imm(9, wrela_machine::pending::core_word_addr(core));
-        a.push(encode::enc_str_x_imm(31, 9, 0));
-    }
-
-    for (addrs, capacity) in reply_lanes {
-        let top = a.abs();
-        a.load_imm(9, addrs.count);
-        a.push(encode::enc_ldr_x_imm(10, 9, 0));
-        let skip_empty = a.skip_placeholder(); // cbz x10, .next
-        a.load_imm(9, addrs.head);
-        a.push(encode::enc_ldr_x_imm(11, 9, 0));
-        a.load_imm(12, REPLY_SLOT_SIZE);
-        a.push(encode::enc_mul(12, 11, 12, true));
-        a.load_imm(13, addrs.ring);
-        a.push(encode::enc_add_reg(13, 13, 12, true));
-        // plans/M10.md item 0c1 / item J: word 0 is
-        // `TurnId | (reply_tag << 32)`; x12 (the slot offset, dead from
-        // here) is the scratch the index→address block borrows, and
-        // `push_ring_advance` below reloads it anyway.
-        a.push(encode::enc_ldr_x_imm(14, 13, 0)); // TurnId | (tag << 32)
-        a.push(encode::enc_ldr_x_imm(15, 13, 8)); // reply word
-        a.push(encode::enc_lsr_imm(16, 14, 32, true)); // x16 = reply_tag
-        a.push(encode::enc_mov_reg(14, 14, false)); // w14 = TurnId (clear high)
-        push_turn_addr_from_id(&mut a, 14, 12, turns_base, log2_stride);
-        a.push(encode::enc_str_x_imm(16, 14, OFF_TURN_REPLY_TAG as u16));
-        a.push(encode::enc_str_x_imm(15, 14, OFF_TURN_REPLY as u16));
-        a.push(encode::enc_movz(16, 1, 0, true));
-        a.push(encode::enc_str_x_imm(16, 14, OFF_TURN_RESUME_READY as u16));
-        push_ring_advance(&mut a, 11, 12, addrs.head, *capacity);
-        a.load_imm(9, addrs.count);
-        a.push(encode::enc_ldr_x_imm(10, 9, 0));
-        a.push(encode::enc_sub_imm(10, 10, 1, true));
-        a.push(encode::enc_str_x_imm(10, 9, 0));
-        a.push(encode::enc_movz(16, 1, 0, true));
-        a.push(encode::enc_str_x_imm(16, 31, 8)); // moved = 1
-        a.b_to(top);
-        let next = a.abs();
-        a.patch_cbz(skip_empty, 10);
-        debug_assert_eq!(next, a.abs());
-    }
-
-    for (addrs, capacity, slot_size, actor) in request_lanes {
-        // plans/M10.md item D0 (decision 610): the destination mailbox's
-        // own `rt_enqueue` now takes its arguments **by value** in
-        // `x1`/`x2`, so this lane loads them out of the request-ring slot
-        // instead of handing over `slot + 16` as a pointer *into the
-        // cross-core ring*. Same expression as both the enqueue's stores
-        // and dispatch's loads, `.min(2)` included.
-        //
-        // Disclosed, not silent: this clamp is new **here**. This lane
-        // used to pass an unclamped `(slot_size - 16) / 8`, so a request
-        // ring whose slot reserves 3+ argument words would have had them
-        // all copied — and then dispatch, which has always clamped to 2,
-        // would never have loaded the rest. Unreachable today (no
-        // reachable call site passes more than two words, enforced at
-        // `codegen.rs`'s `emit_marshal_and_call`); unifying the two
-        // expressions for real is item F2's job (decision 659).
-        let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
-        let top = a.abs();
-        a.load_imm(9, addrs.count);
-        a.push(encode::enc_ldr_x_imm(10, 9, 0));
-        let skip_empty = a.skip_placeholder(); // cbz x10, .next
-        a.load_imm(9, addrs.head);
-        a.push(encode::enc_ldr_x_imm(11, 9, 0));
-        a.load_imm(12, *slot_size);
-        a.push(encode::enc_mul(12, 11, 12, true));
-        a.load_imm(13, addrs.ring);
-        a.push(encode::enc_add_reg(13, 13, 12, true));
-        a.push(encode::enc_ldr_x_imm(0, 13, 0)); // method_idx
-        // plans/M10.md item 0c1: the waker travels as two `u32` fields, and
-        // BOTH must be reloaded on every lap — `x4` left stale from a
-        // previous lane would deliver this message's reply to the wrong
-        // core, which is the one new failure mode the `x4` ABI introduces.
-        a.push(encode::enc_ldr_w_imm(3, 13, 8)); // waker_turn
-        a.push(encode::enc_ldr_w_imm(4, 13, 12)); // waker_core
-        // Absent argument registers are zeroed rather than left holding
-        // whatever the drain loop last put there: the destination
-        // mailbox's slot may be wider than this ring's, in which case the
-        // enqueue stores a register this lane never loaded.
-        if arg_words >= 1 {
-            a.push(encode::enc_ldr_x_imm(1, 13, 16)); // x1 = arg0
-        } else {
-            a.push(encode::enc_mov_reg(1, 31, true)); // mov x1, xzr
-        }
-        if arg_words >= 2 {
-            a.push(encode::enc_ldr_x_imm(2, 13, 24)); // x2 = arg1
-        } else {
-            a.push(encode::enc_mov_reg(2, 31, true)); // mov x2, xzr
-        }
-        // M10 D / decision 615: compiled specialized body in `code`.
-        a.bl_call_key(&crate::codegen::rt_enqueue_symbol(actor));
-        // Rejected: the target mailbox is full. Leave the message in the
-        // ring (back-pressure) and stop this lane — never a drop.
-        let skip_full = a.skip_placeholder(); // cbnz x0, .next
-        a.load_imm(9, addrs.head);
-        a.push(encode::enc_ldr_x_imm(11, 9, 0));
-        push_ring_advance(&mut a, 11, 12, addrs.head, *capacity);
-        a.load_imm(9, addrs.count);
-        a.push(encode::enc_ldr_x_imm(10, 9, 0));
-        a.push(encode::enc_sub_imm(10, 10, 1, true));
-        a.push(encode::enc_str_x_imm(10, 9, 0));
-        a.push(encode::enc_movz(16, 1, 0, true));
-        a.push(encode::enc_str_x_imm(16, 31, 8)); // moved = 1
-        a.b_to(top);
-        let next = a.abs();
-        a.patch_cbz(skip_empty, 10);
-        a.patch_cbnz(skip_full, 0);
-        debug_assert_eq!(next, a.abs());
-    }
-
-    a.push(encode::enc_ldr_x_imm(0, 31, 8)); // x0 = moved
-    a.push(encode::enc_ldr_x_imm(30, 31, 0));
-    a.push(encode::enc_add_imm(31, 31, 16, true));
-    a.push(encode::enc_ret(30));
-    a
-}
-
-/// plans/M8.md item C1: one **secondary core's own entry block** (core
-/// `core` in `1..RuntimeTables::cores`) — 06-machine.md §3's "enters the
-/// per-core event loops", for the cores core 0 releases.
-///
-/// Deliberately the whole of what a secondary core does at C1, in eleven
-/// instructions, with no call outside this same block:
-///
-/// 1. install this core's own stack pointer (`core_stack_base(core) +
-///    CORE_STACK_SIZE` — the per-core state 06 §3 names first; every
-///    codegen'd prologue already assumes `sp` is live);
-/// 2. store this core's own bring-up mark (`machine_info::core_mark_addr`)
-///    — the guest-written evidence the VMM checks at halt, and the one
-///    thing that makes "core 1 executed" falsifiable rather than assumed;
-/// 3. loop: run one tick of **this core's own** event loop
-///    (`rt_run_one_core`, over exactly the actors placed here — 04 §2's
-///    "one per core, over the actors placed there", no stealing, no
-///    migration), and go again while it reports progress;
-/// 4. when nothing on this core is ready, **park** — the ordinary trapping
-///    store to `mmio::PARK_MMIO_ADDR`. The VMM deschedules this core until
-///    its own pending word is raised; it never spins, never polls a wall
-///    clock, and never gets the baton back on its own.
-/// 5. on resume, branch straight back to the loop top: readiness is
-///    re-derived from memory, so a wake decides nothing (the mask-arm-
-///    recheck idempotency 04 §2 requires).
-///
-/// Two things this deliberately does **not** do at C1, each named rather
-/// than silently absent. It does not call `__wrela_checkpoint_service`:
-/// that routine lives in a different image section from this block on the
-/// `layout_program` flavor, and nothing can raise a vector on a secondary
-/// core until cross-core rings exist (item C2), so the call would be an
-/// unreachable cross-section reloc bought on speculation. And it does not
-/// consult `machine_info::OFF_NEXT_DEADLINE`: that word is core 0's park
-/// deadline, and no turn can arm a deadline on a secondary core while no
-/// message can reach one — item C2 gives a woken secondary both.
-#[allow(dead_code)]  // F2: deleted in the follow-up commit
-fn build_secondary_core_entry(core: usize, start: usize) -> Asm {
-    let mut a = Asm::new(start);
-    let sp_top = machine_layout::core_stack_base(core) + machine_layout::CORE_STACK_SIZE;
-    a.load_imm(9, sp_top);
-    a.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
-
-    a.load_imm(9, machine_info::core_mark_running(core));
-    a.load_imm(10, machine_info::core_mark_addr(core));
-    a.push(encode::enc_str_x_imm(9, 10, 0));
-
-    let loop_top = a.abs();
-    // M10 E3: specialized body in `code` (decision 620).
-    a.bl_call_key(&crate::codegen::rt_run_one_symbol(core));
-    {
-        // cbnz x0, .loop_top — a slice ran; try again before parking.
-        let this = a.abs();
-        let delta = (loop_top as i64 - this as i64) * 4;
-        a.push(encode::enc_cbnz(0, delta as i32, true));
-    }
-    // Nothing ready on this core: park. The stored value is unread by the
-    // VMM (`mmio::PARK_MMIO_ADDR`'s own contract) — the core index it
-    // needs is the vCPU that trapped.
-    a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
-    a.load_imm(10, 0);
-    a.push(encode::enc_str_x_imm(10, 9, 0));
-    a.b_to(loop_top);
-    a
-}
-
-/// The deadlock diagnostic's exact transcript wording (printed through
-/// the ordinary `__wrela_abort` path onto the failing root turn's own
-/// test line, then counted as that test's failure — the image exits
-/// nonzero): nothing is ready to run and the root turn has not
-/// completed, so no progress is possible — fail closed, deterministic,
-/// never a hang.
 pub const DEADLOCK_MSG: &str =
     "runtime deadlock: no turn is ready and the root turn has not completed";
 
@@ -8335,12 +7881,6 @@ impl Asm {
     /// the field occupies — an `x` test here would fold the *adjacent*
     /// field in as high bits, which is precisely the confusion decision
     /// 557's two-`u32` encoding exists to avoid.
-    fn patch_cbz_w(&mut self, marker: usize, reg: u8) {
-        let target = self.abs();
-        let this = self.start + marker;
-        let delta = (target as i64 - this as i64) * 4;
-        self.words[marker] = encode::enc_cbz(reg, delta as i32, false);
-    }
 
     // M10 F deleted the last `patch_cbnz_w` call site (select hand-asm).
     // Keep the 32-bit cbnz sibling next to `patch_cbz_w` for F2's reply-
@@ -9885,8 +9425,6 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     // Drain: core=0, one request lane + one reply lane, capacity=4.
     // Group child poll: one child at index 0.
     // Secondary core entry: core=1.
-    const CAP: u64 = 4;
-    const SLOT: u64 = 32;
     const TURNS_BASE: u64 = 0x4050_1000;
     const LOG2_STRIDE: u8 = 6;
     let ring = RingAddrs {
@@ -9946,16 +9484,6 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     // Helpers measured in isolation (delta on a fresh Asm).
     {
         let mut a = Asm::new(0);
-        push_raise_pending(&mut a, 1);
-        insert(&mut out, "push_raise_pending", a.words.len());
-    }
-    {
-        let mut a = Asm::new(0);
-        push_ring_advance(&mut a, 11, 12, ring.head, CAP);
-        insert(&mut out, "push_ring_advance", a.words.len());
-    }
-    {
-        let mut a = Asm::new(0);
         push_turn_addr_from_id(&mut a, 14, 12, TURNS_BASE, LOG2_STRIDE);
         insert(&mut out, "push_turn_addr_from_id", a.words.len());
     }
@@ -9965,52 +9493,9 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         insert(&mut out, "push_load_imm", w.len());
     }
 
-    // Runtime hand-asm inventory.
-    insert(
-        &mut out,
-        "build_ring_enqueue",
-        build_ring_enqueue(&ring, CAP, SLOT, 0).len(),
-    );
-    // Thin wrapper: same words as build_ring_enqueue. Kept in the census
-    // because the symbol still exists (JIT suite / pub API).
-    insert(
-        &mut out,
-        "build_rt_enqueue",
-        build_rt_enqueue(&actor, CAP, SLOT, 0).len(),
-    );
-    insert(
-        &mut out,
-        "build_rt_xsend",
-        build_rt_xsend(0, 0, 1, 0).words.len(),
-    );
-    insert(
-        &mut out,
-        "build_rt_xreply",
-        build_rt_xreply(&ring, CAP, 1, 0).words.len(),
-    );
-    // M10 F deleted hand-asm `build_rt_select_and_run*`; the JIT helper of
-    // the same name only materializes `emit_rt_select_and_run` (counted in
-    // codegen's specialization census). E4 likewise dropped
-    // `build_rt_run_one` / `build_group_child_poll` from this inventory.
-    insert(
-        &mut out,
-        "build_rt_drain",
-        build_rt_drain(
-            0,
-            &[(ring, CAP, SLOT, "Actor".into())],
-            &[(ring, CAP)],
-            TURNS_BASE,
-            LOG2_STRIDE,
-            0,
-        )
-        .words
-        .len(),
-    );
-    insert(
-        &mut out,
-        "build_secondary_core_entry",
-        build_secondary_core_entry(1, 0).words.len(),
-    );
+    // M10 F/F2: hand-asm select / cross-core / ring_enqueue deleted.
+    // JIT helpers `build_rt_select_and_run` / `build_rt_enqueue` only
+    // materialize specialized twins (NON_INVENTORY).
     insert(
         &mut out,
         "build_boot_init",
@@ -11680,145 +11165,6 @@ fn two():
 // only a host-mmap'd stand-in region (`HarnessAddrs`'s own
 // test-vs-production split, module doc above) — never the real,
 // unmapped-in-a-test-process `wrela_machine` constants.
-
-#[cfg(test)]
-mod f2_cross_core_layout_tests {
-    use super::*;
-    use crate::codegen::{
-        emit_rt_drain, emit_rt_xreply, emit_rt_xsend, emit_secondary_core_entry, Reloc,
-        RingField, RtDrainRequestLane, RtDrainSpec, RtSecondaryCoreEntrySpec, RtXreplySpec,
-        RtXsendSpec,
-    };
-
-    fn ring() -> RingAddrs {
-        RingAddrs {
-            ring: 0x4050_4008,
-            head: 0x4050_4050,
-            tail: 0x4050_4058,
-            count: 0x4050_4060,
-        }
-    }
-
-    fn materialize_ring_addrs(code: &mut [u32], relocs: &[Reloc], addrs: &RingAddrs) {
-        for r in relocs {
-            if let Reloc::RingAddr { word, field, .. } = r {
-                let addr = match field {
-                    RingField::Ring => addrs.ring,
-                    RingField::Head => addrs.head,
-                    RingField::Tail => addrs.tail,
-                    RingField::Count => addrs.count,
-                };
-                patch_load_imm_words(code, *word, addr);
-            }
-        }
-    }
-
-    fn dump_diffs(hand: &[u32], emit: &[u32], emit_text: &[(u32, String)]) {
-        let n = hand.len().max(emit.len());
-        for i in 0..n {
-            let h = hand.get(i).copied();
-            let e = emit.get(i).copied();
-            if h != e {
-                let t = emit_text
-                    .get(i)
-                    .map(|(_, s)| s.as_str())
-                    .unwrap_or("?");
-                eprintln!(
-                    "diff @{i}: hand={h:?} emit={e:?} ({t})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn emit_rt_xsend_has_inlined_enqueue_and_ring_addrs() {
-        let e = emit_rt_xsend(&RtXsendSpec {
-            src_core: 0,
-            dst_core: 1,
-            actor: "Off".into(),
-            ring_index: 0,
-            capacity: 4,
-            slot_size: 16,
-        });
-        assert!(e.code.len() >= 60, "got {}", e.code.len());
-        assert!(e
-            .relocs
-            .iter()
-            .any(|r| matches!(r, Reloc::RingAddr { field: RingField::Count, .. })));
-        assert!(
-            !e.relocs.iter().any(|r| matches!(r, Reloc::Call { .. })),
-            "xsend must inline enqueue (decision 637), not BL"
-        );
-    }
-
-    #[test]
-    fn emit_rt_xreply_matches_hand_asm_after_ring_patch() {
-        let addrs = ring();
-        let hand = build_rt_xreply(&addrs, 1, 0, 0);
-        let e = emit_rt_xreply(&RtXreplySpec {
-            src_core: 1,
-            dst_core: 0,
-            ring_index: 0,
-            capacity: 1,
-        });
-        assert_eq!(
-            hand.words.len(),
-            e.code.len(),
-            "len hand={} emit={}",
-            hand.words.len(),
-            e.code.len()
-        );
-        let mut emit_words: Vec<u32> = e.code.iter().map(|(w, _)| *w).collect();
-        materialize_ring_addrs(&mut emit_words, &e.relocs, &addrs);
-        if hand.words != emit_words {
-            dump_diffs(&hand.words, &emit_words, &e.code);
-        }
-        assert_eq!(hand.words, emit_words);
-    }
-
-    #[test]
-    fn emit_rt_drain_request_lane_matches_hand_asm_after_patch() {
-        let addrs = ring();
-        let hand = build_rt_drain(1, &[(addrs, 4, 16, "Off".into())], &[], 0, 9, 0);
-        let e = emit_rt_drain(&RtDrainSpec {
-            core: 1,
-            request_lanes: vec![RtDrainRequestLane {
-                ring_index: 0,
-                capacity: 4,
-                slot_size: 16,
-                actor: "Off".into(),
-            }],
-            reply_lanes: vec![],
-        });
-        let mut emit_words: Vec<u32> = e.code.iter().map(|(w, _)| *w).collect();
-        materialize_ring_addrs(&mut emit_words, &e.relocs, &addrs);
-        assert_eq!(
-            hand.words.len(),
-            emit_words.len(),
-            "len hand={} emit={}",
-            hand.words.len(),
-            emit_words.len()
-        );
-        if hand.words != emit_words {
-            dump_diffs(&hand.words, &emit_words, &e.code);
-        }
-        assert_eq!(hand.words, emit_words);
-    }
-
-    #[test]
-    fn emit_secondary_matches_hand_asm() {
-        let hand = build_secondary_core_entry(1, 0);
-        let e = emit_secondary_core_entry(&RtSecondaryCoreEntrySpec { core: 1 });
-        assert_eq!(hand.words.len(), e.code.len());
-        let emit_words: Vec<u32> = e.code.iter().map(|(w, _)| *w).collect();
-        if hand.words != emit_words {
-            dump_diffs(&hand.words, &emit_words, &e.code);
-        }
-        assert_eq!(hand.words, emit_words);
-    }
-
-
-}
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 mod harness_jit {

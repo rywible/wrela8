@@ -41,7 +41,9 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // program (completion pass needs one).
     // 88 -> 92, plans/M10.md item E3: Reloc::RrCursor resolve (no placement /
     // core out of range) in layout_program + layout_test_image.
-    ("layout.rs", 92),
+    // 92 -> 96, plans/M10.md item F2: Reloc::RingAddr resolve (no placement /
+    // ring_index out of range) in layout_program + layout_test_image.
+    ("layout.rs", 96),
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     ("eval/interp.rs", 79),
     ("lower.rs", 5),
@@ -149,7 +151,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 193,
+            INTERNAL_ERROR_SITE_COUNT, 197,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

@@ -253,51 +253,6 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         note: "G; REF arena_capacity=1",
     },
     EmitterEntry {
-        name: "build_ring_enqueue",
-        file: "layout.rs",
-        words: 55,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; unused by xsend after 637; JIT/census until delete",
-    },
-    // Pub wrapper over build_ring_enqueue — identical word count under REF.
-    EmitterEntry {
-        name: "build_rt_enqueue",
-        file: "layout.rs",
-        words: 55,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; thin wrapper, same body as build_ring_enqueue",
-    },
-    EmitterEntry {
-        name: "build_rt_xsend",
-        file: "layout.rs",
-        words: 18,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; hand-asm twin of emit_rt_xsend",
-    },
-    EmitterEntry {
-        name: "build_rt_xreply",
-        file: "layout.rs",
-        words: 58,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; hand-asm twin of emit_rt_xreply",
-    },
-    // M10 F deleted `build_rt_select_and_run` — specialized twin is
-    // `emit_rt_select_and_run` (decision 630).
-    EmitterEntry {
-        name: "build_rt_drain",
-        file: "layout.rs",
-        words: 122,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; hand-asm twin of emit_rt_drain; REF one req+reply",
-    },
-    EmitterEntry {
-        name: "build_secondary_core_entry",
-        file: "layout.rs",
-        words: 26,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; hand-asm twin of emit_secondary_core_entry",
-    },
-    EmitterEntry {
         name: "build_boot_init",
         file: "layout.rs",
         words: 10,
@@ -312,25 +267,11 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         note: "I; REF zero tests; contains floor-cat1 SP + cat3 halt brk",
     },
     EmitterEntry {
-        name: "push_raise_pending",
-        file: "layout.rs",
-        words: 8,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; helper for hand-asm xsend/xreply",
-    },
-    EmitterEntry {
-        name: "push_ring_advance",
-        file: "layout.rs",
-        words: 13,
-        category: Category::NotYetMigrated,
-        note: "F2 delete; helper for hand-asm drain/xreply",
-    },
-    EmitterEntry {
         name: "push_turn_addr_from_id",
         file: "layout.rs",
         words: 7,
         category: Category::NotYetMigrated,
-        note: "shared index→address; used by G paths once F2 deletes drain",
+        note: "shared index→address; G paths",
     },
     // --- unclassified ----------------------------------------------------
     // Micro-helper used by both floor and migratable paths; not itself a
@@ -370,14 +311,14 @@ pub const FLOOR_WORDS: usize = 26;
 
 pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 579; // was 300; F2 +69+58+126+26
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 587; // unchanged until F2 delete
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 232; // was 587; F2 deleted 355
 
 pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 1230; // was 951; F2 +279
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 875; // was 1230; F2 delete −355
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -385,7 +326,7 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 1230; // was 951; F2 +279
 /// census file (it documents the needle). Measured 2026-07-26. Adding a
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
-pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 693), ("layout.rs", 266)];
+pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 693), ("layout.rs", 171)];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
 pub const ENCODE_ENC_SITE_COUNT: usize = {
@@ -534,7 +475,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 959,
+            ENCODE_ENC_SITE_COUNT, 864,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -671,6 +612,7 @@ mod tests {
         // M10 F: JIT-only materialize of `emit_rt_select_and_run` (patches
         // Call/MailboxAddr/Turns*); not a hand-asm emitter row.
         "layout.rs::build_rt_select_and_run",
+        "layout.rs::build_rt_enqueue",
         "layout.rs::build_checkpoint_and_vector_stub",
         "layout.rs::emit_boot_init_arg",
         "layout.rs::build_runtime_glue_block",
@@ -681,7 +623,7 @@ mod tests {
     /// Census rows that are real emitters (measured word count) but whose
     /// body does not itself contain `encode::enc_` — thin wrappers that
     /// forward to a counted sibling. Still locked by the live-count test.
-    const WRAPPER_EMITTERS: &[&str] = &["layout.rs::build_rt_enqueue"];
+    const WRAPPER_EMITTERS: &[&str] = &[];
 
     #[test]
     fn emitted_a64_census_matches_live_measurements() {

@@ -9054,7 +9054,7 @@ pub fn async_frame_sizes(
 ///
 /// ABI (post-D0): `x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn,
 /// x4=waker_core -> x0` = 0 admitted / 1 rejected. Leaf: no frame.
-fn emit_rt_enqueue(actor: &str, capacity: u64, slot_size: u64) -> CodegenFn {
+pub(crate) fn emit_rt_enqueue(actor: &str, capacity: u64, slot_size: u64) -> CodegenFn {
     let mut words: Vec<(u32, String)> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
 
@@ -10440,7 +10440,6 @@ pub fn emit_rt_select_and_run(spec: &RtSelectAndRunSpec) -> CodegenFn {
     }
 }
 
-
 /// Reply-ring slot size (plans/M10.md item J / decision 665): TurnId|tag
 /// in word 0, reply in word 1. Shared by `emit_rt_xreply` / `emit_rt_drain`.
 const REPLY_SLOT_SIZE: u64 = 16;
@@ -10511,7 +10510,12 @@ pub fn emit_rt_xsend(spec: &RtXsendSpec) -> CodegenFn {
         });
     };
     let raise_pending = |words: &mut Vec<(u32, String)>, core: usize| {
-        load_imm(words, 9, wrela_machine::pending::core_word_addr(core), "pending");
+        load_imm(
+            words,
+            9,
+            wrela_machine::pending::core_word_addr(core),
+            "pending",
+        );
         push(
             words,
             encode::enc_ldr_x_imm(10, 9, 0),
@@ -10568,13 +10572,7 @@ pub fn emit_rt_xsend(spec: &RtXsendSpec) -> CodegenFn {
     }
 
     // --- inlined ring enqueue (decision 637) ---
-    load_ring(
-        &mut words,
-        &mut relocs,
-        9,
-        ring_index,
-        RingField::Count,
-    );
+    load_ring(&mut words, &mut relocs, 9, ring_index, RingField::Count);
     push(
         &mut words,
         encode::enc_ldr_x_imm(10, 9, 0),
@@ -10602,13 +10600,7 @@ pub fn emit_rt_xsend(spec: &RtXsendSpec) -> CodegenFn {
         words[skip_ok].1 = format!("b.lt .ok (+{delta})");
     }
 
-    load_ring(
-        &mut words,
-        &mut relocs,
-        12,
-        ring_index,
-        RingField::Tail,
-    );
+    load_ring(&mut words, &mut relocs, 12, ring_index, RingField::Tail);
     push(
         &mut words,
         encode::enc_ldr_x_imm(13, 12, 0),
@@ -10620,13 +10612,7 @@ pub fn emit_rt_xsend(spec: &RtXsendSpec) -> CodegenFn {
         encode::enc_mul(14, 13, 14, true),
         "mul x14, x13, x14".to_string(),
     );
-    load_ring(
-        &mut words,
-        &mut relocs,
-        15,
-        ring_index,
-        RingField::Ring,
-    );
+    load_ring(&mut words, &mut relocs, 15, ring_index, RingField::Ring);
     push(
         &mut words,
         encode::enc_add_reg(15, 15, 14, true),
@@ -10686,25 +10672,13 @@ pub fn emit_rt_xsend(spec: &RtXsendSpec) -> CodegenFn {
         words[skip_nowrap].0 = encode::enc_b_cond(Cond::Lt, delta as i32);
         words[skip_nowrap].1 = format!("b.lt .nowrap (+{delta})");
     }
-    load_ring(
-        &mut words,
-        &mut relocs,
-        12,
-        ring_index,
-        RingField::Tail,
-    );
+    load_ring(&mut words, &mut relocs, 12, ring_index, RingField::Tail);
     push(
         &mut words,
         encode::enc_str_x_imm(13, 12, 0),
         "str x13, [x12]  ; tail".to_string(),
     );
-    load_ring(
-        &mut words,
-        &mut relocs,
-        9,
-        ring_index,
-        RingField::Count,
-    );
+    load_ring(&mut words, &mut relocs, 9, ring_index, RingField::Count);
     push(
         &mut words,
         encode::enc_ldr_x_imm(10, 9, 0),
@@ -10848,13 +10822,7 @@ pub fn emit_rt_xreply(spec: &RtXreplySpec) -> CodegenFn {
     let ring_index = spec.ring_index;
     let capacity = spec.capacity;
 
-    load_ring(
-        &mut words,
-        &mut relocs,
-        9,
-        ring_index,
-        RingField::Count,
-    );
+    load_ring(&mut words, &mut relocs, 9, ring_index, RingField::Count);
     push(
         &mut words,
         encode::enc_ldr_x_imm(10, 9, 0),
@@ -10880,13 +10848,7 @@ pub fn emit_rt_xreply(spec: &RtXreplySpec) -> CodegenFn {
         words[skip_ok].1 = format!("b.lt .ok (+{delta})");
     }
 
-    load_ring(
-        &mut words,
-        &mut relocs,
-        12,
-        ring_index,
-        RingField::Tail,
-    );
+    load_ring(&mut words, &mut relocs, 12, ring_index, RingField::Tail);
     push(
         &mut words,
         encode::enc_ldr_x_imm(13, 12, 0),
@@ -10898,13 +10860,7 @@ pub fn emit_rt_xreply(spec: &RtXreplySpec) -> CodegenFn {
         encode::enc_mul(14, 13, 14, true),
         "mul x14, x13, x14".to_string(),
     );
-    load_ring(
-        &mut words,
-        &mut relocs,
-        15,
-        ring_index,
-        RingField::Ring,
-    );
+    load_ring(&mut words, &mut relocs, 15, ring_index, RingField::Ring);
     push(
         &mut words,
         encode::enc_add_reg(15, 15, 14, true),
@@ -10931,13 +10887,7 @@ pub fn emit_rt_xreply(spec: &RtXreplySpec) -> CodegenFn {
         capacity,
     );
 
-    load_ring(
-        &mut words,
-        &mut relocs,
-        9,
-        ring_index,
-        RingField::Count,
-    );
+    load_ring(&mut words, &mut relocs, 9, ring_index, RingField::Count);
     push(
         &mut words,
         encode::enc_ldr_x_imm(10, 9, 0),
@@ -10988,7 +10938,6 @@ pub fn emit_rt_xreply(spec: &RtXreplySpec) -> CodegenFn {
         relocs,
     }
 }
-
 
 /// plans/M10.md item F2 (decision 633/659): specialized `rt_drain <core>`.
 /// Reply lanes first, then request lanes (bl `rt_enqueue <Actor>`).
@@ -11045,52 +10994,50 @@ pub fn emit_rt_drain(spec: &RtDrainSpec) -> CodegenFn {
             field,
         });
     };
-    let push_turn_addr = |words: &mut Vec<(u32, String)>,
-                          relocs: &mut Vec<Reloc>,
-                          id_reg: u8,
-                          scratch: u8| {
-        push(
-            words,
-            encode::enc_sub_imm(id_reg, id_reg, 1, true),
-            format!("sub {}, {}, #1", reg_name(id_reg), reg_name(id_reg)),
-        );
-        let word = words.len();
-        load_imm(words, scratch, 0, "turn_stride");
-        for i in 0..4 {
-            if let Some((_, text)) = words.get_mut(word + i) {
-                *text = format!("turn-stride[{i}] {}", reg_name(scratch));
+    let push_turn_addr =
+        |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, id_reg: u8, scratch: u8| {
+            push(
+                words,
+                encode::enc_sub_imm(id_reg, id_reg, 1, true),
+                format!("sub {}, {}, #1", reg_name(id_reg), reg_name(id_reg)),
+            );
+            let word = words.len();
+            load_imm(words, scratch, 0, "turn_stride");
+            for i in 0..4 {
+                if let Some((_, text)) = words.get_mut(word + i) {
+                    *text = format!("turn-stride[{i}] {}", reg_name(scratch));
+                }
             }
-        }
-        relocs.push(Reloc::TurnStride { word });
-        push(
-            words,
-            encode::enc_mul(id_reg, id_reg, scratch, true),
-            format!(
-                "mul {}, {}, {}",
-                reg_name(id_reg),
-                reg_name(id_reg),
-                reg_name(scratch)
-            ),
-        );
-        let word = words.len();
-        load_imm(words, scratch, 0, "turns_base");
-        for i in 0..4 {
-            if let Some((_, text)) = words.get_mut(word + i) {
-                *text = format!("turns-base[{i}] {}", reg_name(scratch));
+            relocs.push(Reloc::TurnStride { word });
+            push(
+                words,
+                encode::enc_mul(id_reg, id_reg, scratch, true),
+                format!(
+                    "mul {}, {}, {}",
+                    reg_name(id_reg),
+                    reg_name(id_reg),
+                    reg_name(scratch)
+                ),
+            );
+            let word = words.len();
+            load_imm(words, scratch, 0, "turns_base");
+            for i in 0..4 {
+                if let Some((_, text)) = words.get_mut(word + i) {
+                    *text = format!("turns-base[{i}] {}", reg_name(scratch));
+                }
             }
-        }
-        relocs.push(Reloc::TurnsBase { word });
-        push(
-            words,
-            encode::enc_add_reg(id_reg, scratch, id_reg, true),
-            format!(
-                "add {}, {}, {}",
-                reg_name(id_reg),
-                reg_name(scratch),
-                reg_name(id_reg)
-            ),
-        );
-    };
+            relocs.push(Reloc::TurnsBase { word });
+            push(
+                words,
+                encode::enc_add_reg(id_reg, scratch, id_reg, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(id_reg),
+                    reg_name(scratch),
+                    reg_name(id_reg)
+                ),
+            );
+        };
     let ring_advance = |words: &mut Vec<(u32, String)>,
                         relocs: &mut Vec<Reloc>,
                         reg: u8,
@@ -11184,13 +11131,7 @@ pub fn emit_rt_drain(spec: &RtDrainSpec) -> CodegenFn {
         );
         let skip_empty = words.len();
         push(&mut words, 0, "cbz x10, .next".to_string());
-        load_ring(
-            &mut words,
-            &mut relocs,
-            9,
-            lane.ring_index,
-            RingField::Head,
-        );
+        load_ring(&mut words, &mut relocs, 9, lane.ring_index, RingField::Head);
         push(
             &mut words,
             encode::enc_ldr_x_imm(11, 9, 0),
@@ -11330,13 +11271,7 @@ pub fn emit_rt_drain(spec: &RtDrainSpec) -> CodegenFn {
         );
         let skip_empty = words.len();
         push(&mut words, 0, "cbz x10, .next".to_string());
-        load_ring(
-            &mut words,
-            &mut relocs,
-            9,
-            lane.ring_index,
-            RingField::Head,
-        );
+        load_ring(&mut words, &mut relocs, 9, lane.ring_index, RingField::Head);
         push(
             &mut words,
             encode::enc_ldr_x_imm(11, 9, 0),
@@ -11401,20 +11336,10 @@ pub fn emit_rt_drain(spec: &RtDrainSpec) -> CodegenFn {
                 "mov x2, xzr".to_string(),
             );
         }
-        bl_key(
-            &mut words,
-            &mut relocs,
-            &rt_enqueue_symbol(&lane.actor),
-        );
+        bl_key(&mut words, &mut relocs, &rt_enqueue_symbol(&lane.actor));
         let skip_full = words.len();
         push(&mut words, 0, "cbnz x0, .next".to_string());
-        load_ring(
-            &mut words,
-            &mut relocs,
-            9,
-            lane.ring_index,
-            RingField::Head,
-        );
+        load_ring(&mut words, &mut relocs, 9, lane.ring_index, RingField::Head);
         push(
             &mut words,
             encode::enc_ldr_x_imm(11, 9, 0),
@@ -11552,8 +11477,8 @@ pub fn emit_secondary_core_entry(spec: &RtSecondaryCoreEntrySpec) -> CodegenFn {
     };
 
     let core = spec.core;
-    let sp_top = wrela_machine::layout::core_stack_base(core)
-        + wrela_machine::layout::CORE_STACK_SIZE;
+    let sp_top =
+        wrela_machine::layout::core_stack_base(core) + wrela_machine::layout::CORE_STACK_SIZE;
     // Floor cat1 SP install (5 words): 4×imm + mov sp.
     load_imm(&mut words, 9, sp_top, "sp_top");
     push(
@@ -11581,11 +11506,7 @@ pub fn emit_secondary_core_entry(spec: &RtSecondaryCoreEntrySpec) -> CodegenFn {
     );
 
     let loop_top = words.len();
-    bl_key(
-        &mut words,
-        &mut relocs,
-        &rt_run_one_symbol(core),
-    );
+    bl_key(&mut words, &mut relocs, &rt_run_one_symbol(core));
     {
         let this = words.len();
         let delta = (loop_top as i64 - this as i64) * 4;
@@ -11623,7 +11544,6 @@ pub fn emit_secondary_core_entry(spec: &RtSecondaryCoreEntrySpec) -> CodegenFn {
         relocs,
     }
 }
-
 
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
 /// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
