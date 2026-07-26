@@ -1453,7 +1453,7 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         ),
         Inst::BytesIndexGet { dst, base, index } => {
             format!("BytesIndexGet dst={dst} base={base} index={index}")
-        },
+        }
         Inst::QueuePrepare {
             dst,
             queue,

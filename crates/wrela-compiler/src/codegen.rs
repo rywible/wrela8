@@ -902,6 +902,17 @@ fn field_offset_size(
             let _ = layout;
             Ok((8 * index, 8))
         }
+        // plans/M10.md item B4: word 0 = base (not source-visible as a
+        // field), word 1 = capacity (`Bytes.len`).
+        Type::Bytes(None) => {
+            if index > 1 {
+                return Err(CodegenError::internal(format!(
+                    "`Bytes` project index {index} out of range"
+                )));
+            }
+            let _ = layout;
+            Ok((8 * index, 8))
+        }
         Type::Named(name, targs) => {
             // plans/M7.md item E4: `IoCompletion[P]` is a real aggregate
             // (payload + status + written_len), not a sealed one-word

@@ -8829,6 +8829,29 @@ impl Asm {
         });
     }
 
+    /// plans/M10.md item B4: `BL __wrela_console_append_bytes`.
+    /// Pre: `x0` holds the packed-byte base. Sets `x1 = x2 = len` so the
+    /// Bytes handle's capacity equals the copy length (every harness
+    /// literal call site).
+    fn bl_console_append_bytes(&mut self, len: u64) {
+        self.load_imm(1, len);
+        self.load_imm(2, len);
+        self.bl_call_key("__wrela_console_append_bytes");
+    }
+
+    /// plans/M10.md item B4: like [`Self::bl_console_append_bytes`] but
+    /// `x0`/`x1` already hold `(base, len)` — copies `x1` into `x2`.
+    fn bl_console_append_bytes_xy(&mut self) {
+        self.push(encode::enc_mov_reg(2, 1, true));
+        self.bl_call_key("__wrela_console_append_bytes");
+    }
+
+    /// plans/M10.md item B4: `BL __wrela_console_append_line_buf`.
+    /// Pre: `x0` holds the byte length written into `OFF_TEST_LINE_BUF`.
+    fn bl_console_append_line_buf(&mut self) {
+        self.bl_call_key("__wrela_console_append_line_buf");
+    }
+
     /// `reg = &rodata[byte_offset]` (symbolic `ADRP`+`ADD`, `Reloc::Rodata`,
     /// item D's own resolution unchanged) — `byte_offset` is an *already
     /// interned* rodata entry's own offset (see `RodataAppend`, below);
@@ -9213,6 +9236,9 @@ fn build_abort_fixed(
     failed_word_off: usize,
     newline_off: usize,
 ) -> Asm {
+    // M10 B4: callers use compiled `__wrela_console_append_*` via
+    // `bl_call_key`; hand-asm `build_ring_append` stays until B5.
+    let _ = append_start;
     let mut a = Asm::new(start);
     // Latch check before any SP work — re-entry must not touch the stack.
     a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
@@ -9226,16 +9252,14 @@ fn build_abort_fixed(
     a.push(encode::enc_str_x_imm(1, 31, 8));
 
     a.load_rodata_addr_at(0, failed_word_off);
-    a.load_imm(1, 7);
-    a.bl_to(append_start);
+    a.bl_console_append_bytes(7);
 
     a.push(encode::enc_ldr_x_imm(0, 31, 0));
     a.push(encode::enc_ldr_x_imm(1, 31, 8));
-    a.bl_to(append_start);
+    a.bl_console_append_bytes_xy();
 
     a.load_rodata_addr_at(0, newline_off);
-    a.load_imm(1, 1);
-    a.bl_to(append_start);
+    a.bl_console_append_bytes(1);
 
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
     // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
@@ -9266,6 +9290,8 @@ fn build_abort_val(
     failed_word_off: usize,
     newline_off: usize,
 ) -> Asm {
+    // M10 B4: see build_abort_fixed — hand-asm append kept until B5.
+    let _ = append_start;
     let mut a = Asm::new(start);
     a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
     a.push(encode::enc_ldr_x_imm(10, 9, 0));
@@ -9279,29 +9305,26 @@ fn build_abort_val(
     }
 
     a.load_rodata_addr_at(0, failed_word_off);
-    a.load_imm(1, 7);
-    a.bl_to(append_start);
+    a.bl_console_append_bytes(7);
 
     a.push(encode::enc_ldr_x_imm(0, 31, 0));
     a.push(encode::enc_ldr_x_imm(1, 31, 8));
-    a.bl_to(append_start); // prefix
+    a.bl_console_append_bytes_xy(); // prefix
 
     a.push(encode::enc_ldr_x_imm(0, 31, 16));
     a.push(encode::enc_ldr_x_imm(1, 31, 24));
     // M10 B3: wrela `__wrela_fmt_dec` (hand-asm retained until B5).
     let _ = fmt_dec_start;
     a.bl_call_key("__wrela_fmt_dec"); // x0 = len, written into OFF_TEST_LINE_BUF
-    a.push(encode::enc_mov_reg(1, 0, true));
-    a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
-    a.bl_to(append_start);
+    // M10 B4: append goes through compiled `__wrela_console_append_line_buf`.
+    a.bl_console_append_line_buf();
 
     a.push(encode::enc_ldr_x_imm(0, 31, 32));
     a.push(encode::enc_ldr_x_imm(1, 31, 40));
-    a.bl_to(append_start); // suffix
+    a.bl_console_append_bytes_xy(); // suffix
 
     a.load_rodata_addr_at(0, newline_off);
-    a.load_imm(1, 1);
-    a.bl_to(append_start);
+    a.bl_console_append_bytes(1);
 
     a.push(encode::enc_add_imm(31, 31, 48, true));
     // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
@@ -9369,6 +9392,9 @@ fn build_entry_driver(
     // whole of what keeps every M5-M7 boot byte-identical.
     cores: usize,
 ) -> Asm {
+    // M10 B4: append goes through compiled `__wrela_console_append_*`;
+    // hand-asm `build_ring_append` stays until B5.
+    let _ = append_start;
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
 
@@ -9483,8 +9509,7 @@ fn build_entry_driver(
         a.bl_call_key("__wrela_line_begin");
 
         a.load_rodata_addr_at(0, prefix_off);
-        a.load_imm(1, prefix_len);
-        a.bl_to(append_start);
+        a.bl_console_append_bytes(prefix_len);
 
         let cont_marker = a.load_imm_placeholder(9);
         a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
@@ -9634,8 +9659,7 @@ fn build_entry_driver(
         }
 
         a.load_rodata_addr_at(0, ok_off);
-        a.load_imm(1, 3);
-        a.bl_to(append_start);
+        a.bl_console_append_bytes(3);
 
         // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
         let _ = commit_start;
@@ -9665,29 +9689,23 @@ fn build_entry_driver(
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
     a.push(encode::enc_movz(1, 0, 0, true));
-    // M10 B3: wrela `__wrela_fmt_dec` (hand-asm retained until B5).
+    // M10 B3 + B4: fmt_dec then append_line_buf (x0 = len).
     let _ = fmt_dec_start;
     a.bl_call_key("__wrela_fmt_dec");
-    a.push(encode::enc_mov_reg(1, 0, true));
-    a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
-    a.bl_to(append_start);
+    a.bl_console_append_line_buf();
 
     a.load_rodata_addr_at(0, passed_comma_off);
-    a.load_imm(1, 9);
-    a.bl_to(append_start);
+    a.bl_console_append_bytes(9);
 
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
     a.push(encode::enc_movz(1, 0, 0, true));
-    // M10 B3
+    // M10 B3 + B4
     a.bl_call_key("__wrela_fmt_dec");
-    a.push(encode::enc_mov_reg(1, 0, true));
-    a.load_imm(0, addrs.info_base + mi::OFF_TEST_LINE_BUF);
-    a.bl_to(append_start);
+    a.bl_console_append_line_buf();
 
     a.load_rodata_addr_at(0, failed_tail_off);
-    a.load_imm(1, 8);
-    a.bl_to(append_start);
+    a.bl_console_append_bytes(8);
 
     // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
     let _ = commit_start;
@@ -9937,9 +9955,9 @@ fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
         .collect();
     let modules_dot: BTreeMap<String, Module> =
         modules.into_iter().map(|(k, m)| (k.join("."), m)).collect();
-    // Walk callees of the force-root seeds (M10 B3: `__wrela_fmt_dec`
-    // calls `store_at` / `extract_one` / …). Seeding only the root keys
-    // leaves those helpers un-codegen'd and layout's Reloc::Call fails.
+    // Force-root seeds plus their callee closure (M10 B3: `fmt_dec` →
+    // `store_at` / `extract_one` / …; M10 B4: append → `copy_*_range`).
+    // Seeding only the root keys leaves those helpers un-codegen'd.
     let only =
         crate::lower::guest_reachable_keys_closure(&programs, &crate::lower::LowerOpts::default());
     let lower_opts = crate::lower::LowerOpts {

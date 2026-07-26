@@ -28,8 +28,8 @@ ImageReport v0
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
     Padding offset=0x1004 size=2564
     Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
-    Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=b0 type=u8 offset=0x0 size=1
     Field name=b1 type=u8 offset=0x1 size=1
@@ -55,16 +55,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=8512
-  Section name=rodata base=0x40502190 size=148
-  Section name=abort base=0x40502224 size=120
-  Section name=checkpoint base=0x4050229c size=104
-  Section name=rtcode base=0x40502304 size=1696
-  Section name=rtdata base=0x405029a8 size=1856
+  Section name=code base=0x40500050 size=10512
+  Section name=rodata base=0x40502960 size=199
+  Section name=abort base=0x40502a28 size=120
+  Section name=checkpoint base=0x40502aa0 size=104
+  Section name=rtcode base=0x40502b08 size=1696
+  Section name=rtdata base=0x405031a8 size=1856
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40502870
-  CoreEntry core=2 base=0x405028d8
-  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  CoreEntry core=1 base=0x40503074
+  CoreEntry core=2 base=0x405030dc
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21

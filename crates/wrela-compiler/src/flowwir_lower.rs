@@ -2381,6 +2381,16 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                     return Ok(dst);
                 }
             }
+            // plans/M10.md item B4: `Bytes.len` is handle word 1.
+            if matches!(base_ty, Type::Bytes(None)) && name == "len" {
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: 1,
+                });
+                return Ok(dst);
+            }
             let idx = field_index(b.prog, &base_ty, name)?;
             let dst = b.fresh(e.ty.clone());
             b.emit_mwir(Inst::Project {

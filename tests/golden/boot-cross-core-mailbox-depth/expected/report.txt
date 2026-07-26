@@ -34,8 +34,8 @@ ImageReport v0
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
     Padding offset=0x1004 size=2564
     Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
-    Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=b0 type=u8 offset=0x0 size=1
     Field name=b1 type=u8 offset=0x1 size=1
@@ -61,16 +61,16 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=12536
-  Section name=rodata base=0x40503148 size=547
-  Section name=abort base=0x4050336c size=120
-  Section name=checkpoint base=0x405033e4 size=104
-  Section name=rtcode base=0x4050344c size=5716
-  Section name=rtdata base=0x40504aa0 size=4800
+  Section name=code base=0x40500050 size=14536
+  Section name=rodata base=0x40503918 size=598
+  Section name=abort base=0x40503b70 size=120
+  Section name=checkpoint base=0x40503be8 size=104
+  Section name=rtcode base=0x40503c50 size=5716
+  Section name=rtdata base=0x405052a8 size=4800
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4050496c
-  CoreEntry core=2 base=0x405049d4
-  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  CoreEntry core=1 base=0x40505170
+  CoreEntry core=2 base=0x405051d8
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
@@ -78,11 +78,11 @@ ImageReport v0
   Actor name=Near mailbox=4 slot=16 frame=304 state=8
   Actor name=Far mailbox=4 slot=16 frame=256 state=8
   Turn fn=mailbox_depth_backpressures_under_three_cores frame=672
-  Ring kind=request src=0 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x40505c10
-  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40505c40
-  Ring kind=request src=2 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x40505c98
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40505cc8
-  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x40505d00
-  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40505d28
+  Ring kind=request src=0 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x40506418
+  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40506448
+  Ring kind=request src=2 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x405064a0
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x405064d0
+  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x40506508
+  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40506530
   Turns count=4 stride=1024 bytes=4096
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=4800

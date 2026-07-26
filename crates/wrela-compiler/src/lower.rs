@@ -309,6 +309,9 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_line_commit",
     // M10 B3: decimal renderer (harness bl_call_key target).
     "__wrela_fmt_dec",
+    // M10 B4: console append split (line_buf / Bytes).
+    "__wrela_console_append_line_buf",
+    "__wrela_console_append_bytes",
 ];
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
@@ -2739,6 +2742,16 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     });
                     return Ok(dst);
                 }
+            }
+            // plans/M10.md item B4: `Bytes.len` is handle word 1 (capacity).
+            if matches!(base_ty, Type::Bytes(None)) && name == "len" {
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: 1,
+                });
+                return Ok(dst);
             }
             let idx = field_index(b.prog(), &base_ty, name)?;
             let dst = b.fresh(expr.ty.clone());

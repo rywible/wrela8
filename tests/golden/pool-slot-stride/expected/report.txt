@@ -33,8 +33,8 @@ ImageReport v0
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
     Padding offset=0x1004 size=2564
     Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
-    Field name=_pad type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=b0 type=u8 offset=0x0 size=1
     Field name=b1 type=u8 offset=0x1 size=1
@@ -65,24 +65,24 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=7876
-  Section name=rodata base=0x40501f18 size=148
-  Section name=abort base=0x40501fac size=120
-  Section name=checkpoint base=0x40502024 size=104
-  Section name=rtcode base=0x4050208c size=100
-  Section name=rtdata base=0x405020f0 size=24
-  Section name=devregs base=0x40502108 size=8
-  Section name=pooldata base=0x40502110 size=37
+  Section name=code base=0x40500050 size=9876
+  Section name=rodata base=0x405026e8 size=199
+  Section name=abort base=0x405027b0 size=120
+  Section name=checkpoint base=0x40502828 size=104
+  Section name=rtcode base=0x40502890 size=100
+  Section name=rtdata base=0x405028f8 size=24
+  Section name=devregs base=0x40502910 size=8
+  Section name=pooldata base=0x40502918 size=37
   Entry base=0x40500000
-  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=8
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=24
-  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40502108 size=8
-  Pool name=Control kind=dma payload=Odd slots=4 slot_bytes=9 base=0x40502110 size=36 align=8 coherency=coherent device=device#0
-  Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x40502134 size=1 align=1 coherency=coherent device=device#0
-  BlkPool name=Control device=device#0 base=0x40502110 size=0x24
-  BlkPool name=Scratch device=device#0 base=0x40502134 size=0x1
+  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40502910 size=8
+  Pool name=Control kind=dma payload=Odd slots=4 slot_bytes=9 base=0x40502918 size=36 align=8 coherency=coherent device=device#0
+  Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x4050293c size=1 align=1 coherency=coherent device=device#0
+  BlkPool name=Control device=device#0 base=0x40502918 size=0x24
+  BlkPool name=Scratch device=device#0 base=0x4050293c size=0x1
