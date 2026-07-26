@@ -484,6 +484,11 @@ fn render_check_dump(
         if key == &runtime_key && !runtime_explicitly_imported {
             continue;
         }
+        // plans/M11.md item E / decision 780: omit stub/live generated
+        // `core.__image_runtime` from check dumps (not a user source file).
+        if key.as_slice() == crate::loader::IMAGE_RUNTIME_MODULE_KEY {
+            continue;
+        }
         // DeclItems are already classified; specialize only for the path
         // line + effect inference. Uses the tables check produced — never
         // a fresh declare (item LL).
@@ -769,7 +774,15 @@ fn check_program_typed_tables(
         })
         .collect();
     for (key, local, target_module, target_name) in splices {
-        let (fn_entry, const_entry, const_val_entry, struct_entry, enum_entry) = {
+        let (
+            fn_entry,
+            const_entry,
+            const_val_entry,
+            struct_entry,
+            enum_entry,
+            static_entry,
+            layout_entries,
+        ) = {
             let src = &mctxs[&target_module];
             (
                 src.fns.get(&target_name).cloned(),
@@ -777,6 +790,12 @@ fn check_program_typed_tables(
                 src.const_values.get(&target_name).cloned(),
                 src.structs.get(&target_name).cloned(),
                 src.enums.get(&target_name).cloned(),
+                src.statics.get(&target_name).cloned(),
+                if src.statics.contains_key(&target_name) {
+                    src.layouts.values().cloned().collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                },
             )
         };
         let dst = mctxs.get_mut(&key).expect("key is a key of mctxs");
@@ -807,7 +826,19 @@ fn check_program_typed_tables(
         if let Some(mut e) = enum_entry {
             // plans/M9.md item B2 / GG: same whole-signature re-key.
             types::rekey_decl_enum_names(&mut e.decl, &subs);
-            dst.enums.insert(local, e);
+            dst.enums.insert(local.clone(), e);
+        }
+        // plans/M11.md item E / decision 785: `pub static` imports (RT /
+        // GROUPS) so handwritten runtime algorithms can index generated
+        // tables.
+        if let Some(mut s) = static_entry {
+            types::rekey_type_names(&mut s.ty, &subs);
+            dst.statics.insert(local, s);
+            for layout in layout_entries {
+                dst.layouts
+                    .entry(layout.name.clone())
+                    .or_insert_with(|| layout);
+            }
         }
     }
 
@@ -905,6 +936,11 @@ fn check_program_typed_tables(
             p.layouts = layouts;
         }
     }
+
+    // plans/M11.md item E / decision 785: after layouts are completed on
+    // the exporter, copy them onto importers that pulled in `@placed`
+    // statics (lower's placed-field path reads `TypedProgram::layouts`).
+    splice_imported_static_layouts(&mut programs, &bindings);
 
     // plans/M6.md item G: the whole-closure half of the send proof (see
     // `check_typed` above) — every module is typed by now, which is
@@ -1091,6 +1127,15 @@ fn splice_imported_decls(
         let fn_entry = src.fns.get(&target_name).cloned();
         let struct_entry = src.structs.get(&target_name).cloned();
         let enum_entry = src.enums.get(&target_name).cloned();
+        let static_entry = src.statics.get(&target_name).cloned();
+        // Layout types named by an imported static's type (and nested
+        // field types) — lower's placed-field path needs them on the
+        // importer's TypedProgram (plans/M11.md item E / decision 785).
+        let layout_entries: Vec<types::LayoutType> = if static_entry.is_some() {
+            src.layouts.clone()
+        } else {
+            Vec::new()
+        };
         // The exporter's own instantiations come across under the
         // *importer-facing* canonical-key spelling (plans/M9.md item II):
         // bodies are re-keyed under `subs`, and so are the map keys, so a
@@ -1101,7 +1146,8 @@ fn splice_imported_decls(
         let body_bearing = const_entry.is_some()
             || fn_entry.is_some()
             || struct_entry.is_some()
-            || enum_entry.is_some();
+            || enum_entry.is_some()
+            || static_entry.is_some();
         let dst = programs.get_mut(&key).expect("key is a key of programs");
         if let (Some(witness), true) = (&withheld, body_bearing) {
             dst.imported.unresolvable.insert(
@@ -1144,6 +1190,15 @@ fn splice_imported_decls(
                 typed::rekey_enum_names(&mut e, &subs);
                 dst.imported.enums.insert(local.clone(), e);
             }
+            if let Some(s) = static_entry {
+                // Imported `@placed` statics land in the main `statics`
+                // map so lower's `placed_static_addr` resolves them
+                // (plans/M11.md item E / decision 785).
+                dst.statics.insert(local.clone(), s);
+            }
+            // Layouts are copied after `complete_layouts` (see
+            // `splice_imported_static_layouts`) so sizes are real.
+            let _ = layout_entries;
             for (ikey, mut inst) in inst_entries {
                 typed::rekey_instantiation(&mut inst, &subs);
                 let new_key = typed::rekey_canonical_key(&ikey, &subs);
@@ -1224,6 +1279,8 @@ fn close_mctx_type_reachability(
                     types::collect_named_types_from_decl_fn(&f.decl, &mut mentioned);
                 } else if let Some(ty) = dst.consts.get(&name) {
                     types::collect_named_type_names(ty, &mut mentioned);
+                } else if let Some(info) = dst.statics.get(&name) {
+                    types::collect_named_type_names(&info.ty, &mut mentioned);
                 }
             }
             for tname in mentioned {
@@ -1336,6 +1393,13 @@ fn close_typed_type_reachability(
                     .or_else(|| dst.consts.get(&name))
                 {
                     types::collect_named_type_names(&c.ty, &mut mentioned);
+                } else if let Some(s) = dst.statics.get(&name) {
+                    // plans/M11.md item E / decision 785: imported
+                    // `@placed` statics (RT / GROUPS) seed the same
+                    // reachability walk ModuleCtx already does, so
+                    // overlay structs (`TurnArea` / `GroupSlot`) land in
+                    // `imported.structs` and leave `unresolvable`.
+                    types::collect_named_type_names(&s.ty, &mut mentioned);
                 }
             }
             for tname in mentioned {
@@ -1473,6 +1537,37 @@ fn close_typed_type_reachability(
             } else if let Some(mut e) = enum_entry {
                 typed::rekey_enum_names(&mut e, &subs);
                 dst.imported.enums.insert(tname, e);
+            }
+        }
+    }
+}
+
+/// Copy completed `@layout` tables from an exporter onto importers that
+/// imported a `@placed` static (plans/M11.md item E / decision 785).
+fn splice_imported_static_layouts(
+    programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
+    bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
+) {
+    let splices: Vec<(Vec<String>, Vec<String>, String)> = bindings
+        .iter()
+        .flat_map(|(key, bs)| {
+            bs.iter().map(move |(_local, b)| {
+                (key.clone(), b.target_module.clone(), b.target_name.clone())
+            })
+        })
+        .collect();
+    for (importer, exporter, target_name) in splices {
+        let Some(src) = programs.get(&exporter) else {
+            continue;
+        };
+        if !src.statics.contains_key(&target_name) {
+            continue;
+        }
+        let layouts = src.layouts.clone();
+        let dst = programs.get_mut(&importer).expect("importer key");
+        for layout in layouts {
+            if !dst.layouts.iter().any(|l| l.name == layout.name) {
+                dst.layouts.push(layout);
             }
         }
     }

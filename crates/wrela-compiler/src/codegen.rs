@@ -11983,12 +11983,18 @@ pub fn emit_boot_init(spec: &BootInitSpec) -> CodegenFn {
 // not pretended migrated (decision 673).
 
 /// Group-arena facts for deadline scan/poll (plans/M10.md item G).
+///
+/// After M11 item E the specialized word emitters are gone — this spec
+/// only carries the `arena_capacity > 0` predicate so the checkpoint
+/// stub knows whether to `BL __wrela_deadline_scan` (and the entry
+/// driver whether to `BL __wrela_deadline_poll`). Addresses live in the
+/// force-rooted wrela bodies via `@placed` RT/GROUPS.
 #[derive(Debug, Clone)]
 pub struct DeadlineGroupSpec {
     pub arena_base: u64,
     pub arena_capacity: u64,
-    /// `(turn_area_addr, TurnId::get())` — build-time immediates; the
-    /// checkpoint block is still shape-then-real double-built.
+    /// `(turn_area_addr, TurnId::get())` — retained for the shape/real
+    /// double-build call sites; ignored by the checkpoint stub after E.
     pub turn_areas: Vec<(u64, u32)>,
 }
 
@@ -12020,7 +12026,12 @@ pub struct CheckpointEmitSpec {
 pub struct CheckpointEmitResult {
     pub words: Vec<u32>,
     pub checkpoint_service_word: usize,
+    /// Always `None` after M11 item E: `__wrela_deadline_poll` lives in
+    /// `code` as a force-rooted key; the entry driver `bl_call_key`s it.
     pub deadline_poll_word: Option<usize>,
+    /// True when the image has a group arena — entry driver should
+    /// `bl_call_key("__wrela_deadline_poll")` each scheduler tick.
+    pub has_deadline_poll: bool,
     pub relocs: Vec<Reloc>,
 }
 
@@ -12077,6 +12088,7 @@ impl CpAsm {
         self.push(0);
         w
     }
+    #[allow(dead_code)] // kept for IRQ/wake multi-path patching symmetry
     fn patch_cond(&mut self, marker: usize, cond: Cond) {
         let target = self.abs();
         let delta = (target as i64 - marker as i64) * 4;
@@ -12087,6 +12099,7 @@ impl CpAsm {
         let delta = (target as i64 - marker as i64) * 4;
         self.words[marker] = encode::enc_cbz(reg, delta as i32, true);
     }
+    #[allow(dead_code)] // kept for IRQ/wake multi-path patching symmetry
     fn patch_cbnz(&mut self, marker: usize, reg: u8) {
         let target = self.abs();
         let delta = (target as i64 - marker as i64) * 4;
@@ -12100,137 +12113,16 @@ const CP_SCRATCH_B: u8 = 10;
 const CP_SCRATCH_C: u8 = 11;
 const CP_X_ZR: u8 = 31;
 
-/// plans/M10.md item G / decision 670: specialized deadline scan +
-/// cancellation delivery. Fully unrolled over `arena_capacity` and
-/// `turn_areas`. Leaf fragment — no `ret` (inlined into vector0).
-pub fn emit_deadline_scan_and_delivery(spec: &DeadlineGroupSpec) -> Vec<u32> {
-    let mut a = CpAsm::new();
-    emit_deadline_scan_and_delivery_into(&mut a, spec);
-    a.words
-}
+/// plans/M10.md item G / decision 670; M11 item E deleted the specialized
+/// deadline scan/poll word emitters — those algorithms live in
+/// `stdlib/core/runtime.wr` as force-rooted `__wrela_deadline_scan` /
+/// `__wrela_deadline_poll`.
 
-fn emit_deadline_scan_and_delivery_into(a: &mut CpAsm, g: &DeadlineGroupSpec) {
-    const NOW: u8 = CP_SCRATCH_A;
-    const SLOT: u8 = CP_SCRATCH_B;
-    const T0: u8 = CP_SCRATCH_C;
-    const T1: u8 = 12;
-    const T2: u8 = 13;
-
-    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
-    a.push(encode::enc_ldr_x_imm(NOW, T0, 0));
-
-    for i in 0..g.arena_capacity {
-        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
-        let skip_a = a.skip_placeholder();
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
-        let skip_b = a.skip_placeholder();
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
-        let skip_c = a.skip_placeholder();
-        a.push(encode::enc_cmp_reg(NOW, T0, true));
-        let skip_d = a.skip_placeholder();
-        a.load_imm(T1, 1);
-        a.push(encode::enc_str_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
-        let next = a.abs();
-        a.patch_cbz(skip_a, T0);
-        a.patch_cbnz(skip_b, T0);
-        a.patch_cbz(skip_c, T0);
-        a.patch_cond(skip_d, Cond::Cc);
-        debug_assert_eq!(next, a.abs());
-    }
-
-    for &(turn, turn_id) in &g.turn_areas {
-        a.load_imm(T0, turn);
-        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_BUSY as u16));
-        let skip_a = a.skip_placeholder();
-        a.push(encode::enc_ldr_x_imm(T1, T0, OFF_TURN_SUSPENDED as u16));
-        let skip_b = a.skip_placeholder();
-        a.push(encode::enc_ldr_x_imm(T1, T0, TURN_RECORD_SIZE as u16));
-        let skip_c = a.skip_placeholder();
-        a.push(encode::enc_sub_imm(T1, T1, 1, true));
-        a.load_imm(T2, GROUP_SLOT_SIZE);
-        a.push(encode::enc_mul(T1, T1, T2, true));
-        a.load_imm(SLOT, g.arena_base);
-        a.push(encode::enc_add_reg(SLOT, SLOT, T1, true));
-        a.push(encode::enc_ldr_x_imm(T1, SLOT, OFF_GROUP_CANCELLED as u16));
-        let skip_d = a.skip_placeholder();
-        a.push(encode::enc_ldr_w_imm(T1, SLOT, OFF_GROUP_OWNER_TURN as u16));
-        a.load_imm(T2, turn_id as u64);
-        a.push(encode::enc_cmp_reg(T1, T2, false));
-        let skip_e = a.skip_placeholder();
-        a.load_imm(T1, 1);
-        a.push(encode::enc_str_x_imm(T1, T0, OFF_TURN_RESUME_READY as u16));
-        let next = a.abs();
-        a.patch_cbz(skip_a, T1);
-        a.patch_cbz(skip_b, T1);
-        a.patch_cbz(skip_c, T1);
-        a.patch_cbz(skip_d, T1);
-        a.patch_cond(skip_e, Cond::Eq);
-        debug_assert_eq!(next, a.abs());
-    }
-}
-
-/// plans/M10.md item G / decision 670: specialized `__wrela_deadline_poll`.
-/// Includes the trailing `ret`.
-pub fn emit_deadline_poll(spec: &DeadlineGroupSpec) -> CodegenFn {
-    let mut a = CpAsm::new();
-    emit_deadline_poll_into(&mut a, spec);
-    a.push(encode::enc_ret(30));
-    CodegenFn {
-        frame_size: 0,
-        code: a.words.into_iter().map(|w| (w, String::new())).collect(),
-        relocs: a.relocs,
-    }
-}
-
-fn emit_deadline_poll_into(a: &mut CpAsm, g: &DeadlineGroupSpec) {
-    const MIN: u8 = CP_SCRATCH_A;
-    const SLOT: u8 = CP_SCRATCH_B;
-    const T0: u8 = CP_SCRATCH_C;
-    const T1: u8 = 12;
-    const T2: u8 = 13;
-
-    a.push(encode::enc_movz(MIN, 0, 0, true));
-    for i in 0..g.arena_capacity {
-        a.load_imm(SLOT, g.arena_base + i * GROUP_SLOT_SIZE);
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_IN_USE as u16));
-        let skip_a = a.skip_placeholder();
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_CANCELLED as u16));
-        let skip_b = a.skip_placeholder();
-        a.push(encode::enc_ldr_x_imm(T0, SLOT, OFF_GROUP_DEADLINE as u16));
-        let skip_c = a.skip_placeholder();
-        a.push(encode::enc_cmp_reg(T0, MIN, true));
-        a.push(encode::enc_csel(T1, T0, MIN, Cond::Cc, true));
-        a.push(encode::enc_cmp_imm(MIN, 0, true));
-        a.push(encode::enc_csel(MIN, T0, T1, Cond::Eq, true));
-        let next = a.abs();
-        a.patch_cbz(skip_a, T0);
-        a.patch_cbnz(skip_b, T0);
-        a.patch_cbz(skip_c, T0);
-        debug_assert_eq!(next, a.abs());
-    }
-    a.load_imm(
-        T0,
-        wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_NEXT_DEADLINE,
-    );
-    a.push(encode::enc_str_x_imm(MIN, T0, 0));
-    let skip_done = a.skip_placeholder();
-    a.load_imm(T0, wrela_machine::mmio::CLOCK_MMIO_ADDR);
-    a.push(encode::enc_ldr_x_imm(T1, T0, 0));
-    a.push(encode::enc_cmp_reg(T1, MIN, true));
-    let skip_not_yet = a.skip_placeholder();
-    a.load_imm(T0, wrela_machine::pending::core_word_addr(0));
-    a.load_imm(T2, 1);
-    a.push(encode::enc_str_x_imm(T2, T0, 0));
-    let done = a.abs();
-    a.patch_cbz(skip_done, MIN);
-    a.patch_cond(skip_not_yet, Cond::Cc);
-    debug_assert_eq!(done, a.abs());
-}
-
-/// plans/M10.md item G / decision 670: full checkpoint + vector0 + optional
-/// deadline poll block. Contains 5 floor-cat2 save/restore words around
-/// the pending loop (decision 673).
+/// plans/M10.md item G / decision 670: full checkpoint + vector0 block.
+/// Contains 5 floor-cat2 save/restore words around the pending loop
+/// (decision 673). M11 item E: vector0 `BL`s `__wrela_deadline_scan`
+/// when a group arena exists; deadline poll is not embedded (lives in
+/// `code`).
 pub fn emit_checkpoint_and_vector_stub(spec: &CheckpointEmitSpec) -> CheckpointEmitResult {
     let mut a = CpAsm::new();
 
@@ -12242,8 +12134,17 @@ pub fn emit_checkpoint_and_vector_stub(spec: &CheckpointEmitSpec) -> CheckpointE
     a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
     a.push(encode::enc_add_imm(CP_SCRATCH_B, CP_SCRATCH_B, 1, true));
     a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-    if let Some(g) = spec.group.as_ref().filter(|g| g.arena_capacity > 0) {
-        emit_deadline_scan_and_delivery_into(&mut a, g);
+    let has_deadline = spec.group.as_ref().is_some_and(|g| g.arena_capacity > 0);
+    if has_deadline {
+        // Save LR (and x28 per vector0 contract) before BL — a bare
+        // `bl …; ret` leaves LR at the `ret` and spins forever.
+        a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
+        a.push(encode::enc_str_x_imm(30, CP_X_SP, 0));
+        a.push(encode::enc_str_x_imm(28, CP_X_SP, 8));
+        a.bl_call_key("__wrela_deadline_scan");
+        a.push(encode::enc_ldr_x_imm(28, CP_X_SP, 8));
+        a.push(encode::enc_ldr_x_imm(30, CP_X_SP, 0));
+        a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
     }
     a.push(encode::enc_ret(30));
 
@@ -12352,20 +12253,11 @@ pub fn emit_checkpoint_and_vector_stub(spec: &CheckpointEmitSpec) -> CheckpointE
     a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
     a.push(encode::enc_ret(30));
 
-    let deadline_poll_word = match spec.group.as_ref().filter(|g| g.arena_capacity > 0) {
-        Some(g) => {
-            let start = a.abs();
-            emit_deadline_poll_into(&mut a, g);
-            a.push(encode::enc_ret(30));
-            Some(start)
-        }
-        None => None,
-    };
-
     CheckpointEmitResult {
         words: a.words,
         checkpoint_service_word,
-        deadline_poll_word,
+        deadline_poll_word: None,
+        has_deadline_poll: has_deadline,
         relocs: a.relocs,
     }
 }
@@ -12850,24 +12742,16 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
         driver_slots: vec![],
     };
     out.insert("emit_boot_init", emit_boot_init(&boot).code.len());
-    // M10 G / decision 670: REF empty group/irq/wake = 26 (incl. 5 floor-cat2);
-    // deadline scan/poll REF arena_capacity=1, one turn area.
+    // M10 G / decision 670: REF empty group/irq/wake = 26 (incl. 5 floor-cat2).
+    // M11 E: deadline scan/poll deleted (force-rooted wrela); checkpoint
+    // still BL `__wrela_deadline_scan` when a group arena exists — REF
+    // empty keeps the empty-path word count.
     let cp = emit_checkpoint_and_vector_stub(&CheckpointEmitSpec {
         group: None,
         irq_vectors: vec![],
         wake_drains: vec![],
     });
     out.insert("emit_checkpoint_and_vector_stub", cp.words.len());
-    let g = DeadlineGroupSpec {
-        arena_base: 0x4050_3000,
-        arena_capacity: 1,
-        turn_areas: vec![(0x4050_1000, 1)],
-    };
-    out.insert(
-        "emit_deadline_scan_and_delivery",
-        emit_deadline_scan_and_delivery(&g).len(),
-    );
-    out.insert("emit_deadline_poll", emit_deadline_poll(&g).code.len());
     out
 }
 

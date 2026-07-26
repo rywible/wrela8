@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_two_devices.wr sha256=9f4c5d0be6360832f9a040c61b763ccd1908e80a723d793fe9a194f52a83741a
-  Input path=<generated> sha256=01243e3e4b8efe7f2e8657dd3869cb2a8e18a2b4bcc6575ad39951d4222bbcd8
+  Input path=<generated> sha256=0758c89b70e04aa8f80f03bfb6e3946c29760877e10ba2935e3862f15c65121f
   Name value=pool-two-devices
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -31,14 +31,20 @@ ImageReport v0
     Child value=driver#1
   Placement id=driver#0 type=BlkDriver core=0 source=inferred work=0 work_source=unproved bytes=24 bytes_state=8 bytes_mailbox=0 bytes_pool=16
   Placement id=driver#1 type=OtherDriver core=0 source=inferred work=0 work_source=unproved bytes=24 bytes_state=8 bytes_mailbox=0 bytes_pool=16
-  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
-    Padding offset=0x0 size=72
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=480
+    Padding offset=0x0 size=40
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Padding offset=0x30 size=24
     Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
     Padding offset=0x68 size=416
     Field name=abort_latch type=u64 offset=0x208 size=8
+  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
+    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=PendingPage kind=runtime endian=little size=24 padding=0
+    Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -61,9 +67,13 @@ ImageReport v0
   Section name=devregs base=0x40510020 size=16
   Section name=pooldata base=0x40510030 size=32
   Entry base=0x40500000
+  PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=GROUPS type=GroupArena addr=0x40510010 size=96
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
+  PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=8
   Driver name=OtherDriver state=8

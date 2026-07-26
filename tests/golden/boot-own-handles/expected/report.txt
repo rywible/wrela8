@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_own_handles.wr sha256=32d671797005fb84cd59806588eb0ae69a610d8d92927c877357f4eb3519b36c
-  Input path=<generated> sha256=7eca291a04e622fe5a5caa6f3ad039b40b59f51adba92b598a935317b17151d7
+  Input path=<generated> sha256=70f94302387e4142f0becc5b0b48e7728522afd1343cb55616c23a08c2abe0c5
   Name value=boot-own-handles
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -21,14 +21,20 @@ ImageReport v0
   Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
     Child value=actor#0
   Placement id=actor#0 type=Holder core=0 source=inferred work=0 work_source=unproved bytes=168 bytes_state=16 bytes_mailbox=152 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
-    Padding offset=0x0 size=72
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=480
+    Padding offset=0x0 size=40
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Padding offset=0x30 size=24
     Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
     Padding offset=0x68 size=416
     Field name=abort_latch type=u64 offset=0x208 size=8
+  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
+    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=PendingPage kind=runtime endian=little size=24 padding=0
+    Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -51,9 +57,13 @@ ImageReport v0
   Section name=rtdata base=0x40510000 size=1216
   Section name=pooldata base=0x405104c0 size=16
   Entry base=0x40500000
+  PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=GROUPS type=GroupArena addr=0x40510010 size=96
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
+  PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Holder mailbox=8 slot=16 frame=64 state=16
   Turn fn=own_handle_addresses_pool_slot frame=480

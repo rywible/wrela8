@@ -816,6 +816,14 @@ pub(crate) fn closure_layouts(
     let mut from: BTreeMap<String, String> = BTreeMap::new();
     for (module, p) in programs {
         for l in &p.layouts {
+            // plans/M11.md item E / decision 785: importers may carry
+            // completed `@layout` tables spliced for imported `@placed`
+            // statics. Those are not declarations — skip them here so two
+            // modules naming the same layout type is still a real conflict
+            // when both *declare* it.
+            if !p.structs.contains_key(&l.name) {
+                continue;
+            }
             if let Some(prior) = from.get(&l.name) {
                 return Err(build_error(format!(
                     "two modules in this build closure declare a `@layout` type named \

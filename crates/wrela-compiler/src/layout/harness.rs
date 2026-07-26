@@ -189,6 +189,7 @@ pub fn build_checkpoint_and_vector_stub_ex(
         words: emitted.words,
         checkpoint_service_word: emitted.checkpoint_service_word,
         deadline_poll_word: emitted.deadline_poll_word,
+        has_deadline_poll: emitted.has_deadline_poll,
         relocs: emitted.relocs,
     }
 }
@@ -969,7 +970,7 @@ impl Asm {
         w
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // entry no longer raises pending by hand (M11 E)
     fn patch_cond(&mut self, marker: usize, cond: Cond) {
         let target = self.abs();
         let this = self.start + marker;
@@ -1159,10 +1160,9 @@ pub(super) fn build_entry_driver(
     // observes vectors only at checkpoints and parks", and the park's own
     // resume point *is* one, by construction).
     checkpoint_service_word: usize,
-    // plans/M6.md item F #3: `__wrela_deadline_poll`'s own harness-absolute
-    // word index, present only for a build with a group arena. Called once
-    // per scheduler tick (module doc on `emit_deadline_poll`).
-    deadline_poll_word: Option<usize>,
+    // plans/M6.md item F #3 / M11 item E: when true, `bl_call_key` to
+    // force-rooted `__wrela_deadline_poll` once per scheduler tick.
+    has_deadline_poll: bool,
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
     boot_init: bool,
@@ -1338,8 +1338,10 @@ pub(super) fn build_entry_driver(
             // still observes its group's cancellation at its very next
             // checkpoint. Absent entirely for a build with no group arena,
             // byte-identical to every pre-item-F image.
-            if let Some(poll) = deadline_poll_word {
-                a.bl_to(poll);
+            if has_deadline_poll {
+                // Force-rooted poll arms next_deadline and raises pending
+                // when due (stdlib/core/runtime.wr); no hand-asm twin.
+                a.bl_call_key("__wrela_deadline_poll");
             }
             // NB: `Asm` relocs carry ABSOLUTE word indices (the
             // `bl_call_key` convention) — `abs()`, not `words.len()`.
@@ -1701,12 +1703,28 @@ pub(super) fn with_force_rooted_runtime(
 
 /// Lower + codegen every `RUNTIME_FORCE_ROOT_KEYS` entry from
 /// `stdlib/core/runtime.wr` as a standalone `CodegenProgram`.
-pub(super) fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
+///
+/// When `rtconfig_text` is `Some`, that generated module is paired with
+/// unstripped `runtime.wr` (live image addresses). When `None`, the
+/// batch-1 stub is used (plans/M11.md item E / decision 780).
+pub(super) fn codegen_runtime_force_roots_with(
+    rtconfig_text: Option<&str>,
+) -> Result<CodegenProgram, String> {
     let (runtime_key, runtime_loaded) = crate::loader::load_runtime_module()
         .map_err(|_| "stdlib/core/runtime.wr missing".to_string())?;
+    let gen_text = rtconfig_text
+        .map(|s| s.to_string())
+        .unwrap_or_else(crate::rtconfig::stub_text);
+    let gen_module = crate::rtconfig::parse_generated(&gen_text)?;
+    let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     let mut modules = BTreeMap::new();
+    modules.insert(gen_key.clone(), gen_module);
     modules.insert(runtime_key.clone(), runtime_loaded.module);
     let mut paths = BTreeMap::new();
+    paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
     paths.insert(
         runtime_key.clone(),
         runtime_loaded.file.display().to_string(),
@@ -1720,9 +1738,14 @@ pub(super) fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
         modules.into_iter().map(|(k, m)| (k.join("."), m)).collect();
     // Force-root seeds plus their callee closure (M10 B3: `fmt_dec` →
     // `store_at` / `extract_one` / …; M10 B4: append → `copy_*_range`).
-    // Seeding only the root keys leaves those helpers un-codegen'd.
-    let only =
+    // M11 E: deadline poll/scan are not in RUNTIME_FORCE_ROOT_KEYS (only
+    // reinjected when a group arena exists) — seed them here so this
+    // helper can compile them for reinject / stub coverage.
+    let mut only =
         crate::lower::guest_reachable_keys_closure(&programs, &crate::lower::LowerOpts::default());
+    for key in ["__wrela_deadline_poll", "__wrela_deadline_scan"] {
+        only.insert(key.to_string());
+    }
     let lower_opts = crate::lower::LowerOpts {
         emit_comptime_tests: false,
         only: Some(only),
@@ -1744,9 +1767,55 @@ pub(super) fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
     let method_index =
         actor_method_index_tables(&modules_dot, &layout_ctx).map_err(|e| e.message)?;
-    // M10 item D: dump / no-@image paths have no mailbox roots — empty specs.
     crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0, &[])
         .map_err(|e| e.message)
+}
+
+/// Lower + codegen force-rooted runtime helpers against the batch-1 stub.
+pub(super) fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
+    codegen_runtime_force_roots_with(None)
+}
+
+/// Replace force-rooted deadline helpers with a codegen against the live
+/// `rtconfig` text (correct `RT` / `GROUPS` addresses for this image).
+pub(super) fn reinject_runtime_with_rtconfig(
+    program: &mut CodegenProgram,
+    tables: &RuntimeTables,
+) -> Result<(), LayoutError> {
+    // Deadline helpers need `ambient_group` at 0x40 and a live group arena.
+    // Header-only turns (stride < 0x48) keep the stub-compiled bodies —
+    // those images never BL poll/scan (no arena).
+    if tables.group_arena_capacity == 0 || tables.turn_stride < 0x48 {
+        return Ok(());
+    }
+    let text = crate::rtconfig::generate(tables);
+    let runtime_cg = codegen_runtime_force_roots_with(Some(&text)).map_err(|m| {
+        LayoutError::new(format!(
+            "internal error: could not codegen runtime helpers against live rtconfig: {m}"
+        ))
+    })?;
+    let rodata_byte_base: usize = program.rodata.iter().map(Vec::len).sum();
+    // Only the deadline keys need live RT/GROUPS addresses; console/abort
+    // helpers already bind MACHINE_INFO / CONSOLE_* and must not be
+    // duplicated into rodata.
+    for key in ["__wrela_deadline_poll", "__wrela_deadline_scan"] {
+        let Some(mut f) = runtime_cg.fns.get(key).cloned() else {
+            return Err(LayoutError::new(format!(
+                "internal error: live rtconfig codegen missing `{key}`"
+            )));
+        };
+        if rodata_byte_base != 0 {
+            for r in &mut f.relocs {
+                if let Reloc::Rodata { byte_offset, .. } = r {
+                    *byte_offset += rodata_byte_base;
+                }
+            }
+        }
+        program.fns.insert(key.to_string(), f);
+    }
+    // Deadline bodies only touch @placed statics — no rodata pool entries.
+    let _ = runtime_cg.rodata;
+    Ok(())
 }
 
 pub fn layout_test_image(
@@ -1790,6 +1859,9 @@ pub fn layout_test_image(
         intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
     }
     if let Some(w) = wiring.as_ref() {
+        // M11 E: re-codegen runtime against live RT/GROUPS addresses before
+        // specialized rt_* inject and code layout (decision 784).
+        reinject_runtime_with_rtconfig(&mut program, &w.tables)?;
         inject_rt_select_and_run_fns(&mut program, w);
         inject_rt_child_poll_fns(&mut program, w);
         inject_rt_run_one_fns(&mut program, w);
@@ -1838,7 +1910,7 @@ pub fn layout_test_image(
     let checkpoint_block =
         build_checkpoint_and_vector_stub_ex(checkpoint_shape.as_ref(), &irq_shape, &wake_shape);
     let checkpoint_service_offset = checkpoint_block.checkpoint_service_word;
-    let deadline_poll_offset = checkpoint_block.deadline_poll_word;
+    let has_deadline_poll = checkpoint_block.has_deadline_poll;
     let checkpoint_words_len = checkpoint_block.words.len();
     // `bl_call_key` records block-relative words when built at start=0;
     // shift them to harness-absolute for the shared reloc resolver.
@@ -1862,7 +1934,6 @@ pub fn layout_test_image(
     // `build_checkpoint_and_vector_stub`'s doc: `__wrela_vector0_service`
     // sits first, so the section's own start is never the right target).
     let checkpoint_service_word = checkpoint_start + checkpoint_service_offset;
-    let deadline_poll_word = deadline_poll_offset.map(|o| checkpoint_start + o);
 
     // M10 H: boot_init lives in `code` (`rt_boot_init 0`); glue empty after
     // F2. Harness is checkpoint then entry — no rtcode slice.
@@ -1880,7 +1951,7 @@ pub fn layout_test_image(
         async_tests,
         has_rt_run_one,
         checkpoint_service_word,
-        deadline_poll_word,
+        has_deadline_poll,
         &mut rodata,
         &mut rodata_cursor,
         call_boot_init,
@@ -1991,6 +2062,24 @@ pub fn layout_test_image(
                 }
                 for (i, word) in real_cp.words.iter().enumerate() {
                     harness_words[checkpoint_start + i] = *word;
+                }
+                // Match layout_program: real-pass Call relocs replace the
+                // shape-pass ones (word indices are identical today; keep
+                // the swap so a future length-preserving reshuffle cannot
+                // leave an unpatched `enc_bl(0)` in the harness).
+                harness_relocs.retain(|r| match r {
+                    Reloc::Call { word, .. } => *word >= entry_start,
+                    Reloc::Rodata { word_adrp, .. } => *word_adrp >= entry_start,
+                    _ => true,
+                });
+                for r in real_cp.relocs {
+                    match r {
+                        Reloc::Call { word, key } => harness_relocs.push(Reloc::Call {
+                            word: word + checkpoint_start,
+                            key,
+                        }),
+                        other => harness_relocs.push(other),
+                    }
                 }
             }
             (BTreeMap::new(), Some(placement))
@@ -2589,7 +2678,7 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
             &std::collections::BTreeSet::new(),
             false,
             0,
-            None,
+            false,
             &mut rodata,
             &mut cursor,
             false,

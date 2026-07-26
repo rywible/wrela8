@@ -3554,14 +3554,26 @@ mod tests {
             Err(_) => panic!("stdlib/core/runtime.wr must load"),
         };
         let root_key = module.path.clone();
+        let gen_key: Vec<String> = loader::IMAGE_RUNTIME_MODULE_KEY
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let gen_module =
+            wrela_compiler::rtconfig::parse_generated(&wrela_compiler::rtconfig::stub_text())
+                .expect("rtconfig stub must parse");
         let mut modules_vec = BTreeMap::new();
         modules_vec.insert(root_key.clone(), module.clone());
         modules_vec.insert(runtime_key.clone(), runtime_loaded.module);
+        modules_vec.insert(gen_key.clone(), gen_module);
         let mut paths = BTreeMap::new();
         paths.insert(root_key.clone(), "<conformance>".to_string());
         paths.insert(
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
+        );
+        paths.insert(
+            gen_key,
+            wrela_compiler::rtconfig::GENERATED_INPUT_PATH.to_string(),
         );
         // Mirror `bin/wrela.rs::load_runtime_bearing_singleton`: time prelude
         // for `seconds(...)` etc., then drop `core.time` from the maps.

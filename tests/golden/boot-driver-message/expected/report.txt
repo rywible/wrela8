@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_driver_message.wr sha256=8ef966def12344169efcdf5f1c9beabddef7b0b676ed5523e85a13c180b78411
-  Input path=<generated> sha256=a9a74c457ada1af1806fd7e619cbf80b04b7218b059a3baf1c1c77fc4942158d
+  Input path=<generated> sha256=945d099f4de1a64dd0c463f7098bb010175635d6f632d95bb5f9c012cf25c7be
   Name value=boot-driver-message
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -35,14 +35,20 @@ ImageReport v0
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=968 bytes_state=80 bytes_mailbox=120 bytes_pool=768
   Placement id=actor#0 type=Scale core=0 source=inferred work=0 work_source=unproved bytes=128 bytes_state=8 bytes_mailbox=120 bytes_pool=0
   Placement id=actor#1 type=Storage core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=488
-    Padding offset=0x0 size=72
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=480
+    Padding offset=0x0 size=40
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Padding offset=0x30 size=24
     Field name=test_failed type=u64 offset=0x48 size=8
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
     Padding offset=0x68 size=416
     Field name=abort_latch type=u64 offset=0x208 size=8
+  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
+    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=PendingPage kind=runtime endian=little size=24 padding=0
+    Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -71,9 +77,13 @@ ImageReport v0
   Section name=devregs base=0x40510fd0 size=104
   Section name=pooldata base=0x40511038 size=512
   Entry base=0x40500000
+  PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=GROUPS type=GroupArena addr=0x40510010 size=96
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
+  PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Scale mailbox=4 slot=24 frame=64 state=8
   Actor name=Storage mailbox=4 slot=16 frame=288 state=8

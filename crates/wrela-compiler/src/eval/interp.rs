@@ -194,7 +194,11 @@ impl<'p> Interp<'p> {
 /// surface, plans/M3.md item B: "const initializers evaluated with the
 /// real evaluator, replacing M2-H's literal-only subset").
 pub fn eval_const(program: &TypedProgram, name: &str) -> Result<Value, EvalError> {
-    let Some(c) = program.consts.get(name) else {
+    let Some(c) = program
+        .consts
+        .get(name)
+        .or_else(|| program.imported.consts.get(name))
+    else {
         return Err(EvalError {
             message: format!("internal error: const `{name}` not found in the checked program"),
             stack: vec![],

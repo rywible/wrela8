@@ -329,18 +329,10 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
                     import.span,
                 ));
             }
-            let mut module = parse_file(&file)?;
+            let module = parse_file(&file)?;
             check_agrees(&file, &module, &expected_root)?;
-            // If this is `core.runtime`, strip its deferred import so
-            // batch-1 sema does not look for a missing module.
-            if key.len() == RUNTIME_MODULE_KEY.len()
-                && key
-                    .iter()
-                    .zip(RUNTIME_MODULE_KEY.iter())
-                    .all(|(a, b)| a == *b)
-            {
-                defer_image_runtime_import(&mut module);
-            }
+            // `core.runtime` keeps its `core.__image_runtime` import; the
+            // stub module is injected after the closure walk (decision 780).
             queue.push(key.clone());
             modules.insert(key, LoadedModule { file, module });
         }
@@ -359,6 +351,10 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
     // the auto-injected module is decision 667 — not lazy load.
     if closure_is_runtime_bearing(&modules) {
         ensure_runtime_module(&pkgroot, &mut modules)?;
+        // plans/M11.md item E / decision 780: stub `core.__image_runtime`
+        // so runtime.wr's import typechecks before a real image is
+        // evaluated. Live images overwrite via `rtconfig::generate`.
+        ensure_image_runtime_stub(&mut modules)?;
     }
 
     Ok(LoadedProgram {
@@ -453,14 +449,44 @@ pub const IMAGE_RUNTIME_MODULE_KEY: &[&str] = &["core", "__image_runtime"];
 /// (`report::address_to_relative_path` of the dotted address).
 pub const RUNTIME_INPUT_PATH: &str = "core/runtime.wr";
 
-/// Drop `from core.__image_runtime import …` so batch-1 / non-image front
-/// ends typecheck without a disk file (plans/M11.md decision 704 / 723 /
-/// 765). Batch-2 re-parses `runtime.wr` unstripped alongside the generated
-/// module.
+/// Drop `from core.__image_runtime import …` — retained for tests that
+/// still name the helper; batch-1 now injects a stub module instead
+/// (plans/M11.md item E / decision 780).
 pub fn defer_image_runtime_import(module: &mut Module) {
     module
         .imports
         .retain(|imp| imp.path.as_slice() != IMAGE_RUNTIME_MODULE_KEY);
+}
+
+/// Inject the facts-only stub `core.__image_runtime` when absent
+/// (plans/M11.md item E / decision 780). Idempotent.
+pub fn ensure_image_runtime_stub(
+    modules: &mut BTreeMap<Vec<String>, LoadedModule>,
+) -> Result<(), LoadError> {
+    let key: Vec<String> = IMAGE_RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    if modules.contains_key(&key) {
+        return Ok(());
+    }
+    let text = crate::rtconfig::stub_text();
+    let tokens = crate::syntax::lexer::lex(&text)
+        .map_err(|e| build_error(format!("rtconfig stub lex: {}", e.message), Span::default()))?;
+    let module = crate::syntax::parser::parse(tokens).map_err(|e| {
+        build_error(
+            format!("rtconfig stub parse: {}", e.message),
+            Span::default(),
+        )
+    })?;
+    modules.insert(
+        key,
+        LoadedModule {
+            file: PathBuf::from(crate::rtconfig::GENERATED_INPUT_PATH),
+            module,
+        },
+    );
+    Ok(())
 }
 
 /// True when `path` is the deferred generated config module.
@@ -568,40 +594,18 @@ pub fn ensure_runtime_module(
             Span::default(),
         ));
     }
-    let mut module = parse_file(&file)?;
+    let module = parse_file(&file)?;
     check_agrees(&file, &module, &expected_root)?;
-    defer_image_runtime_import(&mut module);
     modules.insert(key, LoadedModule { file, module });
     Ok(())
 }
 
 /// Parses toolchain `stdlib/core/runtime.wr` into a standalone loaded
 /// module (plans/M10.md item A2d: no-import runtime-bearing images still
-/// need the module in the programs map). Batch-1 strips the deferred
-/// `core.__image_runtime` import (plans/M11.md item D).
+/// need the module in the programs map). Keeps the `core.__image_runtime`
+/// import; callers must pair with [`ensure_image_runtime_stub`] or a real
+/// generated module (plans/M11.md item E / decision 780).
 pub fn load_runtime_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
-    let key: Vec<String> = RUNTIME_MODULE_KEY
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    let toolchain = toolchain_stdlib_core();
-    let file = toolchain.join("runtime.wr");
-    if !file.is_file() {
-        return Err(build_error(
-            "stdlib not found: toolchain `stdlib/core/runtime.wr` is missing".to_string(),
-            Span::default(),
-        ));
-    }
-    let mut module = parse_file(&file)?;
-    check_agrees(&file, &module, &toolchain)?;
-    defer_image_runtime_import(&mut module);
-    Ok((key, LoadedModule { file, module }))
-}
-
-/// Like [`load_runtime_module`], but keeps the `core.__image_runtime`
-/// import for batch-2 (plans/M11.md item D / decision 765).
-pub fn load_runtime_module_with_image_runtime_import()
--> Result<(Vec<String>, LoadedModule), LoadError> {
     let key: Vec<String> = RUNTIME_MODULE_KEY
         .iter()
         .map(|s| (*s).to_string())
@@ -617,6 +621,13 @@ pub fn load_runtime_module_with_image_runtime_import()
     let module = parse_file(&file)?;
     check_agrees(&file, &module, &toolchain)?;
     Ok((key, LoadedModule { file, module }))
+}
+
+/// Like [`load_runtime_module`] — same body after decision 780 (import is
+/// always kept; stub or real generated module supplies the symbols).
+pub fn load_runtime_module_with_image_runtime_import()
+-> Result<(Vec<String>, LoadedModule), LoadError> {
+    load_runtime_module()
 }
 
 #[cfg(test)]

@@ -242,9 +242,23 @@ fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CheckedC
     let mut modules_by_key = BTreeMap::new();
     modules_by_key.insert(root_key.clone(), module.clone());
     modules_by_key.insert(runtime_key.clone(), runtime_loaded.module);
+    // plans/M11.md item E / decision 780: stub so runtime.wr's import resolves.
+    let stub_module = match rtconfig::parse_generated(&rtconfig::stub_text()) {
+        Ok(m) => m,
+        Err(e) => {
+            print_line_diagnostic(&format!("error[build]: {e}"));
+            return Err(());
+        }
+    };
+    let gen_key: Vec<String> = loader::IMAGE_RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    modules_by_key.insert(gen_key.clone(), stub_module);
     let mut paths = BTreeMap::new();
     paths.insert(root_key.clone(), path.to_string());
     paths.insert(runtime_key.clone(), runtime_path);
+    paths.insert(gen_key, rtconfig::GENERATED_INPUT_PATH.to_string());
     let time_key: Option<Vec<String>> = if loader::module_mentions_time(&module) {
         let (time_key, time_loaded) = match loader::load_time_module() {
             Ok(v) => v,
@@ -523,6 +537,16 @@ fn build_report(
                                     continue;
                                 }
                             }
+                            // plans/M11.md item E / decision 780: stub /
+                            // live `core.__image_runtime` is not a disk
+                            // file — digest is inserted after layout via
+                            // `rtconfig::insert_generated_input_line`.
+                            if rel == rtconfig::GENERATED_INPUT_PATH
+                                || addr == rtconfig::MODULE_ADDR
+                                || path.to_string_lossy() == rtconfig::GENERATED_INPUT_PATH
+                            {
+                                continue;
+                            }
                             let bytes = std::fs::read(path).map_err(|e| {
                                 format!("error[build]: cannot read `{}`: {e}\n", path.display())
                             })?;
@@ -574,6 +598,15 @@ fn build_report(
                                 // checked program supplies its `const`s.
                                 let mut layout_types = Vec::new();
                                 for (key, module) in modules {
+                                    // plans/M11.md item E / decision 780: stub
+                                    // layouts are not user source; live
+                                    // `Input path=<generated>` carries the
+                                    // digest. Exact-bytes layouts for RT
+                                    // overlays arrive via import reachability
+                                    // into `core.runtime` when present.
+                                    if key == rtconfig::MODULE_ADDR || key == "__image_runtime" {
+                                        continue;
+                                    }
                                     let specialized = sema::specialize::specialize(module)
                                         .map_err(|e| render_sema_error(&e))?;
                                     let mut layouts = sema::types::check_layouts(&specialized)
@@ -1156,6 +1189,11 @@ fn dump(args: &[String]) -> ExitCode {
                                     continue;
                                 }
                                 if label == "runtime" && !runtime_explicit {
+                                    continue;
+                                }
+                                // plans/M11.md item E / decision 780: omit
+                                // generated config from typed dumps.
+                                if label == "__image_runtime" || addr == "core.__image_runtime" {
                                     continue;
                                 }
                                 visible.push((label, program));

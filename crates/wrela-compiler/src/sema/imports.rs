@@ -84,8 +84,10 @@ pub(crate) fn alias_subs_for_exporter(
 }
 
 /// Every name `module` exports for another module to import: its own
-/// `pub const`/`fn`/`struct`/`enum` declarations, nothing re-exported
-/// (see the module doc comment above).
+/// `pub const`/`fn`/`struct`/`enum`/`static` declarations, nothing
+/// re-exported (see the module doc comment above). `pub static` is
+/// required so `runtime.wr` can name generated `RT` / `GROUPS`
+/// (plans/M11.md item E / decision 785).
 pub fn public_names(module: &Module) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for item in &module.items {
@@ -94,7 +96,8 @@ pub fn public_names(module: &Module) -> BTreeSet<String> {
             Item::Fn(f) => (f.name.as_str(), f.is_pub),
             Item::Struct(s) => (s.name.as_str(), s.is_pub),
             Item::Enum(e) => (e.name.as_str(), e.is_pub),
-            Item::Pool(_) | Item::ComptimeIf(_) | Item::Static(_) => continue,
+            Item::Static(s) => (s.name.as_str(), s.is_pub),
+            Item::Pool(_) | Item::ComptimeIf(_) => continue,
         };
         if is_pub {
             out.insert(name.to_string());
