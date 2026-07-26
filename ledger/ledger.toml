@@ -140,7 +140,7 @@ note = "every docs/language ```wrela block and every docs/language/examples/*.wr
 id = "docs.examples.wrela-blocks-sema"
 doc = "02-language.md#1"
 status = "gap"
-note = "plans/M9.md item J / shape decision 3: every parseable docs/language ```wrela block and docs/language/examples/*.wr file sema-checks. J1 (2026-07-25, decisions 500–506) landed measurement only: `cargo xtask corpus --sema` wraps fragments, classifies unknown-name/missing-module failures as noise, reports the disagreement count, and exits 0 — off by default, bare `corpus`/`check` unchanged. Measured at landing: 1 disagreement (`virtio-storage.wr` hyphen vs `examples.virtio_storage`), 15 noise, 8 ok out of 24 parseable. J2 fixes each disagreement; J3 flips this clause to `test` and wires `--sema` into `check`."
+note = "plans/M9.md item J / shape decision 3: every parseable docs/language ```wrela block and docs/language/examples/*.wr file sema-checks. J1 (2026-07-25, decisions 500–506) landed measurement only behind `cargo xtask corpus --sema`. J1b (2026-07-25, decisions 507–510) closed the first-error noise keyhole with per-block context stubs (`corpus_sema_context.rs`), retired the noise classifier, and pinned per-block ok/disagreement in `corpus_sema_census.rs` (fail on ok-decay; wired into `check`). Measured after J1b: 10 disagreements, 14 ok, 0 noise out of 24 parseable. Disagreement count remains non-gating until J3; J2 fixes each disagreement; J3 flips this clause to `test` and makes the disagreement count fail `check`."
 
 [[clause]]
 id = "syntax.diagnostics.parse-errors"

@@ -5,11 +5,14 @@
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
-//!              (from M1, also parse). `corpus --sema` (plans/M9.md item
-//!              J1) additionally sema-checks every parseable block,
-//!              classifies failures as noise vs doc/compiler
-//!              disagreement, and reports the count without failing —
-//!              off by default; bare `corpus` and `check` are unchanged.
+//!              (from M1, also parse). `corpus --sema` (plans/M9.md items
+//!              J1/J1b) additionally sema-checks every parseable block
+//!              (with per-block declaration stubs so first-error noise
+//!              cannot hide disagreements), reports ok vs disagreement
+//!              without failing on the disagreement count, and ratchets
+//!              the per-block classification so an `ok` block decaying
+//!              fails loudly — off by default for the report; `check`
+//!              always runs the pin (J3 flips the disagreement gate).
 //!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async]
 //!              [--iters N] [--seed S]; deterministic in-tree fuzzer
 //!              (plans/M1.md items B/E, plans/M2.md item I, plans/M3.md
@@ -169,6 +172,9 @@ use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
 use wrela_compiler::syntax::parser::{self, Parsed};
 use wrela_compiler::syntax::printer;
 
+mod corpus_sema_census;
+mod corpus_sema_context;
+
 fn root() -> PathBuf {
     // crates/xtask -> repo root
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -269,6 +275,10 @@ fn check() -> Result<(), String> {
     report_determinism()?;
     diff_eval_smoke()?;
     corpus(&[])?;
+    // plans/M9.md item J1b: per-block corpus-sema pin. Runs the same
+    // classification as `corpus --sema` and fails on ok-decay / drift;
+    // does not fail merely because disagreements > 0 (that is J3).
+    corpus_sema_pin()?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
     fuzz_sema_smoke()?;
@@ -425,9 +435,12 @@ fn extract_example_files() -> Result<Vec<DocBlock>, String> {
 /// lex-only. `docs.examples.wrela-blocks-parse` is the ledger clause for
 /// the parse half; `docs.examples.wrela-blocks-lex` already covered lexing.
 ///
-/// plans/M9.md item J1: `corpus --sema` additionally sema-checks every
-/// parseable block and reports noise vs disagreement counts without
-/// failing. Off by default — bare `corpus` output stays byte-identical.
+/// plans/M9.md item J1/J1b: `corpus --sema` additionally sema-checks every
+/// parseable block (injecting per-block declaration stubs from
+/// `corpus_sema_context`) and reports ok vs disagreement without failing
+/// on the disagreement count. Off by default — bare `corpus` output stays
+/// byte-identical. The per-block pin (`corpus_sema_pin`, wired into
+/// `check`) is a separate fail-on-decay ratchet.
 fn corpus(args: &[String]) -> Result<(), String> {
     let mut sema = false;
     for a in args {
@@ -496,12 +509,52 @@ fn corpus(args: &[String]) -> Result<(), String> {
     println!("corpus: lexed {lexed}, parsed {parsed}, fragments skipped {fragments}");
     if sema {
         print_corpus_sema_report(&sema_rows);
+        verify_corpus_sema_census(&sema_rows)?;
     }
     Ok(())
 }
 
-/// One `--sema` outcome (plans/M9.md item J1). `kind` is the mechanical
-/// category; see `classify_corpus_sema_failure`.
+/// Run corpus sema classification and fail if the pinned per-block
+/// census drifts (plans/M9.md item J1b). Does not fail on a nonzero
+/// disagreement count — that gate is J3.
+fn corpus_sema_pin() -> Result<(), String> {
+    let rows = collect_corpus_sema_rows()?;
+    verify_corpus_sema_census(&rows)
+}
+
+fn collect_corpus_sema_rows() -> Result<Vec<CorpusSemaRow>, String> {
+    let (blocks, failures) = extract_doc_blocks()?;
+    if !failures.is_empty() {
+        return Err(format!(
+            "corpus sema pin: extract failures: {}",
+            failures.join("; ")
+        ));
+    }
+    let examples = extract_example_files()?;
+    let mut rows = Vec::new();
+    for b in blocks.into_iter().chain(examples) {
+        if b.body.contains("...") {
+            continue;
+        }
+        let tokens = lexer::lex(&b.body).map_err(|e| {
+            format!(
+                "{}:{}: corpus sema pin lex: {}",
+                b.doc.display(),
+                b.start_line,
+                e.message
+            )
+        })?;
+        let parsed_ast = match wrela_compiler::syntax::parser::parse_any(tokens) {
+            Ok(p) => p,
+            Err(_) => continue, // parse failures are corpus's job
+        };
+        rows.push(corpus_sema_one(&b, parsed_ast)?);
+    }
+    Ok(rows)
+}
+
+/// One `--sema` outcome (plans/M9.md item J1b). `kind` is ok or
+/// disagreement — the J1 "noise" keyhole is retired by per-block context.
 #[derive(Debug)]
 struct CorpusSemaRow {
     loc: String,
@@ -513,38 +566,44 @@ struct CorpusSemaRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CorpusSemaKind {
     Ok,
-    /// Incomplete-by-nature: undeclared helper names, missing imported
-    /// modules an aspirational example names, etc.
-    Noise,
-    /// Genuine doc/compiler disagreement (or unclassifiable — fail closed).
+    /// Genuine doc/compiler disagreement (or residual incomplete context
+    /// that could not be given honestly — counted as disagreement so the
+    /// keyhole cannot hide it).
     Disagreement,
+}
+
+impl CorpusSemaKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            CorpusSemaKind::Ok => "ok",
+            CorpusSemaKind::Disagreement => "disagreement",
+        }
+    }
 }
 
 /// Sema-check one parseable corpus block. Fragments are wrapped so
 /// declarations stay at module scope and statements sit inside a
-/// synthetic `fn _corpus_snippet()` (decision 501). Import-bearing
-/// modules load through `loader::load_closure` on the real file path so
-/// path-agreement and missing-module errors surface honestly (decision
-/// 503).
+/// synthetic `fn _corpus_snippet()` (decision 501), with an optional
+/// per-block preamble from `corpus_sema_context` (decision J1b).
+/// Import-bearing modules load through `loader::load_closure` on the real
+/// file path so path-agreement and missing-module errors surface honestly
+/// (decision 503).
 fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, String> {
     let loc = format!("{}:{}", display_repo_path(&b.doc), b.start_line);
     let section = nearest_doc_section(&b.doc, b.start_line);
-    let marker = corpus_incomplete_marker(&b.body);
+    let doc_rel = display_repo_path(&b.doc);
+    let ctx = corpus_sema_context::lookup(&doc_rel, b.start_line);
     let result = match parsed_ast {
         Parsed::Module(module) => {
             if module.imports.is_empty() {
                 let path = synthetic_module_path(&module);
                 sema::check(&module, &path).map_err(|e| format!("[{}] {}", e.category, e.message))
             } else {
-                // Real on-disk example (or a future markdown-embedded
-                // module materialized next to its doc): load the closure
-                // from the block's own file path so module/path agreement
-                // is checked against the name the tree actually ships.
                 corpus_sema_load_file(&b.doc)
             }
         }
         Parsed::Fragment(entries) => {
-            let wrapped = wrap_corpus_fragment(&entries);
+            let wrapped = wrap_corpus_fragment(&entries, ctx);
             let tokens = lexer::lex(&wrapped).map_err(|e| {
                 format!(
                     "{}:{}: --sema wrap re-lex failed: {}",
@@ -566,42 +625,18 @@ fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, St
         }
     };
     match result {
-        Ok(()) => {
-            if let Some(reason) = marker {
-                // Marker present but the block checks clean — still
-                // report as ok; the marker is stale and J2 should drop it.
-                Ok(CorpusSemaRow {
-                    loc,
-                    section,
-                    kind: CorpusSemaKind::Ok,
-                    detail: format!("ok (stale corpus:incomplete marker: {reason})"),
-                })
-            } else {
-                Ok(CorpusSemaRow {
-                    loc,
-                    section,
-                    kind: CorpusSemaKind::Ok,
-                    detail: "ok".into(),
-                })
-            }
-        }
-        Err(detail) => {
-            let kind = if marker.is_some() {
-                CorpusSemaKind::Noise
-            } else {
-                classify_corpus_sema_failure(&detail)
-            };
-            let detail = match marker {
-                Some(reason) => format!("{detail} [corpus:incomplete: {reason}]"),
-                None => detail,
-            };
-            Ok(CorpusSemaRow {
-                loc,
-                section,
-                kind,
-                detail,
-            })
-        }
+        Ok(()) => Ok(CorpusSemaRow {
+            loc,
+            section,
+            kind: CorpusSemaKind::Ok,
+            detail: "ok".into(),
+        }),
+        Err(detail) => Ok(CorpusSemaRow {
+            loc,
+            section,
+            kind: CorpusSemaKind::Disagreement,
+            detail,
+        }),
     }
 }
 
@@ -623,57 +658,35 @@ fn corpus_sema_load_file(path: &Path) -> Result<(), String> {
     sema::check_program(&modules, &paths).map_err(|e| format!("[{}] {}", e.category, e.message))
 }
 
-/// Mechanical failure classifier (plans/M9.md decision 502).
-///
-/// Noise (incomplete-by-nature):
-/// - `error[name]` / `error[type]` whose message begins with `unknown name`
-///   or `unknown type` — the snippet references a helper the surrounding
-///   prose named but the block never declared or imported;
-/// - `module \`...\` not found: no such file` — an aspirational import
-///   closure the tree does not ship.
-///
-/// Everything else is a disagreement. Unclassifiable errors count as
-/// disagreements (overcounting is safe; undercounting is not).
-fn classify_corpus_sema_failure(detail: &str) -> CorpusSemaKind {
-    if detail.starts_with("[name] unknown name `")
-        || detail.starts_with("[type] unknown type `")
-        || detail.contains(" not found: no such file")
-    {
-        CorpusSemaKind::Noise
-    } else {
-        CorpusSemaKind::Disagreement
-    }
-}
-
-/// Optional first-line marker: `# corpus:incomplete: <reason>`.
-/// Greppable; every use must justify the reason in the J1 report.
-fn corpus_incomplete_marker(body: &str) -> Option<String> {
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("# corpus:incomplete:") {
-            return Some(rest.trim().to_string());
-        }
-        return None;
-    }
-    None
-}
-
-/// Wrap a ```wrela fragment into a checkable module: item declarations at
-/// module scope, statement entries inside `fn _corpus_snippet():`.
-fn wrap_corpus_fragment(entries: &[parser::FragmentEntry]) -> String {
+/// Wrap a ```wrela fragment into a checkable module: optional preamble,
+/// item declarations at module scope, optional postamble, statement
+/// entries inside `fn _corpus_snippet()` (shape configurable via context).
+fn wrap_corpus_fragment(
+    entries: &[parser::FragmentEntry],
+    ctx: Option<&corpus_sema_context::CorpusSemaContext>,
+) -> String {
     use parser::FragmentEntry;
+    let drop_items = ctx.map(|c| c.drop_fragment_items).unwrap_or(false);
     let mut items = Vec::new();
     let mut stmts = Vec::new();
     for e in entries {
         match e {
-            FragmentEntry::Item(i) => items.push(i.clone()),
+            FragmentEntry::Item(i) => {
+                if !drop_items {
+                    items.push(i.clone());
+                }
+            }
             FragmentEntry::Stmt(s) => stmts.push(s.clone()),
         }
     }
     let mut out = String::from("module corpus.snippet\n\n");
+    if let Some(c) = ctx {
+        let preamble = c.preamble.trim();
+        if !preamble.is_empty() {
+            out.push_str(preamble);
+            out.push_str("\n\n");
+        }
+    }
     if !items.is_empty() {
         let frag: Vec<_> = items.into_iter().map(FragmentEntry::Item).collect();
         out.push_str(&printer::pretty_fragment(&frag));
@@ -682,16 +695,51 @@ fn wrap_corpus_fragment(entries: &[parser::FragmentEntry]) -> String {
         }
         out.push('\n');
     }
-    if !stmts.is_empty() {
-        out.push_str("fn _corpus_snippet():\n");
-        let frag: Vec<_> = stmts.into_iter().map(FragmentEntry::Stmt).collect();
-        let pretty = printer::pretty_fragment(&frag);
-        for line in pretty.lines() {
-            if line.is_empty() {
-                out.push('\n');
-            } else {
-                out.push_str("    ");
-                out.push_str(line);
+    if let Some(c) = ctx {
+        let postamble = c.postamble.trim();
+        if !postamble.is_empty() {
+            out.push_str(postamble);
+            out.push_str("\n\n");
+        }
+    }
+    if !stmts.is_empty()
+        || ctx
+            .map(|c| !c.params.is_empty() || !c.ret.is_empty())
+            .unwrap_or(false)
+    {
+        let async_kw = if ctx.map(|c| c.async_wrapper).unwrap_or(false) {
+            "async "
+        } else {
+            ""
+        };
+        let params = ctx.map(|c| c.params).unwrap_or("");
+        let ret = ctx.map(|c| c.ret).unwrap_or("");
+        out.push_str(async_kw);
+        out.push_str("fn _corpus_snippet(");
+        out.push_str(params);
+        out.push(')');
+        if !ret.is_empty() {
+            out.push_str(" -> ");
+            out.push_str(ret);
+        }
+        out.push_str(":\n");
+        if !stmts.is_empty() {
+            let frag: Vec<_> = stmts.into_iter().map(FragmentEntry::Stmt).collect();
+            let pretty = printer::pretty_fragment(&frag);
+            for line in pretty.lines() {
+                if line.is_empty() {
+                    out.push('\n');
+                } else {
+                    out.push_str("    ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        if let Some(c) = ctx {
+            if !c.ret_ok.is_empty() {
+                out.push_str("    return ");
+                out.push_str(c.ret_ok);
                 out.push('\n');
             }
         }
@@ -774,16 +822,12 @@ fn nearest_doc_section(doc: &Path, start_line: usize) -> String {
 
 fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
     let ok = rows.iter().filter(|r| r.kind == CorpusSemaKind::Ok).count();
-    let noise = rows
-        .iter()
-        .filter(|r| r.kind == CorpusSemaKind::Noise)
-        .count();
     let disagreements = rows
         .iter()
         .filter(|r| r.kind == CorpusSemaKind::Disagreement)
         .count();
     println!(
-        "corpus sema: checked {}, ok {ok}, noise {noise}, disagreements {disagreements}",
+        "corpus sema: checked {}, ok {ok}, disagreements {disagreements}",
         rows.len()
     );
     if disagreements > 0 {
@@ -796,12 +840,58 @@ fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
             println!("    {}", r.detail);
         }
     }
-    if noise > 0 {
-        println!("corpus sema noise:");
-        for r in rows.iter().filter(|r| r.kind == CorpusSemaKind::Noise) {
-            println!("  {} (§ {}): {}", r.loc, r.section, r.detail);
+}
+
+/// Compare live `--sema` rows against the pinned census. Fails if an `ok`
+/// block decays, if a pinned row disappears, if a new block appears
+/// unpinned, or if any classification changes.
+fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
+    use std::collections::BTreeMap;
+    let live: BTreeMap<&str, &str> = rows
+        .iter()
+        .map(|r| (r.loc.as_str(), r.kind.as_str()))
+        .collect();
+    let pinned: BTreeMap<&str, &str> = corpus_sema_census::CORPUS_SEMA_CENSUS
+        .iter()
+        .map(|(loc, kind)| (*loc, *kind))
+        .collect();
+
+    let mut problems = Vec::new();
+    for (loc, pinned_kind) in &pinned {
+        match live.get(loc) {
+            None => problems.push(format!(
+                "pinned block `{loc}` ({pinned_kind}) missing from live corpus sema"
+            )),
+            Some(live_kind) if live_kind != pinned_kind => {
+                if *pinned_kind == "ok" && *live_kind != "ok" {
+                    problems.push(format!("ok-decay: `{loc}` was pinned ok, now {live_kind}"));
+                } else {
+                    problems.push(format!(
+                        "census drift: `{loc}` pinned {pinned_kind}, live {live_kind}"
+                    ));
+                }
+            }
+            Some(_) => {}
         }
     }
+    for loc in live.keys() {
+        if !pinned.contains_key(loc) {
+            problems.push(format!(
+                "unpinned block `{loc}` ({}) — add it to corpus_sema_census.rs",
+                live[loc]
+            ));
+        }
+    }
+    if !problems.is_empty() {
+        for p in &problems {
+            eprintln!("corpus sema census: {p}");
+        }
+        return Err(format!(
+            "corpus sema census: {} mismatch(es); update crates/xtask/src/corpus_sema_census.rs after review",
+            problems.len()
+        ));
+    }
+    Ok(())
 }
 
 // --- fuzz -------------------------------------------------------------
