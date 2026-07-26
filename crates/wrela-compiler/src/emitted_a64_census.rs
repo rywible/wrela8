@@ -67,9 +67,10 @@
 //! - **image_static** — specialization sanctioned by decisions 613 / 620 /
 //!   623 / 630 / 633 (`emit_rt_enqueue`, `emit_rt_run_one`,
 //!   `emit_rt_child_poll`, `emit_rt_select_and_run`, cross-core quartet)
-//! - **not_yet_migrated** — owned by a named remaining item (F, F2, G, H,
-//!   I, K)
-//! - **unclassified** — could not be confidently placed; still counted
+//! - **not_yet_migrated** — owned by a named remaining item (G, H, K;
+//!   F/F2/I examined or migrated)
+//! - **unclassified** — could not be confidently placed, **or** an
+//!   examined stated residue (item I's `build_entry_driver`) still counted
 //!
 //! ## Two independent locks (neither replaces the other)
 //!
@@ -260,13 +261,6 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         note: "H; REF one actor state_size=8, no init calls",
     },
     EmitterEntry {
-        name: "build_entry_driver",
-        file: "layout.rs",
-        words: 94,
-        category: Category::NotYetMigrated,
-        note: "I; REF zero tests; contains floor-cat1 SP + cat3 halt brk",
-    },
-    EmitterEntry {
         name: "push_turn_addr_from_id",
         file: "layout.rs",
         words: 7,
@@ -292,6 +286,19 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::Unclassified,
         note: "cfg(test) only; C left it for the latch probe",
     },
+    // plans/M10.md item I / decisions 685–689: examined stated residue.
+    // REF zero tests = 94. Floor cats embedded (not in FLOOR_WORDS yet):
+    // 5 cat1 SP, 1 cat3 halt brk; cat4 landing-pad arms appear only when
+    // tests/boot_init exist (9 words/site). Migratable BL targets already
+    // go to existing `__wrela_*` / `rt_*` keys; no further migrate without
+    // new keys or language surface (decision 685).
+    EmitterEntry {
+        name: "build_entry_driver",
+        file: "layout.rs",
+        words: 94,
+        category: Category::Unclassified,
+        note: "I residue (685–689); REF zero tests; cat1 SP + cat3 brk embedded",
+    },
 ];
 
 /// Sum of `words` over floor rows (includes `push_halt`∩`build_entry_stub`
@@ -311,14 +318,14 @@ pub const FLOOR_WORDS: usize = 26;
 
 pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 579; // was 300; F2 +69+58+126+26
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 232; // was 587; F2 deleted 355
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 138; // was 232; I residue −94 → unclassified
 
-pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
+pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residue)
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 875; // was 1230; F2 delete −355
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 875; // unchanged by I (reclassify only)
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -326,6 +333,7 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 875; // was 1230; F2 delete −355
 /// census file (it documents the needle). Measured 2026-07-26. Adding a
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
+/// Item I: no emitter move — layout sites stay 171 (decisions 685–689).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 693), ("layout.rs", 171)];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].

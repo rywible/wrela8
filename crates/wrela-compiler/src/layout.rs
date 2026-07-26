@@ -8009,6 +8009,12 @@ fn install_abort_tail_floor(program: &mut CodegenProgram) -> Result<(), LayoutEr
 /// through whatever `x8` holds; a test fn's return value is otherwise
 /// unread, but this guarantees an aggregate return, if one ever exists, has
 /// somewhere harmless to land rather than an arbitrary stale address).
+///
+/// plans/M10.md item I / decisions 685–689: **stated residue.** Migratable
+/// call sites already `bl_call_key` existing `__wrela_*` / `rt_run_one`
+/// keys; the remainder stays hand-asm (floor cats 1/3/4 embedded, plus
+/// numbered non-floor residues in the plan). Not relocated into an
+/// `emit_entry_driver` twin — that would only move F0's hole.
 #[allow(clippy::too_many_arguments)]
 fn build_entry_driver(
     addrs: &HarnessAddrs,
