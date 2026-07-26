@@ -1438,6 +1438,23 @@ fn inject_rt_run_one_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
     }
 }
 
+/// plans/M10.md item E4 (decision 623): force-root one specialized
+/// `rt_child_poll <callee>` body per static `g.start` site into
+/// `program.fns`. Call after `RuntimeWiring::derive` and before the code
+/// section is laid out (alongside `inject_rt_run_one_fns`).
+fn inject_rt_child_poll_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+    for (callee_key, &child_index) in &wiring.group_child_index {
+        let spec = crate::codegen::RtChildPollSpec {
+            callee_key: callee_key.clone(),
+            child_index,
+        };
+        let key = crate::codegen::rt_child_poll_symbol(callee_key);
+        program
+            .fns
+            .insert(key, crate::codegen::emit_rt_child_poll(&spec));
+    }
+}
+
 /// One mailbox root's own `(capacity, slot size)` — a declared actor's, or
 /// (plans/M8.md item D) a messageable `@driver`'s. The one lookup
 /// `cross_core_rings` needs, so a ring feeding a driver's mailbox is sized
@@ -2819,10 +2836,12 @@ pub fn layout_program(
         None => None,
     };
 
-    // M10 E3: specialized `rt_run_one <core>` into code (decision 620).
+    // M10 E3/E4: specialized `rt_run_one <core>` / `rt_child_poll <key>`
+    // into code (decisions 620 / 623).
     let mut program_owned;
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
+        inject_rt_child_poll_fns(&mut program_owned, w);
         inject_rt_run_one_fns(&mut program_owned, w);
         &program_owned
     } else {
@@ -7626,7 +7645,11 @@ fn build_secondary_core_entry(core: usize, start: usize) -> Asm {
 /// already polls for). `child_turn_addr`/`group_arena_base` are real,
 /// already-placed addresses (this fn is built twice, placeholder then
 /// real, exactly like every other runtime-glue routine in this module).
+///
+/// M10 E4: specialized twin is `codegen::emit_rt_child_poll`; this hand-asm
+/// is kept until the joint E3/E4 delete commit.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // M10 E4: kept until joint delete; no longer placed in glue.
 fn build_group_child_poll(
     child_turn_addr: u64,
     child_key: &str,
@@ -7668,9 +7691,12 @@ fn build_group_child_poll(
     // Completed or cancelled: harvest into the group arena.
     a.push(encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true));
     a.push(encode::enc_cset(11, Cond::Eq, true)); // x11 = tag (0 Ok / 1 Cancelled)
-    a.load_imm(12, child_turn_addr + TURN_RECORD_SIZE); // &this child's own Temp(0) (its ambient group)
-    a.push(encode::enc_ldr_x_imm(13, 12, 0)); // x13 = group id, encoded (arena_index + 1)
-    a.push(encode::enc_sub_imm(13, 13, 1, true));
+    // Temp(0) ambient lineage is `Option[GroupId]` (decision 669): 0 = None,
+    // else arena_index + 1. Load that niche word — never a bare GroupId
+    // wrapped in Some (would alias "no group" with group 0).
+    a.load_imm(12, child_turn_addr + TURN_RECORD_SIZE); // &Temp(0) Option[GroupId]
+    a.push(encode::enc_ldr_x_imm(13, 12, 0)); // x13 = Option[GroupId] word
+    a.push(encode::enc_sub_imm(13, 13, 1, true)); // niche → arena_index
     a.load_imm(14, GROUP_SLOT_SIZE);
     a.push(encode::enc_mul(13, 13, 14, true));
     a.load_imm(12, group_arena_base);
@@ -7783,11 +7809,12 @@ fn build_runtime_glue_block(
     // assignment (shape decision 2: never a second truth). Every entry is
     // `0` for a single-core image.
     actor_cores: &[usize],
-    // plans/M6.md item F: every static `g.start` call site's own
-    // `(callee_key, child_index)` — `BootCtx::group_child_index`, sorted
-    // (`BTreeMap`'s own iteration order, CLAUDE.md's determinism rule) so
-    // poll-routine placement never depends on hash order.
-    group_child_index: &BTreeMap<String, usize>,
+    // plans/M6.md item F / M10 E4: every static `g.start` site's
+    // `(callee_key, child_index)` used to drive hand-asm poll placement
+    // here; specialized `rt_child_poll` now lives in `code` (decision 623),
+    // so this parameter is retained only so call sites stay stable until
+    // the joint delete cleans the signature.
+    _group_child_index: &BTreeMap<String, usize>,
     start: usize,
 ) -> RuntimeGlue {
     let mut asms = Vec::new();
@@ -7912,30 +7939,12 @@ fn build_runtime_glue_block(
         symbols.insert(crate::codegen::rt_select_and_run_symbol(name), select_start);
         asms.push(select_asm);
     }
-    for (callee_key, &child_index) in group_child_index {
-        let Some(&child_turn_addr) = placement.free_turns.get(callee_key) else {
-            // A callee this pass never sized a free-turn area for — an
-            // internal inconsistency (`compute_group_child_indices` and
-            // `RuntimeTables::free_turns` must agree on every async fn key);
-            // skip rather than panic, `layout_program`'s own reloc
-            // resolution catches the real underlying disagreement loudly.
-            continue;
-        };
-        let poll_start = cursor;
-        let poll_asm = build_group_child_poll(
-            child_turn_addr,
-            callee_key,
-            placement.group_arena,
-            child_index,
-            placement.turns_base,
-            placement.log2_turn_stride(),
-            poll_start,
-        );
-        cursor += poll_asm.words.len();
-        // M10 E3: synthetic key for specialized `rt_run_one` (decision 620).
-        symbols.insert(crate::codegen::rt_child_poll_symbol(callee_key), poll_start);
-        asms.push(poll_asm);
-    }
+    // M10 E4: `rt_child_poll <callee>` lives in `code` (`emit_rt_child_poll`);
+    // do not place a hand-asm twin into glue_symbols. `rt_run_one` already
+    // `Reloc::Call`s the synthetic key (decision 623). The free-turn
+    // consistency check against `placement.free_turns` is now
+    // `Reloc::TurnFrameAddr` resolution's job.
+    //
     // plans/M8.md item C1 / C2: drains, then secondary-core entries.
     // Group child polls stay on core 0: a `with group(...)` child is a
     // free turn, and the only free turns that run are the root test turn's
@@ -7944,6 +7953,7 @@ fn build_runtime_glue_block(
     // M10 E3: `rt_run_one` itself lives in `code` as a specialized
     // compiled body (`emit_rt_run_one`); hand-asm `build_rt_run_one` is
     // kept for the macOS JIT suite and deleted in E4's joint commit.
+    // M10 E4: hand-asm `build_group_child_poll` kept until the same joint delete.
     for core in 0..tables.cores {
         let empty_req: Vec<(RingAddrs, u64, u64, String)> = Vec::new();
         let empty_rep: Vec<(RingAddrs, u64)> = Vec::new();
@@ -9756,13 +9766,14 @@ pub fn layout_test_image(
     let addrs = HarnessAddrs::production();
 
     // plans/M6.md item D: the real boot wiring — derived *before* the code
-    // section is laid out so M10 E3 can inject specialized `rt_run_one`
-    // bodies into `program.fns` (decision 620).
+    // section is laid out so M10 E3/E4 can inject specialized `rt_run_one`
+    // / `rt_child_poll` bodies into `program.fns` (decisions 620 / 623).
     let mut wiring: Option<RuntimeWiring> = match &boot {
         Some(b) => RuntimeWiring::derive(b, &program)?,
         None => None,
     };
     if let Some(w) = wiring.as_ref() {
+        inject_rt_child_poll_fns(&mut program, w);
         inject_rt_run_one_fns(&mut program, w);
     }
     let program = &program;
