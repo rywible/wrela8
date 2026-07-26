@@ -29,18 +29,21 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
   the commit.
 - `cargo xtask corpus` — every ```wrela block in the docs must lex (and,
   from M1, parse). The docs are test inputs; drift is a failure.
-- `cargo xtask fuzz [lexer|parser|sema|eval|lower|async] [--iters N]
-  [--seed S]` — deterministic in-tree fuzzer, no external engine. All six
-  lanes are live: seeded splitmix64, random bytes / corpus mutation /
-  token soup, checked every iteration for panics, nondeterminism,
-  rejections outside the fixed category set, and `internal error:`
-  messages (each of which is a bug, not an outcome). Bare `fuzz` runs
-  `lexer` at its deep default (200_000 iterations); every lane has its own
-  deep default and its own smoke budget wired into `check`. `async`
+- `cargo xtask fuzz [lexer|parser|sema|eval|lower|async|imports]
+  [--iters N] [--seed S]` — deterministic in-tree fuzzer, no external
+  engine. All seven lanes are live: seeded splitmix64, random bytes /
+  corpus mutation / token soup (plus fixed shapes where a lane needs
+  them), checked every iteration for panics, nondeterminism, rejections
+  outside the fixed category set, and `internal error:` messages (each
+  of which is a bug, not an outcome). Bare `fuzz` runs `lexer` at its
+  deep default (200_000 iterations); every lane has its own deep default
+  and its own smoke budget wired into `check`. Every lane's summary
+  prints its **measured reach** into the pass it exists to test
+  (plans/M9.md item PP) — modelled on the `async` lane — so a collapse
+  to "clean about nothing" is visible in the output. `async`
   (plans/M7.md item Y) is the one lane that reaches `flowwir_lower` and
   the async codegen/image-layout path — it mutates the async/actor
-  goldens, since no random byte stream ever spells a valid actor image,
-  and prints its measured reach into that surface every run.
+  goldens, since no random byte stream ever spells a valid actor image.
 - `cargo xtask ledger` — validate spec coverage, list gaps.
 - `cargo xtask repro` / `cargo xtask diff-eval` — determinism and
   evaluator-vs-backend oracles; they fail closed until implemented and

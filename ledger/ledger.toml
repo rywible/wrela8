@@ -1872,3 +1872,12 @@ note = """05-library.md §7: bounded collections and array whole-consumption. pl
 **Backend (MM).** Nested field/index assignment and nested `mut self` / `mut` arg places lower via RMW (`Project`/`IndexGet` out, `SetField`/`IndexSet`, write back). `golden/check-nested-place-assign`, `golden/check-list-backend`, `golden/check-slotmap-backend` pin method asm. `diff-eval` agrees on the List/SlotMap/`map_take` cases (no longer lowering-skipped).
 
 **Refused by name (not approximated).** Free/method type params beyond the struct's (`get[R]`) — JJ; nested `SlotMap.Key` path; `reserve`/`resolve` (M10); `InterruptCell` assign through a nested field chain (live STLR only knows bare `self.<cell>`); `List.lend`/`each` CallValue (closure/fn-value call); nested `mut` as an awaited/`send` actor-call argument."""
+
+[[clause]]
+id = "compiler.fuzz.measured-reach"
+doc = "04-compiler.md#8"
+status = "test"
+tests = ["xtask:fuzz"]
+note = """plans/M9.md item PP (decisions 450–458): every live fuzz lane prints measured reach into the pass it exists to test — counters at pass/fail points, one summary line at the end, modelled on the `async` lane. A lane that says \"clean\" with collapsed reach is now visible in the output rather than inferred.
+
+Also closes NN carry-outs 2 and 3: `mwir::build_layout_ctx` and `layout::closure_imported_types` inject the same `Duration`/`Instant` arity-0 prelude `check_typed` uses (`loader::module_mentions_time`), so a module mentioning `seconds`/`Duration` is not spuriously rejected before lowering/codegen; the lower lane drops the time-prelude `LowerRejected` workaround and gains NN's seven comptime-assert-over-runtime-name shapes. Written-down reach floor deferred (decision 455) — seed variance ~7% at 5k iters makes a tight floor flaky at smoke budgets; the printed line is the first half of the ratchet."""
