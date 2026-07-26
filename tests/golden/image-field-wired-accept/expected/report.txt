@@ -59,11 +59,11 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=11780
-  Section name=rodata base=0x40502e58 size=225
-  Section name=abort base=0x40502f3c size=120
-  Section name=checkpoint base=0x40502fb4 size=104
-  Section name=rtcode base=0x4050301c size=1344
+  Section name=code base=0x40500050 size=12124
+  Section name=rodata base=0x40502fb0 size=225
+  Section name=abort base=0x40503094 size=120
+  Section name=checkpoint base=0x4050310c size=104
+  Section name=rtcode base=0x40503174 size=1000
   Section name=rtdata base=0x40503560 size=552
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384

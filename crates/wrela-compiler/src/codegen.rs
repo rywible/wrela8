@@ -527,6 +527,13 @@ pub enum Reloc {
         actor: String,
         field: MailboxField,
     },
+    /// plans/M10.md item E3 (decision 621): the four-word `load_imm`
+    /// starting at `word` materializes core `core`'s round-robin cursor
+    /// address (`RuntimePlacement::rr_cursors[core]`). Same shape as
+    /// `MailboxAddr` — full RT `@placed` for the scheduler stripe is not
+    /// ready, and the specialized `rt_run_one <core>` body needs the
+    /// address without inventing a pointer type.
+    RrCursor { word: usize, core: usize },
 }
 
 /// Which word of a mailbox root's ring bookkeeping a `Reloc::MailboxAddr`
@@ -5589,6 +5596,59 @@ pub fn symbol_is_synthetic(key: &str) -> bool {
 /// load-bearing (see `rt_enqueue_actor` above), not cosmetic.
 const RT_ENQUEUE_PREFIX: &str = "rt_enqueue ";
 
+/// plans/M10.md item E3 (decision 620): specialized per-core scheduler
+/// tick. Space keeps it unrepresentable as a source key (same discipline
+/// as `rt_enqueue `).
+pub fn rt_run_one_symbol(core: usize) -> String {
+    format!("rt_run_one {core}")
+}
+
+/// Hand-asm `rt_select_and_run` for mailbox root `actor`, registered in
+/// glue so specialized `rt_run_one` can `Reloc::Call` it (item E3).
+pub fn rt_select_and_run_symbol(actor: &str) -> String {
+    format!("rt_select_and_run {actor}")
+}
+
+/// Hand-asm (E3) / specialized (E4) group-child poll for free-turn key
+/// `callee`. Space-bearing synthetic key.
+pub fn rt_child_poll_symbol(callee: &str) -> String {
+    format!("rt_child_poll {callee}")
+}
+
+/// Hand-asm inbound-ring drain for `core` (item F2 owns its migration).
+pub fn rt_drain_symbol(core: usize) -> String {
+    format!("rt_drain {core}")
+}
+
+/// Whether `key` is a glue target specialized `rt_run_one` may Call
+/// before those routines themselves migrate into `program.fns`.
+fn rt_run_one_glue_target(key: &str) -> bool {
+    key.strip_prefix("rt_select_and_run ")
+        .is_some_and(|a| !a.is_empty())
+        || key
+            .strip_prefix("rt_child_poll ")
+            .is_some_and(|a| !a.is_empty())
+        || key
+            .strip_prefix("rt_drain ")
+            .is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Inputs `emit_rt_run_one` specializes on (plans/M10.md item E3 /
+/// decision 620). Built after `RuntimeWiring::derive` so actor cores and
+/// group-child keys are known.
+#[derive(Debug, Clone)]
+pub struct RtRunOneSpec {
+    pub core: usize,
+    /// Mailbox roots on this core, in `mailbox_root_names` order — the
+    /// same order hand-asm `build_rt_run_one` walked `select_starts`.
+    pub select_actors: Vec<String>,
+    /// Free-turn keys whose poll routines run on core 0 only (empty on
+    /// every secondary core). `BTreeMap` iteration order.
+    pub child_poll_keys: Vec<String>,
+    /// True when this core has any inbound cross-core ring.
+    pub has_drain: bool,
+}
+
 // --- the turn record (the real park-and-resume contract) --------------------
 //
 // Every turn-capable entity — each declared actor, and each free async fn
@@ -9034,6 +9094,197 @@ fn emit_rt_enqueue(actor: &str, capacity: u64, slot_size: u64) -> CodegenFn {
     }
 }
 
+/// plans/M10.md item E3 (decision 620): specialized `rt_run_one <core>`
+/// body under `rt_run_one_symbol(core)`. Same control flow as
+/// `layout::build_rt_run_one` — drain first (if any), two-pass round-robin
+/// over this core's selects, then core-0 child polls — with select / poll /
+/// drain targets as `Reloc::Call` and the RR cursor as `Reloc::RrCursor`
+/// (decision 621). Hand-asm twin kept until E4's deletion commit.
+///
+/// ABI: `() -> x0` = 1 if a slice ran, 0 if nothing ready. Saves `x30`
+/// (calls out); 16-byte frame matching the hand-asm.
+pub fn emit_rt_run_one(spec: &RtRunOneSpec) -> CodegenFn {
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+
+    let push = |words: &mut Vec<(u32, String)>, w: u32, text: String| {
+        words.push((w, text));
+    };
+    let load_imm = |words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str| {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        push(
+            words,
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h1, 16, true),
+            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h2, 32, true),
+            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h3, 48, true),
+            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
+        );
+    };
+    let load_rr_cursor =
+        |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, reg: u8, core: usize| {
+            let word = words.len();
+            load_imm(words, reg, 0, &format!("rr_cursor core {core}"));
+            for i in 0..4 {
+                if let Some((_, text)) = words.get_mut(word + i) {
+                    *text = format!("rr-cursor[{i}] x{reg} core={core}");
+                }
+            }
+            relocs.push(Reloc::RrCursor { word, core });
+        };
+    let bl_key = |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, key: &str| {
+        let word = words.len();
+        push(words, encode::enc_bl(0), format!("bl <{key}>"));
+        relocs.push(Reloc::Call {
+            word,
+            key: key.to_string(),
+        });
+    };
+
+    // prologue: save x30
+    push(
+        &mut words,
+        encode::enc_sub_imm(31, 31, 16, true),
+        "sub sp, sp, #16".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(30, 31, 0),
+        "str x30, [sp]".to_string(),
+    );
+
+    let mut to_out: Vec<usize> = Vec::new();
+    let n = spec.select_actors.len();
+
+    if spec.has_drain {
+        bl_key(&mut words, &mut relocs, &rt_drain_symbol(spec.core));
+        let skip = words.len();
+        push(&mut words, 0, "cbz x0, .continue".to_string());
+        to_out.push(words.len());
+        push(&mut words, 0, "b .out  ; x0 already 1".to_string());
+        let cont = words.len();
+        {
+            let delta = (cont as i64 - skip as i64) * 4;
+            words[skip].0 = encode::enc_cbz(0, delta as i32, true);
+            words[skip].1 = format!("cbz x0, .continue (+{delta})");
+        }
+    }
+
+    for pass in 0..2 {
+        for (i, actor) in spec.select_actors.iter().enumerate() {
+            load_rr_cursor(&mut words, &mut relocs, 9, spec.core);
+            push(
+                &mut words,
+                encode::enc_ldr_x_imm(10, 9, 0),
+                "ldr x10, [x9]  ; cursor".to_string(),
+            );
+            push(
+                &mut words,
+                encode::enc_cmp_imm(10, i as u16, true),
+                format!("cmp x10, #{i}"),
+            );
+            let skip = words.len();
+            push(
+                &mut words,
+                0,
+                if pass == 0 {
+                    "b.gt .skip".to_string()
+                } else {
+                    "b.le .skip".to_string()
+                },
+            );
+            bl_key(&mut words, &mut relocs, &rt_select_and_run_symbol(actor));
+            let skip_notran = words.len();
+            push(&mut words, 0, "cbz x0, .skip".to_string());
+            // Ran: cursor = (i + 1) % n
+            load_rr_cursor(&mut words, &mut relocs, 9, spec.core);
+            let next = ((i + 1) % n) as u64;
+            load_imm(&mut words, 10, next, "next cursor");
+            push(
+                &mut words,
+                encode::enc_str_x_imm(10, 9, 0),
+                "str x10, [x9]  ; advance cursor".to_string(),
+            );
+            push(
+                &mut words,
+                encode::enc_movz(0, 1, 0, true),
+                "movz x0, #1  ; ran".to_string(),
+            );
+            to_out.push(words.len());
+            push(&mut words, 0, "b .out".to_string());
+            let skip_to = words.len();
+            {
+                let delta = (skip_to as i64 - skip as i64) * 4;
+                let cond = if pass == 0 { Cond::Gt } else { Cond::Le };
+                words[skip].0 = encode::enc_b_cond(cond, delta as i32);
+                words[skip].1 =
+                    format!("b.{} .skip (+{delta})", if pass == 0 { "gt" } else { "le" });
+                let d2 = (skip_to as i64 - skip_notran as i64) * 4;
+                words[skip_notran].0 = encode::enc_cbz(0, d2 as i32, true);
+                words[skip_notran].1 = format!("cbz x0, .skip (+{d2})");
+            }
+        }
+    }
+
+    for callee in &spec.child_poll_keys {
+        bl_key(&mut words, &mut relocs, &rt_child_poll_symbol(callee));
+        let skip_notran = words.len();
+        push(&mut words, 0, "cbz x0, .skip".to_string());
+        to_out.push(words.len());
+        push(&mut words, 0, "b .out".to_string());
+        let skip_to = words.len();
+        {
+            let delta = (skip_to as i64 - skip_notran as i64) * 4;
+            words[skip_notran].0 = encode::enc_cbz(0, delta as i32, true);
+            words[skip_notran].1 = format!("cbz x0, .skip (+{delta})");
+        }
+    }
+
+    push(
+        &mut words,
+        encode::enc_movz(0, 0, 0, true),
+        "movz x0, #0  ; nothing ready".to_string(),
+    );
+    let out = words.len();
+    for m in &to_out {
+        let delta = (out as i64 - *m as i64) * 4;
+        words[*m].0 = encode::enc_b(delta as i32);
+        words[*m].1 = format!("b .out (+{delta})");
+    }
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(30, 31, 0),
+        "ldr x30, [sp]".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(31, 31, 16, true),
+        "add sp, sp, #16".to_string(),
+    );
+    push(&mut words, encode::enc_ret(30), "ret".to_string());
+
+    CodegenFn {
+        frame_size: 16,
+        code: words,
+        relocs,
+    }
+}
+
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
 /// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
 /// via `emit_flowwir_fn` above), merged into one `CodegenProgram` sharing
@@ -9243,12 +9494,14 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     // actor, so a garbled `rt_enqueue ` key is still a
                     // finding here, one stage before layout's own guard.
                     let resolvable = program.fns.contains_key(target)
-                        || rt_enqueue_actor(target).is_some_and(|a| !a.is_empty());
+                        || rt_enqueue_actor(target).is_some_and(|a| !a.is_empty())
+                        || rt_run_one_glue_target(target);
                     if !resolvable {
                         return Err(format!(
                             "fn `{key}`: Reloc::Call targets `{target}`, which this \
                              `CodegenProgram` never codegen'd and which is not an \
-                             `rt_enqueue` glue symbol either"
+                             `rt_enqueue` / `rt_select_and_run` / `rt_child_poll` / \
+                             `rt_drain` glue symbol either"
                         ));
                     }
                 }
@@ -9317,6 +9570,17 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::MailboxAddr word {word} (a 4-word load_imm) is \
+                             out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
+                Reloc::RrCursor { word, .. } => {
+                    // plans/M10.md item E3 / decision 621: four-word
+                    // load_imm of one core's RR cursor address.
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::RrCursor word {word} (a 4-word load_imm) is \
                              out of range (code has {} word(s))",
                             f.code.len()
                         ));
@@ -9912,8 +10176,6 @@ mod synthetic_symbol_tests {
         let sym = rt_enqueue_symbol("Doubler");
         assert!(symbol_is_synthetic(&sym), "{sym} must be synthetic");
         assert_eq!(rt_enqueue_actor(&sym), Some("Doubler"));
-        // A source fn's key is its bare name (or `Struct.member`); none
-        // can contain a space, so none can collide.
         for plausible in [
             "rt_enqueue_Doubler",
             "__rt_enqueue_Doubler",
@@ -9926,5 +10188,11 @@ mod synthetic_symbol_tests {
             );
             assert_ne!(plausible, sym);
         }
+        // M10 E3: the same space discipline for the scheduler tick and
+        // the glue targets it Calls.
+        assert!(symbol_is_synthetic(&rt_run_one_symbol(0)));
+        assert!(symbol_is_synthetic(&rt_select_and_run_symbol("Store")));
+        assert!(symbol_is_synthetic(&rt_child_poll_symbol("child")));
+        assert!(symbol_is_synthetic(&rt_drain_symbol(1)));
     }
 }
