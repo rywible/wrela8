@@ -141,6 +141,7 @@ id = "docs.examples.wrela-blocks-sema"
 doc = "02-language.md#1"
 status = "gap"
 note = "plans/M9.md item J / shape decision 3: every parseable docs/language ```wrela block and docs/language/examples/*.wr file sema-checks. J1 (2026-07-25, decisions 500–506) landed measurement only behind `cargo xtask corpus --sema`. J1b (2026-07-25, decisions 507–510) closed the first-error noise keyhole with per-block context stubs (`corpus_sema_context.rs`), retired the noise classifier, and pinned per-block ok/disagreement in `corpus_sema_census.rs` (fail on ok-decay; wired into `check`). J1c (2026-07-25, decisions 511–515) makes method-shaped fences nest into a preamble type (`nest_items_into`) so the fence's own item text is what sema sees — deleted J1b's `drop_fragment_items` hand-copy path; standing `assert_fragment_items_preserved` guard fails `check` if any fence Item is missing from the wrap; `:370` imports real `core.io_error.IoError` via loader-backed fragment wraps. J2a (2026-07-25, decision 516): renamed aspirational `virtio-storage.wr` → `virtio_storage.wr` (02 §2 path agreement; underscore matches `examples.virtio_storage` and the rest of the tree); scoped ASPIRATIONAL whole-file examples out of corpus-sema (lex/parse still cover them) because they import modules the stdlib does not ship — residual after the rename is `module core.bytes not found`, not a second path disagreement. Measured after J2a (path+§9.5+§6): 7 disagreements, 16 ok out of 23 parseable-for-sema. §6: corpus preamble carries irq.bind (init is not a fragment-top item); fence ISR body still nested honestly. Disagreement count remains non-gating until J3; J2 fixes each disagreement; J3 flips this clause to `test` and makes the disagreement count fail `check`."
+note = "plans/M9.md item J / shape decision 3: every parseable docs/language ```wrela block and docs/language/examples/*.wr file sema-checks. J1 (2026-07-25, decisions 500–506) landed measurement only behind `cargo xtask corpus --sema`. J1b (2026-07-25, decisions 507–510) closed the first-error noise keyhole with per-block context stubs (`corpus_sema_context.rs`), retired the noise classifier, and pinned per-block ok/disagreement in `corpus_sema_census.rs` (fail on ok-decay; wired into `check`). J1c (2026-07-25, decisions 511–515) makes method-shaped fences nest into a preamble type (`nest_items_into`) so the fence's own item text is what sema sees — deleted J1b's `drop_fragment_items` hand-copy path; standing `assert_fragment_items_preserved` guard fails `check` if any fence Item is missing from the wrap; `:370` imports real `core.io_error.IoError` via loader-backed fragment wraps. Measured after J1b/J1c: 10 disagreements, 14 ok, 0 noise out of 24 parseable. **J2b (2026-07-25, decisions 516–519) measured the seven compiler-side rows and stopped** — see those decisions and the gap clauses `sema.generics.method-params`, `actors.messages.take-non-own-resource`, `actors.calls.callerror-nameable`; `:206` already covered by `values.regions.two-binding-disciplines`. Disagreement count remains non-gating until J3; J3 must gate on a pinned known set (not zero), because several rows are deliberate gaps. J2 fixes each remaining disagreement; J3 flips this clause to `test`."
 
 [[clause]]
 id = "syntax.diagnostics.parse-errors"
@@ -1889,3 +1890,39 @@ tests = ["xtask:fuzz"]
 note = """plans/M9.md item PP (decisions 450–458): every live fuzz lane prints measured reach into the pass it exists to test — counters at pass/fail points, one summary line at the end, modelled on the `async` lane. A lane that says \"clean\" with collapsed reach is now visible in the output rather than inferred.
 
 Also closes NN carry-outs 2 and 3: `mwir::build_layout_ctx` and `layout::closure_imported_types` inject the same `Duration`/`Instant` arity-0 prelude `check_typed` uses (`loader::module_mentions_time`), so a module mentioning `seconds`/`Duration` is not spuriously rejected before lowering/codegen; the lower lane drops the time-prelude `LowerRejected` workaround and gains NN's seven comptime-assert-over-runtime-name shapes. Written-down reach floor deferred (decision 455) — seed variance ~7% at 5k iters makes a tight floor flaky at smoke budgets; the printed line is the first half of the ratchet."""
+
+# --- M9 item J2b: measured corpus-sema deferrals ---------------------------
+
+[[clause]]
+id = "sema.generics.method-params"
+doc = "02-language.md#8.3"
+status = "gap"
+note = """02-language.md §8.3's worked example is `fn entry[R](mut self, key: Key, body: fn(mut Item) -> R) -> Result[R, MissingKey]` called as `table.entry(key, |mut item: Item| ...)`. Structural generics (plans/M2.md item H, `sema/generics.rs`) instantiate top-level generic `fn`s and generic `struct`/`enum` types only — a method's own type parameters fail closed with `error[unimplemented]: generic instantiation is not checked yet` (`sema/bodies.rs` method-call path). Corpus `--sema` surfaces this at `docs/language/02-language.md:530`.
+
+**Missing.** Method-level instantiation (substitute + enqueue like `instantiate_fn`/`instantiate_struct`), including inferring `R` from a `fn(...) -> R` argument when a closure or named fn is passed. The closure-as-scoped-access *mechanism* itself already typechecks when `R` is written concretely (J2b probe).
+
+**User-visible consequence.** The normative §8.3 example disagrees with the compiler; concrete-return accessors work. `comptime if` specialization (`sema/specialize.rs`) is unrelated.
+
+**Flip when** a method with its own type parameters instantiates under `sema::check`, pinned by a golden that is the §8.3 shape (or a minimal twin), and the corpus `:530` row goes `ok`. Deferred deliberately by plans/M9.md item J2b (decisions 516–519) rather than discovered mid-\"docs win\"."""
+
+[[clause]]
+id = "actors.messages.take-non-own-resource"
+doc = "02-language.md#9.4"
+status = "gap"
+note = """02-language.md §9.3/§9.4: a message may move resources with take (pool handles, receipts, and the §9.4 send / match-send example's take event with handback inside Rejected). Sema today opens only take of own[P] T into an awaitable driver call (plans/M7.md item E4 / 03 §5 handoff); any other resource take in a message is error[unimplemented]: take of a non-own resource in a message is not checked yet (sema/bodies.rs). Corpus --sema surfaces this at docs/language/02-language.md:656.
+
+**Missing.** Typing + lowering + runtime for non-own resource moves in actor messages, including admission-failure handback into Rejected[...] (and the proven-capacity bare-send form).
+
+**User-visible consequence.** The §9.4 send example cannot typecheck; only DMA-style own[P] handoff takes work in messages.
+
+**Flip when** the §9.4 shape (or a minimal twin) typechecks and a golden pins handback on rejection. Deferred by plans/M9.md item J2b (decisions 516–519) — too large to absorb into a corpus docs-win commit."""
+
+[[clause]]
+id = "actors.calls.callerror-nameable"
+doc = "02-language.md#9.4"
+status = "gap"
+note = """02-language.md §9.4: actor awaits compose to Result[T, CallError[E]], and "? converts it through an ordinary explicit from (§7.4)". CallError is not a source-nameable type (sema::types::resolve_named does not recognize it; annotation CallError[never] is unknown name). So neither a from(take e: CallError[E]) -> MyErr nor a function return type Result[_, CallError[E]] can be written, and ? on an awaited actor call is unreachable from source. M6 recorded the finding; goldens that chain awaits use sequential match (flowwir-chain), not ?. Corpus --sema surfaces the symptom at docs/language/02-language.md:604 (? cannot convert error type CallError[never] to unit).
+
+**J2b ruling (decision 518).** The doc is internally inconsistent: the worked await...? example contradicts unnameability. Shape decision 4 / GOAL tiebreak prefers ledger + goldens → minimal doc fix to match (doc-side). This gap exists so that if the normative "? converts it through from" sentence is kept, the missing work is visible: make CallError source-nameable (prelude or core), allow spelling it in from and signatures, and pin ? on an actor await.
+
+**Flip when** source can name CallError[E], write from, and a golden shows await actor.m(...)? succeeding into a Result whose error is either CallError[E] or a from-converted type. Opened by plans/M9.md item J2b (decisions 516–519)."""
