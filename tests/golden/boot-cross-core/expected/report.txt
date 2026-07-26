@@ -18,18 +18,33 @@ ImageReport v0
     Child value=actor#1
   Placement id=actor#0 type=Store core=0 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Placement id=actor#1 type=Idle core=1 source=explicit work=0 work_source=unproved bytes=64 bytes_state=8 bytes_mailbox=56 bytes_pool=0
+  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
+    Padding offset=0x0 size=80
+    Field name=ring_data_bump type=u64 offset=0x50 size=8
+    Field name=ring_desc_bump type=u64 offset=0x58 size=8
+    Field name=line_start type=u64 offset=0x60 size=8
+  Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
+    Field name=avail_flags_idx type=u32 offset=0x1000 size=4
+    Padding offset=0x1004 size=2564
+    Field name=doorbell type=u64 offset=0x1a08 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
+    Field name=_pad type=u64 offset=0x0 size=8
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=1156
-  Section name=rodata base=0x405004d8 size=170
-  Section name=abort base=0x40500584 size=120
-  Section name=checkpoint base=0x405005fc size=104
-  Section name=rtcode base=0x40500664 size=2076
-  Section name=rtdata base=0x40500e80 size=1792
+  Section name=code base=0x40500050 size=2340
+  Section name=rodata base=0x40500978 size=239
+  Section name=abort base=0x40500a68 size=120
+  Section name=checkpoint base=0x40500ae0 size=104
+  Section name=rtcode base=0x40500b48 size=2076
+  Section name=rtdata base=0x40501368 size=1792
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40500d4c
-  CoreEntry core=2 base=0x40500db4
+  CoreEntry core=1 base=0x40501230
+  CoreEntry core=2 base=0x40501298
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   Actor name=Store mailbox=4 slot=16 frame=64 state=8
   Actor name=Idle mailbox=2 slot=16 frame=64 state=8
   Turn fn=cross_core frame=288

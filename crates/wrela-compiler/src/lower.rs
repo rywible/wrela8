@@ -302,7 +302,12 @@ pub fn guest_reachable_keys_closure(
 /// `Asm::bl_call_key` targets that no wrela Call ever names — without
 /// these seeds they never lower and the reloc fails with "was never
 /// codegen'd". Bare names, not `core.runtime.*`.
-pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &["__wrela_runtime_probe"];
+pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
+    "__wrela_runtime_probe",
+    // M10 B2: console line_begin / line_commit (harness bl_call_key targets).
+    "__wrela_line_begin",
+    "__wrela_line_commit",
+];
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
     let mut work: BTreeSet<String> = BTreeSet::new();
@@ -4668,6 +4673,15 @@ pub fn t():
         assert!(
             reachable.contains("__wrela_runtime_probe"),
             "force-root must seed the probe: {reachable:?}"
+        );
+        // M10 B2
+        assert!(
+            reachable.contains("__wrela_line_begin"),
+            "force-root must seed line_begin: {reachable:?}"
+        );
+        assert!(
+            reachable.contains("__wrela_line_commit"),
+            "force-root must seed line_commit: {reachable:?}"
         );
         let lower_opts = LowerOpts {
             emit_comptime_tests: false,

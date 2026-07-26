@@ -9142,7 +9142,9 @@ fn build_abort_fixed(
     a.bl_to(append_start);
 
     a.push(encode::enc_add_imm(31, 31, 16, true)); // add sp, sp, #16
-    a.bl_to(commit_start);
+    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+    let _ = commit_start;
+    a.bl_call_key("__wrela_line_commit");
     a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
     a
@@ -9204,7 +9206,9 @@ fn build_abort_val(
     a.bl_to(append_start);
 
     a.push(encode::enc_add_imm(31, 31, 48, true));
-    a.bl_to(commit_start);
+    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+    let _ = commit_start;
+    a.bl_call_key("__wrela_line_commit");
     a.patch_cbnz(reenter, 10);
     push_abort_tail(&mut a, addrs);
     a
@@ -9355,7 +9359,9 @@ fn build_entry_driver(
     // failing is image-fatal with a diagnosable line (plans/M6.md decision
     // 12, plans/M7.md decision 8), never a fault at zero.
     let boot_cont_marker = if let Some(boot_init) = boot_init_start {
-        a.bl_to(line_begin_start);
+        // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
+        let _ = line_begin_start;
+        a.bl_call_key("__wrela_line_begin");
         let marker = a.load_imm_placeholder(9);
         a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
         a.push(encode::enc_str_x_imm(9, 10, 0));
@@ -9374,7 +9380,9 @@ fn build_entry_driver(
         let prefix_len = prefix_bytes.len() as u64;
         let prefix_off = append_rodata(rodata, rodata_cursor, prefix_bytes);
 
-        a.bl_to(line_begin_start);
+        // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
+        let _ = line_begin_start;
+        a.bl_call_key("__wrela_line_begin");
 
         a.load_rodata_addr_at(0, prefix_off);
         a.load_imm(1, prefix_len);
@@ -9531,7 +9539,9 @@ fn build_entry_driver(
         a.load_imm(1, 3);
         a.bl_to(append_start);
 
-        a.bl_to(commit_start);
+        // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+        let _ = commit_start;
+        a.bl_call_key("__wrela_line_commit");
 
         a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
         a.push(encode::enc_ldr_x_imm(10, 9, 0));
@@ -9550,7 +9560,9 @@ fn build_entry_driver(
         let target = a.addr(harness_base);
         a.patch_load_imm(marker, 9, target);
     }
-    a.bl_to(line_begin_start);
+    // M10 B2: compiled `__wrela_line_begin` (hand-asm still emitted for B5).
+    let _ = line_begin_start;
+    a.bl_call_key("__wrela_line_begin");
 
     a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
     a.push(encode::enc_ldr_x_imm(0, 9, 0));
@@ -9576,7 +9588,9 @@ fn build_entry_driver(
     a.load_imm(1, 8);
     a.bl_to(append_start);
 
-    a.bl_to(commit_start);
+    // M10 B2: compiled `__wrela_line_commit` (hand-asm still emitted for B5).
+    let _ = commit_start;
+    a.bl_call_key("__wrela_line_commit");
 
     // Exit code: 0 if failed==0, else 1 — stored plainly then via the
     // trapping MMIO store (the same two-writes-one-trap shape
@@ -9764,6 +9778,93 @@ pub struct BootCtx<'a> {
     pub group_child_index: &'a BTreeMap<String, usize>,
 }
 
+/// plans/M10.md item B2: inject force-rooted `core.runtime` helpers into
+/// a `CodegenProgram` that was lowered without the auto-loaded module
+/// (fuzz / diff-eval / profile / older conformance shortcuts). Real
+/// `wrela test` already lowers them via `guest_reachable_keys_closure`;
+/// this is the fail-closed backstop so `layout_test_image`'s harness
+/// `bl_call_key("__wrela_line_*")` never meets a missing symbol.
+fn with_force_rooted_runtime(program: &CodegenProgram) -> Result<CodegenProgram, LayoutError> {
+    let missing: Vec<&str> = crate::lower::RUNTIME_FORCE_ROOT_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !program.fns.contains_key(*k))
+        .collect();
+    if missing.is_empty() {
+        return Ok(program.clone());
+    }
+    let runtime_cg = codegen_runtime_force_roots().map_err(|m| {
+        LayoutError::new(format!(
+            "internal error: could not codegen force-rooted runtime helpers ({missing:?}): {m}"
+        ))
+    })?;
+    let mut out = program.clone();
+    let rodata_byte_base: usize = out.rodata.iter().map(Vec::len).sum();
+    for (key, mut f) in runtime_cg.fns {
+        if out.fns.contains_key(&key) {
+            continue;
+        }
+        if rodata_byte_base != 0 {
+            for r in &mut f.relocs {
+                if let Reloc::Rodata { byte_offset, .. } = r {
+                    *byte_offset += rodata_byte_base;
+                }
+            }
+        }
+        out.fns.insert(key, f);
+    }
+    out.rodata.extend(runtime_cg.rodata);
+    Ok(out)
+}
+
+/// Lower + codegen every `RUNTIME_FORCE_ROOT_KEYS` entry from
+/// `stdlib/core/runtime.wr` as a standalone `CodegenProgram`.
+fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
+    let (runtime_key, runtime_loaded) = crate::loader::load_runtime_module()
+        .map_err(|_| "stdlib/core/runtime.wr missing".to_string())?;
+    let mut modules = BTreeMap::new();
+    modules.insert(runtime_key.clone(), runtime_loaded.module);
+    let mut paths = BTreeMap::new();
+    paths.insert(
+        runtime_key.clone(),
+        runtime_loaded.file.display().to_string(),
+    );
+    let programs_vec = crate::sema::check_program_typed(&modules, &paths).map_err(|e| e.message)?;
+    let programs: BTreeMap<String, crate::sema::typed::TypedProgram> = programs_vec
+        .into_iter()
+        .map(|(k, p)| (k.join("."), p))
+        .collect();
+    let modules_dot: BTreeMap<String, Module> =
+        modules.into_iter().map(|(k, m)| (k.join("."), m)).collect();
+    let only: BTreeSet<String> = crate::lower::RUNTIME_FORCE_ROOT_KEYS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let lower_opts = crate::lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(only),
+    };
+    let mut mwir_programs = Vec::new();
+    let mut flow_fns = BTreeMap::new();
+    for typed in programs.values() {
+        mwir_programs
+            .push(crate::lower::lower_program_with(typed, &lower_opts).map_err(|e| e.message)?);
+        flow_fns.extend(
+            crate::flowwir_lower::lower_program_with(typed, &lower_opts)
+                .map_err(|e| e.message)?
+                .fns,
+        );
+    }
+    let mwir = merge_mwir_programs(mwir_programs);
+    let flow = crate::flowwir::FlowWirProgram { fns: flow_fns };
+    let mut layout_ctx = merge_layout_ctx(&modules_dot).map_err(|e| e.message)?;
+    enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
+    let method_index =
+        actor_method_index_tables(&modules_dot, &layout_ctx).map_err(|e| e.message)?;
+    crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0)
+        .map_err(|e| e.message)
+}
+
 pub fn layout_test_image(
     program: &CodegenProgram,
     runtime_tests: &[String],
@@ -9779,6 +9880,11 @@ pub fn layout_test_image(
     // identical).
     test_args: &BTreeMap<String, Vec<u64>>,
 ) -> Result<ImageLayout, LayoutError> {
+    // M10 B2: harness bl_call_keys force-rooted console helpers. Callers
+    // that already lowered `core.runtime` are a no-op; others get them
+    // injected here so the reloc never fails closed on a missing symbol.
+    let program = with_force_rooted_runtime(program)?;
+    let program = &program;
     check_transcript_bound(program, runtime_tests)?;
 
     let image_base = machine_layout::IMAGE_BASE;

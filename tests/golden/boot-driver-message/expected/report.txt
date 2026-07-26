@@ -34,6 +34,18 @@ ImageReport v0
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=968 bytes_state=80 bytes_mailbox=120 bytes_pool=768
   Placement id=actor#0 type=Scale core=0 source=inferred work=0 work_source=unproved bytes=128 bytes_state=8 bytes_mailbox=120 bytes_pool=0
   Placement id=actor#1 type=Storage core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
+    Padding offset=0x0 size=80
+    Field name=ring_data_bump type=u64 offset=0x50 size=8
+    Field name=ring_desc_bump type=u64 offset=0x58 size=8
+    Field name=line_start type=u64 offset=0x60 size=8
+  Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
+    Field name=avail_flags_idx type=u32 offset=0x1000 size=4
+    Padding offset=0x1004 size=2564
+    Field name=doorbell type=u64 offset=0x1a08 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
+    Field name=_pad type=u64 offset=0x0 size=8
   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
     Padding offset=0x0 size=96
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
@@ -45,15 +57,18 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=7640
-  Section name=rodata base=0x40501e28 size=519
-  Section name=abort base=0x40502030 size=120
-  Section name=checkpoint base=0x405020a8 size=336
-  Section name=rtcode base=0x405021f8 size=3244
-  Section name=rtdata base=0x40502ea8 size=4048
-  Section name=devregs base=0x40503e78 size=104
-  Section name=pooldata base=0x40503ee0 size=512
+  Section name=code base=0x40500050 size=8824
+  Section name=rodata base=0x405022c8 size=588
+  Section name=abort base=0x40502514 size=120
+  Section name=checkpoint base=0x4050258c size=336
+  Section name=rtcode base=0x405026dc size=3244
+  Section name=rtdata base=0x40503388 size=4048
+  Section name=devregs base=0x40504358 size=104
+  Section name=pooldata base=0x405043c0 size=512
   Entry base=0x40500000
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   Actor name=Scale mailbox=4 slot=24 frame=64 state=8
   Actor name=Storage mailbox=4 slot=16 frame=288 state=8
   Turn fn=a_driver_turn_parks_and_resumes frame=288
@@ -63,10 +78,10 @@ ImageReport v0
   Driver name=BlkDriver state=80 mailbox=4 slot=24 frame=368
   Turns count=7 stride=512 bytes=3584
   Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=4048
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503e78 size=104
-  IrqHostInject base=0x40503e78 offset=0x60 status=0xa501 vector=1
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40503ee0 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40503ee0 size=0x200
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40504358 size=104
+  IrqHostInject base=0x40504358 offset=0x60 status=0xa501 vector=1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405043c0 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x405043c0 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
-  BlkQueue index=0 size=8 desc=0x40503ee0 avail=0x40503f60 used=0x40503f78 doorbell=0x40503fc0
+  BlkQueue index=0 size=8 desc=0x405043c0 avail=0x40504440 used=0x40504458 doorbell=0x405044a0
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2

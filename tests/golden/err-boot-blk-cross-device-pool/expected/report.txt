@@ -40,6 +40,18 @@ ImageReport v0
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=872 bytes_state=104 bytes_mailbox=0 bytes_pool=768
   Placement id=driver#1 type=AuxDriver core=0 source=inferred work=0 work_source=unproved bytes=40 bytes_state=8 bytes_mailbox=0 bytes_pool=32
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
+  Layout name=MachineInfoPage kind=runtime endian=little size=104 padding=80
+    Padding offset=0x0 size=80
+    Field name=ring_data_bump type=u64 offset=0x50 size=8
+    Field name=ring_desc_bump type=u64 offset=0x58 size=8
+    Field name=line_start type=u64 offset=0x60 size=8
+  Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
+    Field name=avail_flags_idx type=u32 offset=0x1000 size=4
+    Padding offset=0x1004 size=2564
+    Field name=doorbell type=u64 offset=0x1a08 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=8 padding=0
+    Field name=_pad type=u64 offset=0x0 size=8
   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
     Padding offset=0x0 size=96
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
@@ -57,30 +69,33 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=10744
-  Section name=rodata base=0x40502a48 size=1118
-  Section name=abort base=0x40502ea8 size=120
-  Section name=checkpoint base=0x40502f20 size=336
-  Section name=rtcode base=0x40503070 size=1388
-  Section name=rtdata base=0x405035e0 size=2408
-  Section name=devregs base=0x40503f48 size=112
-  Section name=pooldata base=0x40503fb8 size=1536
+  Section name=code base=0x40500050 size=11928
+  Section name=rodata base=0x40502ee8 size=1187
+  Section name=abort base=0x4050338c size=120
+  Section name=checkpoint base=0x40503404 size=336
+  Section name=rtcode base=0x40503554 size=1388
+  Section name=rtdata base=0x40503ac0 size=2408
+  Section name=devregs base=0x40504428 size=112
+  Section name=pooldata base=0x40504498 size=1536
   Entry base=0x40500000
+  PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=8
+  PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
+  PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=104
   Actor name=Ledger mailbox=8 slot=24 frame=64 state=8
   Turn fn=blk_write_read_roundtrip frame=624
   Driver name=BlkDriver state=104
   Driver name=AuxDriver state=8
   Turns count=2 stride=1024 bytes=2048
   Totals actors=1 drivers=2 ready_queue=2 group_arena=0 bytes=2408
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503f48 size=104
-  DeviceRegs device=device#1 type=AuxHw driver=AuxDriver base=0x40503fb0 size=8
-  IrqHostInject base=0x40503f48 offset=0x60 status=0xa501 vector=1
-  Pool name=AuxBuffers kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40503fb8 size=512 align=8 coherency=coherent device=device#1
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405041b8 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x405043b8 size=512 align=8 coherency=coherent device=device#1
-  BlkPool name=AuxBuffers device=device#1 base=0x40503fb8 size=0x200
-  BlkPool name=BlockControl device=device#0 base=0x405041b8 size=0x200
-  BlkPool name=BlockPayloads device=device#1 base=0x405043b8 size=0x200
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40504428 size=104
+  DeviceRegs device=device#1 type=AuxHw driver=AuxDriver base=0x40504490 size=8
+  IrqHostInject base=0x40504428 offset=0x60 status=0xa501 vector=1
+  Pool name=AuxBuffers kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40504498 size=512 align=8 coherency=coherent device=device#1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40504698 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40504898 size=512 align=8 coherency=coherent device=device#1
+  BlkPool name=AuxBuffers device=device#1 base=0x40504498 size=0x200
+  BlkPool name=BlockControl device=device#0 base=0x40504698 size=0x200
+  BlkPool name=BlockPayloads device=device#1 base=0x40504898 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
-  BlkQueue index=0 size=8 desc=0x405041b8 avail=0x40504238 used=0x40504250 doorbell=0x40504298
+  BlkQueue index=0 size=8 desc=0x40504698 avail=0x40504718 used=0x40504730 doorbell=0x40504778
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
