@@ -2,8 +2,9 @@ module examples.check_layout_assert_budget
 
 # plans/M9.md item H2: a code-budget `@layout_assert` true of the
 # program's real guest code. Before the fix, declaring this fn grew
-# `code` 128 -> 656 and the assert failed; after, code stays 128 and
-# the assert passes. Pins that `@layout_assert` bodies are host-only.
+# `code` 128 -> 656 and the assert failed; after, code stays guest-only
+# (plans/M10.md item A2d adds the force-rooted probe, 128 -> 156).
+# Pins that `@layout_assert` bodies are host-only.
 from core.image_report import ImageReport
 
 @actor

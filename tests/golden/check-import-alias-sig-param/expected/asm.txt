@@ -31,6 +31,14 @@ Program
     0012: f9400ffe  ldr lr, [sp, #24]
     0013: 910083ff  add sp, sp, #32
     0014: d65f03c0  ret
+  Fn key=__wrela_runtime_probe frame=16 bytes
+    0000: d10043ff  sub sp, sp, #16
+    0001: f90003fe  str lr, [sp, #0]
+    0002: 14000002  b #8
+    0003: 14000001  b #4
+    0004: f94003fe  ldr lr, [sp, #0]
+    0005: 910043ff  add sp, sp, #16
+    0006: d65f03c0  ret
   Fn key=drive frame=80 bytes
     0000: d10143ff  sub sp, sp, #80
     0001: f90027fe  str lr, [sp, #72]

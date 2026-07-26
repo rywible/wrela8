@@ -281,6 +281,14 @@ Program
     0071: f9404bfe  ldr lr, [sp, #144]
     0072: 910283ff  add sp, sp, #160
     0073: d65f03c0  ret
+  Fn key=__wrela_runtime_probe frame=16 bytes
+    0000: d10043ff  sub sp, sp, #16
+    0001: f90003fe  str lr, [sp, #0]
+    0002: 14000002  b #8
+    0003: 14000001  b #4
+    0004: f94003fe  ldr lr, [sp, #0]
+    0005: 910043ff  add sp, sp, #16
+    0006: d65f03c0  ret
   Fn key=guest_nested frame=224 bytes
     0000: d280001c  turn-frame[0] x28 <guest_nested>
     0001: f2a0001c  turn-frame[1] x28 <guest_nested>

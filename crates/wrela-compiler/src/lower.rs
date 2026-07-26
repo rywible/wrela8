@@ -297,10 +297,24 @@ pub fn guest_reachable_keys_closure(
     guest_reachable_keys_over(&progs, opts)
 }
 
+/// CalleeKeys force-rooted into every runtime-bearing emit set
+/// (plans/M10.md item A2d / decision 583). Hand-asm `Reloc::Call` /
+/// `Asm::bl_call_key` targets that no wrela Call ever names — without
+/// these seeds they never lower and the reloc fails with "was never
+/// codegen'd". Bare names, not `core.runtime.*`.
+pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &["__wrela_runtime_probe"];
+
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
     let mut work: BTreeSet<String> = BTreeSet::new();
     for p in programs {
         seed_entry_points(p, opts, &mut work);
+    }
+    // plans/M10.md item A2d / decision 583: force-root runtime helpers
+    // that exist in some program's fn table (auto-loaded `core.runtime`).
+    for key in RUNTIME_FORCE_ROOT_KEYS {
+        if programs.iter().any(|p| lookup_typed_fn(p, key).is_some()) {
+            work.insert((*key).to_string());
+        }
     }
     if work.is_empty() {
         // Dump-stage / no-guest-surface fallback: cannot prove free fns
@@ -4493,6 +4507,58 @@ mod integration_tests {
         let tokens = lexer::lex(src).expect("test source must lex");
         let module = parser::parse(tokens).expect("test source must parse");
         sema::check_typed(&module, "<test>").expect("test source must check")
+    }
+
+    #[test]
+    fn runtime_force_root_seeds_probe_when_runtime_loaded() {
+        // plans/M10.md item A2d / decision 583: a `@test(runtime)` root
+        // with auto-loaded `core.runtime` force-roots the probe into the
+        // reachable set even though no Call names it.
+        let src = "\
+module examples.force_root_probe
+
+@test(runtime)
+pub fn t():
+    return
+";
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        let (runtime_key, runtime_loaded) = match crate::loader::load_runtime_module() {
+            Ok(v) => v,
+            Err(_) => panic!("runtime.wr must load"),
+        };
+        let root_key = module.path.clone();
+        let mut modules = BTreeMap::new();
+        modules.insert(root_key.clone(), module);
+        modules.insert(runtime_key.clone(), runtime_loaded.module);
+        let mut paths = BTreeMap::new();
+        paths.insert(root_key.clone(), "<test>".to_string());
+        paths.insert(
+            runtime_key.clone(),
+            runtime_loaded.file.display().to_string(),
+        );
+        let programs = sema::check_program_typed(&modules, &paths).expect("check");
+        let by_dot: BTreeMap<String, TypedProgram> = programs
+            .into_iter()
+            .map(|(k, p)| (k.join("."), p))
+            .collect();
+        let reachable = guest_reachable_keys_closure(&by_dot, &LowerOpts::default());
+        assert!(
+            reachable.contains("__wrela_runtime_probe"),
+            "force-root must seed the probe: {reachable:?}"
+        );
+        let lower_opts = LowerOpts {
+            emit_comptime_tests: false,
+            only: Some(reachable),
+        };
+        let mut saw_probe = false;
+        for typed in by_dot.values() {
+            let mwir = lower_program_with(typed, &lower_opts).expect("lower");
+            if mwir.fns.contains_key("__wrela_runtime_probe") {
+                saw_probe = true;
+            }
+        }
+        assert!(saw_probe, "probe must lower from core.runtime");
     }
 
     #[test]

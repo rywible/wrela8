@@ -42,13 +42,13 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=4840
-  Section name=rodata base=0x40501338 size=454
-  Section name=abort base=0x40501500 size=120
-  Section name=checkpoint base=0x40501578 size=104
-  Section name=rtcode base=0x405015e0 size=2252
-  Section name=rtdata base=0x40501eb0 size=3344
-  Section name=devregs base=0x40502bc0 size=16
+  Section name=code base=0x40500050 size=4868
+  Section name=rodata base=0x40501358 size=454
+  Section name=abort base=0x40501520 size=120
+  Section name=checkpoint base=0x40501598 size=104
+  Section name=rtcode base=0x40501600 size=2252
+  Section name=rtdata base=0x40501ed0 size=3344
+  Section name=devregs base=0x40502be0 size=16
   Entry base=0x40500000
   Actor name=Marker mailbox=4 slot=16 frame=64 state=8
   Actor name=Tags mailbox=4 slot=16 frame=64 state=40
@@ -57,5 +57,5 @@ ImageReport v0
   Driver name=S1 state=8
   Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=2 ready_queue=3 group_arena=0 bytes=3344
-  DeviceRegs device=device#0 type=HwA driver=S0 base=0x40502bc0 size=8
-  DeviceRegs device=device#1 type=HwB driver=S1 base=0x40502bc8 size=8
+  DeviceRegs device=device#0 type=HwA driver=S0 base=0x40502be0 size=8
+  DeviceRegs device=device#1 type=HwB driver=S1 base=0x40502be8 size=8

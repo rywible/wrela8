@@ -64,6 +64,10 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         &["Store.load", "poll_until"],
     ),
     (
+        "asm-runtime-probe/expected/asm.txt",
+        &["__wrela_runtime_probe", "probe_seed"],
+    ),
+    (
         "asm-calls/expected/asm.txt",
         &["add_one", "combo", "double"],
     ),

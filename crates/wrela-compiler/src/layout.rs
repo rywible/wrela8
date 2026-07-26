@@ -3518,7 +3518,10 @@ pub fn enrich_layout_ctx_with_instantiations(
 /// is not currently checked for cross-module uniqueness anywhere in this
 /// compiler); a same-spelling collision resolves last-module-wins, a
 /// disclosed simplification no existing program can trigger.
-fn merge_mwir_programs(programs: Vec<mwir::MwirProgram>) -> mwir::MwirProgram {
+/// Concatenates per-module MWIR programs into one (plans/M9.md item H3 /
+/// M10.md item A2d). Rodata indices are rebased per module; `fns` keys
+/// collide last-module-wins.
+pub fn merge_mwir_programs(programs: Vec<mwir::MwirProgram>) -> mwir::MwirProgram {
     let mut merged_fns: BTreeMap<String, mwir::MwirFn> = BTreeMap::new();
     let mut merged_rodata: Vec<Vec<u8>> = Vec::new();
     for p in programs {
@@ -10430,6 +10433,100 @@ mod tests {
             code: words.iter().map(|w| (*w, String::new())).collect(),
             relocs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn force_rooted_probe_resolves_via_bl_call_key() {
+        // plans/M10.md item A2d / decision 583: after force-rooted emit,
+        // a hand-asm `Reloc::Call` / `bl_call_key` finds `__wrela_runtime_probe`
+        // in `fn_word_base` (not glue).
+        let src = "\
+module examples.bl_call_probe
+
+@test(runtime)
+pub fn t():
+    return
+";
+        let tokens = crate::syntax::lexer::lex(src).expect("lex");
+        let module = crate::syntax::parser::parse(tokens).expect("parse");
+        let (runtime_key, runtime_loaded) = match crate::loader::load_runtime_module() {
+            Ok(v) => v,
+            Err(_) => panic!("runtime.wr must load"),
+        };
+        let root_key = module.path.clone();
+        let mut modules_vec = BTreeMap::new();
+        modules_vec.insert(root_key.clone(), module.clone());
+        modules_vec.insert(runtime_key.clone(), runtime_loaded.module.clone());
+        let mut paths = BTreeMap::new();
+        paths.insert(root_key.clone(), "<test>".to_string());
+        paths.insert(
+            runtime_key.clone(),
+            runtime_loaded.file.display().to_string(),
+        );
+        let programs_vec = crate::sema::check_program_typed(&modules_vec, &paths).expect("check");
+        let programs: BTreeMap<String, crate::sema::typed::TypedProgram> = programs_vec
+            .into_iter()
+            .map(|(k, p)| (k.join("."), p))
+            .collect();
+        let modules: BTreeMap<String, Module> = modules_vec
+            .into_iter()
+            .map(|(k, m)| (k.join("."), m))
+            .collect();
+        let reachable = crate::lower::guest_reachable_keys_closure(
+            &programs,
+            &crate::lower::LowerOpts::default(),
+        );
+        assert!(reachable.contains("__wrela_runtime_probe"));
+        let lower_opts = crate::lower::LowerOpts {
+            emit_comptime_tests: false,
+            only: Some(reachable),
+        };
+        let mut mwir_programs = Vec::new();
+        let mut flow_fns = BTreeMap::new();
+        for typed in programs.values() {
+            mwir_programs.push(crate::lower::lower_program_with(typed, &lower_opts).expect("mwir"));
+            flow_fns.extend(
+                crate::flowwir_lower::lower_program_with(typed, &lower_opts)
+                    .expect("flow")
+                    .fns,
+            );
+        }
+        let mwir = merge_mwir_programs(mwir_programs);
+        let flow = crate::flowwir::FlowWirProgram { fns: flow_fns };
+        let mut layout_ctx = merge_layout_ctx(&modules).expect("layout ctx");
+        enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
+        let method_index = actor_method_index_tables(&modules, &layout_ctx).expect("index");
+        let codegen =
+            crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0)
+                .expect("codegen");
+        assert!(
+            codegen.fns.contains_key("__wrela_runtime_probe"),
+            "probe must be in codegen fns"
+        );
+        // Hand-asm BL into the force-rooted probe — same path console
+        // builders will use. Layout must resolve it via fn_word_base.
+        let mut a = Asm::new(0);
+        a.bl_call_key("__wrela_runtime_probe");
+        a.push(encode::enc_ret(30));
+        let mut fns = codegen.fns.clone();
+        fns.insert(
+            "__wrela_hand_asm_caller".into(),
+            crate::codegen::CodegenFn {
+                frame_size: 16,
+                code: a.words.iter().map(|w| (*w, String::new())).collect(),
+                relocs: a.relocs,
+            },
+        );
+        let codegen = crate::codegen::CodegenProgram {
+            fns,
+            rodata: codegen.rodata.clone(),
+        };
+        let runtime_tests = vec!["t".to_string()];
+        let async_tests = BTreeSet::new();
+        let test_args = BTreeMap::new();
+        let laid = layout_test_image(&codegen, &runtime_tests, &async_tests, None, &test_args)
+            .expect("layout must resolve bl_call_key to force-rooted probe");
+        assert!(!laid.sections.is_empty());
     }
 
     /// plans/M7.md item G self-audit: empty irq/wake lists keep the M6

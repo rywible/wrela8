@@ -21,15 +21,15 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=1128
-  Section name=rodata base=0x405004b8 size=170
-  Section name=abort base=0x40500564 size=120
-  Section name=checkpoint base=0x405005dc size=104
-  Section name=rtcode base=0x40500644 size=2076
-  Section name=rtdata base=0x40500e60 size=1792
+  Section name=code base=0x40500050 size=1156
+  Section name=rodata base=0x405004d8 size=170
+  Section name=abort base=0x40500584 size=120
+  Section name=checkpoint base=0x405005fc size=104
+  Section name=rtcode base=0x40500664 size=2076
+  Section name=rtdata base=0x40500e80 size=1792
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40500d2c
-  CoreEntry core=2 base=0x40500d94
+  CoreEntry core=1 base=0x40500d4c
+  CoreEntry core=2 base=0x40500db4
   Actor name=Store mailbox=4 slot=16 frame=64 state=8
   Actor name=Idle mailbox=2 slot=16 frame=64 state=8
   Turn fn=cross_core frame=288

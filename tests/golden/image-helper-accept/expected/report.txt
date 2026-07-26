@@ -17,11 +17,11 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=76
-  Section name=abort base=0x4050009c size=120
-  Section name=checkpoint base=0x40500114 size=104
-  Section name=rtcode base=0x4050017c size=896
-  Section name=rtdata base=0x40500500 size=376
+  Section name=code base=0x40500050 size=104
+  Section name=abort base=0x405000b8 size=120
+  Section name=checkpoint base=0x40500130 size=104
+  Section name=rtcode base=0x40500198 size=896
+  Section name=rtdata base=0x40500518 size=376
   Entry base=0x40500000
   Actor name=Store mailbox=16 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64

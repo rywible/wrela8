@@ -41,6 +41,14 @@ Program
     0021: f94017fe  ldr lr, [sp, #40]
     0022: 9100c3ff  add sp, sp, #48
     0023: d65f03c0  ret
+  Fn key=__wrela_runtime_probe frame=16 bytes
+    0000: d10043ff  sub sp, sp, #16
+    0001: f90003fe  str lr, [sp, #0]
+    0002: 14000002  b #8
+    0003: 14000001  b #4
+    0004: f94003fe  ldr lr, [sp, #0]
+    0005: 910043ff  add sp, sp, #16
+    0006: d65f03c0  ret
   Fn key=ms frame=48 bytes
     0000: d100c3ff  sub sp, sp, #48
     0001: f90013fe  str lr, [sp, #32]

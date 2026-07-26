@@ -1169,12 +1169,11 @@ fn dump(args: &[String]) -> ExitCode {
                 dump_time = dump_start.elapsed();
             }
         },
-        // plans/M5.md item C / M6.md item D: the same single-file /
-        // whole-closure fork `mwir` uses, one stage further — lowers the
-        // root module (sync + async), builds a whole-closure LayoutCtx
-        // (`layout::merge_layout_ctx`), and dumps the merged codegen
-        // program. plans/M9.md item A2: import-bearing modules reach this
-        // path through `check_closure` rather than the single-module entry.
+        // plans/M5.md item C / M6.md item D / M10.md item A2d: lower the
+        // whole closure (sync + async) with `guest_reachable_keys_closure`
+        // so force-rooted `core.runtime` helpers enter the emit set —
+        // root-only lower never sees them. Builds a whole-closure
+        // LayoutCtx and dumps the merged codegen program.
         "asm" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -1184,66 +1183,84 @@ fn dump(args: &[String]) -> ExitCode {
                 match parsed {
                     Ok(module) => match check_closure(&path, module) {
                         Ok(checked) => {
-                            let program = &checked.programs[&checked.root];
-                            match wrela_compiler::lower::lower_program(program) {
-                                Ok(mwir_program) => {
-                                    match wrela_compiler::flowwir_lower::lower_program(program) {
-                                        Ok(flow_program) => {
-                                            match layout::merge_layout_ctx(&checked.modules) {
-                                                Ok(mut layout_ctx) => {
-                                                    layout::enrich_layout_ctx_with_instantiations(
-                                                        &mut layout_ctx,
-                                                        &checked.programs,
-                                                    );
-                                                    match layout::actor_method_index_tables(
-                                                        &checked.modules,
-                                                        &layout_ctx,
-                                                    ) {
-                                                        Ok(method_index) => {
-                                                            let group_arena_capacity =
-                                                                layout::count_with_group_sites(
-                                                                    &checked.modules,
-                                                                );
-                                                            match wrela_compiler::codegen::codegen_program_with_async(
-                                                                &mwir_program,
-                                                                &flow_program,
-                                                                &layout_ctx,
-                                                                &method_index,
-                                                                group_arena_capacity,
-                                                            ) {
-                                                                Ok(codegen_program) => print!(
-                                                                    "{}",
-                                                                    wrela_compiler::codegen::dump(
-                                                                        &codegen_program
-                                                                    )
-                                                                ),
-                                                                Err(e) => print_line_diagnostic(
-                                                                    &format!(
-                                                                        "error[unimplemented]: {}",
-                                                                        e.message
-                                                                    ),
-                                                                ),
-                                                            }
-                                                        }
-                                                        Err(e) => print_line_diagnostic(&format!(
-                                                            "error[unimplemented]: {}",
-                                                            e.message
-                                                        )),
-                                                    }
-                                                }
-                                                Err(e) => print_sema_error(&e),
-                                            }
-                                        }
-                                        Err(e) => print_line_diagnostic(&format!(
-                                            "error[unimplemented]: {}",
-                                            e.message
-                                        )),
+                            let reachable = lower::guest_reachable_keys_closure(
+                                &checked.programs,
+                                &lower::LowerOpts::default(),
+                            );
+                            let lower_opts = lower::LowerOpts {
+                                emit_comptime_tests: false,
+                                only: Some(reachable),
+                            };
+                            let mut mwir_programs = Vec::with_capacity(checked.programs.len());
+                            let mut flow_fns = BTreeMap::new();
+                            let mut lower_err: Option<String> = None;
+                            for typed in checked.programs.values() {
+                                match lower::lower_program_with(typed, &lower_opts) {
+                                    Ok(p) => mwir_programs.push(p),
+                                    Err(e) => {
+                                        lower_err = Some(e.message);
+                                        break;
                                     }
                                 }
-                                Err(e) => print_line_diagnostic(&format!(
-                                    "error[unimplemented]: {}",
-                                    e.message
-                                )),
+                                match wrela_compiler::flowwir_lower::lower_program_with(
+                                    typed,
+                                    &lower_opts,
+                                ) {
+                                    Ok(p) => flow_fns.extend(p.fns),
+                                    Err(e) => {
+                                        lower_err = Some(e.message);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(msg) = lower_err {
+                                print_line_diagnostic(&format!("error[unimplemented]: {msg}"));
+                            } else {
+                                let mwir_program = layout::merge_mwir_programs(mwir_programs);
+                                let flow_program =
+                                    wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
+                                match layout::merge_layout_ctx(&checked.modules) {
+                                    Ok(mut layout_ctx) => {
+                                        layout::enrich_layout_ctx_with_instantiations(
+                                            &mut layout_ctx,
+                                            &checked.programs,
+                                        );
+                                        match layout::actor_method_index_tables(
+                                            &checked.modules,
+                                            &layout_ctx,
+                                        ) {
+                                            Ok(method_index) => {
+                                                let group_arena_capacity =
+                                                    layout::count_with_group_sites(
+                                                        &checked.modules,
+                                                    );
+                                                match wrela_compiler::codegen::codegen_program_with_async(
+                                                    &mwir_program,
+                                                    &flow_program,
+                                                    &layout_ctx,
+                                                    &method_index,
+                                                    group_arena_capacity,
+                                                ) {
+                                                    Ok(codegen_program) => print!(
+                                                        "{}",
+                                                        wrela_compiler::codegen::dump(
+                                                            &codegen_program
+                                                        )
+                                                    ),
+                                                    Err(e) => print_line_diagnostic(&format!(
+                                                        "error[unimplemented]: {}",
+                                                        e.message
+                                                    )),
+                                                }
+                                            }
+                                            Err(e) => print_line_diagnostic(&format!(
+                                                "error[unimplemented]: {}",
+                                                e.message
+                                            )),
+                                        }
+                                    }
+                                    Err(e) => print_sema_error(&e),
+                                }
                             }
                         }
                         Err(()) => {}
@@ -1555,38 +1572,54 @@ fn test_cmd(args: &[String]) -> ExitCode {
         }
     }
     // plans/M7.md item E1: stamp capacity before lower.
-    let mut program = program;
-    program.blk_capacity_sectors = eval::image_checks::blk_capacity_sectors(&graph);
-    let mwir_program = match lower::lower_program(&program) {
-        Ok(p) => p,
-        Err(e) => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!(
-                "error[unimplemented]: the runtime test tier could not lower this program: {}",
-                e.message
-            ));
-            return ExitCode::FAILURE;
-        }
+    // plans/M10.md item A2d: whole-closure lower with force-rooted
+    // runtime helpers (same reachable set `try_layout_program` uses).
+    let capacity = eval::image_checks::blk_capacity_sectors(&graph);
+    let reachable =
+        lower::guest_reachable_keys_closure(&checked.programs, &lower::LowerOpts::default());
+    let lower_opts = lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(reachable),
     };
-    // plans/M6.md item D: the async half, alongside the sync one above —
-    // `flowwir_lower::lower_program` never touches a sync fn (decision 2),
-    // so this is additive, never a re-lowering of anything `lower_program`
-    // already covers.
-    let flow_program = match wrela_compiler::flowwir_lower::lower_program(&program) {
-        Ok(p) => p,
-        Err(e) => {
-            for l in &comptime_lines {
-                println!("{l}");
+    let mut mwir_programs = Vec::with_capacity(checked.programs.len());
+    let mut flow_fns = BTreeMap::new();
+    for typed in checked.programs.values() {
+        let mut stamped = typed.clone();
+        stamped.blk_capacity_sectors = capacity;
+        match lower::lower_program_with(&stamped, &lower_opts) {
+            Ok(p) => mwir_programs.push(p),
+            Err(e) => {
+                for l in &comptime_lines {
+                    println!("{l}");
+                }
+                print_line_diagnostic(&format!(
+                    "error[unimplemented]: the runtime test tier could not lower this program: {}",
+                    e.message
+                ));
+                return ExitCode::FAILURE;
             }
-            print_line_diagnostic(&format!(
-                "error[unimplemented]: the runtime test tier could not lower this program's \
-                 async fns: {}",
-                e.message
-            ));
-            return ExitCode::FAILURE;
         }
+        match wrela_compiler::flowwir_lower::lower_program_with(&stamped, &lower_opts) {
+            Ok(p) => flow_fns.extend(p.fns),
+            Err(e) => {
+                for l in &comptime_lines {
+                    println!("{l}");
+                }
+                print_line_diagnostic(&format!(
+                    "error[unimplemented]: the runtime test tier could not lower this program's \
+                     async fns: {}",
+                    e.message
+                ));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let mwir_program = layout::merge_mwir_programs(mwir_programs);
+    let flow_program = wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
+    let program = {
+        let mut p = program;
+        p.blk_capacity_sectors = capacity;
+        p
     };
     let method_index = match layout::actor_method_index_tables(&modules, &layout_ctx) {
         Ok(m) => m,
