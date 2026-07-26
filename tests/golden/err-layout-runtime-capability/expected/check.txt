@@ -1,0 +1,1 @@
+error[type]: field `TurnArea.owner: DeviceCap[Blk]` is a capability type (03-hardware.md §1); it has no byte encoding, so a `@layout` type cannot hold one (03-hardware.md §3) at 25:5

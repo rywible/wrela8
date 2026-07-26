@@ -1,0 +1,11 @@
+LayoutTypes v0
+  Module path=examples.layout_runtime
+    Layout name=TurnArea kind=runtime endian=little size=8 padding=0
+      Field name=state type=u32 offset=0x0 size=4
+      Field name=waiter type=u32 offset=0x4 size=4
+    Layout name=TurnTable kind=runtime endian=little size=40 padding=0
+      Field name=rr_cursor type=u64 offset=0x0 size=8
+      Field name=turns type=[TurnArea; 4] offset=0x8 size=32
+    Layout name=GroupSlot kind=runtime endian=little size=40 padding=0
+      Field name=parent type=TurnArea offset=0x0 size=8
+      Field name=children type=[TurnArea; 4] offset=0x8 size=32

@@ -1,0 +1,1 @@
+error[type]: field `TurnArea.owner: Mailbox` nests `Mailbox`, which is already being laid out (Mailbox -> TurnArea -> Mailbox); a `@layout` type cannot contain itself, directly or transitively — its size would have no finite value (03-hardware.md §3.1) at 24:5

@@ -1722,13 +1722,12 @@ pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAu
 
 /// 03-hardware.md §3's four layout kinds.
 ///
-/// `Runtime` (03-hardware.md §3.1, plans/M10.md item A, decision 561) is
-/// **declared and refused**: it parses so that the closed set the other
-/// diagnostics advertise is the truth, and `check_one_layout` then
-/// rejects it with an `error[unimplemented]` naming plans/M10.md item A2,
-/// which lands the field types the class needs (fixed-length arrays and
-/// nested `@layout` structs). It is never a laid-out `LayoutType`, so no
-/// downstream consumer can observe this variant.
+/// `Runtime` (03-hardware.md §3.1) is the fourth kind, live since
+/// plans/M10.md item A2: it is the only kind whose field may be a nested
+/// `@layout(runtime)` struct or a fixed-length array of one, and the
+/// nesting is exclusive in both directions — a `runtime` field is never a
+/// `dma`/`mmio`/`wire` layout, and none of those three nests a `runtime`
+/// one (`nested_layout_kind_error`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
     Dma,
@@ -1979,19 +1978,96 @@ fn parse_offset_attr(struct_name: &str, field_name: &str, attr: &Attr) -> Result
     u64::try_from(value).map_err(|_| bad())
 }
 
-/// A `@layout` field's exact byte size, or the named rejection that says
-/// why it has none. `layout_names` is every `@layout` struct declared in
-/// this module, so a nested one is rejected as the scope limit it is
-/// rather than as an unsized type it is not.
-fn layout_field_size(
+/// Every `@layout` struct declared in one module, by name. `layout_field_bytes`
+/// needs the *declaration*, not just the name: 03 §3.1's nested `runtime`
+/// field is sized by laying the nested struct out, recursively.
+type LayoutDecls<'a> = BTreeMap<String, &'a StructItem>;
+
+/// A `@layout` field's exact bytes: its size, and the alignment its own
+/// offset is checked against.
+///
+/// The two are the same number for every field of a `dma`/`mmio`/`wire`
+/// layout — those are sized integers and register wrappers, whose natural
+/// alignment *is* their width — which is why this pass carried only a size
+/// until plans/M10.md item A2. §3.1's two new field shapes separate them:
+/// `[TurnArea; 4]` is 32 bytes wide and 4-byte aligned, and a nested
+/// struct's alignment is the widest alignment among its own fields, not its
+/// total size. Nothing rounds a size *up* to an alignment anywhere — 03 §3
+/// is explicit that a `@layout` type is exactly the bytes its fields cover,
+/// with no trailing padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FieldBytes {
+    size: u64,
+    align: u64,
+}
+
+impl FieldBytes {
+    /// A sized integer or a register wrapper: width and alignment agree.
+    fn scalar(size: u64) -> Self {
+        FieldBytes { size, align: size }
+    }
+}
+
+/// How deep one `@layout(runtime)` type may nest another. A `runtime`
+/// layout is a table of tables — the deepest shape 03 §3.1 describes is
+/// two levels (`TurnTable` → `[TurnArea; N]`) — so this is generous by an
+/// order of magnitude and exists only as a floor: cycle detection already
+/// makes the recursion finite, but "finite" is not "small", and a module
+/// declaring a thousand-long chain of nested layouts would otherwise
+/// recurse a thousand frames deep inside a compiler pass. Fail closed with
+/// a named diagnostic instead of trusting the process stack.
+const MAX_LAYOUT_NEST_DEPTH: usize = 16;
+
+/// How many nested layouts one top-level `@layout` may expand, in total.
+///
+/// The depth cap alone does not bound the *work*: a nested type is laid out
+/// from scratch at every mention (this pass keeps no cache — it is a pure
+/// function of the ast), so a chain of 16 structs each naming the next four
+/// times expands `4^16` layouts from eighty lines of source. That is not a
+/// wrong answer, it is no answer at all — the pass would appear to hang, and
+/// the fuzzer's `sema` lane reaches `check_layouts` on every iteration.
+/// Bounded by counting expansions rather than by memoizing them: a cache is
+/// the clever fix and needs a profile to buy (ROADMAP.md's cleverness
+/// budget), while a budget is the dumb one and fails closed. 1024 is three
+/// orders of magnitude above any table 03 §3.1 describes.
+const MAX_LAYOUT_NEST_EXPANSIONS: u32 = 1024;
+
+/// The nesting recursion's whole state: the chain of layout structs
+/// currently being laid out, outermost first (cycle detector and depth
+/// counter), and the remaining expansion budget. One per top-level
+/// `@layout` — `check_one_layout` builds it fresh, so no layout's budget is
+/// spent by its siblings.
+struct NestCtx {
+    stack: Vec<String>,
+    budget: u32,
+}
+
+/// A `@layout` field's exact bytes, or the named rejection that says why it
+/// has none. `decls` is every `@layout` struct declared in this module, so
+/// a nested one is sized (03 §3.1's `runtime` allowance) or rejected as the
+/// scope limit it is, rather than as an unsized type it is not.
+fn layout_field_bytes(
     struct_name: &str,
     field_name: &str,
     kind: LayoutKind,
     ty: &ast::Type,
-    layout_names: &BTreeSet<String>,
+    decls: &LayoutDecls,
+    nest: &mut NestCtx,
     span: Span,
-) -> Result<u64, SemaError> {
+) -> Result<FieldBytes, SemaError> {
     let rendered = printer::print_type_bare(ty);
+    if let ast::Type::Array(a) = ty {
+        return array_field_bytes(
+            struct_name,
+            field_name,
+            kind,
+            a,
+            &rendered,
+            decls,
+            nest,
+            span,
+        );
+    }
     let ast::Type::Named(n) = ty else {
         return Err(no_exact_size_error(
             struct_name,
@@ -2003,7 +2079,7 @@ fn layout_field_size(
     };
     if n.args.is_empty() {
         if let Some(size) = scalar_field_size(&n.name) {
-            return Ok(size);
+            return Ok(FieldBytes::scalar(size));
         }
         if matches!(n.name.as_str(), "usize" | "isize") {
             return Err(layout_error(
@@ -2026,15 +2102,17 @@ fn layout_field_size(
                 span,
             ));
         }
-        if layout_names.contains(&n.name) {
-            return Err(layout_error(
-                format!(
-                    "field `{struct_name}.{field_name}: {rendered}` nests a `@layout` type; a \
-                     nested `@layout` field is not implemented (plans/M7.md item E owns the \
-                     composite queue/DMA layouts that need it)"
-                ),
+        if let Some(nested) = decls.get(&n.name) {
+            return nested_field_bytes(
+                struct_name,
+                field_name,
+                kind,
+                nested,
+                &rendered,
+                decls,
+                nest,
                 span,
-            ));
+            );
         }
     }
     // plans/M7.md item D self-audit finding: this pass used to carry its
@@ -2075,10 +2153,7 @@ fn layout_field_size(
                 span,
             ),
             // `Runtime` joins them for the same basic reason, and 03 §3.1
-            // says it by name too ("carries no capability"). Unreachable
-            // today — `check_one_layout` refuses a `runtime` layout before
-            // it reaches a field — but the arm is written rather than
-            // lumped under a wildcard, so item A2 inherits the rule.
+            // says it by name too ("carries no capability").
             LayoutKind::Dma | LayoutKind::Mmio | LayoutKind::Runtime => layout_error(
                 format!(
                     "field `{struct_name}.{field_name}: {rendered}` is {kind_text}; it has no \
@@ -2122,7 +2197,7 @@ fn layout_field_size(
             ));
         };
         return match scalar_field_size(&i.name).filter(|_| i.args.is_empty()) {
-            Some(size) => Ok(size),
+            Some(size) => Ok(FieldBytes::scalar(size)),
             None => Err(layout_error(
                 format!(
                     "field `{struct_name}.{field_name}: {rendered}` wraps `{}`, which is not a \
@@ -2143,6 +2218,300 @@ fn layout_field_size(
     ))
 }
 
+/// 03 §3.1's array field: `[T; N]`, in a `runtime` layout only.
+///
+/// Size is `N * size_of(T)` — no stride rounding, no trailing padding — and
+/// the array's alignment is its element's, because that is the alignment
+/// every element needs and an array adds no requirement of its own.
+#[allow(clippy::too_many_arguments)]
+fn array_field_bytes(
+    struct_name: &str,
+    field_name: &str,
+    kind: LayoutKind,
+    a: &ast::ArrayType,
+    rendered: &str,
+    decls: &LayoutDecls,
+    nest: &mut NestCtx,
+    span: Span,
+) -> Result<FieldBytes, SemaError> {
+    if kind != LayoutKind::Runtime {
+        // The allowance is 03 §3.1's, and it is stated as belonging to the
+        // fourth kind alone: "It adds one allowance the other three kinds
+        // do not have". So this is a permanent scope rule, not a floor —
+        // said by name rather than folded into "no exact byte size", which
+        // would be false (`[u32; 4]` has a perfectly exact size; a `dma`
+        // layout just may not have one).
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` is an array, but `{struct_name}` \
+                 is a `@layout({})` type; a fixed-length array field is the `runtime` kind's own \
+                 allowance, which \"the other three kinds do not have\" (03-hardware.md §3.1)",
+                kind.as_str()
+            ),
+            span,
+        ));
+    }
+    let len = array_field_len(struct_name, field_name, rendered, &a.len, span)?;
+    let elem_rendered = printer::print_type_bare(&a.elem);
+    let elem = match &a.elem {
+        ast::Type::Named(n) if n.args.is_empty() && scalar_field_size(&n.name).is_some() => {
+            FieldBytes::scalar(scalar_field_size(&n.name).expect("just matched"))
+        }
+        ast::Type::Named(n) if n.args.is_empty() && decls.contains_key(&n.name) => {
+            let nested = decls[&n.name];
+            nested_field_bytes(
+                struct_name,
+                field_name,
+                kind,
+                nested,
+                rendered,
+                decls,
+                nest,
+                span,
+            )?
+        }
+        // Everything else, in one message rather than a second copy of the
+        // scalar table's rejections: §3.1 spells the element set out
+        // ("another `@layout(runtime)` type, or a fixed-length array of
+        // one"), so `[usize; 4]`, `[[u32; 2]; 2]`, `[bool; 8]` and
+        // `[DeviceCap[D]; 2]` are all the same rejection — the element is
+        // not one of the two things an array field's element may be.
+        // Notably `[usize; N]` is refused here too: decision 563 /
+        // plans/M10.md item A2 add **no** `usize` exemption for the
+        // `runtime` kind, because one target-dependent layout class breaks
+        // the property the whole mechanism exists for.
+        _ => {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` has element type \
+                     `{elem_rendered}`, which is not an array field's element type; that is a \
+                     sized integer (`u8`/`u16`/`u32`/`u64`, or their signed forms) or a nested \
+                     `@layout(runtime)` struct (03-hardware.md §3.1)"
+                ),
+                span,
+            ));
+        }
+    };
+    // An array is elements back to back at stride `size_of(T)`. If that
+    // stride is not a multiple of `T`'s own alignment, element 1 onwards
+    // land misaligned, and the only fix is padding between elements — the
+    // one thing 03 §3 says a `@layout` never invents. Refused here, at the
+    // declaration, rather than reported as a size the elements do not
+    // actually have.
+    if elem.size % elem.align != 0 {
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` has element type \
+                 `{elem_rendered}`, which is {} byte(s) wide but {}-byte aligned, so every \
+                 element after the first would need implicit padding to be aligned; a `@layout` \
+                 type never pads implicitly (03-hardware.md §3)",
+                elem.size, elem.align
+            ),
+            span,
+        ));
+    }
+    let size = len.checked_mul(elem.size).ok_or_else(|| {
+        layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` is {len} elements of {} byte(s), \
+                 which does not fit in a 64-bit byte count; a `@layout` type's size is exact \
+                 (03-hardware.md §3)",
+                elem.size
+            ),
+            span,
+        )
+    })?;
+    Ok(FieldBytes {
+        size,
+        align: elem.align,
+    })
+}
+
+/// An array field's length: **an integer literal, and nothing else**
+/// (decision 580).
+///
+/// This is `parse_offset_attr`'s rule, for the same reason and in the same
+/// words: `check_layouts` runs before name resolution and evaluates
+/// nothing, so a `const`-named length is inference by another name. 03
+/// §3.1's own example spells `[TurnArea; N_TURNS]` and is therefore *not
+/// yet* accepted — the rejection below names it, so the gap is visible in
+/// the diagnostic rather than discovered by a reader of the doc.
+fn array_field_len(
+    struct_name: &str,
+    field_name: &str,
+    rendered: &str,
+    len: &Expr,
+    span: Span,
+) -> Result<u64, SemaError> {
+    let Expr::Int(_, text) = len else {
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` has a length that is not an \
+                 integer literal; a `@layout` type's size and offsets are checked before name \
+                 resolution and nothing in them is evaluated, so an array field's length is a \
+                 literal — a `const`-named length is inference by another name, the same rule \
+                 `@offset(n)` already states (03-hardware.md §3, plans/M10.md decision 580)"
+            ),
+            span,
+        ));
+    };
+    let value = super::bodies::parse_int_literal(text)
+        .and_then(|v| u64::try_from(v).ok())
+        .ok_or_else(|| {
+            layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` has a length this compiler \
+                     cannot read as a byte count (03-hardware.md §3)"
+                ),
+                span,
+            )
+        })?;
+    if value == 0 {
+        // A zero-length array is a zero-byte field, and "size zero" is
+        // never a reportable answer here (the empty-layout guard below says
+        // the same thing one level up). It would also make the alignment
+        // check divide by zero.
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` has length 0; a `@layout` field \
+                 covers at least one byte (03-hardware.md §3)"
+            ),
+            span,
+        ));
+    }
+    Ok(value)
+}
+
+/// A field whose type is another `@layout` struct declared in this module.
+///
+/// 03 §3.1 allows exactly one shape of this: a `runtime` layout nesting a
+/// `runtime` layout. Both other combinations are refused, and the two
+/// refusals say different true things — a `dma`/`mmio`/`wire` layout
+/// nesting one of its own kind is the M7 item E gap (a missing feature),
+/// while any nesting that crosses the `runtime` boundary is a permanent
+/// rule (§3.1: a `runtime` layout "is not device-visible", so it is neither
+/// a DMA payload nor a register map, in either direction).
+#[allow(clippy::too_many_arguments)]
+fn nested_field_bytes(
+    struct_name: &str,
+    field_name: &str,
+    kind: LayoutKind,
+    nested: &StructItem,
+    rendered: &str,
+    decls: &LayoutDecls,
+    nest: &mut NestCtx,
+    span: Span,
+) -> Result<FieldBytes, SemaError> {
+    if kind != LayoutKind::Runtime {
+        return Err(match declared_layout_kind(&nested.attrs) {
+            Some(LayoutKind::Runtime) => {
+                nested_layout_kind_error(struct_name, field_name, kind, rendered, span)
+            }
+            // Unchanged since plans/M7.md item B: composing a `dma` payload
+            // out of a header layout plus a status layout is still not
+            // implemented, and still belongs to the item that owns those
+            // shapes. Item A2 widened the `runtime` kind only.
+            _ => layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` nests a `@layout` type; a \
+                     nested `@layout` field is not implemented (plans/M7.md item E owns the \
+                     composite queue/DMA layouts that need it)"
+                ),
+                span,
+            ),
+        });
+    }
+    if nest.stack.iter().any(|n| n == &nested.name) {
+        // A cycle, direct (`struct A: a: A`) or transitive. Caught here,
+        // at the field that closes the loop, so the diagnostic can print
+        // the whole chain — and caught *before* recursing, so this is a
+        // diagnostic rather than a stack overflow.
+        let mut chain = nest.stack.clone();
+        chain.push(nested.name.clone());
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` nests `{}`, which is already \
+                 being laid out ({}); a `@layout` type cannot contain itself, directly or \
+                 transitively — its size would have no finite value (03-hardware.md §3.1)",
+                nested.name,
+                chain.join(" -> ")
+            ),
+            span,
+        ));
+    }
+    if nest.stack.len() >= MAX_LAYOUT_NEST_DEPTH {
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` nests `@layout(runtime)` types \
+                 more than {MAX_LAYOUT_NEST_DEPTH} deep ({}); 03-hardware.md §3.1's tables nest \
+                 two levels, and this pass refuses a deeper chain rather than recursing on one",
+                nest.stack.join(" -> ")
+            ),
+            span,
+        ));
+    }
+    let Some(left) = nest.budget.checked_sub(1) else {
+        return Err(layout_error(
+            format!(
+                "field `{struct_name}.{field_name}: {rendered}` expands more than \
+                 {MAX_LAYOUT_NEST_EXPANSIONS} nested `@layout(runtime)` types in one declaration; \
+                 a nested layout is sized from scratch at every mention, so a wide *and* deep \
+                 nesting graph has no answer this pass will finish computing (03-hardware.md §3.1)"
+            ),
+            span,
+        ));
+    };
+    nest.budget = left;
+    let attr = nested
+        .attrs
+        .iter()
+        .find(|a| a.name == "layout")
+        .expect("`decls` holds only structs carrying `@layout`");
+    // Lays the nested type out from scratch, every time it is named. Its
+    // own rejections (including a malformed `@layout` on it) surface here
+    // with their own spans, which is the honest answer: the outer type has
+    // no size until the inner one does. Recomputation is deliberate — this
+    // pass is a pure function of the ast with no cache (`check_layouts`'
+    // own purity note), and the corpus's deepest `runtime` chain is two;
+    // `MAX_LAYOUT_NEST_EXPANSIONS` above is what keeps that affordable.
+    let (inner, align) = lay_out_struct(nested, attr, decls, nest)?;
+    if inner.kind != LayoutKind::Runtime {
+        return Err(nested_layout_kind_error(
+            struct_name,
+            field_name,
+            kind,
+            rendered,
+            span,
+        ));
+    }
+    Ok(FieldBytes {
+        size: inner.size,
+        align,
+    })
+}
+
+/// The nesting rule's cross-kind half, in one place so both directions read
+/// the same (03-hardware.md §3.1).
+fn nested_layout_kind_error(
+    struct_name: &str,
+    field_name: &str,
+    kind: LayoutKind,
+    rendered: &str,
+    span: Span,
+) -> SemaError {
+    layout_error(
+        format!(
+            "field `{struct_name}.{field_name}: {rendered}` nests a `@layout` type of a different \
+             kind, and `{struct_name}` is a `@layout({})` type; only a `runtime` layout may nest \
+             another, and only a `runtime` layout may be nested — a `runtime` layout \"is not \
+             device-visible\", so it is neither a `dma` payload nor an `mmio` register map \
+             (03-hardware.md §3.1)",
+            kind.as_str()
+        ),
+        span,
+    )
+}
+
 fn no_exact_size_error(
     struct_name: &str,
     field_name: &str,
@@ -2150,49 +2519,61 @@ fn no_exact_size_error(
     kind: LayoutKind,
     span: Span,
 ) -> SemaError {
-    let wrappers = match kind {
-        LayoutKind::Mmio => ", optionally wrapped in `ReadOnly`/`WriteOnly`",
-        // `Runtime` has no register wrappers either; §2's `ReadOnly`/
-        // `WriteOnly` exist only in a register map. Unreachable today (a
-        // `runtime` layout is refused before any field is sized).
-        LayoutKind::Dma | LayoutKind::Wire | LayoutKind::Runtime => "",
+    // `Runtime` has no register wrappers — §2's `ReadOnly`/`WriteOnly`
+    // exist only in a register map — but it does have §3.1's two extra
+    // field shapes, so its version of this message names them and cites
+    // the subsection that grants them.
+    let (extra, cite) = match kind {
+        LayoutKind::Mmio => (
+            ", optionally wrapped in `ReadOnly`/`WriteOnly`",
+            "03-hardware.md §3",
+        ),
+        LayoutKind::Dma | LayoutKind::Wire => ("", "03-hardware.md §3"),
+        LayoutKind::Runtime => (
+            ", a nested `@layout(runtime)` struct, or a fixed-length array of one",
+            "03-hardware.md §3.1",
+        ),
     };
     layout_error(
         format!(
             "field `{struct_name}.{field_name}: {rendered}` has no exact byte size; a `@layout` \
-             field is a sized integer (`u8`/`u16`/`u32`/`u64`, or their signed forms){wrappers} \
-             (03-hardware.md §3)"
+             field is a sized integer (`u8`/`u16`/`u32`/`u64`, or their signed forms){extra} \
+             ({cite})"
         ),
         span,
     )
 }
 
-/// Lays out one `@layout` struct, checking every rule as it goes.
+/// Lays out one `@layout` struct, checking every rule as it goes. Discards
+/// the alignment `lay_out_struct` also computes — only a *nested* field
+/// needs it (`nested_field_bytes`); a top-level layout's own alignment is
+/// nothing 03 §3 reports, because nothing rounds a `@layout` type's size up
+/// to it.
 fn check_one_layout(
     s: &StructItem,
     attr: &Attr,
-    layout_names: &BTreeSet<String>,
+    decls: &LayoutDecls,
 ) -> Result<LayoutType, SemaError> {
+    let mut nest = NestCtx {
+        stack: Vec::new(),
+        budget: MAX_LAYOUT_NEST_EXPANSIONS,
+    };
+    lay_out_struct(s, attr, decls, &mut nest).map(|(l, _align)| l)
+}
+
+/// `check_one_layout`'s body, plus the layout's alignment (the widest
+/// alignment among its fields) and the `NestCtx` a `runtime` field recurses
+/// through. `nest.stack` holds the chain of layout structs currently being
+/// laid out, outermost first; `nested_field_bytes` reads it to refuse a
+/// cycle and an over-deep chain before either can recurse.
+fn lay_out_struct(
+    s: &StructItem,
+    attr: &Attr,
+    decls: &LayoutDecls,
+    nest: &mut NestCtx,
+) -> Result<(LayoutType, u64), SemaError> {
     let name = s.name.clone();
     let (kind, endian) = parse_layout_attr(&name, attr)?;
-    // 03-hardware.md §3.1 / plans/M10.md item A, decision 561: the class
-    // is normative from the moment its wording lands, and unimplemented
-    // until item A2 lands the field types it is defined in terms of
-    // (fixed-length array fields and nested `@layout(runtime)` structs).
-    // Refused here, immediately after parsing, so a `runtime` declaration
-    // is never half-checked against rules written for the other three
-    // kinds — fail closed rather than approximate (CLAUDE.md).
-    if kind == LayoutKind::Runtime {
-        return Err(SemaError::at(
-            "unimplemented",
-            format!(
-                "`@layout(runtime)` on struct `{name}` is not implemented yet; the class is \
-                 defined in 03-hardware.md §3.1 in terms of array and nested-`@layout` fields, \
-                 which plans/M10.md item A2 lands. Use `dma`, `mmio`, or `wire` until then"
-            ),
-            attr.span,
-        ));
-    }
     if !s.generics.is_empty() {
         return Err(layout_error(
             format!(
@@ -2205,7 +2586,62 @@ fn check_one_layout(
     let mut entries: Vec<LayoutEntry> = Vec::new();
     let mut cursor: u64 = 0;
     let mut padding: u64 = 0;
+    let mut align: u64 = 1;
     let mut last_field: Option<(String, u64, u64)> = None;
+    nest.stack.push(name.clone());
+    let laid = lay_out_fields(
+        s,
+        &name,
+        kind,
+        decls,
+        nest,
+        &mut entries,
+        &mut cursor,
+        &mut padding,
+        &mut align,
+        &mut last_field,
+    );
+    nest.stack.pop();
+    laid?;
+    if last_field.is_none() {
+        return Err(layout_error(
+            format!(
+                "`@layout` struct `{name}` declares no fields; a `@layout` type is an exact byte \
+                 layout and has no empty form (03-hardware.md §3)"
+            ),
+            s.span,
+        ));
+    }
+    Ok((
+        LayoutType {
+            name,
+            kind,
+            endian,
+            size: cursor,
+            padding,
+            entries,
+        },
+        align,
+    ))
+}
+
+/// `lay_out_struct`'s field walk, split out only so `nest.stack` is popped
+/// on every exit path — including the rejections, of which there are
+/// a dozen. Every `&mut` argument is `lay_out_struct`'s own local; nothing
+/// here is shared with a sibling layout.
+#[allow(clippy::too_many_arguments)]
+fn lay_out_fields(
+    s: &StructItem,
+    name: &str,
+    kind: LayoutKind,
+    decls: &LayoutDecls,
+    nest: &mut NestCtx,
+    entries: &mut Vec<LayoutEntry>,
+    cursor: &mut u64,
+    padding: &mut u64,
+    struct_align: &mut u64,
+    last_field: &mut Option<(String, u64, u64)>,
+) -> Result<(), SemaError> {
     for m in &s.members {
         let f = match m {
             Member::Field(f) => f,
@@ -2252,7 +2688,9 @@ fn check_one_layout(
                 ));
             }
         };
-        let size = layout_field_size(&name, &f.name, kind, &f.ty, layout_names, f.span)?;
+        let FieldBytes { size, align } =
+            layout_field_bytes(name, &f.name, kind, &f.ty, decls, nest, f.span)?;
+        *struct_align = (*struct_align).max(align);
         let mut explicit: Option<u64> = None;
         for a in &f.attrs {
             if a.name == "offset" {
@@ -2262,7 +2700,7 @@ fn check_one_layout(
                         a.span,
                     ));
                 }
-                explicit = Some(parse_offset_attr(&name, &f.name, a)?);
+                explicit = Some(parse_offset_attr(name, &f.name, a)?);
             } else {
                 return Err(layout_error(
                     format!(
@@ -2274,7 +2712,7 @@ fn check_one_layout(
                 ));
             }
         }
-        let offset = explicit.unwrap_or(cursor);
+        let offset = explicit.unwrap_or(*cursor);
         // plans/M7.md item I's sweep: `@offset(n)` accepts any `n` a
         // `u64` holds, and the two additions below (`offset + size`, and
         // the `cursor` advance) both overflowed on one. In a debug build
@@ -2298,10 +2736,10 @@ fn check_one_layout(
                 f.span,
             )
         })?;
-        if offset < cursor {
+        if offset < *cursor {
             let (prev_name, prev_start, prev_end) = last_field
                 .clone()
-                .unwrap_or_else(|| (String::from("<start>"), cursor, cursor));
+                .unwrap_or_else(|| (String::from("<start>"), *cursor, *cursor));
             // Two distinct violations share this one condition, and the
             // diagnostic must not claim the wrong one: a field declared
             // after `prev` may sit entirely *before* it (an ordering
@@ -2331,27 +2769,34 @@ fn check_one_layout(
                 f.span,
             ));
         }
-        if offset % size != 0 {
+        // Checked against the field's *alignment*, not its size. The two
+        // are the same number for every sized integer and register wrapper,
+        // which is why this read `offset % size` until plans/M10.md item
+        // A2; they part company for §3.1's array and nested-struct fields,
+        // where `size % align == 0` but `size` itself is not the
+        // requirement (a `[TurnArea; 4]` is 32 bytes and needs 4-byte
+        // alignment, not 32-byte).
+        if offset % align != 0 {
             return Err(match explicit {
                 Some(n) => layout_error(
                     format!(
-                        "field `{name}.{}: {}` at `@offset({n:#x})` is not {size}-byte aligned \
+                        "field `{name}.{}: {}` at `@offset({n:#x})` is not {align}-byte aligned \
                          (03-hardware.md §2)",
                         f.name,
                         printer::print_type_bare(&f.ty)
                     ),
                     f.span,
                 ),
-                None => implicit_padding_error(&name, &f.name, &f.ty, offset, size, f.span),
+                None => implicit_padding_error(name, &f.name, &f.ty, offset, align, f.span),
             });
         }
-        if offset > cursor {
-            let gap = offset - cursor;
+        if offset > *cursor {
+            let gap = offset - *cursor;
             entries.push(LayoutEntry::Padding {
-                offset: cursor,
+                offset: *cursor,
                 size: gap,
             });
-            padding += gap;
+            *padding += gap;
         }
         entries.push(LayoutEntry::Field(LayoutField {
             name: f.name.clone(),
@@ -2359,31 +2804,15 @@ fn check_one_layout(
             offset,
             size,
         }));
-        cursor = field_end;
-        last_field = Some((f.name.clone(), offset, cursor));
+        *cursor = field_end;
+        *last_field = Some((f.name.clone(), offset, *cursor));
     }
-    if last_field.is_none() {
-        return Err(layout_error(
-            format!(
-                "`@layout` struct `{name}` declares no fields; a `@layout` type is an exact byte \
-                 layout and has no empty form (03-hardware.md §3)"
-            ),
-            s.span,
-        ));
-    }
-    Ok(LayoutType {
-        name,
-        kind,
-        endian,
-        size: cursor,
-        padding,
-        entries,
-    })
+    Ok(())
 }
 
 /// The implicit-padding rejection (plans/M7.md decision 4: "no implicit
 /// padding"). It fires exactly when a field with no `@offset` would land
-/// at a natural offset its own width does not divide — the one place a
+/// at a natural offset its own alignment does not divide — the one place a
 /// conventional compiler inserts padding silently. This one refuses and
 /// says how many bytes it would have had to invent.
 fn implicit_padding_error(
@@ -2391,14 +2820,14 @@ fn implicit_padding_error(
     field_name: &str,
     ty: &ast::Type,
     offset: u64,
-    size: u64,
+    align: u64,
     span: Span,
 ) -> SemaError {
-    let needed = size - (offset % size);
+    let needed = align - (offset % align);
     layout_error(
         format!(
             "field `{struct_name}.{field_name}: {}` follows the previous field at offset \
-             {offset:#x} and would need {needed} byte(s) of implicit padding to be {size}-byte \
+             {offset:#x} and would need {needed} byte(s) of implicit padding to be {align}-byte \
              aligned; a `@layout` type never pads implicitly — give `{field_name}` an explicit \
              `@offset(...)` (03-hardware.md §3)",
             printer::print_type_bare(ty)
@@ -2508,11 +2937,17 @@ fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
 /// 03 §3.
 pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
     check_placed_attrs(module)?;
-    let mut layout_names = BTreeSet::new();
+    // Every struct carrying a `@layout` at all, well-formed or not — the
+    // same set this pass has always collected, now carrying the declaration
+    // itself so 03 §3.1's nested `runtime` field can be sized by laying the
+    // nested struct out (plans/M10.md item A2). A malformed `@layout` on a
+    // *nested* struct therefore surfaces its own rejection, with its own
+    // span, at whichever of the two declarations this pass reaches first.
+    let mut decls: LayoutDecls = BTreeMap::new();
     for item in &module.items {
         if let Item::Struct(s) = item {
             if s.attrs.iter().any(|a| a.name == "layout") {
-                layout_names.insert(s.name.clone());
+                decls.insert(s.name.clone(), s);
             }
         }
     }
@@ -2537,7 +2972,7 @@ pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
                     }
                 }
             }
-            [attr] => out.push(check_one_layout(s, attr, &layout_names)?),
+            [attr] => out.push(check_one_layout(s, attr, &decls)?),
             [_, second, ..] => {
                 return Err(layout_error(
                     format!(
@@ -6091,6 +6526,78 @@ mod tests {
                 "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    r: WriteOnly[u32, u32]\n",
                 "must wrap exactly one register type",
             ),
+            // plans/M10.md item A2, 03-hardware.md §3.1. The `runtime`
+            // kind's two new field shapes are pinned end to end by
+            // `golden/check-layout-runtime` and their headline rejections by
+            // five `golden/err-layout-*` cases; these are the *sibling*
+            // arms, each one sentence long and none needing a source file
+            // to be understood (the precedent this table already set
+            // above).
+            //
+            // §3.1's element set is closed — "another `@layout(runtime)`
+            // type, or a fixed-length array of one" — so everything that is
+            // neither a sized integer nor a nested `runtime` layout is one
+            // rejection. `[usize; 4]` among them: decision 563 adds **no**
+            // `usize` exemption for this kind, because one target-dependent
+            // layout class would break the property `@layout` exists for.
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [usize; 4]\n",
+                "which is not an array field's element type",
+            ),
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [bool; 4]\n",
+                "which is not an array field's element type",
+            ),
+            // An array *of arrays* is not "a fixed-length array of one"
+            // nested layout; it is two levels of a shape §3.1 grants one
+            // level of.
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [[u32; 2]; 2]\n",
+                "which is not an array field's element type",
+            ),
+            // A negative length is not an integer literal (it parses as a
+            // unary expression), so it lands on the same decision-580
+            // rejection `golden/err-layout-runtime-const-len` pins.
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [u32; -1]\n",
+                "has a length that is not an integer literal",
+            ),
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [u32; 0]\n",
+                "has length 0",
+            ),
+            // An element whose width is not a multiple of its own alignment
+            // (`E` is 5 bytes, 4-byte aligned) puts every element after the
+            // first at a misaligned offset, and the only fix is padding
+            // between elements — which a `@layout` never invents.
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct E:\n\
+                 \x20   a: u32\n    b: u8\n\n\
+                 @layout(runtime, endian=little)\nstruct S:\n    e: [E; 2]\n",
+                "would need implicit padding to be aligned",
+            ),
+            // The nesting rule's other direction: `golden/err-layout-\
+            // runtime-nests-dma` pins a `runtime` layout reaching for a
+            // `dma` one; this is a `dma` layout reaching for a `runtime`
+            // one, which must *not* be confused with the M7 item E gap
+            // (`golden/err-layout-nested`, a `dma` layout nesting a `dma`
+            // one — a missing feature, not a rule).
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct R:\n\
+                 \x20   a: u32\n\n\
+                 @layout(dma, endian=little)\nstruct S:\n    r: R\n",
+                "nests a `@layout` type of a different kind",
+            ),
+            // A nested layout's alignment is the widest among its fields
+            // (4 here), not its size, and it is what the following field's
+            // offset is checked against: `t` at offset 1 needs 3 invented
+            // bytes.
+            (
+                "module t\n\n@layout(runtime, endian=little)\nstruct R:\n\
+                 \x20   a: u32\n    b: u32\n\n\
+                 @layout(runtime, endian=little)\nstruct S:\n    tag: u8\n    r: R\n",
+                "would need 3 byte(s) of implicit padding to be 4-byte aligned",
+            ),
         ];
         for (src, needle) in cases {
             let err = layouts_of(src).expect_err("must be rejected");
@@ -6101,6 +6608,123 @@ mod tests {
                 err.message
             );
         }
+    }
+
+    /// A long chain of nested `@layout(runtime)` types — `L0` nests `L1`
+    /// nests ... nests `L199` — fails closed with a named diagnostic rather
+    /// than recursing 200 frames into this pass.
+    ///
+    /// Cycle detection already makes the recursion finite (no name repeats),
+    /// so "it terminates" was never the question; the question is whether it
+    /// terminates by *deciding* or by exhausting the process stack. 200 is
+    /// far past the two levels 03 §3.1's tables need and well past
+    /// `MAX_LAYOUT_NEST_DEPTH`, and a golden for it would be six hundred
+    /// generated lines saying nothing a reader could not predict, so the
+    /// input is generated here instead.
+    #[test]
+    fn a_deep_nesting_chain_fails_closed() {
+        let mut src = String::from("module t\n\n");
+        for i in 0..200 {
+            src.push_str("@layout(runtime, endian=little)\n");
+            src.push_str(&format!("struct L{i}:\n"));
+            if i == 199 {
+                src.push_str("    leaf: u32\n\n");
+            } else {
+                src.push_str(&format!("    next: L{}\n\n", i + 1));
+            }
+        }
+        let err = layouts_of(&src).expect_err("a 200-deep chain must be refused");
+        assert_eq!(err.category, "type");
+        assert!(
+            err.message
+                .contains(&format!("more than {MAX_LAYOUT_NEST_DEPTH} deep")),
+            "expected the depth rejection, got {:?}",
+            err.message
+        );
+    }
+
+    /// A nesting graph that is *within* the depth cap but exponentially wide
+    /// — sixteen layouts, each naming the next one four times — fails closed
+    /// on the expansion budget.
+    ///
+    /// This is the failure the depth cap does not catch, and it is the more
+    /// dangerous one: `4^15` expansions from twenty lines of source is not a
+    /// wrong answer, it is a pass that never returns, and `check_layouts` is
+    /// on the `sema` fuzz lane's path on every iteration. The test's own
+    /// runtime is the assertion — if the budget stopped working this would
+    /// hang rather than fail.
+    #[test]
+    fn a_wide_nesting_graph_fails_closed() {
+        let mut src = String::from("module t\n\n");
+        for i in 0..16 {
+            src.push_str("@layout(runtime, endian=little)\n");
+            src.push_str(&format!("struct L{i}:\n"));
+            if i == 15 {
+                src.push_str("    leaf: u32\n\n");
+            } else {
+                for f in 0..4 {
+                    src.push_str(&format!("    f{f}: L{}\n", i + 1));
+                }
+                src.push('\n');
+            }
+        }
+        let err = layouts_of(&src).expect_err("a 4-wide 16-deep graph must be refused");
+        assert_eq!(err.category, "type");
+        assert!(
+            err.message.contains(&format!(
+                "expands more than {MAX_LAYOUT_NEST_EXPANSIONS} nested"
+            )),
+            "expected the expansion-budget rejection, got {:?}",
+            err.message
+        );
+    }
+
+    /// The two `runtime` field shapes, laid out (03-hardware.md §3.1).
+    /// `golden/check-layout-runtime` is the review surface; this asserts the
+    /// one fact a dump cannot show, because nothing prints it — that a
+    /// nested layout's *alignment* is the widest among its fields and an
+    /// array's is its element's, so neither field is over-aligned to its own
+    /// size.
+    #[test]
+    fn runtime_fields_align_to_their_element_not_their_size() {
+        let src = "module t\n\n\
+             @layout(runtime, endian=little)\n\
+             struct TurnArea:\n\
+             \x20   state: u32\n    waiter: u32\n\n\
+             @layout(runtime, endian=little)\n\
+             struct TurnTable:\n\
+             \x20   rr_cursor: u64\n    turns: [TurnArea; 4]\n    one: TurnArea\n";
+        let layouts = layouts_of(src).expect("03-hardware.md §3.1's own shape");
+        let table = &layouts[1];
+        // 8 + 4*8 + 8, with no padding anywhere: a 32-byte array field
+        // aligned to 32 would have needed 24 invented bytes at offset 0x8,
+        // and a 40-byte struct field aligned to 40 would have needed more
+        // still.
+        assert_eq!(table.size, 48);
+        assert_eq!(table.padding, 0);
+        assert_eq!(
+            table.entries,
+            vec![
+                LayoutEntry::Field(LayoutField {
+                    name: "rr_cursor".to_string(),
+                    ty: "u64".to_string(),
+                    offset: 0,
+                    size: 8,
+                }),
+                LayoutEntry::Field(LayoutField {
+                    name: "turns".to_string(),
+                    ty: "[TurnArea; 4]".to_string(),
+                    offset: 8,
+                    size: 32,
+                }),
+                LayoutEntry::Field(LayoutField {
+                    name: "one".to_string(),
+                    ty: "TurnArea".to_string(),
+                    offset: 40,
+                    size: 8,
+                }),
+            ]
+        );
     }
 
     /// A `@layout` struct with no fields at all. Its own case because the

@@ -1,0 +1,1 @@
+error[type]: field `TurnTable.pending: BlkReqHeader` nests a `@layout` type of a different kind, and `TurnTable` is a `@layout(runtime)` type; only a `runtime` layout may nest another, and only a `runtime` layout may be nested — a `runtime` layout "is not device-visible", so it is neither a `dma` payload nor an `mmio` register map (03-hardware.md §3.1) at 28:5

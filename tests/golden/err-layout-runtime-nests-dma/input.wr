@@ -1,0 +1,28 @@
+module examples.err_layout_runtime_nests_dma
+
+# plans/M10.md item A2, 03-hardware.md §3.1: nesting is the `runtime` kind's
+# own allowance, and it is exclusive in both directions — only a `runtime`
+# layout may nest another, and only a `runtime` layout may be nested. §3.1
+# gives the reason directly: a `runtime` layout "is not device-visible — no
+# device reads or writes it, so it is neither a `dma` payload nor an `mmio`
+# register map".
+#
+# This pins the direction a real mistake takes: a runtime table reaching for
+# a device structure it happens to have declared nearby. The opposite
+# direction (a `dma` layout nesting a `runtime` one) is the same rejection
+# from the same function and is covered in
+# `sema::types`' own `declaration_shape_guards` table, next to the M7 item E
+# gap it must not be confused with — a `dma` layout nesting another `dma`
+# layout is a missing feature (`err-layout-nested`), while crossing the
+# `runtime` boundary is a permanent rule.
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+
+
+@layout(runtime, endian=little)
+struct TurnTable:
+    rr_cursor: u64
+    pending: BlkReqHeader

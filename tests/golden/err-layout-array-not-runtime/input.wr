@@ -1,0 +1,18 @@
+module examples.err_layout_array_not_runtime
+
+# plans/M10.md item A2, 03-hardware.md §3.1: the fixed-length array field is
+# introduced as "one allowance the other three kinds do not have", so it is
+# scoped to `runtime` by the same sentence that grants it. A `wire` layout
+# with an array field is rejected by name.
+#
+# By name, and not with "has no exact byte size" — which would be false.
+# `[u32; 4]` has a perfectly exact size on every target; a `wire` layout
+# simply may not have one, and a diagnostic that gave the wrong reason
+# would send an author looking for a sizing problem that does not exist.
+# (`err-layout-no-exact-size` pins the case where the reason really is the
+# absent size.)
+
+@layout(wire, endian=big)
+struct Header:
+    magic: u32
+    words: [u32; 4]
