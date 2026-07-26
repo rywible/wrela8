@@ -142,7 +142,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 179,
+            INTERNAL_ERROR_SITE_COUNT, 183,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
