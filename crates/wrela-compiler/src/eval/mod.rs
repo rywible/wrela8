@@ -523,11 +523,144 @@ struct AssertSite<'p> {
     span: Span,
 }
 
+/// First `TypedExprKind::Local` in source-walk order, or `None`. Used by
+/// `check_one_comptime_assert` to reject runtime-visible names before
+/// `eval_standalone` would blame itself with the producer-bug prefix
+/// plus `unbound local` (plans/M9.md item NN). Closure bodies are not
+/// walked: a Local there may be the closure's own parameter (legal once
+/// the closure runs under its own env). Exhaustive over `TypedExprKind`
+/// so a new node forces a look.
+fn first_runtime_local(e: &TypedExpr) -> Option<&str> {
+    use crate::sema::typed::TypedExprKind;
+    match &e.kind {
+        TypedExprKind::Local(name) => Some(name.as_str()),
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::Const(_)
+        | TypedExprKind::FnRef(_)
+        | TypedExprKind::PoolName(_)
+        | TypedExprKind::GroupChild(_) => None,
+        TypedExprKind::Field(base, _)
+        | TypedExprKind::ToScalar(base)
+        | TypedExprKind::Neg(base)
+        | TypedExprKind::BitNot(base)
+        | TypedExprKind::Take(base)
+        | TypedExprKind::Not(base)
+        | TypedExprKind::Try(base, _)
+        | TypedExprKind::Is(base, _)
+        | TypedExprKind::Panic(base)
+        | TypedExprKind::Await(base)
+        | TypedExprKind::Send(base) => first_runtime_local(base),
+        TypedExprKind::Index(a, b)
+        | TypedExprKind::Binary(_, a, b)
+        | TypedExprKind::OpCall(_, a, b)
+        | TypedExprKind::And(a, b)
+        | TypedExprKind::Or(a, b) => first_runtime_local(a).or_else(|| first_runtime_local(b)),
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                if let Some(n) = first_runtime_local(r) {
+                    return Some(n);
+                }
+            }
+            for a in args.iter().flatten() {
+                if let Some(n) = first_runtime_local(a) {
+                    return Some(n);
+                }
+            }
+            None
+        }
+        TypedExprKind::CallValue(callee, args) => {
+            if let Some(n) = first_runtime_local(callee) {
+                return Some(n);
+            }
+            for a in args {
+                if let Some(n) = first_runtime_local(a) {
+                    return Some(n);
+                }
+            }
+            None
+        }
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args {
+                if let Some(n) = first_runtime_local(a) {
+                    return Some(n);
+                }
+            }
+            None
+        }
+        TypedExprKind::Closure { .. } => {
+            // A Local inside a closure body may be the closure's own
+            // parameter (legal once the closure runs under its own env).
+            // Do not walk in: rejecting those would refuse a legal
+            // higher-order comptime assert. Outer-scope captures that
+            // somehow typecheck here still hit `unbound local` if
+            // evaluated — recorded as a carry-out, not widened here.
+            None
+        }
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                if let Some(n) = first_runtime_local(i) {
+                    return Some(n);
+                }
+            }
+            None
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                if let Some(n) = first_runtime_local(v) {
+                    return Some(n);
+                }
+            }
+            None
+        }
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                if let Some(n) = first_runtime_local(r) {
+                    return Some(n);
+                }
+            }
+            for (_, a) in args {
+                if let Some(n) = first_runtime_local(a) {
+                    return Some(n);
+                }
+            }
+            None
+        }
+    }
+}
+
 fn check_one_comptime_assert(
     program: &TypedProgram,
     legality: &legal::Legality,
     site: AssertSite<'_>,
 ) -> Result<(), SemaError> {
+    // plans/M9.md item NN: the sibling `comptime if` rejects non-
+    // comptime-visible names up front (`specialize::check_comptime_
+    // vocabulary`). Without the same pre-check here, a Local in the
+    // condition falls through to `eval_standalone`'s empty env and the
+    // evaluator abandons with the producer-bug prefix plus
+    // `unbound local` — blaming the compiler for an ordinary user
+    // mistake. Walk the typed condition for `Local` (parameter, runtime
+    // local, loop variable, `self`, field base, …) and name the rule the
+    // way `comptime if` does. Const-generic parameters never appear as
+    // `Local` by this point: instantiation has already substituted them
+    // to literals.
+    if let Some(name) = first_runtime_local(site.cond) {
+        return Err(SemaError::at(
+            "comptime",
+            format!(
+                "comptime assert condition references `{name}`, which is not comptime-\
+                 visible here (only literals and top-level consts are — a local, a \
+                 parameter, a loop variable, or a field of one cannot be)"
+            ),
+            site.span,
+        ));
+    }
     let cond_scan = legal::scan_standalone(site.cond);
     for callee in &cond_scan.callees {
         legal::require_legal(legality, callee, "comptime assert", site.span)?;

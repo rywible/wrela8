@@ -1,0 +1,9 @@
+module examples.err_comptime_assert_for_var
+
+# plans/M9.md item NN: a for-loop variable is not comptime-visible.
+fn f() -> i64:
+    for i in 0..3:
+        comptime assert i >= 0, "i"
+    return 0
+
+@test pub fn go(): assert f() == 0, "ok"

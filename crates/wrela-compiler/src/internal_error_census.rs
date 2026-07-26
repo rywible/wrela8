@@ -12,13 +12,17 @@
 //! It is a ratchet against silent growth of the producer-bug surface.
 //! It is **not** a claim that every site is unreachable from ordinary
 //! source — four sites this milestone alone were reachable through
-//! multi-module shapes no fuzz lane constructed. Reachability is
-//! policed by `cargo xtask fuzz imports` (the multi-module generator)
-//! and by the golden assertion that no `expected/*.txt` contains the
-//! prefix. Per-site "why unreachable" annotations are deliberately not
-//! written here: a false "unreachable" claim is worse than none, and
-//! the four finds proved how easy those claims would have been to get
-//! wrong.
+//! multi-module shapes no fuzz lane constructed, and a fifth
+//! (`unbound local` via `comptime assert` over a runtime name) was
+//! reachable through a single-file shape the generators never spelled
+//! (plans/M9.md item NN). Reachability is policed by generator shapes
+//! (`cargo xtask fuzz imports`; the comptime-assert-over-runtime-name
+//! shapes in `fuzz sema`/`eval`/`lower`) and by the golden assertion
+//! that no `expected/*.txt` contains the prefix. Per-site "why
+//! unreachable" annotations are deliberately not written here: a false
+//! "unreachable" claim is worse than none (item II decision 171; item
+//! NN decision 414 reaffirms — the durable half is a shape the fuzzer
+//! can reach, not a census column).
 
 /// Per-file counts of the producer-bug prefix under
 /// `crates/wrela-compiler/src/`, measured 2026-07-25. Adding a site in

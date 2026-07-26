@@ -1,0 +1,4 @@
+Module path=examples.check_comptime_assert_call
+  Fn double(n: read i64) -> i64
+  Fn f() -> i64
+  Fn go() -> unit

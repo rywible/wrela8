@@ -1,0 +1,12 @@
+module examples.check_comptime_assert_call
+
+# plans/M9.md item NN: legal twin — a comptime-legal call with literal
+# arguments is fine; only runtime-visible *names* are refused.
+fn double(n: i64) -> i64:
+    return n * 2
+
+fn f() -> i64:
+    comptime assert double(21) == 42, "doubling"
+    return 1
+
+@test pub fn go(): assert f() == 1, "ok"

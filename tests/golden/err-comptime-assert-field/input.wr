@@ -1,0 +1,13 @@
+module examples.err_comptime_assert_field
+
+# plans/M9.md item NN: a field of a parameter is not comptime-visible
+# (the Local base is what the evaluator would abandon on).
+struct Point:
+    x: i64
+    y: i64
+
+fn g(p: Point) -> i64:
+    comptime assert p.x > 0, "x"
+    return p.x
+
+@test pub fn go(): assert g(Point(x=1, y=2)) == 1, "ok"

@@ -1,0 +1,11 @@
+module examples.err_comptime_assert_loop
+
+# plans/M9.md item NN: a loop-accumulated local is not comptime-visible.
+fn f() -> i64:
+    total = 0
+    for i in 0..3:
+        total = total + i
+    comptime assert total == 3, "loop"
+    return total
+
+@test pub fn go(): assert f() == 3, "ok"

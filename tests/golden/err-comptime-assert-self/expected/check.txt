@@ -1,0 +1,1 @@
+error[comptime]: comptime assert condition references `self`, which is not comptime-visible here (only literals and top-level consts are — a local, a parameter, a loop variable, or a field of one cannot be) at 7:9
