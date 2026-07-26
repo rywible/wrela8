@@ -1,0 +1,16 @@
+module examples.err_placed_unimplemented
+
+# plans/M10.md item A, decision 561: unknown attributes are otherwise
+# silently ignored (02-language.md §13's "unknown attributes are errors"
+# is not enforced anywhere yet), so landing 03-hardware.md §3.1's wording
+# without this rejection would land a normative rule that nothing checks.
+#
+# §3.1 gives `@placed` exactly one legal position — a module-level
+# `static` of a `@layout(runtime)` type — and revision 0.1 has no `static`
+# declaration at all, so every position an author can write it in is one
+# §3.1 forbids. The diagnostic says that, rather than reading as a
+# position error against a construct the reader cannot find.
+
+@placed(0x40500000)
+struct TurnTable:
+    rr_cursor: u64

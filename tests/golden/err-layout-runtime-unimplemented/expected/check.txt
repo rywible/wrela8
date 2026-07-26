@@ -1,0 +1,1 @@
+error[unimplemented]: `@layout(runtime)` on struct `TurnArea` is not implemented yet; the class is defined in 03-hardware.md §3.1 in terms of array and nested-`@layout` fields, which plans/M10.md item A2 lands. Use `dma`, `mmio`, or `wire` until then at 15:1

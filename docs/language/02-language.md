@@ -883,10 +883,15 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 | `@image` | The unique build-time image constructor. |
 | `@actor` / `@driver` | Actor root; drivers alone may hold hardware authority. |
 | `@task(...)` | Statically bounded task entry: trigger, priority, budget, failure policy. |
-| `@layout(kind, ...)` | Exact byte layout, `kind` one of `dma`, `mmio`, `wire` ([03](03-hardware.md)). |
+| `@layout(kind, ...)` | Exact byte layout, `kind` one of `dma`, `mmio`, `wire`, `runtime` ([03 §3](03-hardware.md)). |
 | `@offset(n)` | Field offset inside a `@layout` declaration. |
+| `@placed(addr)` | Binds a module-level `static` of a `@layout(runtime)` type to a fixed address ([03 §3.1](03-hardware.md)). |
 | `@layout_assert` | Post-layout build assertion over `ImageReport`. |
 | `@test` / `@test(runtime)` / `@test(exhaustive)` | Test declaration (§12.2). |
 | `@budget(...)` | Proven work/memory bound on a function or the loop it precedes. |
 | `@no_promote` | Reject image-lifetime promotion in the annotated scope. |
 | `@detached` | Work independent of any enclosing group (§9.5). |
+
+Revision 0.1 declares no `static`, so the module-level placed static
+[03 §3.1](03-hardware.md) defines `@placed` on is not a construct of this
+language yet and `@placed` is refused wherever it is written.

@@ -1684,11 +1684,12 @@ pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAu
 // --- `@layout` exact bytes (plans/M7.md item B, 03-hardware.md §2/§3) -----
 //
 // 03-hardware.md §3, the whole rule this pass implements: "`@layout(kind,
-// ...)` is the one exact-bytes mechanism, with three kinds: `dma`
+// ...)` is the one exact-bytes mechanism, with four kinds: `dma`
 // (device-visible memory, checked against the target ABI), `mmio`
-// (register maps, §2), and `wire` (persistent/network bytes — exact
+// (register maps, §2), `wire` (persistent/network bytes — exact
 // encoding independent of any target, no capabilities or target-dependent
-// fields inside). For every `@layout` type the compiler reports exact
+// fields inside), and `runtime` (the machine's own tables, §3.1). For
+// every `@layout` type the compiler reports exact
 // size, offsets, padding, and endianness, and rejects anything implicit or
 // target-dependent." plans/M7.md decision 4 fixes the shape: "reports
 // exact bytes or fails. No implicit padding, no target-dependent field,
@@ -1719,12 +1720,21 @@ pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAu
 // the wire / in the register map". The two deliberately disagree, which is
 // exactly why `@layout` needs its own table rather than reusing that one.
 
-/// 03-hardware.md §3's three layout kinds.
+/// 03-hardware.md §3's four layout kinds.
+///
+/// `Runtime` (03-hardware.md §3.1, plans/M10.md item A, decision 561) is
+/// **declared and refused**: it parses so that the closed set the other
+/// diagnostics advertise is the truth, and `check_one_layout` then
+/// rejects it with an `error[unimplemented]` naming plans/M10.md item A2,
+/// which lands the field types the class needs (fixed-length arrays and
+/// nested `@layout` structs). It is never a laid-out `LayoutType`, so no
+/// downstream consumer can observe this variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
     Dma,
     Mmio,
     Wire,
+    Runtime,
 }
 
 impl LayoutKind {
@@ -1733,6 +1743,7 @@ impl LayoutKind {
             LayoutKind::Dma => "dma",
             LayoutKind::Mmio => "mmio",
             LayoutKind::Wire => "wire",
+            LayoutKind::Runtime => "runtime",
         }
     }
 }
@@ -1853,7 +1864,7 @@ fn parse_layout_attr(
                     return Err(layout_error(
                         format!(
                             "`@layout`'s kind on struct `{struct_name}` must be the bare name \
-                             `dma`, `mmio`, or `wire` (03-hardware.md §3)"
+                             `dma`, `mmio`, `wire`, or `runtime` (03-hardware.md §3)"
                         ),
                         arg.span,
                     ));
@@ -1862,11 +1873,13 @@ fn parse_layout_attr(
                     "dma" => LayoutKind::Dma,
                     "mmio" => LayoutKind::Mmio,
                     "wire" => LayoutKind::Wire,
+                    "runtime" => LayoutKind::Runtime,
                     other => {
                         return Err(layout_error(
                             format!(
                                 "unknown `@layout` kind `{other}` on struct `{struct_name}`; the \
-                                 three kinds are `dma`, `mmio`, and `wire` (03-hardware.md §3)"
+                                 four kinds are `dma`, `mmio`, `wire`, and `runtime` \
+                                 (03-hardware.md §3)"
                             ),
                             arg.span,
                         ));
@@ -1919,7 +1932,7 @@ fn parse_layout_attr(
         return Err(layout_error(
             format!(
                 "`@layout` on struct `{struct_name}` names no kind; write its kind first, one of \
-                 `dma`, `mmio`, or `wire` (03-hardware.md §3)"
+                 `dma`, `mmio`, `wire`, or `runtime` (03-hardware.md §3)"
             ),
             attr.span,
         ));
@@ -2061,7 +2074,12 @@ fn layout_field_size(
                 ),
                 span,
             ),
-            LayoutKind::Dma | LayoutKind::Mmio => layout_error(
+            // `Runtime` joins them for the same basic reason, and 03 §3.1
+            // says it by name too ("carries no capability"). Unreachable
+            // today — `check_one_layout` refuses a `runtime` layout before
+            // it reaches a field — but the arm is written rather than
+            // lumped under a wildcard, so item A2 inherits the rule.
+            LayoutKind::Dma | LayoutKind::Mmio | LayoutKind::Runtime => layout_error(
                 format!(
                     "field `{struct_name}.{field_name}: {rendered}` is {kind_text}; it has no \
                      byte encoding, so a `@layout` type cannot hold one (03-hardware.md §3)"
@@ -2134,7 +2152,10 @@ fn no_exact_size_error(
 ) -> SemaError {
     let wrappers = match kind {
         LayoutKind::Mmio => ", optionally wrapped in `ReadOnly`/`WriteOnly`",
-        LayoutKind::Dma | LayoutKind::Wire => "",
+        // `Runtime` has no register wrappers either; §2's `ReadOnly`/
+        // `WriteOnly` exist only in a register map. Unreachable today (a
+        // `runtime` layout is refused before any field is sized).
+        LayoutKind::Dma | LayoutKind::Wire | LayoutKind::Runtime => "",
     };
     layout_error(
         format!(
@@ -2154,6 +2175,24 @@ fn check_one_layout(
 ) -> Result<LayoutType, SemaError> {
     let name = s.name.clone();
     let (kind, endian) = parse_layout_attr(&name, attr)?;
+    // 03-hardware.md §3.1 / plans/M10.md item A, decision 561: the class
+    // is normative from the moment its wording lands, and unimplemented
+    // until item A2 lands the field types it is defined in terms of
+    // (fixed-length array fields and nested `@layout(runtime)` structs).
+    // Refused here, immediately after parsing, so a `runtime` declaration
+    // is never half-checked against rules written for the other three
+    // kinds — fail closed rather than approximate (CLAUDE.md).
+    if kind == LayoutKind::Runtime {
+        return Err(SemaError::at(
+            "unimplemented",
+            format!(
+                "`@layout(runtime)` on struct `{name}` is not implemented yet; the class is \
+                 defined in 03-hardware.md §3.1 in terms of array and nested-`@layout` fields, \
+                 which plans/M10.md item A2 lands. Use `dma`, `mmio`, or `wire` until then"
+            ),
+            attr.span,
+        ));
+    }
     if !s.generics.is_empty() {
         return Err(layout_error(
             format!(
@@ -2368,6 +2407,90 @@ fn implicit_padding_error(
     )
 }
 
+/// `@placed`, refused everywhere it appears (03-hardware.md §3.1,
+/// plans/M10.md item A, decision 561).
+///
+/// §3.1 gives `@placed(ADDR)` one legal position — a module-level `static`
+/// of a `@layout(runtime)` type — and this revision has no `static`
+/// declaration at all (`static` is not a keyword and `ast::Item` has no
+/// such variant), so *every* position an author can actually write the
+/// attribute in is one §3.1 forbids. The rejection is therefore total, and
+/// it says why rather than reading as a position error.
+///
+/// This exists because unknown attributes are otherwise **silently
+/// ignored** (`sema::bodies::test_attr_kind`'s own note: 02-language.md
+/// §13's "unknown attributes are errors" is not yet enforced anywhere).
+/// Without it, landing §3.1's wording would land a normative rule that
+/// nothing checks and an attribute the compiler drops on the floor — a
+/// fail-open, in the milestone whose subject is removing them. Narrow by
+/// construction: it names exactly one attribute and does not turn on §13's
+/// general rule, which is its own, much larger, item.
+///
+/// Walks every attribute position the ast has (item, member, field,
+/// `comptime if` branch at both scopes) rather than the handful §3.1
+/// mentions — an attribute that is refused in some positions and ignored
+/// in others is the fail-open again, one level down.
+fn check_placed_attrs(module: &Module) -> Result<(), SemaError> {
+    fn refuse(attrs: &[Attr]) -> Result<(), SemaError> {
+        let Some(attr) = attrs.iter().find(|a| a.name == "placed") else {
+            return Ok(());
+        };
+        Err(SemaError::at(
+            "unimplemented",
+            "`@placed` is not implemented yet; 03-hardware.md §3.1 binds it to a module-level \
+             `static` of a `@layout(runtime)` type, and this revision of the language has no \
+             `static` declaration for it to attach to (02-language.md §13). plans/M10.md item \
+             A2 and the runtime migration land it"
+                .to_string(),
+            attr.span,
+        ))
+    }
+    fn walk_members(members: &[Member]) -> Result<(), SemaError> {
+        for m in members {
+            match m {
+                Member::Field(f) => refuse(&f.attrs)?,
+                Member::Fn(f) => refuse(&f.attrs)?,
+                Member::Init(i) => refuse(&i.attrs)?,
+                Member::Pool(p) => refuse(&p.attrs)?,
+                Member::ComptimeIf(c) => {
+                    refuse(&c.attrs)?;
+                    walk_members(&c.then_branch)?;
+                    if let Some(e) = &c.else_branch {
+                        walk_members(e)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    fn walk_items(items: &[Item]) -> Result<(), SemaError> {
+        for item in items {
+            match item {
+                Item::Const(c) => refuse(&c.attrs)?,
+                Item::Fn(f) => refuse(&f.attrs)?,
+                Item::Pool(p) => refuse(&p.attrs)?,
+                Item::Struct(s) => {
+                    refuse(&s.attrs)?;
+                    walk_members(&s.members)?;
+                }
+                Item::Enum(e) => {
+                    refuse(&e.attrs)?;
+                    walk_members(&e.members)?;
+                }
+                Item::ComptimeIf(c) => {
+                    refuse(&c.attrs)?;
+                    walk_items(&c.then_branch)?;
+                    if let Some(e) = &c.else_branch {
+                        walk_items(e)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    walk_items(&module.items)
+}
+
 /// Every `@layout` type declared in `module`, laid out and checked, in
 /// declaration order. Also rejects `@offset` on a field of a struct that
 /// is not a `@layout` at all (02-language.md §13: "`@offset(n)` — field
@@ -2379,7 +2502,12 @@ fn implicit_padding_error(
 /// resolved type, no evaluator. `sema::check_typed`/`check_program_typed`
 /// call it for its rejections; `wrela dump --stage=layout-types` and the
 /// image report's own exact-bytes section call it for its table.
+///
+/// It also runs `check_placed_attrs` first: `@placed` is a §3.1
+/// layout-class attribute and this is the only whole-module pass that owns
+/// 03 §3.
 pub fn check_layouts(module: &Module) -> Result<Vec<LayoutType>, SemaError> {
+    check_placed_attrs(module)?;
     let mut layout_names = BTreeSet::new();
     for item in &module.items {
         if let Item::Struct(s) = item {
@@ -3823,6 +3951,11 @@ fn declared_layout_kind(attrs: &[Attr]) -> Option<LayoutKind> {
         "dma" => Some(LayoutKind::Dma),
         "mmio" => Some(LayoutKind::Mmio),
         "wire" => Some(LayoutKind::Wire),
+        // This table and `parse_layout_attr`'s are independent, and only
+        // that one is exhaustive-checked by the compiler; a kind added
+        // there and forgotten here silently yields `None`, i.e. "not a
+        // layout at all". Both move together, always.
+        "runtime" => Some(LayoutKind::Runtime),
         _ => None,
     }
 }

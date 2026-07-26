@@ -65,12 +65,13 @@ for their own pools.
 
 ## 3. DMA
 
-`@layout(kind, ...)` is the one exact-bytes mechanism, with three kinds:
+`@layout(kind, ...)` is the one exact-bytes mechanism, with four kinds:
 `dma` (device-visible memory, checked against the target ABI), `mmio`
-(register maps, §2), and `wire` (persistent/network bytes — exact encoding
+(register maps, §2), `wire` (persistent/network bytes — exact encoding
 independent of any target, no capabilities or target-dependent fields
-inside). For every `@layout` type the compiler reports exact size, offsets,
-padding, and endianness, and rejects anything implicit or target-dependent.
+inside), and `runtime` (the machine's own tables, §3.1). For every
+`@layout` type the compiler reports exact size, offsets, padding, and
+endianness, and rejects anything implicit or target-dependent.
 Byte decoding (`Bytes.read_wire[W]`) exists only for `wire` layouts.
 
 Two kinds of DMA memory:
@@ -101,6 +102,47 @@ operations (`write_descriptors`, `publish_available`, `load_used_index`,
 `notify_queue`, ...) carry the normative order — payload writes before
 publication, publication before doorbell, acquire before reading used
 entries, ownership return only after acquire/invalidate work.
+
+### 3.1 Runtime layouts and placed statics
+
+`@layout(runtime)` describes the machine's own tables — the structures the
+scheduler, mailboxes, turns, and groups are built from. Every rule above
+applies to it unchanged: exact size, offsets, padding and endianness, all
+reported, nothing implicit and nothing target-dependent. It adds one
+allowance the other three kinds do not have: a field of a `runtime` layout
+may be another `@layout(runtime)` type, or a fixed-length array of one, so
+a table is one declaration rather than a hand-computed set of offsets. A
+`runtime` layout is not device-visible — no device reads or writes it, so
+it is neither a `dma` payload nor an `mmio` register map — and it carries
+no capability.
+
+`@placed(ADDR)` binds one declaration to the fixed comptime address
+`ADDR`, so the runtime's tables live where the machine's own code expects
+them and the address is a checked build output rather than a convention.
+It is legal on exactly one construct: a module-level `static` of a
+`@layout(runtime)` type, with at most one placed static per address. It is
+legal nowhere else — not on a field, a function, a parameter, a local, or
+any other declaration. **Revision 0.1 has no `static` declaration**
+([02 §13](02-language.md)), so the construct `@placed` attaches to does not
+exist in the language yet and the compiler refuses the attribute wherever
+it is written. The rule is stated here rather than held back with the
+construct, because it is the reason the `runtime` kind exists; the shape it
+will take is:
+
+```text
+@layout(runtime, endian=little)
+struct TurnArea:
+    state: u32
+    waiter: u32
+
+@layout(runtime, endian=little)
+struct TurnTable:
+    rr_cursor: u64
+    turns: [TurnArea; N_TURNS]
+
+@placed(0x40500000)
+static TURNS: TurnTable
+```
 
 ## 4. Queues
 

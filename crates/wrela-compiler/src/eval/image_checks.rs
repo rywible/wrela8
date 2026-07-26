@@ -1004,7 +1004,8 @@ pub fn pool_backings(
                 "`img.dma_pool[{payload}](name={name}, ...)` — `{payload}` is `@layout({})`, not \
                  `@layout(dma)`. 03-hardware.md §3 gives each kind its own meaning: `dma` is \
                  device-visible memory checked against the target ABI, `mmio` is a register map, \
-                 `wire` is target-independent persistent bytes",
+                 `wire` is target-independent persistent bytes, `runtime` is the machine's own \
+                 tables (§3.1)",
                 l.kind.as_str()
             )));
         }
