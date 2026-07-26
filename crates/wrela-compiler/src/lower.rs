@@ -933,7 +933,11 @@ pub(crate) fn layout_dma_size(ty: &Type, prog: &TypedProgram) -> Option<u64> {
     prog.layouts
         .iter()
         .find(|l| l.name == name && matches!(l.kind, crate::sema::types::LayoutKind::Dma))
-        .map(|l| l.size)
+        // plans/M10.md item A2b: `None` also covers a layout whose sizing is
+        // still deferred, which is the same answer this fn already gives for
+        // "no such `@layout(dma)` type" — every caller treats `None` as "no
+        // exact size here", never as zero.
+        .and_then(|l| l.size)
 }
 
 /// plans/M7.md item H2a: lower `reported.checked_le(bound)` to a compare
@@ -4606,7 +4610,7 @@ pub fn check():
             name: "Regs".to_string(),
             kind: crate::sema::types::LayoutKind::Mmio,
             endian: crate::sema::types::LayoutEndian::Little,
-            size: 4,
+            size: Some(4),
             padding: 0,
             entries: vec![],
         });

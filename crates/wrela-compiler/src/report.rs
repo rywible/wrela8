@@ -548,10 +548,20 @@ pub fn render(
 /// iteration of its own. Its *input* is deterministic for the same reason:
 /// `check_layouts` is a pure function of one specialized ast module, and
 /// the caller walks the closure in `BTreeMap` order.
-pub fn render_exact_bytes_section(out: &mut String, layouts: &[types::LayoutType]) {
+///
+/// `Err` for a layout whose sizing is still deferred (plans/M10.md item A2b
+/// requirement 4): the report is the machine's own configuration surface, so
+/// a `@layout` type reaching it with no computed size is a fail-closed
+/// rejection, not a `size=0` line. The caller completes the table
+/// (`types::complete_layouts`) before calling this.
+pub fn render_exact_bytes_section(
+    out: &mut String,
+    layouts: &[types::LayoutType],
+) -> Result<(), crate::sema::SemaError> {
     for l in layouts {
-        types::push_layout_lines(out, 1, l);
+        types::push_layout_lines(out, 1, l)?;
     }
+    Ok(())
 }
 
 // --- the digest (plans/M4.md item D, decision 9): one hardcoded,
@@ -831,7 +841,7 @@ mod tests {
             name: "VirtioIrqMmio".to_string(),
             kind: types::LayoutKind::Mmio,
             endian: types::LayoutEndian::Little,
-            size: 0x68,
+            size: Some(0x68),
             padding: 0x60,
             entries: vec![
                 types::LayoutEntry::Padding {
@@ -848,8 +858,8 @@ mod tests {
         };
         let mut a = String::from("ImageReport v0\n");
         let mut b = a.clone();
-        render_exact_bytes_section(&mut a, std::slice::from_ref(&layout));
-        render_exact_bytes_section(&mut b, std::slice::from_ref(&layout));
+        render_exact_bytes_section(&mut a, std::slice::from_ref(&layout)).expect("complete");
+        render_exact_bytes_section(&mut b, std::slice::from_ref(&layout)).expect("complete");
         assert_eq!(a, b);
         assert_eq!(
             a,
@@ -861,7 +871,7 @@ mod tests {
         // Nothing to say means nothing printed — which is why no existing
         // report golden moved when this section landed.
         let mut empty = String::from("ImageReport v0\n");
-        render_exact_bytes_section(&mut empty, &[]);
+        render_exact_bytes_section(&mut empty, &[]).expect("nothing to render");
         assert_eq!(empty, "ImageReport v0\n");
     }
 

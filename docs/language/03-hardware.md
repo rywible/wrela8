@@ -111,7 +111,11 @@ applies to it unchanged: exact size, offsets, padding and endianness, all
 reported, nothing implicit and nothing target-dependent. It adds one
 allowance the other three kinds do not have: a field of a `runtime` layout
 may be another `@layout(runtime)` type, or a fixed-length array of one, so
-a table is one declaration rather than a hand-computed set of offsets. A
+a table is one declaration rather than a hand-computed set of offsets. That
+array's length is an integer literal or the name of a module-level `const`
+whose comptime value is one or more, so a table sized per image is one
+declaration too; `@offset(n)` stays an integer literal, because an offset
+the compiler must evaluate is inference by another name. A
 `runtime` layout is not device-visible — no device reads or writes it, so
 it is neither a `dma` payload nor an `mmio` register map — and it carries
 no capability.

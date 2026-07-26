@@ -261,19 +261,37 @@ fn main() -> ExitCode {
 /// entry for the single-file fork, or the whole closure in `BTreeMap`
 /// key order (the same dotted-address order `--stage=check`'s own
 /// multi-module dump concatenates in).
-fn run_layout_types_stage(modules: &[(String, Module)]) {
+/// `programs` is the same closure's checked programs, keyed by dotted
+/// module address — the completion pass's own input (plans/M10.md item A2b):
+/// `check_layouts` defers a `const`-length layout, and the *dump* must show
+/// the completed sizes, not an absence. A module with no entry here would
+/// leave a deferred layout uncompleted, which `dump_layouts` then refuses by
+/// name rather than printing a zero.
+fn run_layout_types_stage(
+    modules: &[(String, Module)],
+    programs: &BTreeMap<String, &TypedProgram>,
+) {
     let mut by_module = Vec::with_capacity(modules.len());
     for (path, module) in modules {
         let specialized = match sema::specialize::specialize(module) {
             Ok(m) => m,
             Err(e) => return print_sema_error(&e),
         };
-        match sema::types::check_layouts(&specialized) {
-            Ok(layouts) => by_module.push((path.clone(), layouts)),
+        let mut layouts = match sema::types::check_layouts(&specialized) {
+            Ok(layouts) => layouts,
             Err(e) => return print_sema_error(&e),
+        };
+        if let Some(program) = programs.get(path) {
+            if let Err(e) = sema::types::complete_layouts(&specialized, program, &mut layouts) {
+                return print_sema_error(&e);
+            }
         }
+        by_module.push((path.clone(), layouts));
     }
-    print!("{}", sema::types::dump_layouts(&by_module));
+    match sema::types::dump_layouts(&by_module) {
+        Ok(text) => print!("{text}"),
+        Err(e) => print_sema_error(&e),
+    }
 }
 
 fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
@@ -439,16 +457,30 @@ fn build_report(
                                 // neither call here can fail; both are
                                 // still handled as real errors rather than
                                 // unwrapped.
+                                //
+                                // plans/M10.md item A2b: and then completed —
+                                // a `const` array length is resolved by the
+                                // later pass, and the report must show the
+                                // completed size or refuse. Each module's own
+                                // checked program supplies its `const`s.
                                 let mut layout_types = Vec::new();
-                                for module in modules.values() {
+                                for (key, module) in modules {
                                     let specialized = sema::specialize::specialize(module)
                                         .map_err(|e| render_sema_error(&e))?;
-                                    layout_types.extend(
-                                        sema::types::check_layouts(&specialized)
-                                            .map_err(|e| render_sema_error(&e))?,
-                                    );
+                                    let mut layouts = sema::types::check_layouts(&specialized)
+                                        .map_err(|e| render_sema_error(&e))?;
+                                    if let Some(p) = programs.get(key) {
+                                        sema::types::complete_layouts(
+                                            &specialized,
+                                            p,
+                                            &mut layouts,
+                                        )
+                                        .map_err(|e| render_sema_error(&e))?;
+                                    }
+                                    layout_types.extend(layouts);
                                 }
-                                report::render_exact_bytes_section(&mut text, &layout_types);
+                                report::render_exact_bytes_section(&mut text, &layout_types)
+                                    .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout::try_layout_program(
                                     programs,
                                     &layout_ctx,
@@ -728,12 +760,16 @@ fn dump(args: &[String]) -> ExitCode {
                 parse_time = parse_start.elapsed();
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) if module.imports.is_empty() => match sema::check(&module, &path) {
-                        Ok(()) => {
-                            run_layout_types_stage(&[(module.path.join("."), module.clone())])
+                    Ok(module) if module.imports.is_empty() => {
+                        match sema::check_typed(&module, &path) {
+                            Ok(program) => {
+                                let key = module.path.join(".");
+                                let programs = BTreeMap::from([(key.clone(), &program)]);
+                                run_layout_types_stage(&[(key, module.clone())], &programs)
+                            }
+                            Err(e) => print_sema_error(&e),
                         }
-                        Err(e) => print_sema_error(&e),
-                    },
+                    }
                     Ok(_) => match loader::load_closure(Path::new(&path)) {
                         Ok(program) => {
                             let paths: BTreeMap<Vec<String>, String> = program
@@ -746,13 +782,15 @@ fn dump(args: &[String]) -> ExitCode {
                                 .into_iter()
                                 .map(|(k, m)| (k, m.module))
                                 .collect();
-                            match sema::check_program(&modules, &paths) {
-                                Ok(()) => {
+                            match sema::check_program_typed(&modules, &paths) {
+                                Ok(checked) => {
+                                    let programs: BTreeMap<String, &TypedProgram> =
+                                        checked.iter().map(|(k, p)| (k.join("."), p)).collect();
                                     let ordered: Vec<(String, Module)> = modules
                                         .into_iter()
                                         .map(|(k, m)| (k.join("."), m))
                                         .collect();
-                                    run_layout_types_stage(&ordered);
+                                    run_layout_types_stage(&ordered, &programs);
                                 }
                                 Err(e) => print_sema_error(&e),
                             }

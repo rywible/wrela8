@@ -284,6 +284,20 @@ fn check_typed_single_with_decls(
     matches::check(&specialized, &decl_items, &mctx)?;
     program.instantiations = generics::check(&specialized, &decl_items, &mctx, path)?;
     crate::eval::check_comptime(&program)?;
+    // plans/M10.md item A2b, decision 581: the **later layout-completion
+    // pass**. `check_layouts` above deferred any `runtime` layout whose array
+    // length is a `const` name (03 §3.1's own `[TurnArea; N_TURNS]`), because
+    // it runs before name resolution and evaluates nothing — decision 580,
+    // unchanged. Here every `const` has been type-checked and evaluated by
+    // the one real evaluator, so the lengths resolve and the deferred layouts
+    // get their real sizes, offsets and padding, with every size-dependent
+    // rule (overlap, alignment, total bytes) applied to the completed table.
+    // It runs immediately after the comptime pass: that is the earliest point
+    // where a `const` has a value, and it is before anything reads
+    // `TypedProgram::layouts`.
+    let mut layouts = std::mem::take(&mut program.layouts);
+    types::complete_layouts(&specialized, &program, &mut layouts)?;
+    program.layouts = layouts;
     // plans/M7.md item A, decision 3: 03-hardware.md §1's provenance
     // sentence, checked over the same whole-graph reachability
     // `eval::legal` already computes for comptime legality. It runs here,
@@ -852,6 +866,26 @@ fn check_program_typed_tables(
         // omitting them here would let `err-wake-outside-isr` pass.
         crate::eval::legal::check_wake_sites(program)?;
         crate::eval::legal::check_bottom_half(program)?;
+    }
+
+    // plans/M10.md item A2b: the whole-closure half of the later
+    // layout-completion pass (see `check_typed_single_with_decls`, which
+    // carries the full note). Its own loop, after the comptime loop above,
+    // for that loop's own stated reason — every module finishes a pass before
+    // any module starts the next — and because a `const` only has a value
+    // once `check_comptime` has run on the module that declares it. Per
+    // module, like `check_layouts` itself: a `@layout` type is a module-local
+    // declaration, and an imported `const` reaches it through the typed
+    // splice above, not through this pass.
+    for (key, module) in &specialized {
+        let mut layouts = match programs.get_mut(key) {
+            Some(p) => std::mem::take(&mut p.layouts),
+            None => continue,
+        };
+        types::complete_layouts(module, &programs[key], &mut layouts)?;
+        if let Some(p) = programs.get_mut(key) {
+            p.layouts = layouts;
+        }
     }
 
     // plans/M6.md item G: the whole-closure half of the send proof (see
