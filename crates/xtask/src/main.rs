@@ -5,17 +5,15 @@
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   corpus     extract every ```wrela block from docs/ and lex it
-//!              (from M1, also parse). `corpus --sema` (plans/M9.md items
-//!              J1/J1b/J1c) additionally sema-checks every parseable block
-//!              (with per-block declaration stubs so first-error noise
-//!              cannot hide disagreements; method-shaped fence items nest
-//!              into a preamble type rather than being replaced by a
-//!              hand-copy), reports ok vs disagreement without failing on
-//!              the disagreement count, and ratchets the per-block
-//!              classification so an `ok` block decaying fails loudly —
-//!              off by default for the report; `check` always runs the pin
-//!              (J3 flips the disagreement gate). A standing guard refuses
-//!              any wrap that discards fence item text.
+//!              (from M1, also parse). Always sema-checks every parseable
+//!              block (plans/M9.md item J3; per-block stubs / nest from
+//!              J1b/J1c) and ratchets the pinned census: ok-decay fails,
+//!              an accepted disagreement that starts passing fails (naming
+//!              its ledger gap), and every accepted row's gap must still
+//!              be `status = "gap"` in `ledger/ledger.toml`. `--sema` only
+//!              prints the verbose per-block report for humans; the gate
+//!              itself is the same path `check` runs. A standing guard
+//!              refuses any wrap that discards fence item text.
 //!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async]
 //!              [--iters N] [--seed S]; deterministic in-tree fuzzer
 //!              (plans/M1.md items B/E, plans/M2.md item I, plans/M3.md
@@ -277,11 +275,11 @@ fn check() -> Result<(), String> {
     golden(false)?;
     report_determinism()?;
     diff_eval_smoke()?;
+    // plans/M9.md item J3: bare `corpus` always sema-classifies and
+    // verifies the pinned census (accepted disagreements cite open ledger
+    // gaps). Same path as `corpus --sema`; the flag only adds the verbose
+    // report. No second collection path.
     corpus(&[])?;
-    // plans/M9.md item J1b: per-block corpus-sema pin. Runs the same
-    // classification as `corpus --sema` and fails on ok-decay / drift;
-    // does not fail merely because disagreements > 0 (that is J3).
-    corpus_sema_pin()?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
     fuzz_sema_smoke()?;
@@ -438,17 +436,14 @@ fn extract_example_files() -> Result<Vec<DocBlock>, String> {
 /// lex-only. `docs.examples.wrela-blocks-parse` is the ledger clause for
 /// the parse half; `docs.examples.wrela-blocks-lex` already covered lexing.
 ///
-/// plans/M9.md item J1/J1b: `corpus --sema` additionally sema-checks every
-/// parseable block (injecting per-block declaration stubs from
-/// `corpus_sema_context`) and reports ok vs disagreement without failing
-/// on the disagreement count. Off by default — bare `corpus` output stays
-/// byte-identical. The per-block pin (`corpus_sema_pin`, wired into
-/// `check`) is a separate fail-on-decay ratchet.
+/// Always then sema-classifies the parseable non-aspirational set against
+/// the pinned census (plans/M9.md item J3). `--sema` only prints the
+/// verbose per-block report; the gate is identical with or without it.
 fn corpus(args: &[String]) -> Result<(), String> {
-    let mut sema = false;
+    let mut verbose_sema = false;
     for a in args {
         match a.as_str() {
-            "--sema" => sema = true,
+            "--sema" => verbose_sema = true,
             other => {
                 return Err(format!(
                     "corpus: unknown argument `{other}` (want `corpus` or `corpus --sema`)"
@@ -493,7 +488,7 @@ fn corpus(args: &[String]) -> Result<(), String> {
                 // stay lex/parse-only: they import modules the stdlib does
                 // not ship. Sema would only restate the missing-module fact
                 // (plans/M9.md item J2a / decision 516).
-                if sema && !example_is_aspirational(&b) {
+                if !example_is_aspirational(&b) {
                     sema_rows.push(corpus_sema_one(&b, parsed_ast)?);
                 }
             }
@@ -514,54 +509,11 @@ fn corpus(args: &[String]) -> Result<(), String> {
         return Err(format!("corpus: {} failure(s)", failures.len()));
     }
     println!("corpus: lexed {lexed}, parsed {parsed}, fragments skipped {fragments}");
-    if sema {
+    if verbose_sema {
         print_corpus_sema_report(&sema_rows);
-        verify_corpus_sema_census(&sema_rows)?;
     }
+    verify_corpus_sema_census(&sema_rows)?;
     Ok(())
-}
-
-/// Run corpus sema classification and fail if the pinned per-block
-/// census drifts (plans/M9.md item J1b). Does not fail on a nonzero
-/// disagreement count — that gate is J3.
-fn corpus_sema_pin() -> Result<(), String> {
-    let rows = collect_corpus_sema_rows()?;
-    verify_corpus_sema_census(&rows)
-}
-
-fn collect_corpus_sema_rows() -> Result<Vec<CorpusSemaRow>, String> {
-    let (blocks, failures) = extract_doc_blocks()?;
-    if !failures.is_empty() {
-        return Err(format!(
-            "corpus sema pin: extract failures: {}",
-            failures.join("; ")
-        ));
-    }
-    let examples = extract_example_files()?;
-    let mut rows = Vec::new();
-    for b in blocks.into_iter().chain(examples) {
-        if b.body.contains("...") {
-            continue;
-        }
-        // Same aspirational skip as `corpus --sema` (decision 516).
-        if example_is_aspirational(&b) {
-            continue;
-        }
-        let tokens = lexer::lex(&b.body).map_err(|e| {
-            format!(
-                "{}:{}: corpus sema pin lex: {}",
-                b.doc.display(),
-                b.start_line,
-                e.message
-            )
-        })?;
-        let parsed_ast = match wrela_compiler::syntax::parser::parse_any(tokens) {
-            Ok(p) => p,
-            Err(_) => continue, // parse failures are corpus's job
-        };
-        rows.push(corpus_sema_one(&b, parsed_ast)?);
-    }
-    Ok(rows)
 }
 
 /// Whole-file `docs/language/examples/*.wr` whose header marks
@@ -962,32 +914,62 @@ fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
     }
 }
 
-/// Compare live `--sema` rows against the pinned census. Fails if an `ok`
-/// block decays, if a pinned row disappears, if a new block appears
-/// unpinned, or if any classification changes.
+/// Compare live corpus-sema rows against the pinned census (plans/M9.md
+/// item J3). Fails in both directions: an `ok` block that starts
+/// disagreeing (`ok-decay`), and an accepted disagreement that starts
+/// typechecking (`accepted-disagreement-cleared`, naming the cited ledger
+/// gap). Also fails if a pin's shape is wrong, a block is unpinned /
+/// missing, or an accepted row's ledger gap is missing / no longer
+/// `status = "gap"`.
 fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
     use std::collections::BTreeMap;
     let live: BTreeMap<&str, &str> = rows
         .iter()
         .map(|r| (r.loc.as_str(), r.kind.as_str()))
         .collect();
-    let pinned: BTreeMap<&str, &str> = corpus_sema_census::CORPUS_SEMA_CENSUS
-        .iter()
-        .map(|(loc, kind)| (*loc, *kind))
-        .collect();
+    let pinned: BTreeMap<&str, &corpus_sema_census::CorpusSemaPin> =
+        corpus_sema_census::CORPUS_SEMA_CENSUS
+            .iter()
+            .map(|p| (p.loc, p))
+            .collect();
 
     let mut problems = Vec::new();
-    for (loc, pinned_kind) in &pinned {
+    for (loc, pin) in &pinned {
+        // Structural: ok rows have no gap; disagreements must cite one.
+        match (pin.kind, pin.gap) {
+            ("ok", None) => {}
+            ("disagreement", Some(_)) => {}
+            ("ok", Some(gap)) => {
+                problems.push(format!("pin `{loc}`: kind=ok must not cite gap `{gap}`"))
+            }
+            ("disagreement", None) => problems.push(format!(
+                "pin `{loc}`: accepted disagreement must cite a ledger gap id"
+            )),
+            (other, _) => problems.push(format!(
+                "pin `{loc}`: unknown kind `{other}` (want ok or disagreement)"
+            )),
+        }
         match live.get(loc) {
             None => problems.push(format!(
-                "pinned block `{loc}` ({pinned_kind}) missing from live corpus sema"
+                "pinned block `{loc}` ({}) missing from live corpus sema",
+                pin.kind
             )),
-            Some(live_kind) if live_kind != pinned_kind => {
-                if *pinned_kind == "ok" && *live_kind != "ok" {
+            Some(live_kind) if *live_kind != pin.kind => {
+                if pin.kind == "ok" {
                     problems.push(format!("ok-decay: `{loc}` was pinned ok, now {live_kind}"));
+                } else if pin.kind == "disagreement" && *live_kind == "ok" {
+                    let gap = pin.gap.unwrap_or("<missing gap>");
+                    problems.push(format!(
+                        "accepted-disagreement-cleared: `{loc}` was pinned as \
+                         disagreement citing gap `{gap}`, but now typechecks — \
+                         update corpus_sema_census.rs and flip that ledger gap \
+                         to `test` (or restore the disagreement if the clearance \
+                         is wrong)"
+                    ));
                 } else {
                     problems.push(format!(
-                        "census drift: `{loc}` pinned {pinned_kind}, live {live_kind}"
+                        "census drift: `{loc}` pinned {}, live {live_kind}",
+                        pin.kind
                     ));
                 }
             }
@@ -1002,6 +984,31 @@ fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
             ));
         }
     }
+
+    // Coupling: every accepted disagreement's gap must exist and still be
+    // a gap. Flipping the ledger without un-accepting the row (or the
+    // reverse) fails here.
+    let gap_status = ledger_clause_statuses()?;
+    for pin in corpus_sema_census::CORPUS_SEMA_CENSUS {
+        let Some(gap) = pin.gap else {
+            continue;
+        };
+        match gap_status.get(gap).map(String::as_str) {
+            Some("gap") => {}
+            Some(status) => problems.push(format!(
+                "accepted-disagreement gap `{gap}` (cited by `{}`) is \
+                 status=`{status}` in ledger/ledger.toml — un-accept the \
+                 census row or reopen the gap; they must move together",
+                pin.loc
+            )),
+            None => problems.push(format!(
+                "accepted-disagreement cites unknown ledger gap `{gap}` \
+                 (cited by `{}`) — add the clause or fix the pin",
+                pin.loc
+            )),
+        }
+    }
+
     if !problems.is_empty() {
         for p in &problems {
             eprintln!("corpus sema census: {p}");
@@ -1012,6 +1019,33 @@ fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Map every `[[clause]]` id in `ledger/ledger.toml` to its `status`
+/// string. Used by the corpus-sema pin so accepted-disagreement gap cites
+/// cannot drift from the gap list (plans/M9.md item J3).
+fn ledger_clause_statuses() -> Result<std::collections::BTreeMap<String, String>, String> {
+    let path = root().join("ledger/ledger.toml");
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let value: toml::Value = text.parse().map_err(|e| format!("parse ledger: {e}"))?;
+    let clauses = value
+        .get("clause")
+        .and_then(|c| c.as_array())
+        .ok_or("ledger has no [[clause]] entries")?;
+    let mut out = std::collections::BTreeMap::new();
+    for (i, clause) in clauses.iter().enumerate() {
+        let id = clause
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or(format!("clause {i}: missing id"))?;
+        let status = clause
+            .get("status")
+            .and_then(|v| v.as_str())
+            .ok_or(format!("clause `{id}`: missing status"))?;
+        out.insert(id.to_string(), status.to_string());
+    }
+    Ok(out)
 }
 
 // --- fuzz -------------------------------------------------------------
