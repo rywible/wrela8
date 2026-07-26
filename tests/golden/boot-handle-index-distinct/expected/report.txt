@@ -70,13 +70,13 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=15072
-  Section name=rodata base=0x40503b30 size=678
-  Section name=abort base=0x40503dd8 size=120
-  Section name=checkpoint base=0x40503e50 size=104
-  Section name=rtcode base=0x40503eb8 size=1284
-  Section name=rtdata base=0x405043c0 size=3320
-  Section name=devregs base=0x405050b8 size=8
+  Section name=code base=0x40500050 size=16120
+  Section name=rodata base=0x40503f48 size=678
+  Section name=abort base=0x405041f0 size=120
+  Section name=checkpoint base=0x40504268 size=104
+  Section name=rtcode base=0x405042d0 size=260
+  Section name=rtdata base=0x405043d8 size=3320
+  Section name=devregs base=0x405050d0 size=8
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -88,4 +88,4 @@ ImageReport v0
   Driver name=Stub state=8
   Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=3320
-  DeviceRegs device=device#0 type=Hw driver=Stub base=0x405050b8 size=8
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x405050d0 size=8

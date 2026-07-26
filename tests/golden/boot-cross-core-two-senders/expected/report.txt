@@ -64,15 +64,15 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=15876
-  Section name=rodata base=0x40503e58 size=499
-  Section name=abort base=0x4050404c size=120
-  Section name=checkpoint base=0x405040c4 size=104
-  Section name=rtcode base=0x4050412c size=2960
-  Section name=rtdata base=0x40504cc0 size=2680
+  Section name=code base=0x40500050 size=17504
+  Section name=rodata base=0x405044b0 size=499
+  Section name=abort base=0x405046a4 size=120
+  Section name=checkpoint base=0x4050471c size=104
+  Section name=rtcode base=0x40504784 size=1364
+  Section name=rtdata base=0x40504cd8 size=2680
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40504b88
-  CoreEntry core=2 base=0x40504bf0
+  CoreEntry core=1 base=0x40504ba4
+  CoreEntry core=2 base=0x40504c0c
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
@@ -81,7 +81,7 @@ ImageReport v0
   Actor name=Alpha mailbox=4 slot=16 frame=304 state=8
   Actor name=Beta mailbox=4 slot=16 frame=304 state=8
   Turn fn=two_senders_one_ring frame=480
-  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120 base=0x40505678
-  Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72 base=0x405056f0
+  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120 base=0x40505690
+  Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72 base=0x40505708
   Turns count=4 stride=512 bytes=2048
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2680

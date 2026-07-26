@@ -517,10 +517,11 @@ pub enum Reloc {
     /// materializes the absolute address of `@driver` `driver`'s sticky
     /// wake-pending word (trailing word of its state).
     WakePending { word: usize, driver: String },
-    /// plans/M10.md item D (decisions 613–614): the four-word `load_imm`
-    /// starting at `word` materializes one absolute address of mailbox
-    /// root `actor`'s ring bookkeeping — `ring` / `tail` / `count`. Full
-    /// RT `@placed` for mailbox `rtdata` is not ready; this is the same
+    /// plans/M10.md item D (decisions 613–614) / item F (decision 631): the
+    /// four-word `load_imm` starting at `word` materializes one absolute
+    /// address of mailbox root `actor`'s placed region — ring bookkeeping
+    /// (`ring` / `head` / `tail` / `count`), `state`, or `turn`. Full RT
+    /// `@placed` for mailbox `rtdata` is not ready; this is the same
     /// `patch_load_imm_words` shape as `TurnFrameAddr`, not a pointer type.
     MailboxAddr {
         word: usize,
@@ -536,13 +537,17 @@ pub enum Reloc {
     RrCursor { word: usize, core: usize },
 }
 
-/// Which word of a mailbox root's ring bookkeeping a `Reloc::MailboxAddr`
-/// materializes (plans/M10.md item D / decision 614).
+/// Which word of a mailbox root's placed region a `Reloc::MailboxAddr`
+/// materializes (plans/M10.md item D / decision 614; item F / decision
+/// 627 extends with `Head` / `State` / `Turn` for `rt_select_and_run`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailboxField {
     Ring,
+    Head,
     Tail,
     Count,
+    State,
+    Turn,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5605,8 +5610,18 @@ pub fn rt_run_one_symbol(core: usize) -> String {
 
 /// Hand-asm `rt_select_and_run` for mailbox root `actor`, registered in
 /// glue so specialized `rt_run_one` can `Reloc::Call` it (item E3).
+/// Item F promotes the body itself to a specialized `CodegenFn` under
+/// the same key (decision 630).
 pub fn rt_select_and_run_symbol(actor: &str) -> String {
     format!("rt_select_and_run {actor}")
+}
+
+/// Hand-asm cross-core reply-ring push for Reply ring `src -> dst`
+/// (`build_rt_xreply`). Registered in glue so specialized
+/// `rt_select_and_run` can `Reloc::Call` it (item F); item F2 owns the
+/// migration of the body itself.
+pub fn rt_xreply_symbol(src_core: usize, dst_core: usize) -> String {
+    format!("rt_xreply {src_core}->{dst_core}")
 }
 
 /// Specialized (E4) group-child poll for free-turn key `callee`.
@@ -5621,10 +5636,10 @@ pub fn rt_drain_symbol(core: usize) -> String {
 }
 
 /// Whether `key` is a glue / specialized-synthetic target
-/// `rt_run_one` may Call. Select / drain stay hand-asm in `rtcode`
-/// (items F / F2); `rt_child_poll` is also accepted here so validate
-/// still passes if it runs before layout injects the specialized body
-/// (item E4).
+/// `rt_run_one` may Call. Select is specialized in `code` (item F);
+/// drain stays hand-asm in `rtcode` (item F2); `rt_child_poll` is also
+/// accepted here so validate still passes if it runs before layout
+/// injects the specialized body (item E4).
 fn rt_run_one_glue_target(key: &str) -> bool {
     key.strip_prefix("rt_select_and_run ")
         .is_some_and(|a| !a.is_empty())
@@ -5634,6 +5649,13 @@ fn rt_run_one_glue_target(key: &str) -> bool {
         || key
             .strip_prefix("rt_drain ")
             .is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Whether `key` is a glue target specialized `rt_select_and_run` may
+/// Call — today only hand-asm `rt_xreply` (item F2).
+fn rt_select_and_run_glue_target(key: &str) -> bool {
+    key.strip_prefix("rt_xreply ")
+        .is_some_and(|rest| !rest.is_empty())
 }
 
 /// Inputs `emit_rt_run_one` specializes on (plans/M10.md item E3 /
@@ -5662,6 +5684,39 @@ pub struct RtChildPollSpec {
     /// This site's index into the group arena's child slots
     /// (`group_child_tag_off` / `group_child_payload_off`).
     pub child_index: usize,
+}
+
+/// One dispatch arm of a specialized `rt_select_and_run` (plans/M10.md
+/// item F / decision 630). Declaration order = method index.
+#[derive(Debug, Clone)]
+pub struct RtSelectMethod {
+    /// `program.fns` key (`"{Actor}.{method}"`) — `Reloc::Call` target.
+    pub key: String,
+    pub is_async: bool,
+    pub reply_is_aggregate: bool,
+}
+
+/// Inputs `emit_rt_select_and_run` specializes on (plans/M10.md item F /
+/// decision 630). Built after `RuntimeWiring::derive` so method sets,
+/// frame sizes, and reply-ring remotes are known.
+#[derive(Debug, Clone)]
+pub struct RtSelectAndRunSpec {
+    /// Mailbox root name (`Actor` / messageable `@driver`).
+    pub actor: String,
+    pub capacity: u64,
+    pub slot_size: u64,
+    /// This owner's raw turn-area size (`ActorRuntimeLayout::frame_size`) —
+    /// gates lineage zeroing; never the uniform stride (item 0a).
+    pub frame_area_size: u64,
+    /// Methods in declaration order (index = `method_idx`). Dense match
+    /// over this list dissolves the dispatch no-arm-matched `brk 0xACD0`.
+    pub methods: Vec<RtSelectMethod>,
+    /// This root's core (for `rt_xreply_symbol(actor_core, remote)`).
+    pub actor_core: usize,
+    /// Remote cores this producer's Reply rings serve — image-static;
+    /// empty for every single-core image. Dense match dissolves
+    /// `BRK_XREPLY_UNKNOWN_CORE` (decision 557's typed core tag).
+    pub xreply_remotes: Vec<usize>,
 }
 
 // --- the turn record (the real park-and-resume contract) --------------------
@@ -9654,6 +9709,644 @@ pub fn emit_rt_child_poll(spec: &RtChildPollSpec) -> CodegenFn {
     }
 }
 
+/// plans/M7.md item Z1: aggregate-reply arm with no waker — unreachable
+/// by construction (`send` is unit-only). Same imm as
+/// `layout::BRK_REPLY_SLOT_NO_WAKER`.
+const BRK_REPLY_SLOT_NO_WAKER: u16 = 0xACD6;
+
+/// plans/M10.md item F (decision 630): specialized `rt_select_and_run
+/// <Actor>` body under `rt_select_and_run_symbol(actor)`. Same control
+/// flow as `layout::build_rt_select_and_run_core` — readiness, fresh
+/// selection, per-method dispatch, deliver — with mailbox/turn addresses
+/// as `Reloc::MailboxAddr` / `TurnsBase` / `TurnStride` (decision 631),
+/// method / xreply targets as `Reloc::Call`, no mid-tick checkpoint
+/// (decision 632), and the image-static method / remote-core sets
+/// dissolving the no-arm-matched and `BRK_XREPLY_UNKNOWN_CORE` traps.
+/// Hand-asm twin kept until F's delete commit.
+///
+/// ABI: `() -> x0` = 1 if a turn(-slice) ran, 0 if idle. Saves `x30`
+/// (calls out); 16-byte frame matching the hand-asm.
+pub fn emit_rt_select_and_run(spec: &RtSelectAndRunSpec) -> CodegenFn {
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+
+    let push = |words: &mut Vec<(u32, String)>, w: u32, text: String| {
+        words.push((w, text));
+    };
+    let load_imm = |words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str| {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        push(
+            words,
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h1, 16, true),
+            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h2, 32, true),
+            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h3, 48, true),
+            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
+        );
+    };
+    let load_mailbox = |words: &mut Vec<(u32, String)>,
+                        relocs: &mut Vec<Reloc>,
+                        reg: u8,
+                        field: MailboxField,
+                        actor: &str| {
+        let word = words.len();
+        load_imm(words, reg, 0, &format!("mailbox {:?} <{actor}>", field));
+        for i in 0..4 {
+            if let Some((_, text)) = words.get_mut(word + i) {
+                *text = format!("mailbox-addr[{i}] {:?} x{reg} <{actor}>", field);
+            }
+        }
+        relocs.push(Reloc::MailboxAddr {
+            word,
+            actor: actor.to_string(),
+            field,
+        });
+    };
+    let push_turn_addr_from_id =
+        |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, id_reg: u8, scratch: u8| {
+            push(
+                words,
+                encode::enc_sub_imm(id_reg, id_reg, 1, true),
+                format!("sub {}, {}, #1", reg_name(id_reg), reg_name(id_reg)),
+            );
+            let word = words.len();
+            load_imm(words, scratch, 0, "turn_stride");
+            for i in 0..4 {
+                if let Some((_, text)) = words.get_mut(word + i) {
+                    *text = format!("turn-stride[{i}] {}", reg_name(scratch));
+                }
+            }
+            relocs.push(Reloc::TurnStride { word });
+            push(
+                words,
+                encode::enc_mul(id_reg, id_reg, scratch, true),
+                format!(
+                    "mul {}, {}, {}",
+                    reg_name(id_reg),
+                    reg_name(id_reg),
+                    reg_name(scratch)
+                ),
+            );
+            let word = words.len();
+            load_imm(words, scratch, 0, "turns_base");
+            for i in 0..4 {
+                if let Some((_, text)) = words.get_mut(word + i) {
+                    *text = format!("turns-base[{i}] {}", reg_name(scratch));
+                }
+            }
+            relocs.push(Reloc::TurnsBase { word });
+            push(
+                words,
+                encode::enc_add_reg(id_reg, scratch, id_reg, true),
+                format!(
+                    "add {}, {}, {}",
+                    reg_name(id_reg),
+                    reg_name(scratch),
+                    reg_name(id_reg)
+                ),
+            );
+        };
+    let bl_key = |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, key: &str| {
+        let word = words.len();
+        push(words, encode::enc_bl(0), format!("bl <{key}>"));
+        relocs.push(Reloc::Call {
+            word,
+            key: key.to_string(),
+        });
+    };
+
+    let actor = spec.actor.as_str();
+    let capacity = spec.capacity;
+    let slot_size = spec.slot_size;
+
+    push(
+        &mut words,
+        encode::enc_sub_imm(31, 31, 16, true),
+        "sub sp, sp, #16".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(30, 31, 0),
+        "str x30, [sp]".to_string(),
+    );
+
+    let mut to_idle_ret: Vec<usize> = Vec::new();
+    let mut to_epilogue: Vec<usize> = Vec::new();
+    let mut to_deliver: Vec<usize> = Vec::new();
+
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Turn, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(10, 9, 0),
+        "ldr x10, [x9]  ; busy".to_string(),
+    );
+    let skip_fresh_check = words.len();
+    push(&mut words, 0, "cbz x10, .fresh_check".to_string());
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16),
+        format!("ldr x10, [x9, #{OFF_TURN_SUSPENDED}]"),
+    );
+    let skip_idle_a = words.len();
+    push(&mut words, 0, "cbz x10, .idle".to_string());
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(10, 9, OFF_TURN_RESUME_READY as u16),
+        format!("ldr x10, [x9, #{OFF_TURN_RESUME_READY}]"),
+    );
+    let skip_idle_b = words.len();
+    push(&mut words, 0, "cbz x10, .idle".to_string());
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16),
+        format!("ldr x15, [x9, #{OFF_TURN_CUR_METHOD}]"),
+    );
+    load_mailbox(&mut words, &mut relocs, 0, MailboxField::State, actor);
+    let to_dispatch_from_resume = words.len();
+    push(&mut words, 0, "b .dispatch".to_string());
+
+    let idle = words.len();
+    {
+        let d = (idle as i64 - skip_idle_a as i64) * 4;
+        words[skip_idle_a].0 = encode::enc_cbz(10, d as i32, true);
+        words[skip_idle_a].1 = format!("cbz x10, .idle (+{d})");
+        let d2 = (idle as i64 - skip_idle_b as i64) * 4;
+        words[skip_idle_b].0 = encode::enc_cbz(10, d2 as i32, true);
+        words[skip_idle_b].1 = format!("cbz x10, .idle (+{d2})");
+    }
+    push(
+        &mut words,
+        encode::enc_movz(0, 0, 0, true),
+        "movz x0, #0".to_string(),
+    );
+    to_idle_ret.push(words.len());
+    push(&mut words, 0, "b .epilogue".to_string());
+
+    let fresh_check = words.len();
+    {
+        let d = (fresh_check as i64 - skip_fresh_check as i64) * 4;
+        words[skip_fresh_check].0 = encode::enc_cbz(10, d as i32, true);
+        words[skip_fresh_check].1 = format!("cbz x10, .fresh_check (+{d})");
+    }
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Count, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(10, 9, 0),
+        "ldr x10, [x9]  ; count".to_string(),
+    );
+    let skip_have_msg = words.len();
+    push(&mut words, 0, "cbnz x10, .have_msg".to_string());
+    push(
+        &mut words,
+        encode::enc_movz(0, 0, 0, true),
+        "movz x0, #0".to_string(),
+    );
+    to_idle_ret.push(words.len());
+    push(&mut words, 0, "b .epilogue".to_string());
+    let have_msg = words.len();
+    {
+        let d = (have_msg as i64 - skip_have_msg as i64) * 4;
+        words[skip_have_msg].0 = encode::enc_cbnz(10, d as i32, true);
+        words[skip_have_msg].1 = format!("cbnz x10, .have_msg (+{d})");
+    }
+
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Turn, actor);
+    load_imm(&mut words, 10, 1, "busy = 1");
+    push(
+        &mut words,
+        encode::enc_str_x_imm(10, 9, 0),
+        "str x10, [x9]  ; busy = 1".to_string(),
+    );
+
+    load_mailbox(&mut words, &mut relocs, 11, MailboxField::Head, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(12, 11, 0),
+        "ldr x12, [x11]  ; head".to_string(),
+    );
+    load_imm(&mut words, 13, slot_size, "slot_size");
+    push(
+        &mut words,
+        encode::enc_mul(13, 12, 13, true),
+        "mul x13, x12, x13".to_string(),
+    );
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Ring, actor);
+    push(
+        &mut words,
+        encode::enc_add_reg(13, 9, 13, true),
+        "add x13, x9, x13  ; slot".to_string(),
+    );
+
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(15, 13, 0),
+        "ldr x15, [x13]  ; method_idx".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_ldr_w_imm(10, 13, 8),
+        "ldr w10, [x13, #8]  ; waker_turn".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_ldr_w_imm(14, 13, 12),
+        "ldr w14, [x13, #12]  ; waker_core".to_string(),
+    );
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Turn, actor);
+    push(
+        &mut words,
+        encode::enc_str_x_imm(15, 9, OFF_TURN_CUR_METHOD as u16),
+        format!("str x15, [x9, #{OFF_TURN_CUR_METHOD}]"),
+    );
+    push(
+        &mut words,
+        encode::enc_str_w_imm(10, 9, OFF_TURN_WAKER as u16),
+        format!("str w10, [x9, #{OFF_TURN_WAKER}]"),
+    );
+    push(
+        &mut words,
+        encode::enc_str_w_imm(14, 9, OFF_TURN_WAKER as u16 + 4),
+        format!("str w14, [x9, #{}]", OFF_TURN_WAKER + 4),
+    );
+    if spec.frame_area_size >= TURN_RECORD_SIZE + 16 {
+        push(
+            &mut words,
+            encode::enc_str_x_imm(31, 9, TURN_RECORD_SIZE as u16),
+            format!("str xzr, [x9, #{TURN_RECORD_SIZE}]  ; lineage group = 0"),
+        );
+        push(
+            &mut words,
+            encode::enc_str_x_imm(31, 9, (TURN_RECORD_SIZE + 8) as u16),
+            format!(
+                "str xzr, [x9, #{}]  ; lineage deadline = 0",
+                TURN_RECORD_SIZE + 8
+            ),
+        );
+    }
+    let arg_words = ((slot_size.saturating_sub(16)) / 8).min(2);
+    if arg_words >= 1 {
+        push(
+            &mut words,
+            encode::enc_ldr_x_imm(1, 13, 16),
+            "ldr x1, [x13, #16]  ; arg0".to_string(),
+        );
+    }
+    if arg_words >= 2 {
+        push(
+            &mut words,
+            encode::enc_ldr_x_imm(2, 13, 24),
+            "ldr x2, [x13, #24]  ; arg1".to_string(),
+        );
+    }
+    push(
+        &mut words,
+        encode::enc_add_imm(12, 12, 1, true),
+        "add x12, x12, #1".to_string(),
+    );
+    load_imm(&mut words, 9, capacity, "capacity");
+    push(
+        &mut words,
+        encode::enc_cmp_reg(12, 9, true),
+        "cmp x12, x9".to_string(),
+    );
+    let skip_nowrap = words.len();
+    push(&mut words, 0, "b.lt .nowrap".to_string());
+    push(
+        &mut words,
+        encode::enc_movz(12, 0, 0, true),
+        "movz x12, #0".to_string(),
+    );
+    let nowrap = words.len();
+    {
+        let d = (nowrap as i64 - skip_nowrap as i64) * 4;
+        words[skip_nowrap].0 = encode::enc_b_cond(Cond::Lt, d as i32);
+        words[skip_nowrap].1 = format!("b.lt .nowrap (+{d})");
+    }
+    load_mailbox(&mut words, &mut relocs, 11, MailboxField::Head, actor);
+    push(
+        &mut words,
+        encode::enc_str_x_imm(12, 11, 0),
+        "str x12, [x11]  ; head".to_string(),
+    );
+    load_mailbox(&mut words, &mut relocs, 9, MailboxField::Count, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(10, 9, 0),
+        "ldr x10, [x9]".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_sub_imm(10, 10, 1, true),
+        "sub x10, x10, #1".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(10, 9, 0),
+        "str x10, [x9]  ; count".to_string(),
+    );
+
+    load_mailbox(&mut words, &mut relocs, 0, MailboxField::State, actor);
+
+    let dispatch = words.len();
+    {
+        let d = (dispatch as i64 - to_dispatch_from_resume as i64) * 4;
+        words[to_dispatch_from_resume].0 = encode::enc_b(d as i32);
+        words[to_dispatch_from_resume].1 = format!("b .dispatch (+{d})");
+    }
+
+    let n_methods = spec.methods.len();
+    for (idx, method) in spec.methods.iter().enumerate() {
+        push(
+            &mut words,
+            encode::enc_cmp_imm(15, idx as u16, true),
+            format!("cmp x15, #{idx}"),
+        );
+        let skip_next = words.len();
+        push(&mut words, 0, "b.ne .next".to_string());
+
+        if method.reply_is_aggregate {
+            load_mailbox(&mut words, &mut relocs, 9, MailboxField::Turn, actor);
+            push(
+                &mut words,
+                encode::enc_ldr_w_imm(10, 9, OFF_TURN_WAKER as u16),
+                format!("ldr w10, [x9, #{OFF_TURN_WAKER}]"),
+            );
+            let skip_have_waker = words.len();
+            push(&mut words, 0, "cbnz w10, .have_waker".to_string());
+            push(
+                &mut words,
+                encode::enc_brk(BRK_REPLY_SLOT_NO_WAKER),
+                format!("brk #{BRK_REPLY_SLOT_NO_WAKER:#x}"),
+            );
+            let have_waker = words.len();
+            {
+                let d = (have_waker as i64 - skip_have_waker as i64) * 4;
+                words[skip_have_waker].0 = encode::enc_cbnz(10, d as i32, false);
+                words[skip_have_waker].1 = format!("cbnz w10, .have_waker (+{d})");
+            }
+            push_turn_addr_from_id(&mut words, &mut relocs, 10, 11);
+            push(
+                &mut words,
+                encode::enc_ldr_w_imm(8, 10, OFF_TURN_REPLY_SLOT as u16),
+                format!("ldr w8, [x10, #{OFF_TURN_REPLY_SLOT}]"),
+            );
+            push(
+                &mut words,
+                encode::enc_ldr_w_imm(11, 10, OFF_TURN_REPLY_SLOT as u16 + 4),
+                format!("ldr w11, [x10, #{}]", OFF_TURN_REPLY_SLOT + 4),
+            );
+            push_turn_addr_from_id(&mut words, &mut relocs, 8, 12);
+            push(
+                &mut words,
+                encode::enc_add_reg(8, 8, 11, true),
+                "add x8, x8, x11  ; reply staging slot".to_string(),
+            );
+        }
+        bl_key(&mut words, &mut relocs, &method.key);
+        if method.is_async {
+            push(
+                &mut words,
+                encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true),
+                format!("cmp x0, #{TURN_STATUS_SUSPENDED}"),
+            );
+            let skip_not_suspended = words.len();
+            push(&mut words, 0, "b.ne .not_suspended".to_string());
+            to_epilogue.push(words.len());
+            push(&mut words, 0, "b .epilogue".to_string());
+            let not_suspended = words.len();
+            {
+                let d = (not_suspended as i64 - skip_not_suspended as i64) * 4;
+                words[skip_not_suspended].0 = encode::enc_b_cond(Cond::Ne, d as i32);
+                words[skip_not_suspended].1 = format!("b.ne .not_suspended (+{d})");
+            }
+            push(
+                &mut words,
+                encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true),
+                format!("cmp x0, #{TURN_STATUS_CANCELLED}"),
+            );
+            let skip_completed = words.len();
+            push(&mut words, 0, "b.ne .completed".to_string());
+            push(
+                &mut words,
+                encode::enc_movz(9, 0, 0, true),
+                "movz x9, #0  ; cancelled reply".to_string(),
+            );
+            load_imm(
+                &mut words,
+                14,
+                CALL_ERROR_TAG_CANCELLED,
+                "CallError::Cancelled",
+            );
+            to_deliver.push(words.len());
+            push(&mut words, 0, "b .deliver".to_string());
+            let completed = words.len();
+            {
+                let d = (completed as i64 - skip_completed as i64) * 4;
+                words[skip_completed].0 = encode::enc_b_cond(Cond::Ne, d as i32);
+                words[skip_completed].1 = format!("b.ne .completed (+{d})");
+            }
+        }
+        let (reply_reg, reply_text) = match (method.reply_is_aggregate, method.is_async) {
+            (true, _) => (31, "xzr"),
+            (false, true) => (1, "x1"),
+            (false, false) => (0, "x0"),
+        };
+        push(
+            &mut words,
+            encode::enc_mov_reg(9, reply_reg, true),
+            format!("mov x9, {reply_text}"),
+        );
+        load_imm(&mut words, 14, REPLY_TAG_OK, "REPLY_TAG_OK");
+        to_deliver.push(words.len());
+        push(&mut words, 0, "b .deliver".to_string());
+        let next = words.len();
+        {
+            let d = (next as i64 - skip_next as i64) * 4;
+            words[skip_next].0 = encode::enc_b_cond(Cond::Ne, d as i32);
+            words[skip_next].1 = format!("b.ne .next (+{d})");
+        }
+    }
+    // No unmatched-arm `brk 0xACD0`: dense match over comptime indices
+    // (decision 630). Fall-through into `.deliver` is unreachable —
+    // enqueue only admits indices this table was built from. Empty
+    // dispatch keeps the BRK so a zero-method root cannot silently
+    // deliver garbage.
+    if n_methods == 0 {
+        push(
+            &mut words,
+            encode::enc_brk(0xACD0),
+            "brk #0xacd0  ; empty dispatch".to_string(),
+        );
+    }
+
+    let deliver = words.len();
+    for m in &to_deliver {
+        let d = (deliver as i64 - *m as i64) * 4;
+        words[*m].0 = encode::enc_b(d as i32);
+        words[*m].1 = format!("b .deliver (+{d})");
+    }
+    load_mailbox(&mut words, &mut relocs, 10, MailboxField::Turn, actor);
+    push(
+        &mut words,
+        encode::enc_ldr_w_imm(11, 10, OFF_TURN_WAKER as u16),
+        format!("ldr w11, [x10, #{OFF_TURN_WAKER}]"),
+    );
+    let skip_no_waker = words.len();
+    push(&mut words, 0, "cbz w11, .no_waker".to_string());
+
+    let mut to_after_remote: Vec<usize> = Vec::new();
+    if !spec.xreply_remotes.is_empty() {
+        push(
+            &mut words,
+            encode::enc_ldr_w_imm(13, 10, OFF_TURN_WAKER as u16 + 4),
+            format!("ldr w13, [x10, #{}]", OFF_TURN_WAKER + 4),
+        );
+        let skip_local = words.len();
+        push(&mut words, 0, "cbz w13, .local".to_string());
+        let n_remotes = spec.xreply_remotes.len();
+        for &remote_core in &spec.xreply_remotes {
+            push(
+                &mut words,
+                encode::enc_cmp_imm(13, (remote_core as u16) + 1, false),
+                format!("cmp w13, #{}", remote_core + 1),
+            );
+            let skip_arm = words.len();
+            push(&mut words, 0, "b.ne .next_arm".to_string());
+            push(
+                &mut words,
+                encode::enc_mov_reg(0, 11, false),
+                "mov w0, w11  ; TurnId".to_string(),
+            );
+            push(
+                &mut words,
+                encode::enc_lsl_imm(15, 14, 32, true),
+                "lsl x15, x14, #32".to_string(),
+            );
+            push(
+                &mut words,
+                encode::enc_orr_reg(0, 0, 15, true),
+                "orr x0, x0, x15  ; TurnId | (tag << 32)".to_string(),
+            );
+            push(
+                &mut words,
+                encode::enc_mov_reg(1, 9, true),
+                "mov x1, x9  ; reply".to_string(),
+            );
+            bl_key(
+                &mut words,
+                &mut relocs,
+                &rt_xreply_symbol(spec.actor_core, remote_core),
+            );
+            to_after_remote.push(words.len());
+            push(&mut words, 0, "b .after_remote".to_string());
+            let next_arm = words.len();
+            {
+                let d = (next_arm as i64 - skip_arm as i64) * 4;
+                words[skip_arm].0 = encode::enc_b_cond(Cond::Ne, d as i32);
+                words[skip_arm].1 = format!("b.ne .next_arm (+{d})");
+            }
+        }
+        let _ = n_remotes;
+        // No BRK_XREPLY_UNKNOWN_CORE: dense match over image-static remotes
+        // (decision 557 / 626). Fall-through into `.local` is unreachable.
+        let local = words.len();
+        {
+            let d = (local as i64 - skip_local as i64) * 4;
+            words[skip_local].0 = encode::enc_cbz(13, d as i32, false);
+            words[skip_local].1 = format!("cbz w13, .local (+{d})");
+        }
+    }
+    push_turn_addr_from_id(&mut words, &mut relocs, 11, 12);
+    push(
+        &mut words,
+        encode::enc_str_x_imm(14, 11, OFF_TURN_REPLY_TAG as u16),
+        format!("str x14, [x11, #{OFF_TURN_REPLY_TAG}]"),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(9, 11, OFF_TURN_REPLY as u16),
+        format!("str x9, [x11, #{OFF_TURN_REPLY}]"),
+    );
+    push(
+        &mut words,
+        encode::enc_movz(12, 1, 0, true),
+        "movz x12, #1".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(12, 11, OFF_TURN_RESUME_READY as u16),
+        format!("str x12, [x11, #{OFF_TURN_RESUME_READY}]"),
+    );
+    let no_waker = words.len();
+    {
+        let d = (no_waker as i64 - skip_no_waker as i64) * 4;
+        words[skip_no_waker].0 = encode::enc_cbz(11, d as i32, false);
+        words[skip_no_waker].1 = format!("cbz w11, .no_waker (+{d})");
+    }
+    for m in &to_after_remote {
+        let d = (no_waker as i64 - *m as i64) * 4;
+        words[*m].0 = encode::enc_b(d as i32);
+        words[*m].1 = format!("b .after_remote (+{d})");
+    }
+    if !spec.xreply_remotes.is_empty() {
+        load_mailbox(&mut words, &mut relocs, 10, MailboxField::Turn, actor);
+    }
+    push(
+        &mut words,
+        encode::enc_str_x_imm(31, 10, 0),
+        "str xzr, [x10]  ; busy = 0".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(31, 10, OFF_TURN_WAKER as u16),
+        format!("str xzr, [x10, #{OFF_TURN_WAKER}]"),
+    );
+    push(
+        &mut words,
+        encode::enc_movz(0, 1, 0, true),
+        "movz x0, #1  ; ran".to_string(),
+    );
+
+    let epilogue = words.len();
+    for m in to_idle_ret.iter().chain(to_epilogue.iter()) {
+        let d = (epilogue as i64 - *m as i64) * 4;
+        words[*m].0 = encode::enc_b(d as i32);
+        words[*m].1 = format!("b .epilogue (+{d})");
+    }
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(30, 31, 0),
+        "ldr x30, [sp]".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(31, 31, 16, true),
+        "add sp, sp, #16".to_string(),
+    );
+    push(&mut words, encode::enc_ret(30), "ret".to_string());
+
+    CodegenFn {
+        frame_size: 16,
+        code: words,
+        relocs,
+    }
+}
+
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
 /// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
 /// via `emit_flowwir_fn` above), merged into one `CodegenProgram` sharing
@@ -9864,13 +10557,14 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     // finding here, one stage before layout's own guard.
                     let resolvable = program.fns.contains_key(target)
                         || rt_enqueue_actor(target).is_some_and(|a| !a.is_empty())
-                        || rt_run_one_glue_target(target);
+                        || rt_run_one_glue_target(target)
+                        || rt_select_and_run_glue_target(target);
                     if !resolvable {
                         return Err(format!(
                             "fn `{key}`: Reloc::Call targets `{target}`, which this \
                              `CodegenProgram` never codegen'd and which is not an \
                              `rt_enqueue` / `rt_select_and_run` / `rt_child_poll` / \
-                             `rt_drain` glue symbol either"
+                             `rt_drain` / `rt_xreply` glue symbol either"
                         ));
                     }
                 }
@@ -10044,6 +10738,26 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
         child_index: 0,
     };
     out.insert("emit_rt_child_poll", emit_rt_child_poll(&poll).code.len());
+    // M10 F / decision 630: REF one sync method, slot_size=32, bare
+    // turn area (no lineage slots), no xreply arms — same shape as
+    // layout's build_rt_select_and_run REF row.
+    let select = RtSelectAndRunSpec {
+        actor: "Actor".into(),
+        capacity: CAP,
+        slot_size: SLOT,
+        frame_area_size: TURN_RECORD_SIZE,
+        methods: vec![RtSelectMethod {
+            key: "Actor.go".into(),
+            is_async: false,
+            reply_is_aggregate: false,
+        }],
+        actor_core: 0,
+        xreply_remotes: vec![],
+    };
+    out.insert(
+        "emit_rt_select_and_run",
+        emit_rt_select_and_run(&select).code.len(),
+    );
     out
 }
 
@@ -10660,6 +11374,120 @@ mod rt_child_poll_tests {
 }
 
 #[cfg(test)]
+mod rt_select_and_run_tests {
+    use super::*;
+
+    /// Layout injects `rt_select_and_run <Actor>` after `--stage=asm` would
+    /// dump `CodegenProgram`, so the real body is invisible to the asm
+    /// golden (same trap item C recorded for `__wrela_abort_tail` / E4's
+    /// child-poll pin). Pin the emitted words here.
+    #[test]
+    fn emit_rt_select_and_run_pins_real_bytes_and_dissolves_named_brks() {
+        let spec = RtSelectAndRunSpec {
+            actor: "Actor".into(),
+            capacity: 4,
+            slot_size: 32,
+            frame_area_size: TURN_RECORD_SIZE,
+            methods: vec![RtSelectMethod {
+                key: "Actor.go".into(),
+                is_async: false,
+                reply_is_aggregate: false,
+            }],
+            actor_core: 0,
+            xreply_remotes: vec![],
+        };
+        let f = emit_rt_select_and_run(&spec);
+        assert_eq!(f.frame_size, 16);
+        assert!(
+            f.code.len() >= 100,
+            "hand-asm twin REF is 121 words; specialized body must be a real \
+             routine, not a stub (got {} words)",
+            f.code.len()
+        );
+        assert!(
+            f.relocs.iter().any(|r| matches!(
+                r,
+                Reloc::MailboxAddr {
+                    field: MailboxField::Turn,
+                    ..
+                }
+            )),
+            "MailboxAddr::Turn for the turn record"
+        );
+        assert!(
+            f.relocs.iter().any(|r| matches!(
+                r,
+                Reloc::MailboxAddr {
+                    field: MailboxField::State,
+                    ..
+                }
+            )),
+            "MailboxAddr::State for the receiver ABI"
+        );
+        assert!(
+            f.relocs
+                .iter()
+                .any(|r| matches!(r, Reloc::Call { key, .. } if key == "Actor.go")),
+            "Reloc::Call into the method body"
+        );
+        assert!(
+            f.relocs
+                .iter()
+                .any(|r| matches!(r, Reloc::TurnsBase { .. })),
+            "TurnsBase for local reply delivery"
+        );
+        assert!(
+            f.relocs
+                .iter()
+                .any(|r| matches!(r, Reloc::TurnStride { .. })),
+            "TurnStride for local reply delivery"
+        );
+        // Dissolved traps (item F): no 0xACD0, no BRK_XREPLY_UNKNOWN_CORE.
+        let brk_acd0 = encode::enc_brk(0xACD0);
+        let brk_unknown = encode::enc_brk(0xACD8);
+        assert!(
+            !f.code.iter().any(|(w, _)| *w == brk_acd0),
+            "dense method match must dissolve brk 0xACD0"
+        );
+        assert!(
+            !f.code.iter().any(|(w, _)| *w == brk_unknown),
+            "empty xreply_remotes must not emit BRK_XREPLY_UNKNOWN_CORE"
+        );
+        // Cross-core shape: remotes present, still no unknown-core BRK.
+        let cross = RtSelectAndRunSpec {
+            actor: "Actor".into(),
+            capacity: 4,
+            slot_size: 32,
+            frame_area_size: TURN_RECORD_SIZE,
+            methods: vec![RtSelectMethod {
+                key: "Actor.go".into(),
+                is_async: false,
+                reply_is_aggregate: false,
+            }],
+            actor_core: 1,
+            xreply_remotes: vec![0],
+        };
+        let f2 = emit_rt_select_and_run(&cross);
+        assert!(
+            f2.relocs.iter().any(|r| {
+                matches!(r, Reloc::Call { key, .. } if key == &rt_xreply_symbol(1, 0))
+            }),
+            "Reloc::Call into hand-asm rt_xreply"
+        );
+        assert!(
+            !f2.code.iter().any(|(w, _)| *w == brk_unknown),
+            "dense remote-core match must dissolve BRK_XREPLY_UNKNOWN_CORE"
+        );
+        assert!(
+            f.code
+                .iter()
+                .any(|(w, t)| *w == encode::enc_movz(0, 1, 0, true) && t.contains("ran")),
+            "completion path returns 1"
+        );
+    }
+}
+
+#[cfg(test)]
 mod synthetic_symbol_tests {
     use super::*;
 
@@ -10689,5 +11517,6 @@ mod synthetic_symbol_tests {
         assert!(symbol_is_synthetic(&rt_select_and_run_symbol("Store")));
         assert!(symbol_is_synthetic(&rt_child_poll_symbol("child")));
         assert!(symbol_is_synthetic(&rt_drain_symbol(1)));
+        assert!(symbol_is_synthetic(&rt_xreply_symbol(0, 1)));
     }
 }

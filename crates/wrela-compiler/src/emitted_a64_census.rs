@@ -65,7 +65,7 @@
 //!   plan's category 4 (decision 650): pre-SP; must-clobber-no-register;
 //!   no expression form (`brk`/…); stored code address jumped to
 //! - **image_static** — specialization sanctioned by decisions 613 / 620 /
-//!   623 (`emit_rt_enqueue`, `emit_rt_run_one`, `emit_rt_child_poll`)
+//!   623 / 630 (`emit_rt_enqueue`, `emit_rt_run_one`, `emit_rt_child_poll`)
 //! - **not_yet_migrated** — owned by a named remaining item (F, F2, G, H,
 //!   I, K)
 //! - **unclassified** — could not be confidently placed; still counted
@@ -124,7 +124,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::Floor,
         note: "floor cat4 abort long-jump",
     },
-    // --- image-static specialization (613 / 620) -------------------------
+    // --- image-static specialization (613 / 620 / 623 / 630) --------------
     // REF: capacity=4, slot_size=32 → same length as build_ring_enqueue.
     EmitterEntry {
         name: "emit_rt_enqueue",
@@ -149,6 +149,14 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         words: 75,
         category: Category::ImageStatic,
         note: "decision 623; per-site specialized group-child poll",
+    },
+    // REF: one sync method, no xreply, frame = TURN_RECORD_SIZE (no lineage).
+    EmitterEntry {
+        name: "emit_rt_select_and_run",
+        file: "codegen.rs",
+        words: 124,
+        category: Category::ImageStatic,
+        note: "decision 630; per-actor specialized select/dispatch (item F)",
     },
     // --- not yet migrated ------------------------------------------------
     // Checkpoint block at REF (empty group/irq/wake). Includes the 5-word
@@ -210,7 +218,7 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         file: "layout.rs",
         words: 121,
         category: Category::NotYetMigrated,
-        note: "F (via build_rt_select_and_run_core); REF one sync method",
+        note: "F delete; hand-asm twin of emit_rt_select_and_run; REF one sync",
     },
     EmitterEntry {
         name: "build_rt_drain",
@@ -297,7 +305,7 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 176; // 55 + 46 + 75
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 300; // was 176; F +124 emit_rt_select_and_run
 
 pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 708; // was 824; E4 deleted 46+70
 
@@ -306,7 +314,7 @@ pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 948; // 41 + 176 + 708 + 23
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 1072; // was 948; F +124
 
 #[cfg(test)]
 mod tests {

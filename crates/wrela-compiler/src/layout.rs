@@ -1383,24 +1383,25 @@ pub fn mailbox_enqueue_specs(
     Ok(out)
 }
 
-/// Resolve mailbox root `name`'s ring bookkeeping addresses from a live
-/// placement (plans/M10.md item D / decision 614).
-fn resolve_mailbox_ring_addrs(
+/// Resolve mailbox root `name`'s full placed addresses from a live
+/// placement (plans/M10.md item D / decision 614; item F / decision 631
+/// needs `state` / `turn` / `head` too).
+fn resolve_mailbox_actor_addrs(
     placement: &RuntimePlacement,
     tables: &RuntimeTables,
     name: &str,
-) -> Option<RingAddrs> {
+) -> Option<ActorAddrs> {
     if let Some((i, _)) = tables
         .actors
         .iter()
         .enumerate()
         .find(|(_, a)| a.name == name)
     {
-        return placement.actors.get(i).map(|a| a.mailbox());
+        return placement.actors.get(i).copied();
     }
     for (i, d) in tables.drivers.iter().enumerate() {
         if d.mailbox.is_some() && d.name == name {
-            return placement.driver_mailboxes.get(&i).map(|a| a.mailbox());
+            return placement.driver_mailboxes.get(&i).copied();
         }
     }
     None
@@ -1452,6 +1453,69 @@ fn inject_rt_child_poll_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring
         program
             .fns
             .insert(key, crate::codegen::emit_rt_child_poll(&spec));
+    }
+}
+
+/// plans/M10.md item F (decision 630): force-root one specialized
+/// `rt_select_and_run <Actor>` body per mailbox root into `program.fns`.
+/// Call after `RuntimeWiring::derive` and before the code section is
+/// laid out (alongside `inject_rt_run_one_fns` / `inject_rt_child_poll_fns`).
+fn inject_rt_select_and_run_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+    let mut xreply_by_producer: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for ring in &wiring.tables.rings {
+        if ring.kind == RingKind::Reply {
+            xreply_by_producer
+                .entry(ring.src)
+                .or_default()
+                .push(ring.dst);
+        }
+    }
+    let roots = mailbox_root_names(&wiring.tables);
+    for (i, name) in roots.iter().enumerate() {
+        let (capacity, slot_size, frame_area_size) =
+            if let Some(a) = wiring.tables.actors.iter().find(|a| a.name == *name) {
+                (a.mailbox_capacity, a.slot_size, a.frame_size)
+            } else {
+                let d = wiring
+                    .tables
+                    .drivers
+                    .iter()
+                    .find(|d| d.name == *name && d.mailbox.is_some())
+                    .expect("mailbox root must be an actor or messageable driver");
+                let mb = d.mailbox.as_ref().unwrap();
+                (mb.capacity, mb.slot_size, mb.frame_size)
+            };
+        let methods = wiring
+            .dispatch
+            .get(i)
+            .map(|(_, keys)| {
+                keys.iter()
+                    .map(|(key, is_async, agg)| crate::codegen::RtSelectMethod {
+                        key: key.clone(),
+                        is_async: *is_async,
+                        reply_is_aggregate: *agg,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let actor_core = wiring.actor_cores.get(i).copied().unwrap_or(0);
+        let xreply_remotes = xreply_by_producer
+            .get(&actor_core)
+            .cloned()
+            .unwrap_or_default();
+        let spec = crate::codegen::RtSelectAndRunSpec {
+            actor: name.clone(),
+            capacity,
+            slot_size,
+            frame_area_size,
+            methods,
+            actor_core,
+            xreply_remotes,
+        };
+        let key = crate::codegen::rt_select_and_run_symbol(name);
+        program
+            .fns
+            .insert(key, crate::codegen::emit_rt_select_and_run(&spec));
     }
 }
 
@@ -2836,11 +2900,12 @@ pub fn layout_program(
         None => None,
     };
 
-    // M10 E3/E4: specialized `rt_run_one <core>` / `rt_child_poll <key>`
-    // into code (decisions 620 / 623).
+    // M10 E3/E4/F: specialized `rt_run_one` / `rt_child_poll` /
+    // `rt_select_and_run` into code (decisions 620 / 623 / 630).
     let mut program_owned;
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
+        inject_rt_select_and_run_fns(&mut program_owned, w);
         inject_rt_child_poll_fns(&mut program_owned, w);
         inject_rt_run_one_fns(&mut program_owned, w);
         &program_owned
@@ -3336,7 +3401,7 @@ pub fn layout_program(
                             ));
                         }
                     };
-                    let addrs = resolve_mailbox_ring_addrs(p, t, actor).ok_or_else(|| {
+                    let addrs = resolve_mailbox_actor_addrs(p, t, actor).ok_or_else(|| {
                         LayoutError::new(format!(
                             "internal error: Reloc::MailboxAddr names actor `{actor}`, which this \
                              image's runtime tables never placed a mailbox for"
@@ -3344,8 +3409,11 @@ pub fn layout_program(
                     })?;
                     let addr = match field {
                         crate::codegen::MailboxField::Ring => addrs.ring,
+                        crate::codegen::MailboxField::Head => addrs.head,
                         crate::codegen::MailboxField::Tail => addrs.tail,
                         crate::codegen::MailboxField::Count => addrs.count,
+                        crate::codegen::MailboxField::State => addrs.state,
+                        crate::codegen::MailboxField::Turn => addrs.turn,
                     };
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
@@ -6852,6 +6920,10 @@ fn build_rt_xreply(addrs: &RingAddrs, capacity: u64, dst_core: usize, start: usi
 /// `harness_jit` suite), so the flag is `false` by construction rather
 /// than by convention. The real image path is
 /// `build_rt_select_and_run_symbolic` below, which carries the real ones.
+///
+/// M10 F: specialized twin is `codegen::emit_rt_select_and_run`; this
+/// hand-asm is kept until F's delete commit.
+#[allow(dead_code)] // M10 F: kept until delete; no longer placed in glue.
 pub fn build_rt_select_and_run(
     addrs: &ActorAddrs,
     capacity: u64,
@@ -6894,6 +6966,7 @@ pub fn build_rt_select_and_run(
 /// state-machine entry are both ordinary `program.fns` entries. Shares
 /// every byte of hand-assembly with the JIT-tested original above via
 /// `build_rt_select_and_run_core` — never a forked copy.
+#[allow(dead_code)] // M10 F: kept until delete commit; no longer placed in glue.
 fn build_rt_select_and_run_symbolic(
     addrs: &ActorAddrs,
     capacity: u64,
@@ -6941,6 +7014,7 @@ fn build_rt_select_and_run_symbolic(
 const BRK_REPLY_SLOT_NO_WAKER: u16 = 0xACD6;
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // M10 F: kept until delete; no longer placed in glue.
 fn build_rt_select_and_run_core(
     addrs: &ActorAddrs,
     capacity: u64,
@@ -7606,6 +7680,13 @@ fn build_runtime_glue_block(
                 let asm = build_rt_xreply(&addrs, ring.capacity, ring.dst, start_here);
                 cursor += asm.words.len();
                 asms.push(asm);
+                // M10 F: register under a synthetic key so specialized
+                // `rt_select_and_run` can `Reloc::Call` it (decision 630);
+                // item F2 owns migrating the body itself.
+                symbols.insert(
+                    crate::codegen::rt_xreply_symbol(ring.src, ring.dst),
+                    start_here,
+                );
                 xreply_by_producer
                     .entry(ring.src)
                     .or_default()
@@ -7641,36 +7722,14 @@ fn build_runtime_glue_block(
         }
     }
 
-    for (i, (name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
-        let (_, dispatch_keys) = &actor_dispatch[i];
+    // M10 D / decision 615: per-actor mailbox admission lives in `code`
+    // (`emit_rt_enqueue`). M10 F / decision 630: `rt_select_and_run <Actor>`
+    // likewise lives in `code` (`emit_rt_select_and_run`); do not place a
+    // hand-asm twin into glue_symbols. Hand-asm builders kept until F's
+    // delete commit (JIT suite / census). Cross-core request rings still
+    // emit `build_ring_enqueue` above for `xsend` (F2).
+    let _ = (actor_dispatch, actor_cores, &xreply_by_producer);
 
-        // M10 D / decision 615: per-actor mailbox admission lives in the
-        // `code` section (`emit_rt_enqueue` under `rt_enqueue_symbol`); do
-        // not place a hand-asm twin into glue_symbols. Cross-core request
-        // rings still emit `build_ring_enqueue` above for `xsend` (F2).
-        let select_start = cursor;
-        // plans/M8.md item C2: only an actor whose own core produces
-        // replies for another core carries the remote-waker arm.
-        let empty: Vec<(usize, usize)> = Vec::new();
-        let my_core = actor_cores.get(i).copied().unwrap_or(0);
-        let xreply = xreply_by_producer.get(&my_core).unwrap_or(&empty);
-        let select_asm = build_rt_select_and_run_symbolic(
-            addrs,
-            *capacity,
-            *slot_size,
-            dispatch_keys,
-            *frame_size,
-            xreply,
-            placement.turns_base,
-            placement.log2_turn_stride(),
-            select_start,
-        );
-        cursor += select_asm.words.len();
-        // M10 E3: register under a synthetic key so specialized
-        // `rt_run_one` can `Reloc::Call` it (decision 620).
-        symbols.insert(crate::codegen::rt_select_and_run_symbol(name), select_start);
-        asms.push(select_asm);
-    }
     // M10 E4: `rt_child_poll <callee>` lives in `code` (`emit_rt_child_poll`);
     // do not place a hand-asm twin into glue_symbols. `rt_run_one` already
     // `Reloc::Call`s the synthetic key (decision 623). The free-turn
@@ -7682,9 +7741,9 @@ fn build_runtime_glue_block(
     // free turn, and the only free turns that run are the root test turn's
     // own, which is core 0's (06 §3).
     //
-    // M10 E3/E4: `rt_run_one` / `rt_child_poll` live in `code` as
-    // specialized compiled bodies; hand-asm builders deleted in E4's
-    // joint delete commit.
+    // M10 E3/E4/F: `rt_run_one` / `rt_child_poll` / `rt_select_and_run` live
+    // in `code` as specialized compiled bodies; hand-asm select builders
+    // kept until F's delete commit.
     for core in 0..tables.cores {
         let empty_req: Vec<(RingAddrs, u64, u64, String)> = Vec::new();
         let empty_rep: Vec<(RingAddrs, u64)> = Vec::new();
@@ -9496,13 +9555,15 @@ pub fn layout_test_image(
     let addrs = HarnessAddrs::production();
 
     // plans/M6.md item D: the real boot wiring — derived *before* the code
-    // section is laid out so M10 E3/E4 can inject specialized `rt_run_one`
-    // / `rt_child_poll` bodies into `program.fns` (decisions 620 / 623).
+    // section is laid out so M10 E3/E4/F can inject specialized `rt_run_one`
+    // / `rt_child_poll` / `rt_select_and_run` bodies into `program.fns`
+    // (decisions 620 / 623 / 630).
     let mut wiring: Option<RuntimeWiring> = match &boot {
         Some(b) => RuntimeWiring::derive(b, &program)?,
         None => None,
     };
     if let Some(w) = wiring.as_ref() {
+        inject_rt_select_and_run_fns(&mut program, w);
         inject_rt_child_poll_fns(&mut program, w);
         inject_rt_run_one_fns(&mut program, w);
     }
@@ -10100,7 +10161,7 @@ pub fn layout_test_image(
                             ));
                         }
                     };
-                    let addrs = resolve_mailbox_ring_addrs(p, t, actor).ok_or_else(|| {
+                    let addrs = resolve_mailbox_actor_addrs(p, t, actor).ok_or_else(|| {
                         LayoutError::new(format!(
                             "internal error: Reloc::MailboxAddr names actor `{actor}`, which this \
                              image's runtime tables never placed a mailbox for"
@@ -10108,8 +10169,11 @@ pub fn layout_test_image(
                     })?;
                     let addr = match field {
                         crate::codegen::MailboxField::Ring => addrs.ring,
+                        crate::codegen::MailboxField::Head => addrs.head,
                         crate::codegen::MailboxField::Tail => addrs.tail,
                         crate::codegen::MailboxField::Count => addrs.count,
+                        crate::codegen::MailboxField::State => addrs.state,
+                        crate::codegen::MailboxField::Turn => addrs.turn,
                     };
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
