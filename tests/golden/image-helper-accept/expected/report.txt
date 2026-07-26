@@ -21,7 +21,7 @@ ImageReport v0
   Section name=abort base=0x4050009c size=120
   Section name=checkpoint base=0x40500114 size=104
   Section name=rtcode base=0x4050017c size=852
-  Section name=rtdata base=0x405004d0 size=368
+  Section name=rtdata base=0x405004d0 size=376
   Entry base=0x40500000
   Actor name=Store mailbox=16 slot=16 frame=56 state=8
-  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=368
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=376

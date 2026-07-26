@@ -38,12 +38,12 @@ ImageReport v0
   Section name=abort base=0x40500d08 size=120
   Section name=checkpoint base=0x40500d80 size=104
   Section name=rtcode base=0x40500de8 size=1900
-  Section name=rtdata base=0x40501558 size=1040
-  Section name=devregs base=0x40501968 size=8
+  Section name=rtdata base=0x40501558 size=3320
+  Section name=devregs base=0x40502250 size=8
   Entry base=0x40500000
   Actor name=Marker mailbox=4 slot=16 frame=56 state=8
   Actor name=Tags mailbox=4 slot=16 frame=56 state=24
   Turn fn=handle_words_are_distinct frame=680
   Driver name=Stub state=8
-  Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=1040
-  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40501968 size=8
+  Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=3320
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40502250 size=8

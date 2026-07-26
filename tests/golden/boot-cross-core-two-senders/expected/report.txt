@@ -32,7 +32,7 @@ ImageReport v0
   Section name=abort base=0x40500e14 size=120
   Section name=checkpoint base=0x40500e8c size=104
   Section name=rtcode base=0x40500ef4 size=3936
-  Section name=rtdata base=0x40501e58 size=1752
+  Section name=rtdata base=0x40501e58 size=2680
   Entry base=0x40500000
   CoreEntry core=1 base=0x40501d20
   CoreEntry core=2 base=0x40501d88
@@ -40,6 +40,6 @@ ImageReport v0
   Actor name=Alpha mailbox=4 slot=16 frame=296 state=8
   Actor name=Beta mailbox=4 slot=16 frame=296 state=8
   Turn fn=two_senders_one_ring frame=472
-  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120 base=0x40502470
-  Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72 base=0x405024e8
-  Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=1752
+  Ring kind=request src=0 dst=1 target=Sink cap=4 slot=24 bytes=120 base=0x40502810
+  Ring kind=reply src=1 dst=0 target=- cap=3 slot=16 bytes=72 base=0x40502888
+  Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2680

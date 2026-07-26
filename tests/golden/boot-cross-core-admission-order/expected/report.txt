@@ -32,7 +32,7 @@ ImageReport v0
   Section name=abort base=0x40500d0c size=120
   Section name=checkpoint base=0x40500d84 size=104
   Section name=rtcode base=0x40500dec size=6004
-  Section name=rtdata base=0x40502560 size=2184
+  Section name=rtdata base=0x40502560 size=3256
   Entry base=0x40500000
   CoreEntry core=1 base=0x4050242c
   CoreEntry core=2 base=0x40502494
@@ -40,10 +40,10 @@ ImageReport v0
   Actor name=Near mailbox=4 slot=16 frame=296 state=8
   Actor name=Far mailbox=4 slot=16 frame=152 state=8
   Turn fn=admission_order_across_two_cores frame=472
-  Ring kind=request src=0 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502b48
-  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40502c20
-  Ring kind=request src=2 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502c78
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502d50
-  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x40502d88
-  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40502db0
-  Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2184
+  Ring kind=request src=0 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502f78
+  Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40503050
+  Ring kind=request src=2 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x405030a8
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40503180
+  Ring kind=reply src=1 dst=2 target=- cap=1 slot=16 bytes=40 base=0x405031b8
+  Ring kind=reply src=2 dst=0 target=- cap=2 slot=16 bytes=56 base=0x405031e0
+  Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=3256

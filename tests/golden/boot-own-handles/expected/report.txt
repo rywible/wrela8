@@ -31,11 +31,11 @@ ImageReport v0
   Section name=abort base=0x4050086c size=120
   Section name=checkpoint base=0x405008e4 size=104
   Section name=rtcode base=0x4050094c size=928
-  Section name=rtdata base=0x40500cf0 size=720
-  Section name=pooldata base=0x40500fc0 size=16
+  Section name=rtdata base=0x40500cf0 size=1216
+  Section name=pooldata base=0x405011b0 size=16
   Entry base=0x40500000
   Actor name=Holder mailbox=8 slot=16 frame=56 state=16
   Turn fn=own_handle_addresses_pool_slot frame=472
-  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=720
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=16 base=0x40500fc0 size=16 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockPayloads device=device#0 base=0x40500fc0 size=0x10
+  Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1216
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=16 base=0x405011b0 size=16 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockPayloads device=device#0 base=0x405011b0 size=0x10

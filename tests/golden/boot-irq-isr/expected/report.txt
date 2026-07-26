@@ -33,12 +33,12 @@ ImageReport v0
   Section name=abort base=0x40500e68 size=120
   Section name=checkpoint base=0x40500ee0 size=336
   Section name=rtcode base=0x40501030 size=1016
-  Section name=rtdata base=0x40501428 size=960
-  Section name=devregs base=0x405017e8 size=104
+  Section name=rtdata base=0x40501428 size=2336
+  Section name=devregs base=0x40501d48 size=104
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=56 state=8
   Turn fn=irq_delivered frame=616
   Driver name=BlkDriver state=40
-  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=960
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405017e8 size=104
-  IrqHostInject base=0x405017e8 offset=0x60 status=0xa501 vector=1
+  Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2336
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40501d48 size=104
+  IrqHostInject base=0x40501d48 offset=0x60 status=0xa501 vector=1

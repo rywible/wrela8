@@ -3691,6 +3691,27 @@ pub struct RuntimeTables {
     /// its own area via the identical machinery an actor turn uses —
     /// decision 3's "+1 root" ready-queue slot, now made concrete.
     pub free_turns: Vec<(String, u64)>,
+    /// plans/M10.md item 0a (decision 552): how many turn areas this image
+    /// has — every actor, every **messageable** driver, every free async
+    /// fn. The three sets above, counted once, so `total_bytes` and
+    /// `place_runtime_tables` cannot disagree about how many strides they
+    /// are accounting for.
+    pub n_turns: u64,
+    /// plans/M10.md item 0a (decision 552): the **uniform** byte stride
+    /// every turn area is reserved at — `round_up_pow2` of the widest raw
+    /// area over all three owner kinds, or `0` when `n_turns == 0`.
+    ///
+    /// The per-owner `frame_size` fields (`ActorRuntimeLayout::frame_size`,
+    /// `DriverMailbox::frame_size`, `free_turns.1`) stay the **raw** area —
+    /// `TURN_RECORD_SIZE + widest owned async frame` — deliberately. Two
+    /// things depend on that: the report's own `frame=` lines say how much
+    /// of the stride is real (a reader can subtract and see the padding),
+    /// and `build_rt_select_and_run_core`'s lineage-zeroing guard is keyed
+    /// on "does this owner actually have frame slots past its record",
+    /// which the stride cannot answer — under a uniform stride it would
+    /// answer "yes" for a bare actor and emit two stores into padding.
+    /// Only the *reservation* (this field) is uniform.
+    pub turn_stride: u64,
     /// Ready-queue capacity: every actor plus the one root test turn
     /// (decision 3's own "fixed capacity = actor count + 1 root").
     /// Reserved as a real `u64`-per-slot table; `rt_select_and_run` (below)
@@ -5304,22 +5325,49 @@ pub fn compute_runtime_tables(
     let ready_queue_capacity = graph.actors.len() as u64 + messageable_drivers + 1;
     let group_arena_capacity = count_with_group_sites(modules);
 
+    // plans/M10.md item 0a (decision 552): every turn area is *reserved* at
+    // one image-wide power-of-two stride, so a turn reference can become an
+    // index scaled by a shift instead of a bumped address. The stride is
+    // `round_up_pow2` of the widest raw area over **all three** owner kinds
+    // — actors, messageable drivers, free async fns. Missing one of them
+    // undersizes the stride and the array overlaps itself, which is a
+    // corrupted transcript rather than a compile error.
+    let n_turns = actors.len() as u64 + messageable_drivers + free_turns.len() as u64;
+    let widest_turn_area = actors
+        .iter()
+        .map(|a| a.frame_size)
+        .chain(
+            drivers
+                .iter()
+                .filter_map(|d| d.mailbox.as_ref())
+                .map(|mb| mb.frame_size),
+        )
+        .chain(free_turns.iter().map(|(_, area)| *area))
+        .max()
+        .unwrap_or(0);
+    // `widest_turn_area >= TURN_RECORD_SIZE` (56) whenever `n_turns > 0`, so
+    // the degenerate `n <= 1` cases of the rounding never arise here.
+    let turn_stride = if n_turns == 0 {
+        0
+    } else {
+        1u64 << (64 - (widest_turn_area - 1).leading_zeros())
+    };
+
     let mut total_bytes = 0u64;
     for a in &actors {
-        total_bytes += a.state_size
-            + a.mailbox_capacity * a.slot_size
-            + MAILBOX_BOOKKEEPING_SIZE
-            + a.frame_size;
+        total_bytes += a.state_size + a.mailbox_capacity * a.slot_size + MAILBOX_BOOKKEEPING_SIZE;
     }
     for d in &drivers {
         total_bytes += d.state_size;
         if let Some(mb) = &d.mailbox {
-            total_bytes += mb.capacity * mb.slot_size + MAILBOX_BOOKKEEPING_SIZE + mb.frame_size;
+            total_bytes += mb.capacity * mb.slot_size + MAILBOX_BOOKKEEPING_SIZE;
         }
     }
-    for (_, area) in &free_turns {
-        total_bytes += area;
-    }
+    // Every turn area, at the uniform stride — one term, in place of the
+    // three per-owner sums it replaces. `place_runtime_tables` bumps the
+    // identical stride at the identical three sites; `verify_section_sizes`'
+    // blob-length check is what catches the two ever disagreeing.
+    total_bytes += n_turns * turn_stride;
     total_bytes += ready_queue_capacity * 8
         + RR_CURSOR_SIZE
         + group_arena_capacity * crate::codegen::GROUP_SLOT_SIZE;
@@ -5328,6 +5376,8 @@ pub fn compute_runtime_tables(
         actors,
         drivers,
         free_turns,
+        n_turns,
+        turn_stride,
         ready_queue_capacity,
         group_arena_capacity,
         // Single-core until placement says otherwise (`stripe_for_cores`),
@@ -5780,7 +5830,10 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         let count = cursor;
         cursor += 8;
         let turn = cursor;
-        cursor += a.frame_size;
+        // plans/M10.md item 0a: the *reservation* is the image-wide uniform
+        // stride, not this actor's own raw area — `a.frame_size` still says
+        // how much of it is live.
+        cursor += tables.turn_stride;
         actors.push(ActorAddrs {
             state,
             ring,
@@ -5808,7 +5861,7 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             let count = cursor;
             cursor += 8;
             let turn = cursor;
-            cursor += mb.frame_size;
+            cursor += tables.turn_stride;
             driver_mailboxes.insert(
                 i,
                 ActorAddrs {
@@ -5823,9 +5876,9 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         }
     }
     let mut free_turns = BTreeMap::new();
-    for (key, area) in &tables.free_turns {
+    for (key, _area) in &tables.free_turns {
         free_turns.insert(key.clone(), cursor);
-        cursor += area;
+        cursor += tables.turn_stride;
     }
     // plans/M8.md item C1: one ready-queue table + one round-robin cursor
     // per live core, uniformly strided (each core's pair sits at
@@ -6391,6 +6444,16 @@ fn build_rt_select_and_run_core(
     // added unguarded — the group arena's own `in_use` words, three regions
     // later, came back set and `GroupCreate` reported "arena capacity
     // exceeded").
+    //
+    // plans/M10.md item 0a: the guard stays keyed on this owner's own **raw**
+    // area (`ActorRuntimeLayout::frame_size` / `DriverMailbox::frame_size`,
+    // both unchanged by the uniform-stride reservation), never on
+    // `RuntimeTables::turn_stride`. The stride answers "how many bytes were
+    // reserved", not "does this owner have lineage slots" — keyed on the
+    // stride, a bare actor whose area is exactly `TURN_RECORD_SIZE` would
+    // start emitting these two stores into its own padding, changing
+    // `rtcode` for no reason and scribbling past its record the moment the
+    // grouping changes.
     if frame_area_size >= TURN_RECORD_SIZE + 16 {
         a.push(encode::enc_str_x_imm(31, 9, TURN_RECORD_SIZE as u16));
         a.push(encode::enc_str_x_imm(31, 9, (TURN_RECORD_SIZE + 8) as u16));
@@ -10023,7 +10086,13 @@ pub struct Store:
         assert_eq!(a.frame_size, crate::codegen::TURN_RECORD_SIZE);
         assert_eq!(tables.ready_queue_capacity, 2); // 1 actor + root
         assert_eq!(tables.group_arena_capacity, 0);
-        let expect_total = a.state_size + a.mailbox_capacity as u64 * a.slot_size + 24 /* head/tail/count */ + a.frame_size
+        // plans/M10.md item 0a: the turn area is *reserved* at the uniform
+        // stride (here: one turn, raw area 56 -> stride 64), while
+        // `a.frame_size` above still reports the raw 56.
+        assert_eq!(tables.n_turns, 1);
+        assert_eq!(tables.turn_stride, 64);
+        let expect_total = a.state_size + a.mailbox_capacity as u64 * a.slot_size + 24 /* head/tail/count */
+                + tables.n_turns * tables.turn_stride
                 + tables.ready_queue_capacity * 8
                 + 8; // rr cursor
         assert_eq!(tables.total_bytes, expect_total);

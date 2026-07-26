@@ -61,9 +61,9 @@ ImageReport v0
   Section name=abort base=0x40503104 size=120
   Section name=checkpoint base=0x4050317c size=336
   Section name=rtcode base=0x405032cc size=3032
-  Section name=rtdata base=0x40503ea8 size=2104
-  Section name=devregs base=0x405046e0 size=104
-  Section name=pooldata base=0x40504748 size=1024
+  Section name=rtdata base=0x40503ea8 size=6664
+  Section name=devregs base=0x405058b0 size=104
+  Section name=pooldata base=0x40505918 size=1024
   Entry base=0x40500000
   Actor name=Ledger mailbox=4 slot=24 frame=56 state=8
   Actor name=Client mailbox=4 slot=16 frame=632 state=48
@@ -71,13 +71,13 @@ ImageReport v0
   Turn fn=the_bottom_half_is_what_resolved_them frame=280
   Turn fn=the_parked_turn_really_left_and_re_entered frame=280
   Driver name=BlkDriver state=64 mailbox=4 slot=32 frame=56
-  Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=2104
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405046e0 size=104
-  IrqHostInject base=0x405046e0 offset=0x60 status=0xa501 vector=1
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40504748 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40504948 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=BlockControl device=device#0 base=0x40504748 size=0x200
-  BlkPool name=BlockPayloads device=device#0 base=0x40504948 size=0x200
+  Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=6664
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405058b0 size=104
+  IrqHostInject base=0x405058b0 offset=0x60 status=0xa501 vector=1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40505918 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40505b18 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=BlockControl device=device#0 base=0x40505918 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x40505b18 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
-  BlkQueue index=0 size=8 desc=0x40504748 avail=0x405047c8 used=0x405047e0 doorbell=0x40504828
+  BlkQueue index=0 size=8 desc=0x40505918 avail=0x40505998 used=0x405059b0 doorbell=0x405059f8
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
