@@ -1,2 +1,3 @@
-error[build]: `@layout_assert` fn `budget` failed: assertion failed: code budget is 1500 bytes
-  while evaluating `budget`
+build: name=layout-assert-budget-helper target=Target.wrela_machine_v1
+build: devices=0 drivers=0 actors=1 pools=0
+build: report written to target/golden-build-tmp/check-layout-assert-budget-helper/layout-assert-budget-helper.report.txt
