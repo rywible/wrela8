@@ -29,10 +29,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=356
-  Section name=abort base=0x405001b4 size=120
-  Section name=checkpoint base=0x4050022c size=104
-  Section name=rtcode base=0x40500294 size=1044
+  Section name=code base=0x40500050 size=568
+  Section name=abort base=0x40500288 size=120
+  Section name=checkpoint base=0x40500300 size=104
+  Section name=rtcode base=0x40500368 size=832
   Section name=rtdata base=0x405006a8 size=400
   Section name=devregs base=0x40500838 size=8
   Section name=pooldata base=0x40500840 size=256

@@ -166,6 +166,60 @@ Program
     0025: f9400ffe  ldr lr, [sp, #24]
     0026: 910083ff  add sp, sp, #32
     0027: d65f03c0  ret
+  Fn key=rt_enqueue Store frame=0 bytes
+    0000: d2800009  mailbox-addr[0] Count x9 <Store>
+    0001: f2a00009  mailbox-addr[1] Count x9 <Store>
+    0002: f2c00009  mailbox-addr[2] Count x9 <Store>
+    0003: f2e00009  mailbox-addr[3] Count x9 <Store>
+    0004: f940012a  ldr x10, [x9]
+    0005: d280008b  movz x11, #0x4  ; capacity
+    0006: f2a0000b  movk x11, #0x0, lsl #16
+    0007: f2c0000b  movk x11, #0x0, lsl #32
+    0008: f2e0000b  movk x11, #0x0, lsl #48
+    0009: eb0b015f  cmp x10, x11
+    0010: 5400006b  b.lt .ok (+12)
+    0011: d2800020  movz x0, #1  ; rejected
+    0012: 14000028  b .end (+160)
+    0013: d280000c  mailbox-addr[0] Tail x12 <Store>
+    0014: f2a0000c  mailbox-addr[1] Tail x12 <Store>
+    0015: f2c0000c  mailbox-addr[2] Tail x12 <Store>
+    0016: f2e0000c  mailbox-addr[3] Tail x12 <Store>
+    0017: f940018d  ldr x13, [x12]
+    0018: d280020e  movz x14, #0x10  ; slot_size
+    0019: f2a0000e  movk x14, #0x0, lsl #16
+    0020: f2c0000e  movk x14, #0x0, lsl #32
+    0021: f2e0000e  movk x14, #0x0, lsl #48
+    0022: 9b0e7dae  mul x14, x13, x14
+    0023: d280000f  mailbox-addr[0] Ring x15 <Store>
+    0024: f2a0000f  mailbox-addr[1] Ring x15 <Store>
+    0025: f2c0000f  mailbox-addr[2] Ring x15 <Store>
+    0026: f2e0000f  mailbox-addr[3] Ring x15 <Store>
+    0027: 8b0e01ef  add x15, x15, x14
+    0028: f90001e0  str x0, [x15]  ; method_idx
+    0029: b90009e3  str w3, [x15, #8]  ; waker_turn
+    0030: b9000de4  str w4, [x15, #12]  ; waker_core
+    0031: 910005ad  add x13, x13, #1
+    0032: d2800089  movz x9, #0x4  ; capacity
+    0033: f2a00009  movk x9, #0x0, lsl #16
+    0034: f2c00009  movk x9, #0x0, lsl #32
+    0035: f2e00009  movk x9, #0x0, lsl #48
+    0036: eb0901bf  cmp x13, x9
+    0037: 5400004b  b.lt .nowrap (+8)
+    0038: d280000d  movz x13, #0
+    0039: d280000c  mailbox-addr[0] Tail x12 <Store>
+    0040: f2a0000c  mailbox-addr[1] Tail x12 <Store>
+    0041: f2c0000c  mailbox-addr[2] Tail x12 <Store>
+    0042: f2e0000c  mailbox-addr[3] Tail x12 <Store>
+    0043: f900018d  str x13, [x12]  ; tail
+    0044: d2800009  mailbox-addr[0] Count x9 <Store>
+    0045: f2a00009  mailbox-addr[1] Count x9 <Store>
+    0046: f2c00009  mailbox-addr[2] Count x9 <Store>
+    0047: f2e00009  mailbox-addr[3] Count x9 <Store>
+    0048: f940012a  ldr x10, [x9]
+    0049: 9100054a  add x10, x10, #1
+    0050: f900012a  str x10, [x9]  ; count
+    0051: d2800000  movz x0, #0  ; admitted
+    0052: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `+`
     1: offset=0x1a assertion failed: reachable type at guest

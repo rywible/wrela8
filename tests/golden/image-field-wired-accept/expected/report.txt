@@ -22,11 +22,11 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=172
-  Section name=rodata base=0x40500100 size=26
-  Section name=abort base=0x4050011c size=120
-  Section name=checkpoint base=0x40500194 size=104
-  Section name=rtcode base=0x405001fc size=1772
+  Section name=code base=0x40500050 size=600
+  Section name=rodata base=0x405002a8 size=26
+  Section name=abort base=0x405002c4 size=120
+  Section name=checkpoint base=0x4050033c size=104
+  Section name=rtcode base=0x405003a4 size=1344
   Section name=rtdata base=0x405008e8 size=552
   Entry base=0x40500000
   Actor name=Ledger mailbox=8 slot=24 frame=64 state=8

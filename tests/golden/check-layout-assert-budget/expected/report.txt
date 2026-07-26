@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/image_report.wr sha256=7abde3292fbefa4cd47b167ad19ed31ab9e08a7267f0dc3d40b1414b80b416bf
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
-  Input path=examples/check_layout_assert_budget.wr sha256=35b96fe993a8571fd0320c2218d097bf265a2acffe7e0afa37a574ea7fd987a4
+  Input path=examples/check_layout_assert_budget.wr sha256=42ec2c3f7eed9771d045524811636bc3f3079c6d2ad0b09b3872a75fd0498846
   Name value=layout-assert-budget
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -19,10 +19,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=156
-  Section name=abort base=0x405000ec size=120
-  Section name=checkpoint base=0x40500164 size=104
-  Section name=rtcode base=0x405001cc size=932
+  Section name=code base=0x40500050 size=368
+  Section name=abort base=0x405001c0 size=120
+  Section name=checkpoint base=0x40500238 size=104
+  Section name=rtcode base=0x405002a0 size=720
   Section name=rtdata base=0x40500570 size=248
   Entry base=0x40500000
   Actor name=Store mailbox=8 slot=16 frame=64 state=8

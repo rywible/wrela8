@@ -1333,6 +1333,81 @@ fn reject_unlowerable_cross_core_shapes(
     Ok(())
 }
 
+/// plans/M10.md item D / decision 613: `(mailbox-root name, capacity,
+/// slot_size)` for every actor and messageable driver — the inputs
+/// `emit_rt_enqueue` specializes on. Independent of async frame sizes
+/// (slot width is method shapes only), so callers can compute this
+/// before `codegen_program_with_async`.
+pub fn mailbox_enqueue_specs(
+    graph: &ImageGraph,
+    modules: &BTreeMap<String, Module>,
+    layout_ctx: &LayoutCtx,
+) -> Result<Vec<(String, u64, u64)>, String> {
+    if graph.actors.is_empty() && graph.drivers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let shapes = merge_actor_pub_methods(modules, layout_ctx).map_err(|e| e.message)?;
+    let mut out = Vec::new();
+    for decl in &graph.actors {
+        let name = crate::sema::types::render_type(&decl.actor_type);
+        let mailbox_capacity = declared_mailbox_capacity(&decl.args, &format!("actor `{name}`"))?
+            .ok_or_else(|| {
+            format!(
+                "actor `{name}` has no declared `mailbox=` capacity (plans/M6.md decision 3: \
+                 the declared bound is the whole of M6's own mailbox-capacity story; derivation \
+                 is out of scope)"
+            )
+        })?;
+        let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
+        let max_args_bytes = methods
+            .iter()
+            .map(|m| m.param_sizes.iter().sum::<u64>())
+            .max()
+            .unwrap_or(0);
+        let slot_size = 16 + max_args_bytes;
+        out.push((name, mailbox_capacity, slot_size));
+    }
+    for decl in &graph.drivers {
+        let name = crate::sema::types::render_type(&decl.actor_type);
+        let Some(capacity) = declared_mailbox_capacity(&decl.args, &format!("driver `{name}`"))?
+        else {
+            continue;
+        };
+        let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
+        let max_args_bytes = methods
+            .iter()
+            .map(|m| m.param_sizes.iter().sum::<u64>())
+            .max()
+            .unwrap_or(0);
+        let slot_size = 16 + max_args_bytes;
+        out.push((name, capacity, slot_size));
+    }
+    Ok(out)
+}
+
+/// Resolve mailbox root `name`'s ring bookkeeping addresses from a live
+/// placement (plans/M10.md item D / decision 614).
+fn resolve_mailbox_ring_addrs(
+    placement: &RuntimePlacement,
+    tables: &RuntimeTables,
+    name: &str,
+) -> Option<RingAddrs> {
+    if let Some((i, _)) = tables
+        .actors
+        .iter()
+        .enumerate()
+        .find(|(_, a)| a.name == name)
+    {
+        return placement.actors.get(i).map(|a| a.mailbox());
+    }
+    for (i, d) in tables.drivers.iter().enumerate() {
+        if d.mailbox.is_some() && d.name == name {
+            return placement.driver_mailboxes.get(&i).map(|a| a.mailbox());
+        }
+    }
+    None
+}
+
 /// One mailbox root's own `(capacity, slot size)` — a declared actor's, or
 /// (plans/M8.md item D) a messageable `@driver`'s. The one lookup
 /// `cross_core_rings` needs, so a ring feeding a driver's mailbox is sized
@@ -3173,6 +3248,30 @@ pub fn layout_program(
                     let addr = driver_wake_pending_addr(p, t, driver)?;
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                // M10 D / decision 614
+                Reloc::MailboxAddr { word, actor, field } => {
+                    let (p, t) = match (placement.as_ref(), runtime_live) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(
+                                "internal error: a Reloc::MailboxAddr exists but this image has \
+                                 no runtime tables",
+                            ));
+                        }
+                    };
+                    let addrs = resolve_mailbox_ring_addrs(p, t, actor).ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::MailboxAddr names actor `{actor}`, which this \
+                             image's runtime tables never placed a mailbox for"
+                        ))
+                    })?;
+                    let addr = match field {
+                        crate::codegen::MailboxField::Ring => addrs.ring,
+                        crate::codegen::MailboxField::Tail => addrs.tail,
+                        crate::codegen::MailboxField::Count => addrs.count,
+                    };
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -3237,11 +3336,12 @@ pub fn layout_program(
                 | Reloc::TurnStride { .. }
                 | Reloc::GroupArenaBase { .. }
                 | Reloc::IrqVector { .. }
-                | Reloc::WakePending { .. } => {
+                | Reloc::WakePending { .. }
+                | Reloc::MailboxAddr { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
                          AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/TurnsBase/TurnStride/\
-                         GroupArenaBase/IrqVector/WakePending reloc",
+                         GroupArenaBase/IrqVector/WakePending/MailboxAddr reloc",
                     ));
                 }
             }
@@ -3644,12 +3744,17 @@ pub fn try_layout_program(
         Err(_) => return Ok(None),
     };
     let group_arena_capacity = count_with_group_sites(modules);
+    let enqueue_specs = match mailbox_enqueue_specs(graph, modules, layout_ctx) {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
     let codegen_program = match crate::codegen::codegen_program_with_async(
         &merged,
         &flow,
         layout_ctx,
         &method_index,
         group_arena_capacity,
+        &enqueue_specs,
     ) {
         Ok(p) => p,
         Err(_) => return Ok(None),
@@ -7199,9 +7304,9 @@ fn build_rt_run_one(
 /// in bounds at both ends and needs no per-method table on this path.
 fn build_rt_drain(
     core: usize,
-    // (ring addrs, capacity, slot size, that mailbox root's own
-    // `__rt_enqueue_*` start word)
-    request_lanes: &[(RingAddrs, u64, u64, usize)],
+    // (ring addrs, capacity, slot size, that mailbox root's actor name —
+    // M10 D: `bl_call_key(rt_enqueue_symbol(actor))` into the compiled body)
+    request_lanes: &[(RingAddrs, u64, u64, String)],
     // (ring addrs, capacity)
     reply_lanes: &[(RingAddrs, u64)],
     // plans/M10.md item 0c1: see `build_rt_select_and_run`. The reply lane
@@ -7258,7 +7363,7 @@ fn build_rt_drain(
         debug_assert_eq!(next, a.abs());
     }
 
-    for (addrs, capacity, slot_size, enqueue_start) in request_lanes {
+    for (addrs, capacity, slot_size, actor) in request_lanes {
         // plans/M10.md item D0 (decision 610): the destination mailbox's
         // own `rt_enqueue` now takes its arguments **by value** in
         // `x1`/`x2`, so this lane loads them out of the request-ring slot
@@ -7306,7 +7411,8 @@ fn build_rt_drain(
         } else {
             a.push(encode::enc_mov_reg(2, 31, true)); // mov x2, xzr
         }
-        a.bl_to(*enqueue_start);
+        // M10 D / decision 615: compiled specialized body in `code`.
+        a.bl_call_key(&crate::codegen::rt_enqueue_symbol(actor));
         // Rejected: the target mailbox is full. Leave the message in the
         // ring (back-pressure) and stop this lane — never a drop.
         let skip_full = a.skip_placeholder(); // cbnz x0, .next
@@ -7613,7 +7719,6 @@ fn build_runtime_glue_block(
         ));
     }
     let mut select_starts = Vec::with_capacity(roots.len());
-    let mut enqueue_starts: Vec<usize> = Vec::with_capacity(roots.len());
     let mut cursor = start;
     // --- plans/M8.md item C2: the cross-core ring routines --------------
     //
@@ -7673,20 +7778,13 @@ fn build_runtime_glue_block(
         }
     }
 
-    for (i, (name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
+    for (i, (_name, addrs, capacity, slot_size, frame_size)) in roots.iter().enumerate() {
         let (_, dispatch_keys) = &actor_dispatch[i];
 
-        let enqueue_start = cursor;
-        let enqueue_words = build_rt_enqueue(addrs, *capacity, *slot_size, enqueue_start);
-        cursor += enqueue_words.len();
-        enqueue_starts.push(enqueue_start);
-        symbols.insert(crate::codegen::rt_enqueue_symbol(name), enqueue_start);
-        asms.push(Asm {
-            start: enqueue_start,
-            words: enqueue_words,
-            relocs: Vec::new(),
-        });
-
+        // M10 D / decision 615: per-actor mailbox admission lives in the
+        // `code` section (`emit_rt_enqueue` under `rt_enqueue_symbol`); do
+        // not place a hand-asm twin into glue_symbols. Cross-core request
+        // rings still emit `build_ring_enqueue` above for `xsend` (F2).
         let select_start = cursor;
         // plans/M8.md item C2: only an actor whose own core produces
         // replies for another core carries the remote-waker arm.
@@ -7755,12 +7853,10 @@ fn build_runtime_glue_block(
         if reqs.is_empty() && reps.is_empty() {
             continue;
         }
-        let resolved: Vec<(RingAddrs, u64, u64, usize)> = reqs
+        let resolved: Vec<(RingAddrs, u64, u64, String)> = reqs
             .iter()
-            .filter_map(|(addrs, cap, slot, actor)| {
-                let idx = roots.iter().position(|(n, ..)| n == actor)?;
-                Some((*addrs, *cap, *slot, enqueue_starts[idx]))
-            })
+            .filter(|(_, _, _, actor)| roots.iter().any(|(n, ..)| n == actor))
+            .map(|(addrs, cap, slot, actor)| (*addrs, *cap, *slot, actor.clone()))
             .collect();
         let start_here = cursor;
         let asm = build_rt_drain(
@@ -10266,11 +10362,12 @@ pub fn layout_test_image(
             | Reloc::TurnStride { .. }
             | Reloc::GroupArenaBase { .. }
             | Reloc::IrqVector { .. }
-            | Reloc::WakePending { .. } => {
+            | Reloc::WakePending { .. }
+            | Reloc::MailboxAddr { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit an \
                      AbortFixed/AbortVal/CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
-                     GroupArenaBase/IrqVector/WakePending reloc",
+                     GroupArenaBase/IrqVector/WakePending/MailboxAddr reloc",
                 ));
             }
         }
@@ -10389,6 +10486,30 @@ pub fn layout_test_image(
                         }
                     };
                     let addr = driver_wake_pending_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                // M10 D / decision 614
+                Reloc::MailboxAddr { word, actor, field } => {
+                    let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(
+                                "internal error: a Reloc::MailboxAddr exists but this image has \
+                                 no runtime tables",
+                            ));
+                        }
+                    };
+                    let addrs = resolve_mailbox_ring_addrs(p, t, actor).ok_or_else(|| {
+                        LayoutError::new(format!(
+                            "internal error: Reloc::MailboxAddr names actor `{actor}`, which this \
+                             image's runtime tables never placed a mailbox for"
+                        ))
+                    })?;
+                    let addr = match field {
+                        crate::codegen::MailboxField::Ring => addrs.ring,
+                        crate::codegen::MailboxField::Tail => addrs.tail,
+                        crate::codegen::MailboxField::Count => addrs.count,
+                    };
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
             }
@@ -10524,9 +10645,15 @@ pub fn t():
         let mut layout_ctx = merge_layout_ctx(&modules).expect("layout ctx");
         enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
         let method_index = actor_method_index_tables(&modules, &layout_ctx).expect("index");
-        let codegen =
-            crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0)
-                .expect("codegen");
+        let codegen = crate::codegen::codegen_program_with_async(
+            &mwir,
+            &flow,
+            &layout_ctx,
+            &method_index,
+            0,
+            &[],
+        )
+        .expect("codegen");
         assert!(
             codegen.fns.contains_key("__wrela_runtime_probe"),
             "probe must be in codegen fns"

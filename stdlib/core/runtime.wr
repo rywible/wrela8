@@ -1,5 +1,9 @@
-# plans/M10.md item A2d
+# plans/M10.md item A2d / item D
 module runtime
 
+# Force-root seed (A2d / decision 583). Per-actor mailbox admission
+# (`rt_enqueue <Actor>`) is synthesized into CodegenProgram under
+# specialized keys (item D / decisions 613–615) — not spelled here,
+# because the key contains a space no wrela identifier may carry.
 pub fn __wrela_runtime_probe():
     return
