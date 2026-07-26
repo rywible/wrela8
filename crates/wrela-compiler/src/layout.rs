@@ -5505,6 +5505,32 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         for line in ring_report_lines(layout) {
             push_line(out, 1, &line);
         }
+        // plans/M10.md item 0b (decision 555): the turn array's own three
+        // facts, published so an image can see — and later assert — what
+        // the uniform stride costs it. Placed directly under the per-owner
+        // `frame=` lines it summarizes, so a reviewer reads `frame=56 /
+        // frame=472` and then `stride=1024` on adjacent lines and can take
+        // the padding off the page; `Totals` stays last.
+        //
+        // Deliberately *not* folded into `Totals`: that would churn a line
+        // reviewers skim, in every actor-bearing golden, for a reason
+        // unrelated to totals. Absent entirely when this image has no
+        // runtime table, like every other line in this block.
+        //
+        // Making these two numbers `@layout_assert`-able is a separate item
+        // (decision 568): `ImageReport` is a closed eight-field stdlib
+        // surface, and a stdlib change does not belong in a byte-identity
+        // commit.
+        push_line(
+            out,
+            1,
+            &format!(
+                "Turns count={} stride={} bytes={}",
+                tables.n_turns,
+                tables.turn_stride,
+                tables.n_turns * tables.turn_stride
+            ),
+        );
         push_line(
             out,
             1,
@@ -5703,13 +5729,58 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
 // corpus takes only scalar params, so this never silently narrows a real
 // case).
 
+/// plans/M10.md item 0b (decisions 554/567): one turn's index into the
+/// single contiguous `RT.turns` array `place_runtime_tables` lays down at
+/// `rtdata_base`. The whole point of item 0 — the value a waker, a
+/// reply-ring slot or a group's `owner_turn` will carry once 0c1/0c2/0c3
+/// land, in place of a raw turn-area address.
+///
+/// **1-based, deliberately.** Array index 0 is a live turn in every
+/// actor-bearing image (`tables.actors[0]`'s turn is placed first), so `0`
+/// is not a free value — it is *made* free by biasing the id, and it then
+/// serves as the `Option[TurnId]` niche. That is already the machine's
+/// convention for exactly this problem: a group id is `arena_index + 1`
+/// with `0` meaning "no ambient group". The field is private and
+/// `from_index` is the only constructor, so `TurnId(0)` is
+/// unconstructible — this type is the one place the niche is enforced,
+/// rather than nine `cbz` sites assuming it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct TurnId(u32);
+
+impl TurnId {
+    /// The id of turn-array element `index` (0-based, `place_runtime_tables`'
+    /// own order: actors, then messageable drivers, then free turns).
+    pub fn from_index(index: usize) -> TurnId {
+        // `n_turns` is bounded by the declaration count of one image; a
+        // u32 overflow here would mean a 4-billion-root image, which the
+        // 1 GiB ceiling refuses long before this does.
+        let biased = u32::try_from(index + 1)
+            .expect("a turn array with over 4 billion entries cannot fit the machine's memory");
+        TurnId(biased)
+    }
+
+    /// The 1-based value an `Option[TurnId]` word holds — never `0`, which
+    /// is what makes every existing `cbz`/`str xzr` "no waker" test keep
+    /// meaning "none".
+    pub fn get(self) -> u32 {
+        debug_assert!(self.0 != 0, "TurnId(0) is the None niche, not an id");
+        self.0
+    }
+
+    /// The 0-based array index — what `RuntimePlacement::turn_addr` scales
+    /// by the stride. Bias removal lives here and nowhere else.
+    pub fn index(self) -> usize {
+        debug_assert!(self.0 != 0, "TurnId(0) is the None niche, not an id");
+        self.0 as usize - 1
+    }
+}
+
 /// One actor's own absolute runtime-table addresses, placed sequentially
 /// from a given base (`rtdata_base` for a real image, or a host-mmap'd
 /// stand-in base for a JIT/HVF test) — the exact byte order
 /// `compute_runtime_tables`'s own `RuntimeTables::total_bytes` already
-/// accounts for (state, ring, head/tail/count, turn area), so a real
-/// image's `rtdata` section and this fn's own addresses can never
-/// disagree.
+/// accounts for (state, ring, head/tail/count), so a real image's `rtdata`
+/// section and this fn's own addresses can never disagree.
 #[derive(Debug, Clone, Copy)]
 pub struct ActorAddrs {
     pub state: u64,
@@ -5717,7 +5788,13 @@ pub struct ActorAddrs {
     pub head: u64,
     pub tail: u64,
     pub count: u64,
-    /// This actor's own turn area base — the fixed 48-byte turn record
+    /// This actor's own turn area base — no longer bumped alongside the
+    /// four fields above (plans/M10.md item 0b): it is
+    /// `turns_base + (this actor's TurnId index << log2 stride)`, an
+    /// element of the one contiguous turn array. Still a build-time
+    /// absolute address, because the fully-unrolled scans want one.
+    ///
+    /// The fixed 48-byte turn record
     /// (`codegen::OFF_TURN_*`: busy/suspended/resume_ready/reply/waker/
     /// cur_method) followed by its persistent async frame slots. The
     /// address every message this actor's turns *send* carries as their
@@ -5742,12 +5819,36 @@ impl ActorAddrs {
 
 /// Every runtime-table address, placed from one `base` (`rtdata_base` for
 /// a real image, a host-mmap'd stand-in for a JIT/HVF test) in the exact
-/// byte order `compute_runtime_tables::total_bytes` accounts for: each
-/// actor's region (state, ring, head/tail/count, turn area), then every
-/// free-turn area, then the ready-queue table, the round-robin cursor
-/// word, and the group arena.
+/// byte order `compute_runtime_tables::total_bytes` accounts for.
+///
+/// plans/M10.md item 0b (decision 554) re-grouped that order. It is now:
+/// the whole **turn array** first (`n_turns * turn_stride`, actors then
+/// messageable drivers then free turns), then each actor's region (state,
+/// ring, head/tail/count — the turn area no longer rides along), then each
+/// driver's state and, when messageable, its own ring/head/tail/count, then
+/// the per-core scheduler stripe, the group arena, and the cross-core
+/// rings.
+///
+/// Turns first buys the one property `TurnId` needs: `turns_base ==
+/// rtdata_base` exactly, so the address the whole runtime indexes from *is*
+/// a section base and needs no arithmetic to resolve. Keeping them last
+/// instead would only have preserved goldens this item moves anyway.
 #[derive(Debug, Clone, Default)]
 pub struct RuntimePlacement {
+    /// plans/M10.md item 0b: the base of the one contiguous turn array —
+    /// equal to `base` itself, and so to `rtdata_base` for a real image.
+    pub turns_base: u64,
+    /// The uniform stride the array is indexed at, copied from
+    /// `RuntimeTables::turn_stride` so `turn_addr` below needs no second
+    /// argument (`0` for an image with no turns, which then never indexes).
+    pub turn_stride: u64,
+    /// plans/M10.md item 0b: free async fn key -> that fn's own `TurnId` —
+    /// the exact twin of `free_turns` below, and the only owner kind whose
+    /// id is not positional (an actor's is its `tables.actors` index; a
+    /// messageable driver's is `actors.len()` + its rank among the
+    /// messageable drivers). `turn_id_for` is the reader; nothing indexes
+    /// this map directly.
+    pub turn_ids: BTreeMap<String, TurnId>,
     pub actors: Vec<ActorAddrs>,
     /// plans/M7.md item H1: each declared `@driver` instance's own state
     /// address, in `RuntimeTables::drivers` order. Placed after every
@@ -5793,32 +5894,67 @@ pub struct RuntimePlacement {
 }
 
 impl RuntimePlacement {
-    /// The turn area for async fn `key` (`turn_owner`'s own rule):
-    /// an actor method's area is its actor's; anything else its own
-    /// free-turn area. `None` only for a key the tables never sized —
-    /// an internal inconsistency the caller reports loudly.
-    pub fn turn_area_for(&self, key: &str, tables: &RuntimeTables) -> Option<u64> {
+    /// The address of turn-array element `id` — the one index→address rule,
+    /// `turns_base + (index << log2 stride)`. `place_runtime_tables` fills
+    /// every `ActorAddrs::turn` / `free_turns` value from this same
+    /// expression, so a build-time address and a `TurnId` can never name
+    /// different bytes.
+    pub fn turn_addr(&self, id: TurnId) -> u64 {
+        self.turns_base + (id.index() as u64) * self.turn_stride
+    }
+
+    /// The `TurnId` of async fn `key`'s turn (`turn_owner`'s own rule): an
+    /// actor method's turn is its actor's; a messageable driver's `pub async
+    /// fn` parks in the driver's one turn (plans/M8.md item D —
+    /// non-reentrancy is per root, not per method); anything else owns its
+    /// own free turn. `None` only for a key the tables never sized — an
+    /// internal inconsistency the caller reports loudly.
+    ///
+    /// plans/M10.md item 0b: this is *the* owner-resolution rule.
+    /// `turn_area_for` below is defined in terms of it rather than beside
+    /// it, so there is one rule and not two that could skew.
+    pub fn turn_id_for(&self, key: &str, tables: &RuntimeTables) -> Option<TurnId> {
         let roots = mailbox_root_names(tables);
         match turn_owner(key, &roots) {
             Some(root) => {
                 if let Some(i) = tables.actors.iter().position(|a| a.name == root) {
-                    return Some(self.actors[i].turn);
+                    return Some(TurnId::from_index(i));
                 }
-                // plans/M8.md item D: a messageable driver's own `pub async
-                // fn` parks in the driver's one turn area, exactly as an
-                // actor's does (non-reentrancy is per root, not per method).
                 let di = tables.drivers.iter().position(|d| d.name == root)?;
-                self.driver_mailboxes.get(&di).map(|a| a.turn)
+                // `driver_mailboxes` is keyed by `tables.drivers` index and
+                // is a `BTreeMap`, so its key order *is* the messageable
+                // subsequence of `tables.drivers` — the same order
+                // `place_runtime_tables` assigned indices in.
+                let rank = self.driver_mailboxes.keys().position(|k| *k == di)?;
+                Some(TurnId::from_index(tables.actors.len() + rank))
             }
-            None => self.free_turns.get(key).copied(),
+            None => self.turn_ids.get(key).copied(),
         }
+    }
+
+    /// The turn area address for async fn `key` — `turn_id_for` scaled by
+    /// the stride.
+    pub fn turn_area_for(&self, key: &str, tables: &RuntimeTables) -> Option<u64> {
+        self.turn_id_for(key, tables).map(|id| self.turn_addr(id))
     }
 }
 
 pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlacement {
-    let mut cursor = base;
+    // plans/M10.md item 0b (decision 554): the turn array comes first and
+    // whole, so `turns_base == base` and element `i` sits at a plain
+    // stride multiple. Each area is *reserved* at the image-wide uniform
+    // stride (item 0a), not at its owner's raw area — the owner's own
+    // `frame_size` still says how much of it is live.
+    //
+    // Deliberately **not** aligned up to the stride: `add`-based indexing
+    // does not need it, and `verify_section_sizes`' 8-byte inter-section
+    // gap rule reports a larger gap as a producer bug (the prefix every
+    // fuzz lane treats as a failure), not as an outcome.
+    let turns_base = base;
+    let turn_addr = |index: usize| turns_base + (index as u64) * tables.turn_stride;
+    let mut cursor = base + tables.n_turns * tables.turn_stride;
     let mut actors = Vec::with_capacity(tables.actors.len());
-    for a in &tables.actors {
+    for (i, a) in tables.actors.iter().enumerate() {
         let state = cursor;
         cursor += a.state_size;
         let ring = cursor;
@@ -5829,27 +5965,27 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         cursor += 8;
         let count = cursor;
         cursor += 8;
-        let turn = cursor;
-        // plans/M10.md item 0a: the *reservation* is the image-wide uniform
-        // stride, not this actor's own raw area — `a.frame_size` still says
-        // how much of it is live.
-        cursor += tables.turn_stride;
         actors.push(ActorAddrs {
             state,
             ring,
             head,
             tail,
             count,
-            turn,
+            // The first `tables.actors.len()` turn-array elements are the
+            // actors', in this order.
+            turn: turn_addr(i),
         });
     }
     let mut drivers = Vec::with_capacity(tables.drivers.len());
     let mut driver_mailboxes = BTreeMap::new();
+    // The turn array continues with the messageable drivers, in
+    // `tables.drivers` order (`mailbox_root_names`' own order).
+    let mut next_turn = tables.actors.len();
     for (i, d) in tables.drivers.iter().enumerate() {
         let state = cursor;
         drivers.push(state);
         cursor += d.state_size;
-        // plans/M8.md item D: same five regions, same order, same
+        // plans/M8.md item D: same four regions, same order, same
         // arithmetic as the actor loop above.
         if let Some(mb) = &d.mailbox {
             let ring = cursor;
@@ -5860,8 +5996,8 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             cursor += 8;
             let count = cursor;
             cursor += 8;
-            let turn = cursor;
-            cursor += tables.turn_stride;
+            let turn = turn_addr(next_turn);
+            next_turn += 1;
             driver_mailboxes.insert(
                 i,
                 ActorAddrs {
@@ -5875,11 +6011,19 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             );
         }
     }
+    // ...and ends with the free turns, in `tables.free_turns` order.
     let mut free_turns = BTreeMap::new();
-    for (key, _area) in &tables.free_turns {
-        free_turns.insert(key.clone(), cursor);
-        cursor += tables.turn_stride;
+    let mut turn_ids = BTreeMap::new();
+    for (k, (key, _area)) in tables.free_turns.iter().enumerate() {
+        let index = next_turn + k;
+        free_turns.insert(key.clone(), turn_addr(index));
+        turn_ids.insert(key.clone(), TurnId::from_index(index));
     }
+    debug_assert_eq!(
+        next_turn + tables.free_turns.len(),
+        tables.n_turns as usize,
+        "`compute_runtime_tables` and `place_runtime_tables` disagree about how many turns exist"
+    );
     // plans/M8.md item C1: one ready-queue table + one round-robin cursor
     // per live core, uniformly strided (each core's pair sits at
     // `base + core * (ready_queue_capacity * 8 + RR_CURSOR_SIZE)`). With
@@ -5915,6 +6059,9 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         });
     }
     RuntimePlacement {
+        turns_base,
+        turn_stride: tables.turn_stride,
+        turn_ids,
         actors,
         drivers,
         driver_mailboxes,
@@ -10096,6 +10243,63 @@ pub struct Store:
                 + tables.ready_queue_capacity * 8
                 + 8; // rr cursor
         assert_eq!(tables.total_bytes, expect_total);
+    }
+
+    /// plans/M10.md item 0b (decision 554): the turn array is one
+    /// contiguous run at `rtdata_base` — `turns_base == base` exactly, each
+    /// element one stride from the last, and every owner's state/ring/
+    /// bookkeeping placed *after* the whole array rather than interleaved
+    /// with it. This is the invariant that makes a `TurnId` an index.
+    #[test]
+    fn place_runtime_tables_groups_every_turn_into_one_array_at_the_base() {
+        let tables = RuntimeTables {
+            actors: vec![
+                ActorRuntimeLayout {
+                    name: "A".to_string(),
+                    state_size: 8,
+                    mailbox_capacity: 2,
+                    slot_size: 16,
+                    frame_size: 56,
+                },
+                ActorRuntimeLayout {
+                    name: "B".to_string(),
+                    state_size: 8,
+                    mailbox_capacity: 2,
+                    slot_size: 16,
+                    frame_size: 120,
+                },
+            ],
+            free_turns: vec![("f".to_string(), 56)],
+            n_turns: 3,
+            turn_stride: 128,
+            ready_queue_capacity: 3,
+            ..RuntimeTables::default()
+        };
+        let base = 0x4000u64;
+        let p = place_runtime_tables(base, &tables);
+
+        // Turns first, contiguous, one stride apart.
+        assert_eq!(p.turns_base, base, "`turns_base` is `rtdata_base` itself");
+        assert_eq!(p.turn_stride, tables.turn_stride);
+        assert_eq!(p.actors[0].turn, base);
+        assert_eq!(p.actors[1].turn, base + 128);
+        assert_eq!(p.free_turns["f"], base + 256);
+
+        // ...and nothing else is inside the array: the first actor's own
+        // state begins immediately past all three turns.
+        assert_eq!(p.actors[0].state, base + 3 * 128);
+        assert_eq!(p.actors[1].state, p.actors[0].count + 8);
+
+        // `TurnId` is 1-based (decision 567) and `turn_addr` is the one
+        // index->address rule the build-time addresses above came from.
+        assert_eq!(p.turn_ids["f"].get(), 3);
+        assert_eq!(p.turn_ids["f"].index(), 2);
+        assert_eq!(TurnId::from_index(0).get(), 1);
+        for (key, want) in [("A.tick", base), ("B.tick", base + 128), ("f", base + 256)] {
+            let id = p.turn_id_for(key, &tables).expect("a sized turn owner");
+            assert_eq!(p.turn_addr(id), want, "{key}");
+            assert_eq!(p.turn_area_for(key, &tables), Some(want), "{key}");
+        }
     }
 
     #[test]

@@ -45,5 +45,6 @@ ImageReport v0
   Actor name=Tags mailbox=4 slot=16 frame=56 state=24
   Turn fn=handle_words_are_distinct frame=680
   Driver name=Stub state=8
+  Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=3320
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40502250 size=8

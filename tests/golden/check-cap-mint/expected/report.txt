@@ -28,5 +28,6 @@ ImageReport v0
   Section name=devregs base=0x40500270 size=8
   Entry base=0x40500000
   Driver name=BlkDriver state=16
+  Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=32
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40500270 size=8

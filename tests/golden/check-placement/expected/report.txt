@@ -29,4 +29,5 @@ ImageReport v0
   Entry base=0x40500000
   Actor name=Store mailbox=8 slot=16 frame=56 state=8
   Actor name=Probe mailbox=4 slot=16 frame=56 state=8
+  Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=416

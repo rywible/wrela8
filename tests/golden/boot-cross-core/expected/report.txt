@@ -33,4 +33,5 @@ ImageReport v0
   Actor name=Store mailbox=4 slot=16 frame=56 state=8
   Actor name=Idle mailbox=2 slot=16 frame=56 state=8
   Turn fn=cross_core frame=280
+  Turns count=3 stride=512 bytes=1536
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1792

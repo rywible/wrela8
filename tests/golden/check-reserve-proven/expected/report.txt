@@ -51,6 +51,7 @@ ImageReport v0
   Section name=pooldata base=0x405007a0 size=2560
   Entry base=0x40500000
   Driver name=BlkDriver state=32
+  Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40500738 size=104
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x405007a0 size=512 align=8 coherency=coherent device=device#0

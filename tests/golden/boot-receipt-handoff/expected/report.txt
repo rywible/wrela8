@@ -71,6 +71,7 @@ ImageReport v0
   Turn fn=the_bottom_half_is_what_resolved_them frame=280
   Turn fn=the_parked_turn_really_left_and_re_entered frame=280
   Driver name=BlkDriver state=64 mailbox=4 slot=32 frame=56
+  Turns count=6 stride=1024 bytes=6144
   Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=6664
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405058b0 size=104
   IrqHostInject base=0x405058b0 offset=0x60 status=0xa501 vector=1

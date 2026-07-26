@@ -61,6 +61,7 @@ ImageReport v0
   Turn fn=root_messages_the_driver_directly frame=296
   Turn fn=root_never_reenters_bring_up frame=280
   Driver name=BlkDriver state=80 mailbox=4 slot=24 frame=360
+  Turns count=7 stride=512 bytes=3584
   Totals actors=2 drivers=1 ready_queue=4 group_arena=0 bytes=4048
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40503b48 size=104
   IrqHostInject base=0x40503b48 offset=0x60 status=0xa501 vector=1

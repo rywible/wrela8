@@ -55,6 +55,7 @@ ImageReport v0
   Turn fn=every_kind_gets_its_own_word frame=1016
   Driver name=S0 state=8
   Driver name=S1 state=8
+  Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=2 ready_queue=3 group_arena=0 bytes=3344
   DeviceRegs device=device#0 type=HwA driver=S0 base=0x405028a0 size=8
   DeviceRegs device=device#1 type=HwB driver=S1 base=0x405028a8 size=8
