@@ -12,12 +12,18 @@ pub const GROUP_ARENA_CAPACITY: usize = 0
 pub const GROUP_SLOTS: usize = 1
 pub const TURN_STRIDE: usize = 512
 pub const RTDATA_BYTES: usize = 1792
+pub const N_CHILD_SITES: usize = 0
+pub const N_SELECT_STUBS: usize = 2
+pub const SELECT_STUB_COUNT: usize = 32
+pub const DRAIN_STUB_COUNT: usize = 3
+pub const RESUME_STUB_COUNT: usize = 16
 
 @layout(runtime, endian=little)
 struct TurnArea:
     busy: u64
     suspended: u64
     resume_ready: u64
+    reply: u64
     @offset(0x40) ambient_group: u64
     @offset(0x1ff) _tail: u8
 
@@ -29,9 +35,17 @@ struct GroupSlot:
     deadline_ns: u64
     cancelled: u64
     parent: u64
-    join_waiter: u64
+    @offset(0x30) join_waiter: u32
     @offset(0x38) owner_turn: u32
-    @offset(0x5f) _tail: u8
+    @offset(0x40) child0_tag: u64
+    child0_payload: u64
+    child1_tag: u64
+    child1_payload: u64
+
+@layout(runtime, endian=little)
+struct SchedCore:
+    ready: [u64; READY_QUEUE_CAPACITY]
+    rr_cursor: u64
 
 @layout(runtime, endian=little)
 struct RuntimeTables:
@@ -41,8 +55,224 @@ struct RuntimeTables:
 pub static RT: RuntimeTables
 
 @layout(runtime, endian=little)
+struct SchedStripe:
+    cores: [SchedCore; N_CORES]
+
+@placed(0x405106a0)
+pub static SCHED: SchedStripe
+
+@layout(runtime, endian=little)
 struct GroupArena:
     slots: [GroupSlot; GROUP_SLOTS]
 
 @placed(0x40510700)
 pub static GROUPS: GroupArena
+
+pub fn __select_0() -> u64:
+    return 0
+
+pub fn __select_1() -> u64:
+    return 0
+
+pub fn __select_2() -> u64:
+    return 0
+
+pub fn __select_3() -> u64:
+    return 0
+
+pub fn __select_4() -> u64:
+    return 0
+
+pub fn __select_5() -> u64:
+    return 0
+
+pub fn __select_6() -> u64:
+    return 0
+
+pub fn __select_7() -> u64:
+    return 0
+
+pub fn __select_8() -> u64:
+    return 0
+
+pub fn __select_9() -> u64:
+    return 0
+
+pub fn __select_10() -> u64:
+    return 0
+
+pub fn __select_11() -> u64:
+    return 0
+
+pub fn __select_12() -> u64:
+    return 0
+
+pub fn __select_13() -> u64:
+    return 0
+
+pub fn __select_14() -> u64:
+    return 0
+
+pub fn __select_15() -> u64:
+    return 0
+
+pub fn __select_16() -> u64:
+    return 0
+
+pub fn __select_17() -> u64:
+    return 0
+
+pub fn __select_18() -> u64:
+    return 0
+
+pub fn __select_19() -> u64:
+    return 0
+
+pub fn __select_20() -> u64:
+    return 0
+
+pub fn __select_21() -> u64:
+    return 0
+
+pub fn __select_22() -> u64:
+    return 0
+
+pub fn __select_23() -> u64:
+    return 0
+
+pub fn __select_24() -> u64:
+    return 0
+
+pub fn __select_25() -> u64:
+    return 0
+
+pub fn __select_26() -> u64:
+    return 0
+
+pub fn __select_27() -> u64:
+    return 0
+
+pub fn __select_28() -> u64:
+    return 0
+
+pub fn __select_29() -> u64:
+    return 0
+
+pub fn __select_30() -> u64:
+    return 0
+
+pub fn __select_31() -> u64:
+    return 0
+
+pub fn __drain_0() -> u64:
+    return 0
+
+pub fn __drain_1() -> u64:
+    return 0
+
+pub fn __drain_2() -> u64:
+    return 0
+
+pub fn __resume_0() -> u64:
+    return 0
+
+pub fn __resume_1() -> u64:
+    return 0
+
+pub fn __resume_2() -> u64:
+    return 0
+
+pub fn __resume_3() -> u64:
+    return 0
+
+pub fn __resume_4() -> u64:
+    return 0
+
+pub fn __resume_5() -> u64:
+    return 0
+
+pub fn __resume_6() -> u64:
+    return 0
+
+pub fn __resume_7() -> u64:
+    return 0
+
+pub fn __resume_8() -> u64:
+    return 0
+
+pub fn __resume_9() -> u64:
+    return 0
+
+pub fn __resume_10() -> u64:
+    return 0
+
+pub fn __resume_11() -> u64:
+    return 0
+
+pub fn __resume_12() -> u64:
+    return 0
+
+pub fn __resume_13() -> u64:
+    return 0
+
+pub fn __resume_14() -> u64:
+    return 0
+
+pub fn __resume_15() -> u64:
+    return 0
+
+pub fn __wrela_select_count(core: usize) -> usize:
+    match core:
+        case 0:
+            return 1
+        case 1:
+            return 1
+        case 2:
+            return 0
+        case _:
+            return 0
+
+pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
+    match core:
+        case 0:
+            match slot:
+                case 0:
+                    return __select_0()
+                case _:
+                    return 0
+        case 1:
+            match slot:
+                case 0:
+                    return __select_1()
+                case _:
+                    return 0
+        case 2:
+            return 0
+        case _:
+            return 0
+
+pub fn __wrela_try_drain(core: usize) -> u64:
+    match core:
+        case 0:
+            return 0
+        case 1:
+            return 0
+        case 2:
+            return 0
+        case _:
+            return 0
+
+pub fn __wrela_resume_child(site: usize) -> u64:
+    match site:
+        case _:
+            return 0
+
+pub fn __wrela_child_turn_index(site: usize) -> usize:
+    match site:
+        case _:
+            return 0
+
+pub fn __wrela_child_slot(site: usize) -> usize:
+    match site:
+        case _:
+            return 0

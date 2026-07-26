@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/pool_slot_stride.wr sha256=c1a30407cf983d3deb7ca8c2b0753b7f6b902b4a741a2056a90ee5bf818acadd
-  Input path=<generated> sha256=c7fbd14933c8d638626933340e7cc43ea4ef089ae5bef70d000e4c6de1ec89b9
+  Input path=<generated> sha256=bb4a57d66093d216c8dce59d984ffc5050f9dd8355b6aff577c3b1941fdd94b6
   Name value=pool-slot-stride
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -55,10 +55,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=9252
-  Section name=rodata base=0x40502478 size=263
-  Section name=abort base=0x40502580 size=120
-  Section name=checkpoint base=0x405025f8 size=104
+  Section name=code base=0x40500050 size=15612
+  Section name=rodata base=0x40503d50 size=263
+  Section name=abort base=0x40503e58 size=120
+  Section name=checkpoint base=0x40503ed0 size=104
   Section name=rtdata base=0x40510000 size=24
   Section name=devregs base=0x40510018 size=8
   Section name=pooldata base=0x40510020 size=37
@@ -70,6 +70,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=8
   Turns count=0 stride=0 bytes=0

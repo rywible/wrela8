@@ -3,17 +3,78 @@
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
 
-# plans/M11.md item D / E: import the generated facts module.
+# plans/M11.md item D / E / F: import the generated facts module.
 # Batch-1 injects a stub `core.__image_runtime` (decision 780); live images
-# replace it with `rtconfig::generate` before force-rooting deadline keys.
+# replace it with `rtconfig::generate_with` before force-rooting runtime keys.
+# Fixed stub pools (decision 791) are always imported so spliced match
+# ladders can Call them (sema forbids reaching non-imported helpers).
 from core.__image_runtime import (
     N_CORES,
     N_TURNS,
     N_TURNS_LEN,
+    N_CHILD_SITES,
     GROUP_ARENA_CAPACITY,
     GROUP_SLOTS,
     RT,
     GROUPS,
+    SCHED,
+    __wrela_select_count,
+    __wrela_try_select,
+    __wrela_try_drain,
+    __wrela_resume_child,
+    __wrela_child_turn_index,
+    __wrela_child_slot,
+    __select_0,
+    __select_1,
+    __select_2,
+    __select_3,
+    __select_4,
+    __select_5,
+    __select_6,
+    __select_7,
+    __select_8,
+    __select_9,
+    __select_10,
+    __select_11,
+    __select_12,
+    __select_13,
+    __select_14,
+    __select_15,
+    __select_16,
+    __select_17,
+    __select_18,
+    __select_19,
+    __select_20,
+    __select_21,
+    __select_22,
+    __select_23,
+    __select_24,
+    __select_25,
+    __select_26,
+    __select_27,
+    __select_28,
+    __select_29,
+    __select_30,
+    __select_31,
+    __drain_0,
+    __drain_1,
+    __drain_2,
+    __resume_0,
+    __resume_1,
+    __resume_2,
+    __resume_3,
+    __resume_4,
+    __resume_5,
+    __resume_6,
+    __resume_7,
+    __resume_8,
+    __resume_9,
+    __resume_10,
+    __resume_11,
+    __resume_12,
+    __resume_13,
+    __resume_14,
+    __resume_15,
 )
 
 # M10 B2: machine pages the console formatter speaks to (decision 593).
@@ -375,3 +436,91 @@ pub fn __wrela_deadline_scan():
                             RT.turns[t].resume_ready = 1
         t = t +% 1
     return
+
+# ---------------------------------------------------------------------------
+# M11 item F: rt_run_one + rt_child_poll (decisions 790–794). Generic
+# @budget loops over RT.sched / generated select+child ladders. Call sites
+# BL `__wrela_rt_run_one(core)`; child harvest reads `TurnArea.reply`
+# (async epilogue stores the completing scalar there — decision 793).
+# ---------------------------------------------------------------------------
+
+const TURN_STATUS_COMPLETED: u64 = 0
+const TURN_STATUS_SUSPENDED: u64 = 1
+const TURN_STATUS_CANCELLED: u64 = 2
+
+# Per-core scheduler tick. ABI: x0 = core on entry; returns 1 if work ran.
+pub fn __wrela_rt_run_one(core: usize) -> u64:
+    drained = __wrela_try_drain(core)
+    if drained != 0:
+        return 1
+    n = __wrela_select_count(core)
+    rr_pass: usize = 0
+    @budget(bound=2)
+    while rr_pass < 2:
+        i: usize = 0
+        @budget(bound=256)
+        while i < n:
+            cursor = SCHED.cores[core].rr_cursor.to[usize]()
+            should_try = 0
+            if rr_pass == 0:
+                if cursor <= i:
+                    should_try = 1
+            else:
+                if cursor > i:
+                    should_try = 1
+            if should_try != 0:
+                ran = __wrela_try_select(core, i)
+                if ran != 0:
+                    nxt = i +% 1
+                    if nxt >= n:
+                        nxt = 0
+                    SCHED.cores[core].rr_cursor = nxt.to[u64]()
+                    return 1
+            i = i +% 1
+        rr_pass = rr_pass +% 1
+    if core == 0:
+        s: usize = 0
+        @budget(bound=256)
+        while s < N_CHILD_SITES:
+            if __wrela_child_poll(s) != 0:
+                return 1
+            s = s +% 1
+    return 0
+
+# Poll one static g.start site. Returns 1 if a slice ran / completed.
+pub fn __wrela_child_poll(site: usize) -> u64:
+    ti = __wrela_child_turn_index(site)
+    if RT.turns[ti].busy == 0:
+        return 0
+    if RT.turns[ti].suspended == 0:
+        return 0
+    if RT.turns[ti].resume_ready == 0:
+        return 0
+    status = __wrela_resume_child(site)
+    if status == TURN_STATUS_SUSPENDED:
+        return 1
+    payload = RT.turns[ti].reply
+    tag: u64 = 0
+    if status == TURN_STATUS_CANCELLED:
+        tag = 1
+    ag = RT.turns[ti].ambient_group
+    gi: usize = (ag -% 1).to[usize]()
+    slot = __wrela_child_slot(site)
+    match slot:
+        case 0:
+            GROUPS.slots[gi].child0_tag = tag
+            GROUPS.slots[gi].child0_payload = payload
+        case 1:
+            GROUPS.slots[gi].child1_tag = tag
+            GROUPS.slots[gi].child1_payload = payload
+        case _:
+            return 0
+    active = GROUPS.slots[gi].active_children -% 1
+    GROUPS.slots[gi].active_children = active
+    RT.turns[ti].busy = 0
+    if active == 0:
+        waiter = GROUPS.slots[gi].join_waiter
+        if waiter != 0:
+            wi: usize = (waiter.to[u64]() -% 1).to[usize]()
+            RT.turns[wi].resume_ready = 1
+    return 1

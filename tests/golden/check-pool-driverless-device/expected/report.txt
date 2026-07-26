@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_driverless_device.wr sha256=db7117382c936c2135637bbfba74d0da805c314b17c09e99680a71e593845d9e
-  Input path=<generated> sha256=e4106987e2cc332b887ad81c28c5731745ac91c1e6848c012e127a41683429db
+  Input path=<generated> sha256=bd3e1a0d431df1b47ee19d057341fa5b8434bfe2596d34a8f81f3259f22b4b3f
   Name value=pool-driverless
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -50,10 +50,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=9244
-  Section name=rodata base=0x40502470 size=263
-  Section name=abort base=0x40502578 size=120
-  Section name=checkpoint base=0x405025f0 size=104
+  Section name=code base=0x40500050 size=15604
+  Section name=rodata base=0x40503d48 size=263
+  Section name=abort base=0x40503e50 size=120
+  Section name=checkpoint base=0x40503ec8 size=104
   Section name=rtdata base=0x40510000 size=32
   Section name=devregs base=0x40510020 size=8
   Section name=pooldata base=0x40510028 size=16
@@ -65,6 +65,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=16
   Turns count=0 stride=0 bytes=0

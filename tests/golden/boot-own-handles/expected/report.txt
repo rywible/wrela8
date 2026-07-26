@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_own_handles.wr sha256=32d671797005fb84cd59806588eb0ae69a610d8d92927c877357f4eb3519b36c
-  Input path=<generated> sha256=70f94302387e4142f0becc5b0b48e7728522afd1343cb55616c23a08c2abe0c5
+  Input path=<generated> sha256=9b57f98fd6b19b82699f99a397a2a556e038c55bb41c08116e276203b2cb7a65
   Name value=boot-own-handles
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -50,10 +50,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=11980
-  Section name=rodata base=0x40502f20 size=569
-  Section name=abort base=0x4050315c size=120
-  Section name=checkpoint base=0x405031d4 size=104
+  Section name=code base=0x40500050 size=18312
+  Section name=rodata base=0x405047d8 size=569
+  Section name=abort base=0x40504a14 size=120
+  Section name=checkpoint base=0x40504a8c size=104
   Section name=rtdata base=0x40510000 size=1216
   Section name=pooldata base=0x405104c0 size=16
   Entry base=0x40500000
@@ -64,6 +64,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Holder mailbox=8 slot=16 frame=64 state=16
   Turn fn=own_handle_addresses_pool_slot frame=480

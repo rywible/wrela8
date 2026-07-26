@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_cap_mint.wr sha256=2b05d44fa02e0557a941d29d69c4ca6d48bfada3562726b4dd139b63e9064d15
-  Input path=<generated> sha256=e4106987e2cc332b887ad81c28c5731745ac91c1e6848c012e127a41683429db
+  Input path=<generated> sha256=bd3e1a0d431df1b47ee19d057341fa5b8434bfe2596d34a8f81f3259f22b4b3f
   Name value=cap-mint
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -44,10 +44,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=9304
-  Section name=rodata base=0x405024a8 size=263
-  Section name=abort base=0x405025b0 size=120
-  Section name=checkpoint base=0x40502628 size=104
+  Section name=code base=0x40500050 size=15664
+  Section name=rodata base=0x40503d80 size=263
+  Section name=abort base=0x40503e88 size=120
+  Section name=checkpoint base=0x40503f00 size=104
   Section name=rtdata base=0x40510000 size=32
   Section name=devregs base=0x40510020 size=8
   Entry base=0x40500000
@@ -58,6 +58,7 @@ ImageReport v0
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Driver name=BlkDriver state=16
   Turns count=0 stride=0 bytes=0

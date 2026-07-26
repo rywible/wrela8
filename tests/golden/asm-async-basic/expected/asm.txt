@@ -190,15 +190,16 @@ Program
     0187: 94000000  bl <__wrela_abort>
     0188: 14000001  b #4
     0189: aa0003e1  mov x1, x0
-    0190: f9408b89  ldr x9, [x28, #272]
-    0191: f9402b8a  ldr x10, [x28, #80]
-    0192: f900012a  str x10, [x9, #0]
-    0193: d2800000  movz x0, #0x0
-    0194: f2a00000  movk x0, #0x0, lsl #16
-    0195: f2c00000  movk x0, #0x0, lsl #32
-    0196: f2e00000  movk x0, #0x0, lsl #48
-    0197: f9408f9e  ldr lr, [x28, #280]
-    0198: d65f03c0  ret
+    0190: f9000f81  str x1, [x28, #24]  ; complete → turn.reply
+    0191: f9408b89  ldr x9, [x28, #272]
+    0192: f9402b8a  ldr x10, [x28, #80]
+    0193: f900012a  str x10, [x9, #0]
+    0194: d2800000  movz x0, #0x0
+    0195: f2a00000  movk x0, #0x0, lsl #16
+    0196: f2c00000  movk x0, #0x0, lsl #32
+    0197: f2e00000  movk x0, #0x0, lsl #48
+    0198: f9408f9e  ldr lr, [x28, #280]
+    0199: d65f03c0  ret
   Fn key=Counter.get frame=32 bytes
     0000: d10083ff  sub sp, sp, #32
     0001: f9000ffe  str lr, [sp, #24]
