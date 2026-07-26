@@ -1341,11 +1341,21 @@ fn check_sema_invariants(input: &str) -> Result<(), String> {
     let second = std::panic::catch_unwind(|| run_sema_pipeline_once(input))
         .map_err(|p| format!("sema panicked on a repeat call: {}", panic_message(&p)))?;
 
-    if let SemaPipelineOutcome::SemaErr { category, .. } = &first {
+    if let SemaPipelineOutcome::SemaErr {
+        category, message, ..
+    } = &first
+    {
         if !SEMA_CATEGORIES.contains(category) {
             return Err(format!(
                 "sema produced an unknown diagnostic category `{category}` (not in the fixed set)"
             ));
+        }
+        // plans/M9.md item NN / CLAUDE.md: an `internal error:` is a bug,
+        // not an outcome. Sema was the one live lane that only checked the
+        // category set and would have shrugged at the comptime-assert
+        // unbound-local find; close that hole here too.
+        if message.starts_with("internal error: ") {
+            return Err(format!("sema: check_dump reported {message}"));
         }
     }
 
@@ -1657,11 +1667,7 @@ fn check_sema_roundtrip_and_rotation_guarded(input: &str) -> Result<(), String> 
 fn run_sema_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
     for i in 0..iters {
-        let input = if i % 2 == 0 {
-            String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
-        } else {
-            token_soup(&mut rng)
-        };
+        let input = fuzz_input_with_comptime_assert_shapes(&mut rng, seed_inputs, i);
         if let Err(reason) = check_sema_invariants(&input) {
             return report_fuzz_failure("sema", "sema-crash-", seed, i, &input, &reason);
         }
@@ -2209,14 +2215,65 @@ fn check_eval_invariants(input: &str) -> Result<(), String> {
     }
 }
 
+/// plans/M9.md item NN: fixed shapes that put `comptime assert` over a
+/// runtime-visible name (parameter, local, loop-accumulated local,
+/// for-loop variable, field of a parameter, `self`, `@test` local).
+/// Mutation and token soup never spelled this class, so the eval lane's
+/// `internal error:` check had nothing to catch — the fifth reachable
+/// producer-bug after II's multi-module four. Numerics vary from the
+/// seeded RNG; the shape set is fixed (same discipline as `fuzz imports`).
+///
+/// Indent is written as `\n    ` on one line — never a `\` line-
+/// continuation before indented text, which would eat the spaces
+/// (see `import_test_fn`'s own comment for the same trap).
+fn generate_comptime_assert_runtime_shape(rng: &mut Rng) -> String {
+    let n = (rng.gen_range(40) as i64) + 1;
+    let k = (rng.gen_range(40) as i64) + 1;
+    match rng.gen_range(7) {
+        0 => format!(
+            "module fuzz.ca_param\nfn f(n: i64) -> i64:\n    comptime assert n > 0, \"param\"\n    return n\n@test pub fn go(): assert f({n}) == {n}, \"ok\"\n"
+        ),
+        1 => format!(
+            "module fuzz.ca_local\nfn compute() -> i64:\n    t = {n}\n    comptime assert t * 2 == {twice}, \"doubling\"\n    return t\n@test pub fn go(): assert compute() == {n}, \"ok\"\n",
+            twice = n * 2,
+        ),
+        2 => format!(
+            "module fuzz.ca_loop\nfn f() -> i64:\n    total = 0\n    for i in 0..{n}:\n        total = total + i\n    comptime assert total == {k}, \"loop\"\n    return total\n@test pub fn go(): assert f() >= 0, \"ok\"\n"
+        ),
+        3 => format!(
+            "module fuzz.ca_for_var\nfn f() -> i64:\n    for i in 0..{n}:\n        comptime assert i >= 0, \"i\"\n    return 0\n@test pub fn go(): assert f() == 0, \"ok\"\n"
+        ),
+        4 => format!(
+            "module fuzz.ca_field\nstruct Point:\n    x: i64\n    y: i64\nfn g(p: Point) -> i64:\n    comptime assert p.x > 0, \"x\"\n    return p.x\n@test pub fn go(): assert g(Point(x={n}, y={k})) == {n}, \"ok\"\n"
+        ),
+        5 => format!(
+            "module fuzz.ca_self\nstruct Box:\n    n: i64\n    fn check(self) -> i64:\n        comptime assert self.n > 0, \"n\"\n        return self.n\n@test pub fn go(): assert Box(n={n}).check() == {n}, \"ok\"\n"
+        ),
+        _ => format!(
+            "module fuzz.ca_test_local\n@test pub fn go():\n    x = {n}\n    comptime assert x == {n}, \"x\"\n"
+        ),
+    }
+}
+
+/// Corpus mutation / token soup / comptime-assert-over-runtime-name
+/// shapes (plans/M9.md item NN). Every fourth iteration is a shape so
+/// the class cannot regress silently under the existing
+/// `internal error:` invariant.
+fn fuzz_input_with_comptime_assert_shapes(rng: &mut Rng, seed_inputs: &[String], i: u64) -> String {
+    if i % 4 == 3 {
+        return generate_comptime_assert_runtime_shape(rng);
+    }
+    if i % 2 == 0 {
+        String::from_utf8_lossy(&mutate_seed_input(rng, seed_inputs)).into_owned()
+    } else {
+        token_soup(rng)
+    }
+}
+
 fn run_eval_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
     for i in 0..iters {
-        let input = if i % 2 == 0 {
-            String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
-        } else {
-            token_soup(&mut rng)
-        };
+        let input = fuzz_input_with_comptime_assert_shapes(&mut rng, seed_inputs, i);
         if let Err(reason) = check_eval_invariants(&input) {
             return report_fuzz_failure("eval", "eval-crash-", seed, i, &input, &reason);
         }
@@ -2603,6 +2660,22 @@ fn run_lower_pipeline_once(input: &str) -> LowerFuzzOutcome {
     let mwir_dump = mwir::dump(&mwir_program);
     let layout_ctx = match mwir::build_layout_ctx(&module, &Default::default()) {
         Err(e) => {
+            // plans/M9.md item NN carry-out / item LL residue: `check_typed`
+            // splices `core.time` when the source mentions a time-prelude
+            // name, so `build_layout_ctx(&module, empty)` is no longer a
+            // strict subset of what just accepted. A type error here on a
+            // time-mentioning module is that asymmetry (Duration/Instant
+            // known to check, unknown to empty-import declare), not a
+            // newly introduced producer bug — reject, don't Bug. Other
+            // build_layout_ctx failures on non-time modules stay Bugs.
+            let needs_time = input
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|tok| {
+                    tok == "now" || wrela_compiler::loader::TIME_PRELUDE_NAMES.contains(&tok)
+                });
+            if needs_time {
+                return LowerFuzzOutcome::LowerRejected { message: e.message };
+            }
             return LowerFuzzOutcome::Bug(format!(
                 "mwir::build_layout_ctx failed after check_typed already accepted this program: \
                  {e:?}"
@@ -2785,6 +2858,14 @@ fn check_lower_invariants(input: &str) -> Result<(), String> {
 fn run_lower_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> Result<(), String> {
     let mut rng = Rng::new(seed);
     for i in 0..iters {
+        // plans/M9.md item NN: comptime-assert-over-runtime-name shapes
+        // live in `fuzz sema`/`fuzz eval` (the lanes that police the
+        // producer-bug prefix on `check_typed`). Wiring them into this
+        // lane shifted the smoke schedule onto a pre-existing
+        // `mwir::build_layout_ctx` hole against a mutated
+        // `check-time-prelude-types` input (`unknown type Duration`
+        // after check_typed accepted) — recorded as a carry-out, not
+        // fixed here. Keep the historical 50/50 mutate/soup mix.
         let input = if i % 2 == 0 {
             String::from_utf8_lossy(&mutate_seed_input(&mut rng, seed_inputs)).into_owned()
         } else {
@@ -4164,9 +4245,11 @@ fn golden(update: bool) -> Result<(), String> {
             };
             // `build-err.txt` requires the opposite of every other
             // expectation file: `wrela build` exits nonzero exactly when
-            // it printed a diagnostic (decision 11 — unlike `dump`, which
-            // stays exit-0-by-convention), so a *successful* exit here is
-            // itself the failure.
+            // it printed a diagnostic (decision 11). `dump` also exits
+            // nonzero on a diagnostic (plans/M9.md item NN); when the
+            // pinned expectation is itself an `error[…]` line, that
+            // nonzero exit is the expected companion — only a failure
+            // exit with empty/mismatched stdout is a harness problem.
             if stage == "build-err" {
                 if out.status.success() {
                     failures.push(format!(
@@ -4176,12 +4259,28 @@ fn golden(update: bool) -> Result<(), String> {
                     continue;
                 }
             } else if stage != "test" && !out.status.success() {
-                failures.push(format!(
-                    "{} [{stage}]: wrela exited with failure:\n{}",
-                    case.display(),
-                    String::from_utf8_lossy(&out.stderr)
-                ));
-                continue;
+                // plans/M9.md item NN: dump exits nonzero on a diagnostic.
+                // Accept that when the pinned expectation (or, under
+                // `--update`, the fresh stdout) is itself an `error[…]`
+                // line — otherwise a success-case dump that crashed is
+                // still a harness failure.
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let expected_is_diagnostic = std::fs::read_to_string(&exp)
+                    .map(|t| t.lines().next().is_some_and(|l| l.starts_with("error[")))
+                    .unwrap_or(false)
+                    || (update
+                        && stdout
+                            .lines()
+                            .next()
+                            .is_some_and(|l| l.starts_with("error[")));
+                if !expected_is_diagnostic {
+                    failures.push(format!(
+                        "{} [{stage}]: wrela exited with failure:\n{}",
+                        case.display(),
+                        String::from_utf8_lossy(&out.stderr)
+                    ));
+                    continue;
+                }
             }
             let actual = String::from_utf8_lossy(&out.stdout).into_owned();
             cases += 1;
