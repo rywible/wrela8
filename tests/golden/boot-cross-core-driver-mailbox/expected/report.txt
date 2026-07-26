@@ -63,16 +63,15 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=17876
-  Section name=rodata base=0x40504628 size=470
-  Section name=abort base=0x40504800 size=120
-  Section name=checkpoint base=0x40504878 size=104
-  Section name=rtcode base=0x405048e0 size=116
-  Section name=rtdata base=0x40504958 size=2096
-  Section name=devregs base=0x40505188 size=8
+  Section name=code base=0x40500050 size=18024
+  Section name=rodata base=0x405046b8 size=470
+  Section name=abort base=0x40504890 size=120
+  Section name=checkpoint base=0x40504908 size=104
+  Section name=rtdata base=0x40504970 size=2096
+  Section name=devregs base=0x405051a0 size=8
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40503578
-  CoreEntry core=2 base=0x405035e0
+  CoreEntry core=1 base=0x4050360c
+  CoreEntry core=2 base=0x40503674
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
@@ -80,10 +79,10 @@ ImageReport v0
   Actor name=Probe mailbox=4 slot=16 frame=272 state=8
   Turn fn=cross_core_send_into_driver_mailbox frame=464
   Driver name=Stub state=8 mailbox=4 slot=16 frame=64
-  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x40505078
-  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x405050d0
-  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40505128
-  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40505150
+  Ring kind=request src=0 dst=1 target=Probe cap=4 slot=16 bytes=88 base=0x40505090
+  Ring kind=request src=1 dst=0 target=Stub cap=4 slot=16 bytes=88 base=0x405050e8
+  Ring kind=reply src=0 dst=1 target=- cap=1 slot=16 bytes=40 base=0x40505140
+  Ring kind=reply src=1 dst=0 target=- cap=2 slot=16 bytes=56 base=0x40505168
   Turns count=3 stride=512 bytes=1536
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2096
-  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40505188 size=8
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x405051a0 size=8

@@ -64,13 +64,12 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=12360
-  Section name=rodata base=0x40503098 size=199
-  Section name=abort base=0x40503160 size=120
-  Section name=checkpoint base=0x405031d8 size=104
-  Section name=rtcode base=0x40503240 size=172
-  Section name=rtdata base=0x405032f0 size=400
-  Section name=pooldata base=0x40503480 size=256
+  Section name=code base=0x40500050 size=12524
+  Section name=rodata base=0x40503140 size=199
+  Section name=abort base=0x40503208 size=120
+  Section name=checkpoint base=0x40503280 size=104
+  Section name=rtdata base=0x405032e8 size=400
+  Section name=pooldata base=0x40503478 size=256
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -80,4 +79,4 @@ ImageReport v0
   Driver name=Blk state=16
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=400
-  Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40503480 size=256 align=8 coherency=coherent device=none
+  Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40503478 size=256 align=8 coherency=coherent device=none

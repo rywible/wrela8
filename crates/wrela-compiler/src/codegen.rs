@@ -545,6 +545,26 @@ pub enum Reloc {
         ring_index: usize,
         field: RingField,
     },
+    /// plans/M10.md item H (decision 682): the four-word `load_imm`
+    /// starting at `word` materializes `@driver` `driver`'s placed state
+    /// base (`RuntimePlacement::drivers`). Mirrors `WakePending`'s name
+    /// resolution; drivers without mailboxes are not mailbox roots, so
+    /// `MailboxAddr::State` cannot name them.
+    DriverState { word: usize, driver: String },
+    /// plans/M10.md item H (decision 683): four-word `load_imm` of
+    /// `device#device`'s placed register-window base (`DeviceRegs`).
+    DeviceRegsBase { word: usize, device: usize },
+    /// plans/M10.md item H (decision 683): four-word `load_imm` of pool
+    /// `pool`'s placed backing base (`PoolPlacement`).
+    PoolBase { word: usize, pool: String },
+    /// plans/M10.md item H (decision 683): four-word `load_imm` of
+    /// `pool_base + index * slot_bytes` — one `own[P] T` slot address.
+    PoolSlot {
+        word: usize,
+        pool: String,
+        index: u64,
+        slot_bytes: u64,
+    },
 }
 
 /// Which word of a mailbox root's placed region a `Reloc::MailboxAddr`
@@ -5810,6 +5830,64 @@ pub struct RtDrainSpec {
 #[derive(Debug, Clone)]
 pub struct RtSecondaryCoreEntrySpec {
     pub core: usize,
+}
+
+/// plans/M10.md item H (decision 680): specialized `rt_boot_init` symbol.
+/// Space-bearing (` 0`) — unrepresentable as a source key; one body per
+/// image (the trailing `0` is not a core index).
+pub fn rt_boot_init_symbol() -> String {
+    "rt_boot_init 0".to_string()
+}
+
+/// One state region `emit_boot_init` zero-fills, then (when `init` is
+/// `Some`) calls as receiver (plans/M10.md item H / decision 680).
+#[derive(Debug, Clone)]
+pub struct BootInitSlotSpec {
+    /// Actor mailbox-root name (`Reloc::MailboxAddr::State`) or driver
+    /// name (`Reloc::DriverState`).
+    pub name: String,
+    pub is_driver: bool,
+    pub state_size: u64,
+    pub init: Option<BootInitCallSpec>,
+}
+
+/// One boot `init` call (plans/M10.md item H).
+#[derive(Debug, Clone)]
+pub struct BootInitCallSpec {
+    pub key: String,
+    pub args: Vec<BootInitArgSpec>,
+    pub fallible: bool,
+    /// `(rodata_byte_offset, len)` when `fallible`; set after
+    /// `intern_fallible_init_abort_messages`.
+    pub err_msg: Option<(usize, usize)>,
+}
+
+/// One materialized `init` argument for specialized boot (decision 683).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootInitArgSpec {
+    Word(u64),
+    DeviceRegsBase(usize),
+    PoolBase(String),
+    OwnSlot {
+        pool: String,
+        index: u64,
+        slot_bytes: u64,
+    },
+    OwnHandleArray {
+        pool: String,
+        count: u64,
+        slot_bytes: u64,
+    },
+}
+
+/// Inputs `emit_boot_init` specializes on (plans/M10.md item H /
+/// decision 680). Drivers first, then actors — 06 §3 / M7 H1 order.
+#[derive(Debug, Clone)]
+pub struct BootInitSpec {
+    /// Zero-fill order: actors then drivers (same as hand-asm). Init-call
+    /// order is drivers then actors, rebuilt inside the emitter.
+    pub actor_slots: Vec<BootInitSlotSpec>,
+    pub driver_slots: Vec<BootInitSlotSpec>,
 }
 
 // --- the turn record (the real park-and-resume contract) --------------------
@@ -11545,6 +11623,357 @@ pub fn emit_secondary_core_entry(spec: &RtSecondaryCoreEntrySpec) -> CodegenFn {
     }
 }
 
+/// plans/M10.md item H (decisions 680–684): specialized boot-init body.
+/// Saves `x30` (the second hang regression); zero-fills every actor then
+/// driver state with a memset-style count loop (decision 681); calls
+/// drivers' `init`s then actors' (M7 H1). No mid-tick checkpoint
+/// (decision 684 / 597).
+pub fn emit_boot_init(spec: &BootInitSpec) -> CodegenFn {
+    fn push(words: &mut Vec<(u32, String)>, w: u32, text: String) {
+        words.push((w, text));
+    }
+    fn load_imm(words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str) {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        push(
+            words,
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h1, 16, true),
+            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h2, 32, true),
+            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h3, 48, true),
+            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
+        );
+    }
+    fn load_state(
+        words: &mut Vec<(u32, String)>,
+        relocs: &mut Vec<Reloc>,
+        reg: u8,
+        slot: &BootInitSlotSpec,
+    ) {
+        let word = words.len();
+        load_imm(words, reg, 0, &format!("state {}", slot.name));
+        for i in 0..4 {
+            if let Some((_, text)) = words.get_mut(word + i) {
+                *text = format!("state-addr[{i}] {} x{reg}", slot.name);
+            }
+        }
+        if slot.is_driver {
+            relocs.push(Reloc::DriverState {
+                word,
+                driver: slot.name.clone(),
+            });
+        } else {
+            relocs.push(Reloc::MailboxAddr {
+                word,
+                actor: slot.name.clone(),
+                field: MailboxField::State,
+            });
+        }
+    }
+    fn bl_key(words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, key: &str) {
+        let word = words.len();
+        push(words, encode::enc_bl(0), format!("bl <{key}>"));
+        relocs.push(Reloc::Call {
+            word,
+            key: key.to_string(),
+        });
+    }
+    fn zero_fill(words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, slot: &BootInitSlotSpec) {
+        let size = slot.state_size;
+        if size == 0 {
+            return;
+        }
+        assert!(
+            size % 8 == 0,
+            "boot state size must be 8-aligned; got {} for {}",
+            size,
+            slot.name
+        );
+        let nwords = size / 8;
+        load_state(words, relocs, 9, slot);
+        if nwords <= u16::MAX as u64 {
+            push(
+                words,
+                encode::enc_movz(10, nwords as u16, 0, true),
+                format!("movz x10, #{nwords}  ; zero-fill words"),
+            );
+        } else {
+            load_imm(words, 10, nwords, "zero-fill words");
+        }
+        let loop_top = words.len();
+        push(
+            words,
+            encode::enc_str_x_imm(31, 9, 0),
+            "str xzr, [x9]".to_string(),
+        );
+        push(
+            words,
+            encode::enc_add_imm(9, 9, 8, true),
+            "add x9, x9, #8".to_string(),
+        );
+        push(
+            words,
+            encode::enc_subs_imm(10, 10, 1, true),
+            "subs x10, x10, #1".to_string(),
+        );
+        let this = words.len();
+        let delta = (loop_top as i64 - this as i64) * 4;
+        push(
+            words,
+            encode::enc_b_cond(encode::Cond::Ne, delta as i32),
+            format!("b.ne .zero_loop ({delta})"),
+        );
+    }
+    fn emit_arg(
+        words: &mut Vec<(u32, String)>,
+        relocs: &mut Vec<Reloc>,
+        reg: u8,
+        arg: &BootInitArgSpec,
+    ) -> Result<u64, String> {
+        match arg {
+            BootInitArgSpec::Word(w) => {
+                load_imm(words, reg, *w, "init arg");
+                Ok(0)
+            }
+            BootInitArgSpec::DeviceRegsBase(i) => {
+                let word = words.len();
+                load_imm(words, reg, 0, &format!("device#{i} regs"));
+                for j in 0..4 {
+                    if let Some((_, text)) = words.get_mut(word + j) {
+                        *text = format!("device-regs[{j}] device#{i} x{reg}");
+                    }
+                }
+                relocs.push(Reloc::DeviceRegsBase { word, device: *i });
+                Ok(0)
+            }
+            BootInitArgSpec::PoolBase(name) => {
+                let word = words.len();
+                load_imm(words, reg, 0, &format!("pool {name}"));
+                for j in 0..4 {
+                    if let Some((_, text)) = words.get_mut(word + j) {
+                        *text = format!("pool-base[{j}] {name} x{reg}");
+                    }
+                }
+                relocs.push(Reloc::PoolBase {
+                    word,
+                    pool: name.clone(),
+                });
+                Ok(0)
+            }
+            BootInitArgSpec::OwnSlot {
+                pool,
+                index,
+                slot_bytes,
+            } => {
+                let word = words.len();
+                load_imm(words, reg, 0, &format!("own {pool}[{index}]"));
+                for j in 0..4 {
+                    if let Some((_, text)) = words.get_mut(word + j) {
+                        *text = format!("pool-slot[{j}] {pool}[{index}] x{reg}");
+                    }
+                }
+                relocs.push(Reloc::PoolSlot {
+                    word,
+                    pool: pool.clone(),
+                    index: *index,
+                    slot_bytes: *slot_bytes,
+                });
+                Ok(0)
+            }
+            BootInitArgSpec::OwnHandleArray {
+                pool,
+                count,
+                slot_bytes,
+            } => {
+                let raw = count
+                    .checked_mul(8)
+                    .ok_or_else(|| "own-handle array byte count overflow".to_string())?;
+                let bytes = ((raw + 15) / 16) * 16;
+                if bytes == 0 || bytes >= 4096 {
+                    return Err(format!(
+                        "own-handle array for pool `{pool}` wants {bytes} bytes \
+                         (count={count}); boot's unsigned-immediate SUB reaches 4095"
+                    ));
+                }
+                push(
+                    words,
+                    encode::enc_sub_imm(31, 31, bytes as u16, true),
+                    format!("sub sp, sp, #{bytes}  ; own-handle table"),
+                );
+                for i in 0..*count {
+                    let word = words.len();
+                    load_imm(words, 9, 0, &format!("own {pool}[{i}]"));
+                    for j in 0..4 {
+                        if let Some((_, text)) = words.get_mut(word + j) {
+                            *text = format!("pool-slot[{j}] {pool}[{i}] x9");
+                        }
+                    }
+                    relocs.push(Reloc::PoolSlot {
+                        word,
+                        pool: pool.clone(),
+                        index: i,
+                        slot_bytes: *slot_bytes,
+                    });
+                    push(
+                        words,
+                        encode::enc_str_x_imm(9, 31, (i * 8) as u16),
+                        format!("str x9, [sp, #{}]", i * 8),
+                    );
+                }
+                push(
+                    words,
+                    encode::enc_add_imm(reg, 31, 0, true),
+                    format!("mov {}, sp", reg_name(reg)),
+                );
+                Ok(bytes)
+            }
+        }
+    }
+
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+
+    // x30 save — second hang regression (layout::build_boot_init doc).
+    push(
+        &mut words,
+        encode::enc_sub_imm(31, 31, 16, true),
+        "sub sp, sp, #16".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(30, 31, 0),
+        "str x30, [sp]".to_string(),
+    );
+
+    // Zero-fill: actors then drivers (hand-asm sequencing guarantee).
+    for slot in spec.actor_slots.iter().chain(spec.driver_slots.iter()) {
+        zero_fill(&mut words, &mut relocs, slot);
+    }
+
+    // Init calls: drivers first, then actors (M7 H1).
+    let call_order: Vec<&BootInitSlotSpec> = spec
+        .driver_slots
+        .iter()
+        .chain(spec.actor_slots.iter())
+        .collect();
+    for slot in call_order {
+        let Some(call) = &slot.init else { continue };
+        let mut array_stack: u64 = 0;
+        for (i, arg) in call.args.iter().enumerate() {
+            match emit_arg(&mut words, &mut relocs, i as u8 + 1, arg) {
+                Ok(n) => array_stack += n,
+                Err(msg) => panic!("emit_boot_init: {msg}"),
+            }
+        }
+        load_state(&mut words, &mut relocs, 0, slot);
+        if call.fallible {
+            let (msg_off, msg_len) = call.err_msg.unwrap_or_else(|| {
+                panic!(
+                    "emit_boot_init: fallible `{}` has no interned abort message",
+                    call.key
+                )
+            });
+            push(
+                &mut words,
+                encode::enc_sub_imm(31, 31, 16, true),
+                "sub sp, sp, #16  ; reply slot".to_string(),
+            );
+            push(
+                &mut words,
+                encode::enc_add_imm(8, 31, 0, true),
+                "mov x8, sp".to_string(),
+            );
+            bl_key(&mut words, &mut relocs, &call.key);
+            push(
+                &mut words,
+                encode::enc_ldr_x_imm(9, 31, 0),
+                "ldr x9, [sp]  ; Result tag".to_string(),
+            );
+            push(
+                &mut words,
+                encode::enc_add_imm(31, 31, 16, true),
+                "add sp, sp, #16  ; drop reply slot".to_string(),
+            );
+            let ok_fixup = words.len();
+            push(&mut words, 0, "cbz x9, .ok".to_string());
+            let word_adrp = words.len();
+            push(
+                &mut words,
+                encode::enc_adrp(0, 0),
+                format!("adrp x0, rodata+{msg_off}"),
+            );
+            push(
+                &mut words,
+                encode::enc_add_imm(0, 0, 0, true),
+                format!("add x0, x0, #rodata+{msg_off}"),
+            );
+            relocs.push(Reloc::Rodata {
+                word_adrp,
+                byte_offset: msg_off,
+            });
+            load_imm(&mut words, 1, msg_len as u64, "abort msg len");
+            let abort_word = words.len();
+            push(
+                &mut words,
+                encode::enc_bl(0),
+                "bl <__wrela_abort>".to_string(),
+            );
+            relocs.push(Reloc::AbortFixed { word: abort_word });
+            let after = words.len();
+            let delta = (after as i64 - ok_fixup as i64) * 4;
+            if let Some((w, text)) = words.get_mut(ok_fixup) {
+                *w = encode::enc_cbz(9, delta as i32, true);
+                *text = format!("cbz x9, .ok ({delta})");
+            }
+        } else {
+            bl_key(&mut words, &mut relocs, &call.key);
+        }
+        if array_stack > 0 {
+            assert!(
+                array_stack < 4096,
+                "own-handle array stack frame is {array_stack} bytes"
+            );
+            push(
+                &mut words,
+                encode::enc_add_imm(31, 31, array_stack as u16, true),
+                format!("add sp, sp, #{array_stack}  ; free own-handle table"),
+            );
+        }
+    }
+
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(30, 31, 0),
+        "ldr x30, [sp]".to_string(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(31, 31, 16, true),
+        "add sp, sp, #16".to_string(),
+    );
+    push(&mut words, encode::enc_ret(30), "ret".to_string());
+
+    CodegenFn {
+        frame_size: 16,
+        code: words,
+        relocs,
+    }
+}
+
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
 /// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
 /// via `emit_flowwir_fn` above), merged into one `CodegenProgram` sharing
@@ -11899,6 +12328,18 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                         ));
                     }
                 }
+                Reloc::DriverState { word, .. }
+                | Reloc::DeviceRegsBase { word, .. }
+                | Reloc::PoolBase { word, .. }
+                | Reloc::PoolSlot { word, .. } => {
+                    if word + 3 >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::DriverState/DeviceRegsBase/PoolBase/PoolSlot \
+                             word {word} (a 4-word load_imm) is out of range (code has {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                }
             }
         }
     }
@@ -12002,6 +12443,17 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
         "emit_secondary_core_entry",
         emit_secondary_core_entry(&secondary).code.len(),
     );
+    // M10 H / decision 680: REF one actor, state_size=8, no init calls.
+    let boot = BootInitSpec {
+        actor_slots: vec![BootInitSlotSpec {
+            name: "Actor".into(),
+            is_driver: false,
+            state_size: 8,
+            init: None,
+        }],
+        driver_slots: vec![],
+    };
+    out.insert("emit_boot_init", emit_boot_init(&boot).code.len());
     out
 }
 
@@ -12764,6 +13216,7 @@ mod synthetic_symbol_tests {
         assert!(symbol_is_synthetic(&rt_xreply_symbol(0, 1)));
         assert!(symbol_is_synthetic(&rt_xsend_symbol(0, "Actor")));
         assert!(symbol_is_synthetic(&rt_secondary_core_entry_symbol(1)));
+        assert!(symbol_is_synthetic(&rt_boot_init_symbol()));
     }
 }
 

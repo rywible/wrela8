@@ -65,8 +65,9 @@
 //!   plan's category 4 (decision 650): pre-SP; must-clobber-no-register;
 //!   no expression form (`brk`/…); stored code address jumped to
 //! - **image_static** — specialization sanctioned by decisions 613 / 620 /
-//!   623 / 630 / 633 (`emit_rt_enqueue`, `emit_rt_run_one`,
-//!   `emit_rt_child_poll`, `emit_rt_select_and_run`, cross-core quartet)
+//!   623 / 630 / 633 / 680 (`emit_rt_enqueue`, `emit_rt_run_one`,
+//!   `emit_rt_child_poll`, `emit_rt_select_and_run`, cross-core quartet,
+//!   `emit_boot_init`)
 //! - **not_yet_migrated** — owned by a named remaining item (F, F2, G, H,
 //!   I, K)
 //! - **unclassified** — could not be confidently placed; still counted
@@ -252,12 +253,13 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::NotYetMigrated,
         note: "G; REF arena_capacity=1",
     },
+    // REF: one actor, state_size=8, no init calls (memset loop).
     EmitterEntry {
-        name: "build_boot_init",
-        file: "layout.rs",
-        words: 10,
-        category: Category::NotYetMigrated,
-        note: "H; REF one actor state_size=8, no init calls",
+        name: "emit_boot_init",
+        file: "codegen.rs",
+        words: 14, // measured; bump if live count differs
+        category: Category::ImageStatic,
+        note: "decision 680; memset zero-fill (681); was layout build_boot_init",
     },
     EmitterEntry {
         name: "build_entry_driver",
@@ -309,16 +311,16 @@ pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
 /// in the not-yet-migrated total until their owning item extracts them.
 pub const FLOOR_WORDS: usize = 26;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 579; // was 300; F2 +69+58+126+26
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 593; // was 579; H +14 emit_boot_init
 
-pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 232; // was 587; F2 deleted 355
+pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 222; // was 232; H moved boot_init (−10)
 
 pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_rt_enqueue` == `build_ring_enqueue`, `build_entry_stub` embeds
 /// `push_halt`). Useful as a ratchet total; not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 875; // was 1230; F2 delete −355
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 879; // was 875; H −10+14
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -326,7 +328,7 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 875; // was 1230; F2 delete −355
 /// census file (it documents the needle). Measured 2026-07-26. Adding a
 /// call site in a listed file without bumping its count — or introducing
 /// the needle in a new file — fails the unit test below.
-pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 693), ("layout.rs", 171)];
+pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[("codegen.rs", 720), ("layout.rs", 156)];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
 pub const ENCODE_ENC_SITE_COUNT: usize = {
@@ -475,7 +477,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 864,
+            ENCODE_ENC_SITE_COUNT, 876,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -614,7 +616,6 @@ mod tests {
         "layout.rs::build_rt_select_and_run",
         "layout.rs::build_rt_enqueue",
         "layout.rs::build_checkpoint_and_vector_stub",
-        "layout.rs::emit_boot_init_arg",
         "layout.rs::build_runtime_glue_block",
         "layout.rs::build_runtime_block",
         "layout.rs::install_abort_tail_floor",

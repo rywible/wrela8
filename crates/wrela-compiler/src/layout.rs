@@ -1623,6 +1623,79 @@ fn inject_rt_cross_core_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring
     }
 }
 
+/// plans/M10.md item H (decision 680): force-root specialized `rt_boot_init`
+/// into `program.fns`. Call after `intern_fallible_init_abort_messages` and
+/// before the code section is laid out.
+fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+    let to_arg = |a: &BootInitArg| -> crate::codegen::BootInitArgSpec {
+        match a {
+            BootInitArg::Word(w) => crate::codegen::BootInitArgSpec::Word(*w),
+            BootInitArg::DeviceRegsBase(i) => crate::codegen::BootInitArgSpec::DeviceRegsBase(*i),
+            BootInitArg::PoolBase(n) => crate::codegen::BootInitArgSpec::PoolBase(n.clone()),
+            BootInitArg::OwnSlot {
+                pool,
+                index,
+                slot_bytes,
+            } => crate::codegen::BootInitArgSpec::OwnSlot {
+                pool: pool.clone(),
+                index: *index,
+                slot_bytes: *slot_bytes,
+            },
+            BootInitArg::OwnHandleArray {
+                pool,
+                count,
+                slot_bytes,
+            } => crate::codegen::BootInitArgSpec::OwnHandleArray {
+                pool: pool.clone(),
+                count: *count,
+                slot_bytes: *slot_bytes,
+            },
+        }
+    };
+    let to_call = |c: &Option<BootInitCall>| -> Option<crate::codegen::BootInitCallSpec> {
+        c.as_ref().map(|c| crate::codegen::BootInitCallSpec {
+            key: c.key.clone(),
+            args: c.args.iter().map(to_arg).collect(),
+            fallible: c.fallible,
+            err_msg: c.err_msg,
+        })
+    };
+    let actor_slots: Vec<crate::codegen::BootInitSlotSpec> = wiring
+        .tables
+        .actors
+        .iter()
+        .zip(wiring.state_sizes.iter())
+        .zip(wiring.init_calls.iter())
+        .map(|((a, &size), call)| crate::codegen::BootInitSlotSpec {
+            name: a.name.clone(),
+            is_driver: false,
+            state_size: size,
+            init: to_call(call),
+        })
+        .collect();
+    let driver_slots: Vec<crate::codegen::BootInitSlotSpec> = wiring
+        .tables
+        .drivers
+        .iter()
+        .zip(wiring.driver_state_sizes.iter())
+        .zip(wiring.driver_init_calls.iter())
+        .map(|((d, &size), call)| crate::codegen::BootInitSlotSpec {
+            name: d.name.clone(),
+            is_driver: true,
+            state_size: size,
+            init: to_call(call),
+        })
+        .collect();
+    let spec = crate::codegen::BootInitSpec {
+        actor_slots,
+        driver_slots,
+    };
+    let key = crate::codegen::rt_boot_init_symbol();
+    program
+        .fns
+        .insert(key, crate::codegen::emit_boot_init(&spec));
+}
+
 /// One mailbox root's own `(capacity, slot size)` — a declared actor's, or
 /// (plans/M8.md item D) a messageable `@driver`'s. The one lookup
 /// `cross_core_rings` needs, so a ring feeding a driver's mailbox is sized
@@ -2013,6 +2086,32 @@ fn driver_wake_pending_addr(
     // module, while this `@image` never declared that driver (sibling of
     // `irq_driver_undeclared` / the LoadIrqVector soak find).
     Err(wake_driver_undeclared(driver))
+}
+
+/// plans/M10.md item H / decision 682: `@driver` `driver`'s placed state
+/// base — the same name resolution `WakePending` uses, without the
+/// wake-pending offset.
+fn driver_state_addr(
+    placement: &RuntimePlacement,
+    tables: &RuntimeTables,
+    driver: &str,
+) -> Result<u64, LayoutError> {
+    for (i, d) in tables.drivers.iter().enumerate() {
+        let bare = d.name.split('[').next().unwrap_or(d.name.as_str());
+        if d.name != driver && bare != driver {
+            continue;
+        }
+        let Some(&state_base) = placement.drivers.get(i) else {
+            return Err(LayoutError::new(format!(
+                "internal error: `@driver` `{driver}` has no placed state"
+            )));
+        };
+        return Ok(state_base);
+    }
+    Err(LayoutError::new(format!(
+        "internal error: Reloc::DriverState names `@driver` `{driver}`, which this image's \
+         runtime tables never placed"
+    )))
 }
 
 fn wake_driver_undeclared(driver: &str) -> LayoutError {
@@ -3004,7 +3103,16 @@ pub fn layout_program(
         None => None,
     };
 
-    // M10 E3/E4/F/F2: specialized runtime bodies into code.
+    // plans/M7.md item E1 / M10 H: fallible-`init` abort messages must be
+    // interned before `inject_boot_init_fn` so `emit_boot_init` sees
+    // `err_msg` offsets (decision 680).
+    let mut rodata_entries: Vec<Vec<u8>> = program.rodata.clone();
+    let mut rodata_cursor: usize = rodata_entries.iter().map(Vec::len).sum();
+    if let Some(w) = wiring.as_mut() {
+        intern_fallible_init_abort_messages(w, &mut rodata_entries, &mut rodata_cursor);
+    }
+
+    // M10 E3/E4/F/F2/H: specialized runtime bodies into code.
     let mut program_owned;
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
@@ -3012,6 +3120,7 @@ pub fn layout_program(
         inject_rt_child_poll_fns(&mut program_owned, w);
         inject_rt_run_one_fns(&mut program_owned, w);
         inject_rt_cross_core_fns(&mut program_owned, w);
+        inject_boot_init_fn(&mut program_owned, w);
         &program_owned
     } else {
         program
@@ -3026,15 +3135,6 @@ pub fn layout_program(
         for (w, _text) in &f.code {
             code_words.push(*w);
         }
-    }
-
-    // plans/M7.md item E1: fallible-`init` abort messages are interned
-    // into the same rodata pool an `assert` failure's text already uses,
-    // once, before either `build_runtime_block` pass.
-    let mut rodata_entries: Vec<Vec<u8>> = program.rodata.clone();
-    let mut rodata_cursor: usize = rodata_entries.iter().map(Vec::len).sum();
-    if let Some(w) = wiring.as_mut() {
-        intern_fallible_init_abort_messages(w, &mut rodata_entries, &mut rodata_cursor);
     }
     let rodata_bytes: Vec<u8> = rodata_entries
         .iter()
@@ -3065,43 +3165,9 @@ pub fn layout_program(
     let checkpoint_service_word = checkpoint_block.checkpoint_service_word;
     let checkpoint_relocs_shape = checkpoint_block.relocs;
 
-    // This image's own runtime routines (`build_runtime_block`), built
-    // twice for the identical reason the checkpoint block above is: their
-    // word count never depends on `rtdata`'s address, but their bytes do,
-    // and `rtdata`'s base is not known until this very block's own size
-    // has moved `cursor`. Word indices are relative to the `rtcode`
-    // section's own base (this fn's own placement, unlike
-    // `layout_test_image`'s, gives the block a section of its own rather
-    // than a slice of the combined harness section).
-    // The sizing pass gets **address-free but structurally real**
-    // placements: the same device windows and pool backings this image
-    // will place, at base 0. Word counts do not depend on address values
-    // (`build_runtime_glue_block`'s own doc), but `BootInitArg::resolve`'s
-    // "no placed window" guard does depend on the *entries* existing — and
-    // that guard is a real one, so it is fed a real list rather than
-    // switched off for one of the two passes.
-    let sizing_device_regs = place_device_regs(0, &device_register_windows(boot.as_ref())?)
-        .map(|(regs, _, _, _)| regs)
-        .unwrap_or_default();
-    let sizing_pools = place_pools_unchecked(0, &image_pool_backings(boot.as_ref())?)
-        .map(|(pools, _, _, _)| pools)
-        .unwrap_or_default();
-    let dummy_runtime_block = wiring
-        .as_ref()
-        .map(|w| {
-            build_runtime_block(
-                w,
-                &place_runtime_tables(0, &w.tables),
-                &sizing_device_regs,
-                &sizing_pools,
-                0,
-            )
-        })
-        .transpose()?;
-    let rtcode_words_len = dummy_runtime_block
-        .as_ref()
-        .map(|b| b.words.len())
-        .unwrap_or(0);
+    // M10 H: boot_init lives in `code` under `rt_boot_init 0` (decision
+    // 680). Glue is empty after F2; the `rtcode` section is absent.
+    let rtcode_words_len = 0usize;
 
     // --- place sections, fixed order: entry, code, rodata?, abort. ------
     let mut cursor = image_base;
@@ -3311,26 +3377,10 @@ pub fn layout_program(
             }
         }
     }
-    // Second pass over the runtime block, now that `rtdata` is placed —
-    // the identical shape the checkpoint block above uses.
-    let runtime_block = match (&wiring, &placement) {
-        (Some(w), Some(pl)) => {
-            let real = build_runtime_block(w, pl, &device_regs, &pools, 0)?;
-            if real.words.len() != rtcode_words_len {
-                return Err(LayoutError::new(
-                    "internal error: the runtime block's own word count changed between its \
-                     sizing pass and its real-address pass",
-                ));
-            }
-            Some(real)
-        }
-        _ => None,
-    };
+    // M10 H: no `rtcode` section (boot_init in `code`; glue empty after F2).
+    let runtime_block: Option<RuntimeBlock> = None;
     let empty_symbols = BTreeMap::new();
-    let glue_symbols: &BTreeMap<String, usize> = runtime_block
-        .as_ref()
-        .map(|b| &b.symbols)
-        .unwrap_or(&empty_symbols);
+    let glue_symbols: &BTreeMap<String, usize> = &empty_symbols;
     let mut all_code_words = code_words;
     // Internal-error audit (the item-F/G follow-up's own second half), for
     // the three non-`Call` guards below — each is unreachable from any
@@ -3565,6 +3615,66 @@ pub fn layout_program(
                     };
                     patch_load_imm_words(&mut all_code_words, base + word, addr);
                 }
+                // M10 H / decision 682
+                Reloc::DriverState { word, driver } => {
+                    let (p, t) = match (placement.as_ref(), runtime_live) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(
+                                "internal error: a Reloc::DriverState exists but this image has \
+                                 no runtime tables",
+                            ));
+                        }
+                    };
+                    let addr = driver_state_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
+                // M10 H / decision 683
+                Reloc::DeviceRegsBase { word, device } => {
+                    let addr = device_regs
+                        .iter()
+                        .find(|r| r.device == *device)
+                        .map(|r| r.base)
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: Reloc::DeviceRegsBase names device#{device}, \
+                                 which this image never placed"
+                            ))
+                        })?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
+                Reloc::PoolBase { word, pool } => {
+                    let addr = pools
+                        .iter()
+                        .find(|p| &p.backing.name == pool)
+                        .map(|p| p.base)
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: Reloc::PoolBase names pool `{pool}`, which this \
+                                 image never placed"
+                            ))
+                        })?;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
+                Reloc::PoolSlot {
+                    word,
+                    pool,
+                    index,
+                    slot_bytes,
+                } => {
+                    let base_addr = pools
+                        .iter()
+                        .find(|p| &p.backing.name == pool)
+                        .map(|p| p.base)
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: Reloc::PoolSlot names pool `{pool}`, which this \
+                                 image never placed"
+                            ))
+                        })?;
+                    let addr = base_addr + *index * *slot_bytes;
+                    patch_load_imm_words(&mut all_code_words, base + word, addr);
+                }
             }
         }
     }
@@ -3632,11 +3742,16 @@ pub fn layout_program(
                 | Reloc::WakePending { .. }
                 | Reloc::MailboxAddr { .. }
                 | Reloc::RrCursor { .. }
-                | Reloc::RingAddr { .. } => {
+                | Reloc::RingAddr { .. }
+                | Reloc::DriverState { .. }
+                | Reloc::DeviceRegsBase { .. }
+                | Reloc::PoolBase { .. }
+                | Reloc::PoolSlot { .. } => {
                     return Err(LayoutError::new(
                         "internal error: the runtime block itself must never emit an \
                          AbortVal/CheckpointService/TurnFrameAddr/TurnIdImm/TurnsBase/TurnStride/\
-                         GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor/RingAddr reloc",
+                         GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor/RingAddr/\
+                         DriverState/DeviceRegsBase/PoolBase/PoolSlot reloc",
                     ));
                 }
             }
@@ -4714,6 +4829,9 @@ impl BootInitArg {
     /// internal inconsistency (both parameters only exist on a driver
     /// whose binding `eval::image_checks` already resolved), reported
     /// rather than silently zeroed.
+    /// Kept for unit tests / future inject-time validation; specialized
+    /// emit uses Reloc variants (decision 683) instead.
+    #[allow(dead_code)]
     fn resolve(&self, regs: &[DeviceRegs], pools: &[PoolPlacement]) -> Result<u64, LayoutError> {
         match self {
             BootInitArg::Word(w) => Ok(*w),
@@ -6854,6 +6972,7 @@ pub const DEADLOCK_MSG: &str =
 /// own shapes — so this fn is safe to call once with a placeholder
 /// placement purely to learn the total word count, then again with the
 /// real, now-known addresses for the bytes that actually ship.
+#[allow(dead_code)] // F2 emptied glue; H removed last consumer. Item K deletes.
 struct RuntimeGlue {
     asms: Vec<Asm>,
     symbols: BTreeMap<String, usize>,
@@ -6866,6 +6985,7 @@ struct RuntimeGlue {
     core_entry_starts: Vec<usize>,
 }
 
+#[allow(dead_code)] // F2 emptied glue; H removed last consumer. Item K deletes.
 fn build_runtime_glue_block(
     tables: &RuntimeTables,
     actor_dispatch: &[(String, Vec<(String, bool, bool)>)],
@@ -7005,209 +7125,10 @@ pub fn resolve_runtime_test_args(
     Ok(out)
 }
 
-/// plans/M6.md item D, completed by plans/M7.md item W: the real boot
-/// sequence's own actor-state half — every actor's own state slot
-/// zero-initialized, then every declared `init` called with its declared
-/// arguments, before any root turn runs (`build_entry_driver`'s own
-/// `bl_to(boot_init_start)`, right after the console/test-counter zeroing
-/// it already did).
-///
-/// **Two passes, not one interleaved walk**, and that is the point:
-/// every actor's whole state is defined before *any* `init` body runs, so
-/// an `init` can be handed another actor's handle (item W's own
-/// `Value::ImageDecl` argument) without depending on which declaration
-/// order the image happened to use. The word count is identical either
-/// way — this is a sequencing guarantee, not a size change — and no
-/// pinned golden's bytes move for it, because no golden dumps this
-/// fragment (the report pins section *sizes*, which are unchanged for
-/// every image whose `init`s take no arguments).
-///
-/// The arguments themselves are `build_boot_init_calls`'s product: word
-/// `i` goes to `x{i+1}`, `x0` is the actor's own state address (the
-/// receiver, by pointer). That convention is `codegen::emit_prologue`'s,
-/// derived rather than assumed — `BootInitCall`'s own doc comment has the
-/// derivation. Item W's own doc comment on `ActorInit` records what this
-/// used to be (a zero-argument-only call, and a rejection for everything
-/// else) and why it is not that any more.
-/// A fallible `init`'s `Err` path emits `Reloc::AbortFixed` (plans/M10.md
-/// item C: resolves to force-rooted `__wrela_abort` on test images, and
-/// to the minimal halt landing on build images). The guest loads the
-/// interned message into `x0`/`x1` first — the same contract an `assert`
-/// failure inside `init` already has on each flavor.
-#[allow(clippy::too_many_arguments)]
-fn build_boot_init(
-    actor_addrs: &[ActorAddrs],
-    driver_addrs: &[u64],
-    state_sizes: &[u64],
-    driver_state_sizes: &[u64],
-    init_calls: &[Option<BootInitCall>],
-    driver_init_calls: &[Option<BootInitCall>],
-    device_regs: &[DeviceRegs],
-    pools: &[PoolPlacement],
-    start: usize,
-) -> Result<Asm, LayoutError> {
-    let mut a = Asm::new(start);
-    // Called via `bl_to` from `build_entry_driver` and itself calls out
-    // to a real compiled `init` below — `x30` (the link register) is
-    // call-clobbered, so it must be saved/restored around this fn's own
-    // body exactly like `build_rt_select_and_run_core`'s own hard-won
-    // lesson (that fn's own module doc has the full incident report): a
-    // first draft of this fn skipped this and looped the whole entry
-    // driver from its own start forever (`init`'s own correctly-saved/
-    // restored `x30` pointed back at *this* fn's own call site, not this
-    // fn's real caller), caught by exactly the same "behavior is the
-    // oracle" real-boot test this comment now documents.
-    a.push(encode::enc_sub_imm(31, 31, 16, true));
-    a.push(encode::enc_str_x_imm(30, 31, 0));
-    // Every state slot is zero-filled first — actors, then drivers, in
-    // 06-machine.md §3's own "runs typed driver and actor initialization
-    // in image dependency order" spirit, applied to the one ordering fact
-    // this machine has: nothing may read a field before its `init` runs,
-    // so every slot is defined before any `init` is called.
-    let state_slots = actor_addrs
-        .iter()
-        .map(|a| a.state)
-        .zip(state_sizes.iter().copied())
-        .chain(
-            driver_addrs
-                .iter()
-                .copied()
-                .zip(driver_state_sizes.iter().copied()),
-        );
-    for (state, size) in state_slots {
-        let mut w = 0u64;
-        while w < size {
-            a.load_imm(9, state + w);
-            a.push(encode::enc_str_x_imm(31, 9, 0)); // store xzr (unit is Copy/all-zero-valid)
-            w += 8;
-        }
-    }
-    // plans/M7.md item H1: **drivers first.** 06 §3 step 3 is explicit —
-    // "runs typed driver and actor initialization in image dependency
-    // order" — and a driver is the root of that order by construction: an
-    // actor may hold an `Actor[Driver]` handle (`golden/appliance`'s own
-    // cache actor does), and no driver may hold an actor's anything (03 §1:
-    // "a driver may export safe actor APIs but never raw capabilities").
-    let calls = driver_addrs
-        .iter()
-        .copied()
-        .zip(driver_init_calls)
-        .chain(actor_addrs.iter().map(|a| a.state).zip(init_calls));
-    for (state, call) in calls {
-        let Some(call) = call else { continue };
-        // plans/M7.md item E4: `[own; N]` args build a temporary table on
-        // this stack frame; free it after the call (and after any fallible
-        // reply slot, which is nested inside).
-        let mut array_stack: u64 = 0;
-        for (i, arg) in call.args.iter().enumerate() {
-            array_stack += emit_boot_init_arg(&mut a, i as u8 + 1, arg, device_regs, pools)?;
-        }
-        a.load_imm(0, state);
-        // plans/M7.md item E1: a fallible `init` returns
-        // `Result[unit, BootError]` through `x8` (this machine's aggregate
-        // return pointer). Stage 16 bytes on the stack, point `x8` at them,
-        // call, then check the tag — `Err` is image-fatal with a
-        // diagnosable line through the **same** `__wrela_abort` path an
-        // `assert` failure inside `init` already uses (plans/M6.md
-        // decision 12 / plans/M7.md decision 8; H1 arms
-        // `OFF_TEST_CONTINUATION` before boot so the landing pad works).
-        if call.fallible {
-            let (msg_off, msg_len) = call.err_msg.ok_or_else(|| {
-                LayoutError::new(format!(
-                    "internal error: fallible `{}` has no interned abort message — \
-                     `intern_fallible_init_abort_messages` must run before assembly",
-                    call.key
-                ))
-            })?;
-            a.push(encode::enc_sub_imm(31, 31, 16, true)); // reply slot
-            a.push(encode::enc_add_imm(8, 31, 0, true)); // mov x8, sp
-            a.bl_call_key(&call.key);
-            // Load tag from [sp]; RESULT_OK == 0.
-            a.push(encode::enc_ldr_x_imm(9, 31, 0));
-            a.push(encode::enc_add_imm(31, 31, 16, true)); // drop reply slot
-            // cbz x9, ok — skip the abort when tag == 0.
-            let ok_fixup = a.skip_placeholder();
-            // On Err: guest emits its own FAILED line via `__wrela_abort`
-            // (never a host-invented transcript). Message names which
-            // `init` failed; the BootError variant is not recovered.
-            a.load_rodata_addr_at(0, msg_off);
-            a.load_imm(1, msg_len as u64);
-            let w = a.abs();
-            a.push(encode::enc_bl(0));
-            a.relocs.push(Reloc::AbortFixed { word: w });
-            a.patch_cbz(ok_fixup, 9);
-        } else {
-            a.bl_call_key(&call.key);
-        }
-        if array_stack > 0 {
-            // Immediate ADD only reaches 12 bits unsigned; handle tables
-            // for M7's working images stay well under that (CACHE_BLOCKS=64
-            // → 512 bytes). Fail closed rather than emit a wrong free.
-            if array_stack >= 4096 {
-                return Err(LayoutError::new(format!(
-                    "internal error: own-handle array stack frame is {array_stack} bytes; the \
-                     unsigned-immediate ADD encoder reaches 4095"
-                )));
-            }
-            a.push(encode::enc_add_imm(31, 31, array_stack as u16, true));
-        }
-    }
-    a.push(encode::enc_ldr_x_imm(30, 31, 0));
-    a.push(encode::enc_add_imm(31, 31, 16, true));
-    a.push(encode::enc_ret(30));
-    Ok(a)
-}
-
-/// Emit one boot `init` argument into `reg`. Returns stack bytes allocated
-/// for an `[own; N]` table (0 for every other shape).
-fn emit_boot_init_arg(
-    a: &mut Asm,
-    reg: u8,
-    arg: &BootInitArg,
-    regs: &[DeviceRegs],
-    pools: &[PoolPlacement],
-) -> Result<u64, LayoutError> {
-    match arg {
-        BootInitArg::OwnHandleArray {
-            pool,
-            count,
-            slot_bytes,
-        } => {
-            let pool_base = pools
-                .iter()
-                .find(|p| &p.backing.name == pool)
-                .map(|p| p.base)
-                .ok_or_else(|| {
-                    LayoutError::new(format!(
-                        "internal error: boot builds an own-handle array for pool `{pool}`, which \
-                         has no placed backing"
-                    ))
-                })?;
-            let raw = count.checked_mul(8).ok_or_else(|| {
-                LayoutError::new("own-handle array byte count overflow".to_string())
-            })?;
-            // AAPCS64: SP must stay 16-byte aligned.
-            let bytes = ((raw + 15) / 16) * 16;
-            if bytes == 0 || bytes >= 4096 {
-                return Err(LayoutError::new(format!(
-                    "internal error: own-handle array for pool `{pool}` wants {bytes} bytes \
-                     (count={count}); boot's unsigned-immediate SUB reaches 4095"
-                )));
-            }
-            a.push(encode::enc_sub_imm(31, 31, bytes as u16, true));
-            for i in 0..*count {
-                a.load_imm(SCRATCH_A, pool_base + i * *slot_bytes);
-                a.push(encode::enc_str_x_imm(SCRATCH_A, 31, (i * 8) as u16));
-            }
-            a.push(encode::enc_add_imm(reg, 31, 0, true)); // mov reg, sp
-            Ok(bytes)
-        }
-        other => {
-            a.load_imm(reg, other.resolve(regs, pools)?);
-            Ok(0)
-        }
-    }
-}
+// plans/M10.md item H: `build_boot_init` / `emit_boot_init_arg` deleted —
+// specialized `codegen::emit_boot_init` lives in `code` under
+// `rt_boot_init 0` (decisions 680–684). `build_boot_init_calls` remains:
+// it materializes the call specs inject_boot_init_fn consumes.
 
 // ===========================================================================
 // plans/M6.md item F/G follow-up (the found-and-fixed `layout_program`
@@ -7440,79 +7361,33 @@ impl RuntimeWiring {
     }
 }
 
-/// The assembled runtime block: `build_runtime_glue_block`'s routines
-/// followed by `build_boot_init`'s, one contiguous run of words starting at
-/// word index `start` within whichever section the caller places it in.
-/// Every index here (`symbols`, `boot_init_start`, and
-/// each reloc's own `word`) is section-relative in exactly that sense.
-///
-/// Word counts never depend on `placement`'s address *values* (every
-/// `load_imm` is a fixed four words) — only on the wiring's own shapes — so
-/// both callers build this twice: once against a placeholder placement
-/// purely to learn `words.len()` before `rtdata`'s base can be known, then
-/// again against the real placement for the bytes that ship. Both assert
-/// the two passes agreed on the length.
+/// M10 H: formerly glue + boot_init in `rtcode`. Both are gone (F2 emptied
+/// glue; H moved boot_init into `code`). Kept only so the residual
+/// `runtime_block: Option<RuntimeBlock> = None` type-checks until item K
+/// extracts the runtime module.
+#[allow(dead_code)]
 struct RuntimeBlock {
     words: Vec<u32>,
     relocs: Vec<Reloc>,
     symbols: BTreeMap<String, usize>,
-    /// plans/M8.md item C1: `(core, section-relative word index)` for every
-    /// secondary core's own entry block. Empty for a single-core image.
     core_entry_starts: Vec<(usize, usize)>,
     boot_init_start: usize,
 }
 
-/// `device_regs` is this image's own placed register windows — empty on
-/// the *sizing* pass (which runs before any section exists) and real on
-/// the address pass. Nothing about the block's length depends on it: a
-/// `load_imm` is four words whatever it loads, which is exactly the
-/// invariant both image flavors' two-pass assembly already asserts.
+#[allow(dead_code)]
 fn build_runtime_block(
-    wiring: &RuntimeWiring,
-    placement: &RuntimePlacement,
-    device_regs: &[DeviceRegs],
-    pools: &[PoolPlacement],
+    _wiring: &RuntimeWiring,
+    _placement: &RuntimePlacement,
+    _device_regs: &[DeviceRegs],
+    _pools: &[PoolPlacement],
     start: usize,
 ) -> Result<RuntimeBlock, LayoutError> {
-    let glue = build_runtime_glue_block(
-        &wiring.tables,
-        &wiring.dispatch,
-        placement,
-        &wiring.actor_cores,
-        &wiring.group_child_index,
-        start,
-    );
-    let mut words = Vec::new();
-    let mut relocs = Vec::new();
-    for asm in &glue.asms {
-        words.extend(asm.words.iter().copied());
-        relocs.extend(asm.relocs.iter().cloned());
-    }
-    let boot_init_start = start + words.len();
-    let boot_init = build_boot_init(
-        &placement.actors,
-        &placement.drivers,
-        &wiring.state_sizes,
-        &wiring.driver_state_sizes,
-        &wiring.init_calls,
-        &wiring.driver_init_calls,
-        device_regs,
-        pools,
-        boot_init_start,
-    )?;
-    words.extend(boot_init.words.iter().copied());
-    relocs.extend(boot_init.relocs.iter().cloned());
     Ok(RuntimeBlock {
-        words,
-        relocs,
-        symbols: glue.symbols,
-        core_entry_starts: glue
-            .core_entry_starts
-            .iter()
-            .enumerate()
-            .map(|(i, &w)| (i + 1, w))
-            .collect(),
-        boot_init_start,
+        words: Vec::new(),
+        relocs: Vec::new(),
+        symbols: BTreeMap::new(),
+        core_entry_starts: Vec::new(),
+        boot_init_start: start,
     })
 }
 
@@ -8039,7 +7914,7 @@ fn build_entry_driver(
     deadline_poll_word: Option<usize>,
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
-    boot_init_start: Option<usize>,
+    boot_init: bool,
     test_args: &BTreeMap<String, Vec<u64>>,
     // plans/M8.md item C1: how many cores this image brings up
     // (`RuntimeTables::cores`). `1` emits not one extra instruction — the
@@ -8135,12 +8010,13 @@ fn build_entry_driver(
     // — 06-machine.md §3's own "typed driver and actor initialization"
     // failing is image-fatal with a diagnosable line (plans/M6.md decision
     // 12, plans/M7.md decision 8), never a fault at zero.
-    let boot_cont_marker = if let Some(boot_init) = boot_init_start {
+    let boot_cont_marker = if boot_init {
         a.bl_call_key("__wrela_line_begin");
         let marker = a.load_imm_placeholder(9);
         a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
         a.push(encode::enc_str_x_imm(9, 10, 0));
-        a.bl_to(boot_init);
+        // M10 H: specialized `rt_boot_init 0` in `code` (decision 680).
+        a.bl_call_key(&crate::codegen::rt_boot_init_symbol());
         Some(marker)
     } else {
         None
@@ -8674,11 +8550,20 @@ pub fn layout_test_image(
         Some(b) => RuntimeWiring::derive(b, &program)?,
         None => None,
     };
+    let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
+    let mut rodata_cursor: usize = rodata.iter().map(Vec::len).sum();
+
+    // plans/M7.md item E1 / M10 H: intern fallible-`init` abort messages
+    // before inject_boot_init_fn so emit_boot_init sees err_msg offsets.
+    if let Some(w) = wiring.as_mut() {
+        intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
+    }
     if let Some(w) = wiring.as_ref() {
         inject_rt_select_and_run_fns(&mut program, w);
         inject_rt_child_poll_fns(&mut program, w);
         inject_rt_run_one_fns(&mut program, w);
         inject_rt_cross_core_fns(&mut program, w);
+        inject_boot_init_fn(&mut program, w);
     }
     let program = &program;
 
@@ -8696,15 +8581,6 @@ pub fn layout_test_image(
                 "internal error: runtime test `{name}` was never codegen'd"
             )));
         }
-    }
-
-    let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
-    let mut rodata_cursor: usize = rodata.iter().map(Vec::len).sum();
-
-    // plans/M7.md item E1: intern fallible-`init` abort messages before
-    // either runtime-block assembly pass.
-    if let Some(w) = wiring.as_mut() {
-        intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
     }
     let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());
 
@@ -8757,50 +8633,14 @@ pub fn layout_test_image(
     let checkpoint_service_word = checkpoint_start + checkpoint_service_offset;
     let deadline_poll_word = deadline_poll_offset.map(|o| checkpoint_start + o);
 
-    // plans/M6.md item D: the runtime-glue routines + boot-init sequence
-    // (module docs on `build_runtime_glue_block`/`build_boot_init` above)
-    // — absent entirely when no actor exists. Built *twice* when present:
-    // once with placeholder (`base=0`) addresses purely to learn the
-    // total word count (`build_runtime_glue_block`'s own doc: word count
-    // never depends on address *values*), which is what lets
-    // `boot_init_start`/`entry_start` — and therefore `entry_asm` itself,
-    // built only once — be fixed before `rtdata_base` is even known; then
-    // again with the real, now-known addresses once `rtdata_base` is
-    // computed below, replacing the placeholder-valued bytes in the final
-    // buffer at the identical word offsets.
-    let glue_start = checkpoint_start + checkpoint_asm.words.len();
-    let sizing_device_regs = place_device_regs(0, &device_register_windows(boot.as_ref())?)
-        .map(|(regs, _, _, _)| regs)
-        .unwrap_or_default();
-    let sizing_pools = place_pools_unchecked(0, &image_pool_backings(boot.as_ref())?)
-        .map(|(pools, _, _, _)| pools)
-        .unwrap_or_default();
-    let dummy_block = wiring
-        .as_ref()
-        .map(|w| {
-            build_runtime_block(
-                w,
-                &place_runtime_tables(0, &w.tables),
-                &sizing_device_regs,
-                &sizing_pools,
-                glue_start,
-            )
-        })
-        .transpose()?;
-    let runtime_words_len = dummy_block.as_ref().map(|b| b.words.len()).unwrap_or(0);
-    let has_rt_run_one = dummy_block.is_some();
-    let boot_init_start_opt = dummy_block.as_ref().map(|b| b.boot_init_start);
-    // plans/M8.md item C1: word indices only (identical across both
-    // assembly passes, asserted below), so they are known here — before
-    // `rtdata_base` exists — which is what lets the entry driver's own
-    // release store be emitted in the single pass it is built in.
-    let core_entry_starts: Vec<(usize, usize)> = dummy_block
-        .as_ref()
-        .map(|b| b.core_entry_starts.clone())
-        .unwrap_or_default();
+    // M10 H: boot_init lives in `code` (`rt_boot_init 0`); glue empty after
+    // F2. Harness is checkpoint then entry — no rtcode slice.
+    let entry_start = checkpoint_start + checkpoint_asm.words.len();
+    let has_rt_run_one = wiring.is_some();
+    let call_boot_init = wiring.is_some();
+    let core_entry_starts: Vec<(usize, usize)> = Vec::new();
     let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1);
 
-    let entry_start = glue_start + runtime_words_len;
     let entry_asm = build_entry_driver(
         &addrs,
         entry_start,
@@ -8812,7 +8652,7 @@ pub fn layout_test_image(
         deadline_poll_word,
         &mut rodata,
         &mut rodata_cursor,
-        boot_init_start_opt,
+        call_boot_init,
         test_args,
         cores,
     );
@@ -8822,10 +8662,6 @@ pub fn layout_test_image(
     debug_assert_eq!(checkpoint_asm.start, harness_words.len());
     harness_relocs.extend(checkpoint_asm.relocs);
     harness_words.extend(checkpoint_asm.words);
-    debug_assert_eq!(glue_start, harness_words.len());
-    if let Some(b) = &dummy_block {
-        harness_words.extend(b.words.iter().copied());
-    }
     debug_assert_eq!(entry_start, harness_words.len());
     harness_relocs.extend(entry_asm.relocs.clone());
     harness_words.extend(entry_asm.words.clone());
@@ -8888,31 +8724,22 @@ pub fn layout_test_image(
     };
     let pool_cursor = cursor;
     let _ = cursor;
-    // The pools' own bases, needed *now* rather than after the section
-    // table exists, for the same reason `device_regs` is: item H1 made a
-    // `DmaPool[P, N]` `init` argument a real address word, and the
-    // boot-init block that carries it is assembled below. `place_pools`
-    // is called again once `sections` exists — same fn, same cursor, same
-    // backings, so the two placements are the same placement.
+    // Early pool bases for section placement only — boot_init resolves
+    // PoolBase/PoolSlot via Reloc after `place_pools` (decision 683).
     let early_pools = place_pools_unchecked(pool_cursor, &pool_backings)
         .map(|(pools, _, _, _)| pools)
         .unwrap_or_default();
+    let _ = &early_pools;
 
-    // Now that `rtdata_base` is real, rebuild the address-dependent
-    // fragments (glue routines + boot-init) at the identical word offsets
-    // the placeholder pass already reserved — replacing their
-    // placeholder-valued bytes in `harness_words` in place.
+    // Now that `rtdata_base` is real, rebuild the checkpoint block's
+    // address-dependent bytes. Boot_init / glue no longer sit in the
+    // harness (M10 H / F2).
     let (glue_symbols, real_placement): (BTreeMap<String, usize>, Option<RuntimePlacement>) =
         if let Some(w) = &wiring {
             let tables = &w.tables;
             let real_base =
                 rtdata_base.expect("rtdata reserved above whenever runtime_tables is Some");
             let placement = place_runtime_tables(real_base, tables);
-            // The checkpoint block's own second pass (module doc on
-            // `build_checkpoint_and_vector_stub`): vector-0 / deadline /
-            // ISR / wake-drain now address the real, placed rtdata.
-            // Same word count by construction, asserted. Call relocs were
-            // already recorded on the sizing pass (identical sites).
             let (irq_real, wake_real) =
                 checkpoint_irq_shape(boot.as_ref(), Some(&placement), Some(tables));
             if group_service_ctx(&placement, tables).is_some()
@@ -8934,26 +8761,7 @@ pub fn layout_test_image(
                     harness_words[checkpoint_start + i] = *word;
                 }
             }
-            let real_block =
-                build_runtime_block(w, &placement, &device_regs, &early_pools, glue_start)?;
-            if real_block.words.len() != runtime_words_len {
-                return Err(LayoutError::new(
-                    "internal error: the runtime block's own word count changed between its \
-                     sizing pass and its real-address pass",
-                ));
-            }
-            for (i, word) in real_block.words.iter().enumerate() {
-                harness_words[glue_start + i] = *word;
-            }
-            // `build_rt_select_and_run_symbolic`'s own dispatch chain (and
-            // `build_boot_init`'s own `init` calls) carry real
-            // `Reloc::Call`s — a sync method's real compiled body, or an
-            // async method's real state-machine entry — which must resolve
-            // exactly like every other harness-section call, or the emitted
-            // `BL` stays a self-referencing placeholder.
-            harness_relocs.extend(real_block.relocs.iter().cloned());
-            debug_assert_eq!(glue_start + real_block.words.len(), entry_start);
-            (real_block.symbols, Some(placement))
+            (BTreeMap::new(), Some(placement))
         } else {
             (BTreeMap::new(), None)
         };
@@ -9122,11 +8930,16 @@ pub fn layout_test_image(
             | Reloc::WakePending { .. }
             | Reloc::MailboxAddr { .. }
             | Reloc::RrCursor { .. }
-            | Reloc::RingAddr { .. } => {
+            | Reloc::RingAddr { .. }
+            | Reloc::DriverState { .. }
+            | Reloc::DeviceRegsBase { .. }
+            | Reloc::PoolBase { .. }
+            | Reloc::PoolSlot { .. } => {
                 return Err(LayoutError::new(
                     "internal error: the harness section itself must never emit a \
                      CheckpointService/TurnIdImm/TurnsBase/TurnStride/\
-                     GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor/RingAddr reloc",
+                     GroupArenaBase/IrqVector/WakePending/MailboxAddr/RrCursor/RingAddr/\
+                     DriverState/DeviceRegsBase/PoolBase/PoolSlot reloc",
                 ));
             }
         }
@@ -9334,6 +9147,66 @@ pub fn layout_test_image(
                     };
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
+                // M10 H / decision 682
+                Reloc::DriverState { word, driver } => {
+                    let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
+                        (Some(p), Some(t)) => (p, t),
+                        _ => {
+                            return Err(LayoutError::new(
+                                "internal error: a Reloc::DriverState exists but this image has \
+                                 no runtime tables",
+                            ));
+                        }
+                    };
+                    let addr = driver_state_addr(p, t, driver)?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                // M10 H / decision 683
+                Reloc::DeviceRegsBase { word, device } => {
+                    let addr = device_regs
+                        .iter()
+                        .find(|r| r.device == *device)
+                        .map(|r| r.base)
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: Reloc::DeviceRegsBase names device#{device}, \
+                                 which this image never placed"
+                            ))
+                        })?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                Reloc::PoolBase { word, pool } => {
+                    let addr = pools
+                        .iter()
+                        .find(|p| &p.backing.name == pool)
+                        .map(|p| p.base)
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: Reloc::PoolBase names pool `{pool}`, which this \
+                                 image never placed"
+                            ))
+                        })?;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
+                Reloc::PoolSlot {
+                    word,
+                    pool,
+                    index,
+                    slot_bytes,
+                } => {
+                    let base_addr = pools
+                        .iter()
+                        .find(|p| &p.backing.name == pool)
+                        .map(|p| p.base)
+                        .ok_or_else(|| {
+                            LayoutError::new(format!(
+                                "internal error: Reloc::PoolSlot names pool `{pool}`, which this \
+                                 image never placed"
+                            ))
+                        })?;
+                    let addr = base_addr + *index * *slot_bytes;
+                    patch_load_imm_words(&mut code_words, base + word, addr);
+                }
             }
         }
     }
@@ -9433,7 +9306,7 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         tail: 0x4050_2108,
         count: 0x4050_2110,
     };
-    let actor = ActorAddrs {
+    let _actor = ActorAddrs {
         state: 0x4050_0000,
         ring: ring.ring,
         head: ring.head,
@@ -9496,14 +9369,7 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     // M10 F/F2: hand-asm select / cross-core / ring_enqueue deleted.
     // JIT helpers `build_rt_select_and_run` / `build_rt_enqueue` only
     // materialize specialized twins (NON_INVENTORY).
-    insert(
-        &mut out,
-        "build_boot_init",
-        build_boot_init(&[actor], &[], &[8], &[], &[None], &[], &[], &[], 0)
-            .expect("boot_init")
-            .words
-            .len(),
-    );
+    // M10 H: emit_boot_init measured in codegen::emitted_a64_census_specialization_live_counts.
     {
         let addrs = HarnessAddrs::production();
         let mut rodata: Vec<Vec<u8>> = Vec::new();
@@ -9519,7 +9385,7 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
             None,
             &mut rodata,
             &mut cursor,
-            None,
+            false,
             &BTreeMap::new(),
             1,
         );
@@ -10532,48 +10398,43 @@ pub struct Store:
 
     #[test]
     fn boot_init_zero_fills_every_actor_before_it_calls_any_init() {
-        // The sequencing guarantee `build_boot_init`'s own doc comment
-        // claims, asserted rather than described: with two actors and an
-        // `init` on the first, the `BL` must come after *both* state
-        // slots are zeroed, so an `init` handed another actor's handle
-        // never observes an undefined neighbour.
-        let addrs = vec![
-            ActorAddrs {
-                state: 0x1000,
-                ring: 0x2000,
-                head: 0x3000,
-                tail: 0x3008,
-                count: 0x3010,
-                turn: 0x4000,
-            },
-            ActorAddrs {
-                state: 0x5000,
-                ring: 0x6000,
-                head: 0x7000,
-                tail: 0x7008,
-                count: 0x7010,
-                turn: 0x8000,
-            },
-        ];
-        let calls = vec![
-            Some(BootInitCall {
-                key: "A.init".to_string(),
-                args: vec![BootInitArg::Word(7)],
-                fallible: false,
-                err_msg: None,
-            }),
-            None,
-        ];
-        let asm = build_boot_init(&addrs, &[], &[8, 8], &[], &calls, &[], &[], &[], 0).unwrap();
-        let bl_word = asm.relocs.iter().find_map(|r| match r {
+        // Sequencing guarantee: with two actors and an `init` on the first,
+        // the `BL` must come after *both* state slots are zeroed.
+        use crate::codegen::{
+            BootInitArgSpec, BootInitCallSpec, BootInitSlotSpec, BootInitSpec, Reloc,
+            emit_boot_init,
+        };
+        let spec = BootInitSpec {
+            actor_slots: vec![
+                BootInitSlotSpec {
+                    name: "A".into(),
+                    is_driver: false,
+                    state_size: 8,
+                    init: Some(BootInitCallSpec {
+                        key: "A.init".into(),
+                        args: vec![BootInitArgSpec::Word(7)],
+                        fallible: false,
+                        err_msg: None,
+                    }),
+                },
+                BootInitSlotSpec {
+                    name: "B".into(),
+                    is_driver: false,
+                    state_size: 8,
+                    init: None,
+                },
+            ],
+            driver_slots: vec![],
+        };
+        let f = emit_boot_init(&spec);
+        let bl_word = f.relocs.iter().find_map(|r| match r {
             Reloc::Call { word, key } if key == "A.init" => Some(*word),
             _ => None,
         });
         let bl_word = bl_word.expect("the declared `init` is called");
-        // Prologue (2) + two actors' zero-fill (4 + 1 each) = 12 words
-        // before the first argument load; the call itself is at 12 + 4
-        // (the argument) + 4 (`x0`) = 20.
-        assert_eq!(bl_word, 20);
+        // Prologue (2) + two memset fills (4+1+4 each = 9) = 20 words before
+        // the arg load; call at 20 + 4 (arg) + 4 (x0 state) = 28.
+        assert_eq!(bl_word, 28);
     }
 
     #[test]
