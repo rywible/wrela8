@@ -1,0 +1,10 @@
+Module path=examples.layout_runtime
+  Struct TurnArea data
+    field state: u32
+    field waiter: u32
+  Struct TurnTable data
+    field rr_cursor: u64
+    field turns: [TurnArea; 4]
+  Struct GroupSlot data
+    field parent: TurnArea
+    field children: [TurnArea; 4]

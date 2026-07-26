@@ -1,0 +1,24 @@
+module examples.err_layout_runtime_cycle
+
+# plans/M10.md item A2: nesting is recursive, so it can be circular, and a
+# circular one has no finite size. `Mailbox` nests `TurnArea`, which nests
+# `Mailbox` again — a transitive cycle, deliberately not the trivial
+# `struct A: a: A`, because the trivial one can be caught by a single
+# equality test that a two-step loop walks straight past.
+#
+# The requirement is not merely "rejected": it is rejected *as a
+# diagnostic*, before the recursion runs, naming the whole chain. A
+# compiler pass that answered this with a stack overflow would be reporting
+# a bug in itself, which is the failure mode `internal error:` exists to
+# make visible and this rejection exists to prevent.
+
+@layout(runtime, endian=little)
+struct Mailbox:
+    head: u32
+    slot: TurnArea
+
+
+@layout(runtime, endian=little)
+struct TurnArea:
+    state: u32
+    owner: Mailbox

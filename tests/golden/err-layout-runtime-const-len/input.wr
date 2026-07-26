@@ -1,0 +1,30 @@
+module examples.err_layout_runtime_const_len
+
+# plans/M10.md item A2, decision 580: **this is 03-hardware.md §3.1's own
+# example, verbatim**, and it is rejected — which is exactly why the case
+# exists rather than being left as a known-broken doc example.
+#
+# `check_layouts` runs before name resolution (`sema/mod.rs`) and evaluates
+# nothing: `@offset(n)`'s decoder already refuses a `const`-named offset in
+# so many words ("a `const`-named offset is inference by another name"), and
+# an array length is the same question. Resolving `N_TURNS` here would need
+# either a second, narrower name resolver that can disagree with the real
+# one, or moving the pass after resolution — and the pass's own doc block
+# gives two reasons it runs early. So item A2 takes literal lengths only and
+# says so out loud, at the declaration, with the doc's own spelling in the
+# test suite. A later item lands the `const` form; until it does, §3.1's
+# example is aspirational and this rejection is the record of it.
+
+const N_TURNS: u32 = 4
+
+
+@layout(runtime, endian=little)
+struct TurnArea:
+    state: u32
+    waiter: u32
+
+
+@layout(runtime, endian=little)
+struct TurnTable:
+    rr_cursor: u64
+    turns: [TurnArea; N_TURNS]
