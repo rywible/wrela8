@@ -62,7 +62,7 @@ ImageReport v0
   Section name=rodata base=0x405035e0 size=199
   Section name=abort base=0x405036a8 size=120
   Section name=checkpoint base=0x40503720 size=104
-  Section name=rtdata base=0x40503788 size=1856
+  Section name=rtdata base=0x40510000 size=1856
   Entry base=0x40500000
   CoreEntry core=1 base=0x405029b4
   CoreEntry core=2 base=0x40502a1c

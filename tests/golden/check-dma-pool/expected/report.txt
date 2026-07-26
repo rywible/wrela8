@@ -76,9 +76,9 @@ ImageReport v0
   Section name=rodata base=0x405031b0 size=225
   Section name=abort base=0x40503294 size=120
   Section name=checkpoint base=0x4050330c size=104
-  Section name=rtdata base=0x40503378 size=328
-  Section name=devregs base=0x405034c0 size=8
-  Section name=pooldata base=0x405034c8 size=384
+  Section name=rtdata base=0x40510000 size=328
+  Section name=devregs base=0x40510148 size=8
+  Section name=pooldata base=0x40510150 size=384
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -88,7 +88,7 @@ ImageReport v0
   Driver name=BlkDriver state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=328
-  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x405034c0 size=8
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x405034c8 size=128 align=8 coherency=coherent device=device#0
-  Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40503548 size=256 align=8 coherency=coherent device=none
-  BlkPool name=BlockControl device=device#0 base=0x405034c8 size=0x80
+  DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40510148 size=8
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40510150 size=128 align=8 coherency=coherent device=device#0
+  Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x405101d0 size=256 align=8 coherency=coherent device=none
+  BlkPool name=BlockControl device=device#0 base=0x40510150 size=0x80

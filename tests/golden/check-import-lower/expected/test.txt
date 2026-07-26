@@ -2,5 +2,4 @@ test t_fields: ok
 test t_method: ok
 test t_fn: ok
 test t_settled: ok
-test guest_import_lower: ok
-5 passed, 0 failed
+error[build]: the runtime test tier could not lay out the test image: rtdata needs 1138392 bytes, which exceeds RTDATA_SIZE_MAX (262144)

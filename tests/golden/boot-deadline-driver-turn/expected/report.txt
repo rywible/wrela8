@@ -66,8 +66,8 @@ ImageReport v0
   Section name=rodata base=0x40504958 size=605
   Section name=abort base=0x40504bb8 size=120
   Section name=checkpoint base=0x40504c30 size=904
-  Section name=rtdata base=0x40504fb8 size=4480
-  Section name=devregs base=0x40506138 size=8
+  Section name=rtdata base=0x40510000 size=4480
+  Section name=devregs base=0x40511180 size=8
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -79,4 +79,4 @@ ImageReport v0
   Driver name=Stub state=8 mailbox=4 slot=16 frame=64
   Turns count=4 stride=1024 bytes=4096
   Totals actors=1 drivers=1 ready_queue=3 group_arena=1 bytes=4480
-  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40506138 size=8
+  DeviceRegs device=device#0 type=Hw driver=Stub base=0x40511180 size=8

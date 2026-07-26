@@ -98,9 +98,9 @@ ImageReport v0
   Section name=rodata base=0x40505ab0 size=1317
   Section name=abort base=0x40505fd8 size=120
   Section name=checkpoint base=0x40506050 size=336
-  Section name=rtdata base=0x405061a0 size=2408
-  Section name=devregs base=0x40506b08 size=112
-  Section name=pooldata base=0x40506b78 size=1536
+  Section name=rtdata base=0x40510000 size=2408
+  Section name=devregs base=0x40510968 size=112
+  Section name=pooldata base=0x405109d8 size=1536
   Entry base=0x40500000
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -112,15 +112,15 @@ ImageReport v0
   Driver name=AuxDriver state=8
   Turns count=2 stride=1024 bytes=2048
   Totals actors=1 drivers=2 ready_queue=2 group_arena=0 bytes=2408
-  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40506b08 size=104
-  DeviceRegs device=device#1 type=AuxHw driver=AuxDriver base=0x40506b70 size=8
-  IrqHostInject base=0x40506b08 offset=0x60 status=0xa501 vector=1
-  Pool name=AuxBuffers kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40506b78 size=512 align=8 coherency=coherent device=device#1
-  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40506d78 size=512 align=8 coherency=coherent device=device#0
-  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40506f78 size=512 align=8 coherency=coherent device=device#0
-  BlkPool name=AuxBuffers device=device#1 base=0x40506b78 size=0x200
-  BlkPool name=BlockControl device=device#0 base=0x40506d78 size=0x200
-  BlkPool name=BlockPayloads device=device#0 base=0x40506f78 size=0x200
+  DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40510968 size=104
+  DeviceRegs device=device#1 type=AuxHw driver=AuxDriver base=0x405109d0 size=8
+  IrqHostInject base=0x40510968 offset=0x60 status=0xa501 vector=1
+  Pool name=AuxBuffers kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x405109d8 size=512 align=8 coherency=coherent device=device#1
+  Pool name=BlockControl kind=dma payload=BlkReqHeader slots=32 slot_bytes=16 base=0x40510bd8 size=512 align=8 coherency=coherent device=device#0
+  Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=512 base=0x40510dd8 size=512 align=8 coherency=coherent device=device#0
+  BlkPool name=AuxBuffers device=device#1 base=0x405109d8 size=0x200
+  BlkPool name=BlockControl device=device#0 base=0x40510bd8 size=0x200
+  BlkPool name=BlockPayloads device=device#0 base=0x40510dd8 size=0x200
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
-  BlkQueue index=0 size=8 desc=0x40506d78 avail=0x40506df8 used=0x40506e10 doorbell=0x40506e58
+  BlkQueue index=0 size=8 desc=0x40510bd8 avail=0x40510c58 used=0x40510c70 doorbell=0x40510cb8
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
