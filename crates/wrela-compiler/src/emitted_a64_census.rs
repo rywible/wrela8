@@ -165,24 +165,10 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         note: "floor cat4 abort long-jump",
     },
     // --- image-static specialization (613 / 620 / 623 / 630 / 633) -------
-    // REF: capacity=4, slot_size=32 → same length as build_ring_enqueue.
-    EmitterEntry {
-        name: "emit_rt_enqueue",
-        file: "codegen.rs",
-        words: 55,
-        category: Category::ImageStatic,
-        note: "decision 613; per-actor specialized admission",
-    },
+    // M11 J: emit_rt_enqueue / emit_rt_select_and_run deleted (−55/−124);
+    // force-rooted __wrela_rt_enqueue / __wrela_rt_select + __method_* stubs.
     // emit_rt_run_one / emit_rt_child_poll deleted in M11 F
     // (force-rooted __wrela_rt_run_one / __wrela_child_poll); −46/−75.
-    // REF: one sync method, no xreply, frame = TURN_RECORD_SIZE (no lineage).
-    EmitterEntry {
-        name: "emit_rt_select_and_run",
-        file: "codegen.rs",
-        words: 124,
-        category: Category::ImageStatic,
-        note: "decision 630; per-actor specialized select/dispatch (item F)",
-    },
     // emit_rt_xsend / emit_rt_xreply / emit_rt_drain deleted in M11 G
     // (force-rooted __wrela_rt_xsend / xreply / drain); −69/−58/−126.
     // M11 H: secondary algorithm → wrela; 5 floor-cat1 SP extracted here.
@@ -264,7 +250,7 @@ pub const FLOOR_SUM_OF_ROWS: usize = 51; // 15 + 20 + 6 + 5 + 5
 /// until item K.
 pub const FLOOR_WORDS: usize = 36;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 179; // was 205; M11 I −26
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 0; // was 179; M11 J −55/−124
 
 pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 0; // was 7; M (L-11) deleted dead harness push_turn_addr_from_id
 
@@ -274,7 +260,7 @@ pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residu
 /// `build_entry_stub` embeds `push_halt`; the JIT-only `build_rt_*`
 /// materializers are NON_INVENTORY, not rows). Useful as a ratchet total;
 /// not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 347; // was 368; M11 I −26 +5 floor
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 168; // was 347; M11 J −179 ImageStatic
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -290,10 +276,12 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 347; // was 368; M11 I −26 +5 floor
 /// M11 G: xsend/xreply/drain emitters deleted (codegen 728→605).
 /// M11 H: secondary/boot_init emitters → SP install + call stubs (605→594).
 /// M11 I: checkpoint stub deleted; lr_frame + irq/wake stubs (594→544).
+/// M11 J: enqueue/select emitters deleted; method_call_stub stays (544→448);
+/// harness JIT materializers deleted (65→64).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
-    ("codegen.rs", 544), // was 594; I −50 from deleted checkpoint body
+    ("codegen.rs", 448), // was 544; J −109 emitters +13 method_call_stub
     ("layout.rs", 8),
-    ("layout/harness.rs", 65), // was 64; F +1 core-arg movz
+    ("layout/harness.rs", 64), // was 65; J deleted build_rt_* materializers
 ];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
@@ -443,7 +431,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 617,
+            ENCODE_ENC_SITE_COUNT, 520,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -581,10 +569,7 @@ mod tests {
         "layout.rs::layout_program",
         "layout/harness.rs::emitted_a64_census_live_counts",
         "codegen.rs::emitted_a64_census_specialization_live_counts",
-        // M10 F: JIT-only materialize of `emit_rt_select_and_run` (patches
-        // Call/MailboxAddr/Turns*); not a hand-asm emitter row.
-        "layout/harness.rs::build_rt_select_and_run",
-        "layout/harness.rs::build_rt_enqueue",
+        // M11 J: build_rt_enqueue / build_rt_select_and_run deleted with emitters.
         "layout/harness.rs::build_checkpoint_and_vector_stub",
         // M10 G: thin materialize of checkpoint trampoline.
         "layout/harness.rs::build_checkpoint_and_vector_stub_ex",
@@ -600,6 +585,9 @@ mod tests {
         "codegen.rs::emit_checkpoint_wake_call",
         "codegen.rs::emit_driver_state_call",
         "layout/harness.rs::inject_checkpoint_irq_fns",
+        // M11 J: method-dispatch stubs + enqueue/select inject (decision 831).
+        "codegen.rs::emit_method_call_stub",
+        "layout/harness.rs::inject_rt_enqueue_and_dispatch_fns",
     ];
 
     /// Census rows that are real emitters (measured word count) but whose

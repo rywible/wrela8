@@ -25,7 +25,7 @@ pub struct Store:
 
 @layout_assert
 fn budget(report: ImageReport):
-    assert report.code_size < 85000, "code budget is 85000 bytes"
+    assert report.code_size < 160000, "code budget is 160000 bytes"
 
 @image
 pub fn build() -> Image:

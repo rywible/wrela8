@@ -159,8 +159,7 @@ mod harness;
 pub use harness::{
     DEADLOCK_MSG, EXIT_CODE_ABORT_FIXED, EXIT_CODE_ABORT_VAL, EXIT_CODE_NO_RUNTIME,
     TranscriptBound, build_checkpoint_and_vector_stub, build_checkpoint_and_vector_stub_ex,
-    build_rt_enqueue, build_rt_select_and_run, check_transcript_bound, compute_transcript_bound,
-    layout_test_image,
+    check_transcript_bound, compute_transcript_bound, layout_test_image,
 };
 
 #[cfg(test)]
@@ -168,7 +167,7 @@ pub(crate) use harness::emitted_a64_census_live_counts;
 
 use harness::{
     append_rodata, build_entry_stub, inject_boot_init_fn, inject_checkpoint_irq_fns,
-    inject_rt_cross_core_fns, inject_rt_select_and_run_fns, push_halt,
+    inject_rt_cross_core_fns, inject_rt_enqueue_and_dispatch_fns, push_halt,
     reinject_runtime_with_rtconfig,
 };
 
@@ -704,7 +703,7 @@ fn resolve_cross_core_edge(
     if crate::codegen::symbol_is_synthetic(caller_key)
         || caller_key.starts_with("__wrela_")
         || caller_key.starts_with("__enqueue_")
-        || caller_key.starts_with("__select_")
+        || caller_key.starts_with("__method_")
         || caller_key.starts_with("__resume_")
     {
         return Ok(None);
@@ -2511,7 +2510,7 @@ pub fn layout_program(
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
         reinject_runtime_with_rtconfig(&mut program_owned, w)?;
-        inject_rt_select_and_run_fns(&mut program_owned, w);
+        inject_rt_enqueue_and_dispatch_fns(&mut program_owned, w);
         inject_rt_cross_core_fns(&mut program_owned, w);
         inject_boot_init_fn(&mut program_owned, w);
         inject_checkpoint_irq_fns(&mut program_owned, w);
@@ -3778,6 +3777,10 @@ pub struct RuntimeTables {
     pub enqueue_handles: Vec<u64>,
     /// M11 G: mailbox-root names parallel to `enqueue_handles`.
     pub enqueue_actors: Vec<String>,
+    /// M11 J: per root (enqueue_actors order): `(method_key, is_async, reply_is_aggregate)`.
+    pub root_methods: Vec<Vec<(String, bool, bool)>>,
+    /// M11 J: placement core per root (enqueue_actors order).
+    pub root_cores: Vec<usize>,
     /// M11 H: count of boot `init` calls (drivers then actors with `init`).
     pub n_boot_calls: usize,
     /// M11 I: pending-vector bit indices for sealed IRQ binds (decision 823).
@@ -6575,8 +6578,23 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
     wiring.tables.drain_by_core = drain_by_core;
     wiring.tables.child_sites = child_sites;
     wiring.tables.ring_target_handles = ring_target_handles;
+    let mut root_methods = Vec::with_capacity(enqueue_actors.len());
+    let mut root_cores = Vec::with_capacity(enqueue_actors.len());
+    for (i, name) in enqueue_actors.iter().enumerate() {
+        let methods = wiring
+            .dispatch
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, m)| m.clone())
+            .unwrap_or_default();
+        root_methods.push(methods);
+        // `actor_cores` is parallel to `mailbox_root_names` == enqueue_actors order.
+        root_cores.push(wiring.actor_cores.get(i).copied().unwrap_or(0));
+    }
     wiring.tables.enqueue_handles = enqueue_handles;
     wiring.tables.enqueue_actors = enqueue_actors;
+    wiring.tables.root_methods = root_methods;
+    wiring.tables.root_cores = root_cores;
     // M11 H: drivers then actors (same call order as former emit_boot_init).
     let n_boot_calls = wiring
         .driver_init_calls
