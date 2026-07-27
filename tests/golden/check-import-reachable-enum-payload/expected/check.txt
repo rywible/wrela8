@@ -9,10 +9,8 @@ Module path=app.main
   Fn build() -> Image
 Module path=lib.g
   Struct Payload data
-    field n: u32
+    pub field n: u32
   Enum Res data
     variant Good(Payload)
     variant Bad
   Fn make(n: read u32) -> Res
-FieldVisibilityCensus constructs=0 reads=1 writes=0 patterns=0 fields=1
-  read use=app.main decl=lib.g struct=Payload field=n

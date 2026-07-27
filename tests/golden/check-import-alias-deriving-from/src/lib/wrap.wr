@@ -4,7 +4,7 @@ module lib.wrap
 # import case; the importer aliases it.
 
 pub struct Src:
-    n: u32
+    pub n: u32
 
 pub struct Wrap deriving(From):
-    inner: Src
+    pub inner: Src

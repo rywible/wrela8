@@ -85,7 +85,11 @@ fn display_name(name: &str, args: &[TypeArg]) -> String {
 fn display_inst_name(entry: &QueuedInstantiation) -> String {
     match (&entry.kind, &entry.receiver) {
         (InstKind::Method, Some(recv)) => {
-            format!("{}.{}", types::render_type(recv), display_name(&entry.name, &entry.args))
+            format!(
+                "{}.{}",
+                types::render_type(recv),
+                display_name(&entry.name, &entry.args)
+            )
         }
         _ => display_name(&entry.name, &entry.args),
     }
@@ -1068,8 +1072,7 @@ pub(crate) fn instantiate_method(
             call_span,
         ));
     };
-    let (ast_orig, decl_orig) =
-        lookup_method_decl(mctx, type_name, type_args, method, call_span)?;
+    let (ast_orig, decl_orig) = lookup_method_decl(mctx, type_name, type_args, method, call_span)?;
     check_arity(&decl_orig.generics, args, method, call_span)?;
     let subst = build_subst(&decl_orig.generics, args, mctx, call_span)?;
     let decl = subst_decl_fn_direct(&decl_orig, &subst);
@@ -1195,13 +1198,7 @@ fn infer_generic_targs(
         match &p.ty {
             Type::Generic(gname) => {
                 let synthesized = bodies::check_expr(arg_expr, None, fctx, mctx)?.ty;
-                record_inferred(
-                    &mut inferred,
-                    gname,
-                    synthesized,
-                    display_name,
-                    call_span,
-                )?;
+                record_inferred(&mut inferred, gname, synthesized, display_name, call_span)?;
             }
             Type::Fn(fparams, fret) => {
                 if let Type::Generic(gname) = fret.as_ref() {
@@ -1396,9 +1393,7 @@ fn suite_inferred_return(stmts: &[Stmt]) -> Option<Type> {
             Stmt::If(i) => {
                 has_valued_return(&i.then_branch)
                     || i.elifs.iter().any(|e| has_valued_return(&e.body))
-                    || i.else_branch
-                        .as_ref()
-                        .is_some_and(|b| has_valued_return(b))
+                    || i.else_branch.as_ref().is_some_and(|b| has_valued_return(b))
             }
             Stmt::Match(m) => m.arms.iter().any(|a| has_valued_return(&a.body)),
             Stmt::For(f) => has_valued_return(&f.body),
@@ -1752,16 +1747,17 @@ fn find_requirement_in<'a>(
     type_name: &str,
     method_name: &str,
 ) -> Option<(&'a Expr, Type)> {
-    let target_param = generics.iter().zip(args.iter()).find_map(|(g, a)| {
-        match (&g.kind, a) {
+    let target_param = generics
+        .iter()
+        .zip(args.iter())
+        .find_map(|(g, a)| match (&g.kind, a) {
             (DeclGenericKind::Type, TypeArg::Type(Type::Named(n, targs)))
                 if n == type_name && targs.is_empty() =>
             {
                 Some(g.name.clone())
             }
             _ => None,
-        }
-    })?;
+        })?;
     let mut param_types = BTreeMap::new();
     for p in params {
         param_types.insert(p.name.clone(), p.ty.clone());

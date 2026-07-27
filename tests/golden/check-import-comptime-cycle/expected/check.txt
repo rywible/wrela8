@@ -1,6 +1,6 @@
 Module path=a
   Struct Ay data
-    field n: u32
+    pub field n: u32
     fn scaled(read self) -> u32
   Const DEPTH: u32
   Struct Store resource
@@ -10,8 +10,5 @@ Module path=a
   Fn build() -> Image
 Module path=b
   Struct Bee data
-    field m: u32
+    pub field m: u32
   Fn bee_weight(x: read Bee) -> u32
-FieldVisibilityCensus constructs=2 reads=0 writes=0 patterns=0 fields=2
-  construct use=a decl=b struct=Bee field=m
-  construct use=b decl=a struct=Ay field=n

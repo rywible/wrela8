@@ -1,16 +1,16 @@
 module lib.g
 
 pub struct Cell:
-    n: u32
+    pub n: u32
 
 pub struct Box[T]:
-    v: T
+    pub v: T
 
 pub struct Holder:
-    cell: Cell
+    pub cell: Cell
 
 pub struct Maker:
-    seed: u32
+    pub seed: u32
 
     pub fn hold(read self) -> Holder:
         return Holder(cell=Cell(n=self.seed + 2))

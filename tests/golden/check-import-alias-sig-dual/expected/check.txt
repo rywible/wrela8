@@ -14,19 +14,13 @@ Module path=app.main
   Fn build() -> Image
 Module path=lib.pk
   Struct Src data
-    field n: u32
+    pub field n: u32
   Struct Hand data
-    field inner: Src
+    pub field inner: Src
     fn make(source: take Src) -> Hand
 Module path=lib.ret
   Struct Inner data
-    field n: u32
+    pub field n: u32
   Struct Outer data
-    field n: u32
+    pub field n: u32
     fn peel(read self) -> Inner
-FieldVisibilityCensus constructs=2 reads=3 writes=0 patterns=0 fields=4
-  construct use=app.main decl=lib.pk struct=In field=n
-  construct use=app.main decl=lib.ret struct=Out field=n
-  read use=app.main decl=lib.pk struct=Grip field=inner
-  read use=app.main decl=lib.pk struct=In field=n
-  read use=app.main decl=lib.ret struct=Item field=n

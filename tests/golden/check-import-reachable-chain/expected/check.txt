@@ -9,17 +9,12 @@ Module path=app.main
   Fn build() -> Image
 Module path=lib.a
   Struct A data
-    field seed: u32
+    pub field seed: u32
     fn make(read self) -> B
 Module path=lib.b
   Struct B data
-    field seed: u32
+    pub field seed: u32
     fn get(read self) -> C
 Module path=lib.c
   Struct C data
-    field n: u32
-FieldVisibilityCensus constructs=3 reads=1 writes=0 patterns=0 fields=3
-  construct use=app.main decl=lib.a struct=A field=seed
-  construct use=lib.a decl=lib.b struct=B field=seed
-  construct use=lib.b decl=lib.c struct=C field=n
-  read use=app.main decl=lib.c struct=C field=n
+    pub field n: u32

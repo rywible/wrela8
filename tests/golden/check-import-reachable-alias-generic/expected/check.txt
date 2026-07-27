@@ -9,11 +9,8 @@ Module path=app.main
   Fn build() -> Image
 Module path=lib.g
   Struct Src data
-    field n: u32
+    pub field n: u32
   Struct Box[T] data
     field v: T
   Fn peel_box(b: take Box[Src]) -> Src
   Fn wrap_box(s: take Src) -> Box[Src]
-FieldVisibilityCensus constructs=1 reads=1 writes=0 patterns=0 fields=1
-  construct use=app.main decl=lib.g struct=Item field=n
-  read use=app.main decl=lib.g struct=Item field=n

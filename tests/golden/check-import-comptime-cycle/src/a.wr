@@ -11,7 +11,7 @@ from b import Bee, bee_weight
 # exactly the property `sema/mod.rs`'s splice note and `loader.rs` both
 # require, and which A1 preserved before this item.
 pub struct Ay:
-    n: u32
+    pub n: u32
 
     pub fn scaled(read self) -> u32:
         return self.n * 2

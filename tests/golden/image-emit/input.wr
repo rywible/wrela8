@@ -20,4 +20,5 @@ fn compute(a: u32, b: u32) -> u32:
 @image
 pub fn build() -> Image:
     img = Image(name="emit-demo", target=Target.wrela_machine_v1)
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

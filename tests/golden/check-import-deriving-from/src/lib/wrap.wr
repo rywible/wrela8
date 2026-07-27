@@ -4,7 +4,7 @@ module lib.wrap
 # Exporter spelling is Wrap; importers may alias it.
 
 pub struct Src:
-    n: u32
+    pub n: u32
 
 pub struct Wrap deriving(From):
-    inner: Src
+    pub inner: Src

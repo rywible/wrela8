@@ -58,7 +58,9 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // runtime reinject (`inject_rt_enqueue_and_dispatch_fns`).
     ("layout/harness.rs", 33), // was 31; K +primary_entry / missing-key guards
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
-    ("eval/interp.rs", 79),
+    // 79 -> 77, plans/M13.md item F: Restart / intensity eval arms deleted
+    // with Image.supervise → on_failure.
+    ("eval/interp.rs", 77),
     ("lower.rs", 5),
     ("codegen.rs", 4),
     ("eval/mod.rs", 2),
@@ -164,7 +166,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 205,
+            INTERNAL_ERROR_SITE_COUNT, 203,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

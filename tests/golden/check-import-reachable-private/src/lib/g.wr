@@ -1,10 +1,10 @@
 module lib.g
 
 struct Hidden:
-    n: u32
+    pub n: u32
 
 pub struct Maker:
-    seed: u32
+    pub seed: u32
 
     pub fn build(read self) -> Hidden:
         return Hidden(n=self.seed + 1)

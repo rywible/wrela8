@@ -360,10 +360,7 @@ pub const UNPRODUCED_CONSUMER_KEYS: &[(&str, &str)] = &[
 /// bijection with the key surface: `group` / `pool` are `with`-
 /// constructors, not intrinsic keys.
 pub fn is_bare_resolvable(name: &str) -> bool {
-    matches!(
-        name,
-        "Image" | "now" | "wake" | "group" | "pool"
-    )
+    matches!(name, "Image" | "now" | "wake" | "group" | "pool")
 }
 
 /// The whole written-down surface: 05 §9's builder names plus the
