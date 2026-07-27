@@ -48,7 +48,7 @@ pub struct BlkDriver:
         return Ok(unit)
 
     fn drop_permit(mut self) -> unit:
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit: QueuePermit = self.queue.reserve(descriptors=3)
         return unit
 
 @image

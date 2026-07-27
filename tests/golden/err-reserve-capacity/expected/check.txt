@@ -1,3 +1,8 @@
-error[type]: `reserve_proven` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4) at 51:41
-  queue depth 8 admits at most 2 concurrent 3-descriptor operations (floor(8/3)), but this image has 3 static `reserve_proven` site(s)
-  plans/M7.md decision 6: same analysis shape as `sema::send_proof`; runtime backpressure is item G
+error[type]: `reserve` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4); the use site demanded `QueuePermit` (plans/M13.md decision 1) at 51:34
+  queue: VirtQueue[..8]
+  descriptors_per_op: 3
+  in-flight bound: floor(8/3) = 2
+  static `reserve` sites in image: 3
+  image fact: queue depth 8 admits at most 2 concurrent 3-descriptor operations (floor(8/3)), but this image has 3 static `reserve` site(s)
+  04-compiler.md §7: diagnostics carry a why-chain for whole-image analyses
+  plans/M13.md item M / decision 1: keep `Result[QueuePermit, CapacityError]` at the use site, or shrink the image until the proof holds

@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_completion_outcome.wr sha256=9903b4a864243eeeda68f4111838751407bbd0117e7d1b9e4ec72fb186258845
+  Input path=examples/check_completion_outcome.wr sha256=62f8b77a4c8adf5179f6f6550ab3e4fefda3744849ea4621e76fca100216cd5d
   Input path=<generated> sha256=57cd912f2b7055fd4de4809ac485846be39a87e0787d0a09fa4069e0d4ad557a
   Name value=check-completion-outcome
   Target value=Target.wrela_machine_v1
@@ -72,10 +72,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=92080
-  Section name=rodata base=0x40516800 size=500
-  Section name=abort base=0x405169f4 size=120
-  Section name=checkpoint base=0x40516a6c size=28
+  Section name=code base=0x40500050 size=92124
+  Section name=rodata base=0x40516830 size=500
+  Section name=abort base=0x40516a24 size=120
+  Section name=checkpoint base=0x40516a9c size=28
   Section name=rtdata base=0x40540000 size=56
   Section name=devregs base=0x40540038 size=104
   Section name=pooldata base=0x405400a0 size=2560

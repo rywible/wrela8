@@ -241,8 +241,8 @@ compiler-recognized intrinsics even when a package supplies their surface:
 
 ## 10. Naming
 
-Enum variants are CamelCase; functions are snake_case. A statically-proved
-variant of a possibly-failing operation is named `*_proven`
-(`reserve_proven`, `get_proven`) — never an unrelated name, never a silent
-change of failure mode. Bounded-occupancy parameters are spelled `..N` in
-public signatures; exact extents stay `N`.
+Enum variants are CamelCase; functions are snake_case. Bounded-occupancy
+parameters are spelled `..N` in public signatures; exact extents stay `N`.
+Proof-conditioned collapse of a possibly-failing operation (same spelling;
+success type where proved, declared `Result` otherwise) is the language
+rule in [02 §9.4](02-language.md#94-messages--async) — not a second name.

@@ -1,7 +1,8 @@
-module examples.err_handoff_no_transition
+module examples.err_reserve_unproven_discarded
 
-# plans/M7.md item E3 / 03-hardware.md §5: a handoff method's every path
-# must return queue.publish(...) or queue.reject(...).
+# plans/M13.md item M + L: three static sites exceed floor(8/3)=2 so the
+# proof fails; sites keep `Result[QueuePermit, CapacityError]`; silent
+# Err discard is error[sema].
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -13,14 +14,6 @@ struct BlkReqHeader:
     reserved: u32
     sector: u64
 
-@layout(dma, endian=little)
-struct BlkReqStatus:
-    status: u8
-
-@layout(dma, endian=little)
-struct DmaBlock:
-    kind: u64
-
 struct VirtioBlock:
     id: u32
 
@@ -28,7 +21,6 @@ enum Feature:
     Flush
 
 pool BlockControl
-pool BlockPayloads
 
 @driver
 pub struct BlkDriver:
@@ -56,32 +48,39 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    pub fn submit_read(mut self, take buffer: own[BlockPayloads] DmaBlock)
-        -> Receipt[own[BlockPayloads] DmaBlock]:
-        permit = self.queue.reserve(descriptors=3)
-        operation = self.queue.prepare_block(
-            permit=take permit,
-            header=BlkReqHeader(kind=0, reserved=0, sector=0),
-            payload=take buffer,
-            device_writes_payload=true,
-            status=BlkReqStatus(status=0xff),
-            idempotent=true,
-        )
-        # Storing the receipt and returning the local is not a producer
-        # transition — 03 §5 requires `return queue.publish(...)` directly.
-        r = self.queue.publish(operation=take operation)
-        return take r
+    fn a(mut self) -> unit:
+        match self.queue.reserve(descriptors=3):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
+
+    fn b(mut self) -> unit:
+        match self.queue.reserve(descriptors=3):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
+
+    fn c(mut self) -> unit:
+        match self.queue.reserve(descriptors=3):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
 
 @image
 pub fn build() -> Image:
-    img = Image(name="err-handoff-no-transition", target=Target.wrela_machine_v1)
+    img = Image(name="err-reserve-unproven-discarded", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](
         transport=0x2000,
         capacity_sectors=16,
         required_features=[Feature.Flush],
     )
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
-    _payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=4)
     disk = img.driver(BlkDriver, device=blk)
     img.on_failure(policy=Failure.Halt)
     return img.seal()

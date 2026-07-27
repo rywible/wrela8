@@ -67,8 +67,8 @@ Program
                   Local name=buffer ty=own[BlockPayloads] DmaBlock
                 Arg label=error
                   EnumConstruct enum=IoError variant=OutOfRange ty=IoError
-        Let name=permit ty=QueuePermit
-          Intrinsic key=VirtQueue.reserve_proven type_arg=VirtQueue[..8] ty=QueuePermit
+        Let name=permit ty=Result[QueuePermit, CapacityError]
+          Intrinsic key=VirtQueue.reserve type_arg=VirtQueue[..8] ty=Result[QueuePermit, CapacityError]
             Receiver
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver

@@ -57,7 +57,7 @@ pub struct BlkDriver:
         return Ok(unit)
 
     fn bad(mut self, take buffer: own[BlockPayloads] DmaBlock) -> QueueOp[own[BlockPayloads] DmaBlock, true]:
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         return self.queue.prepare_block(
             permit=permit,
             header=BlkReqHeader(kind=0, reserved=0, sector=0),

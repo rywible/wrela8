@@ -205,8 +205,8 @@ await nic.transmit(payload=take packet)
 - Reclaiming a handle returns its slot to the pool that minted it, wherever
   the handle traveled.
 - If the compiler proves an allocation cannot exceed pool capacity, the
-  operation is infallible (the `*_proven` API family); otherwise it returns
-  `CapacityError`.
+  operation's result collapses to its success type (the proof-conditioned
+  rule, §9.4); otherwise it returns `Result[..., CapacityError]`.
 
 A scoped pool is the bulk-region form of the same concept:
 
@@ -714,9 +714,12 @@ match send logger.record(event=take event):
                         stash(take event)     # handed back in the error
 ```
 
-This is the language's one proof-conditioned form: the same spelling is
-infallible exactly where the compiler has proved it, mirroring the library's
-`*_proven` convention.
+This is the language's one proof-conditioned form: where the compiler proves
+an operation's failure impossible, the operation's result is its success
+type; otherwise it is the declared `Result`. The spelling never changes; the
+proof is displayed, and a failed proof surfaces at the use site with the
+why-chain (which bound, which image fact, what changed). Two instances:
+`send` (mailbox admission) and `VirtQueue.reserve` (descriptor capacity).
 
 At an `await` / `send` / `?` boundary, a wildcard or unused binding that
 discards an `Err` is an error — **no silent `Err` discard without

@@ -339,7 +339,7 @@ fn check_typed_single_with_decls(
     // Single-module entry: the "closure" is this one module.
     let one = BTreeMap::from([(specialized.path.join("."), &program)]);
     send_proof::check(&one)?;
-    // plans/M7.md item E2, decision 6: `reserve_proven`'s whole-image
+    // plans/M7.md item E2, decision 6: `reserve`'s whole-image
     // descriptor-capacity proof — same shape as `send_proof`, same
     // placement (after the typed program exists, before any consumer).
     reserve_proof::check(&one)?;

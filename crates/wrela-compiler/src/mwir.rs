@@ -1173,6 +1173,8 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                         | "CompletionOutcome"
                         // plans/M13.md item I: auto-visible fieldless enum.
                         | "Admission"
+                        // plans/M13.md item M: auto-visible fieldless enum.
+                        | "CapacityError"
                 ) =>
         {
             Ok(SLOT)

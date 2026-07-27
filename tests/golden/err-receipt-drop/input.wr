@@ -57,7 +57,7 @@ pub struct BlkDriver:
         return Ok(unit)
 
     fn drop_receipt(mut self, take buffer: own[BlockPayloads] DmaBlock) -> unit:
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=0, reserved=0, sector=0),

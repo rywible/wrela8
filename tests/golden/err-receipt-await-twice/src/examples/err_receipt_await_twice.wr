@@ -114,7 +114,7 @@ pub struct BlkDriver:
                 payload=take buffer,
                 error=IoError.OutOfRange,
             )
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=lba),
@@ -133,7 +133,7 @@ pub struct BlkDriver:
                 payload=take buffer,
                 error=IoError.OutOfRange,
             )
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=BLK_T_IN, reserved=0, sector=lba),

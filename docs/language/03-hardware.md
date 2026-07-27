@@ -156,16 +156,20 @@ static TURNS: TurnTable
 A queue API reserves complete operations, not raw descriptors:
 
 ```wrela
-permit = self.queue.reserve_proven(descriptors=3)   # build-proven capacity
+permit = self.queue.reserve(descriptors=3)   # QueuePermit when proved
 operation = self.queue.prepare_block(permit=take permit, header=..., payload=take buffer, ...)
 receipt = self.queue.publish(operation=take operation)
 ```
 
-`reserve_proven` exists only when whole-image analysis proves every admitted
-handler a complete unit (three direct descriptors in a 128-deep queue means
-at most 42 in flight — the compiler computes it). For runtime backpressure, a
-generated proxy waits for capacity *before* admitting the handler; a handler
-never awaits a permit its own bottom half produces.
+`VirtQueue.reserve` is proof-conditioned ([02 §9.4](02-language.md#94-messages--async)):
+where whole-image analysis proves every admitted handler a complete unit
+against the queue's descriptor capacity (three direct descriptors in a
+128-deep queue means at most 42 in flight — the compiler computes it), the
+result is `QueuePermit`; otherwise it is `Result[QueuePermit, CapacityError]`,
+and a use site that demands the permit without that proof is refused with the
+why-chain. For runtime backpressure, a generated proxy waits for capacity
+*before* admitting the handler; a handler never awaits a permit its own
+bottom half produces.
 
 The queue tracks each operation by ID, slot generation, and reset epoch —
 none of which ever wrap; exhaustion retires the slot or forces reset/fatal

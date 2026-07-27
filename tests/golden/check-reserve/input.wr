@@ -1,6 +1,6 @@
-module examples.check_reserve_proven
+module examples.check_reserve
 
-# plans/M7.md item E2, 03-hardware.md §4: `reserve_proven` + `prepare_block`.
+# plans/M7.md item E2, 03-hardware.md §4: `reserve` + `prepare_block`.
 #
 # Dump oracle (H2a's shape): the operations type-check and lower, and the
 # whole-image proof admits one at-most-once site against a depth-8 queue
@@ -71,7 +71,7 @@ pub struct BlkDriver:
     # as H2a's `Untrusted[T]` parameter).
     fn prepare_read(mut self, take buffer: own[BlockPayloads] DmaBlock,
                     lba: u64) -> QueueOp[own[BlockPayloads] DmaBlock, true]:
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=0, reserved=0, sector=lba),
@@ -84,7 +84,7 @@ pub struct BlkDriver:
 
 @image
 pub fn build() -> Image:
-    img = Image(name="check-reserve-proven", target=Target.wrela_machine_v1)
+    img = Image(name="check-reserve", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](
         transport=0x2000,
         capacity_sectors=16,

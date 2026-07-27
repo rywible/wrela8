@@ -47,7 +47,7 @@ pub struct BlkDriver:
         return Ok(unit)
 
     fn bad(mut self) -> QueuePermit:
-        return self.queue.reserve_proven(descriptors=4)
+        return self.queue.reserve(descriptors=4)
 
 @image
 pub fn build() -> Image:

@@ -1419,7 +1419,7 @@ fn validate_fn_capability_types(
     // rejected as "raw capabilities".
     //
     // plans/M8.md item D narrowed this list. `QueuePermit` / `QueueOp`
-    // (M7 item E2) are minted by `reserve_proven` / `prepare_block` and
+    // (M7 item E2) are minted by `reserve` / `prepare_block` and
     // must reach `prepare_block` / `publish` — which is a *private*
     // driver-internal handoff, and `is_pub_method` is exactly the gate
     // that distinguishes the two. Whitelisting them ahead of the

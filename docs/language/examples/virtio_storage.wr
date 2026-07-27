@@ -193,8 +193,8 @@ pub struct BlkDriver[const MODE: DriverMode]:
             )
 
         # Whole-image analysis proves this appliance keeps at most 42 direct
-        # requests in flight; reserve_proven is infallible or a build error.
-        permit = self.queue.reserve_proven(descriptors=3)
+        # requests in flight; reserve is infallible or a build error.
+        permit = self.queue.reserve(descriptors=3)
 
         operation = self.queue.prepare_block(
             permit=take permit,
@@ -218,7 +218,7 @@ pub struct BlkDriver[const MODE: DriverMode]:
                 error=IoError.OutOfRange,
             )
 
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=lba),
@@ -558,12 +558,12 @@ pub struct Notes:
     @task
     pub async fn run(mut self) -> Result[unit, AppError]:
         with group(deadline=now() + seconds(1)):
-            body = self.buffers.from_str_proven(
+            body = self.buffers.from_str(
                 "wrela boots to an appliance, not a prompt.\n",
             )
             await self.storage.write_file(ino=7, data=take body)?
 
-            output = self.buffers.get_proven(capacity=4096)
+            output = self.buffers.get(capacity=4096)
             output = await self.storage.read_file(ino=7, out=take output)?
 
             # Console is another actor, so ownership moves rather than

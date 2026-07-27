@@ -89,7 +89,7 @@ pub struct BlkDriver:
                 s = take spare
                 self.outcomes = self.outcomes + s.word
             case .Unknown:
-                permit = self.queue.reserve_proven(descriptors=3)
+                permit = self.queue.reserve(descriptors=3)
                 operation = self.queue.prepare_block(
                     permit=take permit,
                     header=BlkReqHeader(kind=BLK_T_IN, reserved=0, sector=lba),

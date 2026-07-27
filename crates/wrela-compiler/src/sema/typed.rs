@@ -744,6 +744,9 @@ pub struct TypedProgram {
     /// depth=N)` site this module typed — `(pool name, depth)`. Layout
     /// places the ring from these facts and nowhere else.
     pub virtqueue_configures: Vec<(String, u16)>,
+    /// plans/M13.md item M: spans that coerced
+    /// `Result[QueuePermit, CapacityError]` to `QueuePermit`.
+    pub reserve_permit_demands: Vec<crate::syntax::ast::Span>,
     /// plans/M13.md item N: sync loops that omitted `@budget`, for the
     /// observation-discharge check (spans from body typing).
     pub unbounded_sync_loops: Vec<UnboundedSyncLoop>,

@@ -124,7 +124,7 @@ The compiler MUST prove, before emitting an artifact:
    resource teardown; the image declares a failure policy exactly once.
 6. **Contracts**: the requirement set of every generic, the inferred effect
    of every private method, and every proof-conditioned form (`send`,
-   `*_proven`) are computed, checked, and published — contracts are compiler
+   `VirtQueue.reserve`) are computed, checked, and published — contracts are compiler
    output, not user ceremony.
 
 Chapter [04](04-compiler.md) specifies these obligations, the required image

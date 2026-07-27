@@ -2323,6 +2323,32 @@ fn lower_mut_arg_place<'a>(
 
 // --- expressions (await-free contexts only) ---------------------------------
 
+/// plans/M13.md item M: see `lower::collapse_reserve_permit_if_needed`.
+fn collapse_reserve_permit_if_needed(
+    expr_ty: &Type,
+    src: Temp,
+    b: &mut FlowBuilder<'_>,
+) -> Result<Temp, FlowError> {
+    let is_permit = matches!(expr_ty, Type::Named(n, t) if n == "QueuePermit" && t.is_empty());
+    if !is_permit {
+        return Ok(src);
+    }
+    let src_ty = &b.temp_types[src.0];
+    let is_reserve_result = match src_ty {
+        Type::Result(ok, err) => {
+            matches!(&**ok, Type::Named(n, t) if n == "QueuePermit" && t.is_empty())
+                && matches!(&**err, Type::Named(n, t) if n == "CapacityError" && t.is_empty())
+        }
+        _ => false,
+    };
+    if !is_reserve_result {
+        return Ok(src);
+    }
+    let dst = b.fresh(expr_ty.clone());
+    b.emit_mwir(Inst::EnumPayload { dst, src, index: 0 });
+    Ok(dst)
+}
+
 /// Lowers `e` in a context that can never itself suspend — the module
 /// doc's own headline fail-closed set names everything this deliberately
 /// does not cover.
@@ -2349,15 +2375,21 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             b.emit_mwir(Inst::ConstUnit { dst });
             Ok(dst)
         }
-        TypedExprKind::Local(name) => match env_lookup(env, name) {
-            Some(Binding::Temp(t)) => Ok(t),
-            Some(Binding::SelfPath(path, ty)) => {
-                let dst = b.fresh(ty);
-                b.emit(FlowInst::SelfPath { dst, path });
-                Ok(dst)
-            }
-            None => Err(FlowError::internal(format!("unbound local `{name}`"))),
-        },
+        TypedExprKind::Local(name) => {
+            let t = match env_lookup(env, name) {
+                Some(Binding::Temp(t)) => t,
+                Some(Binding::SelfPath(path, ty)) => {
+                    let dst = b.fresh(ty);
+                    b.emit(FlowInst::SelfPath { dst, path });
+                    dst
+                }
+                None => {
+                    return Err(FlowError::internal(format!("unbound local `{name}`")));
+                }
+            };
+            // plans/M13.md item M: see `lower::collapse_reserve_permit_if_needed`.
+            collapse_reserve_permit_if_needed(&e.ty, t, b)
+        }
         TypedExprKind::Field(base, name) => {
             // plans/M10.md item A2c: placed-static named field → MmioRead.
             if let TypedExprKind::Static(sname) = &base.kind {
@@ -2412,8 +2444,11 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             Ok(dst)
         }
         // Move is a type-system fact; lowering just evaluates the place
-        // (mirrors `lower.rs`).
-        TypedExprKind::Take(inner) => lower_expr_flat(inner, b, env),
+        // (mirrors `lower.rs`). plans/M13.md item M: coerce Result→permit.
+        TypedExprKind::Take(inner) => {
+            let t = lower_expr_flat(inner, b, env)?;
+            collapse_reserve_permit_if_needed(&e.ty, t, b)
+        }
         TypedExprKind::Const(name) => {
             let v = crate::eval::interp::eval_const(b.prog, name).map_err(|err| {
                 FlowError::internal(format!(
@@ -2766,19 +2801,30 @@ fn lower_flow_queue_op(
             });
             Ok(dst)
         }
-        "VirtQueue.reserve_proven" => {
+        "VirtQueue.reserve" => {
+            // plans/M13.md item M: see `lower.rs` — Result sites wrap Ok.
             let _ = args
                 .iter()
                 .find(|(l, _)| l == "descriptors")
-                .ok_or_else(|| FlowError::internal("`reserve_proven` without `descriptors=`"))?;
+                .ok_or_else(|| FlowError::internal("`reserve` without `descriptors=`"))?;
             let _ = receiver;
-            let dst = b.fresh(e.ty.clone());
+            let permit = b.fresh(Type::Named("QueuePermit".to_string(), vec![]));
             b.emit_mwir(Inst::ConstInt {
-                dst,
+                dst: permit,
                 ty: Type::U64,
                 value: 0,
             });
-            Ok(dst)
+            if matches!(&e.ty, Type::Result(_, _)) {
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::MakeEnum {
+                    dst,
+                    tag: value::RESULT_OK,
+                    payload: vec![permit],
+                });
+                Ok(dst)
+            } else {
+                Ok(permit)
+            }
         }
         "VirtQueue.publish" => {
             let op = args

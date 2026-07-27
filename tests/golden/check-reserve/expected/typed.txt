@@ -6,7 +6,7 @@ Program
       Let name=img ty=Image
         Intrinsic key=Image ty=Image
           Arg label=name
-            Str text="check-reserve-proven" ty=Static[Str]
+            Str text="check-reserve" ty=Static[Str]
           Arg label=target
             EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
       Let name=blk ty=ImageDecl
@@ -49,8 +49,8 @@ Program
       Param name=buffer mode=take ty=own[BlockPayloads] DmaBlock
       Param name=lba mode=read ty=u64
       Body
-        Let name=permit ty=QueuePermit
-          Intrinsic key=VirtQueue.reserve_proven type_arg=VirtQueue[..8] ty=QueuePermit
+        Let name=permit ty=Result[QueuePermit, CapacityError]
+          Intrinsic key=VirtQueue.reserve type_arg=VirtQueue[..8] ty=Result[QueuePermit, CapacityError]
             Receiver
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver

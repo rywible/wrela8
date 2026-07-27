@@ -64,7 +64,7 @@ Program
       0033: MakeEnum dst=t26 tag=0 payload=[t25]
       0034: Return value=t26
       0035: Return
-  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=19 receiver=t0:mut params=[t1,t2:take]
+  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=21 receiver=t0:mut params=[t1,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=u64
     Temp t2 ty=own[BlockPayloads] DmaBlock
@@ -73,17 +73,19 @@ Program
     Temp t5 ty=IoError
     Temp t6 ty=Receipt[own[BlockPayloads] DmaBlock]
     Temp t7 ty=QueuePermit
-    Temp t8 ty=QueuePermit
-    Temp t9 ty=VirtQueue[..8]
-    Temp t10 ty=u32
-    Temp t11 ty=u32
-    Temp t12 ty=BlkReqHeader
-    Temp t13 ty=u8
-    Temp t14 ty=BlkReqStatus
-    Temp t15 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
-    Temp t16 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
-    Temp t17 ty=VirtQueue[..8]
-    Temp t18 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t8 ty=Result[QueuePermit, CapacityError]
+    Temp t9 ty=Result[QueuePermit, CapacityError]
+    Temp t10 ty=VirtQueue[..8]
+    Temp t11 ty=QueuePermit
+    Temp t12 ty=u32
+    Temp t13 ty=u32
+    Temp t14 ty=BlkReqHeader
+    Temp t15 ty=u8
+    Temp t16 ty=BlkReqStatus
+    Temp t17 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t18 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t19 ty=VirtQueue[..8]
+    Temp t20 ty=Receipt[own[BlockPayloads] DmaBlock]
     Body
       0000: Project dst=t3 base=t0 index=3
       0001: Compare op=>= ty=u64 dst=t4 lhs=t1 rhs=t3
@@ -93,16 +95,18 @@ Program
       0005: Return value=t6
       0006: Jump target=0007
       0007: ConstInt dst=t7 ty=u64 value=0
-      0008: Copy dst=t8 src=t7
-      0009: Project dst=t9 base=t0 index=2
-      0010: ConstInt dst=t10 ty=u32 value=0
-      0011: ConstInt dst=t11 ty=u32 value=0
-      0012: MakeAggregate dst=t12 elems=[t10,t11,t1]
-      0013: ConstInt dst=t13 ty=u8 value=255
-      0014: MakeAggregate dst=t14 elems=[t13]
-      0015: QueuePrepare dst=t15 queue=t9 permit=t8 header=t12 payload=t2 status=t14 device_writes=true payload_len=512
-      0016: Copy dst=t16 src=t15
-      0017: Project dst=t17 base=t0 index=2
-      0018: QueuePublish dst=t18 queue=t17 operation=t16 order=[write_descriptors, publish_available, notify_queue]
-      0019: Return value=t18
-      0020: Return
+      0008: MakeEnum dst=t8 tag=0 payload=[t7]
+      0009: Copy dst=t9 src=t8
+      0010: Project dst=t10 base=t0 index=2
+      0011: EnumPayload dst=t11 src=t9 index=0
+      0012: ConstInt dst=t12 ty=u32 value=0
+      0013: ConstInt dst=t13 ty=u32 value=0
+      0014: MakeAggregate dst=t14 elems=[t12,t13,t1]
+      0015: ConstInt dst=t15 ty=u8 value=255
+      0016: MakeAggregate dst=t16 elems=[t15]
+      0017: QueuePrepare dst=t17 queue=t10 permit=t11 header=t14 payload=t2 status=t16 device_writes=true payload_len=512
+      0018: Copy dst=t18 src=t17
+      0019: Project dst=t19 base=t0 index=2
+      0020: QueuePublish dst=t20 queue=t19 operation=t18 order=[write_descriptors, publish_available, notify_queue]
+      0021: Return value=t20
+      0022: Return

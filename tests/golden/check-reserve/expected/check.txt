@@ -1,4 +1,4 @@
-Module path=examples.check_reserve_proven
+Module path=examples.check_reserve
   Struct VirtioIrqMmio data
     field interrupt_status: ReadOnly[u32]
     field interrupt_ack: WriteOnly[u32]
