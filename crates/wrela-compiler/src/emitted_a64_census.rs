@@ -278,7 +278,8 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 90; // was 168; M11 K −94 entry dri
 /// stubs added (+22 codegen).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
     // was 471; M13 item H retired BRK_AWAIT_ACTOR_REJECTED (−2 str stores).
-    ("codegen.rs", 469),
+    // was 469; SlotMap minted-id path (`emit_slotmap_mint_id`) (+3).
+    ("codegen.rs", 472),
     ("layout.rs", 8),
     ("layout/harness.rs", 41), // was 64; K deleted build_entry_driver
 ];
@@ -430,7 +431,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 518,
+            ENCODE_ENC_SITE_COUNT, 521,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -556,6 +557,7 @@ mod tests {
         "codegen.rs::emit_self_path",
         "codegen.rs::emit_now",
         "codegen.rs::push_turn_addr_from_id",
+        "codegen.rs::emit_slotmap_mint_id",
     ];
 
     /// Touches encoders but is not a hand-emitted runtime routine (patch

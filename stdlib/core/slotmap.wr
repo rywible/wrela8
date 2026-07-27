@@ -6,6 +6,11 @@
 #
 # Doc `get(key, fn -> R) -> Option[R]` needs a method type parameter
 # (JJ decision 185) — ship `get_value` / `lend` / `contains` until then.
+#
+# 05 §7: `SlotMap` mints a fresh non-wrapping instance id. Construction
+# takes no caller `map_id`; the compiler/evaluator assign one (see
+# `OFF_SLOTMAP_NEXT_ID` / comptime counter). `self.map_id = 0` below is
+# overwritten before the constructed value is observed.
 module slotmap
 
 pub enum GenerationExhausted:
@@ -28,8 +33,8 @@ pub struct SlotMap[T, const N: usize]:
     retired: [bool; N]
     data: [Option[T]; N]
 
-    init(mut self, map_id: u64):
-        self.map_id = map_id
+    init(mut self):
+        self.map_id = 0
         self.len = 0
         self.generations = [0; N]
         self.occupied = [false; N]

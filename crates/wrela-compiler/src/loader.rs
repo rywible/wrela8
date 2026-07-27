@@ -190,6 +190,47 @@ fn check_agrees(file: &Path, module: &Module, expected_root: &Path) -> Result<()
     Ok(())
 }
 
+/// Refuse a module file whose resolved path escapes `expected_root` via
+/// a symlink (or any other path remapping). Canonicalizes both sides and
+/// requires the file to sit under the root — a package-root-relative
+/// import must never open a file outside that tree.
+fn ensure_under_package_root(
+    file: &Path,
+    expected_root: &Path,
+    module_key: &[String],
+    span: Span,
+) -> Result<(), LoadError> {
+    let root_canon = expected_root.canonicalize().map_err(|e| {
+        build_error(
+            format!(
+                "cannot canonicalize package root `{}`: {e}",
+                expected_root.display()
+            ),
+            span,
+        )
+    })?;
+    let file_canon = file.canonicalize().map_err(|e| {
+        build_error(
+            format!(
+                "cannot canonicalize module `{}` at `{}`: {e}",
+                module_key.join("."),
+                file.display()
+            ),
+            span,
+        )
+    })?;
+    if file_canon.strip_prefix(&root_canon).is_err() {
+        return Err(build_error(
+            format!(
+                "module `{}` resolves outside package root via symlink or path remap",
+                module_key.join(".")
+            ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
 /// `<root>/<path[0]>/<path[1]>/.../<path[n]>.wr` — every segment but the
 /// last becomes a directory, the last becomes the file name.
 fn module_file_path(root: &Path, module_path: &[String]) -> PathBuf {
@@ -329,6 +370,7 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
                     import.span,
                 ));
             }
+            ensure_under_package_root(&file, &expected_root, &key, import.span)?;
             let module = parse_file(&file)?;
             check_agrees(&file, &module, &expected_root)?;
             // `core.runtime` keeps its `core.__image_runtime` import; the
@@ -412,6 +454,7 @@ pub fn ensure_time_module(
             Span::default(),
         ));
     }
+    ensure_under_package_root(&file, &expected_root, &key, Span::default())?;
     let module = parse_file(&file)?;
     check_agrees(&file, &module, &expected_root)?;
     modules.insert(key, LoadedModule { file, module });
@@ -431,6 +474,7 @@ pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
             Span::default(),
         ));
     }
+    ensure_under_package_root(&file, &toolchain, &key, Span::default())?;
     let module = parse_file(&file)?;
     check_agrees(&file, &module, &toolchain)?;
     Ok((key, LoadedModule { file, module }))
@@ -594,6 +638,7 @@ pub fn ensure_runtime_module(
             Span::default(),
         ));
     }
+    ensure_under_package_root(&file, &expected_root, &key, Span::default())?;
     let module = parse_file(&file)?;
     check_agrees(&file, &module, &expected_root)?;
     modules.insert(key, LoadedModule { file, module });
@@ -618,6 +663,7 @@ pub fn load_runtime_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
             Span::default(),
         ));
     }
+    ensure_under_package_root(&file, &toolchain, &key, Span::default())?;
     let module = parse_file(&file)?;
     check_agrees(&file, &module, &toolchain)?;
     Ok((key, LoadedModule { file, module }))
@@ -832,5 +878,47 @@ mod tests {
             }
         }
         assert_eq!(visited.len(), 2);
+    }
+
+    #[test]
+    fn refuses_a_symlink_that_escapes_the_package_root() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wrela-loader-symlink-{}-{}",
+            std::process::id(),
+            "escape"
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let pkgroot = tmp.join("pkg");
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&pkgroot).expect("pkgroot");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let outside_file = outside.join("secret.wr");
+        std::fs::write(&outside_file, "module secret\n").expect("write outside");
+        let link = pkgroot.join("secret.wr");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, &link).expect("symlink");
+        #[cfg(not(unix))]
+        {
+            let _ = (outside_file, link);
+            return;
+        }
+        let err = ensure_under_package_root(
+            &pkgroot.join("secret.wr"),
+            &pkgroot,
+            &[seg("secret")],
+            Span::default(),
+        )
+        .expect_err("symlink escape");
+        match err {
+            LoadError::Build(e) => {
+                assert!(
+                    e.message.contains("outside package root"),
+                    "got {}",
+                    e.message
+                );
+            }
+            LoadError::Lex(_) | LoadError::Parse(_) => panic!("expected Build"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

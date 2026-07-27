@@ -9,13 +9,8 @@ from core.slotmap import SlotMap, Key, SlotMapFull
 
 @actor
 pub struct Store:
-    map_id: u64
-
-    init(mut self, map_id: u64):
-        self.map_id = map_id
-
     pub fn insert_one(mut self) -> u64:
-        m = SlotMap[u64, 2](map_id=self.map_id)
+        m = SlotMap[u64, 2]()
         x: u64 = 10
         match m.insert(take x):
             case .Ok(k):
@@ -38,6 +33,6 @@ async fn guest_slotmap(store: Actor[Store]):
 @image
 pub fn build() -> Image:
     img = Image(name="check-slotmap-backend", target=Target.wrela_machine_v1)
-    a = img.actor(Store, map_id=1, mailbox=4)
+    a = img.actor(Store, mailbox=4)
     img.on_failure(policy=Failure.Halt)
     return img.seal()

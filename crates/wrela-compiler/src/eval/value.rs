@@ -250,8 +250,10 @@ fn checked_op(op: BinOp, a: i128, b: i128) -> Option<i128> {
 /// profile — checked in `i128` (always wide enough: the widest wrela
 /// integer is 64-bit) against the target type's own bounds.
 pub fn eval_ordinary(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
-    let (a, b) = (as_i128(l).unwrap(), as_i128(r).unwrap());
-    let (min, max) = int_bounds(ty).expect("eval_ordinary: not an integer scalar type");
+    let a = as_i128(l).ok_or_else(|| "eval: left operand is not an integer scalar".to_string())?;
+    let b = as_i128(r).ok_or_else(|| "eval: right operand is not an integer scalar".to_string())?;
+    let (min, max) = int_bounds(ty)
+        .ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
     let raw = checked_op(op, a, b);
     match raw {
         Some(v) if v >= min && v <= max => Ok(make_int(ty, v)),
@@ -260,20 +262,24 @@ pub fn eval_ordinary(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value
 }
 
 /// Wrapping `+% -% *%` (02-language.md §6.1): reduce modulo `2^width`,
-/// never abandons.
-pub fn eval_wrapping(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Value {
-    let (bits, signed) = int_shape(ty).expect("eval_wrapping: not an integer scalar type");
-    let (a, b) = (as_i128(l).unwrap(), as_i128(r).unwrap());
+/// never abandons on overflow — but still soft-errors on a typed-IR hole.
+pub fn eval_wrapping(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
+    let (bits, signed) = int_shape(ty)
+        .ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
+    let a = as_i128(l).ok_or_else(|| "eval: left operand is not an integer scalar".to_string())?;
+    let b = as_i128(r).ok_or_else(|| "eval: right operand is not an integer scalar".to_string())?;
     let raw = match op {
         BinOp::AddW => a.wrapping_add(b),
         BinOp::SubW => a.wrapping_sub(b),
         BinOp::MulW => a.wrapping_mul(b),
-        _ => unreachable!(
-            "eval_wrapping: `{}` is not wrapping arithmetic",
-            op.as_str()
-        ),
+        _ => {
+            return Err(format!(
+                "eval: `{}` is not wrapping arithmetic",
+                op.as_str()
+            ));
+        }
     };
-    make_int(ty, mask_to_width(raw, bits, signed))
+    Ok(make_int(ty, mask_to_width(raw, bits, signed)))
 }
 
 /// Reduces a host `i128` to the two's-complement bit pattern of `bits`
@@ -306,8 +312,10 @@ fn mask_to_width(v: i128, bits: u32, signed: bool) -> i128 {
 /// result is bounds-checked against the *target* type afterward,
 /// exactly like `eval_ordinary`.
 pub fn eval_div_rem(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
-    let (a, b) = (as_i128(l).unwrap(), as_i128(r).unwrap());
-    let (min, max) = int_bounds(ty).expect("eval_div_rem: not an integer scalar type");
+    let a = as_i128(l).ok_or_else(|| "eval: left operand is not an integer scalar".to_string())?;
+    let b = as_i128(r).ok_or_else(|| "eval: right operand is not an integer scalar".to_string())?;
+    let (min, max) = int_bounds(ty)
+        .ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
     if b == 0 {
         return Err(format!(
             "{} by zero",
@@ -321,7 +329,12 @@ pub fn eval_div_rem(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value,
     let raw = match op {
         BinOp::Div => a / b,
         BinOp::Rem => a % b,
-        _ => unreachable!("eval_div_rem: `{}` is not division/remainder", op.as_str()),
+        _ => {
+            return Err(format!(
+                "eval: `{}` is not division/remainder",
+                op.as_str()
+            ));
+        }
     };
     if raw >= min && raw <= max {
         Ok(make_int(ty, raw))
@@ -336,9 +349,11 @@ pub fn eval_div_rem(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value,
 /// signedness aside. `count` shares `l`'s own type (`check_binary`
 /// requires same-type operands for every builtin op, shifts included).
 pub fn eval_shift(op: BinOp, ty: &Type, l: &Value, count: &Value) -> Result<Value, String> {
-    let (bits, signed) = int_shape(ty).expect("eval_shift: not an integer scalar type");
-    let a = as_i128(l).unwrap();
-    let c = as_i128(count).unwrap();
+    let (bits, signed) = int_shape(ty)
+        .ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
+    let a = as_i128(l).ok_or_else(|| "eval: left operand is not an integer scalar".to_string())?;
+    let c = as_i128(count)
+        .ok_or_else(|| "eval: shift count is not an integer scalar".to_string())?;
     if c < 0 || c >= bits as i128 {
         return Err(format!(
             "shift count {c} is out of range for a {bits}-bit type"
@@ -373,21 +388,26 @@ pub fn eval_shift(op: BinOp, ty: &Type, l: &Value, count: &Value) -> Result<Valu
             };
             Ok(make_int(ty, mask_to_width(raw, bits, signed)))
         }
-        _ => unreachable!("eval_shift: `{}` is not a shift", op.as_str()),
+        _ => Err(format!("eval: `{}` is not a shift", op.as_str())),
     }
 }
 
-/// Bitwise `& | ^` — never abandons.
-pub fn eval_bitwise(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Value {
-    let (bits, signed) = int_shape(ty).expect("eval_bitwise: not an integer scalar type");
-    let (a, b) = (as_i128(l).unwrap(), as_i128(r).unwrap());
+/// Bitwise `& | ^` — never abandons on a well-typed value; soft-errors on
+/// a typed-IR hole instead of panicking the CLI.
+pub fn eval_bitwise(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
+    let (bits, signed) = int_shape(ty)
+        .ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
+    let a = as_i128(l).ok_or_else(|| "eval: left operand is not an integer scalar".to_string())?;
+    let b = as_i128(r).ok_or_else(|| "eval: right operand is not an integer scalar".to_string())?;
     let raw = match op {
         BinOp::BitAnd => a & b,
         BinOp::BitOr => a | b,
         BinOp::BitXor => a ^ b,
-        _ => unreachable!("eval_bitwise: `{}` is not bitwise", op.as_str()),
+        _ => {
+            return Err(format!("eval: `{}` is not bitwise", op.as_str()));
+        }
     };
-    make_int(ty, mask_to_width(raw, bits, signed))
+    Ok(make_int(ty, mask_to_width(raw, bits, signed)))
 }
 
 /// Ordering (`< <= > >=`) — numeric scalars and `char` only
@@ -429,24 +449,27 @@ pub fn eval_neg(v: &Value) -> Result<Value, String> {
     checked.ok_or_else(|| "arithmetic overflow in unary `-`".to_string())
 }
 
-/// Bitwise NOT (`~`) — never abandons.
-pub fn eval_bitnot(ty: &Type, v: &Value) -> Value {
-    let (bits, signed) = int_shape(ty).expect("eval_bitnot: not an integer scalar type");
-    let a = as_i128(v).unwrap();
+/// Bitwise NOT (`~`) — never abandons on a well-typed value; soft-errors
+/// on a typed-IR hole instead of panicking the CLI.
+pub fn eval_bitnot(ty: &Type, v: &Value) -> Result<Value, String> {
+    let (bits, signed) = int_shape(ty)
+        .ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
+    let a = as_i128(v).ok_or_else(|| "eval: operand is not an integer scalar".to_string())?;
     let mask: u128 = if bits >= 128 {
         u128::MAX
     } else {
         (1u128 << bits) - 1
     };
     let raw = (!(a as u128)) & mask;
-    make_int(ty, mask_to_width(raw as i128, bits, signed))
+    Ok(make_int(ty, mask_to_width(raw as i128, bits, signed)))
 }
 
 /// `x.to[T]()` (02-language.md §6.1): checked scalar-to-scalar
 /// conversion — build error (abandon) when the value does not fit `T`.
 pub fn eval_to_scalar(target: &Type, v: &Value) -> Result<Value, String> {
     if let Some((_, _)) = int_shape(target) {
-        let (min, max) = int_bounds(target).unwrap();
+        let (min, max) = int_bounds(target)
+            .ok_or_else(|| "eval: `.to[T]()` target is not an integer scalar".to_string())?;
         let raw = match v {
             Value::F32(x) => {
                 if !x.is_finite() {
@@ -682,7 +705,7 @@ mod scalar_arithmetic_tests {
         // 250 +% 10 == 260 mod 256 == 4.
         assert_eq!(
             eval_wrapping(BinOp::AddW, &Type::U8, &Value::U8(250), &Value::U8(10)),
-            Value::U8(4)
+            Ok(Value::U8(4))
         );
     }
 
@@ -690,7 +713,7 @@ mod scalar_arithmetic_tests {
     fn wrapping_add_wraps_at_i8_max_to_min() {
         assert_eq!(
             eval_wrapping(BinOp::AddW, &Type::I8, &Value::I8(i8::MAX), &Value::I8(1)),
-            Value::I8(i8::MIN)
+            Ok(Value::I8(i8::MIN))
         );
     }
 
@@ -787,7 +810,7 @@ mod scalar_arithmetic_tests {
                 &Value::U8(0b1010),
                 &Value::U8(0b0110)
             ),
-            Value::U8(0b0010)
+            Ok(Value::U8(0b0010))
         );
     }
 

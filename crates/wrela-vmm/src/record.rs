@@ -46,23 +46,12 @@ use std::path::Path;
 
 use crate::{BootOutcome, VmmError, boot_image_core};
 
-/// A non-cryptographic 64-bit fingerprint (FNV-1a) of the transcript
-/// bytes — a "digest" in the plain sense the plan uses the word (06 §8:
-/// "digests of every output"), not a security primitive. Deliberately
-/// the dumbest fixed-size fingerprint that still catches an accidental
-/// single-byte drift: no external crate, no hand-rolled SHA (a much
-/// larger surface to get bit-perfect for no benefit here — nothing
-/// downstream of this digest needs collision resistance, only "did the
-/// transcript come out the same bytes twice").
+/// SHA-256 hex of `bytes` (06 §8: "digests of every output"). Same
+/// in-tree FIPS 180-4 implementation the compiler's report digests use
+/// (`wrela_machine::sha256`) — collision-resistant enough that a forged
+/// choice-log cannot quietly match a different transcript.
 pub fn digest_hex(bytes: &[u8]) -> String {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = FNV_OFFSET;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    format!("{h:016x}")
+    wrela_machine::sha256::sha256_hex(bytes)
 }
 
 // --- the choice-tagged sequence (decision 9) -------------------------------
@@ -479,6 +468,11 @@ pub struct Chooser {
     /// re-deriving it from the original log.
     log: Vec<ChoiceEntry>,
     divergences: Vec<Divergence>,
+    /// When true (live `boot_image_core` replay), the first divergence
+    /// aborts the boot instead of inventing a fallback and continuing.
+    /// Unit tests of the chooser itself leave this false so they can
+    /// collect every divergence shape.
+    strict: bool,
 }
 
 impl Chooser {
@@ -487,6 +481,7 @@ impl Chooser {
             mode: ChooserMode::Record,
             log: Vec::new(),
             divergences: Vec::new(),
+            strict: false,
         }
     }
 
@@ -498,6 +493,23 @@ impl Chooser {
             },
             log: Vec::new(),
             divergences: Vec::new(),
+            // Live boots opt in via [`Chooser::strict`].
+            strict: false,
+        }
+    }
+
+    /// Fail closed on the first divergence (live replay boots).
+    pub fn strict(mut self) -> Chooser {
+        self.strict = true;
+        self
+    }
+
+    /// `Some` when `strict` and at least one divergence has been noted.
+    pub fn fatal_divergence(&self) -> Option<&Divergence> {
+        if self.strict {
+            self.divergences.first()
+        } else {
+            None
         }
     }
 
@@ -561,6 +573,36 @@ impl Chooser {
                 entry
             }
         }
+    }
+
+    /// Like [`Chooser::choose_next`], but aborts with `VmmError` when this
+    /// chooser is [`Chooser::strict`] and a divergence was just recorded.
+    pub fn choose_checked(
+        &mut self,
+        request: ChoiceRequest,
+        live: impl FnOnce() -> ChoiceEntry,
+    ) -> Result<ChoiceEntry, crate::VmmError> {
+        let entry = self.choose_next(request, live);
+        self.abort_if_strict_diverged()?;
+        Ok(entry)
+    }
+
+    /// Like [`Chooser::note_divergence`], but aborts when strict.
+    pub fn note_divergence_checked(
+        &mut self,
+        divergence: Divergence,
+    ) -> Result<(), crate::VmmError> {
+        self.note_divergence(divergence);
+        self.abort_if_strict_diverged()
+    }
+
+    fn abort_if_strict_diverged(&self) -> Result<(), crate::VmmError> {
+        if let Some(d) = self.fatal_divergence() {
+            return Err(crate::VmmError::GuestFault(format!(
+                "replay divergence: {d}"
+            )));
+        }
+        Ok(())
     }
 
     /// Records a divergence found *outside* the choice mechanism itself.
@@ -631,8 +673,17 @@ impl Chooser {
 /// divergences)` pair `finish` returns — a free fn (not a method) purely
 /// so `lib.rs` never needs `pub(crate)` visibility into `Chooser`'s own
 /// private `finish`.
-pub(crate) fn finish_chooser(chooser: Chooser) -> (Vec<ChoiceEntry>, Vec<Divergence>) {
-    chooser.finish()
+pub(crate) fn finish_chooser(
+    chooser: Chooser,
+) -> Result<(Vec<ChoiceEntry>, Vec<Divergence>), crate::VmmError> {
+    let strict = chooser.strict;
+    let (log, divergences) = chooser.finish();
+    if strict {
+        if let Some(d) = divergences.first() {
+            return Err(crate::VmmError::GuestFault(format!("replay divergence: {d}")));
+        }
+    }
+    Ok((log, divergences))
 }
 
 // --- the record file itself -------------------------------------------------
@@ -793,13 +844,14 @@ pub fn record(report_path: &Path, img_path: &Path) -> Result<RecordFile, VmmErro
 }
 
 /// Boots `img_path`/`report_path` again, feeding `recorded.choices` back
-/// through the identical `Chooser::choose_next` a live boot uses (06 §8's
+/// through the identical `Chooser::choose_checked` a live boot uses (06 §8's
 /// replay half: "replay feeds the log from virtual device models") and
-/// compares every recorded fact against this fresh boot's own. Returns
-/// every divergence found (empty = the replay reproduced the recording
-/// exactly); a genuine VMM/boot failure (a bad report, an HVF error, a
-/// timeout) is still its own `Err`, never folded into the divergence list
-/// — those are boot failures, not determinism findings.
+/// compares every recorded fact against this fresh boot's own. Choice-log
+/// divergences abort the boot (`Err`) under the live strict chooser;
+/// transcript/exit mismatches found after a clean choice replay are still
+/// returned in the `Ok` list. A genuine VMM/boot failure (a bad report, an
+/// HVF error, a timeout) is also `Err`, never folded into the divergence
+/// list — those are boot failures, not determinism findings.
 pub fn replay(
     report_path: &Path,
     img_path: &Path,
@@ -835,7 +887,7 @@ mod tests {
                 ChoiceEntry::DeadlineWake { deadline_ns: 9999 },
                 ChoiceEntry::VectorRaise { vector: 0 },
             ],
-            transcript_digest: "deadbeefcafebabe".to_string(),
+            transcript_digest: digest_hex(b"sample-transcript"),
             exit_code: 0,
             exits: 7,
         }
@@ -984,7 +1036,7 @@ mod tests {
         });
         assert_eq!(a, ChoiceEntry::ClockRead { value: 111 });
         assert_eq!(b, ChoiceEntry::DeadlineWake { deadline_ns: 222 });
-        let (log, divergences) = finish_chooser(c);
+        let (log, divergences) = finish_chooser(c).expect("non-strict finish");
         assert_eq!(log, vec![a, b]);
         assert!(divergences.is_empty());
     }
@@ -996,18 +1048,20 @@ mod tests {
             panic!("replay must never call `live`")
         });
         assert_eq!(got, ChoiceEntry::ClockRead { value: 42 });
-        let (_, divergences) = finish_chooser(c);
+        let (_, divergences) = finish_chooser(c).expect("non-strict finish");
         assert!(divergences.is_empty());
     }
 
     #[test]
     fn replayer_diverges_loudly_on_underrun_but_still_completes() {
+        // Non-strict (unit-test) mode collects every divergence; live boots
+        // use `.strict()` and abort via `choose_checked` instead.
         let mut c = Chooser::replayer(vec![]);
         let got = c.choose_next(ChoiceRequest::ClockRead, || {
             panic!("replay must never call `live`")
         });
         assert_eq!(got, ChoiceEntry::ClockRead { value: 0 }); // safe fallback
-        let (_, divergences) = finish_chooser(c);
+        let (_, divergences) = finish_chooser(c).expect("non-strict finish");
         assert_eq!(
             divergences,
             vec![Divergence::ChoiceLogUnderrun {
@@ -1018,13 +1072,27 @@ mod tests {
     }
 
     #[test]
+    fn strict_replayer_aborts_on_first_divergence() {
+        let mut c = Chooser::replayer(vec![]).strict();
+        let err = c
+            .choose_checked(ChoiceRequest::ClockRead, || {
+                panic!("replay must never call `live`")
+            })
+            .expect_err("strict mode must abort");
+        assert!(
+            err.to_string().contains("replay divergence"),
+            "got {err}"
+        );
+    }
+
+    #[test]
     fn replayer_diverges_loudly_on_a_tag_mismatch() {
         let mut c = Chooser::replayer(vec![ChoiceEntry::ClockRead { value: 1 }]);
         let got = c.choose_next(ChoiceRequest::DeadlineWake { deadline_ns: 5 }, || {
             panic!("replay must never call `live`")
         });
         assert_eq!(got, ChoiceEntry::DeadlineWake { deadline_ns: 5 }); // safe fallback
-        let (_, divergences) = finish_chooser(c);
+        let (_, divergences) = finish_chooser(c).expect("non-strict finish");
         assert_eq!(
             divergences,
             vec![Divergence::ChoiceTagMismatch {
@@ -1044,7 +1112,7 @@ mod tests {
         let _ = c.choose_next(ChoiceRequest::ClockRead, || {
             panic!("replay must never call `live`")
         });
-        let (_, divergences) = finish_chooser(c);
+        let (_, divergences) = finish_chooser(c).expect("non-strict finish");
         assert_eq!(
             divergences,
             vec![Divergence::ChoiceLogOverrun {
@@ -1066,7 +1134,7 @@ mod tests {
             },
             || panic!("replay must never call live"),
         );
-        let (_, divs) = finish_chooser(c);
+        let (_, divs) = finish_chooser(c).expect("non-strict finish");
         assert_eq!(divs.len(), 1);
         let msg = divs[0].to_string();
         assert!(
@@ -1091,7 +1159,7 @@ mod tests {
             },
             || panic!("live"),
         );
-        let (_, divs) = finish_chooser(c);
+        let (_, divs) = finish_chooser(c).expect("non-strict finish");
         let msg = divs[0].to_string();
         assert!(
             msg.contains("admission count mismatch") && msg.contains("unconsumed Admission"),

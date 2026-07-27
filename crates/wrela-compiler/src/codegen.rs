@@ -5435,7 +5435,46 @@ fn write_back_self_skipping_interrupt_cells(
 
 // --- per-fn driver: two passes, prologue length measured up front ----------
 
+fn is_slotmap_init_key(key: &str) -> bool {
+    key.contains("SlotMap[") && key.ends_with(".init")
+}
+
+/// 05-library.md §7: mint a fresh non-wrapping `SlotMap` instance id into
+/// field 0 (`map_id`), overwriting the body's placeholder `0`. Mirrors
+/// `eval::interp::run_init`'s counter; the guest counter lives at
+/// `machine_info::OFF_SLOTMAP_NEXT_ID` (zero at boot → first id is 1).
+fn emit_slotmap_mint_id(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx<'_>) -> Result<(), CodegenError> {
+    let Some((self_temp, _)) = f.receiver else {
+        return Err(CodegenError::internal("SlotMap.init without receiver"));
+    };
+    let addr = wrela_machine::layout::MACHINE_INFO_BASE
+        + wrela_machine::machine_info::OFF_SLOTMAP_NEXT_ID;
+    ctx.load_imm(X_A, addr as i64);
+    ctx.push(
+        encode::enc_ldr_x_imm(X_B, X_A, 0),
+        format!("ldr {}, [{}]  ; SlotMap next id", reg_name(X_B), reg_name(X_A)),
+    );
+    ctx.push(
+        encode::enc_add_imm(X_C, X_B, 1, true),
+        format!("add {}, {}, #1", reg_name(X_C), reg_name(X_B)),
+    );
+    // Non-wrapping: a zero after +1 means the u64 space wrapped.
+    let skip = ctx.emit_skip(SkipKind::Cbnz(X_C));
+    ctx.abort_fixed(
+        "SlotMap instance id space exhausted (u64 non-wrapping mint, 05-library.md §7)",
+    );
+    ctx.patch_skip(skip, SkipKind::Cbnz(X_C));
+    ctx.push(
+        encode::enc_str_x_imm(X_C, X_A, 0),
+        format!("str {}, [{}]", reg_name(X_C), reg_name(X_A)),
+    );
+    // `map_id` is field 0 — first 8 bytes of the self aggregate.
+    ctx.store_slot(X_C, frame.off(self_temp));
+    Ok(())
+}
+
 fn emit_fn(
+    key: &str,
     f: &MwirFn,
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
@@ -5502,6 +5541,9 @@ fn emit_fn(
         emit_one(inst, f, &mut ctx)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
+    if is_slotmap_init_key(key) {
+        emit_slotmap_mint_id(f, &frame, &mut ctx)?;
+    }
     emit_epilogue(f, &frame, &mut ctx)?;
 
     Ok(CodegenFn {
@@ -9940,7 +9982,7 @@ pub fn codegen_program_with_async(
     };
     let mut fns = BTreeMap::new();
     for (key, f) in &mwir.fns {
-        fns.insert(key.clone(), emit_fn(f, layout, &mut rodata)?);
+        fns.insert(key.clone(), emit_fn(key, f, layout, &mut rodata)?);
     }
     for (key, f) in &flow.fns {
         fns.insert(
@@ -9965,7 +10007,7 @@ pub fn codegen_program(
     rodata.seed(&mwir.rodata);
     let mut fns = BTreeMap::new();
     for (key, f) in &mwir.fns {
-        let cf = emit_fn(f, layout, &mut rodata)?;
+        let cf = emit_fn(key, f, layout, &mut rodata)?;
         fns.insert(key.clone(), cf);
     }
     Ok(CodegenProgram {

@@ -466,7 +466,6 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
     (
         "check-slotmap-backend/expected/asm.txt",
         &[
-            "Store.init",
             "Store.insert_one",
             "guest_slotmap",
             "struct:SlotMap[u64, 2].contains",
@@ -477,7 +476,6 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
     (
         "check-slotmap-backend/expected/mwir.txt",
         &[
-            "Store.init",
             "Store.insert_one",
             "struct:SlotMap[u64, 2].contains",
             "struct:SlotMap[u64, 2].init",

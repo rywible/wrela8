@@ -1,0 +1,17 @@
+module examples.err_actor_msg_option_own
+
+# Decl-time: Option[own[P] T] is still a resource carrier and needs `take`.
+
+pool Packets
+
+resource struct Packet:
+    pub n: u64
+
+@actor
+pub struct Sink:
+    pub fn ingest(read self, p: Option[own[Packets] Packet]) -> u64:
+        match p:
+            case .Some(x):
+                return x.n
+            case .None:
+                return 0

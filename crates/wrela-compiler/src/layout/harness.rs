@@ -133,7 +133,8 @@ pub(super) fn inject_rt_enqueue_and_dispatch_fns(
     program: &mut CodegenProgram,
     wiring: &RuntimeWiring,
 ) {
-    let extras = crate::rtconfig::extras_from_tables(&wiring.tables);
+    let extras = crate::rtconfig::extras_from_tables(&wiring.tables)
+        .expect("runtime wiring tables agree with placement");
     let mut flat = 0usize;
     for mb in &extras.mailboxes {
         for method in &mb.methods {
@@ -1312,10 +1313,14 @@ pub(super) fn reinject_runtime_with_test_facts(
 ) -> Result<(), LayoutError> {
     let (text, extras, tables_n_boot, tables_irq, tables_wake) = match wiring {
         Some(w) => {
-            let mut extras = crate::rtconfig::extras_from_tables(&w.tables);
+            let mut extras = crate::rtconfig::extras_from_tables(&w.tables).map_err(|m| {
+                LayoutError::new(format!("rtconfig extras: {m}"))
+            })?;
             extras.tests = tests.to_vec();
             extras.has_boot_init = true;
-            let text = crate::rtconfig::generate_with(&w.tables, &extras);
+            let text = crate::rtconfig::generate_with(&w.tables, &extras).map_err(|m| {
+                LayoutError::new(format!("rtconfig pool ceiling: {m}"))
+            })?;
             (
                 text,
                 extras,
@@ -1338,7 +1343,9 @@ pub(super) fn reinject_runtime_with_test_facts(
             let mut extras = crate::rtconfig::RtconfigExtras::default();
             extras.tests = tests.to_vec();
             extras.has_boot_init = false;
-            let text = crate::rtconfig::generate_with(&tables, &extras);
+            let text = crate::rtconfig::generate_with(&tables, &extras).map_err(|m| {
+                LayoutError::new(format!("rtconfig pool ceiling: {m}"))
+            })?;
             (text, extras, 0, 0, 0)
         }
     };

@@ -1,0 +1,2 @@
+test colliding_construction_cannot_alias: ok
+1 passed, 0 failed

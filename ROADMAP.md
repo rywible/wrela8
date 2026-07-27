@@ -870,15 +870,23 @@ Plan when activated.
   Separately, the **durable-checkpoint idiom + storage stack** is the
   named dependency of crash-only's `Failure.Reboot` viability
   (currently unbuilt; conformance goldens pin `Halt` until it exists).
-- **The cross-core publish/acquire barrier**
+- **True concurrent vCPUs + the cross-core publish/acquire barrier**
   (`machine.cross-core.publish-acquire-barrier`; recorded pointer
-  2026-07-26). 04 §3's sealed publish/acquire ordering is currently
-  unobservable because exactly one vCPU is ever inside `hv_vcpu_run`
-  (the baton). The clause carries its own three-part flip condition
-  (baton retired → `DMB ISHST`/acquire pair emitted → a golden that
-  fails with the barriers deleted). No rung owns baton retirement; it
-  belongs to whichever milestone first wants true concurrent vCPU
-  execution, and must not be forgotten when one does.
+  2026-07-26, note expanded 2026-07-27). Multicore images are real today
+  (placement, per-core loops, cross-core rings, admission order) but M8
+  decision 11's **baton** deliberately runs only one vCPU inside
+  `hv_vcpu_run` at a time so 06 §8's choice log stays an enumerable
+  sequence — affinity and messaging without host-scheduler interleaving,
+  and without parallel throughput. 04 §3's sealed publish/acquire
+  barriers are therefore unobservable (store order + the baton discharge
+  them under serial execution). **This needs its own future milestone**,
+  not a drive-by inside M14/M15: retire the baton (true overlapping
+  `hv_vcpu_run`), grow the recorder into an interleaving enumerator so
+  `xtask repro` still means something, emit the `DMB ISHST`/acquire pair
+  around ring enqueue/drain, and pin a golden that fails when those
+  barriers are deleted under concurrency. The ledger clause's three-part
+  flip condition is that milestone's acceptance test; no activated rung
+  owns it yet.
 - **Report/diagnostics coverage** (owner: report work, no rung): the
   actor-chatter lint (04 §7's `warning[performance]`) and the copy
   pricing threshold line (04 §1/§7) — M13 item E audits both and opens

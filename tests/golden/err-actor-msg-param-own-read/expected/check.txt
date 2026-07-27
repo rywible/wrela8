@@ -1,0 +1,1 @@
+error[actor]: message parameter `Sink.ingest`'s `p: own[Packets] Packet` is a resource and must be declared `take` (02-language.md §9.3) at 12:5

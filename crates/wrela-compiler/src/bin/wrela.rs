@@ -1955,8 +1955,9 @@ fn test_cmd(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let source_digest = report::sha256_hex(source.as_bytes());
+    let image_digest = report::sha256_hex(&image_layout.blob);
     let mut report_text = format!(
-        "Machine revision={}\nInput path={path} digest={source_digest}\n",
+        "Machine revision={}\nInput path={path} sha256={source_digest}\nImage sha256={image_digest}\n",
         wrela_machine::MACHINE_REVISION_STR
     );
     for s in &image_layout.sections {

@@ -8,7 +8,7 @@ from core.slotmap import SlotMap, Key
 
 @test
 fn stale_key_must_miss():
-    m = SlotMap[u64, 1](map_id=1)
+    m = SlotMap[u64, 1]()
     x: u64 = 7
     k: Key = Key(map_id=0, index=0, generation=0)
     match m.insert(take x):

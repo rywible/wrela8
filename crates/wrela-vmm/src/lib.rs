@@ -153,6 +153,15 @@ pub struct BootOutcome {
 #[derive(Debug)]
 struct ParsedReport {
     entry: u64,
+    /// SHA-256 hex of the sealed image blob (06 §3: "validates digests").
+    /// Checked against the `.img` bytes at boot.
+    image_sha256: String,
+    /// `(path, sha256_hex)` for every `Input path=… sha256=…` line.
+    /// Verified against the file when that path is readable.
+    input_digests: Vec<(String, String)>,
+    /// Executable section ranges (rtcode/code/entry) — used for W^X
+    /// `hv_vm_protect` after the image is loaded.
+    exec_sections: Vec<ReportSection>,
     /// plans/M7.md item F: the declared `blk` device, if any (06 §3: "the
     /// VMM ... preconfigures every device, queue, and shared-memory window
     /// the report declares — device topology is a *build output*, not a
@@ -366,20 +375,23 @@ fn report_device_index(
         .map_err(|e| VmmError::MalformedReport(format!("`{kind}` field `device={raw}`: {e}")))
 }
 
+/// Empty-string SHA-256 — used by unit-test report preambles that do not
+/// boot a real image (parse-only). Live boots always carry the blob's own
+/// digest from the compiler.
+pub const EMPTY_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 /// Parses the minimal, internal (not itself golden-pinned — `wrela test`'s
 /// own merged stdout is the golden surface, not this file) report format
 /// `bin/wrela.rs`'s runtime tier writes alongside the image (a `Machine
-/// revision=` line, one or more `Input path=... digest=...` lines, one or
-/// more `Section name=... base=... size=...` lines, and one `Entry
-/// base=0x...` line). Validates exactly what 06 §3/§10 require this VMM to
-/// validate: the machine revision (refused, loudly, on any mismatch) and
-/// every fact's own *presence* (this VMM has no access to the original
-/// source files to re-hash against — only the compiler does, at build
-/// time; re-verifying a digest here would require shipping the sources
-/// into the image, which nothing in this milestone's surface does).
+/// revision=` line, one or more `Input path=... sha256=...` lines, one
+/// `Image sha256=...` line, section/entry lines). Validates 06 §3/§10:
+/// machine revision, digest *presence and shape*, and — at boot — the
+/// image blob hash and every readable input file's hash.
 fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut revision: Option<String> = None;
-    let mut has_input = false;
+    let mut input_digests: Vec<(String, String)> = Vec::new();
+    let mut image_sha256: Option<String> = None;
     let mut entry: Option<u64> = None;
     // plans/M7.md item F: the declared `blk` device's own three line
     // kinds, accumulated here and assembled into one `BlkConfig` below.
@@ -410,8 +422,33 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
             revision = Some(rest.to_string());
-        } else if line.starts_with("Input path=") {
-            has_input = true;
+        } else if let Some(rest) = line.strip_prefix("Image sha256=") {
+            let dig = rest.trim();
+            if !wrela_machine::sha256::is_sha256_hex(dig) {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Image sha256=` must be 64 hex digits, got {dig:?}"
+                )));
+            }
+            if image_sha256.is_some() {
+                return Err(VmmError::MalformedReport(
+                    "more than one `Image sha256=` line".to_string(),
+                ));
+            }
+            image_sha256 = Some(dig.to_ascii_lowercase());
+        } else if let Some(rest) = line.strip_prefix("Input ") {
+            let fields = parse_report_fields("Input", rest, &["path", "sha256"])?;
+            let path = fields.get("path").copied().ok_or_else(|| {
+                VmmError::MalformedReport("`Input` is missing required field `path`".to_string())
+            })?;
+            let dig = fields.get("sha256").copied().ok_or_else(|| {
+                VmmError::MalformedReport("`Input` is missing required field `sha256`".to_string())
+            })?;
+            if !wrela_machine::sha256::is_sha256_hex(dig) {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Input path={path} sha256=` must be 64 hex digits, got {dig:?}"
+                )));
+            }
+            input_digests.push((path.to_string(), dig.to_ascii_lowercase()));
         } else if let Some(rest) = line.strip_prefix("Rings ") {
             // plans/M12.md item C: `Rings count={} stride={} padding={} bytes={}`.
             let fields =
@@ -788,11 +825,14 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             vmm: wrela_machine::MACHINE_REVISION_STR,
         });
     }
-    if !has_input {
+    if input_digests.is_empty() {
         return Err(VmmError::MalformedReport(
-            "no `Input path=` digest line".to_string(),
+            "no `Input path=… sha256=…` digest line".to_string(),
         ));
     }
+    let image_sha256 = image_sha256.ok_or_else(|| {
+        VmmError::MalformedReport("no `Image sha256=` digest line".to_string())
+    })?;
     if sections.is_empty() {
         return Err(VmmError::MalformedReport(
             "no `Section name=` line".to_string(),
@@ -800,6 +840,16 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     }
     let entry =
         entry.ok_or_else(|| VmmError::MalformedReport("no `Entry base=0x...` line".to_string()))?;
+    let exec_sections: Vec<ReportSection> = sections
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.name.as_str(),
+                "entry" | "code" | "abort" | "checkpoint" | "rtcode"
+            )
+        })
+        .cloned()
+        .collect();
     // The three `Blk*` line kinds are all-or-nothing: a device with no
     // queue, a queue with no device, or either with no pool is a report
     // this VMM refuses outright rather than booting on a device model it
@@ -864,11 +914,80 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     )?;
     Ok(ParsedReport {
         entry,
+        image_sha256,
+        input_digests,
+        exec_sections,
         blk,
         irq_injects,
         core_entries,
         request_rings,
     })
+}
+
+/// 06 §3: re-check the sealed image blob and every readable `Input` file
+/// against the digests the report declares. An unreadably-named input
+/// (unit-test placeholders like `<conformance>`) is skipped — presence of
+/// a well-formed digest is still required at parse time.
+fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Result<(), VmmError> {
+    let got = wrela_machine::sha256::sha256_hex(img);
+    if got != parsed.image_sha256 {
+        return Err(VmmError::BadImage(format!(
+            "image sha256 mismatch: report declares {}, blob hashes to {got}",
+            parsed.image_sha256
+        )));
+    }
+    for (path, expected) in &parsed.input_digests {
+        let p = std::path::Path::new(path);
+        if !p.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(p).map_err(|e| {
+            VmmError::Io(format!("read input `{path}` for digest check: {e}"))
+        })?;
+        let got = wrela_machine::sha256::sha256_hex(&bytes);
+        if got != *expected {
+            return Err(VmmError::BadImage(format!(
+                "input `{path}` sha256 mismatch: report declares {expected}, file hashes to {got}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Raise report-declared executable sections to RX (page-granular). The
+/// DRAM reservation was mapped RW-only; this is the only place execute
+/// permission is granted.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn apply_wx_exec_protections(exec_sections: &[ReportSection]) -> Result<(), VmmError> {
+    use hv::{HV_MEMORY_EXEC, HV_MEMORY_READ, HV_SUCCESS, hv_vm_protect};
+    // Apple Silicon HVF page size matches the host DRAM allocation align.
+    const PAGE: u64 = 16 * 1024;
+    for s in exec_sections {
+        let start = s.base & !(PAGE - 1);
+        let end = s
+            .base
+            .checked_add(s.size)
+            .and_then(|e| e.checked_add(PAGE - 1))
+            .map(|e| e & !(PAGE - 1))
+            .ok_or_else(|| {
+                VmmError::BadImage(format!(
+                    "exec section `{}` base={:#x} size={} overflows when page-aligning for W^X",
+                    s.name, s.base, s.size
+                ))
+            })?;
+        let size = (end - start) as usize;
+        if size == 0 {
+            continue;
+        }
+        let r = unsafe { hv_vm_protect(start, size, HV_MEMORY_READ | HV_MEMORY_EXEC) };
+        if r != HV_SUCCESS {
+            return Err(VmmError::Hvf {
+                call: "hv_vm_protect",
+                code: r,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// plans/M12.md item C: fold the `Rings` summary into per-ring
@@ -960,6 +1079,28 @@ fn apply_uniform_ring_layout(
 ///    placed exactly once), each `core=` is brought up, each `type=`
 ///    agrees with the declared root, and every declared root has exactly
 ///    one `Placement`.
+/// Host offset into the DRAM reservation for a guest-physical range, or a
+/// `BadImage`/`MalformedReport` when the range is not wholly inside
+/// `[DRAM_BASE, DRAM_BASE + DRAM_SIZE)`. Callers that only have a point
+/// use `nbytes = 1` (or the access width).
+fn guest_dram_offset(guest: u64, nbytes: u64, what: &str) -> Result<usize, VmmError> {
+    use wrela_machine::layout as machine_layout;
+    let end = guest.checked_add(nbytes).ok_or_else(|| {
+        VmmError::BadImage(format!(
+            "{what} address {guest:#x}+{nbytes} overflows a u64"
+        ))
+    })?;
+    let dram_end = machine_layout::DRAM_BASE + machine_layout::DRAM_SIZE;
+    if guest < machine_layout::DRAM_BASE || end > dram_end {
+        return Err(VmmError::BadImage(format!(
+            "{what} address {guest:#x}+{nbytes} is outside guest DRAM \
+             [{:#x}..{dram_end:#x})",
+            machine_layout::DRAM_BASE
+        )));
+    }
+    Ok((guest - machine_layout::DRAM_BASE) as usize)
+}
+
 fn validate_report_invariants(
     entry: u64,
     core_entries: &mut Vec<(usize, u64)>,
@@ -970,6 +1111,49 @@ fn validate_report_invariants(
     declared_roots: &[DeclaredRoot],
     layout_root_names: &[String],
 ) -> Result<(), VmmError> {
+    use wrela_machine::layout as machine_layout;
+    let dram_end = machine_layout::DRAM_BASE + machine_layout::DRAM_SIZE;
+
+    // (0) Every section and every ring range lies wholly inside guest DRAM
+    // — otherwise a forged report can name host-OOB GPAs that later
+    // `host_ram.add(off)` paths trust.
+    for s in sections {
+        let end = s.base.checked_add(s.size).ok_or_else(|| {
+            VmmError::MalformedReport(format!(
+                "`Section name={} base={:#x} size={}` overflows a u64",
+                s.name, s.base, s.size
+            ))
+        })?;
+        if s.base < machine_layout::DRAM_BASE || end > dram_end {
+            return Err(VmmError::MalformedReport(format!(
+                "`Section name={} base={:#x} size={}` is outside guest DRAM \
+                 [{:#x}..{dram_end:#x})",
+                s.name, s.base, s.size, machine_layout::DRAM_BASE
+            )));
+        }
+    }
+    for a in ring_ranges {
+        let end = a.base.checked_add(a.bytes).ok_or_else(|| {
+            VmmError::MalformedReport(format!(
+                "`Ring kind={} … base={:#x} bytes={}` overflows a u64",
+                a.kind, a.base, a.bytes
+            ))
+        })?;
+        if a.base < machine_layout::DRAM_BASE || end > dram_end {
+            return Err(VmmError::MalformedReport(format!(
+                "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` is outside \
+                 guest DRAM [{:#x}..{dram_end:#x})",
+                a.kind,
+                a.src,
+                a.dst,
+                a.target,
+                a.base,
+                a.bytes,
+                machine_layout::DRAM_BASE
+            )));
+        }
+    }
+
     // (1) Sections are pairwise disjoint.
     for (i, a) in sections.iter().enumerate() {
         for b in sections.iter().skip(i + 1) {
@@ -996,11 +1180,39 @@ fn validate_report_invariants(
     }
 
     // (3) Every CoreEntry base is 4-byte aligned and distinct from every
-    // other core's entry (including core 0's `Entry base=`).
+    // other core's entry (including core 0's `Entry base=`). Core 0's
+    // entry must also sit in guest DRAM and inside an executable section
+    // (same rule as secondary cores — a forged `Entry` below DRAM_BASE
+    // used to pass structural checks and then fault host-side).
     if entry % 4 != 0 {
         return Err(VmmError::MalformedReport(format!(
             "`Entry base={entry:#x}` is not 4-byte aligned (an AArch64 PC must be)"
         )));
+    }
+    if entry < machine_layout::DRAM_BASE || entry >= dram_end {
+        return Err(VmmError::MalformedReport(format!(
+            "`Entry base={entry:#x}` is outside guest DRAM [{:#x}..{dram_end:#x})",
+            machine_layout::DRAM_BASE
+        )));
+    }
+    {
+        const EXEC_SECTIONS: &[&str] = &["rtcode", "code", "entry"];
+        match sections.iter().find(|s| s.contains(entry)) {
+            Some(s) if EXEC_SECTIONS.contains(&s.name.as_str()) => {}
+            Some(s) => {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Entry base={entry:#x}` falls inside `Section name={}` — the image \
+                     entry must be code (`rtcode`, or a test image's `entry`/`code` \
+                     harness), not data",
+                    s.name
+                )));
+            }
+            None => {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Entry base={entry:#x}` is outside every `Section` this report declares"
+                )));
+            }
+        }
     }
     for (core, base) in core_entries.iter() {
         if base % 4 != 0 {
@@ -1303,6 +1515,7 @@ fn boot_image_core(
     let parsed = parse_report(&report_text)?;
     let img = std::fs::read(img_path)
         .map_err(|e| VmmError::Io(format!("read {}: {e}", img_path.display())))?;
+    validate_report_digests(&parsed, &img)?;
 
     let image_off = machine_layout::IMAGE_BASE - machine_layout::DRAM_BASE;
     if image_off + (img.len() as u64) > machine_layout::DRAM_SIZE {
@@ -1363,12 +1576,16 @@ fn boot_image_core(
         layout,
     };
 
+    // W^X: map the whole reservation RW (never RWX). Executable sections
+    // from the report are raised to RX via `hv_vm_protect` after the
+    // image bytes are copied in — a guest that later stores into those
+    // pages faults rather than executing its own write.
     let r = unsafe {
         hv_vm_map(
             host_ram as *mut c_void,
             machine_layout::DRAM_BASE,
             dram_size,
-            HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC,
+            HV_MEMORY_READ | HV_MEMORY_WRITE,
         )
     };
     if r != HV_SUCCESS {
@@ -1382,6 +1599,7 @@ fn boot_image_core(
     unsafe {
         std::ptr::copy_nonoverlapping(img.as_ptr(), host_ram.add(image_off as usize), img.len());
     }
+    apply_wx_exec_protections(&parsed.exec_sections)?;
     let info_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize;
     unsafe {
         let rev_bytes = wrela_machine::MACHINE_REVISION_STR.as_bytes();
@@ -1449,16 +1667,12 @@ fn boot_image_core(
                 inj.base, inj.offset
             ))
         })?;
-        if guest < machine_layout::DRAM_BASE {
-            return Err(VmmError::BadImage(format!(
-                "IrqHostInject address {guest:#x} is below DRAM_BASE"
-            )));
-        }
-        let off = (guest - machine_layout::DRAM_BASE) as usize;
+        let off = guest_dram_offset(guest, 4, "IrqHostInject")?;
+        check_vector_in_range(inj.vector)?;
         unsafe {
             std::ptr::copy_nonoverlapping(inj.status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
         }
-        raise_vector(host_ram, inj.vector);
+        raise_vector(host_ram, inj.vector)?;
     }
 
     // --- plans/M6.md item E's own conformance-only seam: a delayed,
@@ -1635,7 +1849,9 @@ fn boot_image_core(
         },
         released: false,
         chooser: match replay_choices {
-            Some(log) => record::Chooser::replayer(log),
+            // Live replay fails closed on the first divergence (06 §8);
+            // unit tests of the chooser itself leave `.strict()` off.
+            Some(log) => record::Chooser::replayer(log).strict(),
             None => record::Chooser::recorder(),
         },
         blk,
@@ -1712,15 +1928,15 @@ fn boot_image_core(
                     // real clock).
                     let entry = {
                         let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                        g.chooser.choose_next(record::ChoiceRequest::ClockRead, || {
+                        g.chooser.choose_checked(record::ChoiceRequest::ClockRead, || {
                             record::ChoiceEntry::ClockRead {
                                 value: monotonic_ns(),
                             }
-                        })
+                        })?
                     };
                     let record::ChoiceEntry::ClockRead { value: ns } = entry else {
                         unreachable!(
-                            "choose_next(ClockRead, ..) always returns a ClockRead-shaped entry \
+                            "choose_checked(ClockRead, ..) always returns a ClockRead-shaped entry \
                              (a mismatched replay tag falls back to the request's own shape)"
                         )
                     };
@@ -1972,7 +2188,7 @@ fn boot_image_core(
                     if !already_pending && !blk_completed {
                         {
                             let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                            g.chooser.choose_next(
+                            g.chooser.choose_checked(
                                 record::ChoiceRequest::DeadlineWake { deadline_ns },
                                 || {
                                     // The real, host-side sleep — never
@@ -1984,18 +2200,18 @@ fn boot_image_core(
                                     }
                                     record::ChoiceEntry::DeadlineWake { deadline_ns }
                                 },
-                            );
-                            g.chooser.choose_next(
+                            )?;
+                            g.chooser.choose_checked(
                                 record::ChoiceRequest::VectorRaise { vector: 0 },
                                 || record::ChoiceEntry::VectorRaise { vector: 0 },
-                            );
+                            )?;
                         }
                         // The raise itself (06 §4: "a store-release plus
                         // a wake"): a plain host-side write into this
                         // core's own pending word. No separate wake is
                         // needed — resuming this already-exited vCPU on
                         // the next loop iteration below *is* the wake.
-                        raise_vector(host_ram, 0);
+                        raise_vector(host_ram, 0)?;
                     }
                     Ok(Step::Keep)
                 } else if let Some(imm) = decode_brk(esr) {
@@ -2358,7 +2574,7 @@ fn boot_image_core(
     let core_marks = (0..NCORES)
         .map(|c| read_core_mark(host_ram, c))
         .collect::<Vec<u64>>();
-    let (choices, divergences) = record::finish_chooser(shared.chooser);
+    let (choices, divergences) = record::finish_chooser(shared.chooser)?;
     Ok((
         BootOutcome {
             transcript,
@@ -2432,16 +2648,28 @@ struct BlkState {
 /// this machine a second raiser (a `blk` completion) alongside M6's
 /// deadline service — a plain store of `1` would silently drop a
 /// completion vector raised moments earlier in the same park.
+/// Pending-word vectors are bits `0..63`. Masking with `& 63` used to
+/// silently alias high values onto low bits — refuse instead.
+fn check_vector_in_range(vector: u64) -> Result<(), VmmError> {
+    if vector >= 64 {
+        return Err(VmmError::BadImage(format!(
+            "vector={vector} is out of range (pending word has 64 bits; `& 63` would alias)"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn raise_vector(host_ram: *mut u8, vector: u64) {
-    use wrela_machine::layout as machine_layout;
-    let off = (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
+fn raise_vector(host_ram: *mut u8, vector: u64) -> Result<(), VmmError> {
+    check_vector_in_range(vector)?;
+    let off = guest_dram_offset(wrela_machine::pending::core_word_addr(0), 8, "pending word")?;
     unsafe {
         let mut b = [0u8; 8];
         std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8);
-        let raised = u64::from_le_bytes(b) | (1u64 << (vector & 63));
+        let raised = u64::from_le_bytes(b) | (1u64 << vector);
         std::ptr::copy_nonoverlapping(raised.to_le_bytes().as_ptr(), host_ram.add(off), 8);
     }
+    Ok(())
 }
 
 /// 06 §5's doorbell poll, plans/M7.md decision 7's recording, and the
@@ -2497,7 +2725,6 @@ fn commit_completions(
     completions: &[devices::Completion],
     host_ram: *mut u8,
 ) -> Result<bool, VmmError> {
-    use wrela_machine::layout as machine_layout;
     if completions.is_empty() {
         return Ok(false);
     }
@@ -2514,14 +2741,14 @@ fn commit_completions(
         let index = chooser.resolved_count();
         let chosen = {
             let observed = observed.clone();
-            chooser.choose_next(request, move || observed)
+            chooser.choose_checked(request, move || observed)?
         };
         if chosen != observed {
-            chooser.note_divergence(record::Divergence::DeviceCompletionMismatch {
+            chooser.note_divergence_checked(record::Divergence::DeviceCompletionMismatch {
                 index,
                 recorded: chosen.to_text_fields(),
                 actual: observed.to_text_fields(),
-            });
+            })?;
         }
         let len = match &chosen {
             record::ChoiceEntry::DeviceCompletion { len, .. } => *len,
@@ -2545,24 +2772,18 @@ fn commit_completions(
     // `IrqHostInject` only covers the pre-first-instruction oracle).
     if let Some(vector) = state.device.config.vector {
         if let Some(gpa) = state.irq_status_gpa {
-            if gpa >= machine_layout::DRAM_BASE {
-                let off = (gpa - machine_layout::DRAM_BASE) as usize;
-                unsafe {
-                    let mut b = [0u8; 4];
-                    std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 4);
-                    let status = u32::from_le_bytes(b) | 1;
-                    std::ptr::copy_nonoverlapping(
-                        status.to_le_bytes().as_ptr(),
-                        host_ram.add(off),
-                        4,
-                    );
-                }
+            let off = guest_dram_offset(gpa, 4, "interrupt_status")?;
+            unsafe {
+                let mut b = [0u8; 4];
+                std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 4);
+                let status = u32::from_le_bytes(b) | 1;
+                std::ptr::copy_nonoverlapping(status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
             }
         }
-        chooser.choose_next(record::ChoiceRequest::VectorRaise { vector }, || {
+        chooser.choose_checked(record::ChoiceRequest::VectorRaise { vector }, || {
             record::ChoiceEntry::VectorRaise { vector }
-        });
-        raise_vector(host_ram, vector);
+        })?;
+        raise_vector(host_ram, vector)?;
     }
     Ok(true)
 }
@@ -2661,20 +2882,16 @@ fn witness_admissions(
     host_ram: *const u8,
     core: usize,
 ) -> Result<(), VmmError> {
-    use wrela_machine::layout as machine_layout;
     if witness.rings.is_empty() {
         return Ok(());
     }
-    let counts: Vec<u64> = witness
-        .rings
-        .iter()
-        .map(|r| {
-            let off = (r.count_addr - machine_layout::DRAM_BASE) as usize;
-            let mut b = [0u8; 8];
-            unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
-            u64::from_le_bytes(b)
-        })
-        .collect();
+    let mut counts = Vec::with_capacity(witness.rings.len());
+    for r in &witness.rings {
+        let off = guest_dram_offset(r.count_addr, 8, "admission count_addr")?;
+        let mut b = [0u8; 8];
+        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
+        counts.push(u64::from_le_bytes(b));
+    }
     let admitted = witness
         .observe(&counts, core)
         .map_err(VmmError::GuestFault)?;
@@ -2684,14 +2901,14 @@ fn witness_admissions(
         let index = chooser.resolved_count();
         let chosen = {
             let observed = observed.clone();
-            chooser.choose_next(request, move || observed)
+            chooser.choose_checked(request, move || observed)?
         };
         if chosen != observed {
-            chooser.note_divergence(record::Divergence::AdmissionMismatch {
+            chooser.note_divergence_checked(record::Divergence::AdmissionMismatch {
                 index,
                 recorded: chosen.to_text_fields(),
                 actual: observed.to_text_fields(),
-            });
+            })?;
         }
     }
     Ok(())
@@ -2834,7 +3051,11 @@ fn drain_console(host_ram: *const u8) -> Vec<u8> {
     use wrela_machine::console;
     use wrela_machine::layout as machine_layout;
 
-    let dram_size = machine_layout::DRAM_SIZE;
+    // Only the console data window is transcript material — never the rest
+    // of guest DRAM (a forged descriptor must not leak arbitrary guest
+    // memory into the host-side transcript / choice-log digest).
+    let data_base = console::DATA_BASE;
+    let data_end = console::DATA_BASE + console::DATA_SIZE;
     let ring_off = (console::RING_BASE - machine_layout::DRAM_BASE) as usize;
 
     let read_u16 = |off: usize| -> u16 {
@@ -2861,21 +3082,18 @@ fn drain_console(host_ram: *const u8) -> Vec<u8> {
             ring_off + (console::DESC_TABLE_OFFSET + i * console::DESC_ENTRY_SIZE) as usize;
         let addr = read_u64(desc_off);
         let len = read_u32(desc_off + 8) as u64;
-        if addr < machine_layout::DRAM_BASE {
+        if addr < data_base || addr >= data_end {
             continue;
         }
-        let src_off = addr - machine_layout::DRAM_BASE;
-        if src_off >= dram_size {
+        let max_len = data_end - addr;
+        let clamped_len = len.min(max_len) as usize;
+        if clamped_len == 0 {
             continue;
         }
-        let clamped_len = len.min(dram_size - src_off) as usize;
+        let src_off = (addr - machine_layout::DRAM_BASE) as usize;
         let mut buf = vec![0u8; clamped_len];
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                host_ram.add(src_off as usize),
-                buf.as_mut_ptr(),
-                clamped_len,
-            );
+            std::ptr::copy_nonoverlapping(host_ram.add(src_off), buf.as_mut_ptr(), clamped_len);
         }
         out.extend_from_slice(&buf);
     }
@@ -2919,10 +3137,22 @@ pub mod record;
 mod tests {
     use super::*;
 
+    /// VMM-facing report identity lines for unit fixtures. `Image sha256=`
+    /// hashes `img` when provided; parse-only fixtures pass `&[]` and get
+    /// the empty digest.
+    fn report_identity(input_path: &str, img: &[u8]) -> String {
+        format!(
+            "Machine revision={}\nInput path={input_path} sha256={}\nImage sha256={}\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            EMPTY_SHA256,
+            wrela_machine::sha256::sha256_hex(img),
+        )
+    }
+
     #[test]
     fn parse_report_accepts_a_well_formed_report() {
         let text = format!(
-            "Machine revision={}\nInput path=input.wr digest=abc123\nSection name=entry base=0x40500000 size=64\nEntry base=0x40500000\n",
+            "Machine revision={}\nInput path=input.wr sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x40500000 size=64\nEntry base=0x40500000\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         let parsed = parse_report(&text).unwrap();
@@ -2931,7 +3161,7 @@ mod tests {
 
     #[test]
     fn parse_report_rejects_a_wrong_revision() {
-        let text = "Machine revision=some-other-machine-v9\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x0\n";
+        let text = "Machine revision=some-other-machine-v9\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x40500000 size=1\nEntry base=0x40500000\n";
         match parse_report(text) {
             Err(VmmError::MachineRevisionMismatch { report, .. }) => {
                 assert_eq!(report, "some-other-machine-v9");
@@ -2942,7 +3172,7 @@ mod tests {
 
     #[test]
     fn parse_report_rejects_a_missing_revision_line() {
-        let text = "Input path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x0\n";
+        let text = "Input path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x40500000 size=1\nEntry base=0x40500000\n";
         assert!(matches!(
             parse_report(text),
             Err(VmmError::MalformedReport(_))
@@ -2952,7 +3182,7 @@ mod tests {
     #[test]
     fn parse_report_rejects_a_missing_input_line() {
         let text = format!(
-            "Machine revision={}\nSection name=entry base=0x0 size=1\nEntry base=0x0\n",
+            "Machine revision={}\nImage sha256={EMPTY_SHA256}\nSection name=entry base=0x40500000 size=1\nEntry base=0x40500000\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         assert!(matches!(
@@ -2962,9 +3192,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_report_rejects_a_missing_image_digest_line() {
+        let text = format!(
+            "Machine revision={}\nInput path=x sha256={EMPTY_SHA256}\nSection name=entry base=0x40500000 size=1\nEntry base=0x40500000\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        match parse_report(&text) {
+            Err(VmmError::MalformedReport(msg)) => {
+                assert!(msg.contains("Image sha256"), "got {msg}");
+            }
+            other => panic!("expected MalformedReport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_report_digests_rejects_a_tampered_blob() {
+        let img = b"sealed-image-bytes";
+        let text = format!(
+            "{}Section name=entry base=0x40500000 size={}\nEntry base=0x40500000\n",
+            report_identity("x.wr", img),
+            img.len(),
+        );
+        let parsed = parse_report(&text).expect("parses");
+        assert!(validate_report_digests(&parsed, img).is_ok());
+        let err = validate_report_digests(&parsed, b"tampered").expect_err("mismatch");
+        assert!(
+            matches!(err, VmmError::BadImage(ref msg) if msg.contains("image sha256 mismatch")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
     fn parse_report_rejects_a_missing_section_line() {
         let text = format!(
-            "Machine revision={}\nInput path=x digest=y\nEntry base=0x0\n",
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nEntry base=0x40500000\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         assert!(matches!(
@@ -2976,13 +3237,53 @@ mod tests {
     #[test]
     fn parse_report_rejects_a_missing_entry_line() {
         let text = format!(
-            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\n",
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x40500000 size=1\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         assert!(matches!(
             parse_report(&text),
             Err(VmmError::MalformedReport(_))
         ));
+    }
+
+    #[test]
+    fn parse_report_rejects_section_outside_guest_dram() {
+        let text = format!(
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x1000 size=64\nEntry base=0x1000\n",
+            wrela_machine::MACHINE_REVISION_STR
+        );
+        match parse_report(&text) {
+            Err(VmmError::MalformedReport(msg)) => {
+                assert!(
+                    msg.contains("outside guest DRAM"),
+                    "expected DRAM bound diagnostic, got {msg}"
+                );
+            }
+            other => panic!("expected MalformedReport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn guest_dram_offset_rejects_oob_and_accepts_in_range() {
+        assert!(guest_dram_offset(wrela_machine::layout::DRAM_BASE, 4, "t").is_ok());
+        assert!(guest_dram_offset(wrela_machine::layout::DRAM_BASE - 1, 4, "t").is_err());
+        assert!(guest_dram_offset(
+            wrela_machine::layout::DRAM_BASE + wrela_machine::layout::DRAM_SIZE - 3,
+            4,
+            "t"
+        )
+        .is_err());
+        assert!(guest_dram_offset(0xffff_ffff_ffff_fff0, 32, "t").is_err());
+    }
+
+    #[test]
+    fn check_vector_in_range_rejects_aliasing_high_vector() {
+        let err = check_vector_in_range(64).unwrap_err();
+        assert!(
+            matches!(&err, VmmError::BadImage(msg) if msg.contains("out of range")),
+            "got {err:?}"
+        );
+        assert!(check_vector_in_range(63).is_ok());
     }
 
     /// The M5-G adversarial-sweep find/fix, at `drain_console`'s own
@@ -3093,8 +3394,8 @@ mod tests {
 
         let img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let report_text = format!(
-            "Machine revision={}\nInput path=clock-test.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            wrela_machine::MACHINE_REVISION_STR,
+            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            report_identity("clock-test.wr", &img_bytes),
             wrela_machine::layout::IMAGE_BASE,
             img_bytes.len(),
             wrela_machine::layout::IMAGE_BASE,
@@ -3152,31 +3453,25 @@ mod tests {
             actual: 0,
         }));
 
-        // --- truncated choice log: an underrun, caught ---------------------
+        // --- truncated choice log: an underrun aborts (strict replay) ------
         let mut short_log = recorded.clone();
         short_log.choices.truncate(1);
-        let divergences = record::replay(&report_path, &img_path, &short_log).expect("replay boot");
-        assert!(divergences.iter().any(|d| matches!(
-            d,
-            record::Divergence::ChoiceLogUnderrun {
-                index: 1,
-                recorded: 1
-            }
-        )));
+        let err = record::replay(&report_path, &img_path, &short_log).expect_err("strict underrun");
+        assert!(
+            err.to_string().contains("replay divergence"),
+            "got {err}"
+        );
 
-        // --- padded choice log: an overrun, caught -------------------------
+        // --- padded choice log: an overrun aborts (strict replay) ----------
         let mut long_log = recorded.clone();
         long_log
             .choices
             .push(record::ChoiceEntry::ClockRead { value: 424242 });
-        let divergences = record::replay(&report_path, &img_path, &long_log).expect("replay boot");
-        assert!(divergences.iter().any(|d| matches!(
-            d,
-            record::Divergence::ChoiceLogOverrun {
-                consumed: 2,
-                recorded: 3
-            }
-        )));
+        let err = record::replay(&report_path, &img_path, &long_log).expect_err("strict overrun");
+        assert!(
+            err.to_string().contains("replay divergence"),
+            "got {err}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -3190,8 +3485,8 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn boot_hand_built_image(img_bytes: &[u8], tag: &str) -> BootOutcome {
         let report_text = format!(
-            "Machine revision={}\nInput path={tag}.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            wrela_machine::MACHINE_REVISION_STR,
+            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            report_identity(&format!("{tag}.wr"), img_bytes),
             wrela_machine::layout::IMAGE_BASE,
             img_bytes.len(),
             wrela_machine::layout::IMAGE_BASE,
@@ -3219,8 +3514,8 @@ mod tests {
         tag: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let report_text = format!(
-            "Machine revision={}\nInput path={tag}.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            wrela_machine::MACHINE_REVISION_STR,
+            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            report_identity(&format!("{tag}.wr"), img_bytes),
             wrela_machine::layout::IMAGE_BASE,
             img_bytes.len(),
             wrela_machine::layout::IMAGE_BASE,
@@ -3531,10 +3826,7 @@ mod tests {
         )
         .expect("layout_test_image");
 
-        let mut report = format!(
-            "Machine revision={}\nInput path=<conformance> digest=deadbeef\n",
-            wrela_machine::MACHINE_REVISION_STR
-        );
+        let mut report = report_identity("<conformance>", &image.blob);
         for s in &image.sections {
             report.push_str(&format!(
                 "Section name={} base={:#x} size={}\n",
@@ -3609,10 +3901,7 @@ mod tests {
         };
         let image = layout::layout_program(&codegen_program, Some(boot)).expect("layout_program");
 
-        let mut report = format!(
-            "Machine revision={}\nInput path=<conformance> digest=deadbeef\n",
-            wrela_machine::MACHINE_REVISION_STR
-        );
+        let mut report = report_identity("<conformance>", &image.blob);
         for sec in &image.sections {
             report.push_str(&format!(
                 "Section name={} base={:#x} size={}\n",
@@ -3626,14 +3915,31 @@ mod tests {
         (image, report)
     }
 
+    /// Rewrite `Image sha256=` to match `img` — tests that patch a blob
+    /// after `compile_test_image` still present a self-consistent report.
+    fn stamp_image_digest(report: &str, img: &[u8]) -> String {
+        let dig = wrela_machine::sha256::sha256_hex(img);
+        let mut out = String::new();
+        for line in report.lines() {
+            if line.starts_with("Image sha256=") {
+                out.push_str(&format!("Image sha256={dig}\n"));
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn boot_blob(blob: &[u8], report: &str, tag: &str) -> BootOutcome {
+        let report = stamp_image_digest(report, blob);
         let dir = std::env::temp_dir().join(format!("wrela-vmm-conf-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let img_path = dir.join("test.img");
         let report_path = dir.join("test.report.txt");
         std::fs::write(&img_path, blob).expect("write img");
-        std::fs::write(&report_path, report).expect("write report");
+        std::fs::write(&report_path, &report).expect("write report");
         let outcome = boot_image(&report_path, &img_path).expect("boot");
         let _ = std::fs::remove_dir_all(&dir);
         outcome
@@ -4176,8 +4482,8 @@ pub fn build() -> Image:
 
         let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
         let report_text = format!(
-            "Machine revision={}\nInput path=el1-vector.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            wrela_machine::MACHINE_REVISION_STR,
+            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            report_identity("el1-vector.wr", &img_bytes),
             machine_layout::IMAGE_BASE,
             img_bytes.len(),
             machine_layout::IMAGE_BASE,
@@ -4274,14 +4580,13 @@ pub fn build() -> Image:
             "expected no divergence, got {divergences:?}"
         );
 
-        // --- tampered choice tag: caught -----------------------------------
+        // --- tampered choice tag: aborts (strict replay) -------------------
         let mut bad_tag = recorded.clone();
         bad_tag.choices[1] = record::ChoiceEntry::ClockRead { value: 0 };
-        let divergences = record::replay(&report_path, &img_path, &bad_tag).expect("replay boot");
+        let err = record::replay(&report_path, &img_path, &bad_tag).expect_err("strict tag mismatch");
         assert!(
-            divergences
-                .iter()
-                .any(|d| matches!(d, record::Divergence::ChoiceTagMismatch { index: 1, .. }))
+            err.to_string().contains("replay divergence"),
+            "got {err}"
         );
 
         // --- tampered exit code: caught -------------------------------------
@@ -4358,8 +4663,8 @@ pub fn build() -> Image:
         push_halt(&mut words, 9, 10, GUEST_EXIT_CODE);
         let img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let report_text = format!(
-            "Machine revision={}\nInput path=exit-code-contract.wr digest=testdigest\nSection name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            wrela_machine::MACHINE_REVISION_STR,
+            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
+            report_identity("exit-code-contract.wr", &img_bytes),
             wrela_machine::layout::IMAGE_BASE,
             img_bytes.len(),
             wrela_machine::layout::IMAGE_BASE,
@@ -4748,14 +5053,12 @@ pub fn build() -> Image:
         put(&mut img, OFF_SRC, &payload);
 
         let report_text = format!(
-            "Machine revision={}\n\
-             Input path=blk-conformance.wr digest=testdigest\n\
-             Section name=entry base={:#x} size={}\n\
+            "{}Section name=entry base={:#x} size={}\n\
              Entry base={:#x}\n\
              BlkDevice device=device#0 capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
              BlkQueue index=0 size={QUEUE_SIZE} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n\
              BlkPool name=BlockControl device=device#0 base={:#x} size={:#x}\n",
-            wrela_machine::MACHINE_REVISION_STR,
+            report_identity("blk-conformance.wr", &img),
             machine_layout::IMAGE_BASE,
             img.len(),
             machine_layout::IMAGE_BASE,
@@ -4941,13 +5244,11 @@ pub fn build() -> Image:
         for entry in tampered {
             let mut bad = recorded.clone();
             bad.choices[idx] = entry.clone();
-            let divergences = record::replay(&report_path, &img_path, &bad).expect("replay boot");
+            let err = record::replay(&report_path, &img_path, &bad)
+                .expect_err("strict device-completion mismatch");
             assert!(
-                divergences.iter().any(|d| matches!(
-                    d,
-                    record::Divergence::DeviceCompletionMismatch { index, .. } if *index == idx
-                )),
-                "tampering `{}` must be caught by name, got {divergences:?}",
+                err.to_string().contains("replay divergence"),
+                "tampering `{}` must abort, got {err}",
                 entry.to_text_fields()
             );
         }
@@ -5001,7 +5302,7 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_accepts_a_declared_blk_device() {
         let text = format!(
-            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x40500000\n\
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x40500000 size=1\nEntry base=0x40500000\n\
              BlkDevice device=device#0 capacity_sectors=2048 features=0x100000200 vector=1\n\
              BlkQueue index=0 size=128 desc=0x40600000 avail=0x40601000 used=0x40602000 doorbell=0x40603000\n\
              BlkPool name=BlockControl device=device#0 base=0x40600000 size=0x10000\n\
@@ -5032,7 +5333,7 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_rejects_every_malformed_blk_declaration() {
         let head = format!(
-            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x0\n",
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x40500000 size=1\nEntry base=0x40500000\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         let device = "BlkDevice device=device#0 capacity_sectors=16 features=0x100000200\n";
@@ -5334,7 +5635,7 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_rejects_malformed_core_entries() {
         let head = format!(
-            "Machine revision={}\nInput path=x digest=y\n\
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
              Section name=entry base=0x40500000 size=64\n\
              Section name=rtcode base=0x40500100 size=0x200\n\
              Entry base=0x40500000\n",
@@ -5379,7 +5680,7 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_reads_request_rings_and_refuses_malformed_ones() {
         let head = format!(
-            "Machine revision={}\nInput path=x digest=y\n\
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
              Section name=entry base=0x40500000 size=64\n\
              Section name=rtcode base=0x40500100 size=0x200\n\
              Section name=rtdata base=0x40501000 size=0x4000\n\
@@ -5435,7 +5736,7 @@ pub fn build() -> Image:
         // set is the machine, and an admission nothing can ever perform is
         // a report this VMM refuses rather than carries.
         let single_core = format!(
-            "Machine revision={}\nInput path=x digest=y\n\
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
              Section name=entry base=0x40500000 size=64\n\
              Entry base=0x40500000\n\
              Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base=0x40501000\n",
@@ -5478,7 +5779,7 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_refuses_placement_forgeries() {
         let head = format!(
-            "Machine revision={}\nInput path=x digest=y\n\
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
              Section name=entry base=0x40500000 size=64\n\
              Section name=code base=0x40500040 size=0xc0\n\
              Section name=rtcode base=0x40500100 size=0x200\n\
@@ -5514,9 +5815,11 @@ pub fn build() -> Image:
         // (3) CoreEntry whose only owning section is data (no executable
         // section contains the address) — the production-image shape of
         // "not code", distinct from a test image's `entry`/`code` harness.
+        // Core 0's `Entry` still needs a real exec section (DRAM + code).
         {
             let text = format!(
-                "Machine revision={}\nInput path=x digest=y\n\
+                "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
+                 Section name=entry base=0x40500000 size=64\n\
                  Section name=rtdata base=0x40500100 size=0x200\n\
                  Entry base=0x40500000\n\
                  CoreEntry core=1 base=0x40500100\n",
@@ -5607,7 +5910,7 @@ pub fn build() -> Image:
         // (10) Overlapping Sections (forged size swallows a neighbour).
         {
             let text = format!(
-                "Machine revision={}\nInput path=x digest=y\n\
+                "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
                  Section name=code base=0x40500050 size=8600\n\
                  Section name=rtcode base=0x40500100 size=0x200\n\
                  Entry base=0x40500000\n\
@@ -5775,7 +6078,7 @@ pub fn build() -> Image:
     #[test]
     fn parse_report_without_blk_lines_declares_no_device() {
         let text = format!(
-            "Machine revision={}\nInput path=x digest=y\nSection name=entry base=0x0 size=1\nEntry base=0x0\n",
+            "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nSection name=entry base=0x40500000 size=1\nEntry base=0x40500000\n",
             wrela_machine::MACHINE_REVISION_STR
         );
         assert!(parse_report(&text).expect("parses").blk.is_none());

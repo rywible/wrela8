@@ -176,7 +176,7 @@ pub fn stub_text() -> String {
         ..RuntimeTables::default()
     };
     tables.stripe_for_cores(1);
-    generate_with(&tables, &RtconfigExtras::default())
+    generate_with(&tables, &RtconfigExtras::default()).expect("rtconfig stub stays in pool ceilings")
 }
 
 /// Pretty-print the facts-only config module for `tables`.
@@ -190,14 +190,15 @@ pub fn stub_text() -> String {
 /// match ladders + fixed stub pools from `tables.select_by_core` /
 /// `drain_by_core` / `child_sites` (filled by `RuntimeWiring::derive`).
 /// Item G (decisions 800–802): ring overlays + handle-identity ladders.
-pub fn generate(tables: &RuntimeTables) -> String {
-    let extras = extras_from_tables(tables);
+pub fn generate(tables: &RuntimeTables) -> Result<String, String> {
+    let extras = extras_from_tables(tables)?;
     generate_with(tables, &extras)
 }
 
 /// Build [`RtconfigExtras`] from stamped `RuntimeTables` fields (shared by
-/// dump `generate` and live reinject — decision 800 / 813).
-pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
+/// dump `generate` and live reinject — decision 800 / 813). Placement
+/// holes fail closed rather than silently aliasing `RTDATA_BASE`.
+pub fn extras_from_tables(tables: &RuntimeTables) -> Result<RtconfigExtras, String> {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let mut init_slots: Vec<(u64, u64)> = Vec::new();
     for (a, addrs) in tables.actors.iter().zip(placement.actors.iter()) {
@@ -208,19 +209,14 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
     }
     let mut rings = Vec::new();
     for (i, r) in tables.rings.iter().enumerate() {
-        let addrs = placement
-            .rings
-            .get(i)
-            .copied()
-            .unwrap_or(crate::layout::RingAddrs {
-                ring: RTDATA_BASE,
-                head: RTDATA_BASE,
-                tail: RTDATA_BASE,
-                count: RTDATA_BASE,
-            });
+        let addrs = placement.rings.get(i).copied().ok_or_else(|| {
+            format!("rtconfig: ring {i} has no placement (tables/placement disagree)")
+        })?;
         let (target_handle, target_actor) = match r.kind {
             RingKind::Request => {
-                let actor = r.actor.clone().unwrap_or_default();
+                let actor = r.actor.clone().ok_or_else(|| {
+                    format!("rtconfig: request ring {i} has no target actor name")
+                })?;
                 let handle = tables
                     .ring_target_handles
                     .get(i)
@@ -233,7 +229,11 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
                             .find(|(_, n)| *n == &actor)
                             .map(|(h, _)| *h)
                     })
-                    .unwrap_or(0);
+                    .ok_or_else(|| {
+                        format!(
+                            "rtconfig: request ring {i} target `{actor}` has no enqueue handle"
+                        )
+                    })?;
                 (Some(handle), Some(actor))
             }
             RingKind::Reply => (None, None),
@@ -261,16 +261,9 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
                 .enumerate()
                 .find(|(_, a)| a.name == *name)
             {
-                let addrs = placement.actors.get(ai).copied().unwrap_or_else(|| {
-                    crate::layout::ActorAddrs {
-                        state: RTDATA_BASE,
-                        ring: RTDATA_BASE,
-                        head: RTDATA_BASE,
-                        tail: RTDATA_BASE,
-                        count: RTDATA_BASE,
-                        turn: RTDATA_BASE,
-                    }
-                });
+                let addrs = placement.actors.get(ai).copied().ok_or_else(|| {
+                    format!("rtconfig: actor `{name}` has no placement")
+                })?;
                 (
                     a.mailbox_capacity,
                     a.slot_size,
@@ -286,20 +279,18 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
                     .iter()
                     .enumerate()
                     .find(|(_, d)| d.name == *name && d.mailbox.is_some())
-                    .expect("enqueue actor must be actor or messageable driver");
-                let mb = d.mailbox.as_ref().unwrap();
-                let addrs = placement
-                    .driver_mailboxes
-                    .get(&di)
-                    .copied()
-                    .unwrap_or_else(|| crate::layout::ActorAddrs {
-                        state: RTDATA_BASE,
-                        ring: RTDATA_BASE,
-                        head: RTDATA_BASE,
-                        tail: RTDATA_BASE,
-                        count: RTDATA_BASE,
-                        turn: RTDATA_BASE,
-                    });
+                    .ok_or_else(|| {
+                        format!(
+                            "rtconfig: enqueue root `{name}` is neither an actor nor a \
+                             messageable driver"
+                        )
+                    })?;
+                let mb = d.mailbox.as_ref().ok_or_else(|| {
+                    format!("rtconfig: driver `{name}` has no mailbox")
+                })?;
+                let addrs = placement.driver_mailboxes.get(&di).copied().ok_or_else(|| {
+                    format!("rtconfig: driver mailbox `{name}` has no placement")
+                })?;
                 let turn_index = tables.actors.len()
                     + tables
                         .drivers
@@ -344,7 +335,7 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
             methods,
         });
     }
-    RtconfigExtras {
+    Ok(RtconfigExtras {
         select_by_core: tables.select_by_core.clone(),
         drain_by_core: tables.drain_by_core.clone(),
         child_sites: tables
@@ -366,15 +357,15 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
         wake_pending_addrs: tables.wake_pending_addrs.clone(),
         tests: Vec::new(),
         has_boot_init: false,
-    }
+    })
 }
 
 /// Live coalesced init-span count (`N_INIT_SLOTS`) for the placed-static
 /// census (plans/M12.md item G / decisions 890–893). Independent of the
 /// `INIT_SPAN_POOL_COUNT` placeholder pool the stub still emits.
-pub fn live_init_span_count(tables: &RuntimeTables) -> usize {
-    let extras = extras_from_tables(tables);
-    coalesce_init_spans(&extras.init_slots).len()
+pub fn live_init_span_count(tables: &RuntimeTables) -> Result<usize, String> {
+    let extras = extras_from_tables(tables)?;
+    Ok(coalesce_init_spans(&extras.init_slots).len())
 }
 
 /// Sort live `(addr, nwords)` init slots and merge adjacent ranges into
@@ -413,7 +404,10 @@ fn coalesce_init_spans(slots: &[(u64, u64)]) -> Vec<(u64, u64)> {
 /// remaps onto `rt_select_and_run` / resume callees.
 /// Item G (decisions 800–802): ring overlays + handle-identity / drain
 /// lane ladders; enqueue stubs remapped to `rt_enqueue` until item J.
-pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String {
+pub fn generate_with(
+    tables: &RuntimeTables,
+    extras: &RtconfigExtras,
+) -> Result<String, String> {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let init_spans = coalesce_init_spans(&extras.init_slots);
     let n_turns_len = (tables.n_turns as usize).max(1);
@@ -469,54 +463,64 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         }
     }
     let n_child = extras.child_sites.len();
-    assert!(
-        select_flat.len() <= SELECT_STUB_COUNT,
-        "image needs {} select stubs; pool is {SELECT_STUB_COUNT} (decision 791)",
-        select_flat.len()
-    );
-    assert!(
-        n_child <= RESUME_STUB_COUNT,
-        "image needs {n_child} resume stubs; pool is {RESUME_STUB_COUNT} (decision 791)"
-    );
-    assert!(
-        n_rings <= RING_POOL_COUNT,
-        "image needs {n_rings} rings; pool is {RING_POOL_COUNT} (decision 802)"
-    );
-    assert!(
-        extras.enqueue_actors.len() <= ENQUEUE_STUB_COUNT,
-        "image needs {} enqueue stubs; pool is {ENQUEUE_STUB_COUNT} (decision 802)",
-        extras.enqueue_actors.len()
-    );
-    assert!(
-        extras.mailboxes.len() <= MB_POOL_COUNT,
-        "image needs {} mailboxes; pool is {MB_POOL_COUNT} (decision 830)",
-        extras.mailboxes.len()
-    );
+    if select_flat.len() > SELECT_STUB_COUNT {
+        return Err(format!(
+            "image needs {} select stubs; pool is {SELECT_STUB_COUNT} (decision 791)",
+            select_flat.len()
+        ));
+    }
+    if n_child > RESUME_STUB_COUNT {
+        return Err(format!(
+            "image needs {n_child} resume stubs; pool is {RESUME_STUB_COUNT} (decision 791)"
+        ));
+    }
+    if n_rings > RING_POOL_COUNT {
+        return Err(format!(
+            "image needs {n_rings} rings; pool is {RING_POOL_COUNT} (decision 802)"
+        ));
+    }
+    if extras.enqueue_actors.len() > ENQUEUE_STUB_COUNT {
+        return Err(format!(
+            "image needs {} enqueue stubs; pool is {ENQUEUE_STUB_COUNT} (decision 802)",
+            extras.enqueue_actors.len()
+        ));
+    }
+    if extras.mailboxes.len() > MB_POOL_COUNT {
+        return Err(format!(
+            "image needs {} mailboxes; pool is {MB_POOL_COUNT} (decision 830)",
+            extras.mailboxes.len()
+        ));
+    }
     let n_methods: usize = extras.mailboxes.iter().map(|m| m.methods.len()).sum();
-    assert!(
-        n_methods <= METHOD_CALL_POOL_COUNT,
-        "image needs {n_methods} method stubs; pool is {METHOD_CALL_POOL_COUNT} (decision 831)"
-    );
-    assert!(
-        init_spans.len() <= INIT_SPAN_POOL_COUNT,
-        "image needs {} init spans; pool is {INIT_SPAN_POOL_COUNT} (decision 883)",
-        init_spans.len()
-    );
-    assert!(
-        extras.n_boot_calls <= BOOT_CALL_POOL_COUNT,
-        "image needs {} boot calls; pool is {BOOT_CALL_POOL_COUNT} (decision 812)",
-        extras.n_boot_calls
-    );
-    assert!(
-        extras.irq_vector_bits.len() <= IRQ_CALL_POOL_COUNT,
-        "image needs {} IRQ stubs; pool is {IRQ_CALL_POOL_COUNT} (decision 823)",
-        extras.irq_vector_bits.len()
-    );
-    assert!(
-        extras.wake_pending_addrs.len() <= WAKE_CALL_POOL_COUNT,
-        "image needs {} wake stubs; pool is {WAKE_CALL_POOL_COUNT} (decision 823)",
-        extras.wake_pending_addrs.len()
-    );
+    if n_methods > METHOD_CALL_POOL_COUNT {
+        return Err(format!(
+            "image needs {n_methods} method stubs; pool is {METHOD_CALL_POOL_COUNT} (decision 831)"
+        ));
+    }
+    if init_spans.len() > INIT_SPAN_POOL_COUNT {
+        return Err(format!(
+            "image needs {} init spans; pool is {INIT_SPAN_POOL_COUNT} (decision 883)",
+            init_spans.len()
+        ));
+    }
+    if extras.n_boot_calls > BOOT_CALL_POOL_COUNT {
+        return Err(format!(
+            "image needs {} boot calls; pool is {BOOT_CALL_POOL_COUNT} (decision 812)",
+            extras.n_boot_calls
+        ));
+    }
+    if extras.irq_vector_bits.len() > IRQ_CALL_POOL_COUNT {
+        return Err(format!(
+            "image needs {} IRQ stubs; pool is {IRQ_CALL_POOL_COUNT} (decision 823)",
+            extras.irq_vector_bits.len()
+        ));
+    }
+    if extras.wake_pending_addrs.len() > WAKE_CALL_POOL_COUNT {
+        return Err(format!(
+            "image needs {} wake stubs; pool is {WAKE_CALL_POOL_COUNT} (decision 823)",
+            extras.wake_pending_addrs.len()
+        ));
+    }
 
     let mut out = String::new();
     out.push_str("module __image_runtime\n");
@@ -1387,7 +1391,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("        case _:\n");
     out.push_str("            return 0\n");
 
-    out
+    Ok(out)
 }
 
 fn emit_ring_u64_ladder(
@@ -1590,7 +1594,7 @@ pub fn typecheck_batch2(generated_text: &str) -> Result<(), String> {
 /// Generate + batch-2 typecheck for a laid-out image's runtime tables.
 /// Returns the generated source text.
 pub fn generate_and_typecheck(tables: &RuntimeTables) -> Result<String, String> {
-    let text = generate(tables);
+    let text = generate(tables)?;
     typecheck_batch2(&text)?;
     Ok(text)
 }
@@ -1618,12 +1622,12 @@ mod tests {
 
     #[test]
     fn n_cores_spelling_and_values() {
-        let one = generate(&sample_tables(1));
+        let one = generate(&sample_tables(1)).unwrap();
         assert!(
             one.contains("pub const N_CORES: usize = 1\n"),
             "single-core must spell N_CORES exactly; got:\n{one}"
         );
-        let three = generate(&sample_tables(3));
+        let three = generate(&sample_tables(3)).unwrap();
         assert!(
             three.contains("pub const N_CORES: usize = 3\n"),
             "cross-core must spell N_CORES exactly; got:\n{three}"
@@ -1634,7 +1638,7 @@ mod tests {
     fn placed_uses_rtdata_base_literal() {
         // Empty-turn sample: RT moves to a placeholder so state/INIT_SPAN can
         // own RTDATA_BASE (decision 813 / 883); SCHED still uses a numeric literal.
-        let text = generate(&sample_tables(1));
+        let text = generate(&sample_tables(1)).unwrap();
         assert!(!text.contains("@placed(RTDATA_BASE)"));
         assert!(
             text.contains("pub static RT: RuntimeTables\n"),
@@ -1659,7 +1663,7 @@ mod tests {
 
     #[test]
     fn facts_only_forbids_control_and_actors() {
-        let text = generate(&sample_tables(1));
+        let text = generate(&sample_tables(1)).unwrap();
         assert!(
             !contains_forbidden_construct(&text),
             "generator emitted a forbidden construct:\n{text}"
@@ -1675,14 +1679,14 @@ mod tests {
     #[test]
     fn generate_is_deterministic_across_two_runs() {
         let tables = sample_tables(1);
-        let a = generate(&tables);
-        let b = generate(&tables);
+        let a = generate(&tables).unwrap();
+        let b = generate(&tables).unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn generated_text_parses() {
-        let text = generate(&sample_tables(2));
+        let text = generate(&sample_tables(2)).unwrap();
         let module = parse_generated(&text).expect("parse");
         assert_eq!(module.path, vec!["__image_runtime".to_string()]);
     }
@@ -1692,7 +1696,7 @@ mod tests {
         let mut t = sample_tables(1);
         t.group_arena_capacity = 1;
         t.total_bytes = 2048;
-        let text = generate(&t);
+        let text = generate(&t).unwrap();
         assert!(text.contains("struct TurnArea:\n"));
         assert!(text.contains("struct GroupSlot:\n"));
         assert!(text.contains("struct SchedCore:\n"));
@@ -1791,7 +1795,7 @@ mod typecheck_live {
         });
         t.free_turns = vec![("worker".into(), 128), ("test".into(), 128)];
         t.stripe_for_cores(1);
-        let text = generate(&t);
+        let text = generate(&t).unwrap();
         assert!(
             text.contains("@offset(0x3ff) _tail: u8"),
             "generated text missing 0x3ff tail: {text}"

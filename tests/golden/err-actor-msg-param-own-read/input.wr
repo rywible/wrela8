@@ -1,0 +1,13 @@
+module examples.err_actor_msg_param_own_read
+
+# Decl-time: a pub message parameter that is a resource must be `take`.
+
+pool Packets
+
+resource struct Packet:
+    pub n: u64
+
+@actor
+pub struct Sink:
+    pub fn ingest(read self, p: own[Packets] Packet) -> u64:
+        return p.n

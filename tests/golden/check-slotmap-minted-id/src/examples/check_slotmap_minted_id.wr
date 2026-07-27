@@ -1,0 +1,26 @@
+module examples.check_slotmap_minted_id
+
+# plans/M9.md item K1 / 05-library.md §7: construction mints distinct
+# instance ids — two maps built without a caller map_id cannot share a key.
+
+from core.slotmap import SlotMap, Key
+
+@test
+fn colliding_construction_cannot_alias():
+    a = SlotMap[u64, 2]()
+    b = SlotMap[u64, 2]()
+    x: u64 = 10
+    k: Key = Key(map_id=0, index=0, generation=0)
+    match a.insert(take x):
+        case .Ok(kk):
+            k = kk
+        case .Err(_):
+            assert false, "insert a"
+    assert a.contains(k), "own map hits"
+    assert not b.contains(k), "minted ids must differ — foreign contains"
+    match b.get_value(k):
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "minted ids must differ — foreign aliased"
+    assert k.map_id != 0, "minted id is never the zero placeholder"

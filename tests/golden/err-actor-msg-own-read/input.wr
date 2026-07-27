@@ -1,0 +1,24 @@
+module examples.err_actor_msg_own_read
+
+# Call-site: decl is correctly `take`, but the argument is unmarked/`read`.
+# That used to typecheck and leave the sender initialized while the mailbox
+# held a copy (02 §9.3). Decl-time coverage is err-actor-msg-param-own-read.
+
+pool Packets
+
+resource struct Packet:
+    pub n: u64
+
+@actor
+pub struct Sink:
+    pub fn ingest(read self, take p: own[Packets] Packet) -> u64:
+        return p.n
+
+@actor
+pub struct Src:
+    pkt: own[Packets] Packet
+    sink: Actor[Sink]
+
+    pub async fn go(mut self) -> Result[u64, CallError[never]]:
+        r = await self.sink.ingest(self.pkt)?
+        return Ok(r + self.pkt.n)

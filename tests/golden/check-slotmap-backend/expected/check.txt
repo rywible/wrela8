@@ -14,7 +14,7 @@ Module path=slotmap
     field occupied: [bool; N]
     field retired: [bool; N]
     field data: [Option[T]; N]
-    init(mut self, map_id: read u64) -> unit
+    init(mut self) -> unit
     fn len(read self) -> usize
     fn insert(mut self, x: take T) -> Result[Key, SlotMapFull]
     fn try_insert(mut self, x: take T) -> Result[Key, GenerationExhausted]
@@ -25,8 +25,6 @@ Module path=slotmap
     fn each_pair(read self, body: read fn(read Key, read T) -> unit) -> unit
 Module path=examples.check_slotmap_backend
   Struct Store resource
-    field map_id: u64
-    init(mut self, map_id: read u64) -> unit
     fn insert_one(mut self) -> u64
   AsyncFn guest_slotmap(store: read Actor[Store]) -> unit
   Fn build() -> Image

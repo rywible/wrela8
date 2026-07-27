@@ -1,0 +1,27 @@
+module examples.err_actor_msg_send_own
+
+# Same §9.3 hole on `send`: resource by read must be refused.
+
+pool Packets
+
+resource struct Packet:
+    pub n: u64
+
+@actor
+pub struct Sink:
+    pub fn ingest(read self, take p: own[Packets] Packet):
+        return
+
+@actor
+pub struct Src:
+    pkt: own[Packets] Packet
+    sink: Actor[Sink]
+
+    pub async fn go(mut self) -> Result[unit, CallError[never]]:
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
+        match send self.sink.ingest(self.pkt):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return Ok(())

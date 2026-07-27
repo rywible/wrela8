@@ -61,7 +61,8 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // 79 -> 77, plans/M13.md item F: Restart / intensity eval arms deleted
     // with Image.supervise → on_failure (recount confirmed at item N).
     // 77 -> 78, plans/M13.md item I: unknown CallError variant arm.
-    ("eval/interp.rs", 78),
+    // 78 -> 79: SlotMap.init path soft-errors a non-struct self value.
+    ("eval/interp.rs", 79),
     ("lower.rs", 5),
     ("codegen.rs", 4),
     ("eval/mod.rs", 2),
@@ -167,7 +168,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 204,
+            INTERNAL_ERROR_SITE_COUNT, 205,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

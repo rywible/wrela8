@@ -420,6 +420,9 @@ pub enum BlkFault {
         expected: u64,
         device: u64,
     },
+    /// A data descriptor whose `len` would force an unbounded host heap
+    /// allocation (larger than this VMM's own in-memory disk ceiling).
+    DescTooLarge { len: u64 },
 }
 
 impl std::fmt::Display for BlkFault {
@@ -523,6 +526,11 @@ impl std::fmt::Display for BlkFault {
                 "a quiesce named {named:#x} as device#{device}'s quiesce-count word, but this \
                  queue's own is {expected:#x} (03-hardware.md §9: reclaim is gated on the count \
                  this VMM writes, so it may only ever be the queue's own)"
+            ),
+            BlkFault::DescTooLarge { len } => write!(
+                f,
+                "virtio data descriptor length {len} exceeds this VMM's {MAX_DISK_BYTES}-byte \
+                 host-allocation ceiling (a driver fault, never an unbounded host alloc)"
             ),
         }
     }
@@ -947,9 +955,14 @@ impl BlkDevice {
 
         let request_type = mem.read_u32(header.addr)?;
         let sector = mem.read_u64(header.addr + 8)?;
-        let data_len: u64 = data.iter().map(|d| d.len as u64).sum();
-
+        let mut data_len: u64 = 0;
         for d in data {
+            if (d.len as u64) > MAX_DISK_BYTES {
+                return Err(BlkFault::DescTooLarge { len: d.len as u64 });
+            }
+            data_len = data_len
+                .checked_add(d.len as u64)
+                .ok_or(BlkFault::DescTooLarge { len: d.len as u64 })?;
             let want_writable = request_type == T_IN;
             if d.is_device_writable() != want_writable {
                 return Err(BlkFault::DataDirectionMismatch {
@@ -2103,6 +2116,7 @@ mod tests {
             },
             BlkFault::UnalignedDataLength { len: 500 },
             BlkFault::FlushWithData { len: 512 },
+            BlkFault::DescTooLarge { len: MAX_DISK_BYTES + 1 },
             BlkFault::QuiesceWrongWord {
                 named: 1,
                 expected: 2,

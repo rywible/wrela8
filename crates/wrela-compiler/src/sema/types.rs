@@ -749,6 +749,7 @@ fn validate_message_shape(
     params: &[DeclParam],
     ret: &Type,
     components: &BTreeMap<String, &[(Type, Span)]>,
+    structs: &BTreeMap<String, &DeclStruct>,
 ) -> Result<(), SemaError> {
     for p in params {
         if type_contains_actor_handle(&p.ty, components, &mut BTreeSet::new()) {
@@ -757,6 +758,27 @@ fn validate_message_shape(
                 format!(
                     "an `Actor[T]` handle cannot appear in a message (`{struct_name}.{method_name}`'s \
                      own `{}: {}` — 02-language.md §9.1)",
+                    p.name,
+                    render_type(&p.ty)
+                ),
+                span,
+            ));
+        }
+        // 02 §9.3: a resource in a message parameter must be `take`, or
+        // the decl itself is a double-ownership laundering channel
+        // (`p: own[P] T` defaulted to read). Capabilities / sealed authority
+        // are never legal in a message shape even under `take`
+        // (03-hardware.md §1); that rejection lives in the capability pass —
+        // emitting §9.3 here would mask `golden/err-cap-driver-message`.
+        if message_param_ty_is_resource(&p.ty, structs)
+            && p.mode != AccessMode::Take
+            && contains_capability(&p.ty, components).is_none()
+        {
+            return Err(SemaError::at(
+                "actor",
+                format!(
+                    "message parameter `{struct_name}.{method_name}`'s `{}: {}` is a resource and \
+                     must be declared `take` (02-language.md §9.3)",
                     p.name,
                     render_type(&p.ty)
                 ),
@@ -916,6 +938,7 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
                                     &fd.params,
                                     &fd.ret,
                                     &components,
+                                    &structs,
                                 )?;
                             }
                         }
@@ -6238,6 +6261,22 @@ fn classify_named(
     };
     memo.insert(key, result);
     Ok(result)
+}
+
+/// Decl-time resource-ness for message-shape validation: `own[P] T`,
+/// sealed authorities, and structs/enums already marked resource-by-fiat
+/// (or classified Resource when available). Call-site checking uses the
+/// fuller `bodies::is_resource_type` after classification is final.
+fn message_param_ty_is_resource(ty: &Type, structs: &BTreeMap<String, &DeclStruct>) -> bool {
+    resource_propagates(ty, &mut |name, _args| {
+        if crate::eval::image_checks::is_sealed_authority_type_name(name) {
+            return true;
+        }
+        structs
+            .get(name)
+            .map(|s| s.is_resource_fiat || s.classification == Classification::Resource)
+            .unwrap_or(false)
+    })
 }
 
 /// The one exhaustive (no wildcard) compound-propagation rule shared by

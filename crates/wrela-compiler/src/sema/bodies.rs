@@ -10229,7 +10229,20 @@ fn check_message_args(
                 a.span,
             ));
         }
-        if a.mode == AccessMode::Take && is_resource_type(&vt.ty, mctx) {
+        // 02-language.md §9.3: resources move into messages only with
+        // `take`. Unmarked/`read` used to typecheck and leave the sender
+        // initialized while the mailbox held a copy — double ownership.
+        if is_resource_type(&vt.ty, mctx) {
+            if a.mode != AccessMode::Take {
+                return Err(actor_error(
+                    format!(
+                        "a message argument that is a resource must be moved with `take` \
+                         (`{}`, 02-language.md §9.3)",
+                        decl_params[idx].name
+                    ),
+                    a.span,
+                ));
+            }
             // plans/M7.md item E4 / 03-hardware.md §5: a handoff may
             // `take` an `own[P] T` transfer payload into an awaitable
             // driver call. Other resource takes in messages stay closed.
@@ -11505,7 +11518,7 @@ fn scan_await_cross_stmt(s: &TypedStmt, state: &mut CrossAwaitScan) -> Result<()
 fn root_local_name(e: &TypedExpr) -> Option<&str> {
     match &e.kind {
         TypedExprKind::Local(name) => Some(name.as_str()),
-        TypedExprKind::Field(base, _) => root_local_name(base),
+        TypedExprKind::Field(base, _) | TypedExprKind::Index(base, _) => root_local_name(base),
         _ => None,
     }
 }
@@ -11553,6 +11566,27 @@ fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<()
             scan_await_cross_expr(base, state)
         }
         TypedExprKind::Index(base, idx) => {
+            // Same §9.2 rule as Field: an external-rooted nested access
+            // (including `input[0]`) must not span `await`. Field was
+            // checked; Index only recursed — a bypass.
+            if state.seen_await && !state.probe {
+                if let Some(root) = root_local_name(e) {
+                    if root != "self" && !state.after_await.contains(root) {
+                        return Err(SemaError {
+                            category: "actor",
+                            message: format!(
+                                "`{root}`-rooted access cannot span an `await` — only a \
+                                 self-rooted path may (02-language.md §9.2)"
+                            ),
+                            line: 0,
+                            col: 0,
+                            extra_lines: Vec::new(),
+                            omit_location: true,
+                            missing_method: None,
+                        });
+                    }
+                }
+            }
             scan_await_cross_expr(base, state)?;
             scan_await_cross_expr(idx, state)
         }
@@ -12661,6 +12695,26 @@ mod tests {
             kind: TypedExprKind::Field(Box::new(external), "value".to_string()),
         };
         assert_eq!(root_local_name(&external_field), Some("input"));
+
+        let external_idx_base = TypedExpr {
+            ty: Type::Unit,
+            kind: TypedExprKind::Local("input".to_string()),
+        };
+        let external_index = TypedExpr {
+            ty: Type::U64,
+            kind: TypedExprKind::Index(
+                Box::new(external_idx_base),
+                Box::new(TypedExpr {
+                    ty: Type::Usize,
+                    kind: TypedExprKind::Int("0".to_string()),
+                }),
+            ),
+        };
+        assert_eq!(
+            root_local_name(&external_index),
+            Some("input"),
+            "bare `input[0]` must root at `input` (Index is not a Field bypass)"
+        );
 
         let no_root = TypedExpr {
             ty: Type::U64,

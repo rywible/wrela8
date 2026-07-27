@@ -136,6 +136,8 @@ unsafe extern "C" {
     pub fn hv_vm_create(config: *mut c_void) -> i32;
     pub fn hv_vm_destroy() -> i32;
     pub fn hv_vm_map(addr: *mut c_void, ipa: u64, size: usize, flags: u64) -> i32;
+    /// Change permissions on an already-mapped GPA range (`hv_vm.h`).
+    pub fn hv_vm_protect(ipa: u64, size: usize, flags: u64) -> i32;
 
     pub fn hv_vcpu_create(vcpu: *mut u64, exit: *mut *mut HvVcpuExit, config: *mut c_void) -> i32;
     pub fn hv_vcpu_destroy(vcpu: u64) -> i32;

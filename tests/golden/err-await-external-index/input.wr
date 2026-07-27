@@ -1,0 +1,21 @@
+module examples.err_await_external_index
+
+# Twin of err-await-external-path: Index must not span await either (§9.2).
+
+@actor
+pub struct Upstream:
+    pub fn get(read self) -> u64:
+        return 1
+
+@actor
+pub struct Store:
+    upstream: Actor[Upstream]
+
+    pub async fn combine(mut self, input: [u64; 2]) -> u64:
+        fetched = await self.upstream.get()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
+        match fetched:
+            case .Ok(v):
+                return input[0] + v
+            case .Err(_):
+                return input[0]

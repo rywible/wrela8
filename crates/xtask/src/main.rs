@@ -7148,9 +7148,11 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
     let data_off = (data_base - machine_layout::IMAGE_BASE) as usize;
     fill_blk_ring(&mut img, data_off, data_base);
 
+    let image_digest = wrela_machine::sha256::sha256_hex(&img);
     let report_text = format!(
         "Machine revision={}\n\
-         Input path=<xtask blk conformance> digest=deadbeef\n\
+         Input path=<xtask blk conformance> sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
+         Image sha256={image_digest}\n\
          Section name=entry base={:#x} size={}\n\
          Entry base={:#x}\n\
          BlkDevice device=device#0 capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
@@ -7404,8 +7406,9 @@ fn build_runtime_test_image(
     )
     .map_err(|e| e.message)?;
     let source_digest = report::sha256_hex(source.as_bytes());
+    let image_digest = report::sha256_hex(&image_layout.blob);
     let mut report_text = format!(
-        "Machine revision={}\nInput path={path} digest={source_digest}\n",
+        "Machine revision={}\nInput path={path} sha256={source_digest}\nImage sha256={image_digest}\n",
         wrela_machine::MACHINE_REVISION_STR
     );
     for s in &image_layout.sections {
@@ -8007,8 +8010,9 @@ fn profile() -> Result<(), String> {
     );
 
     let source_digest = report::sha256_hex(source.as_bytes());
+    let image_digest = report::sha256_hex(&image_layout.blob);
     let mut report_text = format!(
-        "Machine revision={}\nInput path={path_display} digest={source_digest}\n",
+        "Machine revision={}\nInput path={path_display} sha256={source_digest}\nImage sha256={image_digest}\n",
         wrela_machine::MACHINE_REVISION_STR
     );
     for s in &image_layout.sections {

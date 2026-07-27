@@ -135,6 +135,11 @@ struct Interp<'p> {
     /// full graph — `eval_image` (this module's own new top-level entry)
     /// reads it back out once the whole `@image` fn body has run.
     sealed_image: Option<crate::eval::image::ImageGraph>,
+    /// Next `SlotMap` instance id (05-library.md §7). Starts at 1 so the
+    /// first mint matches the guest's `OFF_SLOTMAP_NEXT_ID` path (which
+    /// returns the pre-increment value after adding one to a zeroed
+    /// word). Non-wrapping: exhaustion is a comptime abandon.
+    slotmap_next_id: u64,
 }
 
 impl<'p> Interp<'p> {
@@ -242,6 +247,7 @@ pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError>
             stack: Vec::new(),
             image: None,
             sealed_image: None,
+            slotmap_next_id: 1,
         };
         match run_call(f, None, name.to_string(), |_, _| Ok(()), &mut ctx) {
             Ok(outcome) => Ok(outcome.result),
@@ -273,6 +279,7 @@ pub fn eval_test_case(
             stack: Vec::new(),
             image: None,
             sealed_image: None,
+            slotmap_next_id: 1,
         };
         let bind = |env: &mut Env, _ctx: &mut Interp| {
             for (p, v) in f.params.iter().zip(args.iter()) {
@@ -306,6 +313,7 @@ pub fn eval_layout_assert(
             stack: Vec::new(),
             image: None,
             sealed_image: None,
+            slotmap_next_id: 1,
         };
         let bind = |env: &mut Env, ctx: &mut Interp| {
             let Some(p) = f.params.first() else {
@@ -350,6 +358,7 @@ pub fn eval_image(
             stack: Vec::new(),
             image: None,
             sealed_image: None,
+            slotmap_next_id: 1,
         };
         match run_call(f, None, fn_name.to_string(), |_, _| Ok(()), &mut ctx) {
             Ok(_) => ctx.sealed_image.ok_or_else(|| EvalError {
@@ -369,6 +378,7 @@ fn eval_top(program: &TypedProgram, expr: &TypedExpr, context: String) -> Result
             stack: Vec::new(),
             image: None,
             sealed_image: None,
+            slotmap_next_id: 1,
         };
         if let Err(e) = ctx.enter(context) {
             return Err(unwind_to_error(e));
@@ -1091,6 +1101,7 @@ fn match_pattern(
                 stack: ctx.stack.clone(),
                 image: None,
                 sealed_image: None,
+                slotmap_next_id: 1,
             };
             let lv = eval_expr(lit, &mut scratch_env, &mut scratch_dstack, 0, &mut scratch)
                 .map_err(|_| ctx.abandon("internal error: pattern literal failed to evaluate"))?;
@@ -1305,7 +1316,7 @@ fn run_init<'p>(
 ) -> R<Value> {
     let placeholder = Value::Struct(vec![Value::Unit; s.fields.len()]);
     let outcome = run_call(f, Some(placeholder), frame_name, bind, ctx)?;
-    let self_val = outcome
+    let mut self_val = outcome
         .final_self
         .expect("run_call always returns `self` back when given one");
     // `init`'s non-receiver params are never `mut` in practice (sema
@@ -1323,6 +1334,28 @@ fn run_init<'p>(
             "writing back `mut` parameter(s) `{}` from `init` is not supported",
             names.join("`, `")
         )));
+    }
+    // 05-library.md §7: overwrite the placeholder `map_id = 0` with a
+    // fresh non-wrapping instance id. Field 0 is `map_id` by declaration
+    // order in `stdlib/core/slotmap.wr`.
+    if s.name == "SlotMap" || s.name.starts_with("SlotMap[") {
+        let id = ctx.slotmap_next_id;
+        if id == 0 {
+            return Err(ctx.abandon(
+                "SlotMap instance id space exhausted (u64 non-wrapping mint, 05-library.md §7)",
+            ));
+        }
+        ctx.slotmap_next_id = id.wrapping_add(1);
+        match &mut self_val {
+            Value::Struct(fields) if !fields.is_empty() => {
+                fields[0] = Value::U64(id);
+            }
+            _ => {
+                return Err(ctx.abandon(
+                    "internal error: SlotMap init did not produce a struct value",
+                ));
+            }
+        }
     }
     match &f.ret {
         Type::Unit => Ok(self_val),
@@ -1743,7 +1776,7 @@ fn eval_expr<'a, 'p>(
         }
         TypedExprKind::BitNot(inner) => {
             let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;
-            Ok(value::eval_bitnot(&expr.ty, &iv))
+            value::eval_bitnot(&expr.ty, &iv).map_err(|m| ctx.abandon(m))
         }
         TypedExprKind::Take(inner) => {
             // Values move by Rust move; flow already proved legality, so
@@ -2355,7 +2388,7 @@ fn eval_binary<'a, 'p>(
                 _ => value::eval_ordinary(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
             }
         }
-        AddW | SubW | MulW => Ok(value::eval_wrapping(op, &l.ty, &lv, &rv)),
+        AddW | SubW | MulW => value::eval_wrapping(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
         Div | Rem => match (&lv, &rv) {
             (Value::F32(a), Value::F32(b)) => Ok(match op {
                 Div => Value::F32(a / b),
@@ -2370,7 +2403,9 @@ fn eval_binary<'a, 'p>(
             _ => value::eval_div_rem(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
         },
         Shl | Shr => value::eval_shift(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
-        BitAnd | BitOr | BitXor => Ok(value::eval_bitwise(op, &l.ty, &lv, &rv)),
+        BitAnd | BitOr | BitXor => {
+            value::eval_bitwise(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m))
+        }
         Lt | Le | Gt | Ge => Ok(Value::Bool(value::eval_compare(op, &lv, &rv))),
         Eq => Ok(Value::Bool(lv == rv)),
         Ne => Ok(Value::Bool(lv != rv)),

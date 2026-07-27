@@ -15,6 +15,8 @@
 //! proves the map is internally coherent before anything is built on top
 //! of it.
 
+pub mod sha256;
+
 /// Machine contract revision (numeric form). The compiler seals this into
 /// the build identity; the VMM refuses an image built for another
 /// revision. Pre-dates this item; unchanged.
@@ -299,6 +301,13 @@ pub mod machine_info {
     /// observes a stale latch. Zero on every green boot (asserted by the
     /// VMM after a zero exit).
     pub const OFF_ABORT_LATCH: u64 = 0x208;
+
+    /// Offset 0x210 (528): next `SlotMap` instance id (05-library.md §7).
+    /// Guest `SlotMap.init` mints by loading, adding one, and storing back
+    /// (non-wrapping — exhaustion aborts). Zero at boot means the first
+    /// mint returns `1`. Comptime evaluation keeps its own counter; both
+    /// start at the same initial value so the first map is always id 1.
+    pub const OFF_SLOTMAP_NEXT_ID: u64 = 0x210;
 }
 
 /// Console: a runtime-owned tx ring, virtio-shaped (plans/M5.md decision
@@ -808,7 +817,8 @@ mod tests {
                 <= machine_info::OFF_VECTOR0_OBSERVED
         );
         assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= machine_info::OFF_ABORT_LATCH);
-        assert!(machine_info::OFF_ABORT_LATCH + 8 <= layout::MACHINE_INFO_SIZE);
+        assert!(machine_info::OFF_ABORT_LATCH + 8 <= machine_info::OFF_SLOTMAP_NEXT_ID);
+        assert!(machine_info::OFF_SLOTMAP_NEXT_ID + 8 <= layout::MACHINE_INFO_SIZE);
     }
 
     /// plans/M8.md item C1: every core's own mark word is distinct, inside

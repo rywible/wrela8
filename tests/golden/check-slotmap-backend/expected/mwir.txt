@@ -1,71 +1,63 @@
 Program
-  Fn key=Store.init ret=unit temps=2 receiver=t0:mut params=[t1]
-    Temp t0 ty=Store
-    Temp t1 ty=u64
-    Body
-      0000: SetField base=t0 index=0 value=t1
-      0001: Return
-  Fn key=Store.insert_one ret=u64 temps=25 receiver=t0:mut
+  Fn key=Store.insert_one ret=u64 temps=24 receiver=t0:mut
     Temp t0 ty=Store
     Temp t1 ty=SlotMap[u64, 2]
-    Temp t2 ty=u64
-    Temp t3 ty=unit
-    Temp t4 ty=SlotMap[u64, 2]
+    Temp t2 ty=unit
+    Temp t3 ty=SlotMap[u64, 2]
+    Temp t4 ty=u64
     Temp t5 ty=u64
-    Temp t6 ty=u64
-    Temp t7 ty=Result[Key, SlotMapFull]
-    Temp t8 ty=Key
+    Temp t6 ty=Result[Key, SlotMapFull]
+    Temp t7 ty=Key
+    Temp t8 ty=u64
     Temp t9 ty=u64
-    Temp t10 ty=u64
-    Temp t11 ty=bool
-    Temp t12 ty=Key
+    Temp t10 ty=bool
+    Temp t11 ty=Key
+    Temp t12 ty=bool
     Temp t13 ty=bool
     Temp t14 ty=bool
-    Temp t15 ty=bool
+    Temp t15 ty=u64
     Temp t16 ty=u64
     Temp t17 ty=u64
     Temp t18 ty=u64
-    Temp t19 ty=u64
-    Temp t20 ty=bool
-    Temp t21 ty=SlotMapFull
+    Temp t19 ty=bool
+    Temp t20 ty=SlotMapFull
+    Temp t21 ty=bool
     Temp t22 ty=bool
-    Temp t23 ty=bool
-    Temp t24 ty=u64
+    Temp t23 ty=u64
     Body
-      0000: Project dst=t2 base=t0 index=0
-      0001: Call key=struct:SlotMap[u64, 2].init dst=t3 args=[t1,t2] write_backs=[0:t1]
-      0002: Copy dst=t4 src=t1
-      0003: ConstInt dst=t5 ty=u64 value=10
-      0004: Copy dst=t6 src=t5
-      0005: Call key=struct:SlotMap[u64, 2].insert dst=t7 args=[t4,t6] write_backs=[0:t4]
-      0006: EnumTag dst=t9 src=t7
-      0007: ConstInt dst=t10 ty=u64 value=0
-      0008: Compare op=== ty=u64 dst=t11 lhs=t9 rhs=t10
-      0009: EnumPayload dst=t12 src=t7 index=0
-      0010: Copy dst=t8 src=t12
-      0011: ConstBool dst=t13 value=true
-      0012: BoolAnd dst=t14 lhs=t11 rhs=t13
-      0013: JumpIfFalse cond=t14 target=0022
-      0014: Call key=struct:SlotMap[u64, 2].contains dst=t15 args=[t4,t8]
-      0015: JumpIfFalse cond=t15 target=0019
-      0016: ConstInt dst=t16 ty=u64 value=1
-      0017: Return value=t16
-      0018: Jump target=0019
-      0019: ConstInt dst=t17 ty=u64 value=0
-      0020: Return value=t17
-      0021: Jump target=0033
-      0022: EnumTag dst=t18 src=t7
-      0023: ConstInt dst=t19 ty=u64 value=1
-      0024: Compare op=== ty=u64 dst=t20 lhs=t18 rhs=t19
-      0025: EnumPayload dst=t21 src=t7 index=0
-      0026: ConstBool dst=t22 value=true
-      0027: BoolAnd dst=t23 lhs=t20 rhs=t22
-      0028: JumpIfFalse cond=t23 target=0032
-      0029: ConstInt dst=t24 ty=u64 value=0
-      0030: Return value=t24
-      0031: Jump target=0033
-      0032: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
-      0033: Return
+      0000: Call key=struct:SlotMap[u64, 2].init dst=t2 args=[t1] write_backs=[0:t1]
+      0001: Copy dst=t3 src=t1
+      0002: ConstInt dst=t4 ty=u64 value=10
+      0003: Copy dst=t5 src=t4
+      0004: Call key=struct:SlotMap[u64, 2].insert dst=t6 args=[t3,t5] write_backs=[0:t3]
+      0005: EnumTag dst=t8 src=t6
+      0006: ConstInt dst=t9 ty=u64 value=0
+      0007: Compare op=== ty=u64 dst=t10 lhs=t8 rhs=t9
+      0008: EnumPayload dst=t11 src=t6 index=0
+      0009: Copy dst=t7 src=t11
+      0010: ConstBool dst=t12 value=true
+      0011: BoolAnd dst=t13 lhs=t10 rhs=t12
+      0012: JumpIfFalse cond=t13 target=0021
+      0013: Call key=struct:SlotMap[u64, 2].contains dst=t14 args=[t3,t7]
+      0014: JumpIfFalse cond=t14 target=0018
+      0015: ConstInt dst=t15 ty=u64 value=1
+      0016: Return value=t15
+      0017: Jump target=0018
+      0018: ConstInt dst=t16 ty=u64 value=0
+      0019: Return value=t16
+      0020: Jump target=0032
+      0021: EnumTag dst=t17 src=t6
+      0022: ConstInt dst=t18 ty=u64 value=1
+      0023: Compare op=== ty=u64 dst=t19 lhs=t17 rhs=t18
+      0024: EnumPayload dst=t20 src=t6 index=0
+      0025: ConstBool dst=t21 value=true
+      0026: BoolAnd dst=t22 lhs=t19 rhs=t21
+      0027: JumpIfFalse cond=t22 target=0031
+      0028: ConstInt dst=t23 ty=u64 value=0
+      0029: Return value=t23
+      0030: Jump target=0032
+      0031: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0032: Return
   Fn key=struct:SlotMap[u64, 2].contains ret=bool temps=20 receiver=t0:read params=[t1]
     Temp t0 ty=SlotMap[u64, 2]
     Temp t1 ty=Key
@@ -117,7 +109,7 @@ Program
       0026: Compare op=== ty=u8 dst=t19 lhs=t17 rhs=t18
       0027: Return value=t19
       0028: Return
-  Fn key=struct:SlotMap[u64, 2].init ret=unit temps=15 receiver=t0:mut params=[t1]
+  Fn key=struct:SlotMap[u64, 2].init ret=unit temps=15 receiver=t0:mut
     Temp t0 ty=SlotMap[u64, 2]
     Temp t1 ty=u64
     Temp t2 ty=usize
@@ -134,26 +126,27 @@ Program
     Temp t13 ty=Option[u64]
     Temp t14 ty=[Option[u64]; 2]
     Body
-      0000: SetField base=t0 index=0 value=t1
-      0001: ConstInt dst=t2 ty=usize value=0
-      0002: SetField base=t0 index=1 value=t2
-      0003: ConstInt dst=t3 ty=u8 value=0
-      0004: ConstInt dst=t4 ty=u8 value=0
-      0005: MakeAggregate dst=t5 elems=[t3,t4]
-      0006: SetField base=t0 index=2 value=t5
-      0007: ConstBool dst=t6 value=false
-      0008: ConstBool dst=t7 value=false
-      0009: MakeAggregate dst=t8 elems=[t6,t7]
-      0010: SetField base=t0 index=3 value=t8
-      0011: ConstBool dst=t9 value=false
-      0012: ConstBool dst=t10 value=false
-      0013: MakeAggregate dst=t11 elems=[t9,t10]
-      0014: SetField base=t0 index=4 value=t11
-      0015: MakeEnum dst=t12 tag=0 payload=[]
-      0016: MakeEnum dst=t13 tag=0 payload=[]
-      0017: MakeAggregate dst=t14 elems=[t12,t13]
-      0018: SetField base=t0 index=5 value=t14
-      0019: Return
+      0000: ConstInt dst=t1 ty=u64 value=0
+      0001: SetField base=t0 index=0 value=t1
+      0002: ConstInt dst=t2 ty=usize value=0
+      0003: SetField base=t0 index=1 value=t2
+      0004: ConstInt dst=t3 ty=u8 value=0
+      0005: ConstInt dst=t4 ty=u8 value=0
+      0006: MakeAggregate dst=t5 elems=[t3,t4]
+      0007: SetField base=t0 index=2 value=t5
+      0008: ConstBool dst=t6 value=false
+      0009: ConstBool dst=t7 value=false
+      0010: MakeAggregate dst=t8 elems=[t6,t7]
+      0011: SetField base=t0 index=3 value=t8
+      0012: ConstBool dst=t9 value=false
+      0013: ConstBool dst=t10 value=false
+      0014: MakeAggregate dst=t11 elems=[t9,t10]
+      0015: SetField base=t0 index=4 value=t11
+      0016: MakeEnum dst=t12 tag=0 payload=[]
+      0017: MakeEnum dst=t13 tag=0 payload=[]
+      0018: MakeAggregate dst=t14 elems=[t12,t13]
+      0019: SetField base=t0 index=5 value=t14
+      0020: Return
   Fn key=struct:SlotMap[u64, 2].insert ret=Result[Key, SlotMapFull] temps=34 receiver=t0:mut params=[t1:take]
     Temp t0 ty=SlotMap[u64, 2]
     Temp t1 ty=u64

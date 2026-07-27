@@ -8,8 +8,8 @@ from core.slotmap import SlotMap, Key, GenerationExhausted
 
 @test
 fn foreign_map_id_misses():
-    a = SlotMap[u64, 2](map_id=1)
-    b = SlotMap[u64, 2](map_id=2)
+    a = SlotMap[u64, 2]()
+    b = SlotMap[u64, 2]()
     x: u64 = 10
     k: Key = Key(map_id=0, index=0, generation=0)
     match a.insert(take x):
@@ -26,7 +26,7 @@ fn foreign_map_id_misses():
 
 @test
 fn stale_after_remove_misses():
-    m = SlotMap[u64, 2](map_id=1)
+    m = SlotMap[u64, 2]()
     x: u64 = 1
     k: Key = Key(map_id=0, index=0, generation=0)
     match m.insert(take x):
@@ -53,7 +53,7 @@ fn stale_after_remove_misses():
 
 @test
 fn wrong_generation_in_range_misses():
-    m = SlotMap[u64, 2](map_id=1)
+    m = SlotMap[u64, 2]()
     x: u64 = 1
     k: Key = Key(map_id=0, index=0, generation=0)
     match m.insert(take x):
@@ -71,23 +71,24 @@ fn wrong_generation_in_range_misses():
 
 @test
 fn fabricated_keys_miss():
-    m = SlotMap[u64, 2](map_id=1)
+    m = SlotMap[u64, 2]()
     x: u64 = 1
+    k: Key = Key(map_id=0, index=0, generation=0)
     match m.insert(take x):
-        case .Ok(_):
-            pass
+        case .Ok(kk):
+            k = kk
         case .Err(_):
             assert false, "insert"
     foreign = Key(map_id=99, index=0, generation=0)
-    oob = Key(map_id=1, index=99, generation=0)
-    empty_slot = Key(map_id=1, index=1, generation=0)
+    oob = Key(map_id=k.map_id, index=99, generation=0)
+    empty_slot = Key(map_id=k.map_id, index=1, generation=0)
     assert not m.contains(foreign), "fabricated foreign"
     assert not m.contains(oob), "fabricated oob"
     assert not m.contains(empty_slot), "fabricated empty index"
 
 @test
 fn generation_exhausted_never_wraps():
-    m = SlotMap[u64, 1](map_id=1)
+    m = SlotMap[u64, 1]()
     i: u16 = 0
     @budget(bound=1000000)
     while i < 256:

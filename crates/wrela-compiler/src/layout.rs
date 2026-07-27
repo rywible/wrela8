@@ -5559,7 +5559,10 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         let spans = layout
             .runtime
             .as_ref()
-            .map(crate::rtconfig::live_init_span_count)
+            .map(|t| {
+                crate::rtconfig::live_init_span_count(t)
+                    .expect("sealed ImageLayout runtime tables agree with placement")
+            })
             .unwrap_or(0);
         let census = crate::placed_static_census::summarize(&layout.placed_statics, spans);
         push_line(out, 1, &census.render_line());
@@ -6628,9 +6631,9 @@ impl RuntimeWiring {
         wiring.tables.add_cross_core_rings(rings);
         // M11 F: stamp select/drain/child facts onto tables so dump and
         // reinject share one `rtconfig::generate` input (decision 790).
-        fill_rtconfig_facts(&mut wiring);
+        fill_rtconfig_facts(&mut wiring)?;
         // M11 I: IRQ/wake facts for checkpoint body (decision 823).
-        fill_checkpoint_irq_facts(&mut wiring, boot);
+        fill_checkpoint_irq_facts(&mut wiring, boot)?;
         Ok(Some(wiring))
     }
 }
@@ -6638,7 +6641,7 @@ impl RuntimeWiring {
 /// Fill `RuntimeTables::{select_by_core,drain_by_core,child_sites,
 /// ring_target_handles,enqueue_handles,enqueue_actors}` from the finished
 /// wiring (plans/M11.md item F / decision 790; item G / decision 801).
-fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
+fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) -> Result<(), LayoutError> {
     let roots = mailbox_root_names(&wiring.tables);
     let mut select_by_core: Vec<Vec<String>> = vec![Vec::new(); wiring.tables.cores];
     for (i, name) in roots.iter().enumerate() {
@@ -6731,33 +6734,40 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
         .chain(wiring.init_calls.iter())
         .filter(|c| c.is_some())
         .count();
-    assert!(
-        n_boot_calls <= crate::rtconfig::BOOT_CALL_POOL_COUNT,
-        "image needs {n_boot_calls} boot init calls; pool is {}",
-        crate::rtconfig::BOOT_CALL_POOL_COUNT
-    );
+    if n_boot_calls > crate::rtconfig::BOOT_CALL_POOL_COUNT {
+        return Err(LayoutError::new(format!(
+            "image needs {n_boot_calls} boot init calls; pool is {}",
+            crate::rtconfig::BOOT_CALL_POOL_COUNT
+        )));
+    }
     wiring.tables.n_boot_calls = n_boot_calls;
+    Ok(())
 }
 
 /// M11 I / decision 823 / M12 item D: stamp IRQ vector bits + contiguous
 /// `WAKE.wake_pending` addresses onto `tables`, and handler/task keys onto
 /// `wiring` for inject.
-fn fill_checkpoint_irq_facts(wiring: &mut RuntimeWiring, boot: &BootCtx) {
+fn fill_checkpoint_irq_facts(
+    wiring: &mut RuntimeWiring,
+    boot: &BootCtx,
+) -> Result<(), LayoutError> {
     // Place once for driver_state addresses (wake region still empty).
     let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
     let (irq, wake) = checkpoint_irq_shape(Some(boot), Some(&rtdata), Some(&wiring.tables));
-    assert!(
-        irq.len() <= crate::rtconfig::IRQ_CALL_POOL_COUNT,
-        "image needs {} IRQ stubs; pool is {}",
-        irq.len(),
-        crate::rtconfig::IRQ_CALL_POOL_COUNT
-    );
-    assert!(
-        wake.len() <= crate::rtconfig::WAKE_CALL_POOL_COUNT,
-        "image needs {} wake stubs; pool is {}",
-        wake.len(),
-        crate::rtconfig::WAKE_CALL_POOL_COUNT
-    );
+    if irq.len() > crate::rtconfig::IRQ_CALL_POOL_COUNT {
+        return Err(LayoutError::new(format!(
+            "image needs {} IRQ stubs; pool is {}",
+            irq.len(),
+            crate::rtconfig::IRQ_CALL_POOL_COUNT
+        )));
+    }
+    if wake.len() > crate::rtconfig::WAKE_CALL_POOL_COUNT {
+        return Err(LayoutError::new(format!(
+            "image needs {} wake stubs; pool is {}",
+            wake.len(),
+            crate::rtconfig::WAKE_CALL_POOL_COUNT
+        )));
+    }
     // Reserve the contiguous WAKE array after rings, then re-place so
     // `wake_base` sits past the ring reservation.
     wiring.tables.total_bytes += (wake.len() as u64) * 8;
@@ -6792,6 +6802,7 @@ fn fill_checkpoint_irq_facts(wiring: &mut RuntimeWiring, boot: &BootCtx) {
         .into_iter()
         .map(|e| (e.task_key, e.driver_state))
         .collect();
+    Ok(())
 }
 
 pub struct BootCtx<'a> {
