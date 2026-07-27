@@ -106,7 +106,8 @@ Everything else in earlier drafts of this specification — region classes,
 frame layout, mailbox capacity derivation, provenance brands, wait-for graphs,
 scheduling policy — is the compiler's obligation, not the user's vocabulary.
 The user never names those things; the compiler proves them, and the build
-report shows its work.
+report shows its work. Contracts are compiler output, not user ceremony —
+the compiler computes them, the report displays them, the source omits them.
 
 The compiler MUST prove, before emitting an artifact:
 
@@ -124,8 +125,9 @@ The compiler MUST prove, before emitting an artifact:
    resource teardown; the image declares a failure policy exactly once.
 6. **Contracts**: the requirement set of every generic, the inferred effect
    of every private method, and every proof-conditioned form (`send`,
-   `VirtQueue.reserve`) are computed, checked, and published — contracts are compiler
-   output, not user ceremony.
+   `VirtQueue.reserve`) are computed, checked, and published — contracts are
+   compiler output, not user ceremony: the compiler computes them, the report
+   displays them, the source omits them.
 
 Chapter [04](04-compiler.md) specifies these obligations, the required image
 report, diagnostics, reproducibility, and the optimization as-if rules.
