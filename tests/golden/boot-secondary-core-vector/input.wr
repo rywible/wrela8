@@ -1,0 +1,39 @@
+module examples.boot_secondary_core_vector
+
+# plans/M13.md item N / decision 11: conformance witness that a secondary
+# core's wake doorbell is consumed through `__wrela_rt_checkpoint(core)`,
+# not through a drain-side clear of `PENDING.words[core]`.
+#
+# Shape matches boot-cross-core-call (request to core 1, reply back): the
+# raise of `PENDING.words[1]` is the doorbell; the secondary loop head BLs
+# the per-core checkpoint before `run_one`, which is what clears it. If
+# checkpoint never serviced words[1], core 1 would stay "pending" for the
+# VMM's baton and the await would never complete — same fail-closed line
+# as breaking the wake in `rt_xsend`. The asserted `77` is written only on
+# core 1, so `ok` is evidence the doorbell was raised *and* consumed.
+
+@actor
+pub struct Off:
+    n: u32
+
+    init(mut self):
+        self.n = 77
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+@test(runtime)
+async fn secondary_vector(o: Actor[Off]):
+    v = await o.get()
+    match v:
+        case .Ok(n):
+            assert n == 77, "expected 77 from Off on core 1 via per-core checkpoint"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-secondary-core-vector", target=Target.wrela_machine_v1)
+    off = img.actor(Off, mailbox=4, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

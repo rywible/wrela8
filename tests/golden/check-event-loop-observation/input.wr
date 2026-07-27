@@ -1,0 +1,21 @@
+module examples.check_event_loop_observation
+
+# plans/M13.md item N / decision 11: unbounded sync loop discharged by
+# observation (pending-vector read via a helper whose observes bit is set),
+# not by a function-name allowlist.
+
+@layout(runtime, endian=little)
+struct PendingPage:
+    words: [u64; 3]
+
+@placed(0x40007000)
+static PENDING: PendingPage
+
+pub fn observe_pending() -> u64:
+    return PENDING.words[0]
+
+pub fn event_loop() -> u64:
+    n: u64 = 0
+    while n == 0:
+        n = observe_pending() +% 1
+    return n

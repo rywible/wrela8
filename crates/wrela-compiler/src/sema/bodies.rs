@@ -318,6 +318,9 @@ pub(crate) struct ModuleCtx {
     /// depth)`. Layout/report read this from `TypedProgram` (copied at
     /// the end of `check`) so the ring geometry has one source of truth.
     pub(crate) virtqueue_configures: RefCell<Vec<(String, u16)>>,
+    /// plans/M13.md item N: sync loops that omit `@budget`, pending the
+    /// observation-discharge check after bodies are typed.
+    pub(crate) unbounded_sync_loops: RefCell<Vec<crate::sema::typed::UnboundedSyncLoop>>,
 }
 
 /// One placed static's resolved type (plans/M10.md item A2c). Address lives
@@ -532,6 +535,7 @@ pub(crate) fn build_module_ctx(
         generics_queue: RefCell::new(BTreeMap::new()),
         current_chain: RefCell::new(Vec::new()),
         virtqueue_configures: RefCell::new(Vec::new()),
+        unbounded_sync_loops: RefCell::new(Vec::new()),
     }
 }
 
@@ -659,9 +663,8 @@ pub(crate) struct FnCtx {
     /// §9.2, not about whether `await` may textually appear there at all
     /// — out of scope to refine further at M6).
     pub(crate) in_async: bool,
-    /// Bare function / method name for sync-loop `@budget` discharge
-    /// (plans/M11.md decision 810). Empty for const/field-default contexts.
-    /// Exact-name allowlist only — not module membership.
+    /// Bare function / method name for sync-loop discharge recording
+    /// (plans/M13.md item N). Empty for const/field-default contexts.
     pub(crate) fn_name: String,
     /// plans/M8.md item G, decision 18: is the statement being checked
     /// inside a `match` arm that can match 03-hardware.md §9's
@@ -1005,6 +1008,9 @@ pub(crate) fn check(
     }
     // plans/M7.md item E1: hand the configure sites to layout/report.
     program.virtqueue_configures = mctx.virtqueue_configures.borrow().clone();
+    // plans/M13.md item N: hand unbounded sync-loop sites to the
+    // observation-discharge check in `sema::mod`.
+    program.unbounded_sync_loops = mctx.unbounded_sync_loops.borrow().clone();
     Ok(program)
 }
 
@@ -2284,25 +2290,16 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
     })
 }
 
-/// Sync-loop `@budget(bound=N)` discharge (02 §8.1, plans/M11.md decision 721 /
-/// decision 810; plans/M12.md item B / decisions 871–874).
+/// Sync-loop `@budget(bound=N)` / observation discharge (02 §8.1,
+/// plans/M11.md decision 721; plans/M12.md item B; plans/M13.md item N /
+/// decision 11).
 ///
-/// - Sync (`!in_async`): attribute required; `N` a positive integer literal
-///   or a module-level (or imported) `const` of integer type with comptime
-///   value ≥ 1 (03 §3.1 length wording, reused); returns `Some(N)` for the
-///   hidden trip counter — except force-rooted runtime event-loop entries
-///   (decision 810), which may omit `@budget`.
+/// - Sync (`!in_async`): `@budget` yields `Some(N)` for the trip counter;
+///   omitting it records the site for the post-body observation-discharge
+///   check (every head→back-edge path must observe) and returns `None`.
 /// - Async: attribute optional (checkpoint path unchanged); returns `None`
 ///   so no trip counter is emitted. A present attribute is still shape-
 ///   checked so a typo fails closed.
-fn is_runtime_event_loop_entry(fn_name: &str) -> bool {
-    // Exact-name allowlist (02 §8.1 / decision 810). Not module membership.
-    matches!(
-        fn_name,
-        "__wrela_rt_secondary_entry" | "__wrela_rt_primary_entry"
-    )
-}
-
 fn resolve_loop_budget(
     budget: Option<&ast::Attr>,
     loop_span: Span,
@@ -2311,16 +2308,17 @@ fn resolve_loop_budget(
 ) -> Result<Option<u64>, SemaError> {
     match budget {
         None => {
-            if fctx.in_async || is_runtime_event_loop_entry(&fctx.fn_name) {
+            if fctx.in_async {
                 Ok(None)
             } else {
-                Err(SemaError::at(
-                    "sema",
-                    "synchronous `for`/`while` requires a preceding `@budget(bound=N)` \
-                     with comptime-known integer N ≥ 1 (02-language.md §8.1)"
-                        .to_string(),
-                    loop_span,
-                ))
+                let mut sites = mctx.unbounded_sync_loops.borrow_mut();
+                let ordinal = sites.iter().filter(|s| s.fn_name == fctx.fn_name).count();
+                sites.push(crate::sema::typed::UnboundedSyncLoop {
+                    fn_name: fctx.fn_name.clone(),
+                    span: loop_span,
+                    ordinal,
+                });
+                Ok(None)
             }
         }
         Some(attr) => {

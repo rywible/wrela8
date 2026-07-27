@@ -1,0 +1,6 @@
+Module path=examples.check_event_loop_observation
+  Struct PendingPage data
+    field words: [u64; 3]
+  Static PENDING: PendingPage placed=0x40007000
+  Fn observe_pending() -> u64
+  Fn event_loop() -> u64

@@ -30,6 +30,7 @@ pub mod image_checks;
 pub mod interp;
 pub mod layout_assert;
 pub mod legal;
+pub mod observes;
 pub mod quota;
 pub mod value;
 
