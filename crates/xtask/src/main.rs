@@ -4,7 +4,7 @@
 //!
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
-//!   field-visibility-census  warn-only aggregate (plans/M13.md G1/G2)
+//!   field-visibility-census  empty-census gate (plans/M13.md G3)
 //!   corpus     extract every ```wrela block from docs/ and lex it
 //!              (from M1, also parse). Always sema-checks every parseable
 //!              block (plans/M9.md item J3; per-block stubs / nest from
@@ -229,10 +229,9 @@ fn main() -> ExitCode {
         Some("profile") => profile(),
         Some("fuzz") => fuzz(&args[1..]),
         Some("bench") => bench(&args[1..]),
-        // plans/M13.md item G2: print the warn-only field-visibility
-        // census without running the full gate (commit messages record
-        // before/after counts per package migration).
-        Some("field-visibility-census") => field_visibility_census_warn(),
+        // plans/M13.md item G3: field-visibility census must be empty
+        // across packages that still typecheck (violations are error[sema]).
+        Some("field-visibility-census") => field_visibility_census_check(),
         _ => {
             eprintln!(
                 "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>|field-visibility-census>"
@@ -278,9 +277,9 @@ fn check() -> Result<(), String> {
     )?;
     test_wrela_vmm_signed()?;
     golden(false)?;
-    // plans/M13.md item G1: warn-only field-visibility census across
-    // multi-module goldens. Never fails the build (G3 flips to fail).
-    field_visibility_census_warn()?;
+    // plans/M13.md item G3: field-visibility census must be empty
+    // (enforcement is error[sema]; residual packages fail check instead).
+    field_visibility_census_check()?;
     report_determinism()?;
     diff_eval_smoke()?;
     // plans/M9.md item J3: bare `corpus` always sema-classifies and
@@ -5201,15 +5200,17 @@ fn test_wrela_vmm_signed() -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M13.md item G1: aggregate the field-visibility census across
-/// every multi-module golden (`root` present) and print a warn-only
-/// summary. Never returns `Err` for a non-zero census — G3 flips that.
+/// plans/M13.md item G3: aggregate the field-visibility census across
+/// every multi-module golden (`root` present). Packages that fail to
+/// check (including the intentional `err-field-*` privacy goldens) are
+/// skipped — enforcement already refused them. Any package that still
+/// typechecks with a non-empty census fails the build.
 ///
 /// Site counts sum per package (many goldens reuse `app.main` /
 /// `lib.pair` spellings, so a global violation-row dedup would
 /// undercount). `fields_needing_pub` is the union of
 /// `(decl_module, decl_struct, field)` across packages.
-fn field_visibility_census_warn() -> Result<(), String> {
+fn field_visibility_census_check() -> Result<(), String> {
     use std::collections::BTreeSet;
     use wrela_compiler::field_visibility_census::census_root;
     let golden_dir = root().join("tests/golden");
@@ -5220,6 +5221,7 @@ fn field_visibility_census_warn() -> Result<(), String> {
     let mut fields: BTreeSet<(String, String, String)> = BTreeSet::new();
     let mut packages = 0usize;
     let mut skipped = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
     for case in golden_case_dirs(&golden_dir)? {
         // Multi-module packages carry a `root` file; single-file goldens
         // cannot host a cross-module field use.
@@ -5232,6 +5234,11 @@ fn field_visibility_census_warn() -> Result<(), String> {
         if !target.exists() {
             continue;
         }
+        let name = case
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
         match census_root(&target) {
             Ok(c) => {
                 if c.is_empty() {
@@ -5244,15 +5251,13 @@ fn field_visibility_census_warn() -> Result<(), String> {
                 writes += counts.writes;
                 patterns += counts.patterns;
                 fields.extend(c.fields_needing_pub());
+                offenders.push(name);
             }
             Err(e) => {
                 // A package that fails to check is already a golden
-                // failure elsewhere; don't fail the warn-only pass on it.
+                // failure elsewhere (err-field-* pins); skip here.
                 skipped += 1;
-                eprintln!(
-                    "field-visibility census: skip {}: {e}",
-                    case.file_name().and_then(|n| n.to_str()).unwrap_or("?")
-                );
+                eprintln!("field-visibility census: skip {name}: {e}");
             }
         }
     }
@@ -5261,6 +5266,12 @@ fn field_visibility_census_warn() -> Result<(), String> {
          patterns={patterns} fields_needing_pub={} packages_hit={packages} skipped={skipped}",
         fields.len()
     );
+    if !offenders.is_empty() {
+        return Err(format!(
+            "field-visibility census non-empty after G3 enforcement (packages: {})",
+            offenders.join(", ")
+        ));
+    }
     Ok(())
 }
 

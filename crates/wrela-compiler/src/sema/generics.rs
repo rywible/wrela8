@@ -1493,6 +1493,52 @@ fn check_one_instantiation(
         .chain
         .last()
         .expect("a queued instantiation's chain always has at least its own triggering call");
+    // plans/M13.md item G3: when re-typing an exporter's generic body
+    // under an importer's ModuleCtx, field privacy must still see the
+    // exporter as the use-site module (same carve-out the G1 census
+    // applied by skipping Struct instantiation walks).
+    let home = instantiation_visibility_home(mctx, entry);
+    *mctx.visibility_home.borrow_mut() = Some(home);
+    let result = check_one_instantiation_inner(mctx, entry, call_span);
+    *mctx.visibility_home.borrow_mut() = None;
+    result
+}
+
+fn instantiation_visibility_home(mctx: &ModuleCtx, entry: &QueuedInstantiation) -> String {
+    match entry.kind {
+        InstKind::Fn => mctx
+            .fn_decl_module
+            .get(&entry.name)
+            .cloned()
+            .unwrap_or_else(|| mctx.module_path.clone()),
+        InstKind::Struct => mctx
+            .struct_decl_module
+            .get(&entry.name)
+            .cloned()
+            .unwrap_or_else(|| mctx.module_path.clone()),
+        InstKind::Method => {
+            let receiver = entry
+                .receiver
+                .as_ref()
+                .expect("InstKind::Method always carries a receiver type");
+            if let Type::Named(type_name, _) = receiver {
+                mctx.struct_decl_module
+                    .get(type_name)
+                    .cloned()
+                    .unwrap_or_else(|| mctx.module_path.clone())
+            } else {
+                mctx.module_path.clone()
+            }
+        }
+        InstKind::Enum => mctx.module_path.clone(),
+    }
+}
+
+fn check_one_instantiation_inner(
+    mctx: &ModuleCtx,
+    entry: &QueuedInstantiation,
+    call_span: Span,
+) -> Result<TypedInstantiation, SemaError> {
     match entry.kind {
         InstKind::Fn => {
             let fi = instantiate_fn(mctx, &entry.name, &entry.args, call_span)?;

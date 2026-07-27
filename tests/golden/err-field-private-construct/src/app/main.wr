@@ -1,0 +1,10 @@
+module app.main
+
+from lib.sealed import Sealed
+
+# plans/M13.md item G3: construct of a non-`pub` field outside the
+# declaring module is error[sema] naming that module.
+fn probe() -> Sealed:
+    return Sealed(hidden=1, visible=2)
+
+const S: Sealed = probe()

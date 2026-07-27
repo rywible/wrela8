@@ -1,0 +1,4 @@
+module lib.open
+
+pub struct Open:
+    pub value: u32

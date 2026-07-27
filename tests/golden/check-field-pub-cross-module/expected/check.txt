@@ -1,0 +1,7 @@
+Module path=app.main
+  Fn probe() -> u32
+  Const N: u32
+  Fn t() -> unit
+Module path=lib.open
+  Struct Open data
+    pub field value: u32

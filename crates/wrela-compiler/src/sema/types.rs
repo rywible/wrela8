@@ -177,9 +177,9 @@ pub struct DeclFn {
 pub struct DeclField {
     pub name: String,
     pub ty: Type,
-    /// Source `pub` on the field (02-language.md §2 / plans/M13.md item G1).
-    /// Carried through declare + subst; enforcement is G3 — G1 only censuses
-    /// cross-module uses of `!is_pub` fields.
+    /// Source `pub` on the field (02-language.md §2 / plans/M13.md item G3).
+    /// Carried through declare + subst; bodies.rs refuses cross-module
+    /// construct/read/write/pattern-bind of `!is_pub` fields as `error[sema]`.
     pub is_pub: bool,
 }
 

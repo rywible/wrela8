@@ -1718,22 +1718,28 @@ Holes found by mutation-testing the guard itself, and closed:
 [[clause]]
 id = "library.time.instant-opaque"
 doc = "05-library.md#5"
-status = "gap"
-note = "05 §5 calls `Instant` \"an opaque monotonic point\" whose only source is the sealed, recorded/replayed `now()` effect, and `stdlib/core/time.wr`'s own header says the same (\"Instant is opaque — fields private to this module — only this module and the `now()` intrinsic mint it\"). The normative field-privacy sentence now lives in 02 §2 (plans/M13.md item G1 landed M9-OO's parked wording), and `DeclField` carries `is_pub`, but enforcement is still deferred to G3 — see `sema.visibility.struct-fields` for the warn-only census and the flip condition. Until G3, `from core.time import Instant` followed by `Instant(nanos=999999)` still mints a fabricated instant from any module."
+status = "test"
+tests = ["golden/err-field-private-instant"]
+note = "05 §5 calls `Instant` \"an opaque monotonic point\" whose only source is the sealed, recorded/replayed `now()` effect, and `stdlib/core/time.wr`'s own header says the same (\"Instant is opaque — fields private to this module — only this module and the `now()` intrinsic mint it\"). plans/M13.md item G3: `Instant.nanos` is non-`pub`; `Instant(nanos=...)` from a foreign module is `error[sema]` (golden/err-field-private-instant). Minting stays `now()` / `core.time` methods."
 
 [[clause]]
 id = "sema.visibility.struct-fields"
 doc = "02-language.md#2"
-status = "gap"
-note = """02-language.md §2: \"Struct fields are module-private unless `pub`; only the declaring module may construct, read, write, or pattern-bind a non-`pub` field.\" (plans/M13.md item G1 / decision 7; sentence drafted by M9 item OO and parked on REVIEW-QUEUE until this commit).
+status = "test"
+tests = [
+  "golden/err-field-private-construct",
+  "golden/err-field-private-read",
+  "golden/err-field-visibility-census",
+  "golden/check-field-pub-cross-module",
+  "golden/err-field-private-instant",
+]
+note = """02-language.md §2: \"Struct fields are module-private unless `pub`; only the declaring module may construct, read, write, or pattern-bind a non-`pub` field.\" (plans/M13.md item G3 / decision 7; sentence drafted by M9 item OO and parked on REVIEW-QUEUE until G1).
 
-**G1 (landed).** `DeclField` carries `is_pub` through `declare_struct` / instantiation / `subst_decl_field`; the `--stage=check` dump prints `pub field` when set. A warn-only violations census (`field_visibility_census`, appended to multi-module check dumps that have hits; `xtask check` aggregates across goldens without failing) lists every cross-module construct/read/write/pattern-bind of a non-`pub` field. Golden `check-field-visibility-census` pins the census shape. Pattern-bind is a counted column with no revision-0.1 surface (no struct-field patterns) — `patterns=0` is expected until such patterns exist.
+**G1 (landed).** `DeclField` carries `is_pub`; warn-only census shipped.
 
-**G1 re-measure (multi-module goldens that typecheck, excluding auto-injected `core.runtime` / generated `core.__image_runtime`):** constructs=41, reads=32, writes=1, patterns=0, fields_needing_pub=29, packages_hit=24. (M9-OO's 44/30/27/26 was a static grep; this is the typed-tree census G2 migrates against.)
+**G2 (landed).** Migratable packages gained `pub` where needed; residual was solely the intentional census shape pin.
 
-**G2 (landed).** Migratable packages against the G1 census gained `pub` on the fields foreign modules construct/read/write. Aggregate census after migration: constructs=1 reads=1 writes=1 patterns=0 fields_needing_pub=1 packages_hit=1 — residual is solely `golden/check-field-visibility-census` (`Sealed.hidden`), the intentional G1 shape pin. `stdlib/core/time.wr` `Instant.nanos` stays private (no foreign Instant sites in the census).
-
-**Not yet.** G3 flips the same sites to `error[sema]` and this clause (plus `library.time.instant-opaque`) to `test`."""
+**G3 (landed).** Cross-module construct/read/write/pattern-bind of a non-`pub` field is `error[sema]` naming the declaring module (`sema/bodies.rs`). Census aggregate flips from warn-only to fail. Goldens: `err-field-private-construct`, `err-field-private-read`, `check-field-pub-cross-module`, `err-field-private-instant`; G1's census shape pin is now `err-field-visibility-census`. Pattern-bind remains a counted column with no revision-0.1 surface."""
 
 [[clause]]
 id = "library.time"

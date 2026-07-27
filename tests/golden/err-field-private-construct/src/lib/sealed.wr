@@ -1,0 +1,5 @@
+module lib.sealed
+
+pub struct Sealed:
+    hidden: u32
+    pub visible: u32

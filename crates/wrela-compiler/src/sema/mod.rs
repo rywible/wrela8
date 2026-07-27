@@ -559,9 +559,8 @@ fn render_check_dump(
             Some(&tables.decl_items_map[key]),
         )?);
     }
-    // plans/M13.md item G1: pin the census shape on multi-module check
-    // dumps that have violations. Empty censuses stay silent so
-    // single-module / clean packages do not churn.
+    // plans/M13.md item G3: append a non-empty census only if one slips
+    // past bodies.rs enforcement (belt-and-suspenders). Empty stays silent.
     if !tables.field_visibility.is_empty() {
         out.push_str(&tables.field_visibility.render());
     }
@@ -871,8 +870,10 @@ fn check_program_typed_tables(
         // Applied even when the owning name itself is unaliased (a peer
         // in the signature may still be). Empty when nothing is aliased.
         let subs = imports::alias_subs_for_exporter(&bindings[&key], &target_module);
+        let origin = target_module.join(".");
         if let Some(mut f) = fn_entry {
             types::rekey_decl_fn_names(&mut f.decl, &subs);
+            dst.fn_decl_module.insert(local.clone(), origin.clone());
             dst.fns.insert(local.clone(), f);
         }
         if let Some(mut c) = const_entry {
@@ -888,6 +889,7 @@ fn check_program_typed_tables(
             // owner, parameters, returns, fields, generic args — must
             // match the importer's bindings.
             types::rekey_decl_struct_names(&mut s.decl, &subs);
+            dst.struct_decl_module.insert(local.clone(), origin);
             dst.structs.insert(local.clone(), s);
         }
         if let Some(mut e) = enum_entry {
@@ -1035,10 +1037,10 @@ fn check_program_typed_tables(
         )?;
     }
 
-    // plans/M13.md item G1: warn-only field-visibility census (never a
-    // diagnostic — G3 flips these sites to error[sema]). Skip the same
-    // auto-injected modules `render_check_dump` omits, so the census is
-    // the G2 worklist rather than generated-runtime field traffic.
+    // plans/M13.md item G3: field-visibility census (belt-and-suspenders;
+    // bodies.rs already emits error[sema] at the same sites). Skip the
+    // same auto-injected modules `render_check_dump` omits, so generated
+    // runtime field traffic is not counted.
     let skip_modules = field_visibility_skip_modules(modules);
     let field_visibility = crate::field_visibility_census::census_programs(
         &programs,
@@ -1463,6 +1465,10 @@ fn close_mctx_type_reachability(
                         types::rekey_decl_struct_names(&mut s.decl, &name_sub);
                     }
                     dst.shapes.insert(tname.clone(), s.decl.generics.len());
+                    // plans/M13.md item G3: HH-reachable structs keep their
+                    // declaring module for field-privacy checks.
+                    dst.struct_decl_module
+                        .insert(tname.clone(), def_module.join("."));
                     dst.structs.insert(tname.clone(), s);
                     origins.insert(tname.clone(), def_module);
                     queue.push(tname);
