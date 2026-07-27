@@ -3,7 +3,7 @@ module b
 from a import Ay
 
 pub struct Bee:
-    m: u32
+    pub m: u32
 
 pub fn use_ay(x: Ay) -> u32:
     return x.n

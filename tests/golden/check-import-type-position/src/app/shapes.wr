@@ -9,7 +9,7 @@ pub enum Color:
     Green
 
 pub struct Box[T]:
-    v: T
+    pub v: T
 
 pub resource struct Token:
     id: u32

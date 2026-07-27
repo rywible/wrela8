@@ -19,9 +19,6 @@ Module path=app.shapes
     variant Red
     variant Green
   Struct Box[T] data
-    field v: T
+    pub field v: T
   Struct Token resource
     field id: u32
-FieldVisibilityCensus constructs=1 reads=1 writes=0 patterns=0 fields=1
-  construct use=app.main decl=app.shapes struct=Box field=v
-  read use=app.main decl=app.shapes struct=Box field=v
