@@ -152,6 +152,12 @@ How a resource may end is derived from its type, not declared by a taxonomy:
   fields (§2), a manual resource is a sealed typestate the declaring module
   alone can mint ([03 §8](03-hardware.md)).
 
+Consuming transitions on resource values are the language's one protocol
+mechanism. Sealed instances — receipts, device bring-up, marked values — and
+user instances — `resource(manual)` plus private fields plus `take self`
+chains — are the same mechanism ([03 §8](03-hardware.md)). One mechanism; no
+second protocol vocabulary.
+
 Overwriting a live resource is always an error: move it or finish it first.
 
 ```wrela
