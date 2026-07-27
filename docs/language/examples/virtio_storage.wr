@@ -157,8 +157,6 @@ pub struct BlkDriver[const MODE: DriverMode]:
     @task(
         trigger=wake,
         poll=(MODE == DriverMode.Poll),
-        priority=driver,
-        budget=us(200),
     )
     fn drain_used(mut self):
         comptime if MODE == DriverMode.Irq:
@@ -557,7 +555,7 @@ pub struct Notes:
         self.console = console
         self.buffers = take buffers
 
-    @task(priority=normal, budget=ms(5), failure=TaskFailure.Escalate)
+    @task
     pub async fn run(mut self) -> Result[unit, AppError]:
         with group(deadline=now() + seconds(1)):
             body = self.buffers.from_str_proven(

@@ -4063,6 +4063,12 @@ fn declare_fn(
     }
     let ret = resolve_ret(&f.ret, shapes, module_pools, local_pools, &scope)?;
     let is_task = f.attrs.iter().any(|a| a.name == "task");
+    // plans/M13.md item C cuts 6–7: `is_task` is still name-only, but
+    // `priority=` / `budget=` (and any other undeferred kwarg) must not be
+    // silently ignored. `trigger=` / `poll=` stay for the ISR gate.
+    if let Some(attr) = f.attrs.iter().find(|a| a.name == "task") {
+        check_task_attr_args(attr)?;
+    }
     Ok(DeclFn {
         name: f.name.clone(),
         is_async: f.is_async,
@@ -4072,6 +4078,59 @@ fn declare_fn(
         params,
         ret,
     })
+}
+
+/// `@task(...)` argument audit (plans/M13.md item C cuts 6–7).
+///
+/// Before this check, every kwarg was parsed and dropped — only the
+/// attribute name set `is_task`. Cut kwargs become `error[type]`;
+/// `trigger=` / `poll=` remain legal (deferred to the ISR gate).
+fn check_task_attr_args(attr: &Attr) -> Result<(), SemaError> {
+    for a in &attr.args {
+        match a.label.as_deref() {
+            Some("trigger") | Some("poll") => {}
+            Some("priority") => {
+                return Err(SemaError::at(
+                    "type",
+                    "`@task(priority=...)` was cut at the revision boundary (plans/M13.md \
+                     item C / decision 13); scheduling is FIFO-per-mailbox + round-robin \
+                     (04-compiler.md §2) — see ROADMAP recorded intentions for bands"
+                        .to_string(),
+                    a.span,
+                ));
+            }
+            Some("budget") => {
+                return Err(SemaError::at(
+                    "type",
+                    "`@task(budget=...)` was cut at the revision boundary (plans/M13.md \
+                     item C / decision 13); the FIFO+RR scheduler cannot honor a \
+                     per-task budget — see ROADMAP recorded intentions for bands"
+                        .to_string(),
+                    a.span,
+                ));
+            }
+            Some(other) => {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "`@task` has no argument `{other}` (revision 0.1 allows \
+                         `trigger=` / `poll=` only; plans/M13.md item C)"
+                    ),
+                    a.span,
+                ));
+            }
+            None => {
+                return Err(SemaError::at(
+                    "type",
+                    "`@task`'s arguments must be labeled (`trigger=` / `poll=`) \
+                     (plans/M13.md item C)"
+                        .to_string(),
+                    a.span,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `init` is never generic and never `pub` (02-language.md §7.1); its

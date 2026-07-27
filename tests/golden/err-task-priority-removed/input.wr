@@ -1,0 +1,35 @@
+module examples.err_task_priority_removed
+
+# plans/M13.md item C cut 6: `@task(priority=)` was silently ignored
+# (sema set `is_task` from the attribute name only) and is cut — scheduling
+# is FIFO-per-mailbox + round-robin (04 §2 / decision 13). `@task(budget=)`
+# is refused the same way (cut 7); `trigger=` / `poll=` stay for the ISR gate.
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct VirtioBlock:
+    id: u32
+
+@driver
+pub struct BlkDriver:
+    regs: Mmio[VirtioIrqMmio]
+
+    init(mut self, take cap: DeviceCap[VirtioBlock]):
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.regs = claimed.map_partition(VirtioIrqMmio)
+
+    @task(priority=driver)
+    fn drain(mut self):
+        pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-task-priority-removed", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](transport=0x2000)
+    disk = img.driver(BlkDriver, device=blk)
+    img.supervise(children=[disk], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()
