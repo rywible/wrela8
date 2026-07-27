@@ -212,7 +212,7 @@ From `plans/M12.md` "Exit criteria (mechanically checkable)":
 
 | Criterion | Result |
 | --- | --- |
-| `cargo xtask check` green | run as gate for any fix commit; see close evidence |
+| `cargo xtask check` green | **partial evidence** — see §5 / close evidence (worktree torn down mid-gate) |
 | Placed-static census line + ratchet; no `RING{i}_` / `WAKE_PEND` / `INIT_SLOT` statics | **pass** (unit tests + golden scan) |
 | Ring padding printed; no golden exceeds `RTDATA_SIZE_MAX` | **pass** (ring images have `Rings … padding=`; peak rtdata 6664) |
 | `boot-group-four-children` pins capacity=4 | **pass** |
@@ -228,7 +228,10 @@ COMPLETE, M13 activation on its own commit).
 
 ---
 
-## 5. Commits from this sweep
+## 5. Commits / gate evidence
+
+**Intended commit** (created on `m12-adversarial` as `9ff0ac9` before the
+worktree disappeared from this agent):
 
 1. Ledger: `sema.bounds.loops` Still-gap sentence — M15 cycle proxy
    (not M13); cite `sema.bounds.loops`.
@@ -236,3 +239,16 @@ COMPLETE, M13 activation on its own commit).
 
 No representation / golden / runtime behavior changes beyond the
 ledger prose fix.
+
+**`cargo xtask check` on the worktree (post-commit attempt):** compiler
+unit tests 367 ok; vmm 83 ok; golden 895 expectations ok; report-
+determinism 85 cases; diff-eval smoke ok; corpus ok; all seven fuzz
+lanes clean at smoke budgets. Gate then failed at the ledger step with
+`xtask: read …/m12-adversarial/docs/language: No such file or directory`
+— the worktree directory was gone (environment teardown), not a ledger
+content failure. **Orchestrator must re-run `cargo xtask check` on a
+live tree that still has the commit / working-tree copies of these two
+files before treating the gate as green.**
+
+**H remains open.** Do not flip ROADMAP M12 COMPLETE or activate M13
+from this sweep.
