@@ -493,24 +493,23 @@ exited cleanup before transferring control.
 A `for` or `while` in an `async fn` checkpoints at its back edge unless
 annotated with a proven `@budget(bound=...)`. Every loop in a synchronous
 `fn` needs a finite bound ([04 §2](04-compiler.md)). Revision 0.1 discharges
-the synchronous half by requiring a statement attribute
-`@budget(bound=N)` immediately preceding the `for` or `while`, where `N` is
-a comptime-known integer ≥ 1 (an integer literal or the name of a
-module-level `const` whose comptime value is one or more). Acceptance emits a
-hidden trip counter that aborts if the loop body runs more than `N` times —
-a fail-closed runtime bound, not a cost model. A synchronous `for`/`while`
-without that attribute is `error[sema]`. **Exception (force-rooted runtime
-event-loop entries):** the designated per-core park/run loop bodies in
-`stdlib/core/runtime.wr` — `__wrela_rt_secondary_entry` and
-`__wrela_rt_primary_entry` — may omit sync `@budget` on
-their loops. Those functions *are* the cooperative scheduler of
-[04 §2](04-compiler.md); a trip-counter abort is the wrong discharge for an
-intentional unbounded park→wake loop. The exemption is by **exact function
-name** (force-rooted / designated keys only), not by module membership:
-ordinary sync loops in `runtime.wr` still require `@budget`. Async
-checkpoint behaviour and ISR-bound loop rejection are unchanged by this
-discharge; proving a budget that replaces an async checkpoint, and
-cycle/latency proofs, remain later work ([04 §2](04-compiler.md)).
+the synchronous half by the **loop-discharge theorem**: every `for`/`while`
+is discharged by a proven bound (`@budget(bound=N)` immediately preceding
+the loop, `N` a comptime-known integer ≥ 1 — an integer literal or the name
+of a module-level `const` whose comptime value is one or more) **or** by
+observation — every path from the loop head to its back edge passes a
+vector-observation point. An observation point is a direct read of the
+pending-vector page, a direct write of the park page (both recognized by
+placed address against the machine constants, never by name), or a call to
+a function whose inferred **observes** bit is set (computed transitively
+from those leaves). Acceptance of `@budget` emits a hidden trip counter
+that aborts if the loop body runs more than `N` times — a fail-closed
+runtime bound, not a cost model. A synchronous `for`/`while` without
+`@budget` and without observation on every head→back-edge path is
+`error[sema]`. No function-name allowlist survives. Async checkpoint
+behaviour and ISR-bound loop rejection are unchanged by this discharge;
+proving a budget that replaces an async checkpoint, and cycle/latency
+proofs, remain later work ([04 §2](04-compiler.md)).
 
 `pass` is an explicit no-op. `defer` and `with` are §10. `send` is §9.
 

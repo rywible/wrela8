@@ -55,17 +55,16 @@ acquiring anything in the cycle. Diagnostics print the full cycle. Every
 async loop back edge is a checkpoint or carries a proven
 `@budget(bound=...)`; every synchronous and ISR-bound loop has a proven
 finite cost; a checkpoint is rejected while a non-suspend-safe access is
-live. Revision 0.1's synchronous discharge of the loop half is the statement
-attribute `@budget(bound=N)` of [02 §8.1](02-language.md): a comptime-known
-integer trip bound with a fail-closed runtime counter — not a predicted
-cost model. The force-rooted runtime event-loop entries named in
-[02 §8.1](02-language.md) (the per-core park/run loops that *are* this
-section's cooperative scheduler) are exempt from that sync `@budget`
-requirement — a trip counter is not a discharge for an intentional
-unbounded park→wake loop. When a proven `@budget` makes an async loop's
-checkpoints elidable, the report discloses that optimization; it is not a
-semantic — the legality rule (budget or suspension) is unchanged.
-ISR-bound discharge and cycle/latency proofs remain later.
+live. Revision 0.1's synchronous discharge of the loop half is
+[02 §8.1](02-language.md)'s loop-discharge theorem: `@budget(bound=N)` (a
+comptime-known integer trip bound with a fail-closed runtime counter — not
+a predicted cost model) **or** observation on every path from the loop head
+to its back edge (pending-vector read, park-page write, or a call whose
+inferred **observes** bit is set). The cooperative per-core park/run loops
+discharge by observation, not by name. When a proven `@budget` makes an
+async loop's checkpoints elidable, the report discloses that optimization;
+it is not a semantic — the legality rule (budget or suspension) is
+unchanged. ISR-bound discharge and cycle/latency proofs remain later.
 
 **Hardware.** Capability provenance and roles match on every hardware
 operation; device and vector ownership is exclusive; MMIO partitions never

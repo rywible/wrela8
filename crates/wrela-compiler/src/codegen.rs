@@ -9493,6 +9493,9 @@ pub fn emit_checkpoint_lr_frame() -> Vec<(u32, String)> {
 /// M11 I: checkpoint section = floor LR frame around `BL __wrela_rt_checkpoint`.
 /// Service entry is at word 0 (vector0 body lives in `code` as `__wrela_vector0`).
 /// When `link_body` is false, emit a bare `ret` (no runtime wiring).
+///
+/// M13 item N: `__wrela_rt_checkpoint` takes `core`; the async/IRQ trampoline
+/// is core-0 only, so it materializes `x0 = 0` before the BL.
 pub fn emit_checkpoint_service_trampoline(
     has_deadline_poll: bool,
     link_body: bool,
@@ -9513,6 +9516,8 @@ pub fn emit_checkpoint_service_trampoline(
     // save (2)
     words.push(frame[0].0);
     words.push(frame[1].0);
+    // core argument (async checkpoints always service core 0)
+    words.push(encode::enc_movz(0, 0, 0, true));
     let bl_word = words.len();
     words.push(encode::enc_bl(0));
     relocs.push(Reloc::Call {

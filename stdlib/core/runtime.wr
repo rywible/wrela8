@@ -964,6 +964,11 @@ pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
     return
 
 # Inbound drain for one core: reply lanes first, then request → enqueue.
+# M13 item N: secondary wake-doorbell clear also lives in
+# `__wrela_rt_checkpoint(core)` (loop-head BL). Dual-clear kept here —
+# level-triggered, idempotent — so a park-vs-loop-head reorder or a raise
+# whose consumer never runs (e.g. ring-full reject) cannot strand the word
+# for the VMM baton (plans/M13.md risk note).
 pub fn __wrela_rt_drain(core: usize) -> u64:
     moved: u64 = 0
     if core != 0:
@@ -1370,9 +1375,12 @@ pub fn __wrela_rt_boot_init():
 
 # Per-core secondary entry (decision 810): mark + unbounded park/run loop.
 # SP install is floor-cat1 words prepended at inject (decision 811 / 636).
+# M13 item N / decision 11: loop head BLs per-core checkpoint so every
+# head→back-edge path observes (wake doorbell consumed here, not by name).
 pub fn __wrela_rt_secondary_entry(core: usize):
     MACHINE_INFO.core_marks[core] = (core +% 1).to[u64]()
     while true:
+        __wrela_rt_checkpoint(core)
         ran = __wrela_rt_run_one(core)
         if ran == 0:
             PARK.word = 0
@@ -1402,7 +1410,18 @@ pub fn __wrela_vector0():
         __wrela_deadline_scan()
     return
 
-pub fn __wrela_rt_checkpoint():
+# M13 item N / decision 11: per-core pending word. Core 0 keeps the
+# vector0/IRQ/wake ladders; secondary cores only consume their wake doorbell
+# (the clear formerly sole in `__wrela_rt_drain`).
+pub fn __wrela_rt_checkpoint(core: usize):
+    if core != 0:
+        @budget(bound=64)
+        while true:
+            p = PENDING.words[core]
+            if p == 0:
+                return
+            PENDING.words[core] = 0
+        return
     if CHECKPOINT_SIMPLE:
         @budget(bound=64)
         while true:
@@ -1615,6 +1634,10 @@ pub fn __wrela_rt_primary_boot():
 # Boot-init abort long-jumps here with `test_next == 0` and `test_failed > 0`
 # — skip straight to summary (old driver armed continuation at the summary).
 pub fn __wrela_rt_primary_entry():
+    # M13 item N: observation discharge (not a name allowlist). Outer
+    # back-edge observes via the trailing checkpoint; abort long-jumps to
+    # the fn head must still see `test_failed` before any service work.
+    # Inner park/run loop observes at its head.
     while true:
         if MACHINE_INFO.test_failed != 0:
             if MACHINE_INFO.test_next == 0:
@@ -1630,6 +1653,7 @@ pub fn __wrela_rt_primary_entry():
         status = __wrela_test_call(i)
         if __wrela_test_suspends(i) != 0:
             while status == TURN_STATUS_SUSPENDED:
+                __wrela_rt_checkpoint(0)
                 if GROUP_ARENA_CAPACITY != 0:
                     __wrela_deadline_poll()
                 ti = __wrela_test_turn_index(i)
@@ -1640,15 +1664,16 @@ pub fn __wrela_rt_primary_entry():
                     if ran == 0:
                         if N_CORES > 1:
                             PARK.word = 0
-                            __wrela_rt_checkpoint()
+                            __wrela_rt_checkpoint(0)
                         else:
                             dl = MACHINE_INFO.next_deadline
                             if dl != 0:
                                 PARK.word = dl
-                                __wrela_rt_checkpoint()
+                                __wrela_rt_checkpoint(0)
                             else:
                                 __wrela_abort_deadlock()
         _ = __wrela_append_ok_literal()
         _ = __wrela_line_commit()
         MACHINE_INFO.test_passed = MACHINE_INFO.test_passed +% 1
+        __wrela_rt_checkpoint(0)
     return

@@ -1,0 +1,1 @@
+error[sema]: synchronous `for`/`while` requires a preceding `@budget(bound=N)` with comptime-known integer N ≥ 1, or every path from the loop head to its back edge must pass a vector-observation point (02-language.md §8.1) at 8:5

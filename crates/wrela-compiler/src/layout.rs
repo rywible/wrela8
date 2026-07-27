@@ -7017,7 +7017,11 @@ pub fn t():
             multi.words, linked.words,
             "irq/wake must not change checkpoint section words after item I"
         );
-        assert_eq!(linked.words.len(), 6, "floor 5 + BL");
+        assert_eq!(
+            linked.words.len(),
+            7,
+            "floor 5 + mov x0,#0 + BL (M13 item N per-core arg)"
+        );
         assert_eq!(linked.relocs.len(), 1, "one BL to __wrela_rt_checkpoint");
         let bare = build_checkpoint_and_vector_stub_ex(None, &[], &[], false);
         assert_eq!(bare.words.len(), 1, "unlinked section is bare ret");

@@ -337,15 +337,29 @@ fn check_typed_single_with_decls(
     // descriptor-capacity proof — same shape as `send_proof`, same
     // placement (after the typed program exists, before any consumer).
     reserve_proof::check(&one)?;
+    // plans/M13.md item N / decision 11: loop-discharge observes bit +
+    // structural rule (replaces the event-loop name allowlist).
+    {
+        let observes = crate::eval::observes::classify(&program);
+        crate::eval::observes::check_loop_discharge(
+            &program,
+            &observes,
+            &program.unbounded_sync_loops,
+        )?;
+    }
     Ok((program, decl_items))
 }
 
 /// The `--stage=typed` dump (decision 2): delegates entirely to
 /// `typed::dump` — `mod.rs` only ever owns the stage wiring, never the
 /// dump's own text (mirrors how `dump` above delegates every declaration
-/// line to `types::render_items`).
+/// line to `types::render_items`). Appends the observes chain (item N)
+/// so goldens can pin the discharge witness.
 pub fn dump_typed(program: &typed::TypedProgram) -> String {
-    typed::dump(program)
+    let mut out = typed::dump(program);
+    let observes = crate::eval::observes::classify(program);
+    out.push_str(&crate::eval::observes::dump(&observes));
+    out
 }
 
 /// The `check` stage's dump (decision 8): on success, `Module path=...`
@@ -959,6 +973,17 @@ fn check_program_typed_tables(
     send_proof::check(&by_name)?;
     // plans/M7.md item E2: whole-closure half of the reserve proof.
     reserve_proof::check(&by_name)?;
+
+    // plans/M13.md item N / decision 11: per-module loop-discharge check
+    // after imports are spliced (observes bits see imported callees).
+    for program in programs.values() {
+        let observes = crate::eval::observes::classify(program);
+        crate::eval::observes::check_loop_discharge(
+            program,
+            &observes,
+            &program.unbounded_sync_loops,
+        )?;
+    }
 
     // plans/M13.md item G1: warn-only field-visibility census (never a
     // diagnostic — G3 flips these sites to error[sema]). Skip the same

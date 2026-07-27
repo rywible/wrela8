@@ -59,7 +59,7 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     ("layout/harness.rs", 33), // was 31; K +primary_entry / missing-key guards
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     // 79 -> 77, plans/M13.md item F: Restart / intensity eval arms deleted
-    // with Image.supervise → on_failure.
+    // with Image.supervise → on_failure (recount confirmed at item N).
     ("eval/interp.rs", 77),
     ("lower.rs", 5),
     ("codegen.rs", 4),

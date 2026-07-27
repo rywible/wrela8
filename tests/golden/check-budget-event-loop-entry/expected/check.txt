@@ -1,3 +1,0 @@
-Module path=examples.check_budget_event_loop_entry
-  Fn __wrela_rt_secondary_entry(core: read usize) -> u64
-  Fn __wrela_rt_primary_entry() -> u64

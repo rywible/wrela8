@@ -672,6 +672,16 @@ pub struct TestDecl {
 /// concrete generic instantiation any of them (or `access`/`flow`/
 /// `matches`'s own re-derivation) discovered — `BTreeMap`-keyed
 /// throughout for determinism (CLAUDE.md).
+/// One sync loop that omitted `@budget` (plans/M13.md item N) — span kept
+/// from body typing so the observation-discharge diagnostic points at the
+/// loop head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnboundedSyncLoop {
+    pub fn_name: String,
+    pub span: crate::syntax::ast::Span,
+    pub ordinal: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypedProgram {
     pub consts: BTreeMap<String, TypedConst>,
@@ -734,6 +744,9 @@ pub struct TypedProgram {
     /// depth=N)` site this module typed — `(pool name, depth)`. Layout
     /// places the ring from these facts and nowhere else.
     pub virtqueue_configures: Vec<(String, u16)>,
+    /// plans/M13.md item N: sync loops that omitted `@budget`, for the
+    /// observation-discharge check (spans from body typing).
+    pub unbounded_sync_loops: Vec<UnboundedSyncLoop>,
     /// plans/M9.md item A1b: the declarations this module *imports*,
     /// keyed by the local (possibly aliased) spelling — the comptime
     /// evaluator's read-only window onto the rest of the build closure.
