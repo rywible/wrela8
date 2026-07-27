@@ -5549,6 +5549,21 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             ),
         );
     }
+    // plans/M12.md item G / decisions 890–893: census line after the
+    // per-static list. `spans` is live `N_INIT_SLOTS` (not the INIT_SPAN
+    // placeholder pool); `count` excludes high-zone INIT_SPAN placeholders
+    // so the ratchet `N ≤ FIXED_SET_LEN + spans` stays honest while
+    // `runtime.wr` still imports INIT_SPAN0..7. Absent when no placed
+    // statics (same no-placeholder rule as the lines above).
+    if !layout.placed_statics.is_empty() {
+        let spans = layout
+            .runtime
+            .as_ref()
+            .map(crate::rtconfig::live_init_span_count)
+            .unwrap_or(0);
+        let census = crate::placed_static_census::summarize(&layout.placed_statics, spans);
+        push_line(out, 1, &census.render_line());
+    }
 
     // --- plans/M6.md item C, decision 3: per-actor runtime-table
     // accounting — facts only, absent entirely when this image has no

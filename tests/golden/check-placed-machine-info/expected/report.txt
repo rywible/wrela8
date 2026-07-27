@@ -25,3 +25,4 @@ ImageReport v0
   Section name=checkpoint base=0x40500108 size=4
   Entry base=0x40500000
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=56
+  PlacedStatics count=1 fixed=MACHINE_INFO spans=0

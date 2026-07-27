@@ -369,6 +369,14 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
     }
 }
 
+/// Live coalesced init-span count (`N_INIT_SLOTS`) for the placed-static
+/// census (plans/M12.md item G / decisions 890–893). Independent of the
+/// `INIT_SPAN_POOL_COUNT` placeholder pool the stub still emits.
+pub fn live_init_span_count(tables: &RuntimeTables) -> usize {
+    let extras = extras_from_tables(tables);
+    coalesce_init_spans(&extras.init_slots).len()
+}
+
 /// Sort live `(addr, nwords)` init slots and merge adjacent ranges into
 /// maximal spans (M12 item E / decisions 883–885). Adjacency is
 /// `addr_i + nwords_i*8 == addr_{i+1}` — mailboxes between actor states

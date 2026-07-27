@@ -40,6 +40,7 @@ pub mod layout;
 pub mod loader;
 pub mod lower;
 pub mod mwir;
+pub mod placed_static_census;
 pub mod placement;
 pub mod report;
 pub mod rtconfig;

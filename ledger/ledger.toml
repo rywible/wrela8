@@ -2140,6 +2140,22 @@ note = """plans/M11.md item D / decisions 702 / 763: the generated `core.__image
 **plans/M12.md item C (decisions 875–879) / item D (decisions 880–882) / item E (decisions 883–885):** a generated dispatch ladder is forced; a generated data ladder is a defect. Init zero-fill sorts/merges adjacent `(addr, nwords)` into maximal `INIT_SPAN{k}` overlays (`N_INIT_SLOTS` = live span count; `INIT_SPAN_POOL_COUNT` (8) is the fixed import/placeholder ceiling). `__wrela_init_nwords` / `__wrela_init_store_word` shrink to the live span count — still dispatch ladders over spans, not per-actor numbered data statics."""
 
 [[clause]]
+id = "runtime.rtdata.placed-static-census"
+doc = "04-compiler.md#7"
+status = "test"
+tests = [
+  "golden/boot-cross-core",
+  "golden/image-basic",
+  "golden/appliance",
+  "golden/check-placed-machine-info",
+]
+note = """plans/M12.md item G / decisions 890–893: the image report's Layout section publishes `PlacedStatics count=N fixed=<list> spans=<k>` after the per-`PlacedStatic` lines. The fixed set is closed and enumerated in `placed_static_census.rs` (nine machine pages, `RT`/`SCHED`/`GROUPS`/`RINGS_CTL`/`RINGS_DATA`/`WAKE`, and every `MB{i}_DATA`/`MB{i}_CTL` for `i < MB_POOL_COUNT=32` — `FIXED_SET_LEN = 79`). `spans` is the live coalesced init-span count (`N_INIT_SLOTS`), not the `INIT_SPAN_POOL_COUNT=8` import/placeholder pool that `runtime.wr` still imports.
+
+**Counting rule (item E residual, option b):** unused `INIT_SPAN{k}` high-zone 1-word placeholders still appear as `PlacedStatic` lines (so the import pool stays intact) but are excluded from `N`. `N` = fixed names present + live `INIT_SPAN{0..spans-1}` + any unexpected name. Ratchet (unit test, wired into `xtask check`): `N ≤ FIXED_SET_LEN + spans`. A resurrected numbered data static (`RING{i}_*`, `WAKE_PEND*`, `INIT_SLOT*`) fails the rtconfig golden scan; a new placed-static name outside the closed set fails the report scan / numeric ratchet.
+
+Pinned by report goldens that gained the census line (`boot-cross-core` / `image-basic` / `appliance` / `check-placed-machine-info`); boot `test.txt` transcripts are byte-identical (representation-only)."""
+
+[[clause]]
 id = "compiler.rtconfig.deterministic"
 doc = "04-compiler.md#8"
 status = "test"
