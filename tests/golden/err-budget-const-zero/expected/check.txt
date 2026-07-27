@@ -1,0 +1,1 @@
+error[sema]: `@budget(bound=N)`'s `N` is `BOUND`, whose value is 0; a loop bound is a comptime-known integer ≥ 1 (02-language.md §8.1, 03-hardware.md §3.1) at 14:5

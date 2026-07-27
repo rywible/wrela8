@@ -2042,7 +2042,7 @@ fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt,
 }
 
 fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
-    let budget = resolve_loop_budget(w.budget.as_ref(), w.span, fctx)?;
+    let budget = resolve_loop_budget(w.budget.as_ref(), w.span, fctx, mctx)?;
     let cond = check_expr(&w.cond, Some(&Type::Bool), fctx, mctx)?;
     let body = scoped(fctx, |fctx| check_stmts(&w.body, fctx, mctx))?;
     Ok(TypedStmt {
@@ -2223,7 +2223,7 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
         bind_local(fctx, &f.name, elem_ty.clone(), f.span)?;
         check_stmts(&f.body, fctx, mctx)
     })?;
-    let budget = resolve_loop_budget(f.budget.as_ref(), f.span, fctx)?;
+    let budget = resolve_loop_budget(f.budget.as_ref(), f.span, fctx, mctx)?;
     Ok(TypedStmt {
         kind: TypedStmtKind::For {
             name: f.name.clone(),
@@ -2237,11 +2237,13 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
 }
 
 /// Sync-loop `@budget(bound=N)` discharge (02 §8.1, plans/M11.md decision 721 /
-/// decision 810).
+/// decision 810; plans/M12.md item B / decisions 871–874).
 ///
-/// - Sync (`!in_async`): attribute required; `N` a positive integer literal;
-///   returns `Some(N)` for the hidden trip counter — except force-rooted
-///   runtime event-loop entries (decision 810), which may omit `@budget`.
+/// - Sync (`!in_async`): attribute required; `N` a positive integer literal
+///   or a module-level (or imported) `const` of integer type with comptime
+///   value ≥ 1 (03 §3.1 length wording, reused); returns `Some(N)` for the
+///   hidden trip counter — except force-rooted runtime event-loop entries
+///   (decision 810), which may omit `@budget`.
 /// - Async: attribute optional (checkpoint path unchanged); returns `None`
 ///   so no trip counter is emitted. A present attribute is still shape-
 ///   checked so a typo fails closed.
@@ -2257,6 +2259,7 @@ fn resolve_loop_budget(
     budget: Option<&ast::Attr>,
     loop_span: Span,
     fctx: &FnCtx,
+    mctx: &ModuleCtx,
 ) -> Result<Option<u64>, SemaError> {
     match budget {
         None => {
@@ -2273,7 +2276,7 @@ fn resolve_loop_budget(
             }
         }
         Some(attr) => {
-            let n = parse_budget_bound_attr(attr)?;
+            let n = parse_budget_bound_attr(attr, mctx)?;
             if fctx.in_async {
                 // Async half stays a gap: keep checkpoint behaviour; do not
                 // emit a trip counter from this attribute yet.
@@ -2285,7 +2288,7 @@ fn resolve_loop_budget(
     }
 }
 
-fn parse_budget_bound_attr(attr: &ast::Attr) -> Result<u64, SemaError> {
+fn parse_budget_bound_attr(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<u64, SemaError> {
     if attr.name != "budget" {
         return Err(SemaError::at(
             "sema",
@@ -2341,29 +2344,120 @@ fn parse_budget_bound_attr(attr: &ast::Attr) -> Result<u64, SemaError> {
                     *span,
                 )
             })?;
-            if n < 1 {
-                return Err(SemaError::at(
-                    "sema",
-                    format!("`@budget(bound=N)` requires N ≥ 1; found {n}"),
-                    *span,
-                ));
-            }
-            u64::try_from(n).map_err(|_| {
-                SemaError::at(
-                    "sema",
-                    format!("`@budget(bound=N)` value {n} does not fit a trip counter"),
-                    *span,
-                )
-            })
+            budget_bound_from_i128(n, *span)
         }
+        Expr::Name(span, name) => budget_bound_from_const_name(name, *span, attr.span, mctx),
         other => Err(SemaError::at(
             "sema",
-            "`@budget(bound=N)` requires a comptime-known integer literal for N \
-             (02-language.md §8.1)"
+            "`@budget(bound=N)` requires a comptime-known integer literal or the name of a \
+             module-level `const` whose comptime value is one or more for N \
+             (02-language.md §8.1, 03-hardware.md §3.1)"
                 .to_string(),
             other.span(),
         )),
     }
+}
+
+/// Resolve `@budget(bound=NAME)` via the same maps layout lengths use:
+/// `mctx.consts` / `mctx.const_values` (imported consts are already spliced).
+/// Value rule matches `collect_length_consts` (integer comptime ≥ 1).
+fn budget_bound_from_const_name(
+    name: &str,
+    name_span: Span,
+    attr_span: Span,
+    mctx: &ModuleCtx,
+) -> Result<u64, SemaError> {
+    let Some(ty) = mctx.consts.get(name) else {
+        return Err(SemaError::at(
+            "sema",
+            format!(
+                "`@budget(bound=N)`'s `N` is `{name}`, which is not a module-level `const` \
+                 visible here; a loop bound is an integer literal or the name of a \
+                 module-level `const` whose comptime value is one or more — a name a \
+                 `comptime if` removed, a local, or a type is not one (02-language.md §8.1, \
+                 03-hardware.md §3.1)"
+            ),
+            attr_span,
+        ));
+    };
+    if !is_integer_scalar(ty) {
+        return Err(SemaError::at(
+            "sema",
+            format!(
+                "`@budget(bound=N)`'s `N` is `{name}`, whose type is not an integer; a loop \
+                 bound is a count of trips (02-language.md §8.1, 03-hardware.md §3.1)"
+            ),
+            attr_span,
+        ));
+    }
+    let Some(init) = mctx.const_values.get(name) else {
+        return Err(SemaError::at(
+            "sema",
+            format!(
+                "`@budget(bound=N)`'s `N` is `{name}`, which is not a module-level `const` \
+                 visible here; a loop bound is an integer literal or the name of a \
+                 module-level `const` whose comptime value is one or more (02-language.md \
+                 §8.1, 03-hardware.md §3.1)"
+            ),
+            attr_span,
+        ));
+    };
+    let n = match init {
+        Expr::Int(_, text) => parse_int_literal(text).ok_or_else(|| {
+            SemaError::at(
+                "sema",
+                format!(
+                    "`@budget(bound=N)`'s `N` is `{name}`, whose value `{text}` is not an \
+                     integer literal (02-language.md §8.1)"
+                ),
+                attr_span,
+            )
+        })?,
+        // Chase a const whose initializer is another const name (same maps;
+        // no second evaluator — layout's full `eval_const` path is for the
+        // post-typing completion pass).
+        Expr::Name(_, other) => {
+            return budget_bound_from_const_name(other, name_span, attr_span, mctx);
+        }
+        _ => {
+            return Err(SemaError::at(
+                "sema",
+                format!(
+                    "`@budget(bound=N)`'s `N` is `{name}`, whose initializer is not a \
+                     comptime integer literal (02-language.md §8.1, 03-hardware.md §3.1)"
+                ),
+                attr_span,
+            ));
+        }
+    };
+    if n < 1 {
+        return Err(SemaError::at(
+            "sema",
+            format!(
+                "`@budget(bound=N)`'s `N` is `{name}`, whose value is {n}; a loop bound is \
+                 a comptime-known integer ≥ 1 (02-language.md §8.1, 03-hardware.md §3.1)"
+            ),
+            attr_span,
+        ));
+    }
+    budget_bound_from_i128(n, attr_span)
+}
+
+fn budget_bound_from_i128(n: i128, span: Span) -> Result<u64, SemaError> {
+    if n < 1 {
+        return Err(SemaError::at(
+            "sema",
+            format!("`@budget(bound=N)` requires N ≥ 1; found {n}"),
+            span,
+        ));
+    }
+    u64::try_from(n).map_err(|_| {
+        SemaError::at(
+            "sema",
+            format!("`@budget(bound=N)` value {n} does not fit a trip counter"),
+            span,
+        )
+    })
 }
 
 fn check_defer(d: &DeferStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {

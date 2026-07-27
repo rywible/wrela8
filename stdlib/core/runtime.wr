@@ -14,10 +14,14 @@ from core.__image_runtime import (
     N_TURNS_LEN,
     N_CHILD_SITES,
     N_RINGS,
+    RING_POOL_COUNT,
     N_INIT_SLOTS,
     N_BOOT_CALLS,
+    BOOT_CALL_POOL_COUNT,
     N_IRQ_VECTORS,
+    IRQ_CALL_POOL_COUNT,
     N_WAKE_DRAINS,
+    WAKE_CALL_POOL_COUNT,
     N_TESTS,
     HAS_BOOT_INIT,
     CHECKPOINT_SIMPLE,
@@ -1020,7 +1024,7 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
         PENDING.words[core] = 0
     n_rep = __wrela_drain_reply_count(core)
     ri: usize = 0
-    @budget(bound=8)
+    @budget(bound=RING_POOL_COUNT)
     while ri < n_rep:
         edge = __wrela_drain_reply_edge(core, ri)
         @budget(bound=256)
@@ -1046,7 +1050,7 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
         ri = ri +% 1
     n_req = __wrela_drain_request_count(core)
     qi: usize = 0
-    @budget(bound=8)
+    @budget(bound=RING_POOL_COUNT)
     while qi < n_req:
         edge = __wrela_drain_request_edge(core, qi)
         @budget(bound=256)
@@ -1399,7 +1403,7 @@ pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
 
 pub fn __wrela_rt_boot_init():
     i: usize = 0
-    @budget(bound=32)
+    @budget(bound=BOOT_CALL_POOL_COUNT)
     while i < N_INIT_SLOTS:
         n = __wrela_init_nwords(i)
         j: usize = 0
@@ -1409,7 +1413,7 @@ pub fn __wrela_rt_boot_init():
             j = j +% 1
         i = i +% 1
     k: usize = 0
-    @budget(bound=32)
+    @budget(bound=BOOT_CALL_POOL_COUNT)
     while k < N_BOOT_CALLS:
         __wrela_boot_call(k)
         k = k +% 1
@@ -1469,7 +1473,7 @@ pub fn __wrela_rt_checkpoint():
                 __wrela_vector0()
                 serviced = serviced | 1
             i: usize = 0
-            @budget(bound=8)
+            @budget(bound=IRQ_CALL_POOL_COUNT)
             while i < N_IRQ_VECTORS:
                 bit = __wrela_irq_mask(i)
                 if (p & bit) != 0:
@@ -1482,7 +1486,7 @@ pub fn __wrela_rt_checkpoint():
         while true:
             any: u64 = 0
             wi: usize = 0
-            @budget(bound=8)
+            @budget(bound=WAKE_CALL_POOL_COUNT)
             while wi < N_WAKE_DRAINS:
                 wp = __wrela_wake_pending_load(wi)
                 if wp != 0:

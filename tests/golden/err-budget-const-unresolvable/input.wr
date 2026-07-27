@@ -1,0 +1,18 @@
+module examples.err_budget_const_unresolvable
+
+# plans/M12.md item B: `bound=NAME` must name a module-level (or imported)
+# `const` of integer type. `Other` resolves as a struct and is still not a
+# bound — same refusal shape as `err-layout-runtime-len-not-const`.
+
+struct Other:
+    n: u64
+
+
+pub fn spin(n: u64) -> u64:
+    total: u64 = 0
+    i: u64 = 0
+    @budget(bound=Other)
+    while i < n:
+        total = total + i
+        i = i + 1
+    return total
