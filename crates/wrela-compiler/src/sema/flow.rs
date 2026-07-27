@@ -653,9 +653,8 @@ fn check_exit_obligations(
 /// had. The diagnostic names the *carried* type so a wrapper's spelling
 /// still says why (`golden/err-cap-drop-option`, `err-cap-drop-wrapped`).
 fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
-    // plans/M13.md item O: re-derive from `must_consume` (dual-run against
-    // `is_protocol_consuming_type_name` for prelude leaves; `resource(manual)`
-    // is the new fiat leaf).
+    // plans/M13.md item O: re-derive from `must_consume` (`resource(manual)`
+    // is must_consume by fiat).
     fn walk(ty: &Type, mctx: &ModuleCtx, seen: &mut BTreeSet<String>) -> Option<String> {
         use crate::sema::types::TypeArg;
         match ty {
@@ -713,19 +712,7 @@ fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
             _ => None,
         }
     }
-    let found = walk(ty, mctx, &mut BTreeSet::new());
-    // Dual-run over the root leaf: old name list ≡ new must_consume.
-    if let Type::Named(name, _) = ty {
-        if crate::sema::classes::leaf_classes(name).is_some() {
-            let old = crate::eval::image_checks::is_protocol_consuming_type(ty);
-            let new = found.as_ref().is_some_and(|f| f.starts_with(name));
-            assert_eq!(
-                new, old,
-                "type-class dual-run: protocol_resource_carried mismatch for `{name}`"
-            );
-        }
-    }
-    found
+    walk(ty, mctx, &mut BTreeSet::new())
 }
 
 /// 02-language.md §3.1: "If its only consumers are protocol operations

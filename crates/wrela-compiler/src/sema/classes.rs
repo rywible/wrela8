@@ -5,12 +5,10 @@
 //! field-wise propagation (the same walk shape as
 //! `protocol_resource_carried` / `type_carries_named`).
 //!
-//! **Dual-run (item O critical process).** While
-//! `image_checks::is_protocol_consuming_type_name` and
-//! `is_sealed_authority_type_name` still exist, every leaf answer from
-//! this module is asserted equal to the old name-list predicate. The
-//! subsequent commit deletes the old lists once the dual-run holds over
-//! the corpus. Never delete first.
+//! This module is the sole leaf for `must_consume` (the legacy name list
+//! in `image_checks` is deleted). `holds_authority` still dual-runs against
+//! `is_sealed_authority_type_name` (that list drives unforgeability /
+//! `@layout` / actor containment and is not deleted here).
 
 use std::collections::BTreeSet;
 
@@ -121,23 +119,16 @@ pub fn leaf_classes(name: &str) -> Option<TypeClasses> {
     Some(classes)
 }
 
-/// Assert old name-list predicates ≡ new leaf classes (item O dual-run).
+/// Assert `holds_authority` / message-forbidden leaves still agree with
+/// the sealed-authority name list (retained for unforgeability etc.).
 fn dual_run_leaf(name: &str, classes: TypeClasses) {
-    let old_must = image_checks::is_protocol_consuming_type_name(name);
     let old_auth = image_checks::is_sealed_authority_type_name(name);
-    assert_eq!(
-        classes.must_consume, old_must,
-        "type-class dual-run: must_consume mismatch for `{name}` \
-         (new={}, old={})",
-        classes.must_consume, old_must
-    );
     assert_eq!(
         classes.holds_authority, old_auth,
         "type-class dual-run: holds_authority mismatch for `{name}` \
          (new={}, old={})",
         classes.holds_authority, old_auth
     );
-    // driver_message_forbidden leaf = sealed OR InterruptCell.
     let old_msg_forbid = old_auth || name == "InterruptCell";
     let new_msg_forbid = classes.holds_authority || name == "InterruptCell";
     assert_eq!(
@@ -147,8 +138,7 @@ fn dual_run_leaf(name: &str, classes: TypeClasses) {
 }
 
 /// Does the named leaf (or a `resource(manual)` fiat) require consume-on-
-/// every-path? Dual-runs against `is_protocol_consuming_type_name` for
-/// prelude names; user `manual` resources are the new leaf.
+/// every-path?
 pub fn name_must_consume(name: &str, is_manual_resource: bool) -> bool {
     if is_manual_resource {
         return true;
@@ -445,22 +435,7 @@ pub fn type_must_consume_carried(ty: &Type, items: &[DeclItem]) -> Option<String
             _ => None,
         }
     }
-    let found = walk(ty, items, &mut BTreeSet::new());
-    // Dual-run: for prelude-only types, old leaf name list ≡ new.
-    if let Type::Named(name, _) = ty {
-        if leaf_classes(name).is_some() {
-            let old = image_checks::is_protocol_consuming_type(ty);
-            let new = found.is_some() && image_checks::is_protocol_consuming_type_name(name);
-            // For a pure leaf Named, carried ≡ the leaf itself.
-            assert_eq!(
-                new,
-                old,
-                "type-class dual-run: carried must_consume mismatch for `{}`",
-                crate::sema::types::render_type(ty)
-            );
-        }
-    }
-    found
+    walk(ty, items, &mut BTreeSet::new())
 }
 
 #[cfg(test)]
@@ -497,15 +472,26 @@ mod tests {
             let _ = leaf_classes(name);
             let _ = name_forbidden_in_driver_message(name);
             assert_eq!(
-                name_must_consume(name, false),
-                image_checks::is_protocol_consuming_type_name(name),
-                "{name} must_consume"
-            );
-            assert_eq!(
                 name_holds_authority(name),
                 image_checks::is_sealed_authority_type_name(name),
                 "{name} holds_authority"
             );
+        }
+        // must_consume leaf pins (former protocol-consumption name list).
+        for name in [
+            "DeviceCap",
+            "Mmio",
+            "IrqCap",
+            "VirtQueue",
+            "QueuePermit",
+            "QueueOp",
+            "Receipt",
+            "RunningDevice",
+        ] {
+            assert!(name_must_consume(name, false), "{name}");
+        }
+        for name in ["DmaPool", "DmaShared", "InterruptCell", "Actor", "u64"] {
+            assert!(!name_must_consume(name, false), "{name}");
         }
     }
 
