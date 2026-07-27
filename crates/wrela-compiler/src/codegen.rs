@@ -5761,13 +5761,6 @@ pub struct RtSelectAndRunSpec {
 
 // M11 G: RtXsendSpec / RtXreplySpec / RtDrainSpec deleted with emitters.
 
-/// Inputs `emit_secondary_core_entry` specializes on (plans/M10.md item
-/// F2 / decision 633). One body per secondary core.
-#[derive(Debug, Clone)]
-pub struct RtSecondaryCoreEntrySpec {
-    pub core: usize,
-}
-
 /// plans/M10.md item H (decision 680): specialized `rt_boot_init` symbol.
 /// Space-bearing (` 0`) — unrepresentable as a source key; one body per
 /// image (the trailing `0` is not a core index).
@@ -5814,16 +5807,6 @@ pub enum BootInitArgSpec {
         count: u64,
         slot_bytes: u64,
     },
-}
-
-/// Inputs `emit_boot_init` specializes on (plans/M10.md item H /
-/// decision 680). Drivers first, then actors — 06 §3 / M7 H1 order.
-#[derive(Debug, Clone)]
-pub struct BootInitSpec {
-    /// Zero-fill order: actors then drivers (same as hand-asm). Init-call
-    /// order is drivers then actors, rebuilt inside the emitter.
-    pub actor_slots: Vec<BootInitSlotSpec>,
-    pub driver_slots: Vec<BootInitSlotSpec>,
 }
 
 // --- the turn record (the real park-and-resume contract) --------------------
@@ -9938,14 +9921,11 @@ pub fn emit_rt_select_and_run(spec: &RtSelectAndRunSpec) -> CodegenFn {
 // deleted — generic `__wrela_rt_xsend` / `__wrela_rt_xreply` /
 // `__wrela_rt_drain` in stdlib/core/runtime.wr over ring facts + trampolines.
 
-/// plans/M10.md item F2 (decision 633): specialized secondary-core entry.
-/// Installs SP (5 floor-cat1 words of `load_imm`+mov sp — remain inside
-/// this image-static body), writes the bring-up mark, loops
-/// `rt_run_one <core>` until idle, then parks. No mid-tick checkpoint.
-pub fn emit_secondary_core_entry(spec: &RtSecondaryCoreEntrySpec) -> CodegenFn {
+/// M11 H / decision 811: floor-cat1 SP install for a secondary core (5 words).
+/// Prepended at inject onto `__wrela_secondary_entry_<core>` before the key is
+/// republished as `rt_secondary_core_entry <core>` (decision 636 extraction).
+pub fn emit_secondary_sp_install(core: usize) -> Vec<(u32, String)> {
     let mut words: Vec<(u32, String)> = Vec::new();
-    let mut relocs: Vec<Reloc> = Vec::new();
-
     let push = |words: &mut Vec<(u32, String)>, w: u32, text: String| {
         words.push((w, text));
     };
@@ -9975,97 +9955,21 @@ pub fn emit_secondary_core_entry(spec: &RtSecondaryCoreEntrySpec) -> CodegenFn {
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
         );
     };
-    let bl_key = |words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, key: &str| {
-        let word = words.len();
-        push(words, encode::enc_bl(0), format!("bl <{key}>"));
-        relocs.push(Reloc::Call {
-            word,
-            key: key.to_string(),
-        });
-    };
-
-    let core = spec.core;
     let sp_top =
         wrela_machine::layout::core_stack_base(core) + wrela_machine::layout::CORE_STACK_SIZE;
-    // Floor cat1 SP install (5 words): 4×imm + mov sp.
     load_imm(&mut words, 9, sp_top, "sp_top");
     push(
         &mut words,
         encode::enc_add_imm(31, 9, 0, true),
         "mov sp, x9".to_string(),
     );
-
-    load_imm(
-        &mut words,
-        9,
-        wrela_machine::machine_info::core_mark_running(core),
-        "core_mark_running",
-    );
-    load_imm(
-        &mut words,
-        10,
-        wrela_machine::machine_info::core_mark_addr(core),
-        "core_mark_addr",
-    );
-    push(
-        &mut words,
-        encode::enc_str_x_imm(9, 10, 0),
-        "str x9, [x10]  ; bring-up mark".to_string(),
-    );
-
-    let loop_top = words.len();
-    // M11 F: `__wrela_rt_run_one(core)` — x0 = core (decision 794).
-    // Core index fits in 16 bits (machine VCPUS = 3).
-    push(
-        &mut words,
-        encode::enc_movz(0, core as u16, 0, true),
-        format!("movz x0, #{core}  ; core arg"),
-    );
-    bl_key(&mut words, &mut relocs, "__wrela_rt_run_one");
-    {
-        let this = words.len();
-        let delta = (loop_top as i64 - this as i64) * 4;
-        push(
-            &mut words,
-            encode::enc_cbnz(0, delta as i32, true),
-            format!("cbnz x0, .loop_top ({delta})"),
-        );
-    }
-    load_imm(
-        &mut words,
-        9,
-        wrela_machine::mmio::PARK_MMIO_ADDR,
-        "PARK_MMIO",
-    );
-    load_imm(&mut words, 10, 0, "park_val");
-    push(
-        &mut words,
-        encode::enc_str_x_imm(10, 9, 0),
-        "str x10, [x9]  ; park".to_string(),
-    );
-    {
-        let this = words.len();
-        let delta = (loop_top as i64 - this as i64) * 4;
-        push(
-            &mut words,
-            encode::enc_b(delta as i32),
-            format!("b .loop_top ({delta})"),
-        );
-    }
-
-    CodegenFn {
-        frame_size: 0,
-        code: words,
-        relocs,
-    }
+    words
 }
 
-/// plans/M10.md item H (decisions 680–684): specialized boot-init body.
-/// Saves `x30` (the second hang regression); zero-fills every actor then
-/// driver state with a memset-style count loop (decision 681); calls
-/// drivers' `init`s then actors' (M7 H1). No mid-tick checkpoint
-/// (decision 684 / 597).
-pub fn emit_boot_init(spec: &BootInitSpec) -> CodegenFn {
+/// M11 H / decision 812: one boot `init` call stub (specialized A64 with
+/// Relocs). Zero-fill lives in `__wrela_rt_boot_init`; inject overwrites
+/// `__boot_call_<i>` with this body. Saves `x30`; no mid-tick checkpoint.
+pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
     fn push(words: &mut Vec<(u32, String)>, w: u32, text: String) {
         words.push((w, text));
     }
@@ -10128,52 +10032,6 @@ pub fn emit_boot_init(spec: &BootInitSpec) -> CodegenFn {
             word,
             key: key.to_string(),
         });
-    }
-    fn zero_fill(words: &mut Vec<(u32, String)>, relocs: &mut Vec<Reloc>, slot: &BootInitSlotSpec) {
-        let size = slot.state_size;
-        if size == 0 {
-            return;
-        }
-        assert!(
-            size % 8 == 0,
-            "boot state size must be 8-aligned; got {} for {}",
-            size,
-            slot.name
-        );
-        let nwords = size / 8;
-        load_state(words, relocs, 9, slot);
-        if nwords <= u16::MAX as u64 {
-            push(
-                words,
-                encode::enc_movz(10, nwords as u16, 0, true),
-                format!("movz x10, #{nwords}  ; zero-fill words"),
-            );
-        } else {
-            load_imm(words, 10, nwords, "zero-fill words");
-        }
-        let loop_top = words.len();
-        push(
-            words,
-            encode::enc_str_x_imm(31, 9, 0),
-            "str xzr, [x9]".to_string(),
-        );
-        push(
-            words,
-            encode::enc_add_imm(9, 9, 8, true),
-            "add x9, x9, #8".to_string(),
-        );
-        push(
-            words,
-            encode::enc_subs_imm(10, 10, 1, true),
-            "subs x10, x10, #1".to_string(),
-        );
-        let this = words.len();
-        let delta = (loop_top as i64 - this as i64) * 4;
-        push(
-            words,
-            encode::enc_b_cond(encode::Cond::Ne, delta as i32),
-            format!("b.ne .zero_loop ({delta})"),
-        );
     }
     fn emit_arg(
         words: &mut Vec<(u32, String)>,
@@ -10284,6 +10142,10 @@ pub fn emit_boot_init(spec: &BootInitSpec) -> CodegenFn {
     let mut words: Vec<(u32, String)> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
 
+    let Some(call) = &slot.init else {
+        panic!("emit_boot_init_call: slot `{}` has no init", slot.name);
+    };
+
     // x30 save — second hang regression (layout::build_boot_init doc).
     push(
         &mut words,
@@ -10296,100 +10158,86 @@ pub fn emit_boot_init(spec: &BootInitSpec) -> CodegenFn {
         "str x30, [sp]".to_string(),
     );
 
-    // Zero-fill: actors then drivers (hand-asm sequencing guarantee).
-    for slot in spec.actor_slots.iter().chain(spec.driver_slots.iter()) {
-        zero_fill(&mut words, &mut relocs, slot);
+    let mut array_stack: u64 = 0;
+    for (i, arg) in call.args.iter().enumerate() {
+        match emit_arg(&mut words, &mut relocs, i as u8 + 1, arg) {
+            Ok(n) => array_stack += n,
+            Err(msg) => panic!("emit_boot_init_call: {msg}"),
+        }
     }
-
-    // Init calls: drivers first, then actors (M7 H1).
-    let call_order: Vec<&BootInitSlotSpec> = spec
-        .driver_slots
-        .iter()
-        .chain(spec.actor_slots.iter())
-        .collect();
-    for slot in call_order {
-        let Some(call) = &slot.init else { continue };
-        let mut array_stack: u64 = 0;
-        for (i, arg) in call.args.iter().enumerate() {
-            match emit_arg(&mut words, &mut relocs, i as u8 + 1, arg) {
-                Ok(n) => array_stack += n,
-                Err(msg) => panic!("emit_boot_init: {msg}"),
-            }
+    load_state(&mut words, &mut relocs, 0, slot);
+    if call.fallible {
+        let (msg_off, msg_len) = call.err_msg.unwrap_or_else(|| {
+            panic!(
+                "emit_boot_init_call: fallible `{}` has no interned abort message",
+                call.key
+            )
+        });
+        push(
+            &mut words,
+            encode::enc_sub_imm(31, 31, 16, true),
+            "sub sp, sp, #16  ; reply slot".to_string(),
+        );
+        push(
+            &mut words,
+            encode::enc_add_imm(8, 31, 0, true),
+            "mov x8, sp".to_string(),
+        );
+        bl_key(&mut words, &mut relocs, &call.key);
+        push(
+            &mut words,
+            encode::enc_ldr_x_imm(9, 31, 0),
+            "ldr x9, [sp]  ; Result tag".to_string(),
+        );
+        push(
+            &mut words,
+            encode::enc_add_imm(31, 31, 16, true),
+            "add sp, sp, #16  ; drop reply slot".to_string(),
+        );
+        let ok_fixup = words.len();
+        push(&mut words, 0, "cbz x9, .ok".to_string());
+        let word_adrp = words.len();
+        push(
+            &mut words,
+            encode::enc_adrp(0, 0),
+            format!("adrp x0, rodata+{msg_off}"),
+        );
+        push(
+            &mut words,
+            encode::enc_add_imm(0, 0, 0, true),
+            format!("add x0, x0, #rodata+{msg_off}"),
+        );
+        relocs.push(Reloc::Rodata {
+            word_adrp,
+            byte_offset: msg_off,
+        });
+        load_imm(&mut words, 1, msg_len as u64, "abort msg len");
+        let abort_word = words.len();
+        push(
+            &mut words,
+            encode::enc_bl(0),
+            "bl <__wrela_abort>".to_string(),
+        );
+        relocs.push(Reloc::AbortFixed { word: abort_word });
+        let after = words.len();
+        let delta = (after as i64 - ok_fixup as i64) * 4;
+        if let Some((w, text)) = words.get_mut(ok_fixup) {
+            *w = encode::enc_cbz(9, delta as i32, true);
+            *text = format!("cbz x9, .ok ({delta})");
         }
-        load_state(&mut words, &mut relocs, 0, slot);
-        if call.fallible {
-            let (msg_off, msg_len) = call.err_msg.unwrap_or_else(|| {
-                panic!(
-                    "emit_boot_init: fallible `{}` has no interned abort message",
-                    call.key
-                )
-            });
-            push(
-                &mut words,
-                encode::enc_sub_imm(31, 31, 16, true),
-                "sub sp, sp, #16  ; reply slot".to_string(),
-            );
-            push(
-                &mut words,
-                encode::enc_add_imm(8, 31, 0, true),
-                "mov x8, sp".to_string(),
-            );
-            bl_key(&mut words, &mut relocs, &call.key);
-            push(
-                &mut words,
-                encode::enc_ldr_x_imm(9, 31, 0),
-                "ldr x9, [sp]  ; Result tag".to_string(),
-            );
-            push(
-                &mut words,
-                encode::enc_add_imm(31, 31, 16, true),
-                "add sp, sp, #16  ; drop reply slot".to_string(),
-            );
-            let ok_fixup = words.len();
-            push(&mut words, 0, "cbz x9, .ok".to_string());
-            let word_adrp = words.len();
-            push(
-                &mut words,
-                encode::enc_adrp(0, 0),
-                format!("adrp x0, rodata+{msg_off}"),
-            );
-            push(
-                &mut words,
-                encode::enc_add_imm(0, 0, 0, true),
-                format!("add x0, x0, #rodata+{msg_off}"),
-            );
-            relocs.push(Reloc::Rodata {
-                word_adrp,
-                byte_offset: msg_off,
-            });
-            load_imm(&mut words, 1, msg_len as u64, "abort msg len");
-            let abort_word = words.len();
-            push(
-                &mut words,
-                encode::enc_bl(0),
-                "bl <__wrela_abort>".to_string(),
-            );
-            relocs.push(Reloc::AbortFixed { word: abort_word });
-            let after = words.len();
-            let delta = (after as i64 - ok_fixup as i64) * 4;
-            if let Some((w, text)) = words.get_mut(ok_fixup) {
-                *w = encode::enc_cbz(9, delta as i32, true);
-                *text = format!("cbz x9, .ok ({delta})");
-            }
-        } else {
-            bl_key(&mut words, &mut relocs, &call.key);
-        }
-        if array_stack > 0 {
-            assert!(
-                array_stack < 4096,
-                "own-handle array stack frame is {array_stack} bytes"
-            );
-            push(
-                &mut words,
-                encode::enc_add_imm(31, 31, array_stack as u16, true),
-                format!("add sp, sp, #{array_stack}  ; free own-handle table"),
-            );
-        }
+    } else {
+        bl_key(&mut words, &mut relocs, &call.key);
+    }
+    if array_stack > 0 {
+        assert!(
+            array_stack < 4096,
+            "own-handle array stack frame is {array_stack} bytes"
+        );
+        push(
+            &mut words,
+            encode::enc_add_imm(31, 31, array_stack as u16, true),
+            format!("add sp, sp, #{array_stack}  ; free own-handle table"),
+        );
     }
 
     push(
@@ -11112,22 +10960,13 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
         emit_rt_select_and_run(&select).code.len(),
     );
     // M11 G: emit_rt_xsend / xreply / drain deleted (force-rooted wrela).
-    let secondary = RtSecondaryCoreEntrySpec { core: 1 };
+    // M11 H: secondary algorithm → wrela; floor SP install measured here.
     out.insert(
-        "emit_secondary_core_entry",
-        emit_secondary_core_entry(&secondary).code.len(),
+        "emit_secondary_sp_install",
+        emit_secondary_sp_install(1).len(),
     );
-    // M10 H / decision 680: REF one actor, state_size=8, no init calls.
-    let boot = BootInitSpec {
-        actor_slots: vec![BootInitSlotSpec {
-            name: "Actor".into(),
-            is_driver: false,
-            state_size: 8,
-            init: None,
-        }],
-        driver_slots: vec![],
-    };
-    out.insert("emit_boot_init", emit_boot_init(&boot).code.len());
+    // emit_boot_init deleted (force-rooted __wrela_rt_boot_init); call
+    // stubs are inject-only (decision 812) — not a census REF row.
     // M10 G / decision 670: REF empty group/irq/wake = 26 (incl. 5 floor-cat2).
     // M11 E: deadline scan/poll deleted (force-rooted wrela); checkpoint
     // still BL `__wrela_deadline_scan` when a group arena exists — REF
@@ -11832,14 +11671,7 @@ mod rt_cross_core_tests {
         assert_eq!(rt_xreply_cores(&rt_xreply_symbol(1, 0)), Some((1, 0)));
         assert_eq!(rt_xreply_cores("rt_enqueue Actor"), None);
 
-        let sec = emit_secondary_core_entry(&RtSecondaryCoreEntrySpec { core: 1 });
-        assert_eq!(sec.code.len(), 27); // +1 movz x0, #core (M11 F)
-        assert!(
-            sec.relocs.iter().any(|r| matches!(
-                r,
-                Reloc::Call { key, .. } if key == "__wrela_rt_run_one"
-            )),
-            "secondary entry must Call __wrela_rt_run_one"
-        );
+        let sp = emit_secondary_sp_install(1);
+        assert_eq!(sp.len(), 5); // floor-cat1 SP (decision 811)
     }
 }

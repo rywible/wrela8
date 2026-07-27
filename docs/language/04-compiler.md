@@ -60,8 +60,12 @@ graph, and hard deadlines without sufficient inheritance are rejected.
 Revision 0.1's synchronous discharge of the loop half is the statement
 attribute `@budget(bound=N)` of [02 §8.1](02-language.md): a comptime-known
 integer trip bound with a fail-closed runtime counter — not a predicted
-cost model. Async checkpoint elision under a proven budget, ISR-bound
-discharge, and cycle/latency proofs remain later.
+cost model. The force-rooted runtime event-loop entries named in
+[02 §8.1](02-language.md) (the per-core park/run loops that *are* this
+section's cooperative scheduler) are exempt from that sync `@budget`
+requirement — a trip counter is not a discharge for an intentional
+unbounded park→wake loop. Async checkpoint elision under a proven budget,
+ISR-bound discharge, and cycle/latency proofs remain later.
 
 **Hardware.** Capability provenance and roles match on every hardware
 operation; device and vector ownership is exclusive; MMIO partitions never

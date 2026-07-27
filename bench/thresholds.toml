@@ -103,7 +103,9 @@ eval_tests_per_entry_us = 20000
 # emit set, including the appliance. Measured median after B3 on the
 # locking machine: ~30ms (30490us). Threshold is 10x that, rounded up —
 # same rationale as every other lock in this file.
-build_appliance_median_us = 300000
+# M11 item H: generic boot_init/secondary + INIT pool grow the appliance
+# build median (~454ms measured); lock admits that with headroom.
+build_appliance_median_us = 600000
 
 [guest]
 # `cargo xtask bench guest` (plans/M5.md item F, decision 14; workload

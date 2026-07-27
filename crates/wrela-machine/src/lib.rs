@@ -49,7 +49,7 @@ pub const VCPUS: usize = 3;
 /// 0x4001_0000  STACKS_BASE         (3 MiB)   3 per-core stacks, 1 MiB each
 /// 0x4031_0000  .. 0x4050_0000               reserved (stack growth room)
 /// 0x4050_0000  IMAGE_BASE          (rest)    sealed image, loaded flat
-/// 0x4051_0000  RTDATA_BASE                  in-image rtdata packing base
+/// 0x4052_0000  RTDATA_BASE                  in-image rtdata packing base
 ///                                            (code/rodata/abort/checkpoint
 ///                                            pack below; see RTDATA_SIZE_MAX)
 /// ```
@@ -113,13 +113,14 @@ pub mod layout {
     /// In-image base of the `rtdata` section (static actor runtime tables).
     /// Fixed packing address so layout checks a placed size against
     /// `compute_runtime_tables` rather than bump-allocating after code
-    /// (plans/M11.md item C / decisions 722, 750). Sized from the measured
-    /// peak `code+rodata+abort+checkpoint` over the golden corpus (28014
-    /// bytes; span from `IMAGE_BASE` through checkpoint end = 0x6dc4 /
-    /// 28100) plus deliberate headroom to a round 64 KiB packing window:
-    /// `IMAGE_BASE + 0x1_0000` = `0x4051_0000`. Guest-visible pages,
+    /// (plans/M11.md item C / decisions 722, 750; ratchet 818). Item C
+    /// sized a 64 KiB window from peak packed span 0x6dc4; M11 item H's
+    /// generic runtime bodies push measured packed peak to ~0xea34
+    /// (~59956) with runtime-test images overflowing the old base — so
+    /// the packing window ratchets to 128 KiB:
+    /// `IMAGE_BASE + 0x2_0000` = `0x4052_0000`. Guest-visible pages,
     /// stacks, and entry are unchanged — not a `MACHINE_REVISION` bump.
-    pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x1_0000; // 0x4051_0000
+    pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x2_0000; // 0x4052_0000
 
     /// Fail-closed ceiling on the `rtdata` section's byte size. Mailbox
     /// capacity is an image-authored integer with no other bound; a
@@ -745,12 +746,12 @@ mod tests {
     }
 
     #[test]
-    fn rtdata_base_is_the_64kib_packing_window() {
-        assert_eq!(layout::RTDATA_BASE, layout::IMAGE_BASE + 0x1_0000);
-        assert_eq!(layout::RTDATA_BASE, 0x4051_0000);
-        // Measured peak span IMAGE_BASE..checkpoint-end over goldens is
-        // 0x6dc4; the packing window must clear it with headroom.
-        assert!(layout::RTDATA_BASE - layout::IMAGE_BASE > 0x6dc4);
+    fn rtdata_base_is_the_128kib_packing_window() {
+        assert_eq!(layout::RTDATA_BASE, layout::IMAGE_BASE + 0x2_0000);
+        assert_eq!(layout::RTDATA_BASE, 0x4052_0000);
+        // M11 H measured packed peak ~0xea34; the packing window must
+        // clear it with headroom (decision 818).
+        assert!(layout::RTDATA_BASE - layout::IMAGE_BASE > 0xea34);
         assert_eq!(layout::RTDATA_SIZE_MAX, 256 << 10);
         assert!(
             layout::RTDATA_BASE + layout::RTDATA_SIZE_MAX < layout::DRAM_BASE + layout::DRAM_SIZE

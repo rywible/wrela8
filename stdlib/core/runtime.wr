@@ -3,18 +3,23 @@
 # harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
 
-# plans/M11.md item D / E / F / G: import the generated facts module.
+# plans/M11.md item D / E / F / G / H: import the generated facts module.
 # Batch-1 injects a stub `core.__image_runtime` (decision 780); live images
 # replace it with `rtconfig::generate_with` before force-rooting runtime keys.
-# Fixed stub pools (decision 791 / 802) are always imported so spliced match
-# ladders can Call them (sema forbids reaching non-imported helpers).
+# Fixed stub pools (decision 791 / 802 / 812) are always imported so spliced
+# match ladders can Call them (sema forbids reaching non-imported helpers).
 from core.__image_runtime import (
     N_CORES,
     N_TURNS,
     N_TURNS_LEN,
     N_CHILD_SITES,
     N_RINGS,
+    N_INIT_SLOTS,
+    N_BOOT_CALLS,
     NO_EDGE,
+    __wrela_init_nwords,
+    __wrela_init_store_word,
+    __wrela_boot_call,
     GROUP_ARENA_CAPACITY,
     GROUP_SLOTS,
     RT,
@@ -44,6 +49,38 @@ from core.__image_runtime import (
     RING5_WORDS,
     RING6_WORDS,
     RING7_WORDS,
+    INIT_SLOT0,
+    INIT_SLOT1,
+    INIT_SLOT2,
+    INIT_SLOT3,
+    INIT_SLOT4,
+    INIT_SLOT5,
+    INIT_SLOT6,
+    INIT_SLOT7,
+    INIT_SLOT8,
+    INIT_SLOT9,
+    INIT_SLOT10,
+    INIT_SLOT11,
+    INIT_SLOT12,
+    INIT_SLOT13,
+    INIT_SLOT14,
+    INIT_SLOT15,
+    INIT_SLOT16,
+    INIT_SLOT17,
+    INIT_SLOT18,
+    INIT_SLOT19,
+    INIT_SLOT20,
+    INIT_SLOT21,
+    INIT_SLOT22,
+    INIT_SLOT23,
+    INIT_SLOT24,
+    INIT_SLOT25,
+    INIT_SLOT26,
+    INIT_SLOT27,
+    INIT_SLOT28,
+    INIT_SLOT29,
+    INIT_SLOT30,
+    INIT_SLOT31,
     __wrela_select_count,
     __wrela_try_select,
     __wrela_resume_child,
@@ -149,6 +186,38 @@ from core.__image_runtime import (
     __enqueue_29,
     __enqueue_30,
     __enqueue_31,
+    __boot_call_0,
+    __boot_call_1,
+    __boot_call_2,
+    __boot_call_3,
+    __boot_call_4,
+    __boot_call_5,
+    __boot_call_6,
+    __boot_call_7,
+    __boot_call_8,
+    __boot_call_9,
+    __boot_call_10,
+    __boot_call_11,
+    __boot_call_12,
+    __boot_call_13,
+    __boot_call_14,
+    __boot_call_15,
+    __boot_call_16,
+    __boot_call_17,
+    __boot_call_18,
+    __boot_call_19,
+    __boot_call_20,
+    __boot_call_21,
+    __boot_call_22,
+    __boot_call_23,
+    __boot_call_24,
+    __boot_call_25,
+    __boot_call_26,
+    __boot_call_27,
+    __boot_call_28,
+    __boot_call_29,
+    __boot_call_30,
+    __boot_call_31,
 )
 
 # M10 B2: machine pages the console formatter speaks to (decision 593).
@@ -164,6 +233,10 @@ const DESC_WORD_COUNT: usize = 512
 const CONSOLE_DATA_BASE: u64 = 0x40003000
 const DATA_SIZE: usize = 16384
 
+# VCPU count is a machine constant (wrela_machine::VCPUS); algorithms still
+# index live cores with N_CORES (decision 709).
+const VCPUS: usize = 3
+
 @layout(runtime, endian=little)
 struct MachineInfoPage:
     @offset(0x28) next_deadline: u64
@@ -171,6 +244,7 @@ struct MachineInfoPage:
     @offset(0x50) ring_data_bump: u64
     @offset(0x58) ring_desc_bump: u64
     @offset(0x60) line_start: u64
+    @offset(0x68) core_marks: [u64; VCPUS]
     @offset(0x208) abort_latch: u64
 
 @placed(0x40000000)
@@ -184,6 +258,14 @@ struct ClockMmio:
 
 @placed(0x08000000)
 static CLOCK: ClockMmio
+
+# Park MMIO (wrela_machine::mmio::PARK_MMIO_ADDR) — trapping store; VMM wakes.
+@layout(runtime, endian=little)
+struct ParkMmio:
+    word: u64
+
+@placed(0x08002000)
+static PARK: ParkMmio
 
 # Per-core pending-vector page (pending::BASE). Array length is the machine
 # VCPU count (3); algorithms index with N_CORES (decision 709).
@@ -782,4 +864,50 @@ pub fn __wrela_xreply_6(turn_and_tag: u64, reply: u64):
     return
 pub fn __wrela_xreply_7(turn_and_tag: u64, reply: u64):
     __wrela_rt_xreply(7, turn_and_tag, reply)
+    return
+
+# ---------------------------------------------------------------------------
+# M11 item H: boot_init + secondary_core_entry (decisions 810–815).
+# `__wrela_rt_boot_init` zeros actor/driver state via generated INIT overlays
+# then Calls `__boot_call_*` stubs (specialized A64 with Relocs, overwritten
+# at inject — decision 812). Secondary park/run loop omits sync `@budget`
+# (decision 810); floor-cat1 SP install is prepended at inject (decision 811).
+# ---------------------------------------------------------------------------
+
+pub fn __wrela_rt_boot_init():
+    i: usize = 0
+    @budget(bound=32)
+    while i < N_INIT_SLOTS:
+        n = __wrela_init_nwords(i)
+        j: usize = 0
+        @budget(bound=4096)
+        while j < n:
+            __wrela_init_store_word(i, j, 0)
+            j = j +% 1
+        i = i +% 1
+    k: usize = 0
+    @budget(bound=32)
+    while k < N_BOOT_CALLS:
+        __wrela_boot_call(k)
+        k = k +% 1
+    return
+
+# Per-core secondary entry (decision 810): mark + unbounded park/run loop.
+# SP install is floor-cat1 words prepended at inject (decision 811 / 636).
+pub fn __wrela_rt_secondary_entry(core: usize):
+    MACHINE_INFO.core_marks[core] = (core +% 1).to[u64]()
+    while true:
+        ran = __wrela_rt_run_one(core)
+        if ran == 0:
+            PARK.word = 0
+    return
+
+# Machine-VCPUS trampoline pool (not N_CORES — decision 709). Inject prepends
+# SP and republishes under `rt_secondary_core_entry <core>`.
+pub fn __wrela_secondary_entry_1():
+    __wrela_rt_secondary_entry(1)
+    return
+
+pub fn __wrela_secondary_entry_2():
+    __wrela_rt_secondary_entry(2)
     return

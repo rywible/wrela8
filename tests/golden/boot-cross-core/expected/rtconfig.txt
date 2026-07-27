@@ -19,6 +19,9 @@ pub const RESUME_STUB_COUNT: usize = 16
 pub const N_RINGS: usize = 0
 pub const RING_POOL_COUNT: usize = 8
 pub const ENQUEUE_STUB_COUNT: usize = 32
+pub const N_INIT_SLOTS: usize = 2
+pub const N_BOOT_CALLS: usize = 2
+pub const BOOT_CALL_POOL_COUNT: usize = 32
 pub const NO_EDGE: usize = 255
 
 @layout(runtime, endian=little)
@@ -55,21 +58,21 @@ struct SchedCore:
 struct RuntimeTables:
     turns: [TurnArea; N_TURNS_LEN]
 
-@placed(0x40510000)
+@placed(0x40520000)
 pub static RT: RuntimeTables
 
 @layout(runtime, endian=little)
 struct SchedStripe:
     cores: [SchedCore; N_CORES]
 
-@placed(0x405106a0)
+@placed(0x405206a0)
 pub static SCHED: SchedStripe
 
 @layout(runtime, endian=little)
 struct GroupArena:
     slots: [GroupSlot; GROUP_SLOTS]
 
-@placed(0x4054fda0)
+@placed(0x4055fda0)
 pub static GROUPS: GroupArena
 
 @layout(runtime, endian=little)
@@ -83,10 +86,10 @@ pub const RING0_WORDS: usize = 1
 struct Ring0Data:
     words: [u64; RING0_WORDS]
 
-@placed(0x4054fe00)
+@placed(0x4055fe00)
 pub static RING0_DATA: Ring0Data
 
-@placed(0x4054fe20)
+@placed(0x4055fe20)
 pub static RING0_CTL: RingCtl
 
 pub const RING1_WORDS: usize = 1
@@ -94,10 +97,10 @@ pub const RING1_WORDS: usize = 1
 struct Ring1Data:
     words: [u64; RING1_WORDS]
 
-@placed(0x4054fe40)
+@placed(0x4055fe40)
 pub static RING1_DATA: Ring1Data
 
-@placed(0x4054fe60)
+@placed(0x4055fe60)
 pub static RING1_CTL: RingCtl
 
 pub const RING2_WORDS: usize = 1
@@ -105,10 +108,10 @@ pub const RING2_WORDS: usize = 1
 struct Ring2Data:
     words: [u64; RING2_WORDS]
 
-@placed(0x4054fe80)
+@placed(0x4055fe80)
 pub static RING2_DATA: Ring2Data
 
-@placed(0x4054fea0)
+@placed(0x4055fea0)
 pub static RING2_CTL: RingCtl
 
 pub const RING3_WORDS: usize = 1
@@ -116,10 +119,10 @@ pub const RING3_WORDS: usize = 1
 struct Ring3Data:
     words: [u64; RING3_WORDS]
 
-@placed(0x4054fec0)
+@placed(0x4055fec0)
 pub static RING3_DATA: Ring3Data
 
-@placed(0x4054fee0)
+@placed(0x4055fee0)
 pub static RING3_CTL: RingCtl
 
 pub const RING4_WORDS: usize = 1
@@ -127,10 +130,10 @@ pub const RING4_WORDS: usize = 1
 struct Ring4Data:
     words: [u64; RING4_WORDS]
 
-@placed(0x4054ff00)
+@placed(0x4055ff00)
 pub static RING4_DATA: Ring4Data
 
-@placed(0x4054ff20)
+@placed(0x4055ff20)
 pub static RING4_CTL: RingCtl
 
 pub const RING5_WORDS: usize = 1
@@ -138,10 +141,10 @@ pub const RING5_WORDS: usize = 1
 struct Ring5Data:
     words: [u64; RING5_WORDS]
 
-@placed(0x4054ff40)
+@placed(0x4055ff40)
 pub static RING5_DATA: Ring5Data
 
-@placed(0x4054ff60)
+@placed(0x4055ff60)
 pub static RING5_CTL: RingCtl
 
 pub const RING6_WORDS: usize = 1
@@ -149,10 +152,10 @@ pub const RING6_WORDS: usize = 1
 struct Ring6Data:
     words: [u64; RING6_WORDS]
 
-@placed(0x4054ff80)
+@placed(0x4055ff80)
 pub static RING6_DATA: Ring6Data
 
-@placed(0x4054ffa0)
+@placed(0x4055ffa0)
 pub static RING6_CTL: RingCtl
 
 pub const RING7_WORDS: usize = 1
@@ -160,10 +163,10 @@ pub const RING7_WORDS: usize = 1
 struct Ring7Data:
     words: [u64; RING7_WORDS]
 
-@placed(0x4054ffc0)
+@placed(0x4055ffc0)
 pub static RING7_DATA: Ring7Data
 
-@placed(0x4054ffe0)
+@placed(0x4055ffe0)
 pub static RING7_CTL: RingCtl
 
 pub fn __select_0() -> u64:
@@ -405,6 +408,326 @@ pub fn __enqueue_30(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_co
 
 pub fn __enqueue_31(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     return 0
+
+pub fn __boot_call_0():
+    return
+
+pub fn __boot_call_1():
+    return
+
+pub fn __boot_call_2():
+    return
+
+pub fn __boot_call_3():
+    return
+
+pub fn __boot_call_4():
+    return
+
+pub fn __boot_call_5():
+    return
+
+pub fn __boot_call_6():
+    return
+
+pub fn __boot_call_7():
+    return
+
+pub fn __boot_call_8():
+    return
+
+pub fn __boot_call_9():
+    return
+
+pub fn __boot_call_10():
+    return
+
+pub fn __boot_call_11():
+    return
+
+pub fn __boot_call_12():
+    return
+
+pub fn __boot_call_13():
+    return
+
+pub fn __boot_call_14():
+    return
+
+pub fn __boot_call_15():
+    return
+
+pub fn __boot_call_16():
+    return
+
+pub fn __boot_call_17():
+    return
+
+pub fn __boot_call_18():
+    return
+
+pub fn __boot_call_19():
+    return
+
+pub fn __boot_call_20():
+    return
+
+pub fn __boot_call_21():
+    return
+
+pub fn __boot_call_22():
+    return
+
+pub fn __boot_call_23():
+    return
+
+pub fn __boot_call_24():
+    return
+
+pub fn __boot_call_25():
+    return
+
+pub fn __boot_call_26():
+    return
+
+pub fn __boot_call_27():
+    return
+
+pub fn __boot_call_28():
+    return
+
+pub fn __boot_call_29():
+    return
+
+pub fn __boot_call_30():
+    return
+
+pub fn __boot_call_31():
+    return
+
+@layout(runtime, endian=little)
+struct InitSlot0Words:
+    words: [u64; 1]
+
+@placed(0x40520600)
+pub static INIT_SLOT0: InitSlot0Words
+
+@layout(runtime, endian=little)
+struct InitSlot1Words:
+    words: [u64; 1]
+
+@placed(0x40520660)
+pub static INIT_SLOT1: InitSlot1Words
+
+@layout(runtime, endian=little)
+struct InitSlot2Words:
+    words: [u64; 1]
+
+@placed(0x4055fcb0)
+pub static INIT_SLOT2: InitSlot2Words
+
+@layout(runtime, endian=little)
+struct InitSlot3Words:
+    words: [u64; 1]
+
+@placed(0x4055fcb8)
+pub static INIT_SLOT3: InitSlot3Words
+
+@layout(runtime, endian=little)
+struct InitSlot4Words:
+    words: [u64; 1]
+
+@placed(0x4055fcc0)
+pub static INIT_SLOT4: InitSlot4Words
+
+@layout(runtime, endian=little)
+struct InitSlot5Words:
+    words: [u64; 1]
+
+@placed(0x4055fcc8)
+pub static INIT_SLOT5: InitSlot5Words
+
+@layout(runtime, endian=little)
+struct InitSlot6Words:
+    words: [u64; 1]
+
+@placed(0x4055fcd0)
+pub static INIT_SLOT6: InitSlot6Words
+
+@layout(runtime, endian=little)
+struct InitSlot7Words:
+    words: [u64; 1]
+
+@placed(0x4055fcd8)
+pub static INIT_SLOT7: InitSlot7Words
+
+@layout(runtime, endian=little)
+struct InitSlot8Words:
+    words: [u64; 1]
+
+@placed(0x4055fce0)
+pub static INIT_SLOT8: InitSlot8Words
+
+@layout(runtime, endian=little)
+struct InitSlot9Words:
+    words: [u64; 1]
+
+@placed(0x4055fce8)
+pub static INIT_SLOT9: InitSlot9Words
+
+@layout(runtime, endian=little)
+struct InitSlot10Words:
+    words: [u64; 1]
+
+@placed(0x4055fcf0)
+pub static INIT_SLOT10: InitSlot10Words
+
+@layout(runtime, endian=little)
+struct InitSlot11Words:
+    words: [u64; 1]
+
+@placed(0x4055fcf8)
+pub static INIT_SLOT11: InitSlot11Words
+
+@layout(runtime, endian=little)
+struct InitSlot12Words:
+    words: [u64; 1]
+
+@placed(0x4055fd00)
+pub static INIT_SLOT12: InitSlot12Words
+
+@layout(runtime, endian=little)
+struct InitSlot13Words:
+    words: [u64; 1]
+
+@placed(0x4055fd08)
+pub static INIT_SLOT13: InitSlot13Words
+
+@layout(runtime, endian=little)
+struct InitSlot14Words:
+    words: [u64; 1]
+
+@placed(0x4055fd10)
+pub static INIT_SLOT14: InitSlot14Words
+
+@layout(runtime, endian=little)
+struct InitSlot15Words:
+    words: [u64; 1]
+
+@placed(0x4055fd18)
+pub static INIT_SLOT15: InitSlot15Words
+
+@layout(runtime, endian=little)
+struct InitSlot16Words:
+    words: [u64; 1]
+
+@placed(0x4055fd20)
+pub static INIT_SLOT16: InitSlot16Words
+
+@layout(runtime, endian=little)
+struct InitSlot17Words:
+    words: [u64; 1]
+
+@placed(0x4055fd28)
+pub static INIT_SLOT17: InitSlot17Words
+
+@layout(runtime, endian=little)
+struct InitSlot18Words:
+    words: [u64; 1]
+
+@placed(0x4055fd30)
+pub static INIT_SLOT18: InitSlot18Words
+
+@layout(runtime, endian=little)
+struct InitSlot19Words:
+    words: [u64; 1]
+
+@placed(0x4055fd38)
+pub static INIT_SLOT19: InitSlot19Words
+
+@layout(runtime, endian=little)
+struct InitSlot20Words:
+    words: [u64; 1]
+
+@placed(0x4055fd40)
+pub static INIT_SLOT20: InitSlot20Words
+
+@layout(runtime, endian=little)
+struct InitSlot21Words:
+    words: [u64; 1]
+
+@placed(0x4055fd48)
+pub static INIT_SLOT21: InitSlot21Words
+
+@layout(runtime, endian=little)
+struct InitSlot22Words:
+    words: [u64; 1]
+
+@placed(0x4055fd50)
+pub static INIT_SLOT22: InitSlot22Words
+
+@layout(runtime, endian=little)
+struct InitSlot23Words:
+    words: [u64; 1]
+
+@placed(0x4055fd58)
+pub static INIT_SLOT23: InitSlot23Words
+
+@layout(runtime, endian=little)
+struct InitSlot24Words:
+    words: [u64; 1]
+
+@placed(0x4055fd60)
+pub static INIT_SLOT24: InitSlot24Words
+
+@layout(runtime, endian=little)
+struct InitSlot25Words:
+    words: [u64; 1]
+
+@placed(0x4055fd68)
+pub static INIT_SLOT25: InitSlot25Words
+
+@layout(runtime, endian=little)
+struct InitSlot26Words:
+    words: [u64; 1]
+
+@placed(0x4055fd70)
+pub static INIT_SLOT26: InitSlot26Words
+
+@layout(runtime, endian=little)
+struct InitSlot27Words:
+    words: [u64; 1]
+
+@placed(0x4055fd78)
+pub static INIT_SLOT27: InitSlot27Words
+
+@layout(runtime, endian=little)
+struct InitSlot28Words:
+    words: [u64; 1]
+
+@placed(0x4055fd80)
+pub static INIT_SLOT28: InitSlot28Words
+
+@layout(runtime, endian=little)
+struct InitSlot29Words:
+    words: [u64; 1]
+
+@placed(0x4055fd88)
+pub static INIT_SLOT29: InitSlot29Words
+
+@layout(runtime, endian=little)
+struct InitSlot30Words:
+    words: [u64; 1]
+
+@placed(0x4055fd90)
+pub static INIT_SLOT30: InitSlot30Words
+
+@layout(runtime, endian=little)
+struct InitSlot31Words:
+    words: [u64; 1]
+
+@placed(0x4055fd98)
+pub static INIT_SLOT31: InitSlot31Words
 
 pub fn __wrela_select_count(core: usize) -> usize:
     match core:
@@ -743,3 +1066,124 @@ pub fn __wrela_try_enqueue(handle: usize, method: u64, arg0: u64, arg1: u64, wak
             return __enqueue_1(method, arg0, arg1, waker_turn, waker_core)
         case _:
             return 1
+
+pub fn __wrela_init_nwords(slot: usize) -> usize:
+    match slot:
+        case 0:
+            return 1
+        case 1:
+            return 1
+        case _:
+            return 0
+
+pub fn __wrela_init_store_word(slot: usize, wi: usize, v: u64):
+    match slot:
+        case 0:
+            INIT_SLOT0.words[wi] = v
+            return
+        case 1:
+            INIT_SLOT1.words[wi] = v
+            return
+        case 2:
+            INIT_SLOT2.words[wi] = v
+            return
+        case 3:
+            INIT_SLOT3.words[wi] = v
+            return
+        case 4:
+            INIT_SLOT4.words[wi] = v
+            return
+        case 5:
+            INIT_SLOT5.words[wi] = v
+            return
+        case 6:
+            INIT_SLOT6.words[wi] = v
+            return
+        case 7:
+            INIT_SLOT7.words[wi] = v
+            return
+        case 8:
+            INIT_SLOT8.words[wi] = v
+            return
+        case 9:
+            INIT_SLOT9.words[wi] = v
+            return
+        case 10:
+            INIT_SLOT10.words[wi] = v
+            return
+        case 11:
+            INIT_SLOT11.words[wi] = v
+            return
+        case 12:
+            INIT_SLOT12.words[wi] = v
+            return
+        case 13:
+            INIT_SLOT13.words[wi] = v
+            return
+        case 14:
+            INIT_SLOT14.words[wi] = v
+            return
+        case 15:
+            INIT_SLOT15.words[wi] = v
+            return
+        case 16:
+            INIT_SLOT16.words[wi] = v
+            return
+        case 17:
+            INIT_SLOT17.words[wi] = v
+            return
+        case 18:
+            INIT_SLOT18.words[wi] = v
+            return
+        case 19:
+            INIT_SLOT19.words[wi] = v
+            return
+        case 20:
+            INIT_SLOT20.words[wi] = v
+            return
+        case 21:
+            INIT_SLOT21.words[wi] = v
+            return
+        case 22:
+            INIT_SLOT22.words[wi] = v
+            return
+        case 23:
+            INIT_SLOT23.words[wi] = v
+            return
+        case 24:
+            INIT_SLOT24.words[wi] = v
+            return
+        case 25:
+            INIT_SLOT25.words[wi] = v
+            return
+        case 26:
+            INIT_SLOT26.words[wi] = v
+            return
+        case 27:
+            INIT_SLOT27.words[wi] = v
+            return
+        case 28:
+            INIT_SLOT28.words[wi] = v
+            return
+        case 29:
+            INIT_SLOT29.words[wi] = v
+            return
+        case 30:
+            INIT_SLOT30.words[wi] = v
+            return
+        case 31:
+            INIT_SLOT31.words[wi] = v
+            return
+        case _:
+            return
+
+pub fn __wrela_boot_call(i: usize):
+    match i:
+        case 0:
+            __boot_call_0()
+            return
+        case 1:
+            __boot_call_1()
+            return
+        case _:
+            return

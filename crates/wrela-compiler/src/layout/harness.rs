@@ -256,23 +256,57 @@ pub(super) fn inject_rt_select_and_run_fns(program: &mut CodegenProgram, wiring:
     }
 }
 
-/// plans/M10.md item F2 (decision 633) / M11 G (decision 805): force-root
-/// specialized secondary-core entry bodies. Cross-core xsend/xreply/drain
-/// live in generic wrela trampolines (`__wrela_xsend_*` / `__wrela_xreply_*`
-/// / `__wrela_rt_drain`) — no longer injected here.
+/// M11 H (decisions 811 / 814): prepend floor-cat1 SP install onto each
+/// `__wrela_secondary_entry_<core>` trampoline and republish under
+/// `rt_secondary_core_entry <core>` for VMM `core_entries`.
 pub(super) fn inject_rt_cross_core_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
     for core in 1..wiring.tables.cores {
-        let spec = crate::codegen::RtSecondaryCoreEntrySpec { core };
+        let tramp = format!("__wrela_secondary_entry_{core}");
+        let mut f = program.fns.get(&tramp).cloned().unwrap_or_else(|| {
+            panic!("internal error: missing secondary trampoline `{tramp}` after runtime reinject")
+        });
+        let sp = crate::codegen::emit_secondary_sp_install(core);
+        let sp_len = sp.len();
+        for r in &mut f.relocs {
+            shift_reloc_words(r, sp_len);
+        }
+        let mut code = sp;
+        code.append(&mut f.code);
+        f.code = code;
         let key = crate::codegen::rt_secondary_core_entry_symbol(core);
-        program
-            .fns
-            .insert(key, crate::codegen::emit_secondary_core_entry(&spec));
+        program.fns.insert(key, f);
     }
 }
 
-/// plans/M10.md item H (decision 680): force-root specialized `rt_boot_init`
-/// into `program.fns`. Call after `intern_fallible_init_abort_messages` and
-/// before the code section is laid out.
+fn shift_reloc_words(r: &mut crate::codegen::Reloc, delta: usize) {
+    use crate::codegen::Reloc;
+    match r {
+        Reloc::Call { word, .. }
+        | Reloc::AbortFixed { word }
+        | Reloc::AbortVal { word }
+        | Reloc::CheckpointService { word }
+        | Reloc::TurnFrameAddr { word, .. }
+        | Reloc::TurnIdImm { word, .. }
+        | Reloc::TurnsBase { word }
+        | Reloc::TurnStride { word }
+        | Reloc::GroupArenaBase { word }
+        | Reloc::IrqVector { word, .. }
+        | Reloc::WakePending { word, .. }
+        | Reloc::MailboxAddr { word, .. }
+        | Reloc::RrCursor { word, .. }
+        | Reloc::RingAddr { word, .. }
+        | Reloc::DriverState { word, .. }
+        | Reloc::DeviceRegsBase { word, .. }
+        | Reloc::PoolBase { word, .. }
+        | Reloc::PoolSlot { word, .. } => *word += delta,
+        Reloc::Rodata { word_adrp, .. } => *word_adrp += delta,
+    }
+}
+
+/// M11 H (decisions 812 / 814): overwrite `__boot_call_<i>` placeholders
+/// with specialized init-call bodies (Relocs). `__wrela_rt_boot_init` is
+/// already force-rooted / reinjected. Also alias `rt_boot_init 0` for any
+/// lingering synthetic-key callers.
 pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
     let to_arg = |a: &BootInitArg| -> crate::codegen::BootInitArgSpec {
         match a {
@@ -299,48 +333,64 @@ pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &Runtime
             },
         }
     };
-    let to_call = |c: &Option<BootInitCall>| -> Option<crate::codegen::BootInitCallSpec> {
-        c.as_ref().map(|c| crate::codegen::BootInitCallSpec {
+    let to_call = |c: &BootInitCall| -> crate::codegen::BootInitCallSpec {
+        crate::codegen::BootInitCallSpec {
             key: c.key.clone(),
             args: c.args.iter().map(to_arg).collect(),
             fallible: c.fallible,
             err_msg: c.err_msg,
-        })
+        }
     };
-    let actor_slots: Vec<crate::codegen::BootInitSlotSpec> = wiring
-        .tables
-        .actors
-        .iter()
-        .zip(wiring.state_sizes.iter())
-        .zip(wiring.init_calls.iter())
-        .map(|((a, &size), call)| crate::codegen::BootInitSlotSpec {
-            name: a.name.clone(),
-            is_driver: false,
-            state_size: size,
-            init: to_call(call),
-        })
-        .collect();
-    let driver_slots: Vec<crate::codegen::BootInitSlotSpec> = wiring
+    // Call order: drivers then actors (M7 H1 / decision 680).
+    let mut call_i = 0usize;
+    for ((d, &size), call) in wiring
         .tables
         .drivers
         .iter()
         .zip(wiring.driver_state_sizes.iter())
         .zip(wiring.driver_init_calls.iter())
-        .map(|((d, &size), call)| crate::codegen::BootInitSlotSpec {
+    {
+        let Some(c) = call else { continue };
+        let slot = crate::codegen::BootInitSlotSpec {
             name: d.name.clone(),
             is_driver: true,
             state_size: size,
-            init: to_call(call),
-        })
-        .collect();
-    let spec = crate::codegen::BootInitSpec {
-        actor_slots,
-        driver_slots,
-    };
-    let key = crate::codegen::rt_boot_init_symbol();
-    program
-        .fns
-        .insert(key, crate::codegen::emit_boot_init(&spec));
+            init: Some(to_call(c)),
+        };
+        let key = format!("__boot_call_{call_i}");
+        program
+            .fns
+            .insert(key, crate::codegen::emit_boot_init_call(&slot));
+        call_i += 1;
+    }
+    for ((a, &size), call) in wiring
+        .tables
+        .actors
+        .iter()
+        .zip(wiring.state_sizes.iter())
+        .zip(wiring.init_calls.iter())
+    {
+        let Some(c) = call else { continue };
+        let slot = crate::codegen::BootInitSlotSpec {
+            name: a.name.clone(),
+            is_driver: false,
+            state_size: size,
+            init: Some(to_call(c)),
+        };
+        let key = format!("__boot_call_{call_i}");
+        program
+            .fns
+            .insert(key, crate::codegen::emit_boot_init_call(&slot));
+        call_i += 1;
+    }
+    assert_eq!(
+        call_i, wiring.tables.n_boot_calls,
+        "boot call stub count disagrees with tables.n_boot_calls"
+    );
+    // Alias synthetic key → wrela body for any residual bl_call_key sites.
+    if let Some(f) = program.fns.get("__wrela_rt_boot_init").cloned() {
+        program.fns.insert(crate::codegen::rt_boot_init_symbol(), f);
+    }
 }
 /// `rt_enqueue_actor(x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn,
 /// x4=waker_core) -> x0 (0=admitted, 1=rejected — the `send`/call admission
@@ -1650,9 +1700,19 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_drain_request_edge",
         "__wrela_xsend_edge",
         "__wrela_xreply_edge",
+        "__wrela_rt_boot_init",
+        "__wrela_rt_secondary_entry",
+        "__wrela_secondary_entry_1",
+        "__wrela_secondary_entry_2",
+        "__wrela_init_nwords",
+        "__wrela_init_store_word",
+        "__wrela_boot_call",
     ] {
         only.insert(key.to_string());
     }
+    // Live `__boot_call_*` keys are seeded from the generated module's
+    // fn set below (reachability via `__wrela_boot_call`); do not force
+    // the whole pool — packing must stay under RTDATA_BASE.
     // Item F/G stubs live in the generated module; seed every `__select_*` /
     // `__resume_*` / `__enqueue_*` so match-ladder Calls lower. Trampolines
     // `__wrela_xsend_*` / `__wrela_xreply_*` live in runtime.wr.
@@ -1769,6 +1829,13 @@ pub(super) fn reinject_runtime_with_rtconfig(
         "__wrela_drain_request_edge",
         "__wrela_xsend_edge",
         "__wrela_xreply_edge",
+        "__wrela_rt_boot_init",
+        "__wrela_rt_secondary_entry",
+        "__wrela_secondary_entry_1",
+        "__wrela_secondary_entry_2",
+        "__wrela_init_nwords",
+        "__wrela_init_store_word",
+        "__wrela_boot_call",
     ] {
         keys.push(k.into());
     }
@@ -1776,6 +1843,10 @@ pub(super) fn reinject_runtime_with_rtconfig(
     for i in 0..crate::rtconfig::RING_POOL_COUNT {
         keys.push(format!("__wrela_xsend_{i}"));
         keys.push(format!("__wrela_xreply_{i}"));
+    }
+    // Boot call stubs (decision 812) — only live ones; overwritten after.
+    for i in 0..tables.n_boot_calls {
+        keys.push(format!("__boot_call_{i}"));
     }
 
     for key in &keys {

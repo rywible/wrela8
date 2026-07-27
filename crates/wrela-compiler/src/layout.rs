@@ -3769,6 +3769,8 @@ pub struct RuntimeTables {
     pub enqueue_handles: Vec<u64>,
     /// M11 G: mailbox-root names parallel to `enqueue_handles`.
     pub enqueue_actors: Vec<String>,
+    /// M11 H: count of boot `init` calls (drivers then actors with `init`).
+    pub n_boot_calls: usize,
 }
 
 impl RuntimeTables {
@@ -6554,6 +6556,19 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
     wiring.tables.ring_target_handles = ring_target_handles;
     wiring.tables.enqueue_handles = enqueue_handles;
     wiring.tables.enqueue_actors = enqueue_actors;
+    // M11 H: drivers then actors (same call order as former emit_boot_init).
+    let n_boot_calls = wiring
+        .driver_init_calls
+        .iter()
+        .chain(wiring.init_calls.iter())
+        .filter(|c| c.is_some())
+        .count();
+    assert!(
+        n_boot_calls <= crate::rtconfig::BOOT_CALL_POOL_COUNT,
+        "image needs {n_boot_calls} boot init calls; pool is {}",
+        crate::rtconfig::BOOT_CALL_POOL_COUNT
+    );
+    wiring.tables.n_boot_calls = n_boot_calls;
 }
 
 pub struct BootCtx<'a> {
@@ -7647,44 +7662,31 @@ pub struct Store:
     }
 
     #[test]
-    fn boot_init_zero_fills_every_actor_before_it_calls_any_init() {
-        // Sequencing guarantee: with two actors and an `init` on the first,
-        // the `BL` must come after *both* state slots are zeroed.
+    fn boot_init_call_stub_emits_init_call_reloc() {
+        // M11 H: zero-fill sequencing lives in `__wrela_rt_boot_init`;
+        // specialized stubs only emit one init Call (decision 812).
         use crate::codegen::{
-            BootInitArgSpec, BootInitCallSpec, BootInitSlotSpec, BootInitSpec, Reloc,
-            emit_boot_init,
+            BootInitArgSpec, BootInitCallSpec, BootInitSlotSpec, Reloc, emit_boot_init_call,
         };
-        let spec = BootInitSpec {
-            actor_slots: vec![
-                BootInitSlotSpec {
-                    name: "A".into(),
-                    is_driver: false,
-                    state_size: 8,
-                    init: Some(BootInitCallSpec {
-                        key: "A.init".into(),
-                        args: vec![BootInitArgSpec::Word(7)],
-                        fallible: false,
-                        err_msg: None,
-                    }),
-                },
-                BootInitSlotSpec {
-                    name: "B".into(),
-                    is_driver: false,
-                    state_size: 8,
-                    init: None,
-                },
-            ],
-            driver_slots: vec![],
+        let slot = BootInitSlotSpec {
+            name: "A".into(),
+            is_driver: false,
+            state_size: 8,
+            init: Some(BootInitCallSpec {
+                key: "A.init".into(),
+                args: vec![BootInitArgSpec::Word(7)],
+                fallible: false,
+                err_msg: None,
+            }),
         };
-        let f = emit_boot_init(&spec);
-        let bl_word = f.relocs.iter().find_map(|r| match r {
-            Reloc::Call { word, key } if key == "A.init" => Some(*word),
-            _ => None,
-        });
-        let bl_word = bl_word.expect("the declared `init` is called");
-        // Prologue (2) + two memset fills (4+1+4 each = 9) = 20 words before
-        // the arg load; call at 20 + 4 (arg) + 4 (x0 state) = 28.
-        assert_eq!(bl_word, 28);
+        let f = emit_boot_init_call(&slot);
+        assert!(
+            f.relocs.iter().any(|r| matches!(
+                r,
+                Reloc::Call { key, .. } if key == "A.init"
+            )),
+            "boot init call stub must Call the init key"
+        );
     }
 
     #[test]

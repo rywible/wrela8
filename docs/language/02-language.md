@@ -492,10 +492,18 @@ the synchronous half by requiring a statement attribute
 a comptime-known integer ≥ 1 (an integer literal). Acceptance emits a
 hidden trip counter that aborts if the loop body runs more than `N` times —
 a fail-closed runtime bound, not a cost model. A synchronous `for`/`while`
-without that attribute is `error[sema]`. Async checkpoint behaviour and
-ISR-bound loop rejection are unchanged by this discharge; proving a budget
-that replaces an async checkpoint, and cycle/latency proofs, remain later
-work ([04 §2](04-compiler.md)).
+without that attribute is `error[sema]`. **Exception (force-rooted runtime
+event-loop entries):** the designated per-core park/run loop bodies in
+`stdlib/core/runtime.wr` — today `__wrela_rt_secondary_entry`, and later the
+primary entry driver when item K migrates it — may omit sync `@budget` on
+their loops. Those functions *are* the cooperative scheduler of
+[04 §2](04-compiler.md); a trip-counter abort is the wrong discharge for an
+intentional unbounded park→wake loop. The exemption is by **exact function
+name** (force-rooted / designated keys only), not by module membership:
+ordinary sync loops in `runtime.wr` still require `@budget`. Async
+checkpoint behaviour and ISR-bound loop rejection are unchanged by this
+discharge; proving a budget that replaces an async checkpoint, and
+cycle/latency proofs, remain later work ([04 §2](04-compiler.md)).
 
 `pass` is an explicit no-op. `defer` and `with` are §10. `send` is §9.
 
