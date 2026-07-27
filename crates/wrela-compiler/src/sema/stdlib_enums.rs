@@ -37,12 +37,15 @@ use crate::syntax::ast::{Item, Module, Span};
 use crate::syntax::{lexer, parser};
 
 /// Auto-visible enum names whose definitions live in `stdlib/core/`.
+/// plans/M13.md item I / decision 6: `Admission` joins the set (fieldless;
+/// live variants `Full | DeadlineUnmeetable`).
 pub const AUTO_VISIBLE: &[&str] = &[
     "Target",
     "Failure",
     "BootError",
     "DriverMode",
     "CompletionOutcome",
+    "Admission",
 ];
 
 /// `(enum name, file stem under stdlib/core/)`.
@@ -52,6 +55,7 @@ const ENUM_FILES: &[(&str, &str)] = &[
     ("BootError", "boot_error"),
     ("DriverMode", "driver_mode"),
     ("CompletionOutcome", "completion_outcome"),
+    ("Admission", "admission"),
 ];
 
 #[derive(Debug)]
@@ -151,7 +155,7 @@ fn ensure_table() -> Result<&'static Table, SemaError> {
     table_result(Span::default())
 }
 
-/// Load the five enums from `core`. `pub(crate)` for unit tests that
+/// Load the auto-visible enums from `core`. `pub(crate)` for unit tests that
 /// corrupt a temp tree without going through the process-wide cache.
 pub(crate) fn load_table(core: &Path) -> Result<Table, SemaError> {
     let mut by_name = BTreeMap::new();
@@ -240,13 +244,13 @@ fn load_error_to_sema(e: crate::loader::LoadError) -> SemaError {
     }
 }
 
-/// Is `name` one of the five auto-visible stdlib enums?
+/// Is `name` one of the auto-visible stdlib enums?
 pub fn is_auto_visible(name: &str) -> bool {
     AUTO_VISIBLE.contains(&name)
 }
 
-/// Variant names in declaration order, or `None` if `name` is not one of
-/// the five. Order is load-bearing for `lower::variant_index` and
+/// Variant names in declaration order, or `None` if `name` is not
+/// auto-visible. Order is load-bearing for `lower::variant_index` and
 /// `matches::shape_of`. Load failures are `error[build]` (item QQ).
 pub fn variants(name: &str) -> Result<Option<&'static [String]>, SemaError> {
     let t = ensure_table()?;
@@ -275,13 +279,20 @@ mod tests {
     }
 
     #[test]
-    fn all_five_enums_load() {
+    fn all_auto_visible_enums_load() {
         for name in AUTO_VISIBLE {
             assert!(
                 variants(name).expect("load").is_some_and(|v| !v.is_empty()),
                 "{name} must load from stdlib"
             );
         }
+    }
+
+    /// plans/M13.md item I / decision 6: post-F live set only.
+    #[test]
+    fn admission_live_variants_are_full_and_deadline_unmeetable() {
+        let vs = variant_strs("Admission").expect("load").expect("loaded");
+        assert_eq!(vs, &["Full", "DeadlineUnmeetable"]);
     }
 
     /// plans/M9.md item QQ: a corrupt stdlib enum file is `error[build]`,
@@ -297,8 +308,14 @@ mod tests {
         ));
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir");
-        // Valid copies of the four siblings so only Target fails.
-        for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
+        // Valid copies of the siblings so only Target fails.
+        for stem in [
+            "failure",
+            "boot_error",
+            "driver_mode",
+            "completion_outcome",
+            "admission",
+        ] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
         }
@@ -333,7 +350,13 @@ mod tests {
         ));
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir");
-        for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
+        for stem in [
+            "failure",
+            "boot_error",
+            "driver_mode",
+            "completion_outcome",
+            "admission",
+        ] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
         }
@@ -378,7 +401,13 @@ mod tests {
         for (dir, variant) in [("a", "OnlyInA"), ("b", "OnlyInB")] {
             let core = tmp.join(dir).join("stdlib/core");
             fs::create_dir_all(&core).expect("mkdir core");
-            for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
+            for stem in [
+                "failure",
+                "boot_error",
+                "driver_mode",
+                "completion_outcome",
+                "admission",
+            ] {
                 let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
                 fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
             }
@@ -420,7 +449,13 @@ mod tests {
             std::env::temp_dir().join(format!("wrela-stdlib-enums-nocache-{}", std::process::id()));
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir core");
-        for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
+        for stem in [
+            "failure",
+            "boot_error",
+            "driver_mode",
+            "completion_outcome",
+            "admission",
+        ] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
         }

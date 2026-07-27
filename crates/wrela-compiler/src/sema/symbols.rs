@@ -693,7 +693,21 @@ impl<'a> Resolver<'a> {
 /// arms in `bodies` are load-bearing across `?`, CallError composition,
 /// and eval tags; always-loading option/result modules would put
 /// `Module path=` into every check dump (decision 79's trap).
-const FIXED_PRELUDE: &[&str] = &["Option", "Some", "None", "Result", "Ok", "Err", "panic"];
+// plans/M13.md item I: `CallError` / `Admission` join the fixed prelude
+// (02 §2). `Admission` is also auto-visible via `stdlib_enums`; listing
+// `CallError` here (and in `is_builtin_type_name`) is what makes the
+// annotation resolve at the symbols pass.
+const FIXED_PRELUDE: &[&str] = &[
+    "Option",
+    "Some",
+    "None",
+    "Result",
+    "Ok",
+    "Err",
+    "panic",
+    "CallError",
+    "Admission",
+];
 
 /// Does `name` resolve with no import and no local binding?
 ///

@@ -58,9 +58,11 @@ pub struct CorpusSemaPin {
 /// example fence is now ```wrela) → **19 ok, 5 disagreements** out of 24.
 /// plans/M13.md item Q (2026-07-27): §8.3 method-owned generics
 /// (`276e58180606`) flipped disagreement → ok → **20 ok, 4 disagreements**.
-/// The remaining four disagreements are deliberate gaps (J2b rulings /
-/// decision 523); J3 gates on this pin, not on zero. Re-keyed by content
-/// 2026-07-26 (item A3).
+/// plans/M13.md item I (2026-07-27): `CallError`/`Admission` nameable —
+/// `:604`/`f56a6f9b7f60` and `:674`/`84c332141ae2` flipped disagreement →
+/// ok → **22 ok, 2 disagreements**. The remaining two disagreements are
+/// deliberate gaps (J2b rulings / decision 523); J3 gates on this pin,
+/// not on zero. Re-keyed by content 2026-07-26 (item A3).
 pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
     CorpusSemaPin {
         key: "8949ad8e2912",
@@ -149,8 +151,8 @@ pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
     CorpusSemaPin {
         key: "f56a6f9b7f60",
         loc: "docs/language/02-language.md:604",
-        kind: "disagreement",
-        gap: Some("actors.calls.callerror-nameable"),
+        kind: "ok",
+        gap: None,
     },
     CorpusSemaPin {
         key: "e18a87c8f714",
@@ -161,8 +163,8 @@ pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
     CorpusSemaPin {
         key: "84c332141ae2",
         loc: "docs/language/02-language.md:674",
-        kind: "disagreement",
-        gap: Some("actors.calls.callerror-nameable"),
+        kind: "ok",
+        gap: None,
     },
     CorpusSemaPin {
         key: "6e8e60909180",

@@ -1,0 +1,113 @@
+Program
+  Fn name=await_question_mark ret=unit
+    Param name=p mode=read ty=Actor[Probe]
+    Param name=c mode=read ty=Actor[Counter]
+    Body
+      Match
+        Send ty=Result[unit, Rejected]
+          Call key=Counter.bump ty=unit
+            Receiver
+              Local name=c ty=Actor[Counter]
+        Case
+          VariantPattern enum=Result variant=Ok ty=Result[unit, Rejected]
+            Wildcard ty=unit
+          Pass
+        Case
+          VariantPattern enum=Result variant=Err ty=Result[unit, Rejected]
+            Wildcard ty=Rejected
+          Assert
+            Bool value=false ty=bool
+            Str text="send must admit" ty=Static[Str]
+      Let name=r ty=Result[u64, CallError[AppErr]]
+        Await ty=Result[u64, CallError[AppErr]]
+          Call key=Probe.fetch ty=Result[u64, AppErr]
+            Receiver
+              Local name=p ty=Actor[Probe]
+      Match
+        Local name=r ty=Result[u64, CallError[AppErr]]
+        Case
+          VariantPattern enum=Result variant=Ok ty=Result[u64, CallError[AppErr]]
+            Binding name=v ty=u64
+          Assert
+            Binary op=== ty=bool
+              Local name=v ty=u64
+              Int text=1 ty=u64
+            Str text="fetch through ? must return the counter" ty=Static[Str]
+        Case
+          VariantPattern enum=Result variant=Err ty=Result[u64, CallError[AppErr]]
+            Wildcard ty=CallError[AppErr]
+          Assert
+            Bool value=false ty=bool
+            Str text="fetch must succeed" ty=Static[Str]
+  Fn name=build ret=Image
+    Body
+      Let name=img ty=Image
+        Intrinsic key=Image ty=Image
+          Arg label=name
+            Str text="check-await-question-mark" ty=Static[Str]
+          Arg label=target
+            EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
+      Let name=c ty=ImageDecl
+        Intrinsic key=Image.actor type_arg=Counter ty=ImageDecl
+          Arg label=mailbox
+            Int text=4 ty=i64
+      Let name=p ty=ImageDecl
+        Intrinsic key=Image.actor type_arg=Probe ty=ImageDecl
+          Arg label=counter
+            Local name=c ty=ImageDecl
+          Arg label=mailbox
+            Int text=4 ty=i64
+      Intrinsic key=Image.on_failure ty=unit
+        Arg label=policy
+          EnumConstruct enum=Failure variant=Halt ty=Failure
+      Return
+        Intrinsic key=Image.seal ty=Image
+  Fn name=wrap_ok ret=Result[u64, AppErr]
+    Param name=v mode=read ty=u64
+    Body
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u64, AppErr]
+          Local name=v ty=u64
+  Struct name=Counter
+    Method name=bump ret=unit
+      Receiver mode=mut ty=Counter
+      Body
+        Assign
+          Field name=value ty=u64
+            Local name=self ty=Counter
+          Binary op=+ ty=u64
+            Field name=value ty=u64
+              Local name=self ty=Counter
+            Int text=1 ty=u64
+        Return
+          Unit ty=unit
+    Method name=get ret=u64
+      Receiver mode=read ty=Counter
+      Body
+        Return
+          Field name=value ty=u64
+            Local name=self ty=Counter
+  Struct name=Probe
+    Method name=fetch ret=Result[u64, AppErr]
+      Receiver mode=mut ty=Probe
+      Body
+        Let name=v ty=u64
+          Try ty=u64 conv=AppErr.from
+            Await ty=Result[u64, CallError[never]]
+              Call key=Counter.get ty=u64
+                Receiver
+                  Field name=counter ty=Actor[Counter]
+                    Local name=self ty=Probe
+        Assign
+          Field name=last ty=u64
+            Local name=self ty=Probe
+          Local name=v ty=u64
+        Return
+          Call key=wrap_ok ty=Result[u64, AppErr]
+            Local name=v ty=u64
+    Method name=last ret=u64
+      Receiver mode=read ty=Probe
+      Body
+        Return
+          Field name=last ty=u64
+            Local name=self ty=Probe

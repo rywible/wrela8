@@ -3058,6 +3058,9 @@ fn variant_payload_types_for(
         // types — `Target`/`Failure`'s own fieldless variants need none).
         // `Admission`/`Peer` are opaque builtin payload types (M7 grows
         // their fields; pattern-matching the *variant* is all M6 needs).
+        // plans/M13.md item H / decision 4: `NotAdmitted` carries
+        // `(Admission, take-args-tuple)` — the tuple is monomorphized per
+        // call signature as CallError's optional second type argument.
         Type::Named(name, targs) if name == "CallError" => {
             if let Some(n) = enum_name {
                 if n != "CallError" {
@@ -3077,8 +3080,12 @@ fn variant_payload_types_for(
                 "Op" => Ok(vec![e_ty.clone()]),
                 "Cancelled" => Ok(vec![]),
                 "DeadlineExceeded" => Ok(vec![]),
-                "NotAdmitted" => Ok(vec![Type::Named("Admission".to_string(), vec![])]),
-                "PeerFailed" => Ok(vec![Type::Named("Peer".to_string(), vec![])]),
+                // plans/M13.md item I / decision 6: `PeerFailed` deleted
+                // (unobservable under crash-only).
+                "NotAdmitted" => Ok(vec![
+                    Type::Named("Admission".to_string(), vec![]),
+                    not_admitted_args_type(targs),
+                ]),
                 other => Err(type_error(
                     format!("`CallError` has no variant `{other}`"),
                     span,
@@ -4797,7 +4804,7 @@ fn check_try(
                 })
             }
             Type::Result(_, ret_err) => {
-                if types_eq(&t_err, &ret_err) {
+                if types_eq(&t_err, &ret_err) || call_error_e_compatible(&t_err, &ret_err) {
                     Ok(TypedExpr {
                         ty: *t_ok,
                         kind: TypedExprKind::Try(Box::new(inner_t), None),
@@ -4879,7 +4886,8 @@ fn try_from_conversion(
             let shape_ok = d.generics.is_empty()
                 && d.params.len() == 1
                 && d.params[0].mode == AccessMode::Take
-                && types_eq(&d.params[0].ty, err_ty);
+                && (types_eq(&d.params[0].ty, err_ty)
+                    || call_error_e_compatible(&d.params[0].ty, err_ty));
             if shape_ok {
                 return Some((
                     d.ret.clone(),
@@ -4893,7 +4901,8 @@ fn try_from_conversion(
             let shape_ok = d.generics.is_empty()
                 && d.params.len() == 1
                 && d.params[0].mode == AccessMode::Take
-                && types_eq(&d.params[0].ty, err_ty);
+                && (types_eq(&d.params[0].ty, err_ty)
+                    || call_error_e_compatible(&d.params[0].ty, err_ty));
             if shape_ok {
                 return Some((
                     d.ret.clone(),
@@ -9595,22 +9604,57 @@ fn actor_error(message: String, span: Span) -> SemaError {
 /// analysis proves any variant unreachable yet, so every composition
 /// keeps the full five-variant `CallError[E]` — recorded, not silently
 /// approximated (the plan's own "record what you shipped").
-pub(crate) fn compose_call_error(raw: &Type) -> Type {
-    match raw {
-        Type::Result(t, e) => Type::Result(
-            t.clone(),
-            Box::new(Type::Named(
-                "CallError".to_string(),
-                vec![TypeArg::Type((**e).clone())],
-            )),
-        ),
-        other => Type::Result(
-            Box::new(other.clone()),
-            Box::new(Type::Named(
-                "CallError".to_string(),
-                vec![TypeArg::Type(Type::Never)],
-            )),
-        ),
+///
+/// plans/M13.md item H / decision 4: when the call has `take` arguments,
+/// `CallError` grows a second type argument — the take-args tuple — so
+/// `NotAdmitted`'s pattern payload is `(Admission, args)` monomorphized
+/// per signature. Calls with no `take` args keep the one-argument form
+/// (second payload types as `()`).
+pub(crate) fn compose_call_error(raw: &Type, take_arg_tys: &[Type]) -> Type {
+    let e_ty = match raw {
+        Type::Result(_, e) => (**e).clone(),
+        _ => Type::Never,
+    };
+    let ok_ty = match raw {
+        Type::Result(t, _) => (**t).clone(),
+        other => other.clone(),
+    };
+    Type::Result(
+        Box::new(ok_ty),
+        Box::new(call_error_type(e_ty, take_arg_tys)),
+    )
+}
+
+/// `CallError[E]` or `CallError[E, Args]` (item H) for a composed await.
+pub(crate) fn call_error_type(e_ty: Type, take_arg_tys: &[Type]) -> Type {
+    let mut targs = vec![TypeArg::Type(e_ty)];
+    if !take_arg_tys.is_empty() {
+        targs.push(TypeArg::Type(Type::Tuple(take_arg_tys.to_vec())));
+    }
+    Type::Named("CallError".to_string(), targs)
+}
+
+/// `NotAdmitted`'s take-args tuple type from a `CallError`'s type arguments
+/// (absent / empty → `()`).
+pub(crate) fn not_admitted_args_type(targs: &[TypeArg]) -> Type {
+    match targs.get(1) {
+        Some(TypeArg::Type(t)) => t.clone(),
+        _ => Type::Tuple(vec![]),
+    }
+}
+
+/// `CallError` equality for `?` / `from`: same `E`, Args may differ.
+/// A `from(take e: CallError[E])` must accept a site-monomorphized
+/// `CallError[E, (T,)]` (item H + item I).
+pub(crate) fn call_error_e_compatible(a: &Type, b: &Type) -> bool {
+    match (a, b) {
+        (Type::Named(n1, a1), Type::Named(n2, a2)) if n1 == "CallError" && n2 == "CallError" => {
+            match (a1.first(), a2.first()) {
+                (Some(TypeArg::Type(e1)), Some(TypeArg::Type(e2))) => types_eq(e1, e2),
+                _ => false,
+            }
+        }
+        _ => false,
     }
 }
 
@@ -9692,7 +9736,6 @@ pub(crate) fn call_error_variant_index(variant: &str) -> Option<usize> {
         "Cancelled" => Some(1),
         "DeadlineExceeded" => Some(2),
         "NotAdmitted" => Some(3),
-        "PeerFailed" => Some(4),
         _ => None,
     }
 }
@@ -9922,6 +9965,16 @@ fn check_await_actor_call(
         return Err(unimplemented_at("generic instantiation is", call_span));
     }
     let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+    // plans/M13.md item H / decision 4: `NotAdmitted` hands back the
+    // call's `take` arguments as an owned tuple — collect their types in
+    // declaration order for CallError's optional second type argument.
+    let take_arg_tys: Vec<Type> = d
+        .params
+        .iter()
+        .zip(typed_args.iter())
+        .filter(|(p, _)| p.mode == AccessMode::Take)
+        .filter_map(|(_, slot)| slot.as_ref().map(|t| t.ty.clone()))
+        .collect();
     let call = TypedExpr {
         ty: d.ret.clone(),
         kind: TypedExprKind::Call {
@@ -9943,7 +9996,7 @@ fn check_await_actor_call(
     let composed = if s.decl.is_driver && crate::sema::handoff::is_handoff_signature(d) {
         d.ret.clone()
     } else {
-        compose_call_error(&d.ret)
+        compose_call_error(&d.ret, &take_arg_tys)
     };
     Ok(TypedExpr {
         ty: composed,
@@ -9985,7 +10038,10 @@ fn check_await_group_join(
             args: vec![],
         },
     };
-    let composed = Type::Array(Box::new(compose_call_error(&child_ty)), Box::new(len_expr));
+    let composed = Type::Array(
+        Box::new(compose_call_error(&child_ty, &[])),
+        Box::new(len_expr),
+    );
     Ok(TypedExpr {
         ty: composed,
         kind: TypedExprKind::Await(Box::new(intrinsic)),
@@ -12059,7 +12115,7 @@ mod tests {
     /// CallError[never]]".
     #[test]
     fn compose_call_error_wraps_a_plain_declared_type() {
-        let composed = compose_call_error(&Type::U64);
+        let composed = compose_call_error(&Type::U64, &[]);
         assert_eq!(
             composed,
             Type::Result(Box::new(Type::U64), Box::new(call_error_of(&Type::Never)))
@@ -12073,7 +12129,7 @@ mod tests {
             Box::new(Type::U32),
             Box::new(Type::Named("FsError".to_string(), vec![])),
         );
-        let composed = compose_call_error(&declared);
+        let composed = compose_call_error(&declared, &[]);
         assert_eq!(
             composed,
             Type::Result(
@@ -12095,7 +12151,7 @@ mod tests {
             Type::Static(Box::new(Type::Str)),
         ];
         for ty in cases {
-            let composed = compose_call_error(&ty);
+            let composed = compose_call_error(&ty, &[]);
             match composed {
                 Type::Result(ok, err) => {
                     assert_eq!(*ok, ty, "the declared type itself must be the Ok payload");
@@ -12115,9 +12171,28 @@ mod tests {
     /// mapping over its input, not a stateful rewrite).
     #[test]
     fn compose_call_error_is_a_pure_function_of_its_input() {
-        let a = compose_call_error(&Type::U64);
-        let b = compose_call_error(&Type::U64);
+        let a = compose_call_error(&Type::U64, &[]);
+        let b = compose_call_error(&Type::U64, &[]);
         assert_eq!(a, b);
+    }
+
+    /// plans/M13.md item H: take-arg types become CallError's second
+    /// type argument so `NotAdmitted` patterns bind `(Admission, args)`.
+    #[test]
+    fn compose_call_error_carries_take_arg_tuple() {
+        let composed = compose_call_error(&Type::U64, &[Type::U32, Type::U64]);
+        let Type::Result(_, err) = composed else {
+            panic!("expected Result");
+        };
+        let Type::Named(name, targs) = *err else {
+            panic!("expected CallError");
+        };
+        assert_eq!(name, "CallError");
+        assert_eq!(targs.len(), 2);
+        assert_eq!(
+            not_admitted_args_type(&targs),
+            Type::Tuple(vec![Type::U32, Type::U64])
+        );
     }
 
     /// `root_local_name` (the cross-await path-rooting classifier,

@@ -592,7 +592,7 @@ fn load_time_module_as_sema() -> Result<(Vec<String>, crate::loader::LoadedModul
 }
 
 /// plans/M9.md item QQ: pick a package root from the closure and load
-/// the five auto-visible stdlib enums from the same `stdlib/core/` the
+/// the auto-visible stdlib enums from the same `stdlib/core/` the
 /// loader would use for `from core.X` imports.
 fn prepare_stdlib_enums_for_closure(
     modules: &BTreeMap<Vec<String>, Module>,
@@ -725,7 +725,7 @@ fn check_program_typed_tables(
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, CheckDumpTables), SemaError> {
     // plans/M9.md item QQ: before specialize (which reads Target/Failure
-    // in comptime-if conditions), load the five auto-visible enums from
+    // in comptime-if conditions), load the auto-visible enums from
     // the same `stdlib/core/` the loader would pick for this package.
     prepare_stdlib_enums_for_closure(modules, paths)?;
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();

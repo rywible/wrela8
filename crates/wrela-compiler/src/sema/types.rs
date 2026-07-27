@@ -5452,6 +5452,9 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             // 02 §2 fixed prelude types.
             | "Option"
             | "Result"
+            // plans/M13.md item I: CallError[E] / Admission nameable.
+            | "CallError"
+            | "Admission"
             // Literal / string surface (02 §1.1 / §6.2).
             | "Static"
             | "Bytes"
@@ -5545,6 +5548,10 @@ fn resolve_named(
         // minted only by `VirtQueue.recover` but nameable in an
         // annotation (a helper that classifies one takes it by value).
         "CompletionOutcome" => Some(Type::Named("CompletionOutcome".to_string(), vec![])),
+        // plans/M13.md item I / decision 6: `Admission` is auto-visible
+        // (stdlib/core/admission.wr) and prelude-nameable — zero-arg Named,
+        // same shape as `Failure` / `Target`.
+        "Admission" => Some(Type::Named("Admission".to_string(), vec![])),
         // plans/M10.md item E2 / decision 669: opaque 1-based group arena
         // index. Zero-argument Named, like `Image` — not a DeclStruct, so
         // source cannot forge one by field init (decision 567's niche
@@ -5567,6 +5574,15 @@ fn resolve_named(
             let ok = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             let err = resolve_type(args[1], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Result(Box::new(ok), Box::new(err)));
+        }
+        // plans/M13.md item I: `CallError[E]` is source-nameable (02 §2
+        // prelude / §9.4). One type argument — the callee error `E`.
+        // Take-arg tuples (item H) are site-monomorphized on composed
+        // awaits only; a written annotation is always the one-arg form.
+        "CallError" => {
+            let args = expect_type_args(n, 1)?;
+            let e = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            return Ok(Type::Named("CallError".to_string(), vec![TypeArg::Type(e)]));
         }
         "Static" => {
             let args = expect_type_args(n, 1)?;

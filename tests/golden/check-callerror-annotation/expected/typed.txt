@@ -1,0 +1,66 @@
+Program
+  Fn name=admission_nameable ret=u64
+    Param name=a mode=read ty=Admission
+    Body
+      Match
+        Local name=a ty=Admission
+        Case
+          VariantPattern enum=Admission variant=Full ty=Admission
+          Return
+            Int text=0 ty=u64
+        Case
+          VariantPattern enum=Admission variant=DeadlineUnmeetable ty=Admission
+          Return
+            Int text=1 ty=u64
+  Fn name=annotated ret=Result[u64, Wrap]
+    Param name=r mode=read ty=Result[u64, CallError[AppErr]]
+    Body
+      Let name=v ty=u64
+        Try ty=u64 conv=Wrap.from
+          Local name=r ty=Result[u64, CallError[AppErr]]
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u64, Wrap]
+          Local name=v ty=u64
+  Struct name=Wrap
+    AssocFn name=from ret=Wrap
+      Param name=e mode=take ty=CallError[AppErr]
+      Body
+        Match
+          Local name=e ty=CallError[AppErr]
+          Case
+            VariantPattern enum=CallError variant=Op ty=CallError[AppErr]
+              Wildcard ty=AppErr
+            Return
+              StructLiteral name=Wrap ty=Wrap
+                Field name=tag
+                  Int text=1 ty=u64
+          Case
+            VariantPattern enum=CallError variant=Cancelled ty=CallError[AppErr]
+            Return
+              StructLiteral name=Wrap ty=Wrap
+                Field name=tag
+                  Int text=2 ty=u64
+          Case
+            VariantPattern enum=CallError variant=DeadlineExceeded ty=CallError[AppErr]
+            Return
+              StructLiteral name=Wrap ty=Wrap
+                Field name=tag
+                  Int text=3 ty=u64
+          Case
+            VariantPattern enum=CallError variant=NotAdmitted ty=CallError[AppErr]
+              Binding name=reason ty=Admission
+              Wildcard ty=()
+            Match
+              Local name=reason ty=Admission
+              Case
+                VariantPattern enum=Admission variant=Full ty=Admission
+                Return
+                  StructLiteral name=Wrap ty=Wrap
+                    Field name=tag
+                      Int text=4 ty=u64
+              Case
+                VariantPattern enum=Admission variant=DeadlineUnmeetable ty=Admission
+                Return
+                  StructLiteral name=Wrap ty=Wrap
+                    Field name=tag
+                      Int text=5 ty=u64
