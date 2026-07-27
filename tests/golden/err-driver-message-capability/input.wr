@@ -51,6 +51,5 @@ pub fn build() -> Image:
     img = Image(name="driver-message-capability", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](transport=0x2000, capacity_sectors=16)
     d = img.driver(BlkDriver, device=blk, mailbox=4)
-    img.supervise(children=[d], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

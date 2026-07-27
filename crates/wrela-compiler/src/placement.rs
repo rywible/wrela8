@@ -302,7 +302,7 @@ pub fn place(
 }
 
 /// Appends the placement section (facts only; absent when the image has
-/// no actors and no drivers). Fixed order after Supervise in the report.
+/// no actors and no drivers). Fixed order after OnFailure in the report.
 pub fn render_placement_section(out: &mut String, table: &PlacementTable) {
     for e in &table.entries {
         crate::eval::image::push_line(

@@ -55,6 +55,5 @@ pub struct Store:
 pub fn build() -> Image:
     img = Image(name="try-none-propagates", target=Target.wrela_machine_v1)
     storage = img.actor(Store, settled=SETTLED, mailbox=4)
-    img.supervise(children=[storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

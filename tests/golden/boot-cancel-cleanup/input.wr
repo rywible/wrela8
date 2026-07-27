@@ -61,6 +61,5 @@ async fn cleanup_runs_in_reverse(c: Actor[Counter]):
 pub fn build() -> Image:
     img = Image(name="boot-cancel-cleanup", target=Target.wrela_machine_v1)
     c = img.actor(Counter, mailbox=8)
-    img.supervise(children=[c], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

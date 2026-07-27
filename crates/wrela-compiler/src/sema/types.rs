@@ -5402,7 +5402,7 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             | "IoCompletion"
             | "CompletionOutcome"
             | "Target"
-            | "Restart"
+            | "Failure"
             | "DriverMode"
             | "ReadOnly"
             | "WriteOnly"
@@ -5473,7 +5473,7 @@ fn resolve_named(
         // types (`const MODE: DriverMode`). Same zero-arg Named shape as
         // `Image`; variants live in `builtin_enum_variants`.
         // =================================================================
-        "DriverMode" | "Target" | "Restart" => Some(Type::Named(n.name.clone(), vec![])),
+        "DriverMode" | "Target" | "Failure" => Some(Type::Named(n.name.clone(), vec![])),
         // plans/M8.md item G, decision 17: 03-hardware.md §9's
         // `CompletionOutcome` — same zero-argument prelude-enum shape,
         // minted only by `VirtQueue.recover` but nameable in an
@@ -6122,7 +6122,7 @@ fn classify_named(
         // Neither a declared struct nor enum: a builtin `Type::Named`
         // this module resolves without a backing declaration (plans/
         // M4.md item B, decision 5 — `Image`, and `sema::bodies`'s own
-        // `ImageDecl`/`Duration`/`RestartIntensity` intrinsic-surface
+        // `ImageDecl`/`Duration` intrinsic-surface
         // pseudo-types, none registered here since nothing declares
         // them). Every one of these is plain data (never a resource
         // fiat, never composed from one), so this falls through to the

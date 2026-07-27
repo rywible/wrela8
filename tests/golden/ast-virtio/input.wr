@@ -17,7 +17,7 @@ from runtime.group import group
 from runtime.image import Image, ImageReport, Target
 from runtime.pool import Pool
 from runtime.scheduling import now, seconds, us, ms, wake
-from runtime.supervision import Restart, RestartIntensity, TaskFailure
+from runtime.failure import Failure
 from runtime.interrupt import InterruptCell
 from target.dma import DmaPool, DmaPoolSpec
 from target.interrupts import IrqCap
@@ -625,11 +625,7 @@ pub fn build() -> Image:
         mailbox=2,
     )
 
-    img.supervise(
-        children=[disk, storage, console, notes],
-        strategy=Restart.OneForAll,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
 
     # The whole @image body is a comptime context; mkfs runs at build time.
     img.seed_disk(extentfs_mkfs(

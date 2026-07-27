@@ -103,6 +103,5 @@ pub fn build() -> Image:
     img = Image(name="check-fstring-bounds", target=Target.wrela_machine_v1)
     storage = img.actor(Store, lit=LIT, inf=INF, mixed=MIXED, braces=BRACES,
                         label=LABEL, bound=BOUND, mailbox=4)
-    img.supervise(children=[storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

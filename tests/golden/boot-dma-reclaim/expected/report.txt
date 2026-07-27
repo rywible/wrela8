@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_dma_reclaim.wr sha256=c5a38f126369021643110ceae068ea8eaad013843a8ce4dd396bf493287c1437
+  Input path=examples/boot_dma_reclaim.wr sha256=219c06b8f814dc88d5888f379f4e5e28aa5828868ce3b782383ef5e28f330c37
   Input path=<generated> sha256=ca8674c0959f84c2571971f8b48d42b39b75a58f02e6d7f022803a9ff43d5150
   Name value=boot-dma-reclaim
   Target value=Target.wrela_machine_v1
@@ -26,9 +26,7 @@ ImageReport v0
   DmaPool name=BlockPayloads type=DmaBlock
     Arg label=device value=device#0
     Arg label=count value=1
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=856 bytes_state=72 bytes_mailbox=0 bytes_pool=784
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

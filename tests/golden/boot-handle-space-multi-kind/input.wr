@@ -125,9 +125,5 @@ pub fn build() -> Image:
         v0=hw0.handle(),
         v1=hw1.handle(),
     )
-    img.supervise(
-        children=[marker, s0, s1, tags],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

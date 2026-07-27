@@ -416,7 +416,7 @@ fn check_comptime_vocabulary(
             }
         }
         // plans/M7.md item G, decision 18: `DriverMode.Irq` / `Target.*` /
-        // `Restart.*` in a condition (fieldless prelude enum variants).
+        // `Failure.*` in a condition (fieldless prelude enum variants).
         Expr::Field(base, span, variant) => match base.as_ref() {
             Expr::Name(_, ename) => {
                 // plans/M9.md item QQ: load failures are `error[build]`.
@@ -900,7 +900,7 @@ fn eval_bound_condition(cond: &Expr, mctx: &ModuleCtx) -> Result<bool, SemaError
     let mut fctx = FnCtx::new(Type::Unit, mctx.module_pools.clone());
     let typed_cond = bodies::check_expr(cond, Some(&Type::Bool), &mut fctx, mctx)?;
     let mut program = TypedProgram::default();
-    for name in ["Target", "Restart", "DriverMode"] {
+    for name in ["Target", "Failure", "DriverMode"] {
         // plans/M9.md item QQ: load failures are `error[build]`.
         if let Some(vs) = stdlib_enums::variant_strs(name)? {
             program.enums.insert(

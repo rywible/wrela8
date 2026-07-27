@@ -224,6 +224,5 @@ pub fn build() -> Image:
     scale = img.actor(Scale, mailbox=4, factor=10)
     disk = img.driver(BlkDriver, device=blk, mailbox=4, scale=scale)
     st = img.actor(Storage, mailbox=4, disk=disk)
-    img.supervise(children=[disk, scale, st], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

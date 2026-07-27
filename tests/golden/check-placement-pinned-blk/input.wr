@@ -27,9 +27,5 @@ pub fn build() -> Image:
     blk_device = img.device[VirtioBlock](transport=0x2000)
     disk = img.driver(BlkDriver, device=blk_device)
     probe = img.actor(Probe, mailbox=4)
-    img.supervise(
-        children=[disk, probe],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -187,6 +187,5 @@ pub fn build() -> Image:
     led = img.actor(Ledger, mailbox=4)
     store = img.actor(Store, mailbox=4, led=led)
     probe = img.actor(Probe, mailbox=4, store=store)
-    img.supervise(children=[led, store, probe], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

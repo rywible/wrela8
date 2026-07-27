@@ -315,6 +315,5 @@ pub fn build() -> Image:
     disk = img.driver(BlkDriver, device=blk, buffer=take payloads)
     aux = img.driver(AuxDriver, device=aux_dev, tag=7)
     led = img.actor(Ledger, mailbox=8)
-    img.supervise(children=[disk, aux, led], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -18,19 +18,19 @@
 //! before init matching; extended again by the post-closure M7 sweep
 //! port, inserting device-bound-once before init-argument matching):
 //! construction DAG, then pools bound-at-seal, then pool declarations,
-//! then device-bound-once, then init-argument matching, then supervision
-//! — first failure wins. Rationale: the DAG check is the most structural
-//! (it does not even need to know what a declaration *is*, only what it
-//! references) so it runs first; pool binding is the next-most-structural
-//! fact (whether a declared resource exists at all) and is a precondition
-//! for init-argument matching to mean anything (an init argument can
-//! reference a pool-backed handle); device-bound-once is the mint's
-//! per-device half of 03 §1's "named once" and must hold before any
-//! `DeviceCap` is substituted; init-argument matching is the deepest
-//! per-declaration check; placement in the supervision tree is the most
+//! then device-bound-once, then init-argument matching, then failure
+//! policy — first failure wins. Rationale: the DAG check is the most
+//! structural (it does not even need to know what a declaration *is*,
+//! only what it references) so it runs first; pool binding is the
+//! next-most-structural fact (whether a declared resource exists at all)
+//! and is a precondition for init-argument matching to mean anything (an
+//! init argument can reference a pool-backed handle); device-bound-once
+//! is the mint's per-device half of 03 §1's "named once" and must hold
+//! before any `DeviceCap` is substituted; init-argument matching is the
+//! deepest per-declaration check; the image failure policy is the most
 //! "external" fact (it says nothing about a declaration's own
-//! construction, only about the tree drawn over already-valid
-//! declarations), so it runs last. `img.seal()`'s own "every declaration
+//! construction, only that the finished image named its abandonment
+//! response), so it runs last. `img.seal()`'s own "every declaration
 //! is fully bound" (05-library.md §9) is exactly the conjunction of every
 //! check below, not a separate mechanism — `check_sealed` *is* the seal
 //! check; `image.graph.seal-fully-bound`'s own ledger clause cites the
@@ -120,7 +120,7 @@ pub fn check_sealed(
     // second `DeviceCap` over a second register window for the same device.
     check_device_bound_once(graph)?;
     check_init_args(graph, programs)?;
-    check_supervision(graph)?;
+    check_failure_policy(graph)?;
     // plans/M7.md item E1, decision 14: required features vs DEVICE_FEATURES
     // is a *build* error; capacity_sectors is the build constant
     // `read_capacity_sectors` lowers to.
@@ -2617,59 +2617,24 @@ fn collect_irq_ops_expr(
     }
 }
 
-// --- check 5: exactly one supervising parent
-// (05-library.md §9, image.graph.supervision-one-parent) -------------------
+// --- check 5: failure policy exactly once
+// (05-library.md §9, image.graph.failure-policy) ---------------------------
 //
-// "Exactly one parent per actor/task" — every declared driver/actor must
-// appear in exactly one `img.supervise(children=[...])` group's own
-// `children` list. Devices and pools are never supervised (05-library.md
-// §9 names only "actor/task"), so neither is a node here. All groups
-// declared by an M4 `@image` fn are top-level (`img.supervise` returns
-// `Unit`, decision 5 — there is nothing composable to nest a group under
-// another), so "the image root is the implicit parent of top-level
-// `supervise` groups" is trivially satisfied by every group this milestone
-// can even construct: there is no nested-supervision surface yet for a
-// group to *not* be top-level under, so this rule needs no separate check
-// beyond "every driver/actor is in exactly one group" below.
-pub fn check_supervision(graph: &ImageGraph) -> Result<(), SemaError> {
-    let mut counts: BTreeMap<ImageDeclRef, usize> = BTreeMap::new();
-    for s in &graph.supervisions {
-        for a in &s.args {
-            if a.label != "children" {
-                continue;
-            }
-            let mut refs = Vec::new();
-            decl_refs_in_value(&a.value, &mut refs);
-            for r in refs {
-                *counts.entry(r).or_insert(0) += 1;
-            }
-        }
+// Crash-only (plans/M13.md item F / decision 3): per-actor supervision is
+// gone. The image must declare `img.on_failure(policy=...)` exactly once —
+// required-explicit, no default. Zero and more-than-one are both build
+// errors; the policy value itself (`Failure.Reboot` | `Failure.Halt`) is
+// ordinary enum construction already accepted by sema.
+pub fn check_failure_policy(graph: &ImageGraph) -> Result<(), SemaError> {
+    match graph.on_failures.len() {
+        0 => Err(build_error(
+            "image has no `img.on_failure(policy=...)` failure policy".to_string(),
+        )),
+        1 => Ok(()),
+        _ => Err(build_error(
+            "image declares `img.on_failure` more than once".to_string(),
+        )),
     }
-    let mut nodes: Vec<ImageDeclRef> = Vec::new();
-    for i in 0..graph.drivers.len() {
-        nodes.push(ImageDeclRef::Driver(i));
-    }
-    for i in 0..graph.actors.len() {
-        nodes.push(ImageDeclRef::Actor(i));
-    }
-    for n in &nodes {
-        match counts.get(n).copied().unwrap_or(0) {
-            0 => {
-                return Err(build_error(format!(
-                    "`{}` is not supervised by any `img.supervise(children=[...])` group",
-                    n.render()
-                )));
-            }
-            1 => {}
-            _ => {
-                return Err(build_error(format!(
-                    "`{}` is supervised by more than one `img.supervise(children=[...])` group",
-                    n.render()
-                )));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -3862,49 +3827,41 @@ mod tests {
         );
     }
 
-    // --- supervision ---------------------------------------------------------
+    // --- failure policy ------------------------------------------------------
 
     #[test]
-    fn an_unsupervised_actor_is_named_as_an_orphan() {
-        let mut g = ImageGraph::default();
-        g.drivers.push(crate::eval::image::DriverDecl {
-            actor_type: Type::Named("Blk".to_string(), vec![]),
-            args: vec![],
-        });
-        g.actors.push(crate::eval::image::ActorDecl {
-            actor_type: Type::Named("Store".to_string(), vec![]),
-            args: vec![],
-        });
-        g.supervisions.push(crate::eval::image::SuperviseDecl {
-            args: vec![decl_arg(
-                "children",
-                Type::Named("ImageDeclArray".to_string(), vec![]),
-                Value::Array(vec![Value::ImageDecl(ImageDeclRef::Driver(0))]),
-            )],
-        });
-        let err = check_supervision(&g).expect_err("actor#0 is never supervised");
-        assert!(err.message.contains("actor#0"));
-        assert!(err.message.contains("not supervised"));
+    fn a_missing_failure_policy_is_rejected() {
+        let g = ImageGraph::default();
+        let err = check_failure_policy(&g).expect_err("no on_failure");
+        assert!(err.message.contains("no `img.on_failure"));
     }
 
     #[test]
-    fn a_doubly_supervised_driver_is_rejected() {
+    fn a_second_failure_policy_is_rejected() {
         let mut g = ImageGraph::default();
-        g.drivers.push(crate::eval::image::DriverDecl {
-            actor_type: Type::Named("Blk".to_string(), vec![]),
-            args: vec![],
-        });
         for _ in 0..2 {
-            g.supervisions.push(crate::eval::image::SuperviseDecl {
+            g.on_failures.push(crate::eval::image::OnFailureDecl {
                 args: vec![decl_arg(
-                    "children",
-                    Type::Named("ImageDeclArray".to_string(), vec![]),
-                    Value::Array(vec![Value::ImageDecl(ImageDeclRef::Driver(0))]),
+                    "policy",
+                    Type::Named("Failure".to_string(), vec![]),
+                    Value::Enum(1, vec![]),
                 )],
             });
         }
-        let err = check_supervision(&g).expect_err("driver#0 has two parents");
-        assert!(err.message.contains("driver#0"));
-        assert!(err.message.contains("more than one"));
+        let err = check_failure_policy(&g).expect_err("two on_failure");
+        assert!(err.message.contains("more than once"));
+    }
+
+    #[test]
+    fn a_single_failure_policy_is_accepted() {
+        let mut g = ImageGraph::default();
+        g.on_failures.push(crate::eval::image::OnFailureDecl {
+            args: vec![decl_arg(
+                "policy",
+                Type::Named("Failure".to_string(), vec![]),
+                Value::Enum(1, vec![]),
+            )],
+        });
+        assert!(check_failure_policy(&g).is_ok());
     }
 }

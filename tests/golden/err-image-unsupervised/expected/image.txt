@@ -1,1 +1,0 @@
-error[build]: `actor#0` is not supervised by any `img.supervise(children=[...])` group

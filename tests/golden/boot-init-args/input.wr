@@ -200,6 +200,5 @@ pub fn build() -> Image:
                       span=1234567890123456789, bias=-3)
     relay = img.actor(Relay, mailbox=4, meter=meter, window=4096, tag=9)
     gauge = img.actor(Gauge, mailbox=4, peer=relay.handle(), limit=30000, armed=true)
-    img.supervise(children=[meter, relay, gauge], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

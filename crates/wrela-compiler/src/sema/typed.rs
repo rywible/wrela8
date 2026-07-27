@@ -84,11 +84,7 @@ impl CalleeKey {
 /// Whether `key` (a `TypedExprKind::Intrinsic::key` spelling) is one of
 /// the *graph-building* `@image` builder intrinsics (plans/M4.md item B,
 /// decision 5) — legal only during `@image` evaluation
-/// (`eval::legal`'s own first real illegal arm). `RestartIntensity`/
-/// `seconds` share the same node kind (dumbest way that works, one
-/// dispatch point in `eval::interp`) but are ordinary comptime-legal
-/// prelude helpers, not graph effects, so they are deliberately excluded
-/// — legal everywhere, exactly like `Option`/`Result`.
+/// (`eval::legal`'s own first real illegal arm).
 pub fn is_restricted_intrinsic(key: &str) -> bool {
     matches!(
         key,
@@ -98,7 +94,7 @@ pub fn is_restricted_intrinsic(key: &str) -> bool {
             | "Image.actor"
             | "Image.pool"
             | "Image.dma_pool"
-            | "Image.supervise"
+            | "Image.on_failure"
             | "Image.check_layout"
             | "Image.seal"
             | "ImageDecl.handle"
@@ -205,9 +201,8 @@ pub enum TypedExprKind {
     /// One `@image`-builder intrinsic call (plans/M4.md item B, decision
     /// 5: 05-library.md §9's whole builder surface — `Image(...)`,
     /// `img.device[D](...)`, `img.driver(A, ...)`, `img.actor(A, ...)`,
-    /// `img.pool[T](...)`, `img.dma_pool[T](...)`, `img.supervise(...)`,
-    /// `img.check_layout(f)`, `img.seal()`, `decl.handle()` — plus the
-    /// two prelude helpers `RestartIntensity(...)`/`seconds(n)`) is one
+    /// `img.pool[T](...)`, `img.dma_pool[T](...)`, `img.on_failure(...)`,
+    /// `img.check_layout(f)`, `img.seal()`, `decl.handle()`) is one
     /// dedicated node kind rather than an ordinary `Call`: none of these
     /// have a declared parameter list a `Call` node could align its
     /// `args` against positionally, and `eval::image`'s report renders
@@ -215,7 +210,7 @@ pub enum TypedExprKind {
     /// label is kept alongside its value instead of erased.
     ///
     /// `key` is the fixed intrinsic spelling (`"Image"`, `"Image.driver"`,
-    /// `"ImageDecl.handle"`, `"seconds"`, ...) `sema::typed::is_restricted_intrinsic`
+    /// `"ImageDecl.handle"`, ...) `sema::typed::is_restricted_intrinsic`
     /// and `eval::image`'s own dispatch both match on directly —
     /// `sema::bodies`'s own callee-key-by-spelling convention, reused
     /// verbatim for the builder surface (decision 5: "recognized by

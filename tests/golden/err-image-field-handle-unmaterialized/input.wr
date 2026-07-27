@@ -53,6 +53,5 @@ pub fn build() -> Image:
     t = img.actor(Tally, mailbox=8)
     led = img.actor(Ledger, mailbox=8)
     w = img.actor(Worker, mailbox=8, led=led)
-    img.supervise(children=[t, led, w], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

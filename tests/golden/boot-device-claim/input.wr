@@ -153,6 +153,5 @@ pub fn build() -> Image:
     blk = img.device[VirtioBlock](transport=0x2000)
     disk = img.driver(BlkDriver, device=blk)
     led = img.actor(Ledger, mailbox=8)
-    img.supervise(children=[disk, led], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

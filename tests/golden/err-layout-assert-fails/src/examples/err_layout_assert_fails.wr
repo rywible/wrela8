@@ -23,6 +23,5 @@ pub fn build() -> Image:
     img = Image(name="layout-assert-fail", target=Target.wrela_machine_v1)
     a = img.actor(Store, mailbox=4)
     img.check_layout(code_must_be_tiny)
-    img.supervise(children=[a], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

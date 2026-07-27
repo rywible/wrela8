@@ -34,6 +34,5 @@ async fn too_many(lg: Actor[Logger]):
 pub fn build() -> Image:
     img = Image(name="err-send-capacity-short", target=Target.wrela_machine_v1)
     lg = img.actor(Logger, mailbox=2)
-    img.supervise(children=[lg], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -463,7 +463,7 @@ fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedPro
     }
     // plans/M7.md item G / plans/M9.md item I: stdlib enums for
     // const-generic arguments (`DriverMode.Irq`).
-    for name in ["Target", "Restart", "DriverMode"] {
+    for name in ["Target", "Failure", "DriverMode"] {
         // plans/M9.md item QQ: load failures are `error[build]`.
         if let Some(vs) = crate::sema::stdlib_enums::variant_strs(name)? {
             program.enums.entry(name.to_string()).or_insert_with(|| {

@@ -31,9 +31,5 @@ pub fn build() -> Image:
     img = Image(name="cap-mint", target=Target.wrela_machine_v1)
     blk_device = img.device[BlockHw](transport=0x2000)
     disk = img.driver(BlkDriver, device=blk_device, sectors=131072)
-    img.supervise(
-        children=[disk],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

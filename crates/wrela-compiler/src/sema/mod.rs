@@ -666,7 +666,7 @@ fn check_program_typed_tables(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, CheckDumpTables), SemaError> {
-    // plans/M9.md item QQ: before specialize (which reads Target/Restart
+    // plans/M9.md item QQ: before specialize (which reads Target/Failure
     // in comptime-if conditions), load the five auto-visible enums from
     // the same `stdlib/core/` the loader would pick for this package.
     prepare_stdlib_enums_for_closure(modules, paths)?;
@@ -1097,7 +1097,7 @@ fn splice_imported_decls(
     // the first name (BTree order, so deterministic) the two modules
     // resolve to genuinely different declarations. "Different module" is
     // not enough on its own — `bodies::check` injects the five remaining
-    // prelude enums (`Target`, `Restart`, `BootError`, `DriverMode`,
+    // prelude enums (`Target`, `Failure`, `BootError`, `DriverMode`,
     // `CompletionOutcome`) into *every* module's own
     // `TypedProgram::enums`, so every pair of modules in every build
     // "declares" all five. Those are the same declaration by value, and

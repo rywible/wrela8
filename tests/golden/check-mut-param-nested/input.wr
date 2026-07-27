@@ -122,6 +122,5 @@ pub fn build() -> Image:
     img = Image(name="mut-param-nested", target=Target.wrela_machine_v1)
     storage = img.actor(Store, agg=AGG_V, sca=SCA_V, nest=NEST_V,
                         chain=CHAIN_V, mix=MIX_V, mailbox=4)
-    img.supervise(children=[storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

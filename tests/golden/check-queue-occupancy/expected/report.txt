@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_queue_occupancy.wr sha256=22087a821967c1b2286c5e53746941e4bb9c34697753cd97ecd948ef0af923e4
+  Input path=examples/check_queue_occupancy.wr sha256=72e9fda2fcd590f55a21a64043f3bf9355859f82c51fc4a9714e50d0cdd6e364
   Input path=<generated> sha256=f4ca6e5d06e0f5b0fb35199746f4abf49f8e2b4680e19bd332d9483de64fda4b
   Name value=check-queue-occupancy
   Target value=Target.wrela_machine_v1
@@ -19,8 +19,7 @@ ImageReport v0
   DmaPool name=BlockControl type=BlkReqHeader
     Arg label=device value=device#0
     Arg label=count value=256
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=6176 bytes_state=32 bytes_mailbox=0 bytes_pool=6144
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

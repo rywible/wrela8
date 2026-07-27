@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_blk_two_devices.wr sha256=d579cfb43de0d8492f675f300d8d8a25106226d57ddaa79eff85c68f679e8ae9
+  Input path=examples/boot_blk_two_devices.wr sha256=705c4a904100bb8d92b9f3d335aad9ce001ea06449ddcc5d3610611344d9e278
   Input path=<generated> sha256=3d6c62e7f11b8da0e60f94a703f37620c58b7a84601e8656f6a184eae2f5a8b4
   Name value=boot-blk-two-devices
   Target value=Target.wrela_machine_v1
@@ -34,10 +34,7 @@ ImageReport v0
   DmaPool name=BlockPayloads type=DmaBlock
     Arg label=device value=device#0
     Arg label=count value=1
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=driver#1
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=880 bytes_state=96 bytes_mailbox=0 bytes_pool=784
   Placement id=driver#1 type=AuxDriver core=0 source=inferred work=0 work_source=unproved bytes=24 bytes_state=8 bytes_mailbox=0 bytes_pool=16
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0

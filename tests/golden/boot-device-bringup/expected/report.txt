@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_device_bringup.wr sha256=2c6fbc0ec28558ce58ac89358a9a9fb62680d5e34591805f4f8a393f81864d76
+  Input path=examples/boot_device_bringup.wr sha256=bd551f629a41cf1a33d4ac1ad3fb2d0756e19b9240daede9be41b88883f7cf67
   Input path=<generated> sha256=847645970b526fa748b630ea1096649934512505602d5f3992f1322ef3bbaa2b
   Name value=boot-device-bringup
   Target value=Target.wrela_machine_v1
@@ -21,9 +21,7 @@ ImageReport v0
   DmaPool name=BlockControl type=BlkReqHeader
     Arg label=device value=device#0
     Arg label=count value=32
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=800 bytes_state=32 bytes_mailbox=0 bytes_pool=768
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

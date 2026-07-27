@@ -3691,8 +3691,7 @@ pub fn build() -> Image:
     img = Image(name="chain", target=Target.wrela_machine_v1)
     inner = img.actor(Inner, mailbox=4)
     outer = img.actor(Outer, mailbox=4, inner=inner)
-    img.supervise(children=[inner, outer], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()
 "#;
         let outcome = boot_source(src, "chain");
@@ -3766,8 +3765,7 @@ pub fn build() -> Image:
     img = Image(name="fifo", target=Target.wrela_machine_v1)
     stamps = img.actor(Stamper, mailbox=4)
     worker = img.actor(Worker, mailbox=4, stamps=stamps)
-    img.supervise(children=[stamps, worker], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()
 "#;
         let outcome = boot_source(src, "fifo");
@@ -3859,8 +3857,7 @@ pub fn build() -> Image:
     log = img.actor(Log, mailbox=8)
     chain = img.actor(ChainActor, mailbox=4, log=log)
     third = img.actor(Third, mailbox=4, log=log)
-    img.supervise(children=[log, chain, third], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()
 "#;
         let outcome = boot_source(src, "interleave");
@@ -3913,8 +3910,7 @@ async fn stuck(target: Actor[Stuck]):
 pub fn build() -> Image:
     img = Image(name="deadlock", target=Target.wrela_machine_v1)
     s = img.actor(Stuck, mailbox=4)
-    img.supervise(children=[s], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()
 "#;
         let (image, report) = compile_test_image(src);
@@ -5149,8 +5145,7 @@ pub fn build() -> Image:
     img = Image(name="cross-core-conf", target=Target.wrela_machine_v1)
     home = img.actor(Home, mailbox=4, core=0)
     away = img.actor(Away, mailbox=2, core=1)
-    img.supervise(children=[home, away], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()
 "#;
 

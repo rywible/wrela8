@@ -297,6 +297,5 @@ pub fn build() -> Image:
     ck = img.actor(Clerk, mailbox=4)
     st = img.actor(Store, mailbox=4, clerk=ck)
     pr = img.actor(Probe, mailbox=4, store=st)
-    img.supervise(children=[ck, st, pr], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

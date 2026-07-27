@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_placement_pinned_blk.wr sha256=826d504c582a65b41bc1749ef2f3c194e3af21a5b236a7a5391aa5a5ce6b57d7
+  Input path=examples/check_placement_pinned_blk.wr sha256=3454f9263d07edf969c1d874230e4588f365f72e045f838031d4dcb96953d5ec
   Input path=<generated> sha256=62db2a1c91572c0f7ee98e8eabcaa96955cf263c42d3fac436632acdc0bdcc13
   Name value=placement-pinned-blk
   Target value=Target.wrela_machine_v1
@@ -16,9 +16,7 @@ ImageReport v0
   Actor index=0 type=Probe
     Mailbox value=4
   Edge from=driver#0 to=device#0
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
   Placement id=actor#0 type=Probe core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

@@ -62,6 +62,5 @@ async fn boots(s: Actor[Sink]):
 pub fn build() -> Image:
     img = Image(name="err-image-init-fallible", target=Target.wrela_machine_v1)
     s = img.actor(Sink, mailbox=4, depth=7)
-    img.supervise(children=[s], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

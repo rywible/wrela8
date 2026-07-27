@@ -101,6 +101,5 @@ pub fn build() -> Image:
     img = Image(name="mut-param-writeback", target=Target.wrela_machine_v1)
     storage = img.actor(Store, agg=AGG, sca=SCA, nest=NEST, field=FIELD,
                         chain=CHAIN, mix=MIX, mailbox=4)
-    img.supervise(children=[storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

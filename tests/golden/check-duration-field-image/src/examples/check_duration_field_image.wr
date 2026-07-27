@@ -27,6 +27,5 @@ pub struct Store:
 pub fn build() -> Image:
     img = Image(name="duration-field-image", target=Target.wrela_machine_v1)
     s = img.actor(Store, mailbox=8)
-    img.supervise(children=[s], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

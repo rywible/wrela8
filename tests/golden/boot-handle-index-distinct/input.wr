@@ -110,9 +110,5 @@ pub fn build() -> Image:
         driver_id=stub.handle(),
         device_id=hw.handle(),
     )
-    img.supervise(
-        children=[marker, stub, tags],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

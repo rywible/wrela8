@@ -2124,7 +2124,7 @@ fn eval_intrinsic<'a, 'p>(
             };
             result.map_err(|m| ctx.abandon(m))
         }
-        "Image.supervise" => {
+        "Image.on_failure" => {
             let (_, decl_args) = split_args(args, env, dstack, loop_marker, ctx)?;
             if ctx.image.is_none() {
                 return Err(
@@ -2134,7 +2134,7 @@ fn eval_intrinsic<'a, 'p>(
             ctx.image
                 .as_mut()
                 .expect("checked above")
-                .declare_supervise(decl_args);
+                .declare_on_failure(decl_args);
             Ok(Value::Unit)
         }
         "Image.check_layout" => {
@@ -2176,28 +2176,6 @@ fn eval_intrinsic<'a, 'p>(
             };
             eval_expr(r, env, dstack, loop_marker, ctx)
         }
-        "RestartIntensity" => {
-            let mut max_v = None;
-            let mut within_v = None;
-            for (label, a) in args {
-                let v = eval_expr(a, env, dstack, loop_marker, ctx)?;
-                match label.as_str() {
-                    "max" => max_v = Some(v),
-                    // plans/M9.md item E: `within` is a `Duration` (struct
-                    // with one `nanos` field) after the constructors moved
-                    // to ordinary wrela; the image graph still stores the
-                    // nanosecond count (report intensity=(max, nanos)).
-                    "within" => within_v = Some(duration_as_nanos(v, ctx)?),
-                    _ => {}
-                }
-            }
-            let (Some(max_v), Some(within_v)) = (max_v, within_v) else {
-                return Err(ctx.abandon("`RestartIntensity` requires both `max` and `within`"));
-            };
-            let v = Value::Tuple(vec![max_v, within_v]);
-            ctx.charge(v.weight())?;
-            Ok(v)
-        }
         // plans/M9.md item F3 decision 347: `[T; N].map_take` /
         // `try_map_take` (05-library.md §7).
         "Array.map_take" | "Array.try_map_take" => {
@@ -2236,24 +2214,6 @@ fn eval_intrinsic<'a, 'p>(
         other => Err(ctx.abandon(format!(
             "internal error: unknown/runtime-only builder intrinsic `{other}` reached the \
              comptime evaluator"
-        ))),
-    }
-}
-
-/// `Duration` after item E is `Value::Struct([nanos])`; the legacy
-/// intrinsic path produced a bare `U64`. Accept both so a half-migrated
-/// tree cannot silently widen.
-fn duration_as_nanos(v: Value, ctx: &Interp<'_>) -> Result<Value, Unwind> {
-    match v {
-        Value::U64(n) => Ok(Value::U64(n)),
-        Value::Struct(fields) if fields.len() == 1 => match &fields[0] {
-            Value::U64(n) => Ok(Value::U64(*n)),
-            other => Err(ctx.abandon(format!(
-                "internal error: Duration.nanos is not u64 (found {other:?})"
-            ))),
-        },
-        other => Err(ctx.abandon(format!(
-            "internal error: RestartIntensity.within is not a Duration (found {other:?})"
         ))),
     }
 }

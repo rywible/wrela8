@@ -29,6 +29,5 @@ async fn fetch(d: Actor[Doubler]) -> u64:
 pub fn build() -> Image:
     img = Image(name="actor-undeclared", target=Target.wrela_machine_v1)
     c = img.actor(Counter, mailbox=4)
-    img.supervise(children=[c], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

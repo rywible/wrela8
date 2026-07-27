@@ -54,10 +54,6 @@ pub fn build() -> Image:
     # A second handle edge, one hop further down the wiring chain.
     stats = img.actor(StatsActor, cache=cache.handle(), window=16, mailbox=4)
 
-    img.supervise(
-        children=[disk, cache, stats],
-        strategy=Restart.OneForAll,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
 
     return img.seal()

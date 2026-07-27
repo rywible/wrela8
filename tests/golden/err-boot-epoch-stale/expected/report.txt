@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/err_boot_epoch_stale.wr sha256=37656ac96a372ef5305e7b08c3e89b3a981492cbb5f4bf7bff14a1b54c685d2b
+  Input path=examples/err_boot_epoch_stale.wr sha256=290dae3248ffdf2f1c8b4eb433dbd7d80976d62d1b7b95dbbe88964df11e004f
   Input path=<generated> sha256=444bc88b30cfd5d5f20e59e0245f1fca94131d7c56a58b98d91d98646889e107
   Name value=err-boot-epoch-stale
   Target value=Target.wrela_machine_v1
@@ -26,9 +26,7 @@ ImageReport v0
   DmaPool name=BlockPayloads type=DmaBlock
     Arg label=device value=device#0
     Arg label=count value=1
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=848 bytes_state=64 bytes_mailbox=0 bytes_pool=784
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

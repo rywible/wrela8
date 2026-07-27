@@ -20,6 +20,5 @@ pub struct Store:
 pub fn build() -> Image:
     img = Image(name="import-reachable-only", target=Target.wrela_machine_v1)
     a = img.actor(Store, mailbox=8)
-    img.supervise(children=[a], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=1, within=seconds(1)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

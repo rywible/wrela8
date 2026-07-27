@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_pool_two_devices.wr sha256=9f4c5d0be6360832f9a040c61b763ccd1908e80a723d793fe9a194f52a83741a
+  Input path=examples/check_pool_two_devices.wr sha256=36aca8d495c39ad80c8b859d9e24d16953b2c44b6ce7126878a7eaf6f576596b
   Input path=<generated> sha256=48e8deae52035a461e030a8d6ac95797c39a772df687a494abf356ec66901a4d
   Name value=pool-two-devices
   Target value=Target.wrela_machine_v1
@@ -26,9 +26,7 @@ ImageReport v0
   DmaPool name=ControlB type=Ctl
     Arg label=device value=device#1
     Arg label=count value=2
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=driver#1
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=inferred work=0 work_source=unproved bytes=24 bytes_state=8 bytes_mailbox=0 bytes_pool=16
   Placement id=driver#1 type=OtherDriver core=0 source=inferred work=0 work_source=unproved bytes=24 bytes_state=8 bytes_mailbox=0 bytes_pool=16
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

@@ -1,0 +1,16 @@
+module examples.err_image_two_failure_policies
+
+@driver
+pub struct Blk:
+    id: u32
+
+    init(mut self):
+        self.id = 1
+
+@image
+pub fn build() -> Image:
+    img = Image(name="two-failure-policies", target=Target.wrela_machine_v1)
+    disk = img.driver(Blk)
+    img.on_failure(policy=Failure.Halt)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

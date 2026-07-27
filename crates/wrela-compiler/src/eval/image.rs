@@ -3,8 +3,8 @@
 //! (`eval::interp`) builds exactly one plain `ImageGraph` — BTreeMaps
 //! keyed by name (pools/dma pools, the one declaration kind 05-library.md
 //! §9 itself names by a bound `pool` identifier) plus construction-order
-//! `Vec`s (everything else: devices, drivers, actors, `supervise`
-//! groups, registered layout asserts) — declarations recorded in program
+//! `Vec`s (everything else: devices, drivers, actors, `on_failure`
+//! declarations, registered layout asserts) — declarations recorded in program
 //! order, every argument a fully evaluated `eval::value::Value` alongside
 //! its own static `sema::types::Type` (needed only so `dump` below can
 //! render an enum construction or a list by name instead of a bare
@@ -14,7 +14,7 @@
 //! (house rule: every stage gets a dump before features) — `Kind
 //! key=value` lines, two-space indent, the M1 dump style, deterministic
 //! order throughout. It does **not** check the graph (item C: DAG,
-//! one-parent supervision, init-argument matching, ...) — recording
+//! failure policy, init-argument matching, ...) — recording
 //! faithfully is this item's whole job; item C reads this same struct.
 //!
 //! `img.dma_pool` used to be the one declaration kind that was recorded
@@ -112,7 +112,7 @@ pub struct PoolDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SuperviseDecl {
+pub struct OnFailureDecl {
     pub args: Vec<DeclArg>,
 }
 
@@ -140,7 +140,7 @@ pub struct ImageGraph {
     pub actors: Vec<ActorDecl>,
     pub pools: BTreeMap<String, PoolDecl>,
     pub dma_pools: BTreeMap<String, PoolDecl>,
-    pub supervisions: Vec<SuperviseDecl>,
+    pub on_failures: Vec<OnFailureDecl>,
     pub layout_asserts: Vec<LayoutAssertDecl>,
     pub sealed: bool,
 }
@@ -234,8 +234,8 @@ impl ImageGraph {
         Ok(Value::ImageDecl(ImageDeclRef::DmaPool(pool_name)))
     }
 
-    pub fn declare_supervise(&mut self, args: Vec<DeclArg>) {
-        self.supervisions.push(SuperviseDecl { args });
+    pub fn declare_on_failure(&mut self, args: Vec<DeclArg>) {
+        self.on_failures.push(OnFailureDecl { args });
     }
 
     pub fn declare_check_layout(&mut self, fn_key: String) {
@@ -245,7 +245,7 @@ impl ImageGraph {
 
 // --- the `--stage=image` dump (deliverable 3): `Kind key=value`, two-
 // space indent, the M1 dump style, deterministic order throughout
-// (program order for devices/drivers/actors/supervisions/layout
+// (program order for devices/drivers/actors/on_failures/layout
 // asserts, `BTreeMap` order for pools/dma pools). -------------------------
 
 /// `pub(crate)`, not private: `report.rs` (plans/M4.md item D) reuses this
@@ -475,8 +475,8 @@ pub fn dump(enums: &BTreeMap<String, Vec<String>>, graph: &ImageGraph) -> String
         );
         dump_args(&program, &d.args, 2, &mut out);
     }
-    for (i, s) in graph.supervisions.iter().enumerate() {
-        push_line(&mut out, 1, &format!("Supervise index={i}"));
+    for (i, s) in graph.on_failures.iter().enumerate() {
+        push_line(&mut out, 1, &format!("OnFailure index={i}"));
         dump_args(&program, &s.args, 2, &mut out);
     }
     for a in &graph.layout_asserts {
@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn supervise_and_check_layout_are_recorded_in_order() {
+    fn on_failure_and_check_layout_are_recorded_in_order() {
         let mut g = ImageGraph::default();
         g.declare_check_layout("fn_a".to_string());
         g.declare_check_layout("fn_b".to_string());
@@ -595,12 +595,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["fn_a".to_string(), "fn_b".to_string()]
         );
-        g.declare_supervise(vec![DeclArg {
-            label: "strategy".to_string(),
-            ty: Type::Named("Restart".to_string(), vec![]),
-            value: Value::Enum(0, vec![]),
+        g.declare_on_failure(vec![DeclArg {
+            label: "policy".to_string(),
+            ty: Type::Named("Failure".to_string(), vec![]),
+            value: Value::Enum(1, vec![]), // Failure.Halt
         }]);
-        assert_eq!(g.supervisions.len(), 1);
+        assert_eq!(g.on_failures.len(), 1);
     }
 
     #[test]
@@ -613,14 +613,14 @@ mod tests {
             "Image.actor",
             "Image.pool",
             "Image.dma_pool",
-            "Image.supervise",
+            "Image.on_failure",
             "Image.check_layout",
             "Image.seal",
             "ImageDecl.handle",
         ] {
             assert!(is_restricted_intrinsic(key), "{key} must be restricted");
         }
-        for key in ["RestartIntensity", "seconds", "not_an_intrinsic"] {
+        for key in ["seconds", "not_an_intrinsic"] {
             assert!(
                 !is_restricted_intrinsic(key),
                 "{key} must not be restricted"

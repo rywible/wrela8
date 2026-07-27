@@ -51,11 +51,8 @@
 //!    construction order the edges were discovered in (devices, then
 //!    drivers, then actors; each declaration's own argument order).
 //! 6. `Pool` blocks (args verbatim, same reasoning as `Device`).
-//! 7. `Supervise` blocks: `strategy`/`intensity` pulled onto the header
-//!    line itself, `children` expanded into one `Child` line per member;
-//!    any other labeled argument (there is no other in 05 §9's own
-//!    surface, but the renderer does not silently drop a real fact it
-//!    cannot name) falls back to an ordinary `Arg` line.
+//! 7. `OnFailure` blocks: `policy` pulled onto the header line itself;
+//!    any other labeled argument falls back to an ordinary `Arg` line.
 //! 8a. **Placement** (plans/M8.md item B, 04-compiler.md §3): one
 //!    `Placement id=... type=... core=... source=... work=... ...` line
 //!    per driver/actor, in declaration order. The table is computed by
@@ -465,62 +462,31 @@ pub fn render(
         render_pool_args(&program, &d.args, &mut out);
     }
 
-    // --- 7. supervision tree ---------------------------------------------------
-    for (i, s) in graph.supervisions.iter().enumerate() {
-        let strategy = s
+    // --- 7. failure policy -----------------------------------------------------
+    for (i, s) in graph.on_failures.iter().enumerate() {
+        let policy = s
             .args
             .iter()
-            .find(|a| a.label == "strategy")
+            .find(|a| a.label == "policy")
             .map(|a| image::render_value(&program, &a.ty, &a.value));
-        let intensity = s
-            .args
-            .iter()
-            .find(|a| a.label == "intensity")
-            .map(|a| image::render_value(&program, &a.ty, &a.value));
-        let mut header = format!("Supervise index={i}");
-        if let Some(v) = &strategy {
-            header.push_str(&format!(" strategy={v}"));
-        }
-        if let Some(v) = &intensity {
-            header.push_str(&format!(" intensity={v}"));
+        let mut header = format!("OnFailure index={i}");
+        if let Some(v) = &policy {
+            header.push_str(&format!(" policy={v}"));
         }
         image::push_line(&mut out, 1, &header);
         for a in &s.args {
-            match a.label.as_str() {
-                "strategy" | "intensity" => {}
-                "children" => {
-                    if let Value::Array(items) = &a.value {
-                        for item in items {
-                            let rendered = if let Value::ImageDecl(r) = item {
-                                r.render()
-                            } else {
-                                image::render_bare_value(item)
-                            };
-                            image::push_line(&mut out, 2, &format!("Child value={rendered}"));
-                        }
-                    } else {
-                        image::push_line(
-                            &mut out,
-                            2,
-                            &format!(
-                                "Arg label=children value={}",
-                                image::render_value(&program, &a.ty, &a.value)
-                            ),
-                        );
-                    }
-                }
-                _ => {
-                    image::push_line(
-                        &mut out,
-                        2,
-                        &format!(
-                            "Arg label={} value={}",
-                            a.label,
-                            image::render_value(&program, &a.ty, &a.value)
-                        ),
-                    );
-                }
+            if a.label == "policy" {
+                continue;
             }
+            image::push_line(
+                &mut out,
+                2,
+                &format!(
+                    "Arg label={} value={}",
+                    a.label,
+                    image::render_value(&program, &a.ty, &a.value)
+                ),
+            );
         }
     }
 
@@ -712,15 +678,15 @@ mod tests {
     }
 
     /// A small, real-shaped graph — one driver (a plain arg), one actor
-    /// (a handle edge + a mailbox + a plain arg), one pool, one supervise
-    /// group over both — enough to exercise every section this module
-    /// renders in one pass.
+    /// (a handle edge + a mailbox + a plain arg), one pool, one failure
+    /// policy — enough to exercise every section this module renders in
+    /// one pass.
     fn sample_graph() -> (ImageGraph, BTreeMap<String, Vec<String>>) {
         let mut enums = BTreeMap::new();
         enums.insert("Target".to_string(), vec!["wrela_machine_v1".to_string()]);
         enums.insert(
-            "Restart".to_string(),
-            vec!["OneForOne".to_string(), "OneForAll".to_string()],
+            "Failure".to_string(),
+            vec!["Reboot".to_string(), "Halt".to_string()],
         );
 
         let mut g = ImageGraph::new(
@@ -755,21 +721,11 @@ mod tests {
                 args: vec![decl_arg("slots", Type::U32, Value::U32(4))],
             },
         );
-        g.declare_supervise(vec![
-            decl_arg(
-                "children",
-                Type::Named("ImageDeclArray".to_string(), vec![]),
-                Value::Array(vec![
-                    Value::ImageDecl(ImageDeclRef::Driver(0)),
-                    Value::ImageDecl(ImageDeclRef::Actor(0)),
-                ]),
-            ),
-            decl_arg(
-                "strategy",
-                Type::Named("Restart".to_string(), vec![]),
-                Value::Enum(0, vec![]),
-            ),
-        ]);
+        g.declare_on_failure(vec![decl_arg(
+            "policy",
+            Type::Named("Failure".to_string(), vec![]),
+            Value::Enum(1, vec![]), // Failure.Halt
+        )]);
         g.sealed = true;
         (g, enums)
     }
@@ -803,9 +759,7 @@ mod tests {
              \x20 Edge from=actor#0 to=driver#0\n\
              \x20 Pool name=Buffers type=u32\n\
              \x20   Arg label=slots value=4\n\
-             \x20 Supervise index=0 strategy=Restart.OneForOne\n\
-             \x20   Child value=driver#0\n\
-             \x20   Child value=actor#0\n",
+             \x20 OnFailure index=0 policy=Failure.Halt\n",
             wrela_machine::MACHINE_REVISION_STR,
             quota::MAX_STEPS,
             quota::MAX_MEMORY,

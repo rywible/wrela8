@@ -37,6 +37,5 @@ async fn smoke(store: Actor[Store]):
 pub fn build() -> Image:
     img = Image(name="field-unknown", target=Target.wrela_machine_v1)
     store = img.actor(Store, mailbox=4, queue_depth=8)
-    img.supervise(children=[store], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

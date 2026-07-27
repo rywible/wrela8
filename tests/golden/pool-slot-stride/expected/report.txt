@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/pool_slot_stride.wr sha256=c1a30407cf983d3deb7ca8c2b0753b7f6b902b4a741a2056a90ee5bf818acadd
+  Input path=examples/pool_slot_stride.wr sha256=5bb9055e62233631966c39244fef737224b58960b52934feae4cd6031c91f266
   Input path=<generated> sha256=a499c7b9e3e915a3d8f6b103cb689ae1e800a4d2f407039026becaa2e564c1bf
   Name value=pool-slot-stride
   Target value=Target.wrela_machine_v1
@@ -21,8 +21,7 @@ ImageReport v0
   DmaPool name=Scratch type=Tiny
     Arg label=device value=device#0
     Arg label=count value=1
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=inferred work=0 work_source=unproved bytes=80 bytes_state=8 bytes_mailbox=0 bytes_pool=72
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

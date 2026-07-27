@@ -1,3 +1,1 @@
-build: name=emit-demo target=Target.wrela_machine_v1
-build: devices=0 drivers=0 actors=0 pools=0
-build: report written to target/golden-build-tmp/image-emit/emit-demo.report.txt
+error[build]: image has no `img.on_failure(policy=...)` failure policy

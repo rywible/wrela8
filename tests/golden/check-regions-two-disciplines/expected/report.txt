@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_regions_two_disciplines.wr sha256=1af016ae04df4306b8db8a62d94a44c6f4726f5db7fc327c6f93e2a787e53aa1
+  Input path=examples/check_regions_two_disciplines.wr sha256=1111493e55059360274ce460edfd7ec45693773aa55e1229e7804508a71bd90d
   Input path=<generated> sha256=37f2afda2120cfa4822e666816dfdeb4da0f0426d57298378d796c412d476db8
   Name value=check-regions-two-disciplines
   Target value=Target.wrela_machine_v1
@@ -15,8 +15,7 @@ ImageReport v0
   Pool name=Parts type=u32
     Arg label=slots value=4
     Arg label=max_payload value=8
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Adder core=0 source=inferred work=0 work_source=unproved bytes=128 bytes_state=8 bytes_mailbox=120 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

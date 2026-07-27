@@ -36,20 +36,9 @@ Program
             Int text=4 ty=i64
           Arg label=max_payload
             Int text=64 ty=i64
-      Intrinsic key=Image.supervise ty=unit
-        Arg label=children
-          List ty=[ImageDecl; 2]
-            Local name=disk ty=ImageDecl
-            Local name=storage ty=ImageDecl
-        Arg label=strategy
-          EnumConstruct enum=Restart variant=OneForOne ty=Restart
-        Arg label=intensity
-          Intrinsic key=RestartIntensity ty=RestartIntensity
-            Arg label=max
-              Int text=3 ty=i64
-            Arg label=within
-              Call key=seconds ty=Duration
-                Int text=10 ty=u64
+      Intrinsic key=Image.on_failure ty=unit
+        Arg label=policy
+          EnumConstruct enum=Failure variant=Halt ty=Failure
       Return
         Intrinsic key=Image.seal ty=Image
   Struct name=Blk

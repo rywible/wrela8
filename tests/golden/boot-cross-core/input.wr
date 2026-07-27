@@ -66,6 +66,5 @@ pub fn build() -> Image:
     img = Image(name="boot-cross-core", target=Target.wrela_machine_v1)
     store = img.actor(Store, mailbox=4, core=0)
     idle = img.actor(Idle, mailbox=2, core=1)
-    img.supervise(children=[store, idle], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

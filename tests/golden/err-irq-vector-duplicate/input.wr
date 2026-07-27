@@ -32,6 +32,5 @@ pub fn build() -> Image:
     b = img.device[VirtioBlock](transport=0x3000, vector=1)
     da = img.driver(BlkDriver, device=a)
     db = img.driver(BlkDriver, device=b)
-    img.supervise(children=[da, db], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

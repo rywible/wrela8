@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_handle_space_multi_kind.wr sha256=53cdc641a34ff2b8a573c0952b2d86ec65740b56f972b5ff66e60571395ca22d
+  Input path=examples/boot_handle_space_multi_kind.wr sha256=08babbcb5f1fceb92342b30d39ac35ab0545df0a440ec11625a1170ef0d32de9
   Input path=<generated> sha256=f723b64a45b14ece0adcacdb6d5c958c97b147d3ef4ec62f99a28fa9cae5b43c
   Name value=probe7-multi-kind
   Target value=Target.wrela_machine_v1
@@ -31,11 +31,7 @@ ImageReport v0
   Edge from=actor#1 to=driver#1
   Edge from=actor#1 to=device#0
   Edge from=actor#1 to=device#1
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
-    Child value=driver#0
-    Child value=driver#1
-    Child value=actor#1
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=S0 core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
   Placement id=driver#1 type=S1 core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
   Placement id=actor#0 type=Marker core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0

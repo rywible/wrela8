@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_driver_mailbox.wr sha256=fc218a98979ea4a501d789cce0529e3735556e90229fd253ece87ca272d2f4a1
+  Input path=examples/boot_cross_core_driver_mailbox.wr sha256=865a2e679ce131044ebca72d685ac7616de5eba3d16171570f0fc0d71d631afc
   Input path=<generated> sha256=4ce7924eb6263e20cc1c2add6fdf3e35e16e703bdec811ca32f61979e5880cdd
   Name value=cross-core-driver-mailbox
   Target value=Target.wrela_machine_v1
@@ -19,9 +19,7 @@ ImageReport v0
     Mailbox value=4
   Edge from=driver#0 to=device#0
   Edge from=actor#0 to=driver#0
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=Stub core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Placement id=actor#0 type=Probe core=1 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

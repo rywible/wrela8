@@ -7,8 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=actor.wr sha256=4b7a743e7f1ce408b38d01780e9c122cf81ead61b0922eac45cbbe9bef5ac1f5
-  Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
-  Input path=image.wr sha256=263c210d393d4eeff3d0be674cb2ec0f215d9246b2eff1da6b12a25d9bd34094
+  Input path=image.wr sha256=73c30b52367f4cd3f94ee05adba51e7aede76ce2efca34a251829cb18306f23c
   Input path=<generated> sha256=ff70278a280f2a805668c2d35d5fbf32aab826c534bcb718df6e37ff9046fd5a
   Name value=project-appliance
   Target value=Target.wrela_machine_v1
@@ -20,9 +19,7 @@ ImageReport v0
   Pool name=Buffers type=u32
     Arg label=slots value=4
     Arg label=max_payload value=64
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=Blk core=0 source=inferred work=0 work_source=unproved bytes=16 bytes_state=16 bytes_mailbox=0 bytes_pool=0
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=296 bytes_state=16 bytes_mailbox=280 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

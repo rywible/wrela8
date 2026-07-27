@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=b0209c37d80cba3fe2c872e0e4ea0a912f040b788d777ced8a16c7d85a9b1fed
+  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=01078cb17b45a6515425e7b50c1825ad85a11b7beeeeec12f45028f332b3ce20
   Input path=<generated> sha256=0825c37acdaa78ad19df1cc852d94c47e2b0cefec2a5dd06f2e9f97857dac2ee
   Name value=cross-core-mailbox-depth
   Target value=Target.wrela_machine_v1
@@ -18,10 +18,7 @@ ImageReport v0
     Mailbox value=4
   Edge from=actor#1 to=actor#0
   Edge from=actor#2 to=actor#0
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
-    Child value=actor#1
-    Child value=actor#2
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Sink core=1 source=explicit work=0 work_source=unproved bytes=56 bytes_state=8 bytes_mailbox=48 bytes_pool=0
   Placement id=actor#1 type=Near core=0 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Placement id=actor#2 type=Far core=2 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0

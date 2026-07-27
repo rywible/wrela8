@@ -57,6 +57,5 @@ pub fn build() -> Image:
     aux = img.driver(OtherDriver, device=other, tag=7)
     a = img.dma_pool[Ctl](name=ControlA, device=blk, count=2)
     b = img.dma_pool[Ctl](name=ControlB, device=other, count=2)
-    img.supervise(children=[disk, aux], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()
