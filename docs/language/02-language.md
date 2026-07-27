@@ -238,6 +238,16 @@ An `async fn` cannot be a detached future value: it is awaited, sent one-way
 through an actor, or installed into a bounded task slot by the image or a
 group. A body whose result is `unit` may fall off the end.
 
+A *private* `fn` may write `-> Result[T]` (one type argument — the success
+type). The compiler infers the exact error set as the union of every `Err`
+construction and every `?`-propagation source that reaches `return`, and
+typed dumps display that set ([04 §7](04-compiler.md)). This is the same
+"pub declares, private infers" doctrine receiver effects, pool names,
+generic contracts, and comptime legality already follow. A `pub` signature
+still declares a nominal error enum (`Result[T, E]`); a cross-module
+boundary never carries an inferred set — callers see only the declared
+enum, and `?` still converts through an explicit `from` (§7.4).
+
 ### 5.1 Parameters and call sites
 
 Every parameter has an access mode; `read` is the unwritten default. The
@@ -288,7 +298,8 @@ no fast-math in revision 0.1.
 ### 6.2 Compound and standard types
 
 - `[T; N]` — fixed array; `(A, B)` — tuple (one-element: `(T,)`).
-- `Option[T]`, `Result[T, E]`.
+- `Option[T]`, `Result[T, E]`. Private signatures may write the one-argument
+  form `Result[T]` (§5); elsewhere both arguments are required.
 - `Bytes[N]` exact bytes; `Bytes[..N]` bytes up to `N`; `String[..N]` owned
   UTF-8 up to `N`; `List[T, ..N]`; `SlotMap[T, ..N]`. The `..N` prefix always
   means bounded runtime occupancy; plain `N` means exact extent.
@@ -450,7 +461,10 @@ scalar uses the builtin operator and inherits those semantics. `==`/`!=` are
 generated structurally for every data type. Error conversion for `?` is
 explicit: the propagated error must be the enclosing error type or that type
 must declare a matching `from(take source)` — no chains, no implicit
-widening.
+widening. Inside a private `-> Result[T]` body (§5) the enclosing error set
+is inferred, so `?` contributes its source to that set rather than
+converting through `from`; a `pub` or cross-module target still requires
+the declared enum and explicit `from`.
 
 ### 7.5 Deriving
 

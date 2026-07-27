@@ -68,3 +68,6 @@ one-line summary, commit sha. Newest last.
 - 04-compiler.md §5 — M13 item F doc: Restart mechanics deleted wholesale (cancellation already in §4); subsequent §§ renumbered 5–10; report lists failure policy not restart provisions. — (this commit)
 - 05-library.md §2/§9 — M13 item F doc: `Admission` live set `Full|DeadlineUnmeetable` (`Quarantined` reserved); `PeerFailed` text gone; `img.supervise` → `img.on_failure(policy=...)` required-once; restart-provision derivation leaves the builder contract. — (this commit)
 - 03-hardware.md §5/§9 (bring-up only) — M13 item F doc: restart-provision wording → generated cleanup; **§9 quarantine paragraph survives verbatim**. — (this commit)
+- 02-language.md §5/§6.2/§7.4 — M13 item K **doc half** (decision 10): private `fn` may write `-> Result[T]`; compiler infers error set from `Err` / `?` reaching `return`; typed dumps display it; `pub` / cross-module still require declared nominal enum + explicit `from`. Rejectable without downstream effect. Impl commit follows. — (this commit)
+- 04-compiler.md §7 — M13 item K doc: tooling-visible inferred facts gain private `-> Result[T]` error sets. — (this commit)
+- 05-library.md §1 — M13 item K doc: `Result[T]` private spelling + inferred-set `?` (no `from` inside the set; `pub` still nominal). — (this commit)

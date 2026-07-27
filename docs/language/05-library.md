@@ -9,11 +9,15 @@ and may not add a hidden failure, copy, allocation, authority, or suspension.
 ## 1. `Option`, `Result`, conversion
 
 `Option[T] = Some(T) | None`; `Result[T, E] = Ok(T) | Err(E)`; ordinary enum
-ownership rules. `?` on `Result` yields `T` or returns `Err` from the
+ownership rules. A private function may spell `Result[T]` and have its
+error set inferred ([02 §5](02-language.md)); `pub` boundaries still name a
+nominal `E`. `?` on `Result` yields `T` or returns `Err` from the
 enclosing `Result` function, converting through the target error type's
 `from(take source)` when the types differ ([02 §7.4](02-language.md)) — no
-conversion chains. `?` on `Option` propagates `None` only in an
-`Option`-returning function; `ok_or(error)` converts explicitly.
+conversion chains — except inside an inferred private set, where `?`
+widens the set rather than converting. `?` on `Option` propagates `None`
+only in an `Option`-returning function; `ok_or(error)` converts
+explicitly.
 
 For `mut Option[T]`, `take()` returns the owned `Option[T]` and leaves
 `None` — the standard way to move a payload out of a runtime-selected slot.
