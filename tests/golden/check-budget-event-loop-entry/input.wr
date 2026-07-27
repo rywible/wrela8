@@ -1,10 +1,16 @@
 module examples.check_budget_event_loop_entry
 
-# plans/M11.md item H / decision 810: the designated runtime event-loop
-# entry may omit sync `@budget` — it *is* the cooperative park/run loop.
+# plans/M11.md item H / K / decision 810: designated runtime event-loop
+# entries may omit sync `@budget` — they *are* the cooperative park/run loop.
 
 pub fn __wrela_rt_secondary_entry(core: usize) -> u64:
     n: u64 = 0
     while n == 0:
         n = core.to[u64]() +% 1
+    return n
+
+pub fn __wrela_rt_primary_entry() -> u64:
+    n: u64 = 0
+    while n == 0:
+        n = 1
     return n

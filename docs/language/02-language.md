@@ -494,8 +494,8 @@ hidden trip counter that aborts if the loop body runs more than `N` times —
 a fail-closed runtime bound, not a cost model. A synchronous `for`/`while`
 without that attribute is `error[sema]`. **Exception (force-rooted runtime
 event-loop entries):** the designated per-core park/run loop bodies in
-`stdlib/core/runtime.wr` — today `__wrela_rt_secondary_entry`, and later the
-primary entry driver when item K migrates it — may omit sync `@budget` on
+`stdlib/core/runtime.wr` — `__wrela_rt_secondary_entry` and
+`__wrela_rt_primary_entry` — may omit sync `@budget` on
 their loops. Those functions *are* the cooperative scheduler of
 [04 §2](04-compiler.md); a trip-counter abort is the wrong discharge for an
 intentional unbounded park→wake loop. The exemption is by **exact function

@@ -18,8 +18,14 @@ from core.__image_runtime import (
     N_BOOT_CALLS,
     N_IRQ_VECTORS,
     N_WAKE_DRAINS,
+    N_TESTS,
+    HAS_BOOT_INIT,
     CHECKPOINT_SIMPLE,
     NO_EDGE,
+    __wrela_test_call,
+    __wrela_test_append_prefix,
+    __wrela_test_suspends,
+    __wrela_test_turn_index,
     __wrela_init_nwords,
     __wrela_init_store_word,
     __wrela_boot_call,
@@ -432,6 +438,38 @@ TURNS_BASE,
     __method_125,
     __method_126,
     __method_127,
+    __test_call_0,
+    __test_call_1,
+    __test_call_2,
+    __test_call_3,
+    __test_call_4,
+    __test_call_5,
+    __test_call_6,
+    __test_call_7,
+    __test_call_8,
+    __test_call_9,
+    __test_call_10,
+    __test_call_11,
+    __test_call_12,
+    __test_call_13,
+    __test_call_14,
+    __test_call_15,
+    __test_prefix_0,
+    __test_prefix_1,
+    __test_prefix_2,
+    __test_prefix_3,
+    __test_prefix_4,
+    __test_prefix_5,
+    __test_prefix_6,
+    __test_prefix_7,
+    __test_prefix_8,
+    __test_prefix_9,
+    __test_prefix_10,
+    __test_prefix_11,
+    __test_prefix_12,
+    __test_prefix_13,
+    __test_prefix_14,
+    __test_prefix_15,
 )
 
 # M10 B2: machine pages the console formatter speaks to (decision 593).
@@ -454,6 +492,8 @@ const VCPUS: usize = 3
 @layout(runtime, endian=little)
 struct MachineInfoPage:
     @offset(0x28) next_deadline: u64
+    @offset(0x30) exit_code: u64
+    @offset(0x40) test_passed: u64
     @offset(0x48) test_failed: u64
     @offset(0x50) ring_data_bump: u64
     @offset(0x58) ring_desc_bump: u64
@@ -461,6 +501,9 @@ struct MachineInfoPage:
     @offset(0x68) core_marks: [u64; VCPUS]
     @offset(0x200) vector0_observed: u64
     @offset(0x208) abort_latch: u64
+    # M11 K: next `@test(runtime)` index; advanced before each invoke so an
+    # abort long-jump into `__wrela_rt_primary_entry` skips the failed test.
+    @offset(0x210) test_next: u64
 
 @placed(0x40000000)
 static MACHINE_INFO: MachineInfoPage
@@ -481,6 +524,13 @@ struct ParkMmio:
 
 @placed(0x08002000)
 static PARK: ParkMmio
+
+# Exit / release MMIO (wrela_machine::mmio::{EXIT,RELEASE}_MMIO_ADDR).
+@placed(0x08001000)
+static EXIT: ParkMmio
+
+@placed(0x08003000)
+static RELEASE: ParkMmio
 
 # Per-core pending-vector page (pending::BASE). Array length is the machine
 # VCPU count (3); algorithms index with N_CORES (decision 709).
@@ -1445,4 +1495,207 @@ pub fn __wrela_rt_checkpoint():
                 break
         if did == 0:
             return
+    return
+
+# ---------------------------------------------------------------------------
+# M11 item K: primary entry / `@test(runtime)` runner (decisions 850–859).
+# `__wrela_rt_primary_entry` is the 810 event-loop key: supervised root turns
+# over the migrated runtime (run_one / select / enqueue). Floor trampoline
+# installs SP, arms OFF_TEST_CONTINUATION at this fn, then BLs boot setup.
+# Abort long-jump (floor cat4) stays — stack abandon still needs BR.
+# ---------------------------------------------------------------------------
+
+pub fn __wrela_append_ok_literal() -> u64:
+    TEST_LINE_BUF.bytes[0] = 111
+    TEST_LINE_BUF.bytes[1] = 107
+    TEST_LINE_BUF.bytes[2] = 10
+    return __wrela_console_append_line_buf(3)
+
+pub fn __wrela_append_passed_comma_literal() -> u64:
+    TEST_LINE_BUF.bytes[0] = 32
+    TEST_LINE_BUF.bytes[1] = 112
+    TEST_LINE_BUF.bytes[2] = 97
+    TEST_LINE_BUF.bytes[3] = 115
+    TEST_LINE_BUF.bytes[4] = 115
+    TEST_LINE_BUF.bytes[5] = 101
+    TEST_LINE_BUF.bytes[6] = 100
+    TEST_LINE_BUF.bytes[7] = 44
+    TEST_LINE_BUF.bytes[8] = 32
+    return __wrela_console_append_line_buf(9)
+
+pub fn __wrela_append_failed_tail_literal() -> u64:
+    TEST_LINE_BUF.bytes[0] = 32
+    TEST_LINE_BUF.bytes[1] = 102
+    TEST_LINE_BUF.bytes[2] = 97
+    TEST_LINE_BUF.bytes[3] = 105
+    TEST_LINE_BUF.bytes[4] = 108
+    TEST_LINE_BUF.bytes[5] = 101
+    TEST_LINE_BUF.bytes[6] = 100
+    TEST_LINE_BUF.bytes[7] = 10
+    return __wrela_console_append_line_buf(8)
+
+pub fn __wrela_append_deadlock_literal() -> u64:
+    # "runtime deadlock: no turn is ready and the root turn has not completed"
+    TEST_LINE_BUF.bytes[0] = 114
+    TEST_LINE_BUF.bytes[1] = 117
+    TEST_LINE_BUF.bytes[2] = 110
+    TEST_LINE_BUF.bytes[3] = 116
+    TEST_LINE_BUF.bytes[4] = 105
+    TEST_LINE_BUF.bytes[5] = 109
+    TEST_LINE_BUF.bytes[6] = 101
+    TEST_LINE_BUF.bytes[7] = 32
+    TEST_LINE_BUF.bytes[8] = 100
+    TEST_LINE_BUF.bytes[9] = 101
+    TEST_LINE_BUF.bytes[10] = 97
+    TEST_LINE_BUF.bytes[11] = 100
+    TEST_LINE_BUF.bytes[12] = 108
+    TEST_LINE_BUF.bytes[13] = 111
+    TEST_LINE_BUF.bytes[14] = 99
+    TEST_LINE_BUF.bytes[15] = 107
+    TEST_LINE_BUF.bytes[16] = 58
+    TEST_LINE_BUF.bytes[17] = 32
+    TEST_LINE_BUF.bytes[18] = 110
+    TEST_LINE_BUF.bytes[19] = 111
+    TEST_LINE_BUF.bytes[20] = 32
+    _ = __wrela_console_append_line_buf(21)
+    TEST_LINE_BUF.bytes[0] = 116
+    TEST_LINE_BUF.bytes[1] = 117
+    TEST_LINE_BUF.bytes[2] = 114
+    TEST_LINE_BUF.bytes[3] = 110
+    TEST_LINE_BUF.bytes[4] = 32
+    TEST_LINE_BUF.bytes[5] = 105
+    TEST_LINE_BUF.bytes[6] = 115
+    TEST_LINE_BUF.bytes[7] = 32
+    TEST_LINE_BUF.bytes[8] = 114
+    TEST_LINE_BUF.bytes[9] = 101
+    TEST_LINE_BUF.bytes[10] = 97
+    TEST_LINE_BUF.bytes[11] = 100
+    TEST_LINE_BUF.bytes[12] = 121
+    TEST_LINE_BUF.bytes[13] = 32
+    TEST_LINE_BUF.bytes[14] = 97
+    TEST_LINE_BUF.bytes[15] = 110
+    TEST_LINE_BUF.bytes[16] = 100
+    TEST_LINE_BUF.bytes[17] = 32
+    TEST_LINE_BUF.bytes[18] = 116
+    TEST_LINE_BUF.bytes[19] = 104
+    TEST_LINE_BUF.bytes[20] = 101
+    _ = __wrela_console_append_line_buf(21)
+    TEST_LINE_BUF.bytes[0] = 32
+    TEST_LINE_BUF.bytes[1] = 114
+    TEST_LINE_BUF.bytes[2] = 111
+    TEST_LINE_BUF.bytes[3] = 111
+    TEST_LINE_BUF.bytes[4] = 116
+    TEST_LINE_BUF.bytes[5] = 32
+    TEST_LINE_BUF.bytes[6] = 116
+    TEST_LINE_BUF.bytes[7] = 117
+    TEST_LINE_BUF.bytes[8] = 114
+    TEST_LINE_BUF.bytes[9] = 110
+    TEST_LINE_BUF.bytes[10] = 32
+    TEST_LINE_BUF.bytes[11] = 104
+    TEST_LINE_BUF.bytes[12] = 97
+    TEST_LINE_BUF.bytes[13] = 115
+    TEST_LINE_BUF.bytes[14] = 32
+    TEST_LINE_BUF.bytes[15] = 110
+    TEST_LINE_BUF.bytes[16] = 111
+    TEST_LINE_BUF.bytes[17] = 116
+    TEST_LINE_BUF.bytes[18] = 32
+    TEST_LINE_BUF.bytes[19] = 99
+    TEST_LINE_BUF.bytes[20] = 111
+    _ = __wrela_console_append_line_buf(21)
+    TEST_LINE_BUF.bytes[0] = 109
+    TEST_LINE_BUF.bytes[1] = 112
+    TEST_LINE_BUF.bytes[2] = 108
+    TEST_LINE_BUF.bytes[3] = 101
+    TEST_LINE_BUF.bytes[4] = 116
+    TEST_LINE_BUF.bytes[5] = 101
+    TEST_LINE_BUF.bytes[6] = 100
+    return __wrela_console_append_line_buf(7)
+
+pub fn __wrela_abort_deadlock():
+    if MACHINE_INFO.abort_latch != 0:
+        finish_abort()
+        return
+    MACHINE_INFO.abort_latch = 1
+    _ = append_failed_literal()
+    _ = __wrela_append_deadlock_literal()
+    _ = append_newline_literal()
+    _ = __wrela_line_commit()
+    finish_abort()
+
+pub fn __wrela_rt_summary_and_halt():
+    __wrela_line_begin()
+    digs = __wrela_fmt_dec(MACHINE_INFO.test_passed, 0)
+    _ = __wrela_console_append_line_buf(digs.to[usize]())
+    _ = __wrela_append_passed_comma_literal()
+    digs2 = __wrela_fmt_dec(MACHINE_INFO.test_failed, 0)
+    _ = __wrela_console_append_line_buf(digs2.to[usize]())
+    _ = __wrela_append_failed_tail_literal()
+    _ = __wrela_line_commit()
+    code: u64 = 0
+    if MACHINE_INFO.test_failed != 0:
+        code = 1
+    MACHINE_INFO.exit_code = code
+    EXIT.word = code
+    return
+
+# Boot setup for the test image (not 810). Floor trampoline arms
+# continuation at `__wrela_rt_primary_entry` then BLs here.
+pub fn __wrela_rt_primary_boot():
+    MACHINE_INFO.test_passed = 0
+    MACHINE_INFO.test_failed = 0
+    MACHINE_INFO.ring_data_bump = 0
+    MACHINE_INFO.ring_desc_bump = 0
+    MACHINE_INFO.line_start = 0
+    MACHINE_INFO.abort_latch = 0
+    MACHINE_INFO.test_next = 0
+    if N_CORES > 1:
+        MACHINE_INFO.core_marks[0] = 1
+        RELEASE.word = N_CORES.to[u64]()
+    if HAS_BOOT_INIT:
+        __wrela_line_begin()
+        __wrela_rt_boot_init()
+    __wrela_rt_primary_entry()
+    return
+
+# Decision 810 primary event-loop entry: one supervised root turn per
+# `@test(runtime)`, driving async roots through run_one / park / checkpoint.
+# Boot-init abort long-jumps here with `test_next == 0` and `test_failed > 0`
+# — skip straight to summary (old driver armed continuation at the summary).
+pub fn __wrela_rt_primary_entry():
+    while true:
+        if MACHINE_INFO.test_failed != 0:
+            if MACHINE_INFO.test_next == 0:
+                __wrela_rt_summary_and_halt()
+                return
+        i: usize = MACHINE_INFO.test_next.to[usize]()
+        if i >= N_TESTS:
+            __wrela_rt_summary_and_halt()
+            return
+        MACHINE_INFO.test_next = (i +% 1).to[u64]()
+        __wrela_line_begin()
+        __wrela_test_append_prefix(i)
+        status = __wrela_test_call(i)
+        if __wrela_test_suspends(i) != 0:
+            while status == TURN_STATUS_SUSPENDED:
+                if GROUP_ARENA_CAPACITY != 0:
+                    __wrela_deadline_poll()
+                ti = __wrela_test_turn_index(i)
+                if RT.turns[ti].resume_ready != 0:
+                    status = __wrela_test_call(i)
+                else:
+                    ran = __wrela_rt_run_one(0)
+                    if ran == 0:
+                        if N_CORES > 1:
+                            PARK.word = 0
+                            __wrela_rt_checkpoint()
+                        else:
+                            dl = MACHINE_INFO.next_deadline
+                            if dl != 0:
+                                PARK.word = dl
+                                __wrela_rt_checkpoint()
+                            else:
+                                __wrela_abort_deadlock()
+        _ = __wrela_append_ok_literal()
+        _ = __wrela_line_commit()
+        MACHINE_INFO.test_passed = MACHINE_INFO.test_passed +% 1
     return

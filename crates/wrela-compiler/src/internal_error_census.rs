@@ -56,7 +56,7 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // runtime reinject (`inject_rt_cross_core_fns`).
     // 30 -> 31, plans/M11.md item J: missing enqueue trampoline after
     // runtime reinject (`inject_rt_enqueue_and_dispatch_fns`).
-    ("layout/harness.rs", 31),
+    ("layout/harness.rs", 33), // was 31; K +primary_entry / missing-key guards
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     ("eval/interp.rs", 79),
     ("lower.rs", 5),
@@ -164,7 +164,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 203,
+            INTERNAL_ERROR_SITE_COUNT, 205,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

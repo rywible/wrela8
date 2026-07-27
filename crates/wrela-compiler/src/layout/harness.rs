@@ -631,6 +631,8 @@ impl Asm {
     /// Pre: `x0` holds the packed-byte base. Sets `x1 = x2 = len` so the
     /// Bytes handle's capacity equals the copy length (every harness
     /// literal call site).
+    // M11 K: last call sites lived in `build_entry_driver` (deleted).
+    #[allow(dead_code)]
     fn bl_console_append_bytes(&mut self, len: u64) {
         self.load_imm(1, len);
         self.load_imm(2, len);
@@ -639,6 +641,8 @@ impl Asm {
 
     /// plans/M10.md item B4: `BL __wrela_console_append_line_buf`.
     /// Pre: `x0` holds the byte length written into `OFF_TEST_LINE_BUF`.
+    // M11 K: last call sites lived in `build_entry_driver` (deleted).
+    #[allow(dead_code)]
     fn bl_console_append_line_buf(&mut self) {
         self.bl_call_key("__wrela_console_append_line_buf");
     }
@@ -647,6 +651,8 @@ impl Asm {
     /// item D's own resolution unchanged) — `byte_offset` is an *already
     /// interned* rodata entry's own offset (see `RodataAppend`, below);
     /// this fn only ever emits code, never interns.
+    // M11 K: last call sites lived in `build_entry_driver` (deleted).
+    #[allow(dead_code)]
     fn load_rodata_addr_at(&mut self, reg: u8, byte_offset: usize) {
         let w = self.abs();
         self.push(encode::enc_adrp(reg, 0));
@@ -675,6 +681,8 @@ impl Asm {
         self.words[marker] = encode::enc_b_cond(cond, delta as i32);
     }
 
+    // M11 K: last call sites lived in `build_entry_driver` (deleted).
+    #[allow(dead_code)]
     fn patch_cbz(&mut self, marker: usize, reg: u8) {
         let target = self.abs();
         let this = self.start + marker;
@@ -809,395 +817,95 @@ pub(super) fn install_abort_tail_floor(program: &mut CodegenProgram) -> Result<(
     }
     Ok(())
 }
-/// The runtime test image's own entry driver (module doc's "Why the entry
-/// driver needs no runtime loop at all"): installs core 0's stack pointer,
-/// zeroes every harness counter, then one straight-line block per
-/// `@test(runtime)` fn in `runtime_tests`' own order — begin a new report
-/// line, append `test <name>: `, arm the landing pad's own continuation
-/// slot, `BL` the test, append `ok\n` and commit the line (one descriptor
-/// covering the whole `test <name>: ok\n` text) and increment the passed
-/// counter on an ordinary return (an abort anywhere inside that `BL`'s own
-/// call tree instead continues and commits *this same* line itself —
-/// `__wrela_abort`/`__wrela_abort_val`'s own doc — then lands directly at
-/// the top of the *next* block, module doc's own landing-pad section) —
-/// then the one merged summary line (begin/append/append/append/append/
-/// commit, identically) and the exit-code/halt tail. `x8` is set to the
-/// fixed `OFF_TEST_LINE_BUF` scratch address before every test call as a
-/// defensive measure (this ABI's own aggregate-return convention writes
-/// through whatever `x8` holds; a test fn's return value is otherwise
-/// unread, but this guarantees an aggregate return, if one ever exists, has
-/// somewhere harmless to land rather than an arbitrary stale address).
-///
-/// plans/M10.md item I / decisions 685–689: **stated residue.** Migratable
-/// call sites already `bl_call_key` existing `__wrela_*` / `rt_run_one`
-/// keys; the remainder stays hand-asm (floor cats 1/3/4 embedded, plus
-/// numbered non-floor residues in the plan). Not relocated into an
-/// `emit_entry_driver` twin — that would only move F0's hole.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_entry_driver(
-    addrs: &HarnessAddrs,
-    start: usize,
-    harness_base: u64,
+
+/// M11 K: free-turn index into `RT.turns` for an async `@test(runtime)` key.
+fn free_turn_index(tables: &RuntimeTables, name: &str) -> Option<usize> {
+    let messageable = tables
+        .drivers
+        .iter()
+        .filter(|d| d.mailbox.is_some())
+        .count();
+    let base = tables.actors.len() + messageable;
+    tables
+        .free_turns
+        .iter()
+        .position(|(k, _)| k == name)
+        .map(|k| base + k)
+}
+
+/// M11 K / decision 851: build test-runner facts for rtconfig reinject.
+pub(super) fn test_runner_facts(
     runtime_tests: &[String],
-    // The park-and-resume additions: which tests are async (compiled
-    // state machines whose calls return TURN_STATUS_* — a sync test's
-    // return value must never be misread as a status), and where the
-    // scheduler tick lives. `has_rt_run_one` is false only when no
-    // runtime glue exists at all — in which case no test can be async
-    // either (an async test is itself a flow fn, which forces the glue
-    // block into existence via its own free-turn area).
     async_tests: &std::collections::BTreeSet<String>,
-    // M10 E3: when true, the scheduler tick is `bl_call_key("rt_run_one 0")`
-    // into the specialized body in `code` (decision 620). False only when
-    // no runtime glue exists at all.
-    has_rt_run_one: bool,
-    // plans/M6.md item E: `__wrela_checkpoint_service`'s own harness-
-    // absolute word index (module doc on `build_checkpoint_and_vector_stub`)
-    // — the park-resume path below calls it directly (06 §4: "the guest
-    // observes vectors only at checkpoints and parks", and the park's own
-    // resume point *is* one, by construction).
-    checkpoint_service_word: usize,
-    // plans/M6.md item F #3 / M11 item E: when true, `bl_call_key` to
-    // force-rooted `__wrela_deadline_poll` once per scheduler tick.
-    has_deadline_poll: bool,
+    tables: Option<&RuntimeTables>,
+) -> Vec<crate::rtconfig::TestRunnerFact> {
+    runtime_tests
+        .iter()
+        .map(|name| {
+            let is_async = async_tests.contains(name);
+            let turn_index = if is_async {
+                tables.and_then(|t| free_turn_index(t, name)).unwrap_or(0)
+            } else {
+                0
+            };
+            crate::rtconfig::TestRunnerFact {
+                name: name.clone(),
+                is_async,
+                turn_index,
+            }
+        })
+        .collect()
+}
+
+/// M11 K: overwrite `__test_call_*` / `__test_prefix_*` with specialized bodies.
+pub(super) fn inject_test_runner_fns(
+    program: &mut CodegenProgram,
+    tests: &[crate::rtconfig::TestRunnerFact],
+    test_args: &BTreeMap<String, Vec<u64>>,
     rodata: &mut Vec<Vec<u8>>,
     rodata_cursor: &mut usize,
-    boot_init: bool,
-    test_args: &BTreeMap<String, Vec<u64>>,
-    // plans/M8.md item C1: how many cores this image brings up
-    // (`RuntimeTables::cores`). `1` emits not one extra instruction — the
-    // whole of what keeps every M5-M7 boot byte-identical.
-    cores: usize,
-) -> Asm {
-    // M10 B5: line_begin / append / commit / fmt_dec are force-rooted
-    // wrela via `bl_call_key` only; hand-asm builders deleted.
+) {
+    for (i, t) in tests.iter().enumerate() {
+        let args = test_args.get(&t.name).cloned().unwrap_or_default();
+        program.fns.insert(
+            format!("__test_call_{i}"),
+            crate::codegen::emit_test_call_stub(&t.name, &args),
+        );
+        let prefix = format!("test {}: ", t.name).into_bytes();
+        let len = prefix.len() as u64;
+        let off = append_rodata(rodata, rodata_cursor, prefix);
+        program.fns.insert(
+            format!("__test_prefix_{i}"),
+            crate::codegen::emit_test_prefix_stub(off, len),
+        );
+    }
+}
+
+/// M11 K / decision 852: thin floor trampoline — SP install, arm
+/// `OFF_TEST_CONTINUATION` at `__wrela_rt_primary_entry` (patched after
+/// code placement), `BL __wrela_rt_primary_boot`, `brk`. Replaces
+/// `build_entry_driver` (94 Unclassified).
+///
+/// Returns `(asm, continuation_load_imm_marker)`.
+pub(super) fn build_primary_entry_trampoline(start: usize) -> (Asm, usize) {
     let mut a = Asm::new(start);
     let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
-
     a.load_imm(9, sp_top);
     a.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
-
-    // 06-machine.md §3 step 3, in the order the chapter states it: "the
-    // entry installs per-core state, **releases the other vCPUs**, runs
-    // typed driver and actor initialization in image dependency order,
-    // opens mailboxes atomically, and enters the per-core event loops."
-    // Core 0's own mark goes down first (the same word every secondary
-    // writes — the VMM checks all of them at halt), then the release
-    // doorbell tells the VMM how many cores this image brings up.
-    //
-    // "Released" means eligible to run, not running: the VMM hands the
-    // baton to each released core in turn, and each of them runs before
-    // this one continues (plans/M8.md decision 11 — never concurrently).
-    // Boot init below therefore still runs before any turn anywhere, which
-    // is what the chapter's own ordering requires.
-    if cores > 1 {
-        a.load_imm(9, machine_info::core_mark_running(0));
-        a.load_imm(10, machine_info::core_mark_addr(0));
-        a.push(encode::enc_str_x_imm(9, 10, 0));
-        a.load_imm(9, cores as u64);
-        a.load_imm(10, wrela_machine::mmio::RELEASE_MMIO_ADDR);
-        a.push(encode::enc_str_x_imm(9, 10, 0));
-    }
-
-    a.push(encode::enc_movz(9, 0, 0, true)); // x9 = 0
-    for off in [
-        mi::OFF_TEST_PASSED,
-        mi::OFF_TEST_FAILED,
-        mi::OFF_RING_DATA_BUMP,
-        mi::OFF_RING_DESC_BUMP,
-        mi::OFF_LINE_START,
-        mi::OFF_ABORT_LATCH,
-    ] {
-        a.load_imm(10, addrs.info_base + off);
-        a.push(encode::enc_str_x_imm(9, 10, 0));
-    }
-
-    // The deadlock diagnostic's message, interned once for every async
-    // test's own scheduler loop below (`DEADLOCK_MSG`;
-    // `compute_transcript_bound` accounts for it explicitly).
-    let deadlock_off = if async_tests.is_empty() {
-        None
-    } else {
-        Some(append_rodata(
-            rodata,
-            rodata_cursor,
-            DEADLOCK_MSG.as_bytes().to_vec(),
-        ))
-    };
-
-    // plans/M6.md item D: the real boot sequence C deferred — every
-    // actor's own state gets zero-initialized (`build_boot_init`) before
-    // any root turn (`@test(runtime)` fn) ever runs, so an actor call
-    // reaches deterministic, in-range memory rather than whatever the
-    // rtdata section's own zeroed-at-load bytes already were (which is
-    // itself all-zero at M6 — this call is what makes that a *documented*
-    // fact rather than an accident of `layout_program`'s own "reserved,
-    // zeroed bytes" section, and the one hook a later item's own real
-    // `init`-arg materialization/dependency-order walk extends). Absent
-    // entirely for a sync-only image (`boot_init_start: None`) — no
-    // actors, nothing to boot.
-    //
-    // plans/M7.md item H1, **found by running**: an `assert` inside a
-    // boot-time `init` used to fault the guest at `pc=0x0` instead of
-    // reporting anything. `push_abort_tail` long-jumps through
-    // `machine_info::OFF_TEST_CONTINUATION`, and until this commit that
-    // word was written only inside the per-test loop below — so any abort
-    // *before* the first test branched to address zero. That is a live
-    // defect of item W (which is what first made boot call an `init` with
-    // arguments at all); item H1 is where it surfaced, because an abort
-    // inside a driver's `init` is this item's own vacuity control
-    // (`golden/err-boot-driver-init-runs`).
-    //
-    // The fix is the landing pad the rest of this file already uses: open
-    // a report line and point the continuation at the summary block, both
-    // *before* boot runs. On success nothing is appended to that line and
-    // the first test's own `line_begin` re-opens it at the identical
-    // position, so a green image's transcript is byte-identical; on an
-    // abort the message lands on a line of its own, `OFF_TEST_FAILED`
-    // counts it, and the image exits nonzero through the ordinary summary
-    // — 06-machine.md §3's own "typed driver and actor initialization"
-    // failing is image-fatal with a diagnosable line (plans/M6.md decision
-    // 12, plans/M7.md decision 8), never a fault at zero.
-    let boot_cont_marker = if boot_init {
-        a.bl_call_key("__wrela_line_begin");
-        let marker = a.load_imm_placeholder(9);
-        a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
-        a.push(encode::enc_str_x_imm(9, 10, 0));
-        // M10 H: specialized `rt_boot_init 0` in `code` (decision 680).
-        a.bl_call_key(&crate::codegen::rt_boot_init_symbol());
-        Some(marker)
-    } else {
-        None
-    };
-
-    let ok_off = append_rodata(rodata, rodata_cursor, b"ok\n".to_vec());
-    let passed_comma_off = append_rodata(rodata, rodata_cursor, b" passed, ".to_vec());
-    let failed_tail_off = append_rodata(rodata, rodata_cursor, b" failed\n".to_vec());
-
-    for name in runtime_tests {
-        let prefix_bytes = format!("test {name}: ").into_bytes();
-        let prefix_len = prefix_bytes.len() as u64;
-        let prefix_off = append_rodata(rodata, rodata_cursor, prefix_bytes);
-
-        // M10 B2+: force-rooted `__wrela_line_begin`.
-        a.bl_call_key("__wrela_line_begin");
-
-        a.load_rodata_addr_at(0, prefix_off);
-        a.bl_console_append_bytes(prefix_len);
-
-        let cont_marker = a.load_imm_placeholder(9);
-        a.load_imm(10, addrs.info_base + mi::OFF_TEST_CONTINUATION);
-        a.push(encode::enc_str_x_imm(9, 10, 0));
-
-        // plans/M6.md decision 11b: a test's own already-resolved
-        // `Actor[T]` handle values (build-time actor indices) load into
-        // x0.., in declared param order — a plain zero-param test (every
-        // pre-decision-11b test) loads nothing here, byte-identical.
-        if let Some(vals) = test_args.get(name) {
-            for (i, v) in vals.iter().enumerate() {
-                a.load_imm(i as u8, *v);
-            }
-        }
-
-        a.load_imm(8, addrs.info_base + mi::OFF_TEST_LINE_BUF);
-        a.bl_call_key(name);
-
-        // The root turn's own scheduler loop (async tests only — the
-        // root test turn parks/resumes through the IDENTICAL turn-record
-        // machinery an actor turn uses, via its own free-turn area):
-        // while the test reports TURN_STATUS_SUSPENDED, drive the
-        // scheduler — re-enter the test the moment its reply arrives
-        // (`resume_ready`), otherwise run one ready actor turn-slice
-        // (`rt_run_one` — this interleaving is exactly 04 §2's "awaiting
-        // a dependency lets other actors run"), and if NOTHING is ready
-        // while the root is still incomplete, no progress is possible:
-        // abort with the named deadlock diagnostic (prints `FAILED
-        // <DEADLOCK_MSG>` on this test's own line, lands at the next
-        // test block via the ordinary landing pad, image exits nonzero).
-        // A sync test never enters this loop: its return value in x0 is
-        // an ordinary value, not a status word.
-        if async_tests.contains(name) {
-            assert!(
-                has_rt_run_one,
-                "an async test forces the runtime glue block into existence"
-            );
-            let ddl_off =
-                deadlock_off.expect("deadlock message interned whenever async tests exist");
-            let mut continue_after_loop = false;
-            let status_loop_top = a.abs();
-            let skip_done = a.skip_placeholder(); // cbz x0, .done
-            let drive_top = a.abs();
-            // plans/M6.md item F #3: the deadline service's own scheduler
-            // half, once per tick, before anything is selected — it arms
-            // `OFF_NEXT_DEADLINE` for the park branch below AND raises the
-            // deadline vector when the minimum live deadline has already
-            // passed, so a turn that keeps running (rather than parking)
-            // still observes its group's cancellation at its very next
-            // checkpoint. Absent entirely for a build with no group arena,
-            // byte-identical to every pre-item-F image.
-            if has_deadline_poll {
-                // Force-rooted poll arms next_deadline and raises pending
-                // when due (stdlib/core/runtime.wr); no hand-asm twin.
-                a.bl_call_key("__wrela_deadline_poll");
-            }
-            // NB: `Asm` relocs carry ABSOLUTE word indices (the
-            // `bl_call_key` convention) — `abs()`, not `words.len()`.
-            let root_area_word = a.abs();
-            a.load_imm(9, 0); // patched: x9 = &this test's own turn area
-            a.relocs.push(Reloc::TurnFrameAddr {
-                word: root_area_word,
-                key: name.clone(),
-            });
-            a.push(encode::enc_ldr_x_imm(
-                10,
-                9,
-                crate::codegen::OFF_TURN_RESUME_READY as u16,
-            ));
-            let skip_reenter = a.skip_placeholder(); // cbnz x10, .reenter
-            // M11 F: generic `__wrela_rt_run_one(core)` — x0 = core.
-            a.push(encode::enc_movz(0, 0, 0, true));
-            a.bl_call_key("__wrela_rt_run_one");
-            {
-                // cbnz x0, .drive_top (backward — a slice ran; try again)
-                let this = a.abs();
-                let delta = (drive_top as i64 - this as i64) * 4;
-                a.push(encode::enc_cbnz(0, delta as i32, true));
-            }
-            // plans/M8.md item C2, decision 31: in a **cross-core** image
-            // "nothing ready here" is never local evidence of deadlock —
-            // another core may be one turn away from pushing a reply onto
-            // this core's inbound ring — so core 0 parks unconditionally
-            // and the VMM's own `core N parked and no core is runnable`
-            // becomes the deadlock diagnostic (it already fails closed with
-            // a named line rather than hanging). A single-core image is
-            // untouched, down to the word: the deadline test and
-            // `DEADLOCK_MSG` arm below are exactly M6's.
-            if cores > 1 {
-                a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
-                a.load_imm(10, 0);
-                a.push(encode::enc_str_x_imm(10, 9, 0));
-                a.bl_to(checkpoint_service_word);
-                a.b_to(drive_top);
-                let reenter = a.abs();
-                a.patch_cbnz(skip_reenter, 10);
-                debug_assert_eq!(reenter, a.abs());
-                a.bl_call_key(name); // resume (the fn's own discriminant routes)
-                a.b_to(status_loop_top);
-                let done = a.abs();
-                a.patch_cbz(skip_done, 0);
-                debug_assert_eq!(done, a.abs());
-                let _ = ddl_off;
-                continue_after_loop = true;
-            }
-            if !continue_after_loop {
-                // Nothing ready. plans/M6.md item E, decision 7/06 §5: park
-                // iff a deadline is pending (`OFF_NEXT_DEADLINE != 0`);
-                // otherwise item D's own deadlock diagnostic still applies
-                // unchanged — no deadline and nothing ready is no progress,
-                // ever (the park path below can never turn a real deadlock
-                // into a hang: it only ever fires when *something* names a
-                // future wake, which item F's groups are the only real M6
-                // producer of — conformance tests exercise it via
-                // hand-arranged state, exactly like D's own deadlock test).
-                a.load_imm(9, addrs.info_base + mi::OFF_NEXT_DEADLINE);
-                a.push(encode::enc_ldr_x_imm(10, 9, 0));
-                let skip_park = a.skip_placeholder(); // cbz x10, .deadlock
-                // Park (06 §5's own protocol): the deadline is already resident
-                // at `OFF_NEXT_DEADLINE` (a real group's expiry write is item
-                // F's job; conformance hand-arranges it here, mirroring D's
-                // own hand-arranged deadlock state) — x10 already holds it.
-                // The trapping store to `PARK_MMIO_ADDR` is the park itself;
-                // the VMM reads the real deadline back from
-                // `OFF_NEXT_DEADLINE`, not from the value stored here.
-                a.load_imm(9, wrela_machine::mmio::PARK_MMIO_ADDR);
-                a.push(encode::enc_str_x_imm(10, 9, 0));
-                // Resumed: the VMM slept until the deadline (or was woken
-                // sooner), raised the vector, and resumed this vCPU with PC
-                // advanced past the trapping store above. The park's own
-                // resume point is a checkpoint by construction (06 §4:
-                // "observed only at checkpoints and parks") — service it
-                // directly, unconditionally, then retry the scheduler.
-                a.bl_to(checkpoint_service_word);
-                a.b_to(drive_top);
-                let deadlock = a.abs();
-                a.patch_cbz(skip_park, 10);
-                debug_assert_eq!(deadlock, a.abs());
-                // Deadlock: root not ready, nothing else ready, no deadline
-                // pending either — no progress is possible, ever.
-                a.load_rodata_addr_at(0, ddl_off);
-                a.load_imm(1, DEADLOCK_MSG.len() as u64);
-                // M10 C: force-rooted `__wrela_abort` (hand-asm builders
-                // remain in-tree until the delete commit).
-                a.bl_call_key("__wrela_abort"); // noreturn (landing pad)
-                let reenter = a.abs();
-                a.patch_cbnz(skip_reenter, 10);
-                debug_assert_eq!(reenter, a.abs());
-                a.bl_call_key(name); // resume (the fn's own discriminant routes)
-                a.b_to(status_loop_top);
-                let done = a.abs();
-                a.patch_cbz(skip_done, 0);
-                debug_assert_eq!(done, a.abs());
-            }
-        }
-
-        a.load_rodata_addr_at(0, ok_off);
-        a.bl_console_append_bytes(3);
-
-        a.bl_call_key("__wrela_line_commit");
-
-        a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
-        a.push(encode::enc_ldr_x_imm(10, 9, 0));
-        a.push(encode::enc_add_imm(10, 10, 1, true));
-        a.push(encode::enc_str_x_imm(10, 9, 0));
-
-        let cont_target = a.addr(harness_base);
-        a.patch_load_imm(cont_marker, 9, cont_target);
-    }
-
-    // Summary line: "<passed> passed, <failed> failed\n" — one descriptor,
-    // like every test's own line above. It is also boot's own abort
-    // landing (above): an `init` that aborted has already printed and
-    // counted its failure, and lands here to report the totals and exit.
-    if let Some(marker) = boot_cont_marker {
-        let target = a.addr(harness_base);
-        a.patch_load_imm(marker, 9, target);
-    }
-    a.bl_call_key("__wrela_line_begin");
-
-    a.load_imm(9, addrs.info_base + mi::OFF_TEST_PASSED);
-    a.push(encode::enc_ldr_x_imm(0, 9, 0));
-    a.push(encode::enc_movz(1, 0, 0, true));
-    a.bl_call_key("__wrela_fmt_dec");
-    a.bl_console_append_line_buf();
-
-    a.load_rodata_addr_at(0, passed_comma_off);
-    a.bl_console_append_bytes(9);
-
-    a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
-    a.push(encode::enc_ldr_x_imm(0, 9, 0));
-    a.push(encode::enc_movz(1, 0, 0, true));
-    a.bl_call_key("__wrela_fmt_dec");
-    a.bl_console_append_line_buf();
-
-    a.load_rodata_addr_at(0, failed_tail_off);
-    a.bl_console_append_bytes(8);
-
-    a.bl_call_key("__wrela_line_commit");
-
-    // Exit code: 0 if failed==0, else 1 — stored plainly then via the
-    // trapping MMIO store (the same two-writes-one-trap shape
-    // `push_halt` uses for the ordinary image, decision E's own protocol).
-    a.load_imm(9, addrs.info_base + mi::OFF_TEST_FAILED);
-    a.push(encode::enc_ldr_x_imm(9, 9, 0));
-    a.push(encode::enc_cmp_imm(9, 0, true));
-    a.push(encode::enc_cset(10, Cond::Ne, true));
-    a.load_imm(11, addrs.info_base + mi::OFF_EXIT_CODE);
-    a.push(encode::enc_str_x_imm(10, 11, 0));
-    a.load_imm(12, addrs.exit_mmio_addr);
-    a.push(encode::enc_str_x_imm(10, 12, 0));
+    let cont_marker = a.load_imm_placeholder(9);
+    a.load_imm(
+        10,
+        machine_layout::MACHINE_INFO_BASE + mi::OFF_TEST_CONTINUATION,
+    );
+    a.push(encode::enc_str_x_imm(9, 10, 0));
+    a.bl_call_key("__wrela_rt_primary_boot");
     a.push(encode::enc_brk(0));
-    a
+    (a, cont_marker)
 }
+
+/// Deleted by M11 item K (decision 850): `@test(runtime)` roots run as
+/// ordinary supervised turns in `__wrela_rt_primary_entry` (stdlib
+/// `runtime.wr`); the harness keeps only [`build_primary_entry_trampoline`].
 
 /// Max decimal digits `__wrela_fmt_dec` ever writes, sign included:
 /// `i64::MIN` (`-9223372036854775808`) and `u64::MAX`
@@ -1504,6 +1212,18 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_rt_secondary_entry",
         "__wrela_secondary_entry_1",
         "__wrela_secondary_entry_2",
+        "__wrela_rt_primary_boot",
+        "__wrela_rt_primary_entry",
+        "__wrela_rt_summary_and_halt",
+        "__wrela_append_ok_literal",
+        "__wrela_append_passed_comma_literal",
+        "__wrela_append_failed_tail_literal",
+        "__wrela_append_deadlock_literal",
+        "__wrela_abort_deadlock",
+        "__wrela_test_call",
+        "__wrela_test_append_prefix",
+        "__wrela_test_suspends",
+        "__wrela_test_turn_index",
         "__wrela_init_nwords",
         "__wrela_init_store_word",
         "__wrela_boot_call",
@@ -1516,6 +1236,10 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_wake_invoke",
     ] {
         only.insert(key.to_string());
+    }
+    for i in 0..crate::rtconfig::TEST_CALL_POOL_COUNT {
+        only.insert(format!("__test_call_{i}"));
+        only.insert(format!("__test_prefix_{i}"));
     }
     // Live `__boot_call_*` keys are seeded from the generated module's
     // fn set below (reachability via `__wrela_boot_call`); do not force
@@ -1585,14 +1309,58 @@ pub(super) fn reinject_runtime_with_rtconfig(
     program: &mut CodegenProgram,
     wiring: &RuntimeWiring,
 ) -> Result<(), LayoutError> {
-    let tables = &wiring.tables;
-    let text = crate::rtconfig::generate(tables);
+    // Ordinary images: no primary entry / test stub pool (keeps code under
+    // RTDATA_BASE). Test images call `reinject_runtime_with_test_facts`.
+    reinject_runtime_with_test_facts(program, Some(wiring), &[], false)
+}
+
+/// M11 K: reinject runtime (+ optional test-runner facts) against live or
+/// stub rtconfig. `wiring == None` uses the batch-1 stub tables with
+/// `HAS_BOOT_INIT = false`. `include_test_runner` pulls primary entry +
+/// live `__test_*` stubs only for `layout_test_image`.
+pub(super) fn reinject_runtime_with_test_facts(
+    program: &mut CodegenProgram,
+    wiring: Option<&RuntimeWiring>,
+    tests: &[crate::rtconfig::TestRunnerFact],
+    include_test_runner: bool,
+) -> Result<(), LayoutError> {
+    let (text, extras, tables_n_boot, tables_irq, tables_wake) = match wiring {
+        Some(w) => {
+            let mut extras = crate::rtconfig::extras_from_tables(&w.tables);
+            extras.tests = tests.to_vec();
+            extras.has_boot_init = true;
+            let text = crate::rtconfig::generate_with(&w.tables, &extras);
+            (
+                text,
+                extras,
+                w.tables.n_boot_calls,
+                w.tables.irq_vector_bits.len(),
+                w.tables.wake_pending_addrs.len(),
+            )
+        }
+        None => {
+            let mut tables = RuntimeTables {
+                n_turns: 0,
+                turn_stride: 0,
+                ready_queue_capacity: 1,
+                group_arena_capacity: 0,
+                total_bytes: 128,
+                cores: 1,
+                ..RuntimeTables::default()
+            };
+            tables.stripe_for_cores(1);
+            let mut extras = crate::rtconfig::RtconfigExtras::default();
+            extras.tests = tests.to_vec();
+            extras.has_boot_init = false;
+            let text = crate::rtconfig::generate_with(&tables, &extras);
+            (text, extras, 0, 0, 0)
+        }
+    };
     let runtime_cg = codegen_runtime_force_roots_with(Some(&text)).map_err(|m| {
         LayoutError::new(format!(
             "internal error: could not codegen runtime helpers against live rtconfig: {m}"
         ))
     })?;
-    let extras = crate::rtconfig::extras_from_tables(tables);
     let remaps = crate::rtconfig::stub_call_remaps(&extras);
     let rodata_byte_base: usize = program.rodata.iter().map(Vec::len).sum();
 
@@ -1682,6 +1450,29 @@ pub(super) fn reinject_runtime_with_rtconfig(
     ] {
         keys.push(k.into());
     }
+    if include_test_runner {
+        for k in [
+            "__wrela_rt_primary_boot",
+            "__wrela_rt_primary_entry",
+            "__wrela_rt_summary_and_halt",
+            "__wrela_append_ok_literal",
+            "__wrela_append_passed_comma_literal",
+            "__wrela_append_failed_tail_literal",
+            "__wrela_append_deadlock_literal",
+            "__wrela_abort_deadlock",
+            "__wrela_test_call",
+            "__wrela_test_append_prefix",
+            "__wrela_test_suspends",
+            "__wrela_test_turn_index",
+        ] {
+            keys.push(k.into());
+        }
+        // Live stubs only — the full pool blows past RTDATA_BASE.
+        for i in 0..tests.len() {
+            keys.push(format!("__test_call_{i}"));
+            keys.push(format!("__test_prefix_{i}"));
+        }
+    }
     // Fixed trampoline pools (decision 802).
     for i in 0..crate::rtconfig::RING_POOL_COUNT {
         keys.push(format!("__wrela_xsend_{i}"));
@@ -1692,14 +1483,14 @@ pub(super) fn reinject_runtime_with_rtconfig(
     }
 
     // Boot call stubs (decision 812) — only live ones; overwritten after.
-    for i in 0..tables.n_boot_calls {
+    for i in 0..tables_n_boot {
         keys.push(format!("__boot_call_{i}"));
     }
     // IRQ / wake stubs (decision 823) — only live ones; overwritten after.
-    for i in 0..tables.irq_vector_bits.len() {
+    for i in 0..tables_irq {
         keys.push(format!("__irq_call_{i}"));
     }
-    for i in 0..tables.wake_pending_addrs.len() {
+    for i in 0..tables_wake {
         keys.push(format!("__wake_call_{i}"));
     }
 
@@ -1707,8 +1498,15 @@ pub(super) fn reinject_runtime_with_rtconfig(
         let Some(mut f) = runtime_cg.fns.get(key).cloned() else {
             // Child poll / ladders may be absent from the reachability set
             // when N_CHILD_SITES == 0 and nothing references them — only
-            // run_one is required.
-            if key == "__wrela_rt_run_one" {
+            // run_one is required when wiring exists.
+            if key == "__wrela_rt_run_one" && wiring.is_some() {
+                return Err(LayoutError::new(format!(
+                    "internal error: live rtconfig codegen missing `{key}`"
+                )));
+            }
+            if include_test_runner
+                && (key == "__wrela_rt_primary_entry" || key == "__wrela_rt_primary_boot")
+            {
                 return Err(LayoutError::new(format!(
                     "internal error: live rtconfig codegen missing `{key}`"
                 )));
@@ -1751,7 +1549,6 @@ pub fn layout_test_image(
     check_transcript_bound(&program, runtime_tests)?;
 
     let image_base = machine_layout::IMAGE_BASE;
-    let addrs = HarnessAddrs::production();
 
     // plans/M6.md item D: the real boot wiring — derived *before* the code
     // section is laid out so M10 E3/E4/F can inject specialized `rt_run_one`
@@ -1769,15 +1566,27 @@ pub fn layout_test_image(
     if let Some(w) = wiring.as_mut() {
         intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
     }
+    let tests = test_runner_facts(
+        runtime_tests,
+        async_tests,
+        wiring.as_ref().map(|w| &w.tables),
+    );
+    // M11 K: always reinject with test-runner facts (even sync-only / no
+    // wiring) so N_TESTS + ladders + primary entry see the live list.
+    reinject_runtime_with_test_facts(&mut program, wiring.as_ref(), &tests, true)?;
     if let Some(w) = wiring.as_ref() {
-        // M11 E/F: re-codegen runtime against live RT/GROUPS/sched + match
-        // ladders before specialized select/drain/enqueue inject.
-        reinject_runtime_with_rtconfig(&mut program, w)?;
         inject_rt_enqueue_and_dispatch_fns(&mut program, w);
         inject_rt_cross_core_fns(&mut program, w);
         inject_boot_init_fn(&mut program, w);
         inject_checkpoint_irq_fns(&mut program, w);
     }
+    inject_test_runner_fns(
+        &mut program,
+        &tests,
+        test_args,
+        &mut rodata,
+        &mut rodata_cursor,
+    );
     let program = &program;
 
     let mut code_words: Vec<u32> = Vec::new();
@@ -1825,7 +1634,7 @@ pub fn layout_test_image(
         link_cp_body,
     );
     let checkpoint_service_offset = checkpoint_block.checkpoint_service_word;
-    let has_deadline_poll = checkpoint_block.has_deadline_poll;
+    let _has_deadline_poll = checkpoint_block.has_deadline_poll;
     let checkpoint_words_len = checkpoint_block.words.len();
     // `bl_call_key` records block-relative words when built at start=0;
     // shift them to harness-absolute for the shared reloc resolver.
@@ -1850,29 +1659,10 @@ pub fn layout_test_image(
     // sits first, so the section's own start is never the right target).
     let checkpoint_service_word = checkpoint_start + checkpoint_service_offset;
 
-    // M10 H: boot_init lives in `code` (`rt_boot_init 0`); glue empty after
-    // F2. Harness is checkpoint then entry — no rtcode slice.
+    // M11 K: harness is checkpoint + thin primary-entry trampoline.
     let entry_start = checkpoint_start + checkpoint_asm.words.len();
-    let has_rt_run_one = wiring.is_some();
-    let call_boot_init = wiring.is_some();
     let core_entry_starts: Vec<(usize, usize)> = Vec::new();
-    let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1);
-
-    let entry_asm = build_entry_driver(
-        &addrs,
-        entry_start,
-        image_base,
-        runtime_tests,
-        async_tests,
-        has_rt_run_one,
-        checkpoint_service_word,
-        has_deadline_poll,
-        &mut rodata,
-        &mut rodata_cursor,
-        call_boot_init,
-        test_args,
-        cores,
-    );
+    let (entry_asm, cont_marker) = build_primary_entry_trampoline(entry_start);
 
     let mut harness_words: Vec<u32> = Vec::new();
     let mut harness_relocs: Vec<Reloc> = Vec::new();
@@ -1893,6 +1683,21 @@ pub fn layout_test_image(
     let code_base = cursor;
     let code_size = (code_words.len() * 4) as u64;
     cursor += code_size;
+
+    // Arm OFF_TEST_CONTINUATION at `__wrela_rt_primary_entry` (decision 852).
+    let primary_entry_word = *fn_word_base
+        .get("__wrela_rt_primary_entry")
+        .ok_or_else(|| {
+            LayoutError::new(
+                "internal error: force-rooted `__wrela_rt_primary_entry` missing from emit set",
+            )
+        })?;
+    let primary_entry_addr = code_base + (primary_entry_word as u64) * 4;
+    patch_load_imm_words(
+        &mut harness_words,
+        entry_start + cont_marker,
+        primary_entry_addr,
+    );
 
     let rodata_bytes: Vec<u8> = rodata.iter().flat_map(|e| e.iter().copied()).collect();
     let rodata_base = if rodata_bytes.is_empty() {
@@ -2571,26 +2376,10 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     // M10 F/F2: hand-asm select / cross-core / ring_enqueue deleted.
     // M11 J: JIT `build_rt_enqueue` / `build_rt_select_and_run` deleted with emitters.
     // M10 H: emit_boot_init measured in codegen::emitted_a64_census_specialization_live_counts.
+    // M11 K: build_entry_driver deleted; primary trampoline is floor.
     {
-        let addrs = HarnessAddrs::production();
-        let mut rodata: Vec<Vec<u8>> = Vec::new();
-        let mut cursor = 0usize;
-        let asm = build_entry_driver(
-            &addrs,
-            0,
-            0,
-            &[],
-            &std::collections::BTreeSet::new(),
-            false,
-            0,
-            false,
-            &mut rodata,
-            &mut cursor,
-            false,
-            &BTreeMap::new(),
-            1,
-        );
-        insert(&mut out, "build_entry_driver", asm.words.len());
+        let (asm, _) = build_primary_entry_trampoline(0);
+        insert(&mut out, "build_primary_entry_trampoline", asm.words.len());
     }
     // Test-only residue of item C (cfg(test) helper).
     {

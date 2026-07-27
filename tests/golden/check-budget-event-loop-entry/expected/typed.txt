@@ -1,4 +1,18 @@
 Program
+  Fn name=__wrela_rt_primary_entry ret=u64
+    Body
+      Let name=n ty=u64
+        Int text=0 ty=u64
+      While
+        Binary op=== ty=bool
+          Local name=n ty=u64
+          Int text=0 ty=u64
+        Body
+          Assign
+            Local name=n ty=u64
+            Int text=1 ty=u64
+      Return
+        Local name=n ty=u64
   Fn name=__wrela_rt_secondary_entry ret=u64
     Param name=core mode=read ty=usize
     Body

@@ -2247,8 +2247,10 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
 ///   checked so a typo fails closed.
 fn is_runtime_event_loop_entry(fn_name: &str) -> bool {
     // Exact-name allowlist (02 §8.1 / decision 810). Not module membership.
-    // Item K will add the primary entry-driver key here.
-    matches!(fn_name, "__wrela_rt_secondary_entry")
+    matches!(
+        fn_name,
+        "__wrela_rt_secondary_entry" | "__wrela_rt_primary_entry"
+    )
 }
 
 fn resolve_loop_budget(

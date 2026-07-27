@@ -96,6 +96,23 @@ pub struct RtconfigExtras {
     pub irq_vector_bits: Vec<u64>,
     /// M11 I: absolute wake-pending word addresses.
     pub wake_pending_addrs: Vec<u64>,
+    /// M11 K: `@test(runtime)` runner facts (decision 851). Empty for
+    /// ordinary images / stub; test-image reinject fills these.
+    pub tests: Vec<TestRunnerFact>,
+    /// M11 K: call `__wrela_rt_boot_init` from the primary entry (wiring
+    /// present). Stub / ordinary dump leave this false.
+    pub has_boot_init: bool,
+}
+
+/// One `@test(runtime)` root for the generated test-runner ladders
+/// (plans/M11.md item K / decision 851).
+#[derive(Debug, Clone)]
+pub struct TestRunnerFact {
+    pub name: String,
+    pub is_async: bool,
+    /// 0-based index into `RT.turns` for this test's free-turn area when
+    /// `is_async`; ignored for sync tests (ladder returns 0).
+    pub turn_index: usize,
 }
 
 /// Hidden module address (decision 701). Loader key is `["core", "__image_runtime"]`;
@@ -130,6 +147,9 @@ pub const BOOT_CALL_POOL_COUNT: usize = 32;
 /// IRQ handler / wake `@task` stub pools (decision 823).
 pub const IRQ_CALL_POOL_COUNT: usize = 8;
 pub const WAKE_CALL_POOL_COUNT: usize = 8;
+/// `@test(runtime)` call / prefix stub pool (plans/M11.md item K / decision 851).
+/// Ceiling above measured peak (`boot-many-tests` = 13).
+pub const TEST_CALL_POOL_COUNT: usize = 16;
 /// Sentinel edge index from match ladders when no ring matches (decision 801).
 pub const NO_EDGE: usize = 255;
 
@@ -335,6 +355,8 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
         n_boot_calls: tables.n_boot_calls,
         irq_vector_bits: tables.irq_vector_bits.clone(),
         wake_pending_addrs: tables.wake_pending_addrs.clone(),
+        tests: Vec::new(),
+        has_boot_init: false,
     }
 }
 
@@ -1284,6 +1306,71 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     }
     out.push_str("        case _:\n");
     out.push_str("            return\n");
+    out.push('\n');
+
+    // M11 K: `@test(runtime)` runner ladders (decision 851). Fixed stub
+    // pool; inject overwrites live `__test_call_*` / `__test_prefix_*`.
+    assert!(
+        extras.tests.len() <= TEST_CALL_POOL_COUNT,
+        "image needs {} runtime tests; pool is {TEST_CALL_POOL_COUNT} (decision 851)",
+        extras.tests.len()
+    );
+    push_const(&mut out, "N_TESTS", extras.tests.len());
+    push_const(&mut out, "TEST_CALL_POOL_COUNT", TEST_CALL_POOL_COUNT);
+    out.push_str(&format!(
+        "pub const HAS_BOOT_INIT: bool = {}\n",
+        if extras.has_boot_init {
+            "true"
+        } else {
+            "false"
+        }
+    ));
+    out.push('\n');
+    for i in 0..TEST_CALL_POOL_COUNT {
+        out.push_str(&format!("pub fn __test_call_{i}() -> u64:\n"));
+        out.push_str("    return 0\n");
+        out.push('\n');
+        out.push_str(&format!("pub fn __test_prefix_{i}():\n"));
+        out.push_str("    return\n");
+        out.push('\n');
+    }
+    out.push_str("pub fn __wrela_test_call(i: usize) -> u64:\n");
+    out.push_str("    match i:\n");
+    for i in 0..extras.tests.len() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return __test_call_{i}()\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+    out.push_str("pub fn __wrela_test_append_prefix(i: usize):\n");
+    out.push_str("    match i:\n");
+    for i in 0..extras.tests.len() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            __test_prefix_{i}()\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+    out.push_str("pub fn __wrela_test_suspends(i: usize) -> u64:\n");
+    out.push_str("    match i:\n");
+    for (i, t) in extras.tests.iter().enumerate() {
+        let v = if t.is_async { 1 } else { 0 };
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {v}\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+    out.push_str("pub fn __wrela_test_turn_index(i: usize) -> usize:\n");
+    out.push_str("    match i:\n");
+    for (i, t) in extras.tests.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {}\n", t.turn_index));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
 
     out
 }
