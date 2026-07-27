@@ -1,0 +1,12 @@
+Module path=examples.check_method_generic_lend
+  Struct Item data
+    field count: u32
+  Struct Key data
+    field id: u32
+  Enum MissingKey data
+    variant Missing
+  Struct Table data
+    field items: [Item; 4]
+    fn resolve(read self, key: read Key) -> Result[usize, MissingKey]
+    fn entry[R](mut self, key: read Key, body: read fn(mut Item) -> R) -> Result[R, MissingKey]
+  Fn use_entry(table: mut Table, key: read Key) -> Result[unit, MissingKey]

@@ -1,0 +1,29 @@
+module examples.check_method_generic_lend
+
+# plans/M13.md item Q / 02-language.md §8.3: method-owned type parameter
+# `R` inferred from a lending closure — the scoped-access idiom.
+
+struct Item:
+    count: u32
+
+struct Key:
+    id: u32
+
+enum MissingKey:
+    Missing
+
+struct Table:
+    items: [Item; 4]
+
+    fn resolve(self, key: Key) -> Result[usize, MissingKey]:
+        return Ok(0)
+
+    # An accessor lends a field for exactly one call:
+    fn entry[R](mut self, key: Key, body: fn(mut Item) -> R)
+        -> Result[R, MissingKey]:
+        index = self.resolve(key)?
+        return Ok(body(mut self.items[index]))
+
+pub fn use_entry(mut table: Table, key: Key) -> Result[unit, MissingKey]:
+    count = table.entry(key, |mut item: Item| item.count += 1)?
+    return Ok(count)

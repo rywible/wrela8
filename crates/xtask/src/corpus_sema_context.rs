@@ -318,8 +318,10 @@ struct Table:
         return Ok(0)
 "#,
         postamble: "",
+        // `item.count += 1` is a suite closure → inferred `R = unit`
+        // (plans/M13.md item Q); the binding `count` is that unit payload.
         params: "mut table: Table, key: Key",
-        ret: "Result[u32, MissingKey]",
+        ret: "Result[unit, MissingKey]",
         ret_ok: "Ok(count)",
         async_wrapper: false,
         nest_items_into: "Table",

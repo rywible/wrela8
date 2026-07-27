@@ -1,0 +1,15 @@
+module examples.err_method_generic_unsatisfied
+
+# plans/M13.md item Q: method-owned generic whose requirement set is
+# unsatisfied — why-chain names the method, the required signature, and
+# the instantiation site (same shape as err-generic-missing-method).
+
+struct Sector:
+    id: u64
+
+struct Table:
+    fn apply[T](read self, x: T) -> u64:
+        return x.hash()
+
+pub fn use_it(t: Table, s: Sector) -> u64:
+    return t.apply(s)

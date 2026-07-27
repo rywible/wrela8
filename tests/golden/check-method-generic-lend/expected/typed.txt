@@ -1,0 +1,55 @@
+Program
+  Fn name=use_entry ret=Result[unit, MissingKey]
+    Param name=table mode=mut ty=Table
+    Param name=key mode=read ty=Key
+    Body
+      Let name=count ty=unit
+        Try ty=unit
+          Call key=method:Table.entry[unit] ty=Result[unit, MissingKey]
+            Receiver
+              Local name=table ty=Table
+            Local name=key ty=Key
+            Closure ty=fn(mut Item) -> unit
+              ClosureParam name=item mode=mut ty=Item
+              Body
+                Assign
+                  Field name=count ty=u32
+                    Local name=item ty=Item
+                  Binary op=+ ty=u32
+                    Field name=count ty=u32
+                      Local name=item ty=Item
+                    Int text=1 ty=u32
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[unit, MissingKey]
+          Local name=count ty=unit
+  Struct name=Item
+  Struct name=Key
+  Struct name=Table
+    Method name=resolve ret=Result[usize, MissingKey]
+      Receiver mode=read ty=Table
+      Param name=key mode=read ty=Key
+      Body
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[usize, MissingKey]
+            Int text=0 ty=usize
+  Instantiation key=method:Table.entry[unit]
+    Fn ret=Result[unit, MissingKey]
+      Receiver mode=mut ty=Table
+      Param name=key mode=read ty=Key
+      Param name=body mode=read ty=fn(mut Item) -> unit
+      Body
+        Let name=index ty=usize
+          Try ty=usize
+            Call key=Table.resolve ty=Result[usize, MissingKey]
+              Receiver
+                Local name=self ty=Table
+              Local name=key ty=Key
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[unit, MissingKey]
+            CallValue ty=unit
+              Callee
+                Local name=body ty=fn(mut Item) -> unit
+              Index ty=Item
+                Field name=items ty=[Item; 4]
+                  Local name=self ty=Table
+                Local name=index ty=usize

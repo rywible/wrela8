@@ -90,6 +90,11 @@ pub(crate) enum InstKind {
     Struct,
     Enum,
     Fn,
+    /// A method's (or associated fn's) own type/const parameters
+    /// (plans/M13.md item Q): keyed `(receiver type, method, type-args)`.
+    /// `QueuedInstantiation::name` is the method name; `receiver` holds
+    /// the concrete `Type::Named` the call was made through.
+    Method,
 }
 
 impl InstKind {
@@ -98,6 +103,7 @@ impl InstKind {
             InstKind::Struct => "struct",
             InstKind::Enum => "enum",
             InstKind::Fn => "fn",
+            InstKind::Method => "method",
         }
     }
 }
@@ -107,6 +113,9 @@ pub(crate) struct QueuedInstantiation {
     pub(crate) kind: InstKind,
     pub(crate) name: String,
     pub(crate) args: Vec<types::TypeArg>,
+    /// Concrete receiver type for `InstKind::Method`
+    /// (`Type::Named(struct_or_enum, struct_args)`); `None` otherwise.
+    pub(crate) receiver: Option<Type>,
     /// The instantiation chain leading to this one, outermost first,
     /// this instantiation's own triggering call site last (decision 2:
     /// "one `instantiated at` line per level, innermost first" — printed
@@ -543,7 +552,45 @@ pub(crate) fn enqueue_instantiation(
     args: &[types::TypeArg],
     call_span: Span,
 ) -> Result<String, SemaError> {
-    let key = generics::canonical_key(kind, name, args);
+    debug_assert_ne!(
+        kind,
+        InstKind::Method,
+        "method instantiations use enqueue_method_instantiation"
+    );
+    enqueue_instantiation_inner(mctx, kind, name, args, None, call_span)
+}
+
+/// Enqueues a method-owned generic instantiation (plans/M13.md item Q).
+/// Key is `method:{ReceiverType}.{method}[{args}]`.
+pub(crate) fn enqueue_method_instantiation(
+    mctx: &ModuleCtx,
+    receiver: &Type,
+    method: &str,
+    args: &[types::TypeArg],
+    call_span: Span,
+) -> Result<String, SemaError> {
+    enqueue_instantiation_inner(
+        mctx,
+        InstKind::Method,
+        method,
+        args,
+        Some(receiver.clone()),
+        call_span,
+    )
+}
+
+fn enqueue_instantiation_inner(
+    mctx: &ModuleCtx,
+    kind: InstKind,
+    name: &str,
+    args: &[types::TypeArg],
+    receiver: Option<Type>,
+    call_span: Span,
+) -> Result<String, SemaError> {
+    let key = match (&kind, &receiver) {
+        (InstKind::Method, Some(recv)) => generics::canonical_method_key(recv, name, args),
+        _ => generics::canonical_key(kind, name, args),
+    };
     let mut chain = mctx.current_chain.borrow().clone();
     chain.push(call_span);
     if chain.len() > MAX_GENERIC_DEPTH {
@@ -562,6 +609,7 @@ pub(crate) fn enqueue_instantiation(
             kind,
             name: name.to_string(),
             args: args.to_vec(),
+            receiver,
             chain,
         });
     Ok(key)
@@ -4872,8 +4920,106 @@ fn check_call_index(
                 kind: TypedExprKind::ToScalar(Box::new(base_t)),
             });
         }
-        // `x.method[Args](...)`: a generic method call — item H's scope
-        // boundary, documented above.
+        // `Type.assoc[Args](...)` first — `check_expr` on a type name is
+        // `error[type]: is a type, not a value`, so recognize it before
+        // synthesizing the base (plans/M13.md item Q).
+        if let Expr::Name(_, bname) = base.as_ref() {
+            if fctx.lookup_local(bname).is_none() {
+                if let Some(s) = mctx.structs.get(bname.as_str()) {
+                    if s.decl.generics.is_empty() {
+                        if let Some((_, d)) = s.assoc_fn(mname) {
+                            if !d.generics.is_empty() {
+                                let recv_ty = Type::Named(bname.clone(), vec![]);
+                                return check_method_generic_call(
+                                    &recv_ty,
+                                    mname,
+                                    d,
+                                    args,
+                                    Some(targs),
+                                    call_span,
+                                    None,
+                                    fctx,
+                                    mctx,
+                                );
+                            }
+                        }
+                    }
+                }
+                if let Some(e) = mctx.enums.get(bname.as_str()) {
+                    if e.generics.is_empty() {
+                        if let Some((_, d)) = e.assoc_fn(mname) {
+                            if !d.generics.is_empty() {
+                                let recv_ty = Type::Named(bname.clone(), vec![]);
+                                return check_method_generic_call(
+                                    &recv_ty,
+                                    mname,
+                                    d,
+                                    args,
+                                    Some(targs),
+                                    call_span,
+                                    None,
+                                    fctx,
+                                    mctx,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // `x.method[Args](...)`: method-owned generics with explicit args.
+        let base_t = check_expr(base, None, fctx, mctx)?;
+        let base_ty = unwrap_own(base_t.ty.clone());
+        if let Type::Named(sname, recv_targs) = &base_ty {
+            if let Some(s) = if recv_targs.is_empty() {
+                mctx.structs
+                    .get(sname.as_str())
+                    .map(std::borrow::Cow::Borrowed)
+            } else if mctx.structs.contains_key(sname.as_str()) {
+                Some(std::borrow::Cow::Owned(generics::instantiate_struct(
+                    mctx, sname, recv_targs, call_span,
+                )?))
+            } else {
+                None
+            } {
+                if let Some((_, d)) = s.method(mname) {
+                    if !d.generics.is_empty() {
+                        let recv_ty = Type::Named(sname.clone(), recv_targs.clone());
+                        return check_method_generic_call(
+                            &recv_ty,
+                            mname,
+                            d,
+                            args,
+                            Some(targs),
+                            call_span,
+                            Some(base_t),
+                            fctx,
+                            mctx,
+                        );
+                    }
+                }
+            }
+            if recv_targs.is_empty() {
+                if let Some(e) = mctx.enums.get(sname.as_str()) {
+                    if let Some((_, d)) = e.method(mname) {
+                        if !d.generics.is_empty() {
+                            let recv_ty = Type::Named(sname.clone(), vec![]);
+                            return check_method_generic_call(
+                                &recv_ty,
+                                mname,
+                                d,
+                                args,
+                                Some(targs),
+                                call_span,
+                                Some(base_t),
+                                fctx,
+                                mctx,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         return Err(unimplemented_at("generic instantiation is", call_span));
     }
     if let Expr::Name(_, name) = inner {
@@ -5464,6 +5610,45 @@ fn capability_name_in_type_expr(e: &Expr) -> Option<&str> {
     crate::eval::image_checks::is_sealed_authority_type_name(name).then_some(name)
 }
 
+/// Call a method/associated fn that declares its own type parameters
+/// (plans/M13.md item Q): infer or resolve `[Args]`, substitute + enqueue,
+/// check args against the concrete signature. `receiver_ty` is the
+/// concrete `Type::Named` the call goes through; `call_receiver` is the
+/// typed receiver expression (`None` for an associated-fn call spelled
+/// `Type.method(...)`).
+fn check_method_generic_call(
+    receiver_ty: &Type,
+    method: &str,
+    d: &types::DeclFn,
+    args: &[Arg],
+    explicit_targs: Option<&[Expr]>,
+    call_span: Span,
+    call_receiver: Option<TypedExpr>,
+    fctx: &mut FnCtx,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let type_args = match explicit_targs {
+        Some(targs) => generics::resolve_call_targs(targs, mctx)?,
+        None => generics::infer_method_targs(method, d, args, fctx, mctx, call_span)?,
+    };
+    let (ast, decl) =
+        generics::instantiate_method(mctx, receiver_ty, method, &type_args, call_span)?;
+    let typed_args = check_call_args(&ast.params, &decl.params, args, call_span, fctx, mctx)?;
+    let key = CalleeKey::FnInstance(generics::canonical_method_key(
+        receiver_ty,
+        method,
+        &type_args,
+    ));
+    Ok(TypedExpr {
+        ty: decl.ret,
+        kind: TypedExprKind::Call {
+            callee: key,
+            receiver: call_receiver.map(Box::new),
+            args: typed_args,
+        },
+    })
+}
+
 fn check_call_by_field(
     base: &Expr,
     fspan: Span,
@@ -5489,7 +5674,18 @@ fn check_call_by_field(
                 }
                 if let Some((af, d)) = s.assoc_fn(name) {
                     if !d.generics.is_empty() {
-                        return Err(unimplemented_at("generic instantiation is", call_span));
+                        let recv_ty = Type::Named(bname.clone(), vec![]);
+                        return check_method_generic_call(
+                            &recv_ty,
+                            name,
+                            d,
+                            args,
+                            None,
+                            call_span,
+                            None,
+                            fctx,
+                            mctx,
+                        );
                     }
                     let typed_args =
                         check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
@@ -5523,10 +5719,24 @@ fn check_call_by_field(
                 // plans/M9.md item B2: associated fn before variant — a
                 // call `Color.from(...)` is a method, not "no variant".
                 if let Some((af, d)) = e.assoc_fn(name) {
-                    // Generic enum assoc fns / method-owned type params:
-                    // still the documented H / J2b boundary.
-                    if !e.generics.is_empty() || !d.generics.is_empty() {
+                    // Generic-enum assoc fns stay deferred; method-owned
+                    // type params on a non-generic enum instantiate (Q).
+                    if !e.generics.is_empty() {
                         return Err(unimplemented_at("generic instantiation is", call_span));
+                    }
+                    if !d.generics.is_empty() {
+                        let recv_ty = Type::Named(bname.clone(), vec![]);
+                        return check_method_generic_call(
+                            &recv_ty,
+                            name,
+                            d,
+                            args,
+                            None,
+                            call_span,
+                            None,
+                            fctx,
+                            mctx,
+                        );
                     }
                     let typed_args =
                         check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
@@ -5762,7 +5972,18 @@ fn check_call_by_field(
                     ));
                 };
                 if !d.generics.is_empty() {
-                    return Err(unimplemented_at("generic instantiation is", call_span));
+                    let recv_ty = Type::Named(sname.clone(), targs.clone());
+                    return check_method_generic_call(
+                        &recv_ty,
+                        name,
+                        d,
+                        args,
+                        None,
+                        call_span,
+                        Some(base_t),
+                        fctx,
+                        mctx,
+                    );
                 }
                 let typed_args =
                     check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
@@ -5796,7 +6017,18 @@ fn check_call_by_field(
                         ));
                     };
                     if !d.generics.is_empty() {
-                        return Err(unimplemented_at("generic instantiation is", call_span));
+                        let recv_ty = Type::Named(sname.clone(), vec![]);
+                        return check_method_generic_call(
+                            &recv_ty,
+                            name,
+                            d,
+                            args,
+                            None,
+                            call_span,
+                            Some(base_t),
+                            fctx,
+                            mctx,
+                        );
                     }
                     let typed_args =
                         check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
@@ -9515,6 +9747,10 @@ fn check_await_actor_call(
         ));
     }
     if !d.generics.is_empty() {
+        // Method-owned generics on an actor-message target: ordinary
+        // (non-message) method calls instantiate (item Q); the message
+        // path still needs take/handoff composition against the
+        // substituted signature — fail closed until that lands.
         return Err(unimplemented_at("generic instantiation is", call_span));
     }
     let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;

@@ -57,8 +57,9 @@ use crate::syntax::ast::{AccessMode, BinOp, Span};
 pub enum CalleeKey {
     /// A plain top-level fn, never generic: its bare name.
     Fn(String),
-    /// An instantiated top-level generic fn: `generics::canonical_key`'s
-    /// `"fn:name[args]"` spelling.
+    /// An instantiated top-level generic fn (`"fn:name[args]"`) or a
+    /// method-owned generic instantiation (`"method:Recv.method[args]"`,
+    /// plans/M13.md item Q) — both resolve to `TypedInstantiation::Fn`.
     FnInstance(String),
     /// A method/associated fn/`init` on a plain (non-generic) struct:
     /// `(struct name, member name)`.

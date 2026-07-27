@@ -482,8 +482,15 @@ fn callee_decl_name(key: &CalleeKey) -> String {
     let no_prefix = raw
         .strip_prefix("fn:")
         .or_else(|| raw.strip_prefix("struct:"))
+        .or_else(|| raw.strip_prefix("method:"))
         .unwrap_or(&raw);
-    no_prefix.split('[').next().unwrap_or(no_prefix).to_string()
+    // `method:Table.entry[u32]` → bare `Table` for unresolvable lookup.
+    let before_args = no_prefix.split('[').next().unwrap_or(no_prefix);
+    before_args
+        .split('.')
+        .next()
+        .unwrap_or(before_args)
+        .to_string()
 }
 
 fn resolve_struct_member<'p>(s: &'p TypedStruct, member: &str) -> Option<&'p TypedFn> {

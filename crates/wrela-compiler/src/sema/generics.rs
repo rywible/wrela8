@@ -26,12 +26,13 @@
 //! below; anything else fails closed via the existing `unimplemented_at`
 //! helper.
 //!
-//! Scope boundary (documented, not silently approximated): a *method*'s
-//! own generic parameters (beyond its struct's, if any) are never
-//! instantiated — only top-level generic `fn`s, and generic
-//! `struct`/`enum` types, are. A call that would need one fails closed
-//! with `unimplemented_at("generic instantiation is", ...)`, exactly as
-//! every fail-closed point already did before this item landed.
+//! Method-owned generic parameters (plans/M13.md item Q / 02 §8.3): a
+//! method's (or associated fn's) own `[T, const N]` list instantiates
+//! under the same worklist, keyed `method:{ReceiverType}.{name}[{args}]`.
+//! Type args are inferred at the call site exactly as for free functions
+//! — including `R` from a `fn(...) -> R` argument when a closure or named
+//! fn is passed — then the substituted body is re-checked and the
+//! monomorphized `TypedFn` lands in `TypedProgram::instantiations`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,7 +43,7 @@ use crate::sema::types::{
     DeclMember, DeclParam, DeclStruct, DeclVariant, DeclVariantPayload, Type, TypeArg,
 };
 use crate::sema::{SemaError, access, flow, matches, unimplemented_at};
-use crate::syntax::ast::{Arg, BinOp, ClosureBody, Expr, Member, Module, Span, Stmt};
+use crate::syntax::ast::{self, Arg, BinOp, ClosureBody, Expr, Member, Module, Span, Stmt};
 use crate::syntax::printer;
 
 // --- canonical keys ---------------------------------------------------
@@ -53,7 +54,22 @@ use crate::syntax::printer;
 /// `BTreeMap` key `bodies::enqueue_instantiation` uses and the display
 /// spelling the chain diagnostic cites (`` `hash_pair[Sector]` ``).
 pub(crate) fn canonical_key(kind: InstKind, name: &str, args: &[TypeArg]) -> String {
+    debug_assert_ne!(
+        kind,
+        InstKind::Method,
+        "method keys use canonical_method_key"
+    );
     format!("{}:{}", kind.tag(), display_name(name, args))
+}
+
+/// `method:{ReceiverType}.{method}[{args}]` — plans/M13.md item Q's
+/// `(receiver type, method, type-args)` key.
+pub(crate) fn canonical_method_key(receiver: &Type, method: &str, args: &[TypeArg]) -> String {
+    format!(
+        "method:{}.{}",
+        types::render_type(receiver),
+        display_name(method, args)
+    )
 }
 
 fn display_name(name: &str, args: &[TypeArg]) -> String {
@@ -62,6 +78,17 @@ fn display_name(name: &str, args: &[TypeArg]) -> String {
     }
     let rendered: Vec<String> = args.iter().map(types::render_type_arg).collect();
     format!("{name}[{}]", rendered.join(", "))
+}
+
+/// Display spelling used by the requirement-chain diagnostic
+/// (`Table.entry[Sector]`, `hash_pair[Sector]`).
+fn display_inst_name(entry: &QueuedInstantiation) -> String {
+    match (&entry.kind, &entry.receiver) {
+        (InstKind::Method, Some(recv)) => {
+            format!("{}.{}", types::render_type(recv), display_name(&entry.name, &entry.args))
+        }
+        _ => display_name(&entry.name, &entry.args),
+    }
 }
 
 // --- substitution: Type::Generic(name) -> concrete Type ----------------
@@ -1019,20 +1046,98 @@ pub(crate) fn instantiate_fn(
     Ok(FnInfo { ast, decl })
 }
 
+/// Substitute + enqueue a method's (or associated fn's) own generic
+/// parameters (plans/M13.md item Q). `receiver` is the concrete
+/// `Type::Named` the call was made through (struct/enum args already
+/// resolved). Returns the substituted AST/decl pair ready for
+/// `check_call_args` / body checking.
+pub(crate) fn instantiate_method(
+    mctx: &ModuleCtx,
+    receiver: &Type,
+    method: &str,
+    args: &[TypeArg],
+    call_span: Span,
+) -> Result<(ast::FnItem, DeclFn), SemaError> {
+    let Type::Named(type_name, type_args) = receiver else {
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "method `{method}` called on non-nominal type `{}`",
+                types::render_type(receiver)
+            ),
+            call_span,
+        ));
+    };
+    let (ast_orig, decl_orig) =
+        lookup_method_decl(mctx, type_name, type_args, method, call_span)?;
+    check_arity(&decl_orig.generics, args, method, call_span)?;
+    let subst = build_subst(&decl_orig.generics, args, mctx, call_span)?;
+    let decl = subst_decl_fn_direct(&decl_orig, &subst);
+    let mut ast = ast_orig;
+    ast.generics = Vec::new();
+    if let Some(body) = ast.body.as_mut() {
+        *body = body.iter().map(|s| subst_stmt(s, &subst)).collect();
+    }
+    bodies::enqueue_method_instantiation(mctx, receiver, method, args, call_span)?;
+    Ok((ast, decl))
+}
+
+/// Resolve `(ast, decl)` for `method` on `type_name[type_args]`, applying
+/// struct/enum-level substitution first when the receiver is itself a
+/// generic instantiation.
+fn lookup_method_decl(
+    mctx: &ModuleCtx,
+    type_name: &str,
+    type_args: &[TypeArg],
+    method: &str,
+    call_span: Span,
+) -> Result<(ast::FnItem, DeclFn), SemaError> {
+    if let Some(s) = mctx.structs.get(type_name) {
+        let info = if type_args.is_empty() {
+            s.clone()
+        } else {
+            instantiate_struct(mctx, type_name, type_args, call_span)?
+        };
+        if let Some((f, d)) = info.method(method).or_else(|| info.assoc_fn(method)) {
+            return Ok((f.clone(), d.clone()));
+        }
+        return Err(SemaError::at(
+            "type",
+            format!("type `{type_name}` has no method `{method}`"),
+            call_span,
+        ));
+    }
+    if let Some(e) = mctx.enums.get(type_name) {
+        if !type_args.is_empty() {
+            return Err(unimplemented_at("generic instantiation is", call_span));
+        }
+        if let Some((f, d)) = e.method(method).or_else(|| e.assoc_fn(method)) {
+            return Ok((f.clone(), d.clone()));
+        }
+        return Err(SemaError::at(
+            "type",
+            format!("type `{type_name}` has no method `{method}`"),
+            call_span,
+        ));
+    }
+    Err(SemaError::at(
+        "type",
+        format!("unknown type `{type_name}`"),
+        call_span,
+    ))
+}
+
 // --- item 2: inferring a generic fn's type arguments ---------------------
 
 /// The dumbest honest inference (item 2): a type parameter used directly
 /// as a parameter's own type (`a: T`) is inferred from that argument's
-/// synthesized type; a parameter whose declared type is anything other
-/// than a bare `Type::Generic` (nested in an array/tuple/`Option`/...) is
-/// not consulted at all — a genuinely deeper case than "direct
-/// `T`-as-parameter-type", so it simply contributes nothing towards
-/// inferring that parameter (decision: "if easy" nested inference is not
-/// attempted). A const generic parameter is never inferred (there is no
-/// comptime engine yet to read a value back out of an argument
-/// expression) — if the fn declares one, inference always reports it
-/// uninferable. Mismatched or never-constrained type parameters are
-/// named in the error, exactly as item 2 asks.
+/// synthesized type. Plans/M13.md item Q adds one nested shape the §8.3
+/// idiom needs: a parameter typed `fn(...) -> R` with bare generic `R`
+/// (in return position only) is inferred from a closure body's result
+/// type or a named fn/method's declared return. Anything else nested
+/// still contributes nothing. A const generic parameter is never
+/// inferred. Mismatched or never-constrained type parameters are named
+/// in the error, exactly as item 2 asks.
 pub(crate) fn infer_fn_targs(
     fi: &FnInfo,
     args: &[Arg],
@@ -1040,35 +1145,84 @@ pub(crate) fn infer_fn_targs(
     mctx: &ModuleCtx,
     call_span: Span,
 ) -> Result<Vec<TypeArg>, SemaError> {
-    let bound = bind_args_positionally(&fi.decl.params, args);
+    infer_generic_targs(
+        &fi.decl.name,
+        &fi.decl.generics,
+        &fi.decl.params,
+        args,
+        fctx,
+        mctx,
+        call_span,
+    )
+}
+
+/// Same inference as [`infer_fn_targs`], for a method/associated-fn
+/// declaration (plans/M13.md item Q).
+pub(crate) fn infer_method_targs(
+    method_name: &str,
+    decl: &DeclFn,
+    args: &[Arg],
+    fctx: &mut bodies::FnCtx,
+    mctx: &ModuleCtx,
+    call_span: Span,
+) -> Result<Vec<TypeArg>, SemaError> {
+    infer_generic_targs(
+        method_name,
+        &decl.generics,
+        &decl.params,
+        args,
+        fctx,
+        mctx,
+        call_span,
+    )
+}
+
+fn infer_generic_targs(
+    display_name: &str,
+    generics: &[DeclGenericParam],
+    params: &[DeclParam],
+    args: &[Arg],
+    fctx: &mut bodies::FnCtx,
+    mctx: &ModuleCtx,
+    call_span: Span,
+) -> Result<Vec<TypeArg>, SemaError> {
+    let bound = bind_args_positionally(params, args);
     let mut inferred: BTreeMap<String, Type> = BTreeMap::new();
-    for (i, p) in fi.decl.params.iter().enumerate() {
-        let Type::Generic(gname) = &p.ty else {
-            continue;
-        };
+    for (i, p) in params.iter().enumerate() {
         let Some(arg_expr) = bound[i] else {
             continue; // a default-valued, unbound parameter: nothing to infer from.
         };
-        let synthesized = bodies::check_expr(arg_expr, None, fctx, mctx)?.ty;
-        if let Some(existing) = inferred.get(gname) {
-            if !bodies::types_eq(existing, &synthesized) {
-                return Err(SemaError::at(
-                    "generic",
-                    format!(
-                        "`{}` requires explicit `[Args]`: parameter `{gname}` is both `{}` and `{}`",
-                        fi.decl.name,
-                        types::render_type(existing),
-                        types::render_type(&synthesized)
-                    ),
+        match &p.ty {
+            Type::Generic(gname) => {
+                let synthesized = bodies::check_expr(arg_expr, None, fctx, mctx)?.ty;
+                record_inferred(
+                    &mut inferred,
+                    gname,
+                    synthesized,
+                    display_name,
                     call_span,
-                ));
+                )?;
             }
-        } else {
-            inferred.insert(gname.clone(), synthesized);
+            Type::Fn(fparams, fret) => {
+                if let Type::Generic(gname) = fret.as_ref() {
+                    if let Some(synthesized) =
+                        infer_fn_arg_return(arg_expr, fparams, fctx, mctx, call_span)?
+                    {
+                        record_inferred(
+                            &mut inferred,
+                            gname,
+                            synthesized,
+                            display_name,
+                            call_span,
+                        )?;
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    let mut out = Vec::with_capacity(fi.decl.generics.len());
-    for g in &fi.decl.generics {
+    let mut out = Vec::with_capacity(generics.len());
+    for g in generics {
         match &g.kind {
             DeclGenericKind::Type => match inferred.get(&g.name) {
                 Some(t) => out.push(TypeArg::Type(t.clone())),
@@ -1076,8 +1230,8 @@ pub(crate) fn infer_fn_targs(
                     return Err(SemaError::at(
                         "generic",
                         format!(
-                            "`{}` requires explicit `[Args]`: parameter `{}` cannot be inferred",
-                            fi.decl.name, g.name
+                            "`{display_name}` requires explicit `[Args]`: parameter `{}` cannot be inferred",
+                            g.name
                         ),
                         call_span,
                     ));
@@ -1087,8 +1241,8 @@ pub(crate) fn infer_fn_targs(
                 return Err(SemaError::at(
                     "generic",
                     format!(
-                        "`{}` requires explicit `[Args]`: const parameter `{}` cannot be inferred",
-                        fi.decl.name, g.name
+                        "`{display_name}` requires explicit `[Args]`: const parameter `{}` cannot be inferred",
+                        g.name
                     ),
                     call_span,
                 ));
@@ -1096,6 +1250,167 @@ pub(crate) fn infer_fn_targs(
         }
     }
     Ok(out)
+}
+
+fn record_inferred(
+    inferred: &mut BTreeMap<String, Type>,
+    gname: &str,
+    synthesized: Type,
+    display_name: &str,
+    call_span: Span,
+) -> Result<(), SemaError> {
+    if let Some(existing) = inferred.get(gname) {
+        if !bodies::types_eq(existing, &synthesized) {
+            return Err(SemaError::at(
+                "generic",
+                format!(
+                    "`{display_name}` requires explicit `[Args]`: parameter `{gname}` is both `{}` and `{}`",
+                    types::render_type(existing),
+                    types::render_type(&synthesized)
+                ),
+                call_span,
+            ));
+        }
+    } else {
+        inferred.insert(gname.to_string(), synthesized);
+    }
+    Ok(())
+}
+
+/// Infer the return type of a `fn(...) -> R` argument for generic
+/// inference (plans/M13.md item Q): a closure body's synthesized
+/// result, or a named fn/method's declared return. Suite closures with
+/// no valued `return` (the §8.3 `item.count += 1` shape) are `unit`.
+/// `Ok(None)` means "contributes nothing" (caller must write `[Args]`
+/// unless another occurrence binds the parameter).
+fn infer_fn_arg_return(
+    arg_expr: &Expr,
+    fparams: &[(crate::syntax::ast::AccessMode, Type)],
+    fctx: &mut bodies::FnCtx,
+    mctx: &ModuleCtx,
+    call_span: Span,
+) -> Result<Option<Type>, SemaError> {
+    match arg_expr {
+        Expr::Closure(c) => {
+            if c.params.len() != fparams.len() {
+                return Err(SemaError::at(
+                    "type",
+                    format!(
+                        "expected {} arguments, found {}",
+                        fparams.len(),
+                        c.params.len()
+                    ),
+                    c.span,
+                ));
+            }
+            fctx.push_scope();
+            for (cp, (_mode, ety)) in c.params.iter().zip(fparams.iter()) {
+                let pty = match &cp.ty {
+                    Some(t) => {
+                        let resolved = mctx.resolve_type(t, &fctx.local_pools)?;
+                        if !bodies::types_eq(&resolved, ety) {
+                            fctx.pop_scope();
+                            return Err(SemaError::at(
+                                "type",
+                                format!(
+                                    "closure parameter `{}` expects `{}`, found `{}`",
+                                    cp.name,
+                                    types::render_type(ety),
+                                    types::render_type(&resolved)
+                                ),
+                                cp.span,
+                            ));
+                        }
+                        resolved
+                    }
+                    None => ety.clone(),
+                };
+                fctx.insert_local(cp.name.clone(), pty);
+            }
+            let result = match &c.body {
+                ClosureBody::Expr(e) => {
+                    bodies::check_expr(e, None, fctx, mctx).map(|te| Some(te.ty))
+                }
+                ClosureBody::Suite(stmts) => Ok(suite_inferred_return(stmts)),
+            };
+            fctx.pop_scope();
+            result
+        }
+        Expr::Name(span, name) => {
+            if let Some(fi) = mctx.fns.get(name) {
+                if !fi.decl.generics.is_empty() {
+                    return Err(unimplemented_at("generic instantiation is", *span));
+                }
+                return Ok(Some(fi.decl.ret.clone()));
+            }
+            Err(SemaError::at(
+                "generic",
+                format!("cannot infer return type of `fn(...) -> R` argument from `{name}`"),
+                call_span,
+            ))
+        }
+        Expr::Field(base, span, name) => {
+            if let Expr::Name(_, bname) = base.as_ref() {
+                if fctx.lookup_local(bname).is_none() {
+                    if let Some(s) = mctx.structs.get(bname.as_str()) {
+                        if let Some((_, d)) = s.assoc_fn(name).or_else(|| s.method(name)) {
+                            if !d.generics.is_empty() || !s.decl.generics.is_empty() {
+                                return Err(unimplemented_at("generic instantiation is", *span));
+                            }
+                            return Ok(Some(d.ret.clone()));
+                        }
+                    }
+                    if let Some(e) = mctx.enums.get(bname.as_str()) {
+                        if let Some((_, d)) = e.assoc_fn(name).or_else(|| e.method(name)) {
+                            if !d.generics.is_empty() || !e.generics.is_empty() {
+                                return Err(unimplemented_at("generic instantiation is", *span));
+                            }
+                            return Ok(Some(d.ret.clone()));
+                        }
+                    }
+                }
+            }
+            Err(SemaError::at(
+                "generic",
+                "cannot infer return type of `fn(...) -> R` argument from this expression"
+                    .to_string(),
+                call_span,
+            ))
+        }
+        _ => Err(SemaError::at(
+            "generic",
+            "cannot infer return type of `fn(...) -> R` argument from this expression".to_string(),
+            call_span,
+        )),
+    }
+}
+
+/// A suite used as a short-form closure body (assign-only §8.3 shape)
+/// returns `Some(unit)` when it never `return`s a value. A suite with a
+/// valued `return` contributes nothing to inference (`None`) — write
+/// explicit `[Args]`.
+fn suite_inferred_return(stmts: &[Stmt]) -> Option<Type> {
+    fn has_valued_return(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            Stmt::Return(_, Some(_)) => true,
+            Stmt::If(i) => {
+                has_valued_return(&i.then_branch)
+                    || i.elifs.iter().any(|e| has_valued_return(&e.body))
+                    || i.else_branch
+                        .as_ref()
+                        .is_some_and(|b| has_valued_return(b))
+            }
+            Stmt::Match(m) => m.arms.iter().any(|a| has_valued_return(&a.body)),
+            Stmt::For(f) => has_valued_return(&f.body),
+            Stmt::While(w) => has_valued_return(&w.body),
+            _ => false,
+        })
+    }
+    if has_valued_return(stmts) {
+        None
+    } else {
+        Some(Type::Unit)
+    }
 }
 
 /// Binds `args` to `decl_params` (label or positional cursor, mirroring
@@ -1194,6 +1509,27 @@ fn check_one_instantiation(
             matches::check_top_fn(&fi.ast, &fi.decl, mctx)?;
             Ok(TypedInstantiation::Fn(tf))
         }
+        InstKind::Method => {
+            let receiver = entry
+                .receiver
+                .as_ref()
+                .expect("InstKind::Method always carries a receiver type");
+            let (ast, decl) =
+                instantiate_method(mctx, receiver, &entry.name, &entry.args, call_span)?;
+            let mini = method_instantiation_struct_info(mctx, receiver, &ast, &decl, call_span)?;
+            let ts = bodies::check_struct_members(&mini, receiver.clone(), mctx)?;
+            let effects = access::infer_effects_over(mctx);
+            access::check_struct_members(&mini, receiver.clone(), mctx, &effects)?;
+            flow::check_struct_members(&mini, receiver.clone(), mctx, &effects)?;
+            matches::check_struct_members(&mini, receiver.clone(), mctx)?;
+            let tf = ts
+                .methods
+                .get(&entry.name)
+                .or_else(|| ts.assoc_fns.get(&entry.name))
+                .cloned()
+                .expect("instantiated method was just checked into the mini struct");
+            Ok(TypedInstantiation::Fn(tf))
+        }
         InstKind::Struct => {
             let si = instantiate_struct(mctx, &entry.name, &entry.args, call_span)?;
             let self_ty = Type::Named(entry.name.clone(), entry.args.clone());
@@ -1212,6 +1548,66 @@ fn check_one_instantiation(
             Ok(TypedInstantiation::Enum)
         }
     }
+}
+
+/// One-method `StructInfo` so the existing struct-member check/access/
+/// flow/matches passes run over a method instantiation unchanged
+/// (plans/M13.md item Q — reuse, no parallel checker).
+fn method_instantiation_struct_info(
+    mctx: &ModuleCtx,
+    receiver: &Type,
+    ast: &ast::FnItem,
+    decl: &DeclFn,
+    call_span: Span,
+) -> Result<StructInfo, SemaError> {
+    let Type::Named(type_name, type_args) = receiver else {
+        return Err(SemaError::at(
+            "type",
+            format!(
+                "method `{}` called on non-nominal type `{}`",
+                decl.name,
+                types::render_type(receiver)
+            ),
+            call_span,
+        ));
+    };
+    let mut base = if let Some(s) = mctx.structs.get(type_name.as_str()) {
+        if type_args.is_empty() {
+            s.clone()
+        } else {
+            instantiate_struct(mctx, type_name, type_args, call_span)?
+        }
+    } else if let Some(e) = mctx.enums.get(type_name.as_str()) {
+        // Enum methods: fabricate a struct-shaped shell carrying only the
+        // method — check_struct_members only reads name/members/pools.
+        return Ok(StructInfo {
+            decl: DeclStruct {
+                name: type_name.clone(),
+                generics: Vec::new(),
+                deriving: e.deriving.clone(),
+                classification: e.classification,
+                members: vec![DeclMember::Fn(decl.clone())],
+                is_resource_fiat: false,
+                is_actor: false,
+                is_driver: false,
+                layout_kind: None,
+                component_types: Vec::new(),
+                span: e.span,
+            },
+            ast_members: vec![Member::Fn(ast.clone())],
+            deferred_comptime_members: Vec::new(),
+        });
+    } else {
+        return Err(SemaError::at(
+            "type",
+            format!("unknown type `{type_name}`"),
+            call_span,
+        ));
+    };
+    base.decl.members = vec![DeclMember::Fn(decl.clone())];
+    base.ast_members = vec![Member::Fn(ast.clone())];
+    base.deferred_comptime_members = Vec::new();
+    Ok(base)
 }
 
 // --- the requirement-chain diagnostic (decision 2) -----------------------
@@ -1255,7 +1651,7 @@ fn finalize_diagnostic(
                     "{type_name}.{method_name}(read self) -> {}",
                     types::render_type(&ret_ty)
                 );
-                let display = display_name(&entry.name, &entry.args);
+                let display = display_inst_name(entry);
                 let mut extra_lines = vec![format!(
                     "  required by `{}` at {path}:{}",
                     printer::print_expr_bare(call_expr),
@@ -1284,46 +1680,97 @@ fn finalize_diagnostic(
     e
 }
 
-/// Only ever recognizes a top-level generic `fn` (`InstKind::Fn`) — the
-/// pinned example's own shape, and item H's documented scope boundary
-/// (a generic *method* is never instantiated at all, so there is no
-/// "original body" to scan for one; a struct/enum instantiation's own
-/// missing-method failures fall back to the ordinary one-line-plus-chain
-/// case instead of trying to attribute the failure to one particular
-/// method among many).
+/// Recognizes a top-level generic `fn` (`InstKind::Fn`) or a method-owned
+/// generic (`InstKind::Method`, plans/M13.md item Q) — the pinned §7.3
+/// shape. A struct/enum instantiation's own missing-method failures fall
+/// back to the ordinary one-line-plus-chain case instead of trying to
+/// attribute the failure to one particular method among many.
 fn find_requirement<'a>(
     mctx: &'a ModuleCtx,
     entry: &QueuedInstantiation,
     type_name: &str,
     method_name: &str,
 ) -> Option<(&'a Expr, Type)> {
-    if entry.kind != InstKind::Fn {
-        return None;
+    match entry.kind {
+        InstKind::Fn => {
+            let fi = mctx.fns.get(&entry.name)?;
+            find_requirement_in(
+                &fi.decl.generics,
+                &entry.args,
+                &fi.decl.params,
+                fi.ast.body.as_ref()?,
+                &fi.decl.ret,
+                type_name,
+                method_name,
+            )
+        }
+        InstKind::Method => {
+            let receiver = entry.receiver.as_ref()?;
+            let Type::Named(recv_name, recv_args) = receiver else {
+                return None;
+            };
+            // Requirement scan uses the *unsubstituted* method body from
+            // the declared (possibly struct-generic) type — same as free
+            // fns. Struct-level args do not change which bare type
+            // parameter of the *method* was the receiver of `.hash()`.
+            let (ast, decl) = if let Some(s) = mctx.structs.get(recv_name.as_str()) {
+                if !recv_args.is_empty() {
+                    // Prefer the original declaration's method (pre
+                    // struct-subst) so param types still show Type::Generic.
+                    let (f, d) = s.method(&entry.name).or_else(|| s.assoc_fn(&entry.name))?;
+                    (f, d)
+                } else {
+                    let (f, d) = s.method(&entry.name).or_else(|| s.assoc_fn(&entry.name))?;
+                    (f, d)
+                }
+            } else if let Some(e) = mctx.enums.get(recv_name.as_str()) {
+                let (f, d) = e.method(&entry.name).or_else(|| e.assoc_fn(&entry.name))?;
+                (f, d)
+            } else {
+                return None;
+            };
+            find_requirement_in(
+                &decl.generics,
+                &entry.args,
+                &decl.params,
+                ast.body.as_ref()?,
+                &decl.ret,
+                type_name,
+                method_name,
+            )
+        }
+        InstKind::Struct | InstKind::Enum => None,
     }
-    let fi = mctx.fns.get(&entry.name)?;
-    let target_param = fi
-        .decl
-        .generics
-        .iter()
-        .zip(entry.args.iter())
-        .find_map(|(g, a)| match (&g.kind, a) {
+}
+
+fn find_requirement_in<'a>(
+    generics: &[DeclGenericParam],
+    args: &[TypeArg],
+    params: &[DeclParam],
+    body: &'a [Stmt],
+    ret: &Type,
+    type_name: &str,
+    method_name: &str,
+) -> Option<(&'a Expr, Type)> {
+    let target_param = generics.iter().zip(args.iter()).find_map(|(g, a)| {
+        match (&g.kind, a) {
             (DeclGenericKind::Type, TypeArg::Type(Type::Named(n, targs)))
                 if n == type_name && targs.is_empty() =>
             {
                 Some(g.name.clone())
             }
             _ => None,
-        })?;
+        }
+    })?;
     let mut param_types = BTreeMap::new();
-    for p in &fi.decl.params {
+    for p in params {
         param_types.insert(p.name.clone(), p.ty.clone());
     }
-    let body = fi.ast.body.as_ref()?;
     let (call_expr, found_method) = infer_requirement_call(body, &target_param, &param_types)?;
     if found_method != method_name {
         return None;
     }
-    Some((call_expr, fi.decl.ret.clone()))
+    Some((call_expr, ret.clone()))
 }
 
 fn infer_requirement_call<'a>(
