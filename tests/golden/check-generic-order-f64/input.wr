@@ -1,0 +1,22 @@
+module examples.check_generic_order_f64
+
+# plans/M13.md item A / 02-language.md §7.4 / 05-library.md §8:
+# a generic instantiated at f64 uses the builtin `<` (not OpCall
+# less_than) and inherits IEEE semantics — NaN is incomparable.
+
+pub fn min[T](a: T, b: T) -> T:
+    if a < b:
+        return a
+    return b
+
+pub fn use_min(x: f64, y: f64) -> f64:
+    return min[f64](x, y)
+
+@test
+pub fn nan_order():
+    nan: f64 = 0.0 / 0.0
+    assert (nan < 1.0) == false, "NaN < 1 is false"
+    assert (1.0 < nan) == false, "1 < NaN is false"
+    assert min[f64](nan, 1.0) == 1.0, "min(NaN, 1) -> 1"
+    r = min[f64](1.0, nan)
+    assert r != r, "min(1, NaN) is NaN"

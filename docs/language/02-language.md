@@ -441,10 +441,14 @@ direct specialized calls:
 | `Err(e)?` needing conversion | `TargetError.from(take e)` |
 
 Operands are `read`; an operator expression never moves or mutates. Core
-scalar operators are built in and never desugar. `==`/`!=` are generated
-structurally for every data type. Error conversion for `?` is explicit: the
-propagated error must be the enclosing error type or that type must declare
-a matching `from(take source)` — no chains, no implicit widening.
+scalar operators are built in and never desugar. The strict-total-order
+contract binds user-declared `less_than`; core scalars keep builtin
+semantics (floats IEEE, NaN incomparable), and a generic instantiated at a
+scalar uses the builtin operator and inherits those semantics. `==`/`!=` are
+generated structurally for every data type. Error conversion for `?` is
+explicit: the propagated error must be the enclosing error type or that type
+must declare a matching `from(take source)` — no chains, no implicit
+widening.
 
 ### 7.5 Deriving
 
