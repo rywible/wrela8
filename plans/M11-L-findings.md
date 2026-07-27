@@ -1,5 +1,12 @@
 # M11 item L — adversarial sweep findings
 
+**Close disposition (item M, 2026-07-26, decisions 865–869):** blockers
+L-02 / L-04 / L-05 / L-06 / L-07 / L-16 / L-20 addressed by exit-prose
+amendments, ledger note 858, and measured bench/soak — see
+`plans/M11.md` item M evidence. Deferred post-M11: L-11, L-15, L-19.
+L-09 opening census labelled historical F0. IMAGE_STATIC remains 0;
+`build_entry_driver` remains deleted. M12/M13 stay DRAFT.
+
 Worktree: `/Users/ryanwible/projects/wrela8/.worktrees/m11-item-l`, branch
 `m11-item-l`, base `55da7c3` (post items 0–K; IMAGE_STATIC=0, FLOOR=52,
 Unclassified=23, GRAND=90).
