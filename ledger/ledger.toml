@@ -1880,6 +1880,13 @@ tests = ["golden/check-generic-order-f64"]
 note = """plans/M13.md item A: the strict-total-order contract on `less_than` binds user-declared methods; core scalars keep builtin operator semantics (floats IEEE 754, NaN incomparable). A generic instantiated at a scalar uses the builtin `<` (typed as `Binary`, never `OpCall`) and inherits those semantics. `golden/check-generic-order-f64` pins `fn:min[f64]`'s typed dump on the builtin path and a NaN-input `@test` on the IEEE outcomes (`NaN < x` / `x < NaN` false; `min(NaN, 1.0) == 1.0`; `min(1.0, NaN)` is NaN)."""
 
 [[clause]]
+id = "sema.errors.inferred-private-sets"
+doc = "02-language.md#5, 02-language.md#6.2, 02-language.md#7.4, 04-compiler.md#7, 05-library.md#1"
+status = "test"
+tests = ["golden/check-inferred-error-set", "golden/err-inferred-at-pub"]
+note = """plans/M13.md item K / decision 10: a private `fn` may write `-> Result[T]`; the compiler infers the error set as the union of `Err` construction and `?`-propagation sources reaching `return` (multi-member sets render as `A | B`); typed and check dumps display the set. A `pub` signature still requires a declared nominal enum (`err-inferred-at-pub`). Cross-module boundaries never carry an inferred set — only `pub` surfaces are importable. `?` inside an inferred private body widens the set (no `from`); a declared `Result[T, E]` target still needs exact match or explicit `from`."""
+
+[[clause]]
 id = "sema.types.enum-methods"
 doc = "02-language.md#5, 02-language.md#7.5, 05-library.md#6"
 status = "test"

@@ -263,7 +263,7 @@ fn check_typed_single_with_decls(
     let layouts = types::check_layouts(&specialized)?;
     let symtab = symbols::collect(&specialized)?;
     symbols::resolve(&specialized, &symtab, &imports::ImportBindings::new())?;
-    let decl_items = types::declare(&specialized)?;
+    let mut decl_items = types::declare(&specialized)?;
     // plans/M10.md item A2c: `@placed` on a `static` needs declare's
     // resolved type and `check_layouts`' table — runtime-layout kind and
     // at-most-one-per-address.
@@ -278,6 +278,9 @@ fn check_typed_single_with_decls(
     types::check_mmio_claims(&specialized, &decl_items, &layouts)?;
     let mctx = bodies::build_module_ctx(&specialized, &decl_items, &types::ImportedTypes::new());
     let mut program = bodies::check(&specialized, &decl_items, &mctx)?;
+    // plans/M13.md item K: check dump reads DeclItems — rewrite private
+    // `Result[T]` markers to the inferred sets typed dump already shows.
+    sync_inferred_error_sets(&mut decl_items, &mctx.inferred_rets.borrow());
     program.layouts = layouts;
     access::check(&specialized, &decl_items, &mctx)?;
     flow::check(&specialized, &decl_items, &mctx)?;
@@ -348,6 +351,48 @@ fn check_typed_single_with_decls(
         )?;
     }
     Ok((program, decl_items))
+}
+
+/// plans/M13.md item K: copy finalized private `Result[T]` return types
+/// from `bodies`'s inference map onto the DeclItems the check dump
+/// renders, so check and typed agree on the displayed set.
+fn sync_inferred_error_sets(
+    decl_items: &mut [types::DeclItem],
+    inferred: &BTreeMap<String, types::Type>,
+) {
+    for item in decl_items.iter_mut() {
+        match item {
+            types::DeclItem::Fn(f) => {
+                if let Some(ret) = inferred.get(&f.name) {
+                    f.ret = ret.clone();
+                }
+            }
+            types::DeclItem::Struct(s) => {
+                for m in &mut s.members {
+                    match m {
+                        types::DeclMember::Fn(f) | types::DeclMember::Init(f) => {
+                            let key = format!("{}.{}", s.name, f.name);
+                            if let Some(ret) = inferred.get(&key) {
+                                f.ret = ret.clone();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            types::DeclItem::Enum(e) => {
+                for m in &mut e.members {
+                    if let types::DeclMember::Fn(f) = m {
+                        let key = format!("{}.{}", e.name, f.name);
+                        if let Some(ret) = inferred.get(&key) {
+                            f.ret = ret.clone();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The `--stage=typed` dump (decision 2): delegates entirely to
@@ -876,9 +921,14 @@ fn check_program_typed_tables(
 
     let mut programs: BTreeMap<Vec<String>, typed::TypedProgram> = BTreeMap::new();
     for (key, module) in &specialized {
-        let decl_items = &decl_items_map[key];
         let mctx = &mctxs[key];
-        let mut program = bodies::check(module, decl_items, mctx)?;
+        let mut program = bodies::check(module, &decl_items_map[key], mctx)?;
+        // plans/M13.md item K: rewrite inferred `Result[T]` markers for dump.
+        sync_inferred_error_sets(
+            decl_items_map.get_mut(key).expect("decl_items for key"),
+            &mctx.inferred_rets.borrow(),
+        );
+        let decl_items = &decl_items_map[key];
         program.layouts = layouts.get(key).cloned().unwrap_or_default();
         access::check(module, decl_items, mctx)?;
         flow::check(module, decl_items, mctx)?;

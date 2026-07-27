@@ -1,0 +1,47 @@
+Program
+  Fn name=either ret=Result[u32, IoFault | ParseFault]
+    Param name=flag mode=read ty=bool
+    Body
+      If
+        Local name=flag ty=bool
+        Then
+          Return
+            EnumConstruct enum=Result variant=Err ty=Result[u32, IoFault]
+              EnumConstruct enum=IoFault variant=Timeout ty=IoFault
+      Return
+        EnumConstruct enum=Result variant=Err ty=Result[u32, ParseFault]
+          EnumConstruct enum=ParseFault variant=Truncated ty=ParseFault
+  Fn name=parse ret=Result[u32, LoadError]
+    Param name=raw mode=read ty=u32
+    Body
+      If
+        Binary op=== ty=bool
+          Local name=raw ty=u32
+          Int text=0 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Err ty=Result[u32, LoadError]
+              EnumConstruct enum=LoadError variant=Missing ty=LoadError
+      If
+        Binary op=> ty=bool
+          Local name=raw ty=u32
+          Int text=100 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Err ty=Result[u32, LoadError]
+              EnumConstruct enum=LoadError variant=Bad ty=LoadError
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u32, never]
+          Local name=raw ty=u32
+  Fn name=twice ret=Result[u32, LoadError]
+    Param name=raw mode=read ty=u32
+    Body
+      Let name=x ty=u32
+        Try ty=u32
+          Call key=parse ty=Result[u32, LoadError]
+            Local name=raw ty=u32
+      Return
+        EnumConstruct enum=Result variant=Ok ty=Result[u32, never]
+          Binary op=+ ty=u32
+            Local name=x ty=u32
+            Local name=x ty=u32

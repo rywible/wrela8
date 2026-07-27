@@ -4065,7 +4065,7 @@ fn declare_fn(
             ty,
         });
     }
-    let ret = resolve_ret(&f.ret, shapes, module_pools, local_pools, &scope)?;
+    let ret = resolve_ret(&f.ret, shapes, module_pools, local_pools, &scope, f.is_pub)?;
     let is_task = f.attrs.iter().any(|a| a.name == "task");
     // plans/M13.md item C cuts 6–7: `is_task` is still name-only, but
     // `priority=` / `budget=` (and any other undeferred kwarg) must not be
@@ -4163,7 +4163,14 @@ fn declare_init(
             ty,
         });
     }
-    let ret = resolve_ret(&i.ret, shapes, module_pools, local_pools, outer_generics)?;
+    let ret = resolve_ret(
+        &i.ret,
+        shapes,
+        module_pools,
+        local_pools,
+        outer_generics,
+        false,
+    )?;
     Ok(DeclFn {
         name: "init".to_string(),
         is_async: false,
@@ -4179,14 +4186,73 @@ fn declare_init(
     })
 }
 
+/// Sentinel name for a private `-> Result[T]` whose error set is not yet
+/// inferred (plans/M13.md item K / decision 10). Not source-nameable —
+/// only `resolve_ret`'s one-argument `Result` arm constructs it.
+pub(crate) const INFERRED_ERROR_SET_NAME: &str = "__InferredErrorSet";
+
+/// Synthetic multi-member error-set carrier (same `Type::Named` shape
+/// `CallError` uses). Rendered as `A | B | …`; a single member collapses
+/// to that member, and an empty set is `never`.
+pub(crate) const ERROR_SET_NAME: &str = "__ErrorSet";
+
+pub(crate) fn inferred_error_set_marker() -> Type {
+    Type::Named(INFERRED_ERROR_SET_NAME.to_string(), vec![])
+}
+
+pub(crate) fn is_inferred_error_set(ty: &Type) -> bool {
+    matches!(ty, Type::Named(n, a) if n == INFERRED_ERROR_SET_NAME && a.is_empty())
+}
+
+pub(crate) fn is_inferred_result(ty: &Type) -> bool {
+    matches!(ty, Type::Result(_, e) if is_inferred_error_set(e))
+}
+
+/// Union the collected error sources into the type typed dumps print.
+/// Dedupes by rendered spelling (stable); empty → `never`; one → that
+/// type; several → `__ErrorSet[A, B, …]` rendered as `A | B | …`.
+pub(crate) fn finalize_error_set(mut members: Vec<Type>) -> Type {
+    members.sort_by(|a, b| render_type(a).cmp(&render_type(b)));
+    members.dedup_by(|a, b| render_type(a) == render_type(b));
+    match members.len() {
+        0 => Type::Never,
+        1 => members.pop().expect("len == 1"),
+        _ => Type::Named(
+            ERROR_SET_NAME.to_string(),
+            members.into_iter().map(TypeArg::Type).collect(),
+        ),
+    }
+}
+
 fn resolve_ret(
     ret: &Option<ast::Type>,
     shapes: &BTreeMap<String, usize>,
     module_pools: &BTreeSet<String>,
     local_pools: &BTreeSet<String>,
     generics: &BTreeMap<String, GenericKind>,
+    is_pub: bool,
 ) -> Result<Type, SemaError> {
     match ret {
+        // plans/M13.md item K / decision 10: private `-> Result[T]`
+        // (one-argument form). `pub` refuses here so the golden is a
+        // declare-time `error[type]`, not a later body surprise.
+        Some(ast::Type::Named(n)) if n.name == "Result" && n.args.len() == 1 => {
+            if is_pub {
+                return Err(SemaError::at(
+                    "type",
+                    "a `pub` signature must declare a nominal error type — write \
+                     `Result[T, E]`, not `Result[T]` (02-language.md §5)"
+                        .to_string(),
+                    n.span,
+                ));
+            }
+            let args = expect_type_args(n, 1)?;
+            let ok = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
+            Ok(Type::Result(
+                Box::new(ok),
+                Box::new(inferred_error_set_marker()),
+            ))
+        }
         // Resolved types are spelled fully (decision 8): an omitted
         // return type is `unit`, printed explicitly like every other
         // type rather than leaving the arrow off.
@@ -6376,6 +6442,13 @@ pub fn render_type(ty: &Type) -> String {
         ),
         Type::Option(t) => format!("Option[{}]", render_type(t)),
         Type::Result(ok, err) => format!("Result[{}, {}]", render_type(ok), render_type(err)),
+        // plans/M13.md item K: multi-member inferred error set.
+        Type::Named(name, args) if name == ERROR_SET_NAME => args
+            .iter()
+            .map(render_type_arg)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Type::Named(name, _) if name == INFERRED_ERROR_SET_NAME => "<inferred>".to_string(),
         Type::Own(pool, inner) => format!("own[{pool}] {}", render_type(inner)),
         Type::Static(t) => format!("Static[{}]", render_type(t)),
         Type::Bytes(None) => "Bytes".to_string(),
