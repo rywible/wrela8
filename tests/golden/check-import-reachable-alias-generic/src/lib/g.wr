@@ -1,7 +1,7 @@
 module lib.g
 
 pub struct Src:
-    n: u32
+    pub n: u32
 
 pub struct Box[T]:
     v: T
