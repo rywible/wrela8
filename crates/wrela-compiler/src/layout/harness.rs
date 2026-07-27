@@ -1194,14 +1194,6 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_ring_dst_core",
         "__wrela_ring_src_core",
         "__wrela_ring_target_handle",
-        "__wrela_ring_get_head",
-        "__wrela_ring_set_head",
-        "__wrela_ring_get_tail",
-        "__wrela_ring_set_tail",
-        "__wrela_ring_get_count",
-        "__wrela_ring_set_count",
-        "__wrela_ring_load_word",
-        "__wrela_ring_store_word",
         "__wrela_drain_reply_count",
         "__wrela_drain_reply_edge",
         "__wrela_drain_request_count",
@@ -1419,14 +1411,6 @@ pub(super) fn reinject_runtime_with_test_facts(
         "__wrela_ring_dst_core",
         "__wrela_ring_src_core",
         "__wrela_ring_target_handle",
-        "__wrela_ring_get_head",
-        "__wrela_ring_set_head",
-        "__wrela_ring_get_tail",
-        "__wrela_ring_set_tail",
-        "__wrela_ring_get_count",
-        "__wrela_ring_set_count",
-        "__wrela_ring_load_word",
-        "__wrela_ring_store_word",
         "__wrela_drain_reply_count",
         "__wrela_drain_reply_edge",
         "__wrela_drain_request_count",
@@ -1714,7 +1698,7 @@ pub fn layout_test_image(
     // section at the fixed `RTDATA_BASE`, sized exactly `tables.total_bytes`
     // — mirroring `layout_program`'s identical convention.
     let rtdata_base = if let Some(tables) = runtime_tables.as_ref() {
-        let base = steer_rtdata_base(cursor, tables.total_bytes)?;
+        let base = steer_rtdata_base(cursor, tables)?;
         cursor = base + tables.total_bytes;
         Some(base)
     } else {

@@ -2,4 +2,4 @@ test t_fields: ok
 test t_method: ok
 test t_fn: ok
 test t_settled: ok
-error[build]: the runtime test tier could not lay out the test image: rtdata needs 1138392 bytes, which exceeds RTDATA_SIZE_MAX (262144)
+error[build]: the runtime test tier could not lay out the test image: rtdata needs 1138392 bytes (rings padding 0), which exceeds RTDATA_SIZE_MAX (262144)

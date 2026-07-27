@@ -389,11 +389,17 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     let group_slots = group_cap.max(1);
     // When the arena is empty, `place_runtime_tables` still returns a
     // `group_arena` cursor equal to the first ring's base (0-byte arena).
-    // Overlay GROUPS at a non-colliding placeholder so RING*_DATA can own
-    // the real ring addresses (decision 800) — same move as empty-sched.
+    // Overlay GROUPS at a non-colliding placeholder so RINGS_CTL/DATA can
+    // own the real ring addresses (decision 800 / M12 item C) — same move
+    // as empty-sched.
+    let n_rings = extras.rings.len();
+    // High-zone reserve for the empty-ring placeholder overlays only
+    // (live rings place RINGS_* inside real rtdata). One RingCtl + one
+    // data word when N_RINGS_LEN=1 / RING_STRIDE_WORDS=1.
+    let rings_high_reserve: u64 = if n_rings == 0 { 24 + 8 } else { 0 };
     let group_addr = if group_cap == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
-            - (RING_POOL_COUNT as u64) * 64
+            - rings_high_reserve
             - (MB_POOL_COUNT as u64) * 64
             - 96
     } else {
@@ -401,7 +407,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     };
     let n_cores = tables.cores;
     let ready_cap = tables.ready_queue_capacity as usize;
-    let n_rings = extras.rings.len();
 
     // Flatten select actors for stub numbering (stable across cores).
     let mut select_flat: Vec<(usize, usize, String)> = Vec::new();
@@ -560,7 +565,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     // GROUPS (decision 800). Placeholder sits just below the INIT pool.
     let rt_addr = if tables.n_turns == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
-            - (RING_POOL_COUNT as u64) * 64
+            - rings_high_reserve
             - (MB_POOL_COUNT as u64) * 64
             - 96
             - (BOOT_CALL_POOL_COUNT as u64) * 8
@@ -597,40 +602,58 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("pub static GROUPS: GroupArena\n");
     out.push('\n');
 
-    // Cross-core ring overlays (decision 800). Pool is fixed so runtime.wr
-    // can import every RING*_CTL / RING*_DATA name; unused slots sit at a
-    // non-colliding placeholder past the overlay turn array.
+    // Cross-core ring overlays (decision 800 / M12 item C decisions
+    // 875–879): two uniformly-strided statics — all CTLs, then DATA.
+    // `N_RINGS_LEN` is at least 1 so the array length rule (03 §3.1) holds
+    // for the empty-ring stub; live images size to `N_RINGS`.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct RingCtl:\n");
     out.push_str("    head: u64\n");
     out.push_str("    tail: u64\n");
     out.push_str("    count: u64\n");
     out.push('\n');
-    let ring_placeholder =
-        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX - (RING_POOL_COUNT as u64) * 64;
-    for i in 0..RING_POOL_COUNT {
-        let (words, data_addr, ctl_addr) = if let Some(r) = extras.rings.get(i) {
-            let words = ((r.capacity * r.slot_size) / 8).max(1) as usize;
-            (words, r.ring_base, r.head)
-        } else {
-            (
-                1usize,
-                ring_placeholder + (i as u64) * 64,
-                ring_placeholder + (i as u64) * 64 + 32,
-            )
-        };
-        push_const(&mut out, &format!("RING{i}_WORDS"), words);
-        out.push_str("@layout(runtime, endian=little)\n");
-        out.push_str(&format!("struct Ring{i}Data:\n"));
-        out.push_str(&format!("    words: [u64; RING{i}_WORDS]\n"));
-        out.push('\n');
-        out.push_str(&format!("@placed({data_addr:#x})\n"));
-        out.push_str(&format!("pub static RING{i}_DATA: Ring{i}Data\n"));
-        out.push('\n');
-        out.push_str(&format!("@placed({ctl_addr:#x})\n"));
-        out.push_str(&format!("pub static RING{i}_CTL: RingCtl\n"));
-        out.push('\n');
-    }
+    let n_rings_len = n_rings.max(1);
+    let ring_stride_words = if n_rings == 0 {
+        1usize
+    } else {
+        extras
+            .rings
+            .iter()
+            .map(|r| ((r.capacity * r.slot_size) / 8) as usize)
+            .max()
+            .unwrap_or(1)
+            .max(1)
+    };
+    push_const(&mut out, "N_RINGS_LEN", n_rings_len);
+    push_const(&mut out, "RING_STRIDE_WORDS", ring_stride_words);
+    let (rings_ctl_addr, rings_data_addr) = if n_rings == 0 {
+        let ph = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX - rings_high_reserve;
+        (ph, ph + 24)
+    } else {
+        let first = &extras.rings[0];
+        (first.head, first.ring_base)
+    };
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct RingsCtl:\n");
+    out.push_str("    edges: [RingCtl; N_RINGS_LEN]\n");
+    out.push('\n');
+    out.push_str(&format!("@placed({rings_ctl_addr:#x})\n"));
+    out.push_str("pub static RINGS_CTL: RingsCtl\n");
+    out.push('\n');
+    // Flat word array: `N_RINGS_LEN * RING_STRIDE_WORDS` u64s, row-major
+    // by edge. Placed lowering supports `STATIC.array[i]` and
+    // `STATIC.struct_array[i].field`, but not `STATIC.row[i].words[j]` —
+    // so the uniform stride is an index arithmetic
+    // (`edge * RING_STRIDE_WORDS + wi`) rather than a nested array.
+    let rings_data_words = n_rings_len * ring_stride_words;
+    push_const(&mut out, "RINGS_DATA_WORDS", rings_data_words);
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct RingsData:\n");
+    out.push_str("    words: [u64; RINGS_DATA_WORDS]\n");
+    out.push('\n');
+    out.push_str(&format!("@placed({rings_data_addr:#x})\n"));
+    out.push_str("pub static RINGS_DATA: RingsData\n");
+    out.push('\n');
 
     // Mailbox overlays (decision 830). Pool is fixed so runtime.wr can
     // import every MB*_CTL / MB*_DATA; unused slots sit at placeholders.
@@ -641,7 +664,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("    count: u64\n");
     out.push('\n');
     let mb_placeholder = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
-        - (RING_POOL_COUNT as u64) * 64
+        - rings_high_reserve
         - (MB_POOL_COUNT as u64) * 64;
     for i in 0..MB_POOL_COUNT {
         let (words, data_addr, ctl_addr) = if let Some(m) = extras.mailboxes.get(i) {
@@ -703,11 +726,11 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     }
 
     // Init-slot overlays (decision 813): fixed pool so `runtime.wr` can
-    // import every INIT_SLOT* (same rule as RING*_DATA — decision 800).
-    // Live slots use place_runtime_tables state addresses; unused / 0-word
-    // slots get a 1-word non-colliding placeholder.
+    // import every INIT_SLOT* (same rule as RINGS_DATA — decision 800 /
+    // M12 item C). Live slots use place_runtime_tables state addresses;
+    // unused / 0-word slots get a 1-word non-colliding placeholder.
     let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
-        - (RING_POOL_COUNT as u64) * 64
+        - rings_high_reserve
         - (MB_POOL_COUNT as u64) * 64
         - 96
         - (BOOT_CALL_POOL_COUNT as u64) * 8
@@ -828,91 +851,9 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     emit_ring_usize_ladder(&mut out, "target_handle", extras, |r| {
         r.target_handle.unwrap_or(0) as usize
     });
-
-    // CTL field accessors
-    out.push_str("pub fn __wrela_ring_get_head(edge: usize) -> u64:\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            return RING{i}_CTL.head\n"));
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return 0\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_ring_set_head(edge: usize, v: u64):\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            RING{i}_CTL.head = v\n"));
-        out.push_str("            return\n");
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_ring_get_tail(edge: usize) -> u64:\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            return RING{i}_CTL.tail\n"));
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return 0\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_ring_set_tail(edge: usize, v: u64):\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            RING{i}_CTL.tail = v\n"));
-        out.push_str("            return\n");
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_ring_get_count(edge: usize) -> u64:\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            return RING{i}_CTL.count\n"));
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return 0\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_ring_set_count(edge: usize, v: u64):\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            RING{i}_CTL.count = v\n"));
-        out.push_str("            return\n");
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_ring_load_word(edge: usize, wi: usize) -> u64:\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            return RING{i}_DATA.words[wi]\n"));
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return 0\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_ring_store_word(edge: usize, wi: usize, v: u64):\n");
-    out.push_str("    match edge:\n");
-    for i in 0..RING_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            RING{i}_DATA.words[wi] = v\n"));
-        out.push_str("            return\n");
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return\n");
-    out.push('\n');
+    // M12 item C: data ladders (get/set head/tail/count, load/store word)
+    // deleted — runtime.wr indexes RINGS_CTL / RINGS_DATA directly. Fact
+    // ladders above stay.
 
     // --- item J: mailbox accessors + method dispatch (decision 830–831) ---
     emit_mb_u64_ladder(&mut out, "capacity", extras, |m| m.capacity);

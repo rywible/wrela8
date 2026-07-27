@@ -183,13 +183,17 @@ struct ParsedReport {
 }
 
 /// One `Ring kind=request ...` report line, as the recorder consumes it
-/// (plans/M8.md item C3). `count_addr` is the ring's occupancy word:
-/// `layout::place_runtime_tables` lays each ring out as `capacity *
-/// slot_size` bytes of slots followed by `head`, `tail`, `count`, so the
-/// third bookkeeping word is `base + capacity * slot_size + 16`. That
-/// derivation is the one thing this struct knows that the report line does
-/// not spell outright, and it is stated here rather than inline at the
-/// read site.
+/// (plans/M8.md item C3). `count_addr` is the ring's occupancy word.
+///
+/// Pre-M12 packing: each ring was `capacity * slot_size` bytes of slots
+/// followed by `head`, `tail`, `count`, so count sat at
+/// `base + capacity * slot_size + 16`.
+///
+/// M12 item C (decision 875): all CTL records pack contiguously, then
+/// uniformly-strided DATA. When the report carries a `Rings count=…
+/// stride=…` line, `parse_report` rewrites `count_addr` from that
+/// geometry (`ctl_base + index * 24 + 16`). Without that line the
+/// pre-M12 derivation stands (hand-written unit fixtures).
 #[derive(Debug, Clone)]
 struct RequestRing {
     /// The producing core — decision 28: the producer of a cross-core ring
@@ -200,7 +204,18 @@ struct RequestRing {
     dst: usize,
     /// The mailbox root this ring feeds — exactly one, by decision 28.
     target: String,
+    /// DATA base from the report's `base=` (slots start here).
+    data_base: u64,
     count_addr: u64,
+}
+
+/// plans/M12.md item C: the report's `Rings count={} stride={} padding={}
+/// bytes={}` summary. Present on every image with cross-core rings after
+/// that item; absent on hand-written unit fixtures and ringless images.
+#[derive(Debug, Clone, Copy)]
+struct RingsMeta {
+    count: u64,
+    stride: u64,
 }
 
 /// A ring's declared byte range (`base`..`base+bytes`), request or reply —
@@ -390,12 +405,50 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     let mut placements: Vec<ReportPlacement> = Vec::new();
     let mut declared_roots: Vec<DeclaredRoot> = Vec::new();
     let mut layout_root_names: Vec<String> = Vec::new();
+    let mut rings_meta: Option<RingsMeta> = None;
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Machine revision=") {
             revision = Some(rest.to_string());
         } else if line.starts_with("Input path=") {
             has_input = true;
+        } else if let Some(rest) = line.strip_prefix("Rings ") {
+            // plans/M12.md item C: `Rings count={} stride={} padding={} bytes={}`.
+            let fields =
+                parse_report_fields("Rings", rest, &["count", "stride", "padding", "bytes"])?;
+            let count = report_u64("Rings", &fields, "count")?;
+            let stride = report_u64("Rings", &fields, "stride")?;
+            let padding = report_u64("Rings", &fields, "padding")?;
+            let bytes = report_u64("Rings", &fields, "bytes")?;
+            if count == 0 {
+                return Err(VmmError::MalformedReport(
+                    "`Rings count=0`: the summary line is absent for ringless images, never zero"
+                        .to_string(),
+                ));
+            }
+            if stride == 0 {
+                return Err(VmmError::MalformedReport(
+                    "`Rings stride=0`: a live ring image always has a positive data stride"
+                        .to_string(),
+                ));
+            }
+            let expect_bytes = count
+                .checked_mul(24)
+                .and_then(|c| c.checked_add(count.checked_mul(stride)?))
+                .ok_or_else(|| {
+                    VmmError::MalformedReport(
+                        "`Rings` count/stride overflow computing expected bytes".to_string(),
+                    )
+                })?;
+            if bytes != expect_bytes {
+                return Err(VmmError::MalformedReport(format!(
+                    "`Rings count={count} stride={stride} padding={padding} bytes={bytes}`: \
+                     bytes must equal count*24 + count*stride (={expect_bytes})"
+                )));
+            }
+            // padding is disclosed; forge-check it against the Ring lines
+            // after the loop (needs every ring's cap*slot).
+            rings_meta = Some(RingsMeta { count, stride });
         } else if let Some(rest) = line.strip_prefix("Section ") {
             let fields = parse_report_fields("Section", rest, &["name", "base", "size"])?;
             let name = fields.get("name").copied().ok_or_else(|| {
@@ -512,8 +565,9 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
                         src: src as usize,
                         dst: dst as usize,
                         target: target.to_string(),
-                        // `place_runtime_tables`'s own layout: slots, then
-                        // head, tail, count.
+                        data_base: base,
+                        // Pre-M12 default; rewritten below when `Rings` meta
+                        // is present (CTL-then-DATA packing).
                         count_addr: base + capacity * slot + 16,
                     });
                     ring_ranges.push(RingRange {
@@ -792,6 +846,12 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
             })
         }
     };
+    // M12 item C: when the report publishes `Rings …`, rewrite count_addrs
+    // and overlap ranges for CTL-then-uniform-DATA packing. Without that
+    // line (unit fixtures), pre-M12 DATA-then-CTL stands.
+    if let Some(meta) = rings_meta {
+        apply_uniform_ring_layout(&mut request_rings, &mut ring_ranges, meta)?;
+    }
     validate_report_invariants(
         entry,
         &mut core_entries,
@@ -809,6 +869,73 @@ fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
         core_entries,
         request_rings,
     })
+}
+
+/// plans/M12.md item C: fold the `Rings` summary into per-ring
+/// `count_addr` and into the ranges overlap checks walk. DATA bases stay
+/// as reported; each ring's overlap span becomes the uniform `stride`,
+/// and the contiguous CTL block is appended so stack/section checks see
+/// it (CTL words live immediately before the first DATA base).
+fn apply_uniform_ring_layout(
+    request_rings: &mut [RequestRing],
+    ring_ranges: &mut Vec<RingRange>,
+    meta: RingsMeta,
+) -> Result<(), VmmError> {
+    if ring_ranges.len() as u64 != meta.count {
+        return Err(VmmError::MalformedReport(format!(
+            "`Rings count={}` but the report has {} `Ring kind=` line(s)",
+            meta.count,
+            ring_ranges.len()
+        )));
+    }
+    let mut sorted: Vec<u64> = ring_ranges.iter().map(|r| r.base).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.len() as u64 != meta.count {
+        return Err(VmmError::MalformedReport(
+            "`Ring` DATA bases are not unique under uniform stride packing".to_string(),
+        ));
+    }
+    let data0 = sorted[0];
+    for (i, &b) in sorted.iter().enumerate() {
+        let expect = data0 + (i as u64) * meta.stride;
+        if b != expect {
+            return Err(VmmError::MalformedReport(format!(
+                "`Ring` DATA base {b:#x} is not at index {i} of stride {} from {data0:#x} \
+                 (expected {expect:#x})",
+                meta.stride
+            )));
+        }
+    }
+    let ctl_base = data0.checked_sub(meta.count * 24).ok_or_else(|| {
+        VmmError::MalformedReport(
+            "uniform ring CTL block would underflow below DATA base".to_string(),
+        )
+    })?;
+    for r in request_rings.iter_mut() {
+        let idx = sorted
+            .iter()
+            .position(|&b| b == r.data_base)
+            .ok_or_else(|| {
+                VmmError::MalformedReport(format!(
+                    "request ring DATA base {:#x} missing from Ring ranges",
+                    r.data_base
+                ))
+            })?;
+        r.count_addr = ctl_base + (idx as u64) * 24 + 16;
+    }
+    for r in ring_ranges.iter_mut() {
+        r.bytes = meta.stride;
+    }
+    ring_ranges.push(RingRange {
+        kind: "ctl".to_string(),
+        src: 0,
+        dst: 0,
+        target: "-".to_string(),
+        base: ctl_base,
+        bytes: meta.count * 24,
+    });
+    Ok(())
 }
 
 /// Set-level invariants over the report's own tables (plans/M8.md item H
@@ -5582,6 +5709,7 @@ pub fn build() -> Image:
             src,
             dst,
             target: target.to_string(),
+            data_base: 0,
             count_addr: 0,
         };
         let mut w = AdmissionWitness::new(vec![
@@ -5625,6 +5753,7 @@ pub fn build() -> Image:
             src: 0,
             dst: 1,
             target: "Sink".to_string(),
+            data_base: 0,
             count_addr: 0,
         }]);
         let err = w.observe(&[3], 1).expect_err("must fail closed");

@@ -508,10 +508,17 @@ fn round_up(n: u64, align: u64) -> u64 {
 /// Fails closed if that run would overrun the fixed base, or if the
 /// tables alone exceed `RTDATA_SIZE_MAX` (mailbox blowup ceiling).
 /// plans/M11.md item C / decisions 750–753.
-fn steer_rtdata_base(cursor: u64, tables_bytes: u64) -> Result<u64, LayoutError> {
-    if tables_bytes > machine_layout::RTDATA_SIZE_MAX {
+///
+/// plans/M12.md item C (decisions 875–879): `tables.total_bytes` already
+/// folds uniform ring-data padding; the diagnostic names that padding so
+/// a blowup is measurable rather than opaque. Offset-table fallback is a
+/// human gate (decision 2), never taken here.
+fn steer_rtdata_base(cursor: u64, tables: &RuntimeTables) -> Result<u64, LayoutError> {
+    if tables.total_bytes > machine_layout::RTDATA_SIZE_MAX {
         return Err(LayoutError::new(format!(
-            "rtdata needs {tables_bytes} bytes, which exceeds RTDATA_SIZE_MAX ({})",
+            "rtdata needs {} bytes (rings padding {}), which exceeds RTDATA_SIZE_MAX ({})",
+            tables.total_bytes,
+            tables.rings_padding,
             machine_layout::RTDATA_SIZE_MAX
         )));
     }
@@ -2087,6 +2094,20 @@ fn append_ring_vmm_lines(out: &mut String, layout: &ImageLayout) {
         out.push_str(&line);
         out.push('\n');
     }
+    // plans/M12.md item C: uniform-stride summary — the VMM needs
+    // `stride` to derive CTL addresses and overlap spans under
+    // CTL-then-DATA packing. Absent when this image has no rings.
+    if let Some(tables) = &layout.runtime {
+        if !tables.rings.is_empty() {
+            out.push_str(&format!(
+                "Rings count={} stride={} padding={} bytes={}\n",
+                tables.rings.len(),
+                tables.ring_stride,
+                tables.rings_padding,
+                rings_reservation_bytes(&tables.rings)
+            ));
+        }
+    }
 }
 
 /// One `Ring kind=... base=0x...` line per cross-core ring. Empty for an
@@ -2663,7 +2684,7 @@ pub fn layout_program(
     // tables at the fixed `RTDATA_BASE` — absent entirely when `runtime`
     // is `None` (no actors), never a zero-size placeholder section. ----
     let rtdata_base = if let Some(tables) = runtime.filter(|t| t.total_bytes > 0) {
-        let base = steer_rtdata_base(cursor, tables.total_bytes)?;
+        let base = steer_rtdata_base(cursor, tables)?;
         cursor = base;
         sections.push(Section {
             name: "rtdata",
@@ -3748,6 +3769,16 @@ pub struct RuntimeTables {
     /// image and for a cross-core image whose graph has no cross-core
     /// message edge (decision 28's own "emit nothing" rule).
     pub rings: Vec<RingLayout>,
+    /// plans/M12.md item C (decision 875): image-wide uniform ring-data
+    /// stride in bytes (`max(capacity * slot_size)`), or `0` when there
+    /// are no rings. Padding cost is `rings_padding`.
+    pub ring_stride: u64,
+    /// plans/M12.md item C: `n_rings * ring_stride - sum(capacity *
+    /// slot_size)` — bytes spent to buy a uniformly-strided type. Printed
+    /// on the report's `Rings` line; folded into `total_bytes` before
+    /// `steer_rtdata_base` so `RTDATA_SIZE_MAX` fails closed with the
+    /// number.
+    pub rings_padding: u64,
     /// How many cores this image brings up (`placement::PlacementTable::
     /// cores` — `1` for every single-core image, `VCPUS` for a cross-core
     /// graph). plans/M8.md item C1: the scheduler's own per-core state is
@@ -3804,17 +3835,46 @@ impl RuntimeTables {
         self.cores = cores;
     }
 
-    /// plans/M8.md item C2: installs this image's own cross-core rings and
-    /// grows `total_bytes` by exactly their reservation. Called once, by
-    /// `RuntimeWiring::derive`, right after `stripe_for_cores` — the rings
-    /// are placed **last** in `rtdata` (after the group arena), so nothing
-    /// an existing golden pins moves for an image that has none.
+    /// plans/M8.md item C2 / M12 item C: installs this image's own
+    /// cross-core rings and grows `total_bytes` by their **padded**
+    /// reservation (all CTLs, then uniformly-strided DATA). Called once,
+    /// by `RuntimeWiring::derive`, right after `stripe_for_cores` — the
+    /// rings are placed **last** in `rtdata` (after the group arena), so
+    /// nothing an existing golden pins moves for an image that has none.
     pub fn add_cross_core_rings(&mut self, rings: Vec<RingLayout>) {
-        for r in &rings {
-            self.total_bytes += r.bytes();
-        }
+        self.ring_stride = ring_data_stride_bytes(&rings);
+        self.rings_padding = rings_padding_bytes(&rings);
+        self.total_bytes += rings_reservation_bytes(&rings);
         self.rings = rings;
     }
+}
+
+/// Image-wide max of `capacity * slot_size` (decision 875). `0` when empty.
+pub fn ring_data_stride_bytes(rings: &[RingLayout]) -> u64 {
+    rings
+        .iter()
+        .map(|r| r.capacity * r.slot_size)
+        .max()
+        .unwrap_or(0)
+}
+
+/// `n * stride - sum(raw data)` — the bytes uniform stride spends.
+pub fn rings_padding_bytes(rings: &[RingLayout]) -> u64 {
+    if rings.is_empty() {
+        return 0;
+    }
+    let stride = ring_data_stride_bytes(rings);
+    let raw: u64 = rings.iter().map(|r| r.capacity * r.slot_size).sum();
+    (rings.len() as u64) * stride - raw
+}
+
+/// CTL block (`n * 24`) plus padded DATA (`n * stride`).
+pub fn rings_reservation_bytes(rings: &[RingLayout]) -> u64 {
+    if rings.is_empty() {
+        return 0;
+    }
+    let n = rings.len() as u64;
+    n * MAILBOX_BOOKKEEPING_SIZE + n * ring_data_stride_bytes(rings)
 }
 
 /// plans/M8.md item C2 (04-compiler.md §3: "cross-core actor edges ...
@@ -3854,8 +3914,11 @@ pub struct RingLayout {
 }
 
 impl RingLayout {
-    /// `capacity * slot_size` plus the same three-word head/tail/count
-    /// bookkeeping a mailbox carries (`MAILBOX_BOOKKEEPING_SIZE`).
+    /// Logical ring size: `capacity * slot_size` plus the same three-word
+    /// head/tail/count bookkeeping a mailbox carries. The **placed**
+    /// reservation after M12 item C is larger when strides differ — see
+    /// `rings_reservation_bytes` / `rings_padding_bytes`. Report `bytes=`
+    /// still spells this logical size (VMM forge check).
     pub fn bytes(&self) -> u64 {
         self.capacity * self.slot_size + MAILBOX_BOOKKEEPING_SIZE
     }
@@ -5572,6 +5635,22 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
                 tables.n_turns * tables.turn_stride
             ),
         );
+        // plans/M12.md item C (decision 875): uniform ring-stride cost,
+        // printed so a reviewer can see the padding trade. Absent when
+        // this image has no cross-core rings (like the `Ring kind=` lines).
+        if !tables.rings.is_empty() {
+            push_line(
+                out,
+                1,
+                &format!(
+                    "Rings count={} stride={} padding={} bytes={}",
+                    tables.rings.len(),
+                    tables.ring_stride,
+                    tables.rings_padding,
+                    rings_reservation_bytes(&tables.rings)
+                ),
+            );
+        }
         push_line(
             out,
             1,
@@ -6121,27 +6200,36 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     cursor = sched_base + (tables.cores as u64) * per_core;
     let group_arena = cursor;
     cursor += tables.group_arena_capacity * crate::codegen::GROUP_SLOT_SIZE;
-    // plans/M8.md item C2: the cross-core rings, last. Every address above
-    // this point is unchanged for an image with none, which is what makes
-    // "a single-core image emits no ring machinery at all" a placement fact
-    // rather than a claim.
+    // plans/M8.md item C2 / M12 item C (decision 875): cross-core rings
+    // last — all CTL records contiguously, then uniformly-strided DATA.
+    // Every address above this point is unchanged for an image with none.
+    let n_rings = tables.rings.len() as u64;
+    let stride = if tables.rings.is_empty() {
+        0
+    } else {
+        // Prefer the value `add_cross_core_rings` recorded; recompute if a
+        // unit test built tables by hand without that path.
+        let s = tables.ring_stride;
+        if s == 0 {
+            ring_data_stride_bytes(&tables.rings)
+        } else {
+            s
+        }
+    };
+    let ctl_base = cursor;
+    let data_base = ctl_base + n_rings * MAILBOX_BOOKKEEPING_SIZE;
     let mut rings = Vec::with_capacity(tables.rings.len());
-    for r in &tables.rings {
-        let ring = cursor;
-        cursor += r.capacity * r.slot_size;
-        let head = cursor;
-        cursor += 8;
-        let tail = cursor;
-        cursor += 8;
-        let count = cursor;
-        cursor += 8;
+    for (i, _r) in tables.rings.iter().enumerate() {
+        let i = i as u64;
+        let head = ctl_base + i * MAILBOX_BOOKKEEPING_SIZE;
         rings.push(RingAddrs {
-            ring,
+            ring: data_base + i * stride,
             head,
-            tail,
-            count,
+            tail: head + 8,
+            count: head + 16,
         });
     }
+    let _rings_end = data_base + n_rings * stride;
     RuntimePlacement {
         turns_base,
         turn_stride: tables.turn_stride,

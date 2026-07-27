@@ -14,6 +14,9 @@ from core.__image_runtime import (
     N_TURNS_LEN,
     N_CHILD_SITES,
     N_RINGS,
+    N_RINGS_LEN,
+    RING_STRIDE_WORDS,
+    RINGS_DATA_WORDS,
     RING_POOL_COUNT,
     N_INIT_SLOTS,
     N_BOOT_CALLS,
@@ -43,30 +46,8 @@ from core.__image_runtime import (
     RT,
     GROUPS,
     SCHED,
-    RING0_CTL,
-    RING1_CTL,
-    RING2_CTL,
-    RING3_CTL,
-    RING4_CTL,
-    RING5_CTL,
-    RING6_CTL,
-    RING7_CTL,
-    RING0_DATA,
-    RING1_DATA,
-    RING2_DATA,
-    RING3_DATA,
-    RING4_DATA,
-    RING5_DATA,
-    RING6_DATA,
-    RING7_DATA,
-    RING0_WORDS,
-    RING1_WORDS,
-    RING2_WORDS,
-    RING3_WORDS,
-    RING4_WORDS,
-    RING5_WORDS,
-    RING6_WORDS,
-    RING7_WORDS,
+    RINGS_CTL,
+    RINGS_DATA,
     INIT_SLOT0,
     INIT_SLOT1,
     INIT_SLOT2,
@@ -116,14 +97,6 @@ from core.__image_runtime import (
     __wrela_ring_dst_core,
     __wrela_ring_src_core,
     __wrela_ring_target_handle,
-    __wrela_ring_get_head,
-    __wrela_ring_set_head,
-    __wrela_ring_get_tail,
-    __wrela_ring_set_tail,
-    __wrela_ring_get_count,
-    __wrela_ring_set_count,
-    __wrela_ring_load_word,
-    __wrela_ring_store_word,
     __wrela_xsend_edge,
     __wrela_xreply_edge,
     __wrela_drain_reply_count,
@@ -959,13 +932,14 @@ pub fn __wrela_child_poll(site: usize) -> u64:
 # ---------------------------------------------------------------------------
 
 # Cross-core request publish. ABI matches former emit_rt_xsend / rt_enqueue.
+# M12 item C: index RINGS_CTL / RINGS_DATA directly (data ladders deleted).
 pub fn __wrela_rt_xsend(edge: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     if edge >= N_RINGS:
         return 1
     if edge == NO_EDGE:
         return 1
     cap = __wrela_ring_capacity(edge)
-    count = __wrela_ring_get_count(edge)
+    count = RINGS_CTL.edges[edge].count
     if count >= cap:
         return 1
     src = __wrela_ring_src_core(edge)
@@ -973,20 +947,21 @@ pub fn __wrela_rt_xsend(edge: usize, method: u64, arg0: u64, arg1: u64, waker_tu
     if waker_turn != 0:
         wc = (src +% 1).to[u64]()
     slot_words = __wrela_ring_slot_words(edge)
-    tail = __wrela_ring_get_tail(edge)
+    tail = RINGS_CTL.edges[edge].tail
     base = (tail *% slot_words.to[u64]()).to[usize]()
-    __wrela_ring_store_word(edge, base, method)
+    row = edge *% RING_STRIDE_WORDS
+    RINGS_DATA.words[row +% base] = method
     packed = waker_turn | (wc << 32)
-    __wrela_ring_store_word(edge, base +% 1, packed)
+    RINGS_DATA.words[row +% base +% 1] = packed
     if slot_words >= 3:
-        __wrela_ring_store_word(edge, base +% 2, arg0)
+        RINGS_DATA.words[row +% base +% 2] = arg0
     if slot_words >= 4:
-        __wrela_ring_store_word(edge, base +% 3, arg1)
+        RINGS_DATA.words[row +% base +% 3] = arg1
     t = tail +% 1
     if t >= cap:
         t = 0
-    __wrela_ring_set_tail(edge, t)
-    __wrela_ring_set_count(edge, count +% 1)
+    RINGS_CTL.edges[edge].tail = t
+    RINGS_CTL.edges[edge].count = count +% 1
     dst = __wrela_ring_dst_core(edge)
     PENDING.words[dst] = PENDING.words[dst] | 1
     return 0
@@ -998,21 +973,22 @@ pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
     if edge == NO_EDGE:
         return
     cap = __wrela_ring_capacity(edge)
-    count = __wrela_ring_get_count(edge)
+    count = RINGS_CTL.edges[edge].count
     if count >= cap:
         # Unreachable by construction (reply_ring_capacity); fail closed.
         MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
         return
     # Reply slots are always 2 u64 words (decision 665).
-    tail = __wrela_ring_get_tail(edge)
+    tail = RINGS_CTL.edges[edge].tail
     base = (tail *% 2).to[usize]()
-    __wrela_ring_store_word(edge, base, turn_and_tag)
-    __wrela_ring_store_word(edge, base +% 1, reply)
+    row = edge *% RING_STRIDE_WORDS
+    RINGS_DATA.words[row +% base] = turn_and_tag
+    RINGS_DATA.words[row +% base +% 1] = reply
     t = tail +% 1
     if t >= cap:
         t = 0
-    __wrela_ring_set_tail(edge, t)
-    __wrela_ring_set_count(edge, count +% 1)
+    RINGS_CTL.edges[edge].tail = t
+    RINGS_CTL.edges[edge].count = count +% 1
     dst = __wrela_ring_dst_core(edge)
     PENDING.words[dst] = PENDING.words[dst] | 1
     return
@@ -1028,11 +1004,12 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
     while ri < n_rep:
         edge = __wrela_drain_reply_edge(core, ri)
         @budget(bound=256)
-        while __wrela_ring_get_count(edge) != 0:
-            head = __wrela_ring_get_head(edge)
+        while RINGS_CTL.edges[edge].count != 0:
+            head = RINGS_CTL.edges[edge].head
             base = (head *% 2).to[usize]()
-            turn_and_tag = __wrela_ring_load_word(edge, base)
-            reply = __wrela_ring_load_word(edge, base +% 1)
+            row = edge *% RING_STRIDE_WORDS
+            turn_and_tag = RINGS_DATA.words[row +% base]
+            reply = RINGS_DATA.words[row +% base +% 1]
             tag = turn_and_tag >> 32
             tid = turn_and_tag & 4294967295
             ti: usize = (tid -% 1).to[usize]()
@@ -1043,9 +1020,9 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
             cap = __wrela_ring_capacity(edge)
             if h >= cap:
                 h = 0
-            __wrela_ring_set_head(edge, h)
-            c = __wrela_ring_get_count(edge)
-            __wrela_ring_set_count(edge, c -% 1)
+            RINGS_CTL.edges[edge].head = h
+            c = RINGS_CTL.edges[edge].count
+            RINGS_CTL.edges[edge].count = c -% 1
             moved = 1
         ri = ri +% 1
     n_req = __wrela_drain_request_count(core)
@@ -1054,20 +1031,21 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
     while qi < n_req:
         edge = __wrela_drain_request_edge(core, qi)
         @budget(bound=256)
-        while __wrela_ring_get_count(edge) != 0:
+        while RINGS_CTL.edges[edge].count != 0:
             slot_words = __wrela_ring_slot_words(edge)
-            head = __wrela_ring_get_head(edge)
+            head = RINGS_CTL.edges[edge].head
             base = (head *% slot_words.to[u64]()).to[usize]()
-            method = __wrela_ring_load_word(edge, base)
-            packed = __wrela_ring_load_word(edge, base +% 1)
+            row = edge *% RING_STRIDE_WORDS
+            method = RINGS_DATA.words[row +% base]
+            packed = RINGS_DATA.words[row +% base +% 1]
             wt = packed & 4294967295
             wc = packed >> 32
             arg0: u64 = 0
             arg1: u64 = 0
             if slot_words >= 3:
-                arg0 = __wrela_ring_load_word(edge, base +% 2)
+                arg0 = RINGS_DATA.words[row +% base +% 2]
             if slot_words >= 4:
-                arg1 = __wrela_ring_load_word(edge, base +% 3)
+                arg1 = RINGS_DATA.words[row +% base +% 3]
             handle = __wrela_ring_target_handle(edge)
             rejected = __wrela_try_enqueue(handle, method, arg0, arg1, wt, wc)
             if rejected != 0:
@@ -1077,9 +1055,9 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
             cap = __wrela_ring_capacity(edge)
             if h >= cap:
                 h = 0
-            __wrela_ring_set_head(edge, h)
-            c = __wrela_ring_get_count(edge)
-            __wrela_ring_set_count(edge, c -% 1)
+            RINGS_CTL.edges[edge].head = h
+            c = RINGS_CTL.edges[edge].count
+            RINGS_CTL.edges[edge].count = c -% 1
             moved = 1
         qi = qi +% 1
     return moved
