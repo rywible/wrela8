@@ -30,6 +30,7 @@ pub const BOOT_CALL_POOL_COUNT: usize = 32
 pub const N_IRQ_VECTORS: usize = 0
 pub const IRQ_CALL_POOL_COUNT: usize = 8
 pub const N_WAKE_DRAINS: usize = 0
+pub const N_WAKE_DRAINS_LEN: usize = 1
 pub const WAKE_CALL_POOL_COUNT: usize = 8
 pub const CHECKPOINT_SIMPLE: bool = true
 pub const NO_EDGE: usize = 255
@@ -88,7 +89,7 @@ pub static SCHED: SchedStripe
 struct GroupArena:
     slots: [GroupSlot; GROUP_SLOTS]
 
-@placed(0x4057f780)
+@placed(0x4057f778)
 pub static GROUPS: GroupArena
 
 @layout(runtime, endian=little)
@@ -147,10 +148,10 @@ pub const MB2_WORDS: usize = 1
 struct Mb2Data:
     words: [u64; MB2_WORDS]
 
-@placed(0x4057f860)
+@placed(0x4057f858)
 pub static MB2_DATA: Mb2Data
 
-@placed(0x4057f880)
+@placed(0x4057f878)
 pub static MB2_CTL: MbCtl
 
 pub const MB3_WORDS: usize = 1
@@ -158,10 +159,10 @@ pub const MB3_WORDS: usize = 1
 struct Mb3Data:
     words: [u64; MB3_WORDS]
 
-@placed(0x4057f8a0)
+@placed(0x4057f898)
 pub static MB3_DATA: Mb3Data
 
-@placed(0x4057f8c0)
+@placed(0x4057f8b8)
 pub static MB3_CTL: MbCtl
 
 pub const MB4_WORDS: usize = 1
@@ -169,10 +170,10 @@ pub const MB4_WORDS: usize = 1
 struct Mb4Data:
     words: [u64; MB4_WORDS]
 
-@placed(0x4057f8e0)
+@placed(0x4057f8d8)
 pub static MB4_DATA: Mb4Data
 
-@placed(0x4057f900)
+@placed(0x4057f8f8)
 pub static MB4_CTL: MbCtl
 
 pub const MB5_WORDS: usize = 1
@@ -180,10 +181,10 @@ pub const MB5_WORDS: usize = 1
 struct Mb5Data:
     words: [u64; MB5_WORDS]
 
-@placed(0x4057f920)
+@placed(0x4057f918)
 pub static MB5_DATA: Mb5Data
 
-@placed(0x4057f940)
+@placed(0x4057f938)
 pub static MB5_CTL: MbCtl
 
 pub const MB6_WORDS: usize = 1
@@ -191,10 +192,10 @@ pub const MB6_WORDS: usize = 1
 struct Mb6Data:
     words: [u64; MB6_WORDS]
 
-@placed(0x4057f960)
+@placed(0x4057f958)
 pub static MB6_DATA: Mb6Data
 
-@placed(0x4057f980)
+@placed(0x4057f978)
 pub static MB6_CTL: MbCtl
 
 pub const MB7_WORDS: usize = 1
@@ -202,10 +203,10 @@ pub const MB7_WORDS: usize = 1
 struct Mb7Data:
     words: [u64; MB7_WORDS]
 
-@placed(0x4057f9a0)
+@placed(0x4057f998)
 pub static MB7_DATA: Mb7Data
 
-@placed(0x4057f9c0)
+@placed(0x4057f9b8)
 pub static MB7_CTL: MbCtl
 
 pub const MB8_WORDS: usize = 1
@@ -213,10 +214,10 @@ pub const MB8_WORDS: usize = 1
 struct Mb8Data:
     words: [u64; MB8_WORDS]
 
-@placed(0x4057f9e0)
+@placed(0x4057f9d8)
 pub static MB8_DATA: Mb8Data
 
-@placed(0x4057fa00)
+@placed(0x4057f9f8)
 pub static MB8_CTL: MbCtl
 
 pub const MB9_WORDS: usize = 1
@@ -224,10 +225,10 @@ pub const MB9_WORDS: usize = 1
 struct Mb9Data:
     words: [u64; MB9_WORDS]
 
-@placed(0x4057fa20)
+@placed(0x4057fa18)
 pub static MB9_DATA: Mb9Data
 
-@placed(0x4057fa40)
+@placed(0x4057fa38)
 pub static MB9_CTL: MbCtl
 
 pub const MB10_WORDS: usize = 1
@@ -235,10 +236,10 @@ pub const MB10_WORDS: usize = 1
 struct Mb10Data:
     words: [u64; MB10_WORDS]
 
-@placed(0x4057fa60)
+@placed(0x4057fa58)
 pub static MB10_DATA: Mb10Data
 
-@placed(0x4057fa80)
+@placed(0x4057fa78)
 pub static MB10_CTL: MbCtl
 
 pub const MB11_WORDS: usize = 1
@@ -246,10 +247,10 @@ pub const MB11_WORDS: usize = 1
 struct Mb11Data:
     words: [u64; MB11_WORDS]
 
-@placed(0x4057faa0)
+@placed(0x4057fa98)
 pub static MB11_DATA: Mb11Data
 
-@placed(0x4057fac0)
+@placed(0x4057fab8)
 pub static MB11_CTL: MbCtl
 
 pub const MB12_WORDS: usize = 1
@@ -257,10 +258,10 @@ pub const MB12_WORDS: usize = 1
 struct Mb12Data:
     words: [u64; MB12_WORDS]
 
-@placed(0x4057fae0)
+@placed(0x4057fad8)
 pub static MB12_DATA: Mb12Data
 
-@placed(0x4057fb00)
+@placed(0x4057faf8)
 pub static MB12_CTL: MbCtl
 
 pub const MB13_WORDS: usize = 1
@@ -268,10 +269,10 @@ pub const MB13_WORDS: usize = 1
 struct Mb13Data:
     words: [u64; MB13_WORDS]
 
-@placed(0x4057fb20)
+@placed(0x4057fb18)
 pub static MB13_DATA: Mb13Data
 
-@placed(0x4057fb40)
+@placed(0x4057fb38)
 pub static MB13_CTL: MbCtl
 
 pub const MB14_WORDS: usize = 1
@@ -279,10 +280,10 @@ pub const MB14_WORDS: usize = 1
 struct Mb14Data:
     words: [u64; MB14_WORDS]
 
-@placed(0x4057fb60)
+@placed(0x4057fb58)
 pub static MB14_DATA: Mb14Data
 
-@placed(0x4057fb80)
+@placed(0x4057fb78)
 pub static MB14_CTL: MbCtl
 
 pub const MB15_WORDS: usize = 1
@@ -290,10 +291,10 @@ pub const MB15_WORDS: usize = 1
 struct Mb15Data:
     words: [u64; MB15_WORDS]
 
-@placed(0x4057fba0)
+@placed(0x4057fb98)
 pub static MB15_DATA: Mb15Data
 
-@placed(0x4057fbc0)
+@placed(0x4057fbb8)
 pub static MB15_CTL: MbCtl
 
 pub const MB16_WORDS: usize = 1
@@ -301,10 +302,10 @@ pub const MB16_WORDS: usize = 1
 struct Mb16Data:
     words: [u64; MB16_WORDS]
 
-@placed(0x4057fbe0)
+@placed(0x4057fbd8)
 pub static MB16_DATA: Mb16Data
 
-@placed(0x4057fc00)
+@placed(0x4057fbf8)
 pub static MB16_CTL: MbCtl
 
 pub const MB17_WORDS: usize = 1
@@ -312,10 +313,10 @@ pub const MB17_WORDS: usize = 1
 struct Mb17Data:
     words: [u64; MB17_WORDS]
 
-@placed(0x4057fc20)
+@placed(0x4057fc18)
 pub static MB17_DATA: Mb17Data
 
-@placed(0x4057fc40)
+@placed(0x4057fc38)
 pub static MB17_CTL: MbCtl
 
 pub const MB18_WORDS: usize = 1
@@ -323,10 +324,10 @@ pub const MB18_WORDS: usize = 1
 struct Mb18Data:
     words: [u64; MB18_WORDS]
 
-@placed(0x4057fc60)
+@placed(0x4057fc58)
 pub static MB18_DATA: Mb18Data
 
-@placed(0x4057fc80)
+@placed(0x4057fc78)
 pub static MB18_CTL: MbCtl
 
 pub const MB19_WORDS: usize = 1
@@ -334,10 +335,10 @@ pub const MB19_WORDS: usize = 1
 struct Mb19Data:
     words: [u64; MB19_WORDS]
 
-@placed(0x4057fca0)
+@placed(0x4057fc98)
 pub static MB19_DATA: Mb19Data
 
-@placed(0x4057fcc0)
+@placed(0x4057fcb8)
 pub static MB19_CTL: MbCtl
 
 pub const MB20_WORDS: usize = 1
@@ -345,10 +346,10 @@ pub const MB20_WORDS: usize = 1
 struct Mb20Data:
     words: [u64; MB20_WORDS]
 
-@placed(0x4057fce0)
+@placed(0x4057fcd8)
 pub static MB20_DATA: Mb20Data
 
-@placed(0x4057fd00)
+@placed(0x4057fcf8)
 pub static MB20_CTL: MbCtl
 
 pub const MB21_WORDS: usize = 1
@@ -356,10 +357,10 @@ pub const MB21_WORDS: usize = 1
 struct Mb21Data:
     words: [u64; MB21_WORDS]
 
-@placed(0x4057fd20)
+@placed(0x4057fd18)
 pub static MB21_DATA: Mb21Data
 
-@placed(0x4057fd40)
+@placed(0x4057fd38)
 pub static MB21_CTL: MbCtl
 
 pub const MB22_WORDS: usize = 1
@@ -367,10 +368,10 @@ pub const MB22_WORDS: usize = 1
 struct Mb22Data:
     words: [u64; MB22_WORDS]
 
-@placed(0x4057fd60)
+@placed(0x4057fd58)
 pub static MB22_DATA: Mb22Data
 
-@placed(0x4057fd80)
+@placed(0x4057fd78)
 pub static MB22_CTL: MbCtl
 
 pub const MB23_WORDS: usize = 1
@@ -378,10 +379,10 @@ pub const MB23_WORDS: usize = 1
 struct Mb23Data:
     words: [u64; MB23_WORDS]
 
-@placed(0x4057fda0)
+@placed(0x4057fd98)
 pub static MB23_DATA: Mb23Data
 
-@placed(0x4057fdc0)
+@placed(0x4057fdb8)
 pub static MB23_CTL: MbCtl
 
 pub const MB24_WORDS: usize = 1
@@ -389,10 +390,10 @@ pub const MB24_WORDS: usize = 1
 struct Mb24Data:
     words: [u64; MB24_WORDS]
 
-@placed(0x4057fde0)
+@placed(0x4057fdd8)
 pub static MB24_DATA: Mb24Data
 
-@placed(0x4057fe00)
+@placed(0x4057fdf8)
 pub static MB24_CTL: MbCtl
 
 pub const MB25_WORDS: usize = 1
@@ -400,10 +401,10 @@ pub const MB25_WORDS: usize = 1
 struct Mb25Data:
     words: [u64; MB25_WORDS]
 
-@placed(0x4057fe20)
+@placed(0x4057fe18)
 pub static MB25_DATA: Mb25Data
 
-@placed(0x4057fe40)
+@placed(0x4057fe38)
 pub static MB25_CTL: MbCtl
 
 pub const MB26_WORDS: usize = 1
@@ -411,10 +412,10 @@ pub const MB26_WORDS: usize = 1
 struct Mb26Data:
     words: [u64; MB26_WORDS]
 
-@placed(0x4057fe60)
+@placed(0x4057fe58)
 pub static MB26_DATA: Mb26Data
 
-@placed(0x4057fe80)
+@placed(0x4057fe78)
 pub static MB26_CTL: MbCtl
 
 pub const MB27_WORDS: usize = 1
@@ -422,10 +423,10 @@ pub const MB27_WORDS: usize = 1
 struct Mb27Data:
     words: [u64; MB27_WORDS]
 
-@placed(0x4057fea0)
+@placed(0x4057fe98)
 pub static MB27_DATA: Mb27Data
 
-@placed(0x4057fec0)
+@placed(0x4057feb8)
 pub static MB27_CTL: MbCtl
 
 pub const MB28_WORDS: usize = 1
@@ -433,10 +434,10 @@ pub const MB28_WORDS: usize = 1
 struct Mb28Data:
     words: [u64; MB28_WORDS]
 
-@placed(0x4057fee0)
+@placed(0x4057fed8)
 pub static MB28_DATA: Mb28Data
 
-@placed(0x4057ff00)
+@placed(0x4057fef8)
 pub static MB28_CTL: MbCtl
 
 pub const MB29_WORDS: usize = 1
@@ -444,10 +445,10 @@ pub const MB29_WORDS: usize = 1
 struct Mb29Data:
     words: [u64; MB29_WORDS]
 
-@placed(0x4057ff20)
+@placed(0x4057ff18)
 pub static MB29_DATA: Mb29Data
 
-@placed(0x4057ff40)
+@placed(0x4057ff38)
 pub static MB29_CTL: MbCtl
 
 pub const MB30_WORDS: usize = 1
@@ -455,10 +456,10 @@ pub const MB30_WORDS: usize = 1
 struct Mb30Data:
     words: [u64; MB30_WORDS]
 
-@placed(0x4057ff60)
+@placed(0x4057ff58)
 pub static MB30_DATA: Mb30Data
 
-@placed(0x4057ff80)
+@placed(0x4057ff78)
 pub static MB30_CTL: MbCtl
 
 pub const MB31_WORDS: usize = 1
@@ -466,10 +467,10 @@ pub const MB31_WORDS: usize = 1
 struct Mb31Data:
     words: [u64; MB31_WORDS]
 
-@placed(0x4057ffa0)
+@placed(0x4057ff98)
 pub static MB31_DATA: Mb31Data
 
-@placed(0x4057ffc0)
+@placed(0x4057ffb8)
 pub static MB31_CTL: MbCtl
 
 pub fn __resume_0() -> u64:
@@ -1066,267 +1067,218 @@ pub static INIT_SLOT1: InitSlot1Words
 struct InitSlot2Words:
     words: [u64; 1]
 
-@placed(0x4057f650)
+@placed(0x4057f688)
 pub static INIT_SLOT2: InitSlot2Words
 
 @layout(runtime, endian=little)
 struct InitSlot3Words:
     words: [u64; 1]
 
-@placed(0x4057f658)
+@placed(0x4057f690)
 pub static INIT_SLOT3: InitSlot3Words
 
 @layout(runtime, endian=little)
 struct InitSlot4Words:
     words: [u64; 1]
 
-@placed(0x4057f660)
+@placed(0x4057f698)
 pub static INIT_SLOT4: InitSlot4Words
 
 @layout(runtime, endian=little)
 struct InitSlot5Words:
     words: [u64; 1]
 
-@placed(0x4057f668)
+@placed(0x4057f6a0)
 pub static INIT_SLOT5: InitSlot5Words
 
 @layout(runtime, endian=little)
 struct InitSlot6Words:
     words: [u64; 1]
 
-@placed(0x4057f670)
+@placed(0x4057f6a8)
 pub static INIT_SLOT6: InitSlot6Words
 
 @layout(runtime, endian=little)
 struct InitSlot7Words:
     words: [u64; 1]
 
-@placed(0x4057f678)
+@placed(0x4057f6b0)
 pub static INIT_SLOT7: InitSlot7Words
 
 @layout(runtime, endian=little)
 struct InitSlot8Words:
     words: [u64; 1]
 
-@placed(0x4057f680)
+@placed(0x4057f6b8)
 pub static INIT_SLOT8: InitSlot8Words
 
 @layout(runtime, endian=little)
 struct InitSlot9Words:
     words: [u64; 1]
 
-@placed(0x4057f688)
+@placed(0x4057f6c0)
 pub static INIT_SLOT9: InitSlot9Words
 
 @layout(runtime, endian=little)
 struct InitSlot10Words:
     words: [u64; 1]
 
-@placed(0x4057f690)
+@placed(0x4057f6c8)
 pub static INIT_SLOT10: InitSlot10Words
 
 @layout(runtime, endian=little)
 struct InitSlot11Words:
     words: [u64; 1]
 
-@placed(0x4057f698)
+@placed(0x4057f6d0)
 pub static INIT_SLOT11: InitSlot11Words
 
 @layout(runtime, endian=little)
 struct InitSlot12Words:
     words: [u64; 1]
 
-@placed(0x4057f6a0)
+@placed(0x4057f6d8)
 pub static INIT_SLOT12: InitSlot12Words
 
 @layout(runtime, endian=little)
 struct InitSlot13Words:
     words: [u64; 1]
 
-@placed(0x4057f6a8)
+@placed(0x4057f6e0)
 pub static INIT_SLOT13: InitSlot13Words
 
 @layout(runtime, endian=little)
 struct InitSlot14Words:
     words: [u64; 1]
 
-@placed(0x4057f6b0)
+@placed(0x4057f6e8)
 pub static INIT_SLOT14: InitSlot14Words
 
 @layout(runtime, endian=little)
 struct InitSlot15Words:
     words: [u64; 1]
 
-@placed(0x4057f6b8)
+@placed(0x4057f6f0)
 pub static INIT_SLOT15: InitSlot15Words
 
 @layout(runtime, endian=little)
 struct InitSlot16Words:
     words: [u64; 1]
 
-@placed(0x4057f6c0)
+@placed(0x4057f6f8)
 pub static INIT_SLOT16: InitSlot16Words
 
 @layout(runtime, endian=little)
 struct InitSlot17Words:
     words: [u64; 1]
 
-@placed(0x4057f6c8)
+@placed(0x4057f700)
 pub static INIT_SLOT17: InitSlot17Words
 
 @layout(runtime, endian=little)
 struct InitSlot18Words:
     words: [u64; 1]
 
-@placed(0x4057f6d0)
+@placed(0x4057f708)
 pub static INIT_SLOT18: InitSlot18Words
 
 @layout(runtime, endian=little)
 struct InitSlot19Words:
     words: [u64; 1]
 
-@placed(0x4057f6d8)
+@placed(0x4057f710)
 pub static INIT_SLOT19: InitSlot19Words
 
 @layout(runtime, endian=little)
 struct InitSlot20Words:
     words: [u64; 1]
 
-@placed(0x4057f6e0)
+@placed(0x4057f718)
 pub static INIT_SLOT20: InitSlot20Words
 
 @layout(runtime, endian=little)
 struct InitSlot21Words:
     words: [u64; 1]
 
-@placed(0x4057f6e8)
+@placed(0x4057f720)
 pub static INIT_SLOT21: InitSlot21Words
 
 @layout(runtime, endian=little)
 struct InitSlot22Words:
     words: [u64; 1]
 
-@placed(0x4057f6f0)
+@placed(0x4057f728)
 pub static INIT_SLOT22: InitSlot22Words
 
 @layout(runtime, endian=little)
 struct InitSlot23Words:
     words: [u64; 1]
 
-@placed(0x4057f6f8)
+@placed(0x4057f730)
 pub static INIT_SLOT23: InitSlot23Words
 
 @layout(runtime, endian=little)
 struct InitSlot24Words:
     words: [u64; 1]
 
-@placed(0x4057f700)
+@placed(0x4057f738)
 pub static INIT_SLOT24: InitSlot24Words
 
 @layout(runtime, endian=little)
 struct InitSlot25Words:
     words: [u64; 1]
 
-@placed(0x4057f708)
+@placed(0x4057f740)
 pub static INIT_SLOT25: InitSlot25Words
 
 @layout(runtime, endian=little)
 struct InitSlot26Words:
     words: [u64; 1]
 
-@placed(0x4057f710)
+@placed(0x4057f748)
 pub static INIT_SLOT26: InitSlot26Words
 
 @layout(runtime, endian=little)
 struct InitSlot27Words:
     words: [u64; 1]
 
-@placed(0x4057f718)
+@placed(0x4057f750)
 pub static INIT_SLOT27: InitSlot27Words
 
 @layout(runtime, endian=little)
 struct InitSlot28Words:
     words: [u64; 1]
 
-@placed(0x4057f720)
+@placed(0x4057f758)
 pub static INIT_SLOT28: InitSlot28Words
 
 @layout(runtime, endian=little)
 struct InitSlot29Words:
     words: [u64; 1]
 
-@placed(0x4057f728)
+@placed(0x4057f760)
 pub static INIT_SLOT29: InitSlot29Words
 
 @layout(runtime, endian=little)
 struct InitSlot30Words:
     words: [u64; 1]
 
-@placed(0x4057f730)
+@placed(0x4057f768)
 pub static INIT_SLOT30: InitSlot30Words
 
 @layout(runtime, endian=little)
 struct InitSlot31Words:
     words: [u64; 1]
 
-@placed(0x4057f738)
+@placed(0x4057f770)
 pub static INIT_SLOT31: InitSlot31Words
 
 @layout(runtime, endian=little)
-struct WakePend0Word:
-    word: u64
+struct WakeTables:
+    wake_pending: [u64; N_WAKE_DRAINS_LEN]
 
-@placed(0x4057f740)
-pub static WAKE_PEND0: WakePend0Word
-
-@layout(runtime, endian=little)
-struct WakePend1Word:
-    word: u64
-
-@placed(0x4057f748)
-pub static WAKE_PEND1: WakePend1Word
-
-@layout(runtime, endian=little)
-struct WakePend2Word:
-    word: u64
-
-@placed(0x4057f750)
-pub static WAKE_PEND2: WakePend2Word
-
-@layout(runtime, endian=little)
-struct WakePend3Word:
-    word: u64
-
-@placed(0x4057f758)
-pub static WAKE_PEND3: WakePend3Word
-
-@layout(runtime, endian=little)
-struct WakePend4Word:
-    word: u64
-
-@placed(0x4057f760)
-pub static WAKE_PEND4: WakePend4Word
-
-@layout(runtime, endian=little)
-struct WakePend5Word:
-    word: u64
-
-@placed(0x4057f768)
-pub static WAKE_PEND5: WakePend5Word
-
-@layout(runtime, endian=little)
-struct WakePend6Word:
-    word: u64
-
-@placed(0x4057f770)
-pub static WAKE_PEND6: WakePend6Word
-
-@layout(runtime, endian=little)
-struct WakePend7Word:
-    word: u64
-
-@placed(0x4057f778)
-pub static WAKE_PEND7: WakePend7Word
+@placed(0x4057ffd8)
+pub static WAKE: WakeTables
 
 pub fn __wrela_select_count(core: usize) -> usize:
     match core:
@@ -2388,56 +2340,6 @@ pub fn __wrela_irq_mask(i: usize) -> u64:
 
 pub fn __wrela_irq_invoke(i: usize):
     match i:
-        case _:
-            return
-
-pub fn __wrela_wake_pending_load(i: usize) -> u64:
-    match i:
-        case 0:
-            return WAKE_PEND0.word
-        case 1:
-            return WAKE_PEND1.word
-        case 2:
-            return WAKE_PEND2.word
-        case 3:
-            return WAKE_PEND3.word
-        case 4:
-            return WAKE_PEND4.word
-        case 5:
-            return WAKE_PEND5.word
-        case 6:
-            return WAKE_PEND6.word
-        case 7:
-            return WAKE_PEND7.word
-        case _:
-            return 0
-
-pub fn __wrela_wake_pending_store(i: usize, v: u64):
-    match i:
-        case 0:
-            WAKE_PEND0.word = v
-            return
-        case 1:
-            WAKE_PEND1.word = v
-            return
-        case 2:
-            WAKE_PEND2.word = v
-            return
-        case 3:
-            WAKE_PEND3.word = v
-            return
-        case 4:
-            WAKE_PEND4.word = v
-            return
-        case 5:
-            WAKE_PEND5.word = v
-            return
-        case 6:
-            WAKE_PEND6.word = v
-            return
-        case 7:
-            WAKE_PEND7.word = v
-            return
         case _:
             return
 

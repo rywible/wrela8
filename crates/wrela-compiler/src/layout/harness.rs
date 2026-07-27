@@ -309,16 +309,11 @@ pub(super) fn inject_checkpoint_irq_fns(program: &mut CodegenProgram, wiring: &R
     }
     for (i, (task_key, driver_state)) in wiring.wake_calls.iter().enumerate() {
         let key = format!("__wake_call_{i}");
-        let off = wiring
-            .tables
-            .wake_pending_addrs
-            .get(i)
-            .copied()
-            .unwrap_or(0)
-            .saturating_sub(*driver_state);
+        // M12 item D: pending bits live in WAKE.wake_pending[i]; the stub
+        // only materializes x0 = driver_state for the @task body.
         let spec = crate::codegen::CheckpointWakeSpec {
             driver_state: *driver_state,
-            wake_pending_off: off,
+            wake_pending_off: 0,
             task_key: task_key.clone(),
         };
         program
@@ -1223,8 +1218,6 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_rt_checkpoint",
         "__wrela_irq_mask",
         "__wrela_irq_invoke",
-        "__wrela_wake_pending_load",
-        "__wrela_wake_pending_store",
         "__wrela_wake_invoke",
     ] {
         only.insert(key.to_string());
@@ -1428,8 +1421,6 @@ pub(super) fn reinject_runtime_with_test_facts(
         "__wrela_rt_checkpoint",
         "__wrela_irq_mask",
         "__wrela_irq_invoke",
-        "__wrela_wake_pending_load",
-        "__wrela_wake_pending_store",
         "__wrela_wake_invoke",
     ] {
         keys.push(k.into());

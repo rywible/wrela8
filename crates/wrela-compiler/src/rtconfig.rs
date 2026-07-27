@@ -94,7 +94,8 @@ pub struct RtconfigExtras {
     pub n_boot_calls: usize,
     /// M11 I: pending-vector bit indices for sealed IRQ binds.
     pub irq_vector_bits: Vec<u64>,
-    /// M11 I: absolute wake-pending word addresses.
+    /// M11 I / M12 item D: absolute addresses of each `WAKE.wake_pending[i]`
+    /// word (contiguous array; drain index aligned with `__wake_call_{i}`).
     pub wake_pending_addrs: Vec<u64>,
     /// M11 K: `@test(runtime)` runner facts (decision 851). Empty for
     /// ordinary images / stub; test-image reinject fills these.
@@ -393,13 +394,18 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     // own the real ring addresses (decision 800 / M12 item C) — same move
     // as empty-sched.
     let n_rings = extras.rings.len();
+    let n_wake = extras.wake_pending_addrs.len();
     // High-zone reserve for the empty-ring placeholder overlays only
     // (live rings place RINGS_* inside real rtdata). One RingCtl + one
     // data word when N_RINGS_LEN=1 / RING_STRIDE_WORDS=1.
     let rings_high_reserve: u64 = if n_rings == 0 { 24 + 8 } else { 0 };
+    // M12 item D: empty-wake floor-1 WAKE static (03 §3.1 forbids [u64;0]).
+    // Live wakes place WAKE inside real rtdata after rings.
+    let wake_high_reserve: u64 = if n_wake == 0 { 8 } else { 0 };
     let group_addr = if group_cap == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
             - rings_high_reserve
+            - wake_high_reserve
             - (MB_POOL_COUNT as u64) * 64
             - 96
     } else {
@@ -497,7 +503,11 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "BOOT_CALL_POOL_COUNT", BOOT_CALL_POOL_COUNT);
     push_const(&mut out, "N_IRQ_VECTORS", extras.irq_vector_bits.len());
     push_const(&mut out, "IRQ_CALL_POOL_COUNT", IRQ_CALL_POOL_COUNT);
-    push_const(&mut out, "N_WAKE_DRAINS", extras.wake_pending_addrs.len());
+    push_const(&mut out, "N_WAKE_DRAINS", n_wake);
+    // Floor 1 when empty so `wake_pending: [u64; N_WAKE_DRAINS_LEN]` stays
+    // legal under 03 §3.1 (same empty-arena pattern as N_RINGS_LEN).
+    let n_wake_len = n_wake.max(1);
+    push_const(&mut out, "N_WAKE_DRAINS_LEN", n_wake_len);
     push_const(&mut out, "WAKE_CALL_POOL_COUNT", WAKE_CALL_POOL_COUNT);
     let checkpoint_simple =
         extras.irq_vector_bits.is_empty() && extras.wake_pending_addrs.is_empty();
@@ -566,10 +576,10 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     let rt_addr = if tables.n_turns == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
             - rings_high_reserve
+            - wake_high_reserve
             - (MB_POOL_COUNT as u64) * 64
             - 96
             - (BOOT_CALL_POOL_COUNT as u64) * 8
-            - (WAKE_CALL_POOL_COUNT as u64) * 8
             - (n_turns_len as u64) * (turn_stride as u64)
     } else {
         RTDATA_BASE
@@ -665,6 +675,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push('\n');
     let mb_placeholder = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
         - rings_high_reserve
+        - wake_high_reserve
         - (MB_POOL_COUNT as u64) * 64;
     for i in 0..MB_POOL_COUNT {
         let (words, data_addr, ctl_addr) = if let Some(m) = extras.mailboxes.get(i) {
@@ -731,10 +742,10 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     // unused / 0-word slots get a 1-word non-colliding placeholder.
     let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
         - rings_high_reserve
+        - wake_high_reserve
         - (MB_POOL_COUNT as u64) * 64
         - 96
-        - (BOOT_CALL_POOL_COUNT as u64) * 8
-        - (WAKE_CALL_POOL_COUNT as u64) * 8;
+        - (BOOT_CALL_POOL_COUNT as u64) * 8;
     for i in 0..BOOT_CALL_POOL_COUNT {
         let (addr, nwords) = extras
             .init_slots
@@ -751,23 +762,23 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         out.push('\n');
     }
 
-    // Wake-pending word overlays (decision 823): live addrs overlay driver
-    // state; unused slots get non-colliding placeholders.
-    let wake_placeholder_base = init_placeholder_base + (BOOT_CALL_POOL_COUNT as u64) * 8;
-    for i in 0..WAKE_CALL_POOL_COUNT {
-        let addr = extras
-            .wake_pending_addrs
-            .get(i)
-            .copied()
-            .unwrap_or(wake_placeholder_base + (i as u64) * 8);
-        out.push_str("@layout(runtime, endian=little)\n");
-        out.push_str(&format!("struct WakePend{i}Word:\n"));
-        out.push_str("    word: u64\n");
-        out.push('\n');
-        out.push_str(&format!("@placed({addr:#x})\n"));
-        out.push_str(&format!("pub static WAKE_PEND{i}: WakePend{i}Word\n"));
-        out.push('\n');
-    }
+    // Contiguous WAKE.wake_pending (M12 item D / decisions 880–882). Live
+    // drains place after rings; N_WAKE_DRAINS == 0 uses a floor-1 high-zone
+    // placeholder so the static always exists (item G census).
+    let wake_addr = if n_wake == 0 {
+        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+            - rings_high_reserve
+            - wake_high_reserve
+    } else {
+        extras.wake_pending_addrs[0]
+    };
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct WakeTables:\n");
+    out.push_str("    wake_pending: [u64; N_WAKE_DRAINS_LEN]\n");
+    out.push('\n');
+    out.push_str(&format!("@placed({wake_addr:#x})\n"));
+    out.push_str("pub static WAKE: WakeTables\n");
+    out.push('\n');
 
     // --- match ladders (facts only; no if/while) ---------------------------
     out.push_str("pub fn __wrela_select_count(core: usize) -> usize:\n");
@@ -1217,27 +1228,8 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("            return\n");
     out.push('\n');
 
-    out.push_str("pub fn __wrela_wake_pending_load(i: usize) -> u64:\n");
-    out.push_str("    match i:\n");
-    for i in 0..WAKE_CALL_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            return WAKE_PEND{i}.word\n"));
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return 0\n");
-    out.push('\n');
-
-    out.push_str("pub fn __wrela_wake_pending_store(i: usize, v: u64):\n");
-    out.push_str("    match i:\n");
-    for i in 0..WAKE_CALL_POOL_COUNT {
-        out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            WAKE_PEND{i}.word = v\n"));
-        out.push_str("            return\n");
-    }
-    out.push_str("        case _:\n");
-    out.push_str("            return\n");
-    out.push('\n');
-
+    // Wake pending load/store ladders deleted (M12 item D): runtime.wr
+    // indexes WAKE.wake_pending[i] directly. Dispatch invoke stays.
     out.push_str("pub fn __wrela_wake_invoke(i: usize):\n");
     out.push_str("    match i:\n");
     for i in 0..extras.wake_pending_addrs.len() {

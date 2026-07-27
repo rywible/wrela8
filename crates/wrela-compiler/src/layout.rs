@@ -372,7 +372,8 @@ pub struct IrqVectorEntry {
 #[derive(Debug, Clone)]
 pub struct WakeDrainEntry {
     pub driver_state: u64,
-    pub wake_pending_off: u64,
+    /// Index into the contiguous `WAKE.wake_pending` array (M12 item D).
+    pub wake_drain_index: usize,
     pub task_key: String,
 }
 
@@ -1229,11 +1230,12 @@ fn checkpoint_irq_shape(
             }
         }
         if let Some(tables) = tables {
-            if let Some(off) = tables.drivers.get(di).and_then(|d| d.wake_pending_off) {
+            if tables.drivers.get(di).is_some_and(|d| d.has_wake) {
                 for task in driver_task_method_names(boot.modules, driver) {
+                    let wake_drain_index = wake_drains.len();
                     wake_drains.push(WakeDrainEntry {
                         driver_state: state,
-                        wake_pending_off: off,
+                        wake_drain_index,
                         task_key: format!("{key_prefix}.{task}"),
                     });
                 }
@@ -1442,16 +1444,16 @@ fn build_irq_host_injects(
     out
 }
 
-/// plans/M7.md item G: absolute address of `@driver` `driver`'s sticky
-/// wake-pending word (trailing word of its state). `placement.drivers`
-/// already holds absolute addresses (`place_runtime_tables` starts its
-/// cursor at `rtdata_base`).
+/// plans/M7.md item G / M12 item D: absolute address of `@driver`
+/// `driver`'s sticky wake-pending word in the contiguous `WAKE` array.
+/// First drain index for that driver (shared-bit semantics when a driver
+/// declares multiple `@task`s).
 fn driver_wake_pending_addr(
-    placement: &RuntimePlacement,
+    _placement: &RuntimePlacement,
     tables: &RuntimeTables,
     driver: &str,
 ) -> Result<u64, LayoutError> {
-    for (i, d) in tables.drivers.iter().enumerate() {
+    for d in &tables.drivers {
         // Decision 18: runtime table names are rendered
         // (`BlkDriver[DriverMode.Irq]`); `Inst::Wake` carries the bare
         // struct name from the FnRef.
@@ -1459,23 +1461,21 @@ fn driver_wake_pending_addr(
         if d.name != driver && bare != driver {
             continue;
         }
-        let Some(off) = d.wake_pending_off else {
+        let Some(idx) = d.wake_drain_index else {
             // Unreachable from source: `sema` rejects `wake(D.m)` when `m`
             // is not `@task` (`golden/err-wake-not-task`), and only a
-            // `@task` reserves the wake-pending word.
+            // `@task` reserves a wake-pending drain slot.
             return Err(LayoutError::new(format!(
                 "internal error: `Wake` for `{driver}` but that driver has no `@task` \
-                 (no wake-pending word was reserved)"
+                 (no wake-pending drain was reserved)"
             )));
         };
-        let Some(&state_base) = placement.drivers.get(i) else {
-            // Unreachable from source: `place_runtime_tables` emits one
-            // base per `tables.drivers` entry.
+        let Some(&addr) = tables.wake_pending_addrs.get(idx) else {
             return Err(LayoutError::new(format!(
-                "internal error: `@driver` `{driver}` has no placed state"
+                "internal error: `@driver` `{driver}` wake drain {idx} has no WAKE address"
             )));
         };
-        return Ok(state_base + off);
+        return Ok(addr);
     }
     // Author-reachable: a `@driver` with `wake(...)` compiled into the
     // module, while this `@image` never declared that driver (sibling of
@@ -3677,14 +3677,15 @@ pub struct ActorRuntimeLayout {
 pub struct DriverRuntimeLayout {
     pub name: String,
     /// This driver struct's own field storage (`mwir::size_of`) — where
-    /// the instance lives, exactly like an actor's `state_size`. When the
-    /// driver declares a `@task`, this also includes one trailing word for
-    /// the sticky wake-pending bit (plans/M7.md item G).
+    /// the instance lives, exactly like an actor's `state_size`.
     pub state_size: u64,
-    /// Byte offset of the wake-pending word within `state_size`, when the
-    /// driver has a `@task`. Layout patches `Reloc::WakePending` against
-    /// `driver_state_base + wake_pending_off`.
-    pub wake_pending_off: Option<u64>,
+    /// True when the driver declares a `@task`. Sticky wake-pending bits
+    /// live in the contiguous `WAKE.wake_pending` array (M12 item D /
+    /// decisions 880–882), not as a trailing word of driver state.
+    pub has_wake: bool,
+    /// Index into `wake_pending_addrs` / `WAKE.wake_pending` for this
+    /// driver's first `@task` drain. Filled by `fill_checkpoint_irq_facts`.
+    pub wake_drain_index: Option<usize>,
     /// plans/M8.md item D (decision 19): present exactly when this
     /// declaration carried `mailbox=n`. The three numbers are the same
     /// three an `ActorRuntimeLayout` carries and are computed by the same
@@ -5337,8 +5338,9 @@ pub fn compute_runtime_tables(
     // bytes, sized by the identical `mwir::size_of` an actor's are — which
     // is only answerable at all since this item taught it that a
     // capability is one word.
-    // plans/M7.md item G: a `@task` adds one trailing wake-pending word
-    // (sticky bit; mask–arm–recheck for the ISR→bottom-half edge).
+    // plans/M7.md item G / M12 item D: a `@task` marks `has_wake`; the
+    // sticky wake-pending bit lives in contiguous `WAKE.wake_pending`
+    // (decisions 880–882), not a trailing word of driver state.
     // plans/M8.md item D: a `mailbox=` on the declaration makes the driver
     // messageable, and its mailbox is sized by the *identical* arithmetic
     // an actor's is, from the identical `merge_actor_pub_methods` shapes —
@@ -5347,16 +5349,10 @@ pub fn compute_runtime_tables(
     let mut drivers = Vec::with_capacity(graph.drivers.len());
     for decl in &graph.drivers {
         let name = crate::sema::types::render_type(&decl.actor_type);
-        let mut state_size = mwir::size_of(&decl.actor_type, layout_ctx)
+        let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
             .map_err(|e| format!("driver `{name}`'s own state: {e}"))?
             as u64;
-        let wake_pending_off = if driver_declares_task(modules, &name) {
-            let off = state_size;
-            state_size += 8;
-            Some(off)
-        } else {
-            None
-        };
+        let has_wake = driver_declares_task(modules, &name);
         let capacity = declared_mailbox_capacity(&decl.args, &format!("driver `{name}`"))?;
         let mailbox = match capacity {
             None => None,
@@ -5396,7 +5392,8 @@ pub fn compute_runtime_tables(
         drivers.push(DriverRuntimeLayout {
             name,
             state_size,
-            wake_pending_off,
+            has_wake,
+            wake_drain_index: None,
             mailbox,
         });
     }
@@ -6005,9 +6002,10 @@ pub struct RuntimePlacement {
     /// its state with the same ring/head/tail/count/turn run an actor's
     /// does, in the same order `RuntimeTables::total_bytes` accounts for —
     /// `driver_mailboxes` below holds those addresses, keyed by the same
-    /// index. The `state` word here is unchanged either way, so every
-    /// pre-item-D consumer (boot state fill, `Reloc::WakePending`, the ISR
-    /// table) reads exactly what it always did.
+    /// index. The `state` word here is unchanged either way.
+    ///
+    /// M12 item D: sticky wake-pending bits are no longer a trail word of
+    /// driver state — they live at `wake_base` (contiguous `WAKE` array).
     pub drivers: Vec<u64>,
     /// plans/M8.md item D: `RuntimeTables::drivers` index -> that
     /// messageable driver's own mailbox addresses. An `ActorAddrs`
@@ -6038,6 +6036,10 @@ pub struct RuntimePlacement {
     /// image with no cross-core edge places byte-for-byte what it did
     /// before this item.
     pub rings: Vec<RingAddrs>,
+    /// M12 item D (decisions 880–882): base of the contiguous
+    /// `WAKE.wake_pending` array, placed after rings. Equal to the rings
+    /// end when `wake_pending_addrs` is empty (no reservation).
+    pub wake_base: u64,
 }
 
 impl RuntimePlacement {
@@ -6229,7 +6231,12 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             count: head + 16,
         });
     }
-    let _rings_end = data_base + n_rings * stride;
+    let rings_end = data_base + n_rings * stride;
+    // M12 item D: contiguous WAKE.wake_pending after rings. Length comes
+    // from `wake_pending_addrs` (filled to the drain count before place).
+    let n_wake = tables.wake_pending_addrs.len() as u64;
+    let wake_base = rings_end;
+    let _wake_end = wake_base + n_wake * 8;
     RuntimePlacement {
         turns_base,
         turn_stride: tables.turn_stride,
@@ -6241,6 +6248,7 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         rr_cursors,
         group_arena,
         rings,
+        wake_base,
     }
 }
 
@@ -6698,9 +6706,11 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
     wiring.tables.n_boot_calls = n_boot_calls;
 }
 
-/// M11 I / decision 823: stamp IRQ vector bits + wake-pending addresses
-/// onto `tables`, and handler/task keys onto `wiring` for inject.
+/// M11 I / decision 823 / M12 item D: stamp IRQ vector bits + contiguous
+/// `WAKE.wake_pending` addresses onto `tables`, and handler/task keys onto
+/// `wiring` for inject.
 fn fill_checkpoint_irq_facts(wiring: &mut RuntimeWiring, boot: &BootCtx) {
+    // Place once for driver_state addresses (wake region still empty).
     let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
     let (irq, wake) = checkpoint_irq_shape(Some(boot), Some(&rtdata), Some(&wiring.tables));
     assert!(
@@ -6715,11 +6725,32 @@ fn fill_checkpoint_irq_facts(wiring: &mut RuntimeWiring, boot: &BootCtx) {
         wake.len(),
         crate::rtconfig::WAKE_CALL_POOL_COUNT
     );
+    // Reserve the contiguous WAKE array after rings, then re-place so
+    // `wake_base` sits past the ring reservation.
+    wiring.tables.total_bytes += (wake.len() as u64) * 8;
+    wiring.tables.wake_pending_addrs = vec![0; wake.len()];
+    let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
     wiring.tables.irq_vector_bits = irq.iter().map(|e| e.vector).collect();
-    wiring.tables.wake_pending_addrs = wake
-        .iter()
-        .map(|e| e.driver_state + e.wake_pending_off)
+    wiring.tables.wake_pending_addrs = (0..wake.len())
+        .map(|i| rtdata.wake_base + (i as u64) * 8)
         .collect();
+    // First drain index per driver (shared-bit / Reloc::WakePending target).
+    for d in &mut wiring.tables.drivers {
+        d.wake_drain_index = None;
+    }
+    for e in &wake {
+        // Match by placed driver_state address.
+        if let Some(di) = rtdata
+            .drivers
+            .iter()
+            .position(|&addr| addr == e.driver_state)
+        {
+            let d = &mut wiring.tables.drivers[di];
+            if d.wake_drain_index.is_none() {
+                d.wake_drain_index = Some(e.wake_drain_index);
+            }
+        }
+    }
     wiring.irq_calls = irq
         .into_iter()
         .map(|e| (e.handler_key, e.driver_state))
@@ -6944,7 +6975,7 @@ pub fn t():
             }],
             &[WakeDrainEntry {
                 driver_state: 0x4050_0000,
-                wake_pending_off: 24,
+                wake_drain_index: 0,
                 task_key: "struct:BlkDriver.drain".into(),
             }],
             true,
@@ -7137,7 +7168,8 @@ pub struct Store:
                 DriverRuntimeLayout {
                     name: "Msg".to_string(),
                     state_size: 8,
-                    wake_pending_off: None,
+                    has_wake: false,
+                    wake_drain_index: None,
                     mailbox: Some(DriverMailbox {
                         capacity: 2,
                         slot_size: 16,
@@ -7147,7 +7179,8 @@ pub struct Store:
                 DriverRuntimeLayout {
                     name: "Silent".to_string(),
                     state_size: 8,
-                    wake_pending_off: None,
+                    has_wake: false,
+                    wake_drain_index: None,
                     mailbox: None,
                 },
             ],

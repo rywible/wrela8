@@ -24,6 +24,7 @@ from core.__image_runtime import (
     N_IRQ_VECTORS,
     IRQ_CALL_POOL_COUNT,
     N_WAKE_DRAINS,
+    N_WAKE_DRAINS_LEN,
     WAKE_CALL_POOL_COUNT,
     N_TESTS,
     HAS_BOOT_INIT,
@@ -38,8 +39,6 @@ from core.__image_runtime import (
     __wrela_boot_call,
     __wrela_irq_mask,
     __wrela_irq_invoke,
-    __wrela_wake_pending_load,
-    __wrela_wake_pending_store,
     __wrela_wake_invoke,
     GROUP_ARENA_CAPACITY,
     GROUP_SLOTS,
@@ -48,6 +47,7 @@ from core.__image_runtime import (
     SCHED,
     RINGS_CTL,
     RINGS_DATA,
+    WAKE,
     INIT_SLOT0,
     INIT_SLOT1,
     INIT_SLOT2,
@@ -80,14 +80,6 @@ from core.__image_runtime import (
     INIT_SLOT29,
     INIT_SLOT30,
     INIT_SLOT31,
-    WAKE_PEND0,
-    WAKE_PEND1,
-    WAKE_PEND2,
-    WAKE_PEND3,
-    WAKE_PEND4,
-    WAKE_PEND5,
-    WAKE_PEND6,
-    WAKE_PEND7,
     __wrela_select_count,
     __wrela_resume_child,
     __wrela_child_turn_index,
@@ -1466,9 +1458,9 @@ pub fn __wrela_rt_checkpoint():
             wi: usize = 0
             @budget(bound=WAKE_CALL_POOL_COUNT)
             while wi < N_WAKE_DRAINS:
-                wp = __wrela_wake_pending_load(wi)
+                wp = WAKE.wake_pending[wi]
                 if wp != 0:
-                    __wrela_wake_pending_store(wi, 0)
+                    WAKE.wake_pending[wi] = 0
                     __wrela_wake_invoke(wi)
                     any = 1
                     did = 1
