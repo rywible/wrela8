@@ -44,8 +44,8 @@ those remain explicit parts of the model.
 
 The result of `@image build()` is a typed graph: device bindings, actor
 instances, mailboxes, pools, task slots, interrupt vectors, and the
-supervision tree. Actor-to-actor edges are typed message channels, not object
-references. Device edges are capabilities minted by image binding.
+image failure policy. Actor-to-actor edges are typed message channels, not
+object references. Device edges are capabilities minted by image binding.
 
 ```text
 Image
@@ -54,7 +54,7 @@ Image
 ├── Storage actor ─ owns filesystem and cache
 ├── App actor ───── owns application state
 ├── Pools, mailboxes, task frames
-└── Supervisor tree
+└── Failure policy (Halt | Reboot)
 ```
 
 ## 3. What the language is
@@ -82,8 +82,8 @@ and bounded child work. Every actor has one build-time core — inferred, or
 set in the image — and nothing about the APIs changes across cores.
 
 **Errors.** Recoverable failures are `Result` values propagated with `?`. Bugs
-abandon the actor and reach its supervisor. Cross-actor calls add one composed
-error type, `CallError`.
+abandon the actor; the image applies its declared failure policy. Cross-actor
+calls add one composed error type, `CallError`.
 
 **Cleanup.** `defer` runs a registered action on every path out of a block,
 in reverse order, wired into the same graph that governs cancellation.
@@ -104,9 +104,9 @@ depend on.
 
 Everything else in earlier drafts of this specification — region classes,
 frame layout, mailbox capacity derivation, provenance brands, wait-for graphs,
-scheduling policy, restart mechanics — is the compiler's obligation, not the
-user's vocabulary. The user never names those things; the compiler proves
-them, and the build report shows its work.
+scheduling policy — is the compiler's obligation, not the user's vocabulary.
+The user never names those things; the compiler proves them, and the build
+report shows its work.
 
 The compiler MUST prove, before emitting an artifact:
 
@@ -121,7 +121,7 @@ The compiler MUST prove, before emitting an artifact:
    device-owned DMA; ISR-bound functions stay inside the ISR effect set;
    nothing device-owned is reclaimed before quiescence.
 5. **Failure**: recoverable errors are values; abandonment cannot skip
-   resource teardown; every restart dependency has a declared recovery source.
+   resource teardown; the image declares a failure policy exactly once.
 6. **Contracts**: the requirement set of every generic, the inferred effect
    of every private method, and every proof-conditioned form (`send`,
    `*_proven`) are computed, checked, and published — contracts are compiler
@@ -197,3 +197,32 @@ add, each with its surviving replacement named:
 Each exclusion is reversible in a later revision without breaking the
 model; a new device or core count is a machine revision, never an ambient
 environment change.
+
+**Crash-only failure (plans/M13.md item F / decision 3).** Revision 0.1 is
+crash-only: the image is sealed, every run is recorded, and boot is instant,
+so an abandonment is a defect event — not a recoverable peer failure and not
+a steady-state tail event. Generated cleanup runs for the abandoned turn, the
+failure is attributed (actor, fault category, faulting site), and the image
+applies its declared failure policy: `Failure.Reboot` or `Failure.Halt`,
+declared exactly once as `img.on_failure(policy=...)` (required-explicit, no
+default). Per-actor restart is cut: `img.supervise`, restart provisions,
+restart intensity, the three strategies, the `Restart` enum, `PeerFailed`,
+and `TaskFailure`.
+
+Viability, stated against the strongest objections: **we accept bystander
+loss and pay with a durability requirement.** A display-driver fault that
+`OneForOne` restart would have contained now destroys the app's volatile
+state with the image; crash-only pays for that with apps checkpointing
+working state via storage, so a whole-image reboot costs seconds of volatile
+state rather than documents. `Failure.Reboot` *presumes* that durability —
+the durable-checkpoint idiom + storage stack is a named dependency, currently
+unbuilt (`blk` modeled, `ExtentFs` aspirational, `with pool` unimplemented);
+conformance goldens pin `Failure.Halt` until the idiom exists (halt is
+honest; reboot-with-no-durability is the bad combination). The flat-tail
+product claim conditions on no-defect; reboot time is itself bounded and
+bench-locked (`boot-actors` guest lane). Crash-only is not justified by the
+revision-boundary cut rule and is not additive to restore; the recorded,
+evidence-gated fallback is **driver-only restart** (re-adds
+`Admission.Restarting`; quarantine and device epochs survive; flip witness: a
+recording in which rebooting through a driver fault mid-session is
+demonstrated unacceptable).
