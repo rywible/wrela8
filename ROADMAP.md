@@ -581,8 +581,9 @@ Detail: [plans/M13.md](plans/M13.md). The load-bearing pieces:
   priority-band apparatus — 04 §2 is rewritten to state the shipped
   FIFO + round-robin semantics as *the* semantics. Machine-v1
   conformance narrows to blk/console/clock/entropy/input/display; net
-  and sound become future machine revisions (drivers land incrementally
-  per device, never blocking a rung).
+  and sound become future machine revisions. Drivers land
+  incrementally per device, each with its conformance boot golden,
+  none blocking a rung.
 - **Crash-only failure model** (human-decided 2026-07-26). Abandonment
   runs cleanup, is attributed, and the image applies its declared
   policy (`img.on_failure`: reboot or halt, required-explicit) —

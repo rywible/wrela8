@@ -106,24 +106,36 @@ the power story.
 
 ## 6. Devices
 
+### Machine v1
+
 The complete, closed device set of machine v1 — each a virtio-family
 contract whose driver ships in the stdlib and whose model ships in the VMM:
 
 | Device | Contract |
 |---|---|
 | `blk` | virtio-blk, split ring, `Flush`, per-queue reset. |
-| `net` | virtio-net, split ring. |
-| `input` | virtio-input: keyboard, pointer, touch, tablet events. |
 | `console` | virtio-console: serial streams, log capture in tests. |
-| `entropy` | virtio-rng, recorded under replay. |
-| `sound` | virtio-snd: PCM in/out with bounded period buffers. |
-| `display` | See §7 — framebuffer push, not a GPU. |
 | `clock` | Paravirtual monotonic clock + wall reference; backs `now()`. |
+| `entropy` | virtio-rng, recorded under replay. |
+| `input` | virtio-input: keyboard, pointer, touch, tablet events. |
+| `display` | See §7 — framebuffer push, not a GPU. |
 
-There are no other devices and no device hotplug. A future device is a
-machine revision. Appliance authors do not write drivers; the `@driver`
-machinery ([03](03-hardware.md)) is how the stdlib drivers are themselves
-written and checked.
+There are no other devices and no device hotplug in machine v1. A future
+device is an additive machine revision under [§10](#10-conformance).
+Appliance authors do not write drivers; the `@driver` machinery
+([03](03-hardware.md)) is how the stdlib drivers are themselves written
+and checked.
+
+### Future revisions
+
+The following contracts are preserved as written for a future additive
+machine revision ([§10](#10-conformance)); they are **non-normative until
+revised** — outside machine-v1 conformance:
+
+| Device | Contract |
+|---|---|
+| `net` | virtio-net, split ring. |
+| `sound` | virtio-snd: PCM in/out with bounded period buffers. |
 
 ## 7. Display: software rendering, zero-copy scanout
 
@@ -178,6 +190,15 @@ optional profile.
 
 An implementation of machine v1 must pass the machine conformance suite:
 boot contract, memory map, checkpoint-injection semantics, doorbell ABI,
-every device contract, determinism of the recorded boundary, and the
+every machine-v1 device contract (`blk`, `console`, `clock`, `entropy`,
+`input`, `display`), determinism of the recorded boundary, and the
 golden-image display tests. The compiler pins the machine revision into the
 build identity; the VMM refuses an image built for another revision.
+
+A new device (or a change to an existing device's contract) is an
+**additive machine revision**: the prior revision's contracts are
+preserved, the new revision's conformance suite grows by the added
+contracts, and an image built for an older revision remains loadable.
+Contracts listed under [§6](#6-devices) as future-revision (`net`,
+`sound`) are preserved as written and are **non-normative until revised**
+— outside machine-v1 conformance until a revision that names them.
