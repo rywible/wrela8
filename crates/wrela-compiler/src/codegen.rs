@@ -9657,6 +9657,173 @@ pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
     }
 }
 
+/// M11 K / decision 851: specialized `@test(runtime)` call stub.
+/// Loads resolved handle args into `x0..`, sets `x8` to `OFF_TEST_LINE_BUF`,
+/// `bl <test_key>`, returns status in `x0`. Inject overwrites `__test_call_i`.
+pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
+    fn push(words: &mut Vec<(u32, String)>, w: u32, text: String) {
+        words.push((w, text));
+    }
+    fn load_imm(words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str) {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        push(
+            words,
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h1, 16, true),
+            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h2, 32, true),
+            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h3, 48, true),
+            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
+        );
+    }
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+    push(
+        &mut words,
+        encode::enc_sub_imm(31, 31, 16, true),
+        "sub sp, sp, #16".into(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(30, 31, 0),
+        "str x30, [sp]".into(),
+    );
+    for (i, &v) in args.iter().enumerate() {
+        assert!(i < 8, "emit_test_call_stub: too many args");
+        load_imm(&mut words, i as u8, v, &format!("test arg {i}"));
+    }
+    let line_buf =
+        wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_TEST_LINE_BUF;
+    load_imm(&mut words, 8, line_buf, "OFF_TEST_LINE_BUF");
+    let bl = words.len();
+    push(&mut words, encode::enc_bl(0), format!("bl <{test_key}>"));
+    relocs.push(Reloc::Call {
+        word: bl,
+        key: test_key.to_string(),
+    });
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(30, 31, 0),
+        "ldr x30, [sp]".into(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(31, 31, 16, true),
+        "add sp, sp, #16".into(),
+    );
+    push(&mut words, encode::enc_ret(30), "ret".into());
+    CodegenFn {
+        frame_size: 16,
+        code: words,
+        relocs,
+    }
+}
+
+/// M11 K / decision 851: append interned `test <name>: ` prefix via
+/// `__wrela_console_append_bytes`. Inject overwrites `__test_prefix_i`.
+pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
+    fn push(words: &mut Vec<(u32, String)>, w: u32, text: String) {
+        words.push((w, text));
+    }
+    fn load_imm(words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str) {
+        let h0 = (value & 0xFFFF) as u16;
+        let h1 = ((value >> 16) & 0xFFFF) as u16;
+        let h2 = ((value >> 32) & 0xFFFF) as u16;
+        let h3 = ((value >> 48) & 0xFFFF) as u16;
+        push(
+            words,
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h1, 16, true),
+            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h2, 32, true),
+            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h3, 48, true),
+            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
+        );
+    }
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+    push(
+        &mut words,
+        encode::enc_sub_imm(31, 31, 16, true),
+        "sub sp, sp, #16".into(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(30, 31, 0),
+        "str x30, [sp]".into(),
+    );
+    let word_adrp = words.len();
+    push(
+        &mut words,
+        encode::enc_adrp(0, 0),
+        format!("adrp x0, rodata+{rodata_off:#x}"),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(0, 0, 0, true),
+        format!("add x0, x0, #rodata+{rodata_off:#x}"),
+    );
+    relocs.push(Reloc::Rodata {
+        word_adrp,
+        byte_offset: rodata_off,
+    });
+    // Bytes ABI is (ptr, capacity) in x0/x1; the copy length is x2
+    // (harness `bl_console_append_bytes` sets x1 = x2 = len).
+    load_imm(&mut words, 1, len, "prefix Bytes.capacity");
+    load_imm(&mut words, 2, len, "prefix copy len");
+    let bl = words.len();
+    push(
+        &mut words,
+        encode::enc_bl(0),
+        "bl <__wrela_console_append_bytes>".into(),
+    );
+    relocs.push(Reloc::Call {
+        word: bl,
+        key: "__wrela_console_append_bytes".into(),
+    });
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(30, 31, 0),
+        "ldr x30, [sp]".into(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(31, 31, 16, true),
+        "add sp, sp, #16".into(),
+    );
+    push(&mut words, encode::enc_ret(30), "ret".into());
+    CodegenFn {
+        frame_size: 16,
+        code: words,
+        relocs,
+    }
+}
+
 /// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
 /// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
 /// via `emit_flowwir_fn` above), merged into one `CodegenProgram` sharing

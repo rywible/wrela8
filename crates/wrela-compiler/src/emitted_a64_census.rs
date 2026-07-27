@@ -48,8 +48,7 @@
 //! - checkpoint: empty irq/wake (M6 path), no group arena
 //! - deadline scan/poll: `arena_capacity = 1`, one turn area
 //! - boot init: one actor, `state_size = 8`, no `init` calls
-//! - entry driver: zero runtime tests, `cores = 1`, no boot_init, no
-//!   `rt_run_one`
+//! - primary entry trampoline (M11 K): SP + continuation arm + BL boot + brk
 //! - drain: core 0, one request lane + one reply lane
 //! - group child poll: one child at index 0
 //! - secondary core entry: core 1
@@ -73,7 +72,7 @@
 //!   residue; L-11 deleted the last row's dead code); kept so a future
 //!   addition lands loudly
 //! - **unclassified** — could not be confidently placed, **or** an
-//!   examined stated residue (item I's `build_entry_driver`) still counted
+//!   examined stated residue (item I's `build_entry_driver`, deleted at K)
 //!
 //! ## Two independent locks (neither replaces the other)
 //!
@@ -220,47 +219,44 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
         category: Category::Unclassified,
         note: "cfg(test) only; C left it for the latch probe",
     },
-    // plans/M10.md item I / decisions 685–689: examined stated residue.
-    // REF zero tests = 94 (no rt_run_one arm when wiring is absent).
-    // Floor cats embedded (not in FLOOR_WORDS yet):
-    // 5 cat1 SP, 1 cat3 halt brk; cat4 landing-pad arms appear only when
-    // tests/boot_init exist (9 words/site). Migratable BL targets already
-    // go to existing `__wrela_*` / `rt_*` keys; no further migrate without
-    // new keys or language surface (decision 685).
+    // M11 K / decision 852: thin primary-entry trampoline (was
+    // `build_entry_driver` 94 Unclassified). Floor cat1 SP (5) + cat4
+    // continuation arm (9) + BL primary_boot (1) + cat3 brk (1) = 16.
     EmitterEntry {
-        name: "build_entry_driver",
+        name: "build_primary_entry_trampoline",
         file: "layout/harness.rs",
-        words: 94,
-        category: Category::Unclassified,
-        note: "I residue (685–689); REF zero tests; cat1 SP + cat3 brk embedded",
+        words: 16,
+        category: Category::Floor,
+        note: "decision 852; SP + OFF_TEST_CONTINUATION arm + BL boot + brk",
     },
 ];
 
 /// Sum of `words` over floor rows (includes `push_halt`∩`build_entry_stub`
 /// overlap). Prefer [`FLOOR_WORDS`] for the exit-criterion comparison.
-pub const FLOOR_SUM_OF_ROWS: usize = 51; // 15 + 20 + 6 + 5 + 5
+pub const FLOOR_SUM_OF_ROWS: usize = 67; // 15 + 20 + 6 + 5 + 5 + 16
 
 /// Floor total after removing the `push_halt` / `build_entry_stub` overlap:
 /// `push_halt` (15) + entry-stub-only SP prefix (5) + abort tail (6) +
-/// secondary SP install (5) + checkpoint LR frame (5) = 36.
+/// secondary SP install (5) + checkpoint LR frame (5) + primary trampoline
+/// (16) = 52.
 ///
 /// Compared against the exit criterion's ≤ 30 and ROADMAP's "roughly twenty
 /// instructions" — exit criterion allows growth only by extracted formerly-
-/// embedded floor words (plans/M11.md). Entry-driver SP remains embedded
-/// until item K.
-pub const FLOOR_WORDS: usize = 36;
+/// embedded floor words (plans/M11.md). Item K extracted entry-driver SP /
+/// continuation arm / halt brk into the primary trampoline.
+pub const FLOOR_WORDS: usize = 52;
 
 pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 0; // was 179; M11 J −55/−124
 
 pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 0; // was 7; M (L-11) deleted dead harness push_turn_addr_from_id
 
-pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residue)
+pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 23; // 4 + 19 (build_entry_driver 94 deleted at K)
 
 /// Sum of every locked row. Includes helper/wrapper overlap (e.g.
 /// `build_entry_stub` embeds `push_halt`; the JIT-only `build_rt_*`
 /// materializers are NON_INVENTORY, not rows). Useful as a ratchet total;
 /// not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 168; // was 347; M11 J −179 ImageStatic
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 90; // was 168; M11 K −94 entry driver +16 trampoline
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -278,10 +274,12 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 168; // was 347; M11 J −179 ImageSt
 /// M11 I: checkpoint stub deleted; lr_frame + irq/wake stubs (594→544).
 /// M11 J: enqueue/select emitters deleted; method_call_stub stays (544→448);
 /// harness JIT materializers deleted (65→64).
+/// M11 K: build_entry_driver deleted (−23 harness sites); test call/prefix
+/// stubs added (+22 codegen).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
-    ("codegen.rs", 448), // was 544; J −109 emitters +13 method_call_stub
+    ("codegen.rs", 470), // was 448; K +22 test_call/prefix stub sites
     ("layout.rs", 8),
-    ("layout/harness.rs", 64), // was 65; J deleted build_rt_* materializers
+    ("layout/harness.rs", 41), // was 64; K deleted build_entry_driver
 ];
 
 /// Total sites across [`ENCODE_ENC_SITES_BY_FILE`].
@@ -431,7 +429,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 520,
+            ENCODE_ENC_SITE_COUNT, 519,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -588,6 +586,10 @@ mod tests {
         // M11 J: method-dispatch stubs + enqueue/select inject (decision 831).
         "codegen.rs::emit_method_call_stub",
         "layout/harness.rs::inject_rt_enqueue_and_dispatch_fns",
+        // M11 K: per-test call/prefix stubs (decision 851); REF empty.
+        "codegen.rs::emit_test_call_stub",
+        "codegen.rs::emit_test_prefix_stub",
+        "layout/harness.rs::inject_test_runner_fns",
     ];
 
     /// Census rows that are real emitters (measured word count) but whose
@@ -660,11 +662,12 @@ mod tests {
         );
         assert_eq!(grand, GRAND_TOTAL_SUM_OF_ROWS, "GRAND_TOTAL_SUM_OF_ROWS");
         assert_eq!(
-            FLOOR_WORDS, 36,
+            FLOOR_WORDS, 52,
             "adjusted floor total is part of the ratchet"
         );
-        // Sanity: FLOOR_WORDS == push_halt + SP prefix + abort tail + secondary SP + checkpoint LR.
-        assert_eq!(15 + 5 + 6 + 5 + 5, FLOOR_WORDS);
+        // Sanity: FLOOR_WORDS == push_halt + SP prefix + abort tail + secondary SP
+        // + checkpoint LR + primary trampoline.
+        assert_eq!(15 + 5 + 6 + 5 + 5 + 16, FLOOR_WORDS);
     }
 
     #[test]

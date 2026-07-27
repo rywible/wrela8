@@ -49,7 +49,7 @@ pub const VCPUS: usize = 3;
 /// 0x4001_0000  STACKS_BASE         (3 MiB)   3 per-core stacks, 1 MiB each
 /// 0x4031_0000  .. 0x4050_0000               reserved (stack growth room)
 /// 0x4050_0000  IMAGE_BASE          (rest)    sealed image, loaded flat
-/// 0x4052_0000  RTDATA_BASE                  in-image rtdata packing base
+/// 0x4054_0000  RTDATA_BASE                  in-image rtdata packing base
 ///                                            (code/rodata/abort/checkpoint
 ///                                            pack below; see RTDATA_SIZE_MAX)
 /// ```
@@ -117,10 +117,12 @@ pub mod layout {
     /// sized a 64 KiB window from peak packed span 0x6dc4; M11 item H's
     /// generic runtime bodies push measured packed peak to ~0xea34
     /// (~59956) with runtime-test images overflowing the old base — so
-    /// the packing window ratchets to 128 KiB:
-    /// `IMAGE_BASE + 0x2_0000` = `0x4052_0000`. Guest-visible pages,
-    /// stacks, and entry are unchanged — not a `MACHINE_REVISION` bump.
-    pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x2_0000; // 0x4052_0000
+    /// the packing window ratcheted to 128 KiB at item H (818); M11 item K's
+    /// primary test-runner bodies push measured packed ends past that
+    /// (~0x23640 on `check-format-fstring-guest`) — so the window ratchets
+    /// to 256 KiB: `IMAGE_BASE + 0x4_0000` = `0x4054_0000`. Guest-visible
+    /// pages, stacks, and entry are unchanged — not a `MACHINE_REVISION` bump.
+    pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x4_0000; // 0x4054_0000
 
     /// Fail-closed ceiling on the `rtdata` section's byte size. Mailbox
     /// capacity is an image-authored integer with no other bound; a
@@ -747,8 +749,8 @@ mod tests {
 
     #[test]
     fn rtdata_base_is_the_128kib_packing_window() {
-        assert_eq!(layout::RTDATA_BASE, layout::IMAGE_BASE + 0x2_0000);
-        assert_eq!(layout::RTDATA_BASE, 0x4052_0000);
+        assert_eq!(layout::RTDATA_BASE, layout::IMAGE_BASE + 0x4_0000);
+        assert_eq!(layout::RTDATA_BASE, 0x4054_0000);
         // M11 H measured packed peak ~0xea34; the packing window must
         // clear it with headroom (decision 818).
         assert!(layout::RTDATA_BASE - layout::IMAGE_BASE > 0xea34);
