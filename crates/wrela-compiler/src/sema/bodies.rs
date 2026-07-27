@@ -10144,6 +10144,18 @@ fn check_send_call(
         return Err(unimplemented_at("generic instantiation is", call_span));
     }
     let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+    // plans/M13.md item J / decision 5: `send` is `Result[unit, CallError[never]]`
+    // (with take-args as CallError's optional second type argument, same
+    // shape as an awaited unit-returning call). Whole-image erasure leaves
+    // `NotAdmitted` as the one reachable variant; the bare `Rejected` type
+    // is deleted.
+    let take_arg_tys: Vec<Type> = d
+        .params
+        .iter()
+        .zip(typed_args.iter())
+        .filter(|(p, _)| p.mode == AccessMode::Take)
+        .filter_map(|(_, slot)| slot.as_ref().map(|t| t.ty.clone()))
+        .collect();
     let call = TypedExpr {
         ty: Type::Unit,
         kind: TypedExprKind::Call {
@@ -10154,7 +10166,7 @@ fn check_send_call(
     };
     let ty = Type::Result(
         Box::new(Type::Unit),
-        Box::new(Type::Named("Rejected".to_string(), vec![])),
+        Box::new(call_error_type(Type::Never, &take_arg_tys)),
     );
     Ok(TypedExpr {
         ty,

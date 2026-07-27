@@ -12,7 +12,7 @@ module examples.boot_cross_core_ring_full
 # drain in between, and the second send meets a full ring.
 #
 # What it must do then is what a full *mailbox* already does at this ABI
-# granularity (02-language.md §9.4's `NotAdmitted`/`Rejected` path,
+# granularity (02-language.md §9.4's `NotAdmitted` path,
 # `build_rt_enqueue`'s own doc): return the rejection, touching neither
 # `tail` nor `count`, leaving the sender's argument blob exactly where it
 # was. The sender sees `.Err(_)` on an ordinary `Result` and carries on.

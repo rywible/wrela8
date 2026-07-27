@@ -413,7 +413,7 @@ fn rejection(site: &MessageSite, span: Span, reason: String) -> SemaError {
         "actor",
         format!(
             "a bare `send` to `{}.{}` is not proven infallible — consume its `Result[unit, \
-             Rejected]` (bind it or `match` it)",
+             CallError[never]]` (bind it or `match` it)",
             site.actor, site.method
         ),
         span,

@@ -1095,12 +1095,13 @@ fn lower_stmt<'a>(
         }
         // plans/M6.md item G: a proven bare `send` lowers exactly like the
         // consumed expression form — `FlowInst::Send` still writes its
-        // `Result[unit, Rejected]` outcome into a fresh temp; the only
-        // difference is that nothing reads that temp. Deliberately NOT a
-        // second lowering path: a proven send and an unproven one must
-        // execute identically (the proof is a legality verdict, never a
-        // codegen switch), so the same instruction is emitted either way
-        // and `codegen::emit_send` never learns the proof exists.
+        // `Result[unit, CallError[never]]` outcome into a fresh temp; the
+        // only difference is that nothing reads that temp. Deliberately
+        // NOT a second lowering path: a proven send and an unproven one
+        // must execute identically (the proof is a legality verdict,
+        // never a codegen switch), so the same instruction is emitted
+        // either way and `codegen::emit_send` never learns the proof
+        // exists.
         TypedStmtKind::BareSend { expr, .. } => {
             lower_expr_flat(expr, b, env)?;
             Ok(false)
@@ -2514,12 +2515,22 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                     "passing a nested `mut` place as a `send` argument is",
                 ));
             }
+            // plans/M13.md item J: take-mode params handed back in
+            // `NotAdmitted`'s args tuple when enqueue refuses (item H).
+            let take_arg_temps: Vec<_> = f
+                .params
+                .iter()
+                .zip(arg_temps.iter())
+                .filter(|(p, _)| p.mode == AccessMode::Take)
+                .map(|(_, t)| *t)
+                .collect();
             let dst = b.fresh(e.ty.clone());
             b.emit(FlowInst::Send {
                 dst,
                 target,
                 method_key,
                 arg_temps,
+                take_arg_temps,
             });
             Ok(dst)
         }

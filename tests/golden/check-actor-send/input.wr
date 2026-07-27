@@ -16,6 +16,6 @@ pub struct Auditor:
         match outcome:
             case .Ok(_):
                 pass
-            case .Err(_rejected):
+            case .Err(_e):
                 pass
         return code

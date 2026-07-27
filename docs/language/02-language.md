@@ -693,8 +693,10 @@ a `Receipt` ([03 §5](03-hardware.md)). Under crash-only failure
 it — `PeerFailed` is not in the vocabulary.
 
 One-way messages have a single form. `send actor.method(...)` enqueues a
-unit-returning method; its type is `Result[unit, Rejected[...]]` with the
-moved payloads handed back in the error — an ordinary storable value. When
+unit-returning method; its type is `Result[unit, CallError[never]]` — the
+same vocabulary as an awaited call, with whole-image erasure leaving
+`NotAdmitted` as the one reachable variant. Moved payloads are handed back
+inside `NotAdmitted` (declaration order) — an ordinary storable value. When
 mailbox analysis proves admission cannot fail, the error type is `never` and
 `send` stands as a bare statement; otherwise the result must be consumed:
 
@@ -704,8 +706,12 @@ send audit.record(event=take event)          # capacity proven at build time
 match send logger.record(event=take event):
     case .Ok(_):
         pass                                  # event was moved
-    case .Err(rejected):
-        stash(take rejected.event)            # handed back in the error
+    case .Err(e):
+        match e:
+            case .NotAdmitted(_, args):
+                match args:
+                    case (event,):
+                        stash(take event)     # handed back in the error
 ```
 
 This is the language's one proof-conditioned form: the same spelling is

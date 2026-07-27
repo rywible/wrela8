@@ -155,8 +155,8 @@ pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
         gap: None,
     },
     CorpusSemaPin {
-        key: "e18a87c8f714",
-        loc: "docs/language/02-language.md:656",
+        key: "ca57644b1058",
+        loc: "docs/language/02-language.md:698",
         kind: "disagreement",
         gap: Some("actors.messages.take-non-own-resource"),
     },

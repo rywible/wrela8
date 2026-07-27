@@ -267,12 +267,12 @@ pub enum TypedExprKind {
     /// `sema::send_proof` decides on (plans/M6.md item G). The node's own
     /// type is identical either way: the proof is a *statement legality*
     /// verdict, never a type refinement — 02 §9.4's "the error type is
-    /// `never`" erasure is not shipped at M6 (decision 8's own "erasure
-    /// shipped: none", recorded in `actors.send.statement-requires-proof`).
-    /// `inner` is the raw message `Call` (receiver `Actor[T]`, callee a
+    /// `never`" erasure for the bare-statement form is not a type rewrite
+    /// (recorded in `actors.send.statement-requires-proof`). `inner` is
+    /// the raw message `Call` (receiver `Actor[T]`, callee a
     /// `unit`-returning method); `ty` (on the wrapping node) is always
-    /// `Result[unit, Rejected]` — `Rejected`'s own payload (the take-args
-    /// handed back) is opaque at M6 (02 §9.4, the moved-payloads story).
+    /// `Result[unit, CallError[never]]` (plans/M13.md item J / decision 5),
+    /// with take-args as CallError's optional second type argument.
     Send(Box<TypedExpr>),
     /// `g.start(callee, args...)`'s own first (callee) argument
     /// (plans/M6.md item A, 02-language.md §9.5) — the one `Group.start`
@@ -442,7 +442,7 @@ pub enum TypedStmtKind {
     /// admission cannot fail ... `send` stands as a bare statement;
     /// otherwise the result must be consumed"). `expr` is always a
     /// `TypedExprKind::Send` node; the statement discards its
-    /// `Result[unit, Rejected]` value.
+    /// `Result[unit, CallError[never]]` value.
     ///
     /// Its own node kind rather than an `ExprStmt` wrapping a `Send`
     /// (plans/M6.md item G): the whole-image proof

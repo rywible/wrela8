@@ -717,7 +717,6 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
                     | "Duration"
                     | "Admission"
                     | "Peer"
-                    | "Rejected"
                     // plans/M7.md item G, decision 17: one word, passed by
                     // value like every other builtin pseudo-type.
                     | "InterruptCell"
@@ -6627,18 +6626,16 @@ fn lookup_method_idx(
 }
 
 /// `send target.method(args...)` (02-language.md §9.4): a one-way
-/// `rt_enqueue` call, never a suspension. `dst` is filled with a minimal
-/// `Result[unit,Rejected]`-shaped two-word value: tag = the real admission
-/// outcome (`rt_enqueue`'s own `x0`, 0 admitted/1 rejected), payload
-/// zeroed. **Disclosed floor, not silently narrowed**: composing a real
-/// `Rejected[..]` payload (which sender, which reason) is item G's own
-/// send-proof/err-corpus job — no required M6-D conformance case ever
-/// fills a mailbox, so this path's own tag-only half is what actually
-/// executes.
+/// `rt_enqueue` call, never a suspension. `dst` is
+/// `Result[unit, CallError[never]]` (plans/M13.md item J / decision 5):
+/// admitted (`x0 == 0`) → `Ok(unit)`; rejected → the same local
+/// `Err(CallError.NotAdmitted(Admission.Full, (take_args...)))`
+/// construction as an awaited call's enqueue-fail arm (item H).
 fn emit_send(
     dst: Temp,
     method_key: &str,
     arg_temps: &[Temp],
+    take_arg_temps: &[Temp],
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
 ) -> Result<(), CodegenError> {
@@ -6651,16 +6648,19 @@ fn emit_send(
         None, // one-way: no reply slot, no waker — the sender never suspends.
     )?;
     let dst_off = ctx.frame.off(dst);
-    ctx.store_slot(0, dst_off); // x0 already holds rt_enqueue's own outcome.
     let dst_size = ctx.frame.size_of_temp(dst);
-    if dst_size > 8 {
-        ctx.load_imm(X_A, 0);
-        let mut w = 8;
-        while w < dst_size {
-            ctx.store_slot(X_A, dst_off + w);
-            w += 8;
-        }
+    // Rejected (x0 != 0) skips the Ok arm.
+    let skip_ok = ctx.emit_skip(SkipKind::Cbnz(0));
+    // Ok(unit): zero-fill, tag = 0.
+    let mut w = 0usize;
+    while w < dst_size {
+        ctx.store_slot(X_ZR, dst_off + w);
+        w += 8;
     }
+    let done = ctx.emit_skip(SkipKind::Cond(Cond::Al));
+    ctx.patch_skip(skip_ok, SkipKind::Cbnz(0));
+    emit_not_admitted_local(ctx, dst_off, dst_size, take_arg_temps)?;
+    ctx.patch_skip(done, SkipKind::Cond(Cond::Al));
     Ok(())
 }
 
@@ -7549,7 +7549,15 @@ fn emit_flow_op(
             target: _,
             method_key,
             arg_temps,
-        } => emit_send(*dst, method_key, arg_temps, ctx, method_index),
+            take_arg_temps,
+        } => emit_send(
+            *dst,
+            method_key,
+            arg_temps,
+            take_arg_temps,
+            ctx,
+            method_index,
+        ),
         FlowInst::GroupCreate {
             group_temp,
             capacity,
