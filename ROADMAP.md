@@ -519,7 +519,7 @@ immediates). The `bench guest` lock on `boot-actors` (700000us threshold;
 dodge it. The payoff is structural: today's hand specialization becomes
 *derivable* by ordinary passes — const-prop of the placed base and
 constant indices, `TurnId` bounds-proof elision, dense-match jump tables
-— each a future cleverness-budget purchase scored by **M13's** proxy,
+— each a future cleverness-budget purchase scored by **M15's** proxy,
 acting on runtime and user code alike. M11 makes the runtime reachable by
 the budget; it does not spend it.
 
@@ -542,51 +542,152 @@ entry-driver residue. Detail: [plans/M11.md](plans/M11.md).
 
 Opens: facts-only / generator-determinism / rtconfig-dump clauses (named
 in the plan). Narrows: `sema.bounds.loops` (the `@budget` half for sync
-loops). Non-goals: optimizing the scheduler (M13-proxy-gated); fusion;
+loops). Non-goals: optimizing the scheduler (M15-proxy-gated); fusion;
 `@naked`; comptime metaprogramming; config-as-data; register allocation.
 
-### M12 — Authoring hardening (no silent failure)
-A thin language-pressure pass that lands **after** M11 makes the runtime
-ordinary wrela — so the same fail-closed rules hit application code and
-the scheduler alike — and **before** the cycle proxy, so ranking work is
-not spent on code that still discards failures by habit.
+### M12 — The representation rung (placed statics back to O(1))
+Ladder rewritten 2026-07-26 (human-directed): the former M12 (authoring
+hardening) is absorbed and dissolved by M12/M13 below — item 1 moves
+into M13 as a dependency-ordered item; items 2–3 (epoch freshness,
+restart intensity) lose their subject when M13 cuts per-actor restart.
 
-Ordinary wrela already aims at safe-Rust-or-stricter memory isolation
-(01 §5: no UAF, no mutable aliasing, no cross-actor shared mutability, no
-FFI/`unsafe`). What remains as *footguns* is mostly silence: ignored
-`CallError`, surprise abandonment, soft stale-handle handling. M12 closes
-the accidental ones with compiler refusal, not new escape hatches.
+M11's rule — *every runtime-varying reference is an index into a
+statically-sized, uniformly-strided array* — holds for data and is faked
+by numbered names wherever the element is a placed region:
+`RING{0..7}_*`, `INIT_SLOT{0..31}`, `WAKE_PEND{0..7}`, each reached by a
+generated accessor ladder. This short rung makes the rule hold for real:
+uniform ring stride (bytes buy a type — the M10 turn-area trade, with
+the offset-table fallback named and a fail-closed `RTDATA_SIZE_MAX`
+gate), wake and init-span convergence, `GROUP_MAX_CHILDREN` from a Rust
+const to an image fact (02 §9.5's own `capacity=4` example finally
+runs), `@budget(bound=NAME)` so a loop bound and the const it shadows
+are one fact, and a **placed-static census ratchet** as the exit
+criterion. Every item is verified by byte-identical boot transcripts —
+representation only. A generated *dispatch* ladder is forced (no
+function pointers); a generated *data* ladder is a defect. Detail:
+[plans/M12.md](plans/M12.md).
 
-**Doctrine (one sentence).** No silent failure: a discarded error, an
-abandoning operator without a proof or `Result`, or a send that cannot
-name freshness, is a diagnostic — not a `pass` arm.
+### M13 — One vocabulary, no silent failure (the unification milestone)
+Apply the language's signature move — computed, published, checked — to
+its own remaining exceptions, and let every item delete something.
+Detail: [plans/M13.md](plans/M13.md). The load-bearing pieces:
 
-**What lands (keep it thin).**
+- **The revision-boundary cuts.** Spec promises with no implementation,
+  no clause, and no consumer are cut, each naming its replacement:
+  `race(...)`, `@detached`, `@no_promote`, `group(budget=)`,
+  function-level `@budget`, `@task(budget=|priority=)`, and the whole
+  priority-band apparatus — 04 §2 is rewritten to state the shipped
+  FIFO + round-robin semantics as *the* semantics. Machine-v1
+  conformance narrows to blk/console/clock/entropy/input/display; net
+  and sound become future machine revisions (drivers land incrementally
+  per device, never blocking a rung).
+- **Crash-only failure model** (human-decided 2026-07-26). Abandonment
+  runs cleanup, is attributed, and the image applies its declared
+  policy (`img.on_failure`: reboot or halt, required-explicit) —
+  per-actor restart, 04 §5, provisions, intensity, and `PeerFailed`
+  are deleted. Viability: we **accept bystander loss and pay with a
+  durability requirement** (`Reboot` *presumes* app durable checkpoints
+  via storage — named dependency, currently unbuilt; conformance
+  goldens pin `Halt` until it exists). Not covered by the cut rule —
+  restoring general restart later would be expensive, and the plan
+  says so; the recorded fallback is **driver-only restart** (device
+  reset epochs are its partial machinery; would re-add
+  `Admission.Restarting`), evidence-gated on a recording where
+  rebooting through a driver fault is unacceptable.
+- **The vocabulary.** Struct field visibility enforced in three
+  ordered items (census → migrate → flip; 05 §5's "opaque" `Instant`
+  becomes true; sealed user types become mintable);
+  `CallError`/`Admission` source-nameable; `Rejected` folds into
+  `NotAdmitted`; no silent `Err` discard without `@discard(reason=)`;
+  the proof-conditioned rule generalized (`reserve_proven` collapses
+  into `reserve`; 05 §10's naming law deleted); the loop-discharge
+  theorem replaces the event-loop name allowlist with a structural
+  observes-bit; computed type classes replace the per-type containment
+  prose; `resource(manual)` + private fields make user typestate real
+  (`Validated` demotes to an honest idiom); method-owned generic
+  parameters land (02 §8.3's flagship idiom compiles); inferred error
+  sets for private fns (promoted from the intention below; its doc
+  revision stays human-gated).
+- **The ISR gate** is prepared here and decided before M15's plan is
+  written: delete the user-visible ISR (vector → bottom-half wake,
+  pending-word consumption as the ack) or keep it — evidence package
+  with measured latency numbers, golden inventory, the 06 §5 MMIO
+  tension, and **M14's upward-edge sentence** (preserve or replace),
+  accept/reject spaces.
 
-1. **No silent `Err` / `CallError` discard.** Wildcard `Err(_)` (and kin)
-   at await/`send`/`?` boundaries is refused unless an explicit
-   `@discard(...)` (or equivalent spelling frozen in the plan) names the
-   intent. Goldens that today `pass` on failure are migrated or annotated
-   deliberately — the golden diff *is* the review surface.
-2. **Stale / epoch freshness on send.** Every message path either proves
-   the handle is live for this epoch or returns a named `CallError`
-   variant; no soft reuse after restart. Builds on M11's handle-truthful
-   routing.
-3. **Restart intensity is load-bearing.** Exceeding declared
-   `RestartIntensity` is a sealed, observable outcome (permanent fail /
-   supervisor action), not an unbounded restart storm hope.
+### M14 — Progress, constructively (no graph analyzer)
+Settled 2026-07-26 (human decision, superseding the same day's earlier
+draft of this rung as a build-time wait-for-graph analysis): **the
+graph analyzer does not get built.** That decision stands. What this
+rung is — stated in the same register as M13's crash-only cut, because
+it is the same shape of decision — is a **capability cut**, not a
+documentation of an accident.
 
-**Depends on M11** (runtime as ordinary wrela + truthful handles). Plan
-when activated: [plans/M12.md](plans/M12.md) (does not exist until then).
+**The cut (02 §12.1, named).** Normative text today says: "Construction
+edges (moves, initialization order) must form a DAG; **handle edges
+may be cyclic.**" Ledger clause `image.graph.construction-dag` pins the
+construction half; the handle-cycle permission has been dead on arrival
+since M4 — declaration-order evaluation makes cycles unconstructible,
+and `decl.handle()` vs a bare decl-reference are the identical
+`Value::ImageDecl`, so the shipped DFS refuses *all* cycles including
+the ones the doc permits (recorded in that clause's note as an honest
+finding). Zero consumers. M14 deletes the permission and states the
+DAG as law.
 
-**Non-goals (deliberately not this rung).** Flipping default arithmetic
-from abandoning ops to `Result` (normative + corpus-wide — human-gated
-intention); wait-for-graph / full cancellation density proofs (still
-unowned); cycle/`@budget` cost proofs (still human-gated); driver/MMIO
-semantic correctness beyond exclusive `DeviceCap`; optimizing anything;
-the cycle proxy.
+**Counterargument preserved** (REVIEW-QUEUE line of the doc commit
+carries it, not just the rationale): cyclic handles have a genuinely
+safe use the DAG kills — **bidirectional peer `send`**. Sends are
+fire-and-forget with no wait edge, so a send-only handle cycle cannot
+deadlock. The cut is still justified (unconstructible, unimplemented,
+zero consumers), but restoring that use later is *not* the five-node-
+kind analyzer: it is a ~50-line static **await-edge** DAG check over
+actor pairs (the construction-dag DFS reused, cycle printed). That
+re-admission path is recorded so the cut is honest about its price.
 
-### M13 — The cycle proxy
+**Why no analyzer still holds.** Per wait-edge kind after the cut: an
+actor-call await can only cycle if handles cycle, and handles are a
+DAG by the cut plus the `Actor[T]` mobility class (05 §2 — computed
+after M13); group joins reduce to the same case; receipt awaits ride
+device progress under the deadline/quarantine backstop (04 §1's
+external-event carve-out); admission is fail-fast `NotAdmitted`, never
+a wait; and **no blocking acquire exists** — `reserve` is synchronous
+fail-fast-or-proven, and 03 §4 already states a driver "never awaits a
+permit its own bottom half produces." A hand-spelled permit retry loop
+dies by M13's loop-discharge theorem + turn non-reentrancy as a
+budget-trip abandonment, not a deadlock. Starvation is FIFO +
+round-robin plus the same loop theorem.
+
+**The upward edge (unstated architectural rule, now stated).** Downward
+edges are handles; **upward edges are resolutions or vectors.** A
+client reaches a driver by handle (request); the driver answers by
+resolving the client's parked call or receipt (reply); the device
+reaches the driver by vector (06 §7's vsync-on-the-frame-vector). That
+sentence is what makes the handle DAG survive contact with a real
+appliance rather than being an artifact of every current golden being
+request/response. It is an **input the ISR gate must preserve or
+replace** — the gate's proposal (vector → bottom-half wake) changes
+how the device→driver edge is spelled, not whether the driver→app
+resolution path exists; the gate's evidence package cites this frozen
+sentence as its fourth item. Ordering note, not a work dependency:
+M14 freezes the answer space; the gate decides within it.
+
+**What lands.** Rewrite 04 §1's Progress paragraph (and 04 §3/§4's
+wait-for-graph phrasing) into the constructive theorem above, one
+disposition per edge kind, including the up-is-a-resolution-or-vector
+sentence (human-reviewed normative revision); delete 02 §12.1's
+"handle edges may be cyclic" with the counterargument and re-admission
+path in the REVIEW-QUEUE line; state + clause + golden-pin the two
+load-bearing rules (handles are `@image`-wiring-only and never
+rebound; the mobility class preserves the DAG — the M6/M8
+forward-reference refusal graduates from a recorded experiment to a
+golden); walk every suspension kind in FlowWir recording its
+disposition, so a future blocking-acquire or rebinding construct meets
+a fail-closed refusal naming this rung. Retargets
+`compiler.progress.wait-for-graph` to the constructive clauses with
+history preserved. Follows M13 because M13 lands its ingredients
+(loop discharge, fail-fast admission, the `Actor[T]` class).
+
+### M15 — The cycle proxy
 Perf without chasing hardware. Today `compiler.costs.predicted-vs-measured`
 is a gap: `report::render` predicts no costs, so `profile` has nothing to
 put beside its measurements. This milestone builds a deterministic
@@ -610,7 +711,7 @@ build-affecting constant.
 not pre-layout asm, not an IR op count. Stable `wrela dump --stage=cost`
 with totals by function (and coarser owners). Every term names an
 instruction and the profile rule that priced it; a bare number is not a
-review surface. Full IR why-chains can deepen later; M13's floor is
+review surface. Full IR why-chains can deepen later; M15's floor is
 "which word, which rule."
 
 **A/B through ordinary lowering.** Clone the input, flip one change, lower
@@ -633,7 +734,7 @@ fix or mark unscored — never nudge until quiet.
 **Semantic counts stay exact.** Choice entries, exits, transcript bytes,
 exit status: exact match or bug. Checkpoint crossings only after the
 recorder exposes them. Exit-rate *predictions* in the report (06 §5) are
-**not** M13 — useful, but a separate report feature; rewrite the stale
+**not** M15 — useful, but a separate report feature; rewrite the stale
 ledger note so this clause flips on proxy A/B + semantic exact-matches,
 not on device exit-rate lines.
 
@@ -653,7 +754,7 @@ misrankings. (8) Capstone below.
 FlowWir rewrite; unproved sites untouched. Amplify with unrolling or many
 straight-line sites — not async loops (checkpoints drown the delta) and
 not sync loops (`sema.bounds.loops` is out of scope for this capstone —
-M11 narrows that gap for authoring; M13's held-out case stays
+M11 narrows that gap for authoring; M15's held-out case stays
 straight-line). Held out of calibration. Outcomes: (a) measurable
 physical win and proxy agrees → land under the budget; (b) measurable
 disagree → pin and fix the model; (c) still unmeasurable → do not land
@@ -666,8 +767,8 @@ Non-goals: anything beyond the capstone; `@budget` proofs; WCET; exit-rate
 report lines; trace/cache modeling; multicore contention; DVFS/thermal;
 in-compiler ML (offline search may emit tables later).
 
-### M14 — The optimization playground
-M13 is the ruler. M14 is the shelf where purchases sit — not the purchases.
+### M16 — The optimization playground
+M15 is the ruler. M16 is the shelf where purchases sit — not the purchases.
 
 **What lands (three things).**
 
@@ -688,50 +789,104 @@ M13 is the ruler. M14 is the shelf where purchases sit — not the purchases.
    semantics, it is a bug fix or a doc rule — not an optimization.
 
 Done when a later spend can add a function + a table row without inventing
-process. M13's capstone is the smoke test if it landed; do not invent a
+process. M15's capstone is the smoke test if it landed; do not invent a
 second toy opt to prove the shelf.
 
 **Non-goals.** Register allocation, isel catalogs, fusion, weighted
 search, recipe frameworks, SelectionDAG, "host all future lanes,"
 world's-fastest exit criteria, cost proofs. Those are budget spends that
 use this shelf. Three spend lanes (floor / search / specialization) live
-in the cleverness-budget section below — doctrine, not M14 deliverables.
+in the cleverness-budget section below — doctrine, not M16 deliverables.
 
-Depends on M13's score + A/B. Opens: evidence-table and opts-off clauses.
+Depends on M15's score + A/B. Opens: evidence-table and opts-off clauses.
 Plan when activated.
 
 ### Recorded language intentions (not yet scheduled)
 
-- **Inferred error sets** (stdlib milestone, via doc revision): extend
-  "pub declares, private infers" — the doctrine receiver effects, pool
-  names, generic contracts, and comptime legality already follow — to
-  error types. A private `fn` omits its error type; the compiler infers
-  the exact set from the closed world (it already computes this to erase
-  impossible `CallError` variants, 02 §9.4); `pub` boundaries still
-  demand a declared nominal enum. Lands when `Result`/`from` conversion
-  machinery is real; it is a normative doc change first, human-reviewed.
-- **Cost proofs** (deliberately not M13). M13's proxy ranks compiler
+- **Inferred error sets** — *scheduled 2026-07-26: M13 (plans/M13.md
+  item K)*, its normative doc revision still human-reviewed in its own
+  commit and rejectable without downstream effect. The intention as
+  recorded: extend "pub declares, private infers" — the doctrine
+  receiver effects, pool names, generic contracts, and comptime
+  legality already follow — to error types; a private `fn` writes
+  `-> Result[T]` and the compiler infers the exact set from the closed
+  world (it already computes this to erase impossible `CallError`
+  variants, 02 §9.4); `pub` boundaries still demand a declared nominal
+  enum.
+- **Cost proofs** (deliberately not M15). M15's proxy ranks compiler
   alternatives; it does not discharge `@budget`, make
   `sema.bounds.loops` sound in cycles, or prove elapsed latency. Those need
   a separate static upper-bound model with explicit path, memory and
   interference assumptions, plus a normative decision about the existing
   `@budget(bound=...)` work/memory surface. (M11 narrows `sema.bounds.loops`
   for the authoring/runtime half — proven finite sync loops via `@budget`
-  — without claiming cycle proofs; M12's authoring hardening does not claim
-  cycle proofs either.) An end-to-end `@latency_assert` needs that proof
-  model and a defined host contract, not merely a well-calibrated optimizer
-  proxy. Human-gated because promoting a useful estimate into a safety
-  proof is exactly the sort of semantic change that must never happen by
-  accretion.
-- **Default arithmetic as `Result`** (deliberately not M12). M12 forbids
+  — and M13's loop-discharge theorem discharges the event-loop half
+  structurally, without claiming cycle proofs.) An end-to-end
+  `@latency_assert` needs that proof model and a defined host contract,
+  not merely a well-calibrated optimizer proxy. Human-gated because
+  promoting a useful estimate into a safety proof is exactly the sort of
+  semantic change that must never happen by accretion. The same gate
+  covers **hard copy budgets** — after M13 cuts function-level
+  `@budget`, copy pricing is report-only until this proof model exists.
+- **Default arithmetic as `Result`** (deliberately not M13). M13 forbids
   silent *error discard*; flipping abandoning `+`/`/`/shifts to
   `Result`-returning defaults is a separate normative + corpus-wide edit,
-  human-gated like cost proofs.
-- **Report expected exit rates** (06 §5; deliberately not M13). The report
+  human-gated like cost proofs — and M13's crash-only decision leans the
+  other way on purpose (an overflow is a recorded, replayable, fatal bug,
+  not a value).
+- **Report expected exit rates** (06 §5; deliberately not M15). The report
   "states expected exit rates per device" is a semantic prediction with an
   exact `profile`/`repro` comparison — valuable and dumb, but it is report
   work, not the cycle proxy. Schedule when a named device recording needs
   the line; do not smuggle it into the scorer milestone.
+- **Consumer-gated library surface** (recorded 2026-07-26; each waits
+  for its first real consumer, and each has or gains an honest ledger
+  clause via M13 item E so none is merely believed): `Completion[T]` as
+  a user-facing type (M13 names the underlying resolution cell; the
+  type ships with its first consumer); `Secret`/`Envelope` enforcement
+  (`values.marked.secret` — first image holding a real secret);
+  `SlotMap` minted-id semantics (`library.collections.slotmap-minted-id`
+  — first contended multi-client service); messages taking non-`own`
+  resources (`actors.messages.take-non-own-resource` — first driver
+  that must hand a non-pooled resource across an edge); scoped pools /
+  `with pool` (the remaining flip condition of
+  `values.regions.two-binding-disciplines` — travels with the pixels
+  rung, whose compositor is the natural first consumer).
+- **Event-gated hardening** (recorded 2026-07-26): quarantine execution
+  and in-flight receipt delivery on cancellation
+  (`hardware.cancellation.recovery-turn`, mechanism simplified by M13's
+  cuts to "deliver to the owning driver's existing bottom-half `@task`"
+  — flips on the first cancellation-under-load golden; quarantine also
+  adds `Admission.Quarantined`); and **driver-only restart**, the
+  crash-only decision's recorded fallback — device reset epochs are its
+  partial machinery; would re-add `Admission.Restarting` (no
+  `Cancelled` overload); flip witness is a recording where rebooting
+  through a mid-session driver fault is demonstrated unacceptable.
+  Separately, the **durable-checkpoint idiom + storage stack** is the
+  named dependency of crash-only's `Failure.Reboot` viability
+  (currently unbuilt; conformance goldens pin `Halt` until it exists).
+- **The cross-core publish/acquire barrier**
+  (`machine.cross-core.publish-acquire-barrier`; recorded pointer
+  2026-07-26). 04 §3's sealed publish/acquire ordering is currently
+  unobservable because exactly one vCPU is ever inside `hv_vcpu_run`
+  (the baton). The clause carries its own three-part flip condition
+  (baton retired → `DMB ISHST`/acquire pair emitted → a golden that
+  fails with the barriers deleted). No rung owns baton retirement; it
+  belongs to whichever milestone first wants true concurrent vCPU
+  execution, and must not be forgotten when one does.
+- **Report/diagnostics coverage** (owner: report work, no rung): the
+  actor-chatter lint (04 §7's `warning[performance]`) and the copy
+  pricing threshold line (04 §1/§7) — M13 item E audits both and opens
+  `compiler.diagnostics.actor-chatter` / `compiler.report.copy-pricing`
+  as `test` or honest `gap` accordingly.
+- **Post-cut re-additions** (recorded 2026-07-26 so M13's cut commits
+  point somewhere): priority bands, `must_service_within`,
+  priority/deadline inheritance, and `@task`/`group` budgets return
+  only as cleverness-budget purchases against a recording that shows a
+  missed deadline — the scheduler is wrela source since M11, so the
+  budget applies to it like all code; `race(...)` returns as "selection
+  with a loser-cancellation witness" when a consumer exists (the M13
+  resolution cell makes it cheap).
 - **Deferred until an ingredient exists**: graph-level flow policy waits
   until a concrete image needs a concrete named check — hardcode that
   check, no policy query language; whole-image snapshot/time-travel is a
@@ -852,13 +1007,18 @@ Plan when activated.
 
   *What descheduling leaves open, stated rather than implied.*
   `machine.display.golden-frames` is a gap **no rung owns**, recorded as
-  such in the clause's own note — the same shape as
-  `compiler.progress.wait-for-graph`. 06 §10 lists the golden-image
-  display tests in the machine conformance suite, so machine v1 is not
-  conformant until this lands; it keeps company there with `net`, `sound`
-  and `entropy`, three more contracts in 06 §6's closed device set that no
-  rung owns either. And the VMM's cross-device pool oracle stays half a
-  unit test: `devices::tests::a_window_bound_to_another_device_is_refused_by_name`
+  such in the clause's own note (`compiler.progress.wait-for-graph` was
+  the same shape until 2026-07-26 gave it rung M14 — progress,
+  constructively; this one still waits here). 06 §10 lists the golden-image display tests in the machine
+  conformance suite, so machine v1 is not conformant until this lands —
+  a set M13 item D narrows: `net` and `sound` move to future machine
+  revisions, leaving display and input (this bullet's own subjects) and
+  `entropy` — a small recorded-source model that lands with whichever
+  rung first needs it — as the unowned v1 contracts. The stdlib's closed SIMD
+  vector set gets its honest clause the same way (`library.simd.
+  vector-set`, opened by M13 item E, owner: this bullet). And the VMM's
+  cross-device pool oracle stays half a unit test:
+  `devices::tests::a_window_bound_to_another_device_is_refused_by_name`
   becomes a *boot* only once a second device model exists, whichever
   device that turns out to be.
 
@@ -877,7 +1037,7 @@ lands only with all three, no matter how obviously fast it is:
 3. a **lock** — a bench threshold or `@budget`/layout assertion — so the
    win cannot silently regress.
 
-After M14, landings also need an **evidence row** in the optimization
+After M16, landings also need an **evidence row** in the optimization
 table (proxy Δ, physical Δ, module, off-switch) — no row, no enablement.
 
 Measurement has two lanes, and the budget governs both equally. The
@@ -915,7 +1075,7 @@ Rules that follow:
   is unreachable by this budget until ImageStatic specialization is
   dissolved into ordinary wrela) wait their turn like everything else: the
   profile says when, and until then dumb code calling stdlib SIMD ops is
-  the answer. After M14 they land as table rows, not as silent pipeline
+  the answer. After M16 they land as table rows, not as silent pipeline
   edits.
 - **Where I/O effort is worth spending, and where it is not.** For
   storage, the software path is already below the device's noise floor — a
@@ -923,16 +1083,20 @@ Rules that follow:
   further buys something invisible and spends budget that has somewhere
   better to go. For networking, where wire times are sub-microsecond,
   software dominates and the zero-exit/zero-copy/vDPA path is where the
-  wins actually are. Check which regime a workload is in *before* profiling
-  it, or the profile will faithfully measure something that does not
-  matter.
+  wins actually are — **note (2026-07-26): `net` is outside machine-v1
+  conformance after M13 item D** (future machine revision); this bullet
+  and the M8 bandwidth arithmetic (~2M descriptors/sec/core, VFIO/vDPA)
+  reason about that future revision, not the v1 contract M15/M16 will
+  first measure against. Check which regime a workload is in *before*
+  profiling it, or the profile will faithfully measure something that
+  does not matter.
 - **The win is the tail, not the mean** — and this reframes what "beating a
   general-purpose OS" means. Throughput parity with a tuned Linux is
   achievable and unremarkable. What a general-purpose OS cannot offer is a
   flat p99.9: its tail is dominated by scheduling, interference, page
   faults, and allocator behavior, and wrela has none of those by
   construction. That win is not earned by optimization; it is already true,
-  and it is the claim to defend. M13 makes tuning that path repeatable, but
+  and it is the claim to defend. M15 makes tuning that path repeatable, but
   its proxy does **not** prove the tail at build time — that claim waits for
   the separate cost-proof work recorded above. Measure tails, not averages;
   a benchmark reporting only a mean is measuring the half of the story
@@ -943,10 +1107,11 @@ Rules that follow:
   turns, floor locked; ImageStatic specialization remains as the
   recorded interim; (2) M11 — generated config + generic `runtime.wr`;
   ImageStatic words ratchet to zero and the dispatch compare chain becomes
-  ordinary wrela `match` by construction; (3) M12 — authoring hardening
-  so discarded `CallError` / soft stale paths are refused in runtime and
-  app code alike; (4) **measure** — `bench guest` over byte-identical
-  transcripts gives the exact before/after, and M13 adds a zero-variance
+  ordinary wrela `match` by construction; (3) M12–M13 — the
+  representation rung (data ladders die, the census ratchets) and the
+  vocabulary milestone (discarded `CallError` is refused in runtime and
+  app code alike); (4) **measure** — `bench guest` over byte-identical
+  transcripts gives the exact before/after, and M15 adds a zero-variance
   proxy-score diff **beside**, never instead of, the physical timing run;
   (5) the two dumb wins, if and only if the profile asks for them —
   populate the already-reserved ready-queue table (O(actors) scan → O(1)
