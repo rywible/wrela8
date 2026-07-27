@@ -1106,12 +1106,17 @@ fn enum_payload_offset(
                     "`CallError` with no error type argument",
                 ));
             };
+            // plans/M13.md item H / decision 4: NotAdmitted(Admission, args).
+            let args_ty = crate::sema::bodies::not_admitted_args_type(targs);
             vec![
-                vec![e_ty.clone()],                                     // Op(E)
-                Vec::new(),                                             // Cancelled
-                Vec::new(),                                             // DeadlineExceeded
-                vec![Type::Named("Admission".to_string(), Vec::new())], // NotAdmitted
-                vec![Type::Named("Peer".to_string(), Vec::new())],      // PeerFailed
+                vec![e_ty.clone()], // Op(E)
+                Vec::new(),         // Cancelled
+                Vec::new(),         // DeadlineExceeded
+                vec![
+                    Type::Named("Admission".to_string(), Vec::new()),
+                    args_ty,
+                ], // NotAdmitted
+                vec![Type::Named("Peer".to_string(), Vec::new())], // PeerFailed
             ]
         }
         Type::Named(name, targs) => {
@@ -6038,14 +6043,6 @@ pub fn group_child_payload_off(child_index: usize) -> u64 {
     group_child_tag_off(child_index) + 8
 }
 
-/// A rejected admission on an `await`'s own enqueue aborts (`BRK`) rather
-/// than composing a real `CallError[NotAdmitted(..)]` value — the same
-/// disclosed floor the nested-drain placeholder carried, unchanged by the
-/// park-and-resume redesign; item G's send-proof/err-corpus work owns the
-/// real composition. No required M6 conformance boot ever fills a mailbox
-/// on an awaited call.
-pub const BRK_AWAIT_ACTOR_REJECTED: u16 = 0xACD3;
-
 fn actor_of_method_key(key: &str) -> &str {
     key.split('.').next().unwrap_or(key)
 }
@@ -7976,6 +7973,7 @@ fn emit_await_suspend(
             target_temp: _,
             method_key,
             arg_temps,
+            take_arg_temps,
         } => {
             let (actor, idx) = lookup_method_idx(method_key, method_index)?;
             ctx.load_imm(X_A, resume_state as i64);
@@ -8041,10 +8039,11 @@ fn emit_await_suspend(
                 &rt_enqueue_symbol(&actor),
                 Some(fn_key), // waker = this turn, by `TurnId`.
             )?;
-            // plans/M10.md item J: a rejected admission delivers
-            // `Err(CallError.NotAdmitted(Admission.Full))` through the
-            // reply tag rather than aborting. Handoff receipts have no
-            // `CallError` channel — keep the legible abort there.
+            // plans/M13.md item H: enqueue-fail — caller still owns the
+            // argument words; build
+            // `Err(CallError.NotAdmitted(Admission.Full, (take_args...)))`
+            // locally (reply_tag semantics still reserve tag 3 for the
+            // resume path). Handoff receipts have no CallError channel.
             let composed_ty = &f.temp_types[result_temp.0];
             if is_handoff_receipt_reply(composed_ty) {
                 let skip = ctx.emit_skip(SkipKind::Cbz(0));
@@ -8057,27 +8056,9 @@ fn emit_await_suspend(
                 // Admitted (x0 == 0) skips the reject arm and parks;
                 // rejected falls through, composes NotAdmitted, resumes.
                 let skip_admitted = ctx.emit_skip(SkipKind::Cbz(0));
-                ctx.load_imm(X_B, CALL_ERROR_TAG_NOT_ADMITTED as i64);
-                ctx.push(
-                    encode::enc_str_x_imm(X_B, X_FRAME, OFF_TURN_REPLY_TAG as u16),
-                    format!(
-                        "str {}, [{}, #{OFF_TURN_REPLY_TAG}]",
-                        reg_name(X_B),
-                        reg_name(X_FRAME)
-                    ),
-                );
-                ctx.load_imm(X_A, ADMISSION_FULL as i64);
-                ctx.push(
-                    encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
-                    format!(
-                        "str {}, [{}, #{OFF_TURN_REPLY}]",
-                        reg_name(X_A),
-                        reg_name(X_FRAME)
-                    ),
-                );
                 let result_off = ctx.frame.off(result_temp);
                 let result_size = ctx.frame.size_of_temp(result_temp);
-                emit_compose_from_reply_tag(ctx, result_off, result_size);
+                emit_not_admitted_local(ctx, result_off, result_size, take_arg_temps)?;
                 ctx.checkpoint();
                 emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
                 ctx.b_unconditional(state_flat_base[resume_state]);
@@ -8495,11 +8476,63 @@ fn emit_compose_staged_reply(
     Ok(())
 }
 
+/// plans/M13.md item H: build
+/// `Err(CallError.NotAdmitted(Admission.Full, (take_args...)))` into the
+/// composed result slot from temps the caller still owns (enqueue did not
+/// commit). Layout: `Result.tag=Err` at +0, `CallError.tag=NotAdmitted` at
+/// +8, `Admission.Full` at +16, take-arg words at +24… (each scalar one
+/// slot; aggregates on this arm fail closed — known risk in plans/M13.md).
+///
+/// Clobbers `X_A`/`X_B`.
+fn emit_not_admitted_local(
+    ctx: &mut FnCtx,
+    result_off: usize,
+    result_size: usize,
+    take_arg_temps: &[Temp],
+) -> Result<(), CodegenError> {
+    for t in take_arg_temps {
+        let sz = ctx.frame.size_of_temp(*t);
+        if sz != 8 {
+            return Err(CodegenError::unimplemented(
+                "NotAdmitted take-arg handback for a non-scalar argument (plans/M13.md item H; \
+                 spill aggregates on the fail branch is not implemented)",
+            ));
+        }
+    }
+    // Zero-fill the whole temp so unused payload words stay deterministic.
+    let mut w = 0usize;
+    while w < result_size {
+        ctx.store_slot(X_ZR, result_off + w);
+        w += 8;
+    }
+    ctx.load_imm(X_A, 1); // Result.Err
+    ctx.store_slot(X_A, result_off);
+    ctx.load_imm(X_B, CALL_ERROR_TAG_NOT_ADMITTED as i64);
+    ctx.store_slot(X_B, result_off + 8);
+    ctx.load_imm(X_A, ADMISSION_FULL as i64);
+    ctx.store_slot(X_A, result_off + 16);
+    let mut off = 24usize;
+    for t in take_arg_temps {
+        if off + 8 > result_size {
+            return Err(CodegenError::internal(
+                "NotAdmitted take-arg tuple does not fit the composed CallError temp \
+                 (size_of/compose_call_error disagree with this site)",
+            ));
+        }
+        ctx.load_slot(X_A, ctx.frame.off(*t));
+        ctx.store_slot(X_A, result_off + off);
+        off += 8;
+    }
+    Ok(())
+}
+
 /// plans/M10.md item J: compose `result_temp` from the turn record's
 /// `(OFF_TURN_REPLY_TAG, OFF_TURN_REPLY)` pair. `tag == 0` → `Ok(reply)`;
 /// nonzero → `Err(CallError)` whose variant index is the tag and whose
-/// payload (when any) is the reply word (`Admission` for `NotAdmitted`).
-/// Same shape the group arena already uses for `(tag, payload)`.
+/// payload (when any) is the reply word (`Admission` for `NotAdmitted`
+/// with an empty take-args tuple — local enqueue-fail with take args uses
+/// [`emit_not_admitted_local`] instead). Same shape the group arena
+/// already uses for `(tag, payload)`.
 ///
 /// `X_A` enters holding the reply word; `X_B` holding the tag. Clobbers
 /// `X_A`/`X_B`.

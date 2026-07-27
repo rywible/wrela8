@@ -1,0 +1,62 @@
+module examples.boot_await_rejected
+
+# plans/M13.md item H — `NotAdmitted(Admission, args)` composition.
+#
+# Conformance boot that fills a mailbox then `await`s with a `take`
+# argument: enqueue refuses, the caller still owns the arg words, and
+# codegen builds `Err(CallError.NotAdmitted(Admission.Full, (code,)))`
+# locally. The transcript pins the `NotAdmitted` arm and recovers the
+# handed-back payload (02 §9.4 / decision 4). Retires the dead
+# `BRK_AWAIT_ACTOR_REJECTED` floor.
+
+@actor
+pub struct Logger:
+    total: u64
+
+    pub fn record(mut self, code: u64) -> unit:
+        self.total = self.total + code
+        return unit
+
+    pub fn poke(mut self, take code: u64) -> u64:
+        self.total = self.total + code
+        return code
+
+@test(runtime)
+async fn await_rejected_recovers_take_args(lg: Actor[Logger]):
+    filled: u64 = 0
+    match send lg.record(code=1):
+        case .Ok(_):
+            filled = filled + 1
+        case .Err(_):
+            pass
+    match send lg.record(code=2):
+        case .Ok(_):
+            filled = filled + 1
+        case .Err(_):
+            pass
+    assert filled == 2, "the two-slot mailbox is now full"
+    code: u64 = 99
+    t = await lg.poke(take code)
+    recovered: u64 = 0
+    hit_not_admitted: u64 = 0
+    match t:
+        case .Ok(_):
+            assert false, "await into a full mailbox must be NotAdmitted"
+        case .Err(e):
+            match e:
+                case .NotAdmitted(_, args):
+                    hit_not_admitted = 1
+                    match args:
+                        case (got,):
+                            recovered = got
+                case _:
+                    pass
+    assert hit_not_admitted == 1, "NotAdmitted arm must run"
+    assert recovered == 99, "take arg must be handed back inside NotAdmitted"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-await-rejected", target=Target.wrela_machine_v1)
+    lg = img.actor(Logger, mailbox=2)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

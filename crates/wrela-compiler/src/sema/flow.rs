@@ -1641,6 +1641,11 @@ fn walk_stmt<'a>(
             // does walk one — exactly like `Stmt::Expr` below: the
             // message arguments are ordinary operands that move/read
             // storage paths like any other call's.
+            // plans/M13.md item H: on an awaited call, `take` args that
+            // admission refuses come back inside
+            // `Err(CallError.NotAdmitted(_, args))` — the owned tuple on
+            // that match arm is the resource (02 §9.4); ordinary pattern
+            // binding seeds those names as `Init` on that arm only.
             let mut st = state.clone();
             walk_expr(e, &mut st, fctx, wctx, dstack, loop_marker)?;
             Ok(fallthrough(st))

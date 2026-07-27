@@ -1149,11 +1149,17 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             );
             Ok(size_of(payload, ctx)? + size_of(&status, ctx)? + size_of(&written, ctx)?)
         }
+        // plans/M13.md item H / decision 4: `NotAdmitted(Admission, args)`
+        // widens the payload beyond one opaque slot when the call has
+        // `take` arguments (CallError's optional second type argument).
         Type::Named(name, targs) if name == "CallError" => {
             let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
                 return Err("`CallError` with no error type argument".to_string());
             };
-            Ok(SLOT + size_of(e_ty, ctx)?.max(SLOT))
+            let args_ty = crate::sema::bodies::not_admitted_args_type(targs);
+            let not_admitted = SLOT + size_of(&args_ty, ctx)?; // Admission + args
+            let peer = SLOT;
+            Ok(SLOT + size_of(e_ty, ctx)?.max(not_admitted).max(peer))
         }
         // plans/M7.md item E1: `BootError` is a prelude enum (one unit
         // variant), never a DeclEnum in this LayoutCtx — same vehicle as

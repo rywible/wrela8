@@ -1204,11 +1204,21 @@ fn build_await_kind(
                     "passing a nested `mut` place as an awaited actor-call argument is",
                 ));
             }
+            // plans/M13.md item H: take-mode params only — handed back in
+            // `NotAdmitted`'s args tuple when enqueue refuses.
+            let take_arg_temps: Vec<_> = f
+                .params
+                .iter()
+                .zip(arg_temps.iter())
+                .filter(|(p, _)| p.mode == AccessMode::Take)
+                .map(|(_, t)| *t)
+                .collect();
             Ok((
                 AwaitKind::ActorCall {
                     target_temp,
                     method_key,
                     arg_temps,
+                    take_arg_temps,
                 },
                 await_expr.ty.clone(),
             ))

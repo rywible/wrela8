@@ -401,18 +401,23 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
         // mirroring `bodies::variant_payload_types_for`'s own new arm —
         // exhaustiveness over a `match`ed `CallError` needs the identical
         // fixed shape that pass uses to type each arm's payload.
+        // plans/M13.md item H / decision 4: `NotAdmitted(Admission, args)`.
         Type::Named(name, targs) if name == "CallError" => {
             let e_ty = match targs.first() {
                 Some(types::TypeArg::Type(t)) => t.clone(),
                 _ => Type::Never,
             };
+            let args_ty = bodies::not_admitted_args_type(targs);
             TyShape::Sum(vec![
                 ("Op".to_string(), vec![e_ty]),
                 ("Cancelled".to_string(), vec![]),
                 ("DeadlineExceeded".to_string(), vec![]),
                 (
                     "NotAdmitted".to_string(),
-                    vec![Type::Named("Admission".to_string(), vec![])],
+                    vec![
+                        Type::Named("Admission".to_string(), vec![]),
+                        args_ty,
+                    ],
                 ),
                 (
                     "PeerFailed".to_string(),

@@ -4051,6 +4051,7 @@ const ASYNC_SEED_CASES: &[&str] = &[
     "boot-actor-smoke",
     "boot-actors",
     "boot-await-mailbox-full",
+    "boot-await-rejected",
     "boot-cancel-cleanup",
     "boot-deadline-cancel",
     "boot-deadline-inherit",

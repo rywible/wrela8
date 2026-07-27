@@ -311,6 +311,10 @@ pub enum AwaitKind {
         target_temp: Temp,
         method_key: String,
         arg_temps: Vec<Temp>,
+        /// plans/M13.md item H: temps of `take`-mode message params, in
+        /// declaration order — packed into `NotAdmitted`'s args tuple on
+        /// enqueue-fail (caller still owns them; enqueue did not commit).
+        take_arg_temps: Vec<Temp>,
     },
     /// `g.join_all()` — `group_temp` is the group local's own temp;
     /// `child_count` is the number of static `g.start` sites found in
@@ -476,10 +480,21 @@ fn fmt_await_kind(k: &AwaitKind) -> String {
             target_temp,
             method_key,
             arg_temps,
-        } => format!(
-            "ActorCall{{target={target_temp},method={method_key},args=[{}]}}",
-            join_temps(arg_temps)
-        ),
+            take_arg_temps,
+        } => {
+            if take_arg_temps.is_empty() {
+                format!(
+                    "ActorCall{{target={target_temp},method={method_key},args=[{}]}}",
+                    join_temps(arg_temps)
+                )
+            } else {
+                format!(
+                    "ActorCall{{target={target_temp},method={method_key},args=[{}],take=[{}]}}",
+                    join_temps(arg_temps),
+                    join_temps(take_arg_temps)
+                )
+            }
+        }
         AwaitKind::GroupJoin {
             group_temp,
             child_count,
