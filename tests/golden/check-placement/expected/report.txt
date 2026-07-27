@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_placement.wr sha256=a736fa504e833d97e8d24cdd4f75e2bab88362a18d3984b1c339158b9a6dc4ce
+  Input path=examples/check_placement.wr sha256=2284c74fb870f6b185fcc15bb9d15d4ebaf48c0ef45e249481b0d39a0adf709e
   Input path=<generated> sha256=97dba757a0d9f61bc4e28f337516b69a5d29153b2c9c405305f39a7e85950186
   Name value=placement-basic
   Target value=Target.wrela_machine_v1
@@ -14,9 +14,7 @@ ImageReport v0
     Mailbox value=8
   Actor index=1 type=Probe
     Mailbox value=4
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
-    Child value=actor#1
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=160 bytes_state=8 bytes_mailbox=152 bytes_pool=0
   Placement id=actor#1 type=Probe core=0 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

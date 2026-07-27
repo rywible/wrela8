@@ -38,6 +38,5 @@ async fn guest_slotmap(store: Actor[Store]):
 pub fn build() -> Image:
     img = Image(name="check-slotmap-backend", target=Target.wrela_machine_v1)
     a = img.actor(Store, map_id=1, mailbox=4)
-    img.supervise(children=[a], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -1,4 +1,4 @@
-module examples.err_image_unsupervised
+module examples.err_image_no_failure_policy
 
 @driver
 pub struct Blk:
@@ -16,9 +16,7 @@ pub struct Store:
 
 @image
 pub fn build() -> Image:
-    img = Image(name="unsupervised", target=Target.wrela_machine_v1)
+    img = Image(name="no-failure-policy", target=Target.wrela_machine_v1)
     disk = img.driver(Blk)
     storage = img.actor(Store, mailbox=16)
-    img.supervise(children=[disk], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
     return img.seal()

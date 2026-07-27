@@ -58,6 +58,5 @@ pub fn build() -> Image:
     # is accepted by the graph checker through handle substitution, and
     # boot cannot honour that yet.
     s = img.actor(Sink, mailbox=4, depth=7)
-    img.supervise(children=[led, s], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

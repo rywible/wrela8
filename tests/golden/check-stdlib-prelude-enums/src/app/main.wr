@@ -3,14 +3,14 @@ module app.main
 # plans/M9.md item I: the five formerly-prelude enums are real stdlib
 # source. Explicit import compiles them through the ordinary pipeline.
 from core.target import Target
-from core.restart import Restart
+from core.failure import Failure
 from core.boot_error import BootError
 from core.driver_mode import DriverMode
 from core.completion_outcome import CompletionOutcome
 
 pub fn sample(
     t: Target,
-    r: Restart,
+    r: Failure,
     b: BootError,
     m: DriverMode,
     o: CompletionOutcome,

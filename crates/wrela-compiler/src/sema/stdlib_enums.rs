@@ -1,7 +1,7 @@
 //! The five formerly-prelude enums, as real `stdlib/core/*.wr` source
 //! (plans/M9.md item I, decisions 472–474; item QQ, decisions 500–505).
 //!
-//! `Target`, `Restart`, `BootError`, `DriverMode`, and `CompletionOutcome`
+//! `Target`, `Failure`, `BootError`, `DriverMode`, and `CompletionOutcome`
 //! used to live only in `sema/prelude::builtin_enum_variants`. Their
 //! declarations now sit in the toolchain stdlib; this module loads those
 //! files once per `stdlib/core/` tree and exposes their variant order so
@@ -39,7 +39,7 @@ use crate::syntax::{lexer, parser};
 /// Auto-visible enum names whose definitions live in `stdlib/core/`.
 pub const AUTO_VISIBLE: &[&str] = &[
     "Target",
-    "Restart",
+    "Failure",
     "BootError",
     "DriverMode",
     "CompletionOutcome",
@@ -48,7 +48,7 @@ pub const AUTO_VISIBLE: &[&str] = &[
 /// `(enum name, file stem under stdlib/core/)`.
 const ENUM_FILES: &[(&str, &str)] = &[
     ("Target", "target"),
-    ("Restart", "restart"),
+    ("Failure", "failure"),
     ("BootError", "boot_error"),
     ("DriverMode", "driver_mode"),
     ("CompletionOutcome", "completion_outcome"),
@@ -298,7 +298,7 @@ mod tests {
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir");
         // Valid copies of the four siblings so only Target fails.
-        for stem in ["restart", "boot_error", "driver_mode", "completion_outcome"] {
+        for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
         }
@@ -333,7 +333,7 @@ mod tests {
         ));
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir");
-        for stem in ["restart", "boot_error", "driver_mode", "completion_outcome"] {
+        for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
         }
@@ -378,7 +378,7 @@ mod tests {
         for (dir, variant) in [("a", "OnlyInA"), ("b", "OnlyInB")] {
             let core = tmp.join(dir).join("stdlib/core");
             fs::create_dir_all(&core).expect("mkdir core");
-            for stem in ["restart", "boot_error", "driver_mode", "completion_outcome"] {
+            for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
                 let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
                 fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
             }
@@ -420,7 +420,7 @@ mod tests {
             std::env::temp_dir().join(format!("wrela-stdlib-enums-nocache-{}", std::process::id()));
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir core");
-        for stem in ["restart", "boot_error", "driver_mode", "completion_outcome"] {
+        for stem in ["failure", "boot_error", "driver_mode", "completion_outcome"] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
         }

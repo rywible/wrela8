@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_completion_outcome.wr sha256=a274d5d65d2d96fd0e3919232ccffc1bffe8894fce97f26db7f09d1f9688287d
+  Input path=examples/check_completion_outcome.wr sha256=9903b4a864243eeeda68f4111838751407bbd0117e7d1b9e4ec72fb186258845
   Input path=<generated> sha256=57cd912f2b7055fd4de4809ac485846be39a87e0787d0a09fa4069e0d4ad557a
   Name value=check-completion-outcome
   Target value=Target.wrela_machine_v1
@@ -23,8 +23,7 @@ ImageReport v0
   DmaPool name=BlockPayloads type=DmaBlock
     Arg label=device value=device#0
     Arg label=count value=4
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=872 bytes_state=40 bytes_mailbox=0 bytes_pool=832
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

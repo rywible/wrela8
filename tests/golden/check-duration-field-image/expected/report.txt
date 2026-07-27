@@ -6,14 +6,13 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_duration_field_image.wr sha256=5858d094bc772383036776140ca7edd88ac0a7e307a30b91af5ac49678d5a402
+  Input path=examples/check_duration_field_image.wr sha256=89cd57492a095d06dd77b426e8e12f1cb6e81c84ca52f1ce785841bbe04d41b6
   Input path=<generated> sha256=f70ba1d67ac5adbb090c257b045cda010f780be3fe40f69cfb3314bcf3ac6351
   Name value=duration-field-image
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
     Mailbox value=8
-  Supervise index=0 strategy=Restart.OneForOne intensity=(1, 1000000000)
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=160 bytes_state=8 bytes_mailbox=152 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

@@ -28,6 +28,5 @@ pub fn build() -> Image:
         required_features=[Feature.RingReset],
     )
     disk = img.driver(BlkDriver, device=blk)
-    img.supervise(children=[disk], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

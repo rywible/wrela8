@@ -1,5 +1,5 @@
 Module path=app.main
-  Fn sample(t: read Target, r: read Restart, b: read BootError, m: read DriverMode, o: read CompletionOutcome) -> u32
+  Fn sample(t: read Target, r: read Failure, b: read BootError, m: read DriverMode, o: read CompletionOutcome) -> u32
 Module path=boot_error
   Enum BootError data
     variant Failed
@@ -12,11 +12,10 @@ Module path=driver_mode
   Enum DriverMode data
     variant Irq
     variant Poll
-Module path=restart
-  Enum Restart data
-    variant OneForOne
-    variant OneForAll
-    variant RestForOne
+Module path=failure
+  Enum Failure data
+    variant Reboot
+    variant Halt
 Module path=target
   Enum Target data
     variant wrela_machine_v1

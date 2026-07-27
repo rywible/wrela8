@@ -6,14 +6,13 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_call.wr sha256=ebe377789eaa73f023851e3de5da70afa8c7b21f74318d4600fe9c1f5f30bc06
+  Input path=examples/boot_cross_core_call.wr sha256=1c57c46873aa556fdbc6d8663d4d04114436f64c830cd6df7eda9013fb412c19
   Input path=<generated> sha256=78b5927a54371c8cb9b821a90fde451792eff0d31af05e1bdb3d21ed79bfd9f2
   Name value=cross-core-send
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Off
     Mailbox value=4
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Off core=1 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

@@ -111,6 +111,5 @@ pub fn build() -> Image:
     img = Image(name="check-regions-two-disciplines", target=Target.wrela_machine_v1)
     parts = img.pool[u32](name=Parts, slots=4, max_payload=8)
     a = img.actor(Adder, mailbox=4)
-    img.supervise(children=[a], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -89,9 +89,5 @@ pub fn build() -> Image:
     sink = img.actor(Sink, mailbox=4, core=1)
     alpha = img.actor(Alpha, mailbox=4, core=0, sink=sink)
     beta = img.actor(Beta, mailbox=4, core=0, sink=sink)
-    img.supervise(
-        children=[sink, alpha, beta],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

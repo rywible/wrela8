@@ -47,6 +47,5 @@ pub fn build() -> Image:
     img = Image(name="boot-actor-chain", target=Target.wrela_machine_v1)
     inner = img.actor(Inner, mailbox=4)
     outer = img.actor(Outer, mailbox=4, inner=inner)
-    img.supervise(children=[inner, outer], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

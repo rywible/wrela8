@@ -74,9 +74,5 @@ async fn runs_off_core(o: Actor[Off]):
 pub fn build() -> Image:
     img = Image(name="cross-core-send", target=Target.wrela_machine_v1)
     off = img.actor(Off, mailbox=4, core=1)
-    img.supervise(
-        children=[off],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

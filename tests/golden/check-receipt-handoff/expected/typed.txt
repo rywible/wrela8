@@ -41,19 +41,9 @@ Program
         Intrinsic key=Image.driver type_arg=BlkDriver ty=ImageDecl
           Arg label=device
             Local name=blk ty=ImageDecl
-      Intrinsic key=Image.supervise ty=unit
-        Arg label=children
-          List ty=[ImageDecl; 1]
-            Local name=disk ty=ImageDecl
-        Arg label=strategy
-          EnumConstruct enum=Restart variant=OneForOne ty=Restart
-        Arg label=intensity
-          Intrinsic key=RestartIntensity ty=RestartIntensity
-            Arg label=max
-              Int text=3 ty=i64
-            Arg label=within
-              Call key=seconds ty=Duration
-                Int text=10 ty=u64
+      Intrinsic key=Image.on_failure ty=unit
+        Arg label=policy
+          EnumConstruct enum=Failure variant=Halt ty=Failure
       Return
         Intrinsic key=Image.seal ty=Image
   Struct name=BlkDriver

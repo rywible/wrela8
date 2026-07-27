@@ -6,14 +6,13 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_ring_full.wr sha256=457bcb2c896589770fa5fec21a77ec4cb571a313a726e4e032a140c52163d12e
+  Input path=examples/boot_cross_core_ring_full.wr sha256=4aed386ba379f43a26a9f6559fb76c83be87006bf434b72f3143011a6081038d
   Input path=<generated> sha256=25bd43eb28c8eae6ab074abf00bcc91b7bf6eebffdd2b2803bab2905bf4e3363
   Name value=cross-core-ring-full
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Tally
     Mailbox value=1
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Tally core=1 source=explicit work=0 work_source=unproved bytes=56 bytes_state=8 bytes_mailbox=48 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

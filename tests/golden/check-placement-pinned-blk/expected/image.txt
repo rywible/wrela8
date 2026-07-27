@@ -7,8 +7,6 @@ ImageGraph v0
     Arg label=device value=device#0
   Actor index=0 type=Probe
     Arg label=mailbox value=4
-  Supervise index=0
-    Arg label=children value=[driver#0, actor#0]
-    Arg label=strategy value=Restart.OneForOne
-    Arg label=intensity value=(3, 10000000000)
+  OnFailure index=0
+    Arg label=policy value=Failure.Halt
   Sealed value=true

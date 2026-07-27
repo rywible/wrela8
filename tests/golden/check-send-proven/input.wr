@@ -39,6 +39,5 @@ async fn proven_sends(lg: Actor[Logger]):
 pub fn build() -> Image:
     img = Image(name="check-send-proven", target=Target.wrela_machine_v1)
     lg = img.actor(Logger, mailbox=4)
-    img.supervise(children=[lg], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

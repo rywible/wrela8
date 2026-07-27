@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/image_field_wired_accept.wr sha256=6dbfe7a0a44640e9c2abae467db78937a6035e6fb3bc4697356ea2a19100a7e3
+  Input path=examples/image_field_wired_accept.wr sha256=26d86866674b2ddc030a76b21405c188f0a286afa685e534db3c59d92a43aa98
   Input path=<generated> sha256=4d863bcc2518e3d8a01d235174b753264e2c12a8f5c334ff73cb603c690cc238
   Name value=field-wired
   Target value=Target.wrela_machine_v1
@@ -15,9 +15,7 @@ ImageReport v0
   Actor index=1 type=Worker
     Mailbox value=8
   Edge from=actor#1 to=actor#0
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
-    Child value=actor#1
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=224 bytes_state=8 bytes_mailbox=216 bytes_pool=0
   Placement id=actor#1 type=Worker core=0 source=inferred work=0 work_source=unproved bytes=168 bytes_state=16 bytes_mailbox=152 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432

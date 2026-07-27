@@ -13,9 +13,5 @@ pub struct Store:
 pub fn build() -> Image:
     img = Image(name="bad-core", target=Target.wrela_machine_v1)
     store = img.actor(Store, mailbox=4, core=3)
-    img.supervise(
-        children=[store],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

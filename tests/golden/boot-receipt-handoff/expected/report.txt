@@ -7,8 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
-  Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
-  Input path=examples/boot_receipt_handoff.wr sha256=9929c4ff996066e364d14bb1e3377ecd6f9b5bab38e9b9c2e2e44729e196fd0c
+  Input path=examples/boot_receipt_handoff.wr sha256=04d929401b41a15512357468434c6a6fc526aa35410f4da8e4c5d0a686cb411b
   Input path=<generated> sha256=a747307d8f50ba3baf3fc3f62f349fdfc5cd9f95ae68358fa1274028c786e522
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
@@ -33,10 +32,7 @@ ImageReport v0
   DmaPool name=BlockPayloads type=DmaBlock
     Arg label=device value=device#0
     Arg label=count value=1
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
-    Child value=actor#1
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=pinned-virtio-blk work=0 work_source=unproved bytes=992 bytes_state=56 bytes_mailbox=152 bytes_pool=784
   Placement id=actor#0 type=Ledger core=0 source=inferred work=0 work_source=unproved bytes=128 bytes_state=8 bytes_mailbox=120 bytes_pool=0
   Placement id=actor#1 type=Client core=0 source=inferred work=0 work_source=unproved bytes=136 bytes_state=48 bytes_mailbox=88 bytes_pool=0

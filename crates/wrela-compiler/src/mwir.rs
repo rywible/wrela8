@@ -1157,7 +1157,7 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         }
         // plans/M7.md item E1: `BootError` is a prelude enum (one unit
         // variant), never a DeclEnum in this LayoutCtx — same vehicle as
-        // Target/Restart for the builder. Tag only.
+        // Target/Failure for the builder. Tag only.
         Type::Named(name, targs)
             if targs.is_empty()
                 && matches!(
@@ -1165,7 +1165,7 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     // plans/M8.md item G: 03-hardware.md §9's
                     // `CompletionOutcome` — three fieldless variants, so
                     // the tag word is the whole value.
-                    "BootError" | "Target" | "Restart" | "IoError" | "CompletionOutcome"
+                    "BootError" | "Target" | "Failure" | "IoError" | "CompletionOutcome"
                 ) =>
         {
             Ok(SLOT)

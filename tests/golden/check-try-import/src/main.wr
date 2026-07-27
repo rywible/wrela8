@@ -50,6 +50,5 @@ pub fn build() -> Image:
     img = Image(name="try-import", target=Target.wrela_machine_v1)
     storage = img.actor(Store, err=ERR_VIA_IMPORT, ok=OK_VIA_IMPORT,
                         none=NONE_VIA_IMPORT, some=SOME_VIA_IMPORT, mailbox=4)
-    img.supervise(children=[storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

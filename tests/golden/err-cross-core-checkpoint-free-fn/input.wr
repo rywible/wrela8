@@ -60,9 +60,5 @@ pub fn build() -> Image:
     img = Image(name="err-cross-core-checkpoint-free-fn", target=Target.wrela_machine_v1)
     q = img.actor(Quick, mailbox=4, core=1)
     s = img.actor(Slow, mailbox=4, core=1)
-    img.supervise(
-        children=[q, s],
-        strategy=Restart.OneForOne,
-        intensity=RestartIntensity(max=3, within=seconds(10)),
-    )
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -32,6 +32,5 @@ pub fn build() -> Image:
     img = Image(name="err-isr-while", target=Target.wrela_machine_v1)
     blk = img.device[VirtioBlock](transport=0x2000, vector=1)
     disk = img.driver(BlkDriver, device=blk)
-    img.supervise(children=[disk], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

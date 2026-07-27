@@ -7,9 +7,8 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=cache.wr sha256=1a924c897defb3a7ba6ca57e4d38aaae95bba87c419486d9078ef3df0519e2a2
-  Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
   Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
-  Input path=image.wr sha256=5778ef86a97edc7c4856fd70f343db253e77283c61dda63b4ca8a024d43ccddc
+  Input path=image.wr sha256=56e24549178a76a7f80966d536be2704e14fb1a0414f745596122f2e9c7775b4
   Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee
   Input path=<generated> sha256=494594976b211dc6d00f5dd988d8a52515e7ddfb68f056f9402d58f0d02b6c01
   Name value=storage-appliance
@@ -31,10 +30,7 @@ ImageReport v0
   Pool name=CacheBuffers type=u32
     Arg label=slots value=8
     Arg label=max_payload value=4096
-  Supervise index=0 strategy=Restart.OneForAll intensity=(3, 10000000000)
-    Child value=driver#0
-    Child value=actor#0
-    Child value=actor#1
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=StorageDriver core=0 source=inferred work=0 work_source=unproved bytes=16 bytes_state=16 bytes_mailbox=0 bytes_pool=0
   Placement id=actor#0 type=CacheActor core=0 source=inferred work=0 work_source=unproved bytes=176 bytes_state=24 bytes_mailbox=152 bytes_pool=0
   Placement id=actor#1 type=StatsActor core=0 source=inferred work=0 work_source=unproved bytes=144 bytes_state=24 bytes_mailbox=120 bytes_pool=0

@@ -64,6 +64,5 @@ pub fn build() -> Image:
     blk = img.device[BlockHw](transport=0x2000)
     disk = img.driver(BlkDriver, device=blk, sectors=2048)
     c = img.dma_pool[Ctl](name=Control, device=blk, count=4)
-    img.supervise(children=[disk], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

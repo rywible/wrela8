@@ -81,6 +81,5 @@ pub fn build() -> Image:
     hw = img.device[Hw](transport=0x1000, required_features=[Feature.Flush])
     c = img.actor(Counter, mailbox=8)
     s = img.driver(Stub, device=hw, mailbox=4)
-    img.supervise(children=[c, s], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

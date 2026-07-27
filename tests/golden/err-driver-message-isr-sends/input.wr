@@ -113,6 +113,5 @@ pub fn build() -> Image:
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
     bell = img.driver(Bell, mailbox=4)
     d = img.driver(BlkDriver, device=blk, bell=bell)
-    img.supervise(children=[bell, d], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

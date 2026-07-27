@@ -137,6 +137,5 @@ pub fn build() -> Image:
     storage = img.actor(Store, scalar=SCALAR, literal=LITERAL, inferred=INFERRED,
                         boolv=BOOL, concat=CONCAT, point=POINT, bound=BOUND,
                         hue=HUE, mailbox=4)
-    img.supervise(children=[storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -865,13 +865,13 @@ pub(crate) fn check(
     // plans/M4.md item B / plans/M9.md item I: the five stdlib enums
     // (`sema::stdlib_enums`) are injected into every module's own
     // `TypedProgram` unconditionally — the dumbest way to make
-    // `eval::interp::variant_index` index `Target`/`Restart`/…
+    // `eval::interp::variant_index` index `Target`/`Failure`/…
     // constructions with no evaluator-side special case. Variant
     // order comes from `stdlib/core/*.wr`. Harmless for a module that
     // never mentions them (this field is not part of the typed dump).
     for name in [
         "Target",
-        "Restart",
+        "Failure",
         "BootError",
         // plans/M9.md item A2: `IoError` is no longer injected — it arrives
         // through the ordinary import splice from `stdlib/core/io_error.wr`.
@@ -2921,7 +2921,7 @@ fn variant_payload_types_for(
         // `CallError[E]` (plans/M6.md item A, 02-language.md §9.4): a
         // fixed, compiler-known five-variant sum (the
         // `builtin_enum_variants` precedent, extended to carry payload
-        // types — `Target`/`Restart`'s own fieldless variants need none).
+        // types — `Target`/`Failure`'s own fieldless variants need none).
         // `Admission`/`Peer` are opaque builtin payload types (M7 grows
         // their fields; pattern-matching the *variant* is all M6 needs).
         Type::Named(name, targs) if name == "CallError" => {
@@ -2953,7 +2953,7 @@ fn variant_payload_types_for(
         }
         // plans/M8.md item G / plans/M9.md item I: an auto-visible stdlib
         // enum (`CompletionOutcome`, `BootError`, `DriverMode`, `Target`,
-        // `Restart`) may have no `DeclEnum` in `mctx.enums` — its variants
+        // `Failure`) may have no `DeclEnum` in `mctx.enums` — its variants
         // live in `sema::stdlib_enums`. Every one of them is fieldless, so
         // the payload answer is always the empty vector; this arm exists so
         // `match o: case .Unknown:` type-checks the same way a module-
@@ -3468,9 +3468,9 @@ fn check_field_expr(
                 ));
             }
             // plans/M4.md item B (05-library.md §9's own `Target`/
-            // `Restart` prelude enums, decision 5): recognized only once
+            // `Failure` prelude enums, decision 5): recognized only once
             // `bname` is not a real module struct/enum, so a module that
-            // declares its own `Target`/`Restart` shadows this fallback
+            // declares its own `Target`/`Failure` shadows this fallback
             // exactly like it would any other prelude name.
             // plans/M9.md item QQ: load failures are `error[build]`, not panic.
             if let Some(variants) = crate::sema::stdlib_enums::variant_strs(bname.as_str())? {
@@ -5480,39 +5480,6 @@ fn check_call_by_name(
                 ty: image_type(),
                 kind: TypedExprKind::Intrinsic {
                     key: "Image".to_string(),
-                    receiver: None,
-                    type_arg: None,
-                    args: iargs,
-                },
-            })
-        }
-        // The builder surface's own two supporting prelude helpers
-        // (02-language.md §11, 05-library.md §5): ordinary comptime-legal
-        // values, not graph-building effects, so `eval::legal` never
-        // restricts them to `@image` evaluation the way it does the ten
-        // intrinsics above (`typed::is_restricted_intrinsic`) — they
-        // share the same typed node (dumbest way that works: one
-        // dispatch point in `eval::interp`) purely because neither has a
-        // declared parameter list to check labeled arguments against
-        // either.
-        "RestartIntensity" => {
-            if args.len() != 2 {
-                return Err(type_error(
-                    "`RestartIntensity` takes exactly `max` and `within`".to_string(),
-                    call_span,
-                ));
-            }
-            let iargs = check_intrinsic_args(args, fctx, mctx)?;
-            if !iargs.iter().any(|(l, _)| l == "max") || !iargs.iter().any(|(l, _)| l == "within") {
-                return Err(type_error(
-                    "`RestartIntensity` requires `max` and `within`".to_string(),
-                    call_span,
-                ));
-            }
-            Ok(TypedExpr {
-                ty: Type::Named("RestartIntensity".to_string(), vec![]),
-                kind: TypedExprKind::Intrinsic {
-                    key: "RestartIntensity".to_string(),
                     receiver: None,
                     type_arg: None,
                     args: iargs,
@@ -9422,7 +9389,7 @@ fn actor_error(message: String, span: Span) -> SemaError {
 /// type says `CallError` by name (`variant_payload_types_for`/
 /// `matches::shape_of`), the same "builtin_enum_variants precedent" the
 /// plan names — a fixed, compiler-known variant/payload table, just with
-/// non-empty payloads unlike `Target`/`Restart`'s fieldless ones.
+/// non-empty payloads unlike `Target`/`Failure`'s fieldless ones.
 /// Variant erasure (decision 8) ships nothing at M6: no whole-image
 /// analysis proves any variant unreachable yet, so every composition
 /// keeps the full five-variant `CallError[E]` — recorded, not silently
@@ -10981,7 +10948,7 @@ fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<()
     }
 }
 
-/// `img.driver(A, ...)` / `img.actor(A, ...)` / `img.supervise(...)` /
+/// `img.driver(A, ...)` / `img.actor(A, ...)` / `img.on_failure(...)` /
 /// `img.check_layout(f)` / `img.seal()` — every builder method called
 /// directly on the `Image` builder value itself (05-library.md §9);
 /// `check_call_by_field`'s own new dispatch reaches here once the
@@ -11025,12 +10992,18 @@ fn check_image_method_intrinsic(
                 },
             })
         }
-        "supervise" => {
+        "on_failure" => {
             let iargs = check_intrinsic_args(args, fctx, mctx)?;
+            if !iargs.iter().any(|(l, _)| l == "policy") {
+                return Err(type_error(
+                    "`img.on_failure` requires `policy`".to_string(),
+                    call_span,
+                ));
+            }
             Ok(TypedExpr {
                 ty: Type::Unit,
                 kind: TypedExprKind::Intrinsic {
-                    key: "Image.supervise".to_string(),
+                    key: "Image.on_failure".to_string(),
                     receiver: None,
                     type_arg: None,
                     args: iargs,

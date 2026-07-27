@@ -44,6 +44,5 @@ async fn two_children_one_slot(c: Actor[C]):
 pub fn build() -> Image:
     img = Image(name="err-group-capacity-exceeded", target=Target.wrela_machine_v1)
     c = img.actor(C, mailbox=8)
-    img.supervise(children=[c], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

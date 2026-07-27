@@ -1,0 +1,7 @@
+# plans/M13.md item F: crash-only image failure policy (01 §7 / 05 §9).
+# Declaration order is load-bearing for variant tags.
+module failure
+
+pub enum Failure:
+    Reboot
+    Halt

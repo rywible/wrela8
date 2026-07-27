@@ -1,1 +1,0 @@
-error[build]: `driver#0` is supervised by more than one `img.supervise(children=[...])` group

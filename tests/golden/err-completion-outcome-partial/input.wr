@@ -100,6 +100,5 @@ pub fn build() -> Image:
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
     _payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=4)
     disk = img.driver(BlkDriver, device=blk)
-    img.supervise(children=[disk], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

@@ -1038,9 +1038,8 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
         // anywhere but the one reachable `@image` fn — `classify` clears
         // this flag on that one fn's own node afterward, so this arm
         // does not need to know which fn is currently being scanned.
-        // `RestartIntensity`/`seconds` share the node kind but are
-        // ordinary prelude helpers (excluded from the restricted set),
-        // so they fall through to `None`, legal everywhere.
+        // Non-restricted intrinsics sharing the node kind fall through
+        // to `None`, legal everywhere.
         TypedExprKind::Intrinsic { key, .. } => {
             if crate::sema::bodies::is_mmio_access_intrinsic(key) {
                 // plans/M7.md item C: 02-language.md §12's own sentence —
@@ -1072,8 +1071,7 @@ fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
                 // new illegal-reason arm decision 11 asks for, mirroring
                 // the intrinsic-outside-`@image` precedent just above.
                 // `ms(n)` shares this node kind but stays comptime-legal
-                // (falls through to `None`, same as `seconds`/
-                // `RestartIntensity`).
+                // (falls through to `None`).
                 Some("`now()` (a runtime-only clock read)")
             } else if key.starts_with("Group.") {
                 // `Group.start`/`Group.join_all` (plans/M6.md item A):

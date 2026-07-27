@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_dma_shared.wr sha256=2b1bdb4e7484b90a18a8f3f4d97146006c97e9086ebc7226a9f4b3d0b0e0c1f5
+  Input path=examples/check_dma_shared.wr sha256=b6c61116f4dd5ffe6534b56d74de683ed2d5ba06cef1e355faab7f049f41f733
   Input path=<generated> sha256=a499c7b9e3e915a3d8f6b103cb689ae1e800a4d2f407039026becaa2e564c1bf
   Name value=dma-shared
   Target value=Target.wrela_machine_v1
@@ -18,8 +18,7 @@ ImageReport v0
   DmaPool name=BlockControl type=BlkReqHeader
     Arg label=device value=device#0
     Arg label=count value=16
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=driver#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=BlkDriver core=0 source=inferred work=0 work_source=unproved bytes=392 bytes_state=8 bytes_mailbox=0 bytes_pool=384
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

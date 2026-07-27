@@ -87,8 +87,8 @@ pub const IMAGE_BUILDER_SURFACE: &[&str] = &[
     "Image.pool",
     // `img.dma_pool[T](name=P, device=d, count=N)`
     "Image.dma_pool",
-    // `img.supervise(children=..., strategy=..., intensity=...)`
-    "Image.supervise",
+    // `img.on_failure(policy=...)`
+    "Image.on_failure",
     // `img.check_layout(f)` — registers a `@layout_assert` (04 §2).
     "Image.check_layout",
     // `img.seal()` — consumes the builder.
@@ -128,13 +128,6 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
         "Array.try_map_take",
         "05 §7: sealed fallible whole-array consumption with unwind-and-reclaim on Err — \
          same reason as `Array.map_take`.",
-    ),
-    // --- 05 §9 adjacent: builder vocabulary with no parameter list ----
-    (
-        "RestartIntensity",
-        "02 §11 / 05 §9: `img.supervise(intensity=...)`'s argument. Comptime-only builder \
-         vocabulary read straight off the image graph; it shares the intrinsic node purely \
-         because it has no declared parameter list to align labeled arguments against.",
     ),
     // --- 03 §2: typed MMIO -------------------------------------------
     (
@@ -331,7 +324,7 @@ pub const FORMAT_KEY_SITES: &[(&str, &[&str], &str)] = &[
     ),
     (
         // `check_image_method_intrinsic` — the construction site is
-        // inside this match arm; `supervise`/`check_layout`/`seal` have
+        // inside this match arm; `on_failure`/`check_layout`/`seal` have
         // their own literal sites and anything else is "no builder
         // method".
         "Image.{name}",
@@ -369,7 +362,7 @@ pub const UNPRODUCED_CONSUMER_KEYS: &[(&str, &str)] = &[
 pub fn is_bare_resolvable(name: &str) -> bool {
     matches!(
         name,
-        "Image" | "RestartIntensity" | "now" | "wake" | "group" | "pool"
+        "Image" | "now" | "wake" | "group" | "pool"
     )
 }
 

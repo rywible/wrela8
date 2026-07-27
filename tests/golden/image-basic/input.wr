@@ -47,6 +47,5 @@ pub fn build() -> Image:
     disk = img.driver(Blk, device=block_device, queue_depth=8)
     storage = img.actor(Store, disk=disk.handle(), mailbox=16)
     buffers = img.pool[u32](name=Buffers, slots=4, max_payload=64)
-    img.supervise(children=[disk, storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

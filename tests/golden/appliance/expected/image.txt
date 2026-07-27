@@ -18,8 +18,6 @@ ImageGraph v0
   Pool name=CacheBuffers type=u32
     Arg label=slots value=8
     Arg label=max_payload value=4096
-  Supervise index=0
-    Arg label=children value=[driver#0, actor#0, actor#1]
-    Arg label=strategy value=Restart.OneForAll
-    Arg label=intensity value=(3, 10000000000)
+  OnFailure index=0
+    Arg label=policy value=Failure.Halt
   Sealed value=true

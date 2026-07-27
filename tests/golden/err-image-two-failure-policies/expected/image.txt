@@ -1,0 +1,1 @@
+error[build]: image declares `img.on_failure` more than once

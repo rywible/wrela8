@@ -6,14 +6,13 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_actor_smoke.wr sha256=e0b2fa7b243ea503bb71343ed33a946312b9fd228e073efa7bc6023f1ad3c55b
+  Input path=examples/boot_actor_smoke.wr sha256=d580a824a00268aec11aa3e5c0f0f56530ef982d3a1163b24ae41c063b0e5e95
   Input path=<generated> sha256=2be148b6e9f1aaa5ecdf978456b70242bedbd18fc1d3293b9bcee981df42b36f
   Name value=boot-actor-smoke
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
     Mailbox value=4
-  Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
-    Child value=actor#0
+  OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
     Padding offset=0x0 size=40

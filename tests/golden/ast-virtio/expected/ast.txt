@@ -17,10 +17,8 @@ Module @12:1 path=examples.virtio_storage
     ImportName @19:46 name=us
     ImportName @19:50 name=ms
     ImportName @19:54 name=wake
-  Import @20:1 from=runtime.supervision
-    ImportName @20:33 name=Restart
-    ImportName @20:42 name=RestartIntensity
-    ImportName @20:60 name=TaskFailure
+  Import @20:1 from=runtime.failure
+    ImportName @20:29 name=Failure
   Import @21:1 from=runtime.interrupt
     ImportName @21:31 name=InterruptCell
   Import @22:1 from=target.dma
@@ -2022,77 +2020,61 @@ Module @12:1 path=examples.virtio_storage
           Arg @625:9 label=mailbox
             Int @625:17 text=2
       ExprStmt @628:5
-        Call @628:18
-          Field @628:9 name=supervise
+        Call @628:19
+          Field @628:9 name=on_failure
             Name @628:5 name=img
-          Arg @629:9 label=children
-            List @629:18
-              Name @629:19 name=disk
-              Name @629:25 name=storage
-              Name @629:34 name=console
-              Name @629:43 name=notes
-          Arg @630:9 label=strategy
-            Field @630:26 name=OneForAll
-              Name @630:18 name=Restart
-          Arg @631:9 label=intensity
-            Call @631:35
-              Name @631:19 name=RestartIntensity
-              Arg @631:36 label=max
-                Int @631:40 text=3
-              Arg @631:43 label=within
-                Call @631:57
-                  Name @631:50 name=seconds
-                  Arg @631:58
-                    Int @631:58 text=10
-      ExprStmt @635:5
-        Call @635:18
-          Field @635:9 name=seed_disk
-            Name @635:5 name=img
-          Arg @635:19
-            Call @635:32
-              Name @635:19 name=extentfs_mkfs
-              Arg @636:9 label=files
-                List @636:15
-                  Call @636:24
-                    Name @636:16 name=SeedFile
-                    Arg @636:25 label=ino
-                      Int @636:29 text=7
-                    Arg @636:32 label=data
-                      BStr @636:37 text=b"hello from comptime\n"
-      ExprStmt @638:5
-        Call @638:21
-          Field @638:9 name=check_layout
-            Name @638:5 name=img
-          Arg @638:22
-            Name @638:22 name=example_limits
-      Return @639:5
-        Call @639:20
-          Field @639:16 name=seal
-            Name @639:12 name=img
-  Fn @643:1 name=example_limits
-    Attr @642:1 name=layout_assert
-    Param @643:19 name=report mode=read
-      TypeName @643:27 name=ImageReport
+          Arg @628:20 label=policy
+            Field @628:35 name=Halt
+              Name @628:27 name=Failure
+      ExprStmt @631:5
+        Call @631:18
+          Field @631:9 name=seed_disk
+            Name @631:5 name=img
+          Arg @631:19
+            Call @631:32
+              Name @631:19 name=extentfs_mkfs
+              Arg @632:9 label=files
+                List @632:15
+                  Call @632:24
+                    Name @632:16 name=SeedFile
+                    Arg @632:25 label=ino
+                      Int @632:29 text=7
+                    Arg @632:32 label=data
+                      BStr @632:37 text=b"hello from comptime\n"
+      ExprStmt @634:5
+        Call @634:21
+          Field @634:9 name=check_layout
+            Name @634:5 name=img
+          Arg @634:22
+            Name @634:22 name=example_limits
+      Return @635:5
+        Call @635:20
+          Field @635:16 name=seal
+            Name @635:12 name=img
+  Fn @639:1 name=example_limits
+    Attr @638:1 name=layout_assert
+    Param @639:19 name=report mode=read
+      TypeName @639:27 name=ImageReport
     Body
-      Assert @644:5
-        Binary @644:31 op=<
-          Field @644:19 name=peak_memory
-            Name @644:12 name=report
-          Field @644:36 name=MiB
-            Int @644:33 text=64
-      Assert @645:5
-        Binary @645:61 op===
-          Field @645:41 name=max_direct_requests
-            Call @645:24
-              Field @645:19 name=queue
-                Name @645:12 name=report
-              Arg @645:25
-                Str @645:25 text="virtio-blk.0"
-          Int @645:64 text=42
-      Assert @646:5
-        Binary @646:43 op===
-          Call @646:40
-            Field @646:37 name=len
-              Field @646:19 name=region_promotions
-                Name @646:12 name=report
-          Int @646:46 text=0
+      Assert @640:5
+        Binary @640:31 op=<
+          Field @640:19 name=peak_memory
+            Name @640:12 name=report
+          Field @640:36 name=MiB
+            Int @640:33 text=64
+      Assert @641:5
+        Binary @641:61 op===
+          Field @641:41 name=max_direct_requests
+            Call @641:24
+              Field @641:19 name=queue
+                Name @641:12 name=report
+              Arg @641:25
+                Str @641:25 text="virtio-blk.0"
+          Int @641:64 text=42
+      Assert @642:5
+        Binary @642:43 op===
+          Call @642:40
+            Field @642:37 name=len
+              Field @642:19 name=region_promotions
+                Name @642:12 name=report
+          Int @642:46 text=0

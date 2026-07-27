@@ -57,6 +57,5 @@ pub fn build() -> Image:
     other = img.device[OtherHw](transport=0x3000)
     d = img.driver(BlkDriver, device=blk)
     p = img.dma_pool[Hdr](name=Control, device=other, count=2)
-    img.supervise(children=[d], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()

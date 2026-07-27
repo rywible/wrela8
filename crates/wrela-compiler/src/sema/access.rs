@@ -1682,9 +1682,9 @@ fn check_call_by_name(
     }
     if name == "Image" {
         // plans/M4.md item B, decision 5: unlike `Some`/`Ok`/`Err`/
-        // `RestartIntensity`/`seconds` below (whose own results this
-        // pass never needs to track further — nothing calls a method on
-        // any of them), `img`'s own type *does* matter: every later
+        // `Some`/`Ok`/`Err`/`panic` below (whose own results this pass
+        // never needs to track further — nothing calls a method on any of
+        // them), `img`'s own type *does* matter: every later
         // `img.driver(...)`/`img.actor(...)`/... in the same `@image`
         // body is a real method call this pass's own best-effort type
         // tracker must not lose (`check_call_by_field`'s own new
@@ -1705,9 +1705,8 @@ fn check_call_by_name(
         }
         return Ok(Some(Type::Named("Instant".to_string(), vec![])));
     }
-    // `Some`/`Ok`/`Err`/`panic`/`RestartIntensity`/`seconds`: builtin
-    // pseudo-constructors with no declared parameter modes (they are not
-    // real `DeclParam`s).
+    // `Some`/`Ok`/`Err`/`panic`: builtin pseudo-constructors with no
+    // declared parameter modes (they are not real `DeclParam`s).
     for a in args {
         check_payload_arg(a, actx)?;
     }
@@ -1928,7 +1927,7 @@ fn check_call_by_field(
         let result = match name {
             "driver" | "actor" => Type::Named("ImageDecl".to_string(), vec![]),
             "seal" => Type::Named("Image".to_string(), vec![]),
-            _ => Type::Unit, // `supervise`/`check_layout`, or an already-rejected name.
+            _ => Type::Unit, // `on_failure`/`check_layout`, or an already-rejected name.
         };
         return Ok(Some(result));
     }

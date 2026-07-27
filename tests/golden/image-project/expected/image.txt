@@ -9,8 +9,6 @@ ImageGraph v0
   Pool name=Buffers type=u32
     Arg label=slots value=4
     Arg label=max_payload value=64
-  Supervise index=0
-    Arg label=children value=[driver#0, actor#0]
-    Arg label=strategy value=Restart.OneForOne
-    Arg label=intensity value=(3, 10000000000)
+  OnFailure index=0
+    Arg label=policy value=Failure.Halt
   Sealed value=true
