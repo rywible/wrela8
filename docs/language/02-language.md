@@ -673,9 +673,11 @@ CallError[E] =
 One signature is exempt from that composition, and its own chapter names it:
 a call to a `@driver` method carrying the handoff calling convention
 ([03 §5](03-hardware.md)) has result `Receipt[P]` exactly as declared. The
-receipt is the caller's endpoint on work no handler has done yet, so its
+handoff's single-resolution cell ([05 §3](05-library.md)) is the receipt
+itself — the caller's endpoint on work no handler has done yet — so its
 failure vocabulary is the receipt's own state machine, reached by awaiting
-it — not `CallError`.
+it — not `CallError`. Naming that shared cell does not dissolve this
+exemption; full dissolution is future work.
 
 `CallError` is the whole failure vocabulary for suspending work: group joins
 and installed tasks use the same variants minus the actor-specific ones.

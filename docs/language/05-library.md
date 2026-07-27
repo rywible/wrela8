@@ -83,6 +83,14 @@ is level-triggered and idempotent.
 `IoCompletion[P]` — owned `payload: P` returned before
 `status: Result[unit, IoError]` is inspected.
 
+An actor-call awaitable, a group child's join, a receipt's terminal await, and
+a service slot are instances of one sealed single-resolution cell —
+`(waiter, outcome)`, the shape the turn record carries literally as `reply` +
+`reply_tag` ([02 §9.4](02-language.md)). Naming the shared cell does not
+dissolve the handoff composition exemption: the handoff's cell is the receipt
+itself, restated there as an instance; full dissolution of that exemption is
+future work.
+
 ## 4. Groups and slots
 
 `group(deadline=..., capacity=...)` is the one suspend-safe

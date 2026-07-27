@@ -2082,6 +2082,16 @@ tests = [
 ]
 note = """plans/M13.md item L / decision 9 (2026-07-27): at an await/send/`?` boundary, a wildcard or unused binding that discards `Err` of a `Result[_, CallError[...]]` is `error[sema]` unless the consuming `match` carries `@discard(reason=\"...\")` (non-empty string; 02 §13 table). ROADMAP doctrine sentence lands verbatim in 02 §9.4: \"no silent `Err` discard without `@discard(reason=)`\". Goldens: `err-discarded-callerror` (refuse), `check-discard-annotated` (accept); existing pass-on-failure CallError goldens migrated with `@discard` — the golden diff is the review surface."""
 
+[[clause]]
+id = "actors.resolution.one-cell"
+doc = "05-library.md#3"
+status = "test"
+tests = [
+  "golden/boot-await-rejected",
+  "golden/boot-await-mailbox-full",
+]
+note = """plans/M13.md item R: 05 §3 names one sealed single-resolution cell — `(waiter, outcome)` — of which actor-call awaitables, group-child joins, receipt terminal awaits, and service slots are instances. The turn record carries that shape as `reply` + `reply_tag` (plans/M10.md item J; plans/M13.md item H). 02 §9.4's handoff paragraph is restated as an instance (\"the handoff's cell is the receipt itself\"); the composition exemption is not dissolved. Tests cite existing goldens only: `boot-await-rejected` (item H NotAdmitted composition into the reply cell) and `boot-await-mailbox-full` (reply_tag delivers `Err(NotAdmitted)`). Does not flip `library.async.completion-type` (user-facing `Completion[T]` remains consumer-gated)."""
+
 # --- M10: the runtime in wrela -----------------------------------------------
 
 [[clause]]
@@ -2302,4 +2312,4 @@ doc = "05-library.md#3"
 status = "gap"
 note = """05-library.md §3: `Completion[T]` is a sealed single-resolution awaitable resource. Only `IoCompletion[P]` exists today; the user-facing generic is unclaused without this row (2026-07-26 census survivor).
 
-**Disposition (plans/M13.md item E.4 / non-goals):** item R names the underlying single-resolution cell; shipping the user-facing type is consumer-gated. Flips to `test` when a consumer needs `Completion[T]` and a golden pins mint + single resolve."""
+**Disposition (plans/M13.md item E.4 / non-goals):** item R named the underlying single-resolution cell (`actors.resolution.one-cell`); shipping the user-facing type is consumer-gated. Flips to `test` when a consumer needs `Completion[T]` and a golden pins mint + single resolve."""
