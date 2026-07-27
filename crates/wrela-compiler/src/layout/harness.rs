@@ -18,22 +18,18 @@ use crate::encode::Cond;
 use crate::syntax::ast::Module;
 
 use super::{
-    ActorAddrs, BootCtx, BootInitArg, BootInitCall, CheckpointBlock, DeviceRegs, GroupServiceCtx,
-    ImageLayout, IrqVectorEntry, LayoutError, PoolPlacement, RingKind, RuntimePlacement,
-    RuntimeTables, RuntimeWiring, Section, WakeDrainEntry, actor_method_index_tables,
-    build_irq_host_injects, checkpoint_irq_shape, device_register_windows, driver_irq_vector,
-    driver_state_addr, driver_wake_pending_addr, enrich_layout_ctx_with_instantiations,
-    group_service_ctx, group_service_shape, image_pool_backings,
-    intern_fallible_init_abort_messages, mailbox_root_names, merge_layout_ctx, merge_mwir_programs,
-    pad_to, patch_adrp_add, patch_bl, patch_load_imm_words, place_device_regs, place_pools,
-    place_pools_unchecked, place_runtime_tables, resolve_cross_core_edge,
-    resolve_mailbox_actor_addrs, resolve_xreply_edge, round_up, steer_rtdata_base,
-    turns_deref_needs_rtdata, unresolved_call_target, verify_device_windows, verify_pool_windows,
-    verify_section_sizes, wake_needs_rtdata,
+    BootCtx, BootInitArg, BootInitCall, CheckpointBlock, DeviceRegs, GroupServiceCtx, ImageLayout,
+    IrqVectorEntry, LayoutError, PoolPlacement, RuntimePlacement, RuntimeTables, RuntimeWiring,
+    Section, WakeDrainEntry, actor_method_index_tables, build_irq_host_injects,
+    checkpoint_irq_shape, device_register_windows, driver_irq_vector, driver_state_addr,
+    driver_wake_pending_addr, enrich_layout_ctx_with_instantiations, group_service_ctx,
+    group_service_shape, image_pool_backings, intern_fallible_init_abort_messages,
+    merge_layout_ctx, merge_mwir_programs, pad_to, patch_adrp_add, patch_bl, patch_load_imm_words,
+    place_device_regs, place_pools, place_pools_unchecked, place_runtime_tables,
+    resolve_cross_core_edge, resolve_mailbox_actor_addrs, resolve_xreply_edge, round_up,
+    steer_rtdata_base, turns_deref_needs_rtdata, unresolved_call_target, verify_device_windows,
+    verify_pool_windows, verify_section_sizes, wake_needs_rtdata,
 };
-
-#[cfg(test)]
-use super::RingAddrs;
 
 // --- scratch registers for stub emission (never x0..x8/x29/x30/sp) -----
 
@@ -130,62 +126,33 @@ pub fn build_checkpoint_and_vector_stub_ex(
 /// `rt_select_and_run <Actor>` body per mailbox root into `program.fns`.
 /// Call after `RuntimeWiring::derive` and before the code section is
 /// laid out.
-pub(super) fn inject_rt_select_and_run_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
-    let mut xreply_by_producer: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for ring in &wiring.tables.rings {
-        if ring.kind == RingKind::Reply {
-            xreply_by_producer
-                .entry(ring.src)
-                .or_default()
-                .push(ring.dst);
+/// M11 J: overwrite `__method_R_M` placeholders with specialized call stubs
+/// (state in x0, stage in x8, bl method — decision 831). Alias
+/// `rt_enqueue <Actor>` onto `__enqueue_N` trampolines (decision 834).
+pub(super) fn inject_rt_enqueue_and_dispatch_fns(
+    program: &mut CodegenProgram,
+    wiring: &RuntimeWiring,
+) {
+    let extras = crate::rtconfig::extras_from_tables(&wiring.tables);
+    let mut flat = 0usize;
+    for mb in &extras.mailboxes {
+        for method in &mb.methods {
+            let key = format!("__method_{flat}");
+            program.fns.insert(
+                key,
+                crate::codegen::emit_method_call_stub(&method.key, mb.state),
+            );
+            flat += 1;
         }
     }
-    let roots = mailbox_root_names(&wiring.tables);
-    for (i, name) in roots.iter().enumerate() {
-        let (capacity, slot_size, frame_area_size) =
-            if let Some(a) = wiring.tables.actors.iter().find(|a| a.name == *name) {
-                (a.mailbox_capacity, a.slot_size, a.frame_size)
-            } else {
-                let d = wiring
-                    .tables
-                    .drivers
-                    .iter()
-                    .find(|d| d.name == *name && d.mailbox.is_some())
-                    .expect("mailbox root must be an actor or messageable driver");
-                let mb = d.mailbox.as_ref().unwrap();
-                (mb.capacity, mb.slot_size, mb.frame_size)
-            };
-        let methods = wiring
-            .dispatch
-            .get(i)
-            .map(|(_, keys)| {
-                keys.iter()
-                    .map(|(key, is_async, agg)| crate::codegen::RtSelectMethod {
-                        key: key.clone(),
-                        is_async: *is_async,
-                        reply_is_aggregate: *agg,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let actor_core = wiring.actor_cores.get(i).copied().unwrap_or(0);
-        let xreply_remotes = xreply_by_producer
-            .get(&actor_core)
-            .cloned()
-            .unwrap_or_default();
-        let spec = crate::codegen::RtSelectAndRunSpec {
-            actor: name.clone(),
-            capacity,
-            slot_size,
-            frame_area_size,
-            methods,
-            actor_core,
-            xreply_remotes,
+    for (i, name) in wiring.tables.enqueue_actors.iter().enumerate() {
+        let tramp = format!("__enqueue_{i}");
+        let Some(f) = program.fns.get(&tramp).cloned() else {
+            panic!("internal error: missing enqueue trampoline `{tramp}` after runtime reinject");
         };
-        let key = crate::codegen::rt_select_and_run_symbol(name);
         program
             .fns
-            .insert(key, crate::codegen::emit_rt_select_and_run(&spec));
+            .insert(crate::codegen::rt_enqueue_symbol(name), f);
     }
 }
 
@@ -359,168 +326,9 @@ pub(super) fn inject_checkpoint_irq_fns(program: &mut CodegenProgram, wiring: &R
             .insert(key, crate::codegen::emit_checkpoint_wake_call(&spec));
     }
 }
-
-/// `rt_enqueue_actor(x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn,
-/// x4=waker_core) -> x0 (0=admitted, 1=rejected — the `send`/call admission
-/// outcome, 02 §9.4's `NotAdmitted`/`Rejected` path, the minimal
-/// encoding of it)`. Admission alone — never selection, never dispatch,
-/// never readiness: a bounded ring insert, FIFO by construction (always
-/// appended at `tail`, always drained from `head` by
-/// `rt_select_and_run`) — 04 §2's "admission occupies one logical
-/// mailbox slot until selection; selection is FIFO per mailbox by
-/// admission order". The waker — plans/M10.md item 0c1: the awaiting
-/// turn's own **`Option[TurnId]`** in `x3` (0 for a one-way `send`) plus
-/// its `Option[CoreId]` in `x4` (0 = local), not the raw turn-area address
-/// with a core tag in its top bits that it used to be — is stored into the
-/// two `u32` halves of the slot's second word and carried to selection,
-/// where the dispatched turn's completion delivers its reply there.
-/// Admission is deliberately independent of the
-/// target's `busy` flag: a message to a busy(-suspended) actor QUEUES —
-/// decision 4's non-reentrancy lives entirely in selection, never here.
-/// A full ring (`count == capacity`) is rejected without touching
-/// `tail`/`count` at all — the caller's own arguments are left exactly
-/// where they were (in its own registers, now that they never left
-/// them), mirroring 02 §9.4's "an outcome that did not consume
-/// [arguments] hands them back" at this ABI granularity (a real
-/// `NotAdmitted(..)` payload carry-back is item G's job).
-///
-/// The arguments are **by value in `x1`/`x2`** — plans/M10.md item D0,
-/// decision 610. They used to be `x1 = args_ptr` (the address of a
-/// 2-word scratch pair in the caller's own frame) plus `x2 =
-/// nargs_words`, copied out by a runtime loop. Nothing reachable ever
-/// passed more than two words, and the *consumer* half of this ABI
-/// (`build_rt_select_and_run`) already loaded exactly `x1`/`x2` out of
-/// the slot, so this makes the two halves symmetric and removes the one
-/// raw address that crossed this call boundary.
-///
-/// Register use (leaf fn, owns every register it touches, never `x0..x4`
-/// until the outcome/scratch reuse below): `x9`/`x10` = count addr/value,
-/// then reused as scratch after the branch; `x11` = capacity, then a
-/// scratch; `x12`/`x13` = tail addr/value; `x14`/`x15` = slot-size scratch,
-/// then the computed slot address. `x28` (`X_FRAME`) is never touched —
-/// `emit_await_suspend` keeps using it across this `bl`.
-/// M10 item F2: hand-asm `build_ring_enqueue` deleted. Specialized twin is
-/// `codegen::emit_rt_enqueue` (decision 613 / 637). This helper materializes
-/// that body for same-buffer JIT/HVF harnesses — patches `MailboxAddr`
-/// against the stand-in addresses the harness already knows.
-pub fn build_rt_enqueue(
-    addrs: &ActorAddrs,
-    capacity: u64,
-    slot_size: u64,
-    _start: usize,
-) -> Vec<u32> {
-    use crate::codegen::{MailboxField, Reloc, emit_rt_enqueue};
-    let f = emit_rt_enqueue("__jit_actor", capacity, slot_size);
-    let mut words: Vec<u32> = f.code.iter().map(|(w, _)| *w).collect();
-    let mb = addrs.mailbox();
-    for reloc in &f.relocs {
-        match reloc {
-            Reloc::MailboxAddr { word, field, .. } => {
-                let value = match field {
-                    MailboxField::Ring => mb.ring,
-                    MailboxField::Head => mb.head,
-                    MailboxField::Tail => mb.tail,
-                    MailboxField::Count => mb.count,
-                    MailboxField::State => addrs.state,
-                    MailboxField::Turn => addrs.turn,
-                };
-                patch_load_imm_words(&mut words, *word, value);
-            }
-            other => panic!("unexpected reloc in JIT enqueue materialize: {other:?}"),
-        }
-    }
-    words
-}
-
-/// Raises core `core`'s own pending word (`pending::core_word_addr`), bit
-/// 0 — 06 §5's doorbell: "a shared-memory word, no trap". A plain
-/// read-modify-write is sound here for the same reason
-/// `build_checkpoint_and_vector_stub`'s own clear is: decision 11's baton
-/// means exactly one vCPU is inside `hv_vcpu_run` at any instant, so there
-/// is no concurrent writer to race. Uses `x9`/`x10`/`x11`.
-///
-/// Bit 0 rather than a ring-private vector bit is deliberate
-/// (decision 30): the pending word is a "something changed, re-derive
-/// readiness from memory" signal, and 04 §2 requires exactly that of it
-/// ("wakes are idempotent; the runtime park primitive has mask-arm-recheck
-/// semantics"). A core woken for a ring drains its rings because its loop
-/// always does, not because a bit told it to.
-/// M10 item F: hand-asm `build_rt_select_and_run*` deleted. Specialized
-/// twin is `codegen::emit_rt_select_and_run` (decision 630). This helper
-/// materializes that body for same-buffer JIT/HVF harnesses that still
-/// name methods by absolute word index — patches `MailboxAddr` /
-/// `TurnsBase` / `TurnStride` / method `Reloc::Call`s against the stand-in
-/// addresses the harness already knows.
-#[allow(clippy::too_many_arguments)]
-pub fn build_rt_select_and_run(
-    addrs: &ActorAddrs,
-    capacity: u64,
-    slot_size: u64,
-    dispatch: &[(usize, bool)],
-    frame_area_size: u64,
-    turns_base: u64,
-    log2_stride: u8,
-    start: usize,
-) -> Vec<u32> {
-    use crate::codegen::{
-        MailboxField, Reloc, RtSelectAndRunSpec, RtSelectMethod, emit_rt_select_and_run,
-    };
-    let methods: Vec<RtSelectMethod> = dispatch
-        .iter()
-        .enumerate()
-        .map(|(i, (_, is_async))| RtSelectMethod {
-            key: format!("__jit_select_m{i}"),
-            is_async: *is_async,
-            reply_is_aggregate: false,
-        })
-        .collect();
-    let method_starts: Vec<usize> = dispatch.iter().map(|(s, _)| *s).collect();
-    let spec = RtSelectAndRunSpec {
-        actor: "__jit_actor".into(),
-        capacity,
-        slot_size,
-        frame_area_size,
-        methods,
-        actor_core: 0,
-        xreply_remotes: vec![],
-    };
-    let f = emit_rt_select_and_run(&spec);
-    let mut words: Vec<u32> = f.code.iter().map(|(w, _)| *w).collect();
-    let turn_stride = 1u64 << log2_stride;
-    for reloc in &f.relocs {
-        match reloc {
-            Reloc::MailboxAddr { word, field, .. } => {
-                let value = match field {
-                    MailboxField::Ring => addrs.ring,
-                    MailboxField::Head => addrs.head,
-                    MailboxField::Tail => addrs.tail,
-                    MailboxField::Count => addrs.count,
-                    MailboxField::State => addrs.state,
-                    MailboxField::Turn => addrs.turn,
-                };
-                patch_load_imm_words(&mut words, *word, value);
-            }
-            Reloc::TurnsBase { word } => {
-                patch_load_imm_words(&mut words, *word, turns_base);
-            }
-            Reloc::TurnStride { word } => {
-                patch_load_imm_words(&mut words, *word, turn_stride);
-            }
-            Reloc::Call { word, key } => {
-                let idx: usize = key
-                    .strip_prefix("__jit_select_m")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or_else(|| panic!("unexpected Call key in JIT select: {key}"));
-                let target = method_starts[idx];
-                let this = start + *word;
-                let delta = (target as i64 - this as i64) * 4;
-                words[*word] = encode::enc_bl(delta as i32);
-            }
-            other => panic!("unexpected reloc in JIT select materialize: {other:?}"),
-        }
-    }
-    words
-}
+// M11 J: `build_rt_enqueue` / `build_rt_select_and_run` deleted with
+// `emit_rt_enqueue` / `emit_rt_select_and_run`; enqueue/select oracles live
+// in boot-*/expected/test.txt (decision 705).
 
 pub const DEADLOCK_MSG: &str =
     "runtime deadlock: no turn is ready and the root turn has not completed";
@@ -1641,6 +1449,8 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_child_poll",
         "__wrela_select_count",
         "__wrela_try_select",
+        "__wrela_select_root",
+        "__wrela_rt_select",
         "__wrela_try_drain",
         "__wrela_rt_drain",
         "__wrela_rt_xsend",
@@ -1649,6 +1459,28 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_child_turn_index",
         "__wrela_child_slot",
         "__wrela_try_enqueue",
+        "__wrela_enqueue_root",
+        "__wrela_rt_enqueue",
+        "__wrela_call_method",
+        "__wrela_deliver_reply",
+        "__wrela_invoke_xreply",
+        "__wrela_mb_capacity",
+        "__wrela_mb_slot_words",
+        "__wrela_mb_turn_index",
+        "__wrela_mb_core",
+        "__wrela_mb_state",
+        "__wrela_mb_has_lineage",
+        "__wrela_mb_method_count",
+        "__wrela_mb_get_head",
+        "__wrela_mb_set_head",
+        "__wrela_mb_get_tail",
+        "__wrela_mb_set_tail",
+        "__wrela_mb_get_count",
+        "__wrela_mb_set_count",
+        "__wrela_mb_load_word",
+        "__wrela_mb_store_word",
+        "__wrela_method_suspends",
+        "__wrela_method_is_aggregate",
         "__wrela_ring_capacity",
         "__wrela_ring_slot_words",
         "__wrela_ring_dst_core",
@@ -1693,8 +1525,8 @@ pub(super) fn codegen_runtime_force_roots_with(
     // `__wrela_xsend_*` / `__wrela_xreply_*` live in runtime.wr.
     for typed in programs.values() {
         for name in typed.fns.keys() {
-            if name.starts_with("__select_")
-                || name.starts_with("__resume_")
+            if name.starts_with("__resume_")
+                || name.starts_with("__method_")
                 || name.starts_with("__enqueue_")
                 || name.starts_with("__wrela_xsend_")
                 || name.starts_with("__wrela_xreply_")
@@ -1705,8 +1537,8 @@ pub(super) fn codegen_runtime_force_roots_with(
             }
         }
         for name in typed.imported.fns.keys() {
-            if name.starts_with("__select_")
-                || name.starts_with("__resume_")
+            if name.starts_with("__resume_")
+                || name.starts_with("__method_")
                 || name.starts_with("__enqueue_")
                 || name.starts_with("__wrela_")
                 || name.starts_with("__irq_call_")
@@ -1779,7 +1611,9 @@ pub(super) fn reinject_runtime_with_rtconfig(
     keys.push("__wrela_child_poll".into());
     // Match ladders / stub wrappers (Calls remapped onto ImageStatic keys).
     keys.push("__wrela_select_count".into());
+    keys.push("__wrela_select_root".into());
     keys.push("__wrela_try_select".into());
+    keys.push("__wrela_rt_select".into());
     keys.push("__wrela_try_drain".into());
     keys.push("__wrela_rt_drain".into());
     keys.push("__wrela_rt_xsend".into());
@@ -1787,7 +1621,29 @@ pub(super) fn reinject_runtime_with_rtconfig(
     keys.push("__wrela_resume_child".into());
     keys.push("__wrela_child_turn_index".into());
     keys.push("__wrela_child_slot".into());
+    keys.push("__wrela_enqueue_root".into());
     keys.push("__wrela_try_enqueue".into());
+    keys.push("__wrela_rt_enqueue".into());
+    keys.push("__wrela_call_method".into());
+    keys.push("__wrela_deliver_reply".into());
+    keys.push("__wrela_invoke_xreply".into());
+    keys.push("__wrela_mb_capacity".into());
+    keys.push("__wrela_mb_slot_words".into());
+    keys.push("__wrela_mb_turn_index".into());
+    keys.push("__wrela_mb_core".into());
+    keys.push("__wrela_mb_state".into());
+    keys.push("__wrela_mb_has_lineage".into());
+    keys.push("__wrela_mb_method_count".into());
+    keys.push("__wrela_mb_get_head".into());
+    keys.push("__wrela_mb_set_head".into());
+    keys.push("__wrela_mb_get_tail".into());
+    keys.push("__wrela_mb_set_tail".into());
+    keys.push("__wrela_mb_get_count".into());
+    keys.push("__wrela_mb_set_count".into());
+    keys.push("__wrela_mb_load_word".into());
+    keys.push("__wrela_mb_store_word".into());
+    keys.push("__wrela_method_suspends".into());
+    keys.push("__wrela_method_is_aggregate".into());
     // Ring accessors + drain lane ladders (item G).
     for k in [
         "__wrela_ring_capacity",
@@ -1831,6 +1687,10 @@ pub(super) fn reinject_runtime_with_rtconfig(
         keys.push(format!("__wrela_xsend_{i}"));
         keys.push(format!("__wrela_xreply_{i}"));
     }
+    for i in 0..crate::rtconfig::ENQUEUE_STUB_COUNT {
+        keys.push(format!("__enqueue_{i}"));
+    }
+
     // Boot call stubs (decision 812) — only live ones; overwritten after.
     for i in 0..tables.n_boot_calls {
         keys.push(format!("__boot_call_{i}"));
@@ -1913,7 +1773,7 @@ pub fn layout_test_image(
         // M11 E/F: re-codegen runtime against live RT/GROUPS/sched + match
         // ladders before specialized select/drain/enqueue inject.
         reinject_runtime_with_rtconfig(&mut program, w)?;
-        inject_rt_select_and_run_fns(&mut program, w);
+        inject_rt_enqueue_and_dispatch_fns(&mut program, w);
         inject_rt_cross_core_fns(&mut program, w);
         inject_boot_init_fn(&mut program, w);
         inject_checkpoint_irq_fns(&mut program, w);
@@ -2679,21 +2539,7 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     // Drain: core=0, one request lane + one reply lane, capacity=4.
     // Group child poll: one child at index 0.
     // Secondary core entry: core=1.
-    const TURNS_BASE: u64 = 0x4050_1000;
-    let ring = RingAddrs {
-        ring: 0x4050_2000,
-        head: 0x4050_2100,
-        tail: 0x4050_2108,
-        count: 0x4050_2110,
-    };
-    let _actor = ActorAddrs {
-        state: 0x4050_0000,
-        ring: ring.ring,
-        head: ring.head,
-        tail: ring.tail,
-        count: ring.count,
-        turn: TURNS_BASE,
-    };
+    // M11 J: enqueue/select REF ActorAddrs/RingAddrs measures deleted with emitters.
 
     // Floor / halt.
     {
@@ -2723,8 +2569,7 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     }
 
     // M10 F/F2: hand-asm select / cross-core / ring_enqueue deleted.
-    // JIT helpers `build_rt_select_and_run` / `build_rt_enqueue` only
-    // materialize specialized twins (NON_INVENTORY).
+    // M11 J: JIT `build_rt_enqueue` / `build_rt_select_and_run` deleted with emitters.
     // M10 H: emit_boot_init measured in codegen::emitted_a64_census_specialization_live_counts.
     {
         let addrs = HarnessAddrs::production();
@@ -2834,11 +2679,9 @@ mod harness_jit {
 
         /// The `_at` family: identical shape to a two-arg AAPCS64 leaf call,
         /// but entering at `byte_offset` into this same page instead of its
-        /// very first byte — plans/M6.md item C's own tests combine
-        /// several fragments (stand-in "actor method" bodies,
-        /// `rt_enqueue`, `rt_select_and_run`) into one JIT'd page, exactly
-        /// the M5 harness's own combined-section technique, and need to
-        /// call into the *middle* of it.
+        /// very first byte. M11 J deleted the enqueue/select combined-page
+        /// oracles; `call2_at` remains for the abort-tail latch probe.
+        #[allow(dead_code)]
         fn call0_at(&self, byte_offset: usize) -> u64 {
             assert!(byte_offset < self.len);
             let f: extern "C" fn() -> u64 =
@@ -2853,8 +2696,7 @@ mod harness_jit {
             f(a0, a1)
         }
 
-        /// plans/M10.md item 0c1: `rt_enqueue`'s ABI grew an `x4`
-        /// (`Option[CoreId]`), so the admission tests need five arguments.
+        #[allow(dead_code)]
         fn call5_at(&self, byte_offset: usize, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
             assert!(byte_offset < self.len);
             let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
@@ -3074,414 +2916,8 @@ mod harness_jit {
     }
 
     // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
-    // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
-    //
-    // Stand-in "actor method" bodies (hand-assembled, the identical ABI a
-    // real compiled method uses) stand in for compiled `pub fn`s /
-    // `pub async fn` state machines, combined into one JIT'd page
-    // alongside the real runtime routines — the M5 harness's own
-    // combined-section technique, one level up. Sync stand-ins:
-    // `add x0, x1, #N; ret` (self in x0 unread, one scalar arg in x1,
-    // reply in x0). The async stand-in below implements the full
-    // park-and-resume fn contract (`codegen::OFF_TURN_*`) by hand.
-
-    use crate::codegen::{
-        OFF_TURN_BUSY, OFF_TURN_REPLY, OFF_TURN_RESUME_READY, OFF_TURN_SUSPENDED,
-        TURN_STATUS_COMPLETED, TURN_STATUS_SUSPENDED,
-    };
-
-    fn stand_in_method(add_const: u16) -> Vec<u32> {
-        vec![
-            encode::enc_add_imm(0, 1, add_const, true),
-            encode::enc_ret(30),
-        ]
-    }
-
-    /// One actor's own region in a `HostRam` page, laid out exactly the
-    /// way `place_runtime_tables` places a real actor (state, ring,
-    /// head/tail/count, turn area), plus one detached stand-in **waker
-    /// record** (`waker`) an enqueued message can name so a test can
-    /// observe reply delivery — standing in for the awaiting turn's own
-    /// turn area.
-    struct ActorFixture {
-        ram: HostRam,
-        addrs: ActorAddrs,
-        waker: u64,
-    }
-
-    impl ActorFixture {
-        /// plans/M10.md item 0c1: a stand-in two-element turn array —
-        /// element 0 is the actor's own turn, element 1 the waker record —
-        /// at a power-of-two stride, exactly the shape
-        /// `place_runtime_tables` lays down. `Reloc`-free: these tests hand
-        /// the base and log2 stride straight to `build_rt_select_and_run`.
-        const TURN_STRIDE: u64 = 64;
-        const LOG2_TURN_STRIDE: u8 = 6;
-        /// The waker's own `TurnId` — 1-based, so element 1 is id 2. This is
-        /// what an admission now passes in `x3`, in place of the address.
-        const WAKER_ID: u64 = 2;
-
-        fn new(capacity: u64, slot_size: u64) -> ActorFixture {
-            let state_size: u64 = 8;
-            let ram = HostRam::new(4096);
-            let base = ram.base();
-            let ring = base + state_size;
-            let head = ring + capacity * slot_size;
-            let addrs = ActorAddrs {
-                state: base,
-                ring,
-                head,
-                tail: head + 8,
-                count: head + 16,
-                turn: head + 24,
-            };
-            // Turn-array element 1 (`WAKER_ID`), one stride past the
-            // actor's own — a detached record past the turn area proper
-            // (`TURN_RECORD_SIZE` is 64, matching this fixture's stride).
-            let waker = addrs.turn + Self::TURN_STRIDE;
-            ActorFixture { ram, addrs, waker }
-        }
-
-        /// The turn array's base — element 0 is this actor's own turn.
-        fn turns_base(&self) -> u64 {
-            self.addrs.turn
-        }
-
-        fn rel(&self, addr: u64) -> u64 {
-            addr - self.ram.base()
-        }
-
-        fn read(&self, addr: u64) -> u64 {
-            self.ram.read_u64(self.rel(addr))
-        }
-
-        fn write(&self, addr: u64, v: u64) {
-            self.ram.write_u64(self.rel(addr), v);
-        }
-    }
-
-    #[test]
-    fn rt_enqueue_admits_fifo_carries_the_waker_and_rejects_when_full() {
-        let capacity: u64 = 2;
-        let slot_size: u64 = 24; // idx + waker + one scalar arg
-        let f = ActorFixture::new(capacity, slot_size);
-        let addrs = f.addrs;
-
-        let mut combined: Vec<u32> = Vec::new();
-        let method0_start = combined.len();
-        combined.extend(stand_in_method(1)); // arg + 1
-        let method1_start = combined.len();
-        combined.extend(stand_in_method(2)); // arg + 2
-        let enqueue_start = combined.len();
-        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
-        let select_start = combined.len();
-        combined.extend(build_rt_select_and_run(
-            &addrs,
-            capacity,
-            slot_size,
-            &[(method0_start, false), (method1_start, false)],
-            crate::codegen::TURN_RECORD_SIZE,
-            f.turns_base(),
-            ActorFixture::LOG2_TURN_STRIDE,
-            select_start,
-        ));
-
-        let page = ExecPage::new(&combined);
-        let enqueue_off = enqueue_start * 4;
-        let select_off = select_start * 4;
-
-        // Arguments by value, `x1` = arg0 / `x2` = arg1 (plans/M10.md
-        // item D0, decision 610); this slot is 24 bytes, so only `x1` is
-        // stored.
-        assert_eq!(
-            page.call5_at(enqueue_off, 0, 10, 0, ActorFixture::WAKER_ID, 0),
-            0,
-            "first enqueue admitted"
-        );
-        assert_eq!(
-            page.call5_at(enqueue_off, 1, 20, 0, ActorFixture::WAKER_ID, 0),
-            0,
-            "second enqueue admitted"
-        );
-        assert_eq!(f.read(addrs.count), 2);
-
-        // A third, over capacity=2: rejected, ring state untouched
-        // (02 §9.4: an outcome that did not consume arguments hands them
-        // back — the minimal encoding is simply "never mutated").
-        assert_eq!(
-            page.call5_at(enqueue_off, 0, 30, 0, ActorFixture::WAKER_ID, 0),
-            1,
-            "ring full -> rejected"
-        );
-        assert_eq!(
-            f.read(addrs.count),
-            2,
-            "a rejected enqueue must not touch count"
-        );
-
-        // FIFO dispatch; each completion delivers to the waker record.
-        assert_eq!(page.call0_at(select_off), 1, "ran the first queued turn");
-        assert_eq!(
-            f.read(f.waker + OFF_TURN_REPLY),
-            11,
-            "FIFO: (method 0, arg 10) enqueued first, dispatched first; reply delivered to the waker"
-        );
-        assert_eq!(
-            f.read(f.waker + OFF_TURN_RESUME_READY),
-            1,
-            "delivery marks the waker ready to resume"
-        );
-        assert_eq!(
-            f.read(addrs.turn + OFF_TURN_BUSY),
-            0,
-            "busy cleared after the turn"
-        );
-        assert_eq!(
-            f.read(addrs.count),
-            1,
-            "selection released the dispatched slot (04 §2) — only the second message remains"
-        );
-
-        f.write(f.waker + OFF_TURN_RESUME_READY, 0);
-        assert_eq!(page.call0_at(select_off), 1, "ran the second queued turn");
-        assert_eq!(
-            f.read(f.waker + OFF_TURN_REPLY),
-            22,
-            "(method 1, arg 20) dispatched second, in admission order"
-        );
-
-        assert_eq!(
-            page.call0_at(select_off),
-            0,
-            "mailbox now empty: no turn to run"
-        );
-    }
-
-    #[test]
-    fn a_send_with_no_waker_delivers_nowhere() {
-        let capacity: u64 = 2;
-        let slot_size: u64 = 24;
-        let f = ActorFixture::new(capacity, slot_size);
-        let addrs = f.addrs;
-
-        let mut combined: Vec<u32> = Vec::new();
-        let method0_start = combined.len();
-        combined.extend(stand_in_method(1));
-        let enqueue_start = combined.len();
-        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
-        let select_start = combined.len();
-        combined.extend(build_rt_select_and_run(
-            &addrs,
-            capacity,
-            slot_size,
-            &[(method0_start, false)],
-            crate::codegen::TURN_RECORD_SIZE,
-            f.turns_base(),
-            ActorFixture::LOG2_TURN_STRIDE,
-            select_start,
-        ));
-        let page = ExecPage::new(&combined);
-
-        assert_eq!(
-            page.call5_at(enqueue_start * 4, 0, 7, 0, 0, 0),
-            0,
-            "send admitted (waker_turn = 0)"
-        );
-        assert_eq!(page.call0_at(select_start * 4), 1, "the send's turn ran");
-        assert_eq!(
-            f.read(f.waker + OFF_TURN_RESUME_READY),
-            0,
-            "no waker -> nothing marked ready anywhere"
-        );
-        assert_eq!(f.read(addrs.turn + OFF_TURN_BUSY), 0);
-    }
-
-    #[test]
-    fn rt_select_and_run_never_admits_a_second_turn_while_busy() {
-        // Decision 4's structural non-reentrancy: with `busy` set (a real
-        // parked awaiting turn's state) and no delivered reply, the actor
-        // must do nothing — the queued message stays queued.
-        let capacity: u64 = 1;
-        let slot_size: u64 = 24;
-        let f = ActorFixture::new(capacity, slot_size);
-        let addrs = f.addrs;
-        f.write(addrs.turn + OFF_TURN_BUSY, 1);
-        f.write(addrs.turn + OFF_TURN_SUSPENDED, 1); // parked...
-        // ...but resume_ready stays 0: the awaited reply has not arrived.
-        f.write(addrs.count, 1); // a second message is queued...
-
-        let mut combined: Vec<u32> = Vec::new();
-        let method0_start = combined.len();
-        combined.extend(stand_in_method(1));
-        let select_start = combined.len();
-        combined.extend(build_rt_select_and_run(
-            &addrs,
-            capacity,
-            slot_size,
-            &[(method0_start, false)],
-            crate::codegen::TURN_RECORD_SIZE,
-            f.turns_base(),
-            ActorFixture::LOG2_TURN_STRIDE,
-            select_start,
-        ));
-        let page = ExecPage::new(&combined);
-
-        assert_eq!(
-            page.call0_at(select_start * 4),
-            0,
-            "busy-suspended actor admits no new turn, even with a message queued"
-        );
-        assert_eq!(f.read(addrs.count), 1, "count untouched");
-        assert_eq!(
-            f.read(addrs.turn + OFF_TURN_BUSY),
-            1,
-            "still owned by the parked turn"
-        );
-    }
-
-    #[test]
-    fn rt_select_and_run_dispatches_correctly_at_the_smallest_possible_ring() {
-        // capacity=1, slot_size=16 (idx + waker, no args) — the smallest
-        // legal slot; the bounded arg load must never read past the ring.
-        let capacity: u64 = 1;
-        let slot_size: u64 = 16;
-        let f = ActorFixture::new(capacity, slot_size);
-        let addrs = f.addrs;
-        // Hand-seed one message (method 0, waker = the stand-in record).
-        f.write(addrs.ring, 0);
-        // plans/M10.md item 0c1: the slot's waker word is
-        // `(waker_turn: u32, waker_core: u32)` — id 2, core 0 (local).
-        f.write(addrs.ring + 8, ActorFixture::WAKER_ID);
-        f.write(addrs.tail, 1);
-        f.write(addrs.count, 1);
-
-        // A genuine no-arg method: returns a fixed constant, never reads
-        // x1/x2 at all.
-        let no_arg_method = vec![encode::enc_movz(0, 42, 0, true), encode::enc_ret(30)];
-
-        let mut combined: Vec<u32> = Vec::new();
-        let method0_start = combined.len();
-        combined.extend(no_arg_method);
-        let select_start = combined.len();
-        combined.extend(build_rt_select_and_run(
-            &addrs,
-            capacity,
-            slot_size,
-            &[(method0_start, false)],
-            crate::codegen::TURN_RECORD_SIZE,
-            f.turns_base(),
-            ActorFixture::LOG2_TURN_STRIDE,
-            select_start,
-        ));
-        let page = ExecPage::new(&combined);
-        assert_eq!(page.call0_at(select_start * 4), 1, "should have dispatched");
-        assert_eq!(f.read(f.waker + OFF_TURN_REPLY), 42);
-    }
-
-    /// A hand-assembled stand-in that implements the full compiled-async-
-    /// fn contract (`codegen.rs`'s park-and-resume module doc) against a
-    /// baked-in turn record address: fresh entry parks immediately (as if
-    /// its first op were an `await` of something external), a resumed
-    /// entry consumes the discriminant + delivered reply and completes
-    /// with `reply + 100`.
-    fn stand_in_async_method(rec: u64) -> Vec<u32> {
-        let mut w: Vec<u32> = Vec::new();
-        // load_imm x9, rec (4 words)
-        for word in load_imm4(9, rec) {
-            w.push(word);
-        }
-        w.push(encode::enc_ldr_x_imm(10, 9, OFF_TURN_SUSPENDED as u16));
-        // cbnz x10, +5 words -> .resume
-        w.push(encode::enc_cbnz(10, 5 * 4, true));
-        // fresh: suspended = 1; return TURN_STATUS_SUSPENDED.
-        w.push(encode::enc_movz(11, 1, 0, true));
-        w.push(encode::enc_str_x_imm(11, 9, OFF_TURN_SUSPENDED as u16));
-        w.push(encode::enc_movz(0, TURN_STATUS_SUSPENDED as u16, 0, true));
-        w.push(encode::enc_ret(30));
-        // .resume: clear discriminant + ready, complete with reply + 100.
-        w.push(encode::enc_str_x_imm(31, 9, OFF_TURN_SUSPENDED as u16));
-        w.push(encode::enc_str_x_imm(31, 9, OFF_TURN_RESUME_READY as u16));
-        w.push(encode::enc_ldr_x_imm(1, 9, OFF_TURN_REPLY as u16));
-        w.push(encode::enc_add_imm(1, 1, 100, true));
-        w.push(encode::enc_movz(0, TURN_STATUS_COMPLETED as u16, 0, true));
-        w.push(encode::enc_ret(30));
-        w
-    }
-
-    fn load_imm4(reg: u8, value: u64) -> [u32; 4] {
-        [
-            encode::enc_movz(reg, (value & 0xFFFF) as u16, 0, true),
-            encode::enc_movk(reg, ((value >> 16) & 0xFFFF) as u16, 16, true),
-            encode::enc_movk(reg, ((value >> 32) & 0xFFFF) as u16, 32, true),
-            encode::enc_movk(reg, ((value >> 48) & 0xFFFF) as u16, 48, true),
-        ]
-    }
-
-    /// The whole park-and-resume turn lifecycle through the real
-    /// scheduler primitives: fresh dispatch parks (a slice ran, busy
-    /// stays), the parked turn is not re-entered until its reply is
-    /// delivered, resume completes it, and the completion is delivered to
-    /// the ORIGINAL message's waker.
-    #[test]
-    fn a_parked_turn_resumes_only_after_delivery_and_then_completes_to_its_waker() {
-        let capacity: u64 = 2;
-        let slot_size: u64 = 16; // no-arg async method
-        let f = ActorFixture::new(capacity, slot_size);
-        let addrs = f.addrs;
-
-        let mut combined: Vec<u32> = Vec::new();
-        let method0_start = combined.len();
-        combined.extend(stand_in_async_method(addrs.turn));
-        let enqueue_start = combined.len();
-        combined.extend(build_rt_enqueue(&addrs, capacity, slot_size, enqueue_start));
-        let select_start = combined.len();
-        combined.extend(build_rt_select_and_run(
-            &addrs,
-            capacity,
-            slot_size,
-            &[(method0_start, true)],
-            crate::codegen::TURN_RECORD_SIZE,
-            f.turns_base(),
-            ActorFixture::LOG2_TURN_STRIDE,
-            select_start,
-        ));
-        let page = ExecPage::new(&combined);
-
-        assert_eq!(
-            page.call5_at(enqueue_start * 4, 0, 0, 0, ActorFixture::WAKER_ID, 0),
-            0,
-            "admitted"
-        );
-        // Fresh dispatch: the turn parks — a real slice ran.
-        assert_eq!(
-            page.call0_at(select_start * 4),
-            1,
-            "fresh slice ran (then parked)"
-        );
-        assert_eq!(
-            f.read(addrs.turn + OFF_TURN_BUSY),
-            1,
-            "parked turn still owns the actor"
-        );
-        assert_eq!(f.read(addrs.turn + OFF_TURN_SUSPENDED), 1);
-        assert_eq!(f.read(addrs.count), 0, "slot released at selection");
-        // Not resumable yet: nothing delivered.
-        assert_eq!(
-            page.call0_at(select_start * 4),
-            0,
-            "parked + no reply -> not ready"
-        );
-        // Deliver (what a completing awaited turn's scheduler would do).
-        f.write(addrs.turn + OFF_TURN_REPLY, 5);
-        f.write(addrs.turn + OFF_TURN_RESUME_READY, 1);
-        // Resume: completes with 105, delivered to the waker.
-        assert_eq!(page.call0_at(select_start * 4), 1, "resumed and completed");
-        assert_eq!(f.read(addrs.turn + OFF_TURN_BUSY), 0);
-        assert_eq!(f.read(f.waker + OFF_TURN_REPLY), 105);
-        assert_eq!(f.read(f.waker + OFF_TURN_RESUME_READY), 1);
-        assert_eq!(page.call0_at(select_start * 4), 0, "idle again");
-    }
-
+    // M11 J: enqueue/select JIT oracles deleted with emit_rt_enqueue /
+    // emit_rt_select_and_run — boot transcripts are the oracle (decision 705).
     // M11 F: RR oracle moved to boot goldens — `emit_rt_run_one` deleted;
     // `__wrela_rt_run_one` is generic wrela over SCHED + match ladders.
 }

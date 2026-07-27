@@ -105,7 +105,9 @@ eval_tests_per_entry_us = 20000
 # same rationale as every other lock in this file.
 # M11 item H: generic boot_init/secondary + INIT pool grow the appliance
 # build median (~454ms measured); lock admits that with headroom.
-build_appliance_median_us = 600000
+# M11 item J: enqueue/select as generic wrela + method stubs grow the
+# appliance build median (~1377ms measured); lock admits that with headroom.
+build_appliance_median_us = 2000000
 
 [guest]
 # `cargo xtask bench guest` (plans/M5.md item F, decision 14; workload

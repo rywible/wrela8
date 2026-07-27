@@ -19,6 +19,11 @@ pub const RESUME_STUB_COUNT: usize = 16
 pub const N_RINGS: usize = 0
 pub const RING_POOL_COUNT: usize = 8
 pub const ENQUEUE_STUB_COUNT: usize = 32
+pub const N_MAILBOXES: usize = 2
+pub const MB_POOL_COUNT: usize = 32
+pub const METHOD_CALL_POOL_COUNT: usize = 128
+pub const N_METHODS: usize = 5
+pub const TURNS_BASE: usize = 1079115776
 pub const N_INIT_SLOTS: usize = 2
 pub const N_BOOT_CALLS: usize = 0
 pub const BOOT_CALL_POOL_COUNT: usize = 32
@@ -35,8 +40,14 @@ struct TurnArea:
     suspended: u64
     resume_ready: u64
     reply: u64
+    @offset(0x20) waker_turn: u32
+    waker_core: u32
+    cur_method: u64
+    reply_slot_turn: u32
+    reply_slot_off: u32
     @offset(0x38) reply_tag: u64
     @offset(0x40) ambient_group: u64
+    lineage_deadline: u64
     @offset(0x3ff) _tail: u8
 
 @layout(runtime, endian=little)
@@ -77,7 +88,7 @@ pub static SCHED: SchedStripe
 struct GroupArena:
     slots: [GroupSlot; GROUP_SLOTS]
 
-@placed(0x4055fda0)
+@placed(0x4055f5a0)
 pub static GROUPS: GroupArena
 
 @layout(runtime, endian=little)
@@ -174,101 +185,363 @@ pub static RING7_DATA: Ring7Data
 @placed(0x4055ffe0)
 pub static RING7_CTL: RingCtl
 
-pub fn __select_0() -> u64:
-    return 0
+@layout(runtime, endian=little)
+struct MbCtl:
+    head: u64
+    tail: u64
+    count: u64
 
-pub fn __select_1() -> u64:
-    return 0
+pub const MB0_WORDS: usize = 24
+@layout(runtime, endian=little)
+struct Mb0Data:
+    words: [u64; MB0_WORDS]
 
-pub fn __select_2() -> u64:
-    return 0
+@placed(0x40520c08)
+pub static MB0_DATA: Mb0Data
 
-pub fn __select_3() -> u64:
-    return 0
+@placed(0x40520cc8)
+pub static MB0_CTL: MbCtl
 
-pub fn __select_4() -> u64:
-    return 0
+pub const MB1_WORDS: usize = 16
+@layout(runtime, endian=little)
+struct Mb1Data:
+    words: [u64; MB1_WORDS]
 
-pub fn __select_5() -> u64:
-    return 0
+@placed(0x40520ce8)
+pub static MB1_DATA: Mb1Data
 
-pub fn __select_6() -> u64:
-    return 0
+@placed(0x40520d68)
+pub static MB1_CTL: MbCtl
 
-pub fn __select_7() -> u64:
-    return 0
+pub const MB2_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb2Data:
+    words: [u64; MB2_WORDS]
 
-pub fn __select_8() -> u64:
-    return 0
+@placed(0x4055f680)
+pub static MB2_DATA: Mb2Data
 
-pub fn __select_9() -> u64:
-    return 0
+@placed(0x4055f6a0)
+pub static MB2_CTL: MbCtl
 
-pub fn __select_10() -> u64:
-    return 0
+pub const MB3_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb3Data:
+    words: [u64; MB3_WORDS]
 
-pub fn __select_11() -> u64:
-    return 0
+@placed(0x4055f6c0)
+pub static MB3_DATA: Mb3Data
 
-pub fn __select_12() -> u64:
-    return 0
+@placed(0x4055f6e0)
+pub static MB3_CTL: MbCtl
 
-pub fn __select_13() -> u64:
-    return 0
+pub const MB4_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb4Data:
+    words: [u64; MB4_WORDS]
 
-pub fn __select_14() -> u64:
-    return 0
+@placed(0x4055f700)
+pub static MB4_DATA: Mb4Data
 
-pub fn __select_15() -> u64:
-    return 0
+@placed(0x4055f720)
+pub static MB4_CTL: MbCtl
 
-pub fn __select_16() -> u64:
-    return 0
+pub const MB5_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb5Data:
+    words: [u64; MB5_WORDS]
 
-pub fn __select_17() -> u64:
-    return 0
+@placed(0x4055f740)
+pub static MB5_DATA: Mb5Data
 
-pub fn __select_18() -> u64:
-    return 0
+@placed(0x4055f760)
+pub static MB5_CTL: MbCtl
 
-pub fn __select_19() -> u64:
-    return 0
+pub const MB6_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb6Data:
+    words: [u64; MB6_WORDS]
 
-pub fn __select_20() -> u64:
-    return 0
+@placed(0x4055f780)
+pub static MB6_DATA: Mb6Data
 
-pub fn __select_21() -> u64:
-    return 0
+@placed(0x4055f7a0)
+pub static MB6_CTL: MbCtl
 
-pub fn __select_22() -> u64:
-    return 0
+pub const MB7_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb7Data:
+    words: [u64; MB7_WORDS]
 
-pub fn __select_23() -> u64:
-    return 0
+@placed(0x4055f7c0)
+pub static MB7_DATA: Mb7Data
 
-pub fn __select_24() -> u64:
-    return 0
+@placed(0x4055f7e0)
+pub static MB7_CTL: MbCtl
 
-pub fn __select_25() -> u64:
-    return 0
+pub const MB8_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb8Data:
+    words: [u64; MB8_WORDS]
 
-pub fn __select_26() -> u64:
-    return 0
+@placed(0x4055f800)
+pub static MB8_DATA: Mb8Data
 
-pub fn __select_27() -> u64:
-    return 0
+@placed(0x4055f820)
+pub static MB8_CTL: MbCtl
 
-pub fn __select_28() -> u64:
-    return 0
+pub const MB9_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb9Data:
+    words: [u64; MB9_WORDS]
 
-pub fn __select_29() -> u64:
-    return 0
+@placed(0x4055f840)
+pub static MB9_DATA: Mb9Data
 
-pub fn __select_30() -> u64:
-    return 0
+@placed(0x4055f860)
+pub static MB9_CTL: MbCtl
 
-pub fn __select_31() -> u64:
-    return 0
+pub const MB10_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb10Data:
+    words: [u64; MB10_WORDS]
+
+@placed(0x4055f880)
+pub static MB10_DATA: Mb10Data
+
+@placed(0x4055f8a0)
+pub static MB10_CTL: MbCtl
+
+pub const MB11_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb11Data:
+    words: [u64; MB11_WORDS]
+
+@placed(0x4055f8c0)
+pub static MB11_DATA: Mb11Data
+
+@placed(0x4055f8e0)
+pub static MB11_CTL: MbCtl
+
+pub const MB12_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb12Data:
+    words: [u64; MB12_WORDS]
+
+@placed(0x4055f900)
+pub static MB12_DATA: Mb12Data
+
+@placed(0x4055f920)
+pub static MB12_CTL: MbCtl
+
+pub const MB13_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb13Data:
+    words: [u64; MB13_WORDS]
+
+@placed(0x4055f940)
+pub static MB13_DATA: Mb13Data
+
+@placed(0x4055f960)
+pub static MB13_CTL: MbCtl
+
+pub const MB14_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb14Data:
+    words: [u64; MB14_WORDS]
+
+@placed(0x4055f980)
+pub static MB14_DATA: Mb14Data
+
+@placed(0x4055f9a0)
+pub static MB14_CTL: MbCtl
+
+pub const MB15_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb15Data:
+    words: [u64; MB15_WORDS]
+
+@placed(0x4055f9c0)
+pub static MB15_DATA: Mb15Data
+
+@placed(0x4055f9e0)
+pub static MB15_CTL: MbCtl
+
+pub const MB16_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb16Data:
+    words: [u64; MB16_WORDS]
+
+@placed(0x4055fa00)
+pub static MB16_DATA: Mb16Data
+
+@placed(0x4055fa20)
+pub static MB16_CTL: MbCtl
+
+pub const MB17_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb17Data:
+    words: [u64; MB17_WORDS]
+
+@placed(0x4055fa40)
+pub static MB17_DATA: Mb17Data
+
+@placed(0x4055fa60)
+pub static MB17_CTL: MbCtl
+
+pub const MB18_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb18Data:
+    words: [u64; MB18_WORDS]
+
+@placed(0x4055fa80)
+pub static MB18_DATA: Mb18Data
+
+@placed(0x4055faa0)
+pub static MB18_CTL: MbCtl
+
+pub const MB19_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb19Data:
+    words: [u64; MB19_WORDS]
+
+@placed(0x4055fac0)
+pub static MB19_DATA: Mb19Data
+
+@placed(0x4055fae0)
+pub static MB19_CTL: MbCtl
+
+pub const MB20_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb20Data:
+    words: [u64; MB20_WORDS]
+
+@placed(0x4055fb00)
+pub static MB20_DATA: Mb20Data
+
+@placed(0x4055fb20)
+pub static MB20_CTL: MbCtl
+
+pub const MB21_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb21Data:
+    words: [u64; MB21_WORDS]
+
+@placed(0x4055fb40)
+pub static MB21_DATA: Mb21Data
+
+@placed(0x4055fb60)
+pub static MB21_CTL: MbCtl
+
+pub const MB22_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb22Data:
+    words: [u64; MB22_WORDS]
+
+@placed(0x4055fb80)
+pub static MB22_DATA: Mb22Data
+
+@placed(0x4055fba0)
+pub static MB22_CTL: MbCtl
+
+pub const MB23_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb23Data:
+    words: [u64; MB23_WORDS]
+
+@placed(0x4055fbc0)
+pub static MB23_DATA: Mb23Data
+
+@placed(0x4055fbe0)
+pub static MB23_CTL: MbCtl
+
+pub const MB24_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb24Data:
+    words: [u64; MB24_WORDS]
+
+@placed(0x4055fc00)
+pub static MB24_DATA: Mb24Data
+
+@placed(0x4055fc20)
+pub static MB24_CTL: MbCtl
+
+pub const MB25_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb25Data:
+    words: [u64; MB25_WORDS]
+
+@placed(0x4055fc40)
+pub static MB25_DATA: Mb25Data
+
+@placed(0x4055fc60)
+pub static MB25_CTL: MbCtl
+
+pub const MB26_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb26Data:
+    words: [u64; MB26_WORDS]
+
+@placed(0x4055fc80)
+pub static MB26_DATA: Mb26Data
+
+@placed(0x4055fca0)
+pub static MB26_CTL: MbCtl
+
+pub const MB27_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb27Data:
+    words: [u64; MB27_WORDS]
+
+@placed(0x4055fcc0)
+pub static MB27_DATA: Mb27Data
+
+@placed(0x4055fce0)
+pub static MB27_CTL: MbCtl
+
+pub const MB28_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb28Data:
+    words: [u64; MB28_WORDS]
+
+@placed(0x4055fd00)
+pub static MB28_DATA: Mb28Data
+
+@placed(0x4055fd20)
+pub static MB28_CTL: MbCtl
+
+pub const MB29_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb29Data:
+    words: [u64; MB29_WORDS]
+
+@placed(0x4055fd40)
+pub static MB29_DATA: Mb29Data
+
+@placed(0x4055fd60)
+pub static MB29_CTL: MbCtl
+
+pub const MB30_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb30Data:
+    words: [u64; MB30_WORDS]
+
+@placed(0x4055fd80)
+pub static MB30_DATA: Mb30Data
+
+@placed(0x4055fda0)
+pub static MB30_CTL: MbCtl
+
+pub const MB31_WORDS: usize = 1
+@layout(runtime, endian=little)
+struct Mb31Data:
+    words: [u64; MB31_WORDS]
+
+@placed(0x4055fdc0)
+pub static MB31_DATA: Mb31Data
+
+@placed(0x4055fde0)
+pub static MB31_CTL: MbCtl
 
 pub fn __resume_0() -> u64:
     return 0
@@ -318,100 +591,388 @@ pub fn __resume_14() -> u64:
 pub fn __resume_15() -> u64:
     return 0
 
-pub fn __enqueue_0(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_0(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_1(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_1(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_2(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_2(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_3(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_3(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_4(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_4(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_5(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_5(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_6(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_6(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_7(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_7(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_8(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_8(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_9(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_9(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_10(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_10(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_11(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_11(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_12(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_12(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_13(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_13(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_14(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_14(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_15(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_15(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_16(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_16(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_17(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_17(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_18(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_18(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_19(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_19(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_20(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_20(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_21(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_21(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_22(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_22(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_23(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_23(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_24(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_24(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_25(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_25(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_26(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_26(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_27(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_27(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_28(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_28(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_29(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_29(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_30(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_30(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
-pub fn __enqueue_31(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __method_31(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_32(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_33(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_34(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_35(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_36(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_37(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_38(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_39(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_40(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_41(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_42(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_43(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_44(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_45(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_46(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_47(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_48(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_49(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_50(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_51(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_52(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_53(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_54(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_55(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_56(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_57(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_58(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_59(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_60(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_61(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_62(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_63(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_64(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_65(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_66(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_67(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_68(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_69(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_70(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_71(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_72(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_73(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_74(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_75(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_76(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_77(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_78(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_79(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_80(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_81(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_82(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_83(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_84(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_85(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_86(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_87(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_88(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_89(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_90(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_91(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_92(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_93(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_94(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_95(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_96(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_97(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_98(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_99(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_100(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_101(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_102(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_103(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_104(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_105(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_106(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_107(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_108(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_109(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_110(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_111(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_112(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_113(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_114(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_115(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_116(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_117(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_118(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_119(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_120(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_121(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_122(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_123(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_124(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_125(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_126(arg0: u64, arg1: u64, stage: u64) -> u64:
+    return 0
+
+pub fn __method_127(arg0: u64, arg1: u64, stage: u64) -> u64:
     return 0
 
 pub fn __boot_call_0():
@@ -576,266 +1137,266 @@ pub static INIT_SLOT1: InitSlot1Words
 struct InitSlot2Words:
     words: [u64; 1]
 
-@placed(0x4055fc70)
+@placed(0x4055f470)
 pub static INIT_SLOT2: InitSlot2Words
 
 @layout(runtime, endian=little)
 struct InitSlot3Words:
     words: [u64; 1]
 
-@placed(0x4055fc78)
+@placed(0x4055f478)
 pub static INIT_SLOT3: InitSlot3Words
 
 @layout(runtime, endian=little)
 struct InitSlot4Words:
     words: [u64; 1]
 
-@placed(0x4055fc80)
+@placed(0x4055f480)
 pub static INIT_SLOT4: InitSlot4Words
 
 @layout(runtime, endian=little)
 struct InitSlot5Words:
     words: [u64; 1]
 
-@placed(0x4055fc88)
+@placed(0x4055f488)
 pub static INIT_SLOT5: InitSlot5Words
 
 @layout(runtime, endian=little)
 struct InitSlot6Words:
     words: [u64; 1]
 
-@placed(0x4055fc90)
+@placed(0x4055f490)
 pub static INIT_SLOT6: InitSlot6Words
 
 @layout(runtime, endian=little)
 struct InitSlot7Words:
     words: [u64; 1]
 
-@placed(0x4055fc98)
+@placed(0x4055f498)
 pub static INIT_SLOT7: InitSlot7Words
 
 @layout(runtime, endian=little)
 struct InitSlot8Words:
     words: [u64; 1]
 
-@placed(0x4055fca0)
+@placed(0x4055f4a0)
 pub static INIT_SLOT8: InitSlot8Words
 
 @layout(runtime, endian=little)
 struct InitSlot9Words:
     words: [u64; 1]
 
-@placed(0x4055fca8)
+@placed(0x4055f4a8)
 pub static INIT_SLOT9: InitSlot9Words
 
 @layout(runtime, endian=little)
 struct InitSlot10Words:
     words: [u64; 1]
 
-@placed(0x4055fcb0)
+@placed(0x4055f4b0)
 pub static INIT_SLOT10: InitSlot10Words
 
 @layout(runtime, endian=little)
 struct InitSlot11Words:
     words: [u64; 1]
 
-@placed(0x4055fcb8)
+@placed(0x4055f4b8)
 pub static INIT_SLOT11: InitSlot11Words
 
 @layout(runtime, endian=little)
 struct InitSlot12Words:
     words: [u64; 1]
 
-@placed(0x4055fcc0)
+@placed(0x4055f4c0)
 pub static INIT_SLOT12: InitSlot12Words
 
 @layout(runtime, endian=little)
 struct InitSlot13Words:
     words: [u64; 1]
 
-@placed(0x4055fcc8)
+@placed(0x4055f4c8)
 pub static INIT_SLOT13: InitSlot13Words
 
 @layout(runtime, endian=little)
 struct InitSlot14Words:
     words: [u64; 1]
 
-@placed(0x4055fcd0)
+@placed(0x4055f4d0)
 pub static INIT_SLOT14: InitSlot14Words
 
 @layout(runtime, endian=little)
 struct InitSlot15Words:
     words: [u64; 1]
 
-@placed(0x4055fcd8)
+@placed(0x4055f4d8)
 pub static INIT_SLOT15: InitSlot15Words
 
 @layout(runtime, endian=little)
 struct InitSlot16Words:
     words: [u64; 1]
 
-@placed(0x4055fce0)
+@placed(0x4055f4e0)
 pub static INIT_SLOT16: InitSlot16Words
 
 @layout(runtime, endian=little)
 struct InitSlot17Words:
     words: [u64; 1]
 
-@placed(0x4055fce8)
+@placed(0x4055f4e8)
 pub static INIT_SLOT17: InitSlot17Words
 
 @layout(runtime, endian=little)
 struct InitSlot18Words:
     words: [u64; 1]
 
-@placed(0x4055fcf0)
+@placed(0x4055f4f0)
 pub static INIT_SLOT18: InitSlot18Words
 
 @layout(runtime, endian=little)
 struct InitSlot19Words:
     words: [u64; 1]
 
-@placed(0x4055fcf8)
+@placed(0x4055f4f8)
 pub static INIT_SLOT19: InitSlot19Words
 
 @layout(runtime, endian=little)
 struct InitSlot20Words:
     words: [u64; 1]
 
-@placed(0x4055fd00)
+@placed(0x4055f500)
 pub static INIT_SLOT20: InitSlot20Words
 
 @layout(runtime, endian=little)
 struct InitSlot21Words:
     words: [u64; 1]
 
-@placed(0x4055fd08)
+@placed(0x4055f508)
 pub static INIT_SLOT21: InitSlot21Words
 
 @layout(runtime, endian=little)
 struct InitSlot22Words:
     words: [u64; 1]
 
-@placed(0x4055fd10)
+@placed(0x4055f510)
 pub static INIT_SLOT22: InitSlot22Words
 
 @layout(runtime, endian=little)
 struct InitSlot23Words:
     words: [u64; 1]
 
-@placed(0x4055fd18)
+@placed(0x4055f518)
 pub static INIT_SLOT23: InitSlot23Words
 
 @layout(runtime, endian=little)
 struct InitSlot24Words:
     words: [u64; 1]
 
-@placed(0x4055fd20)
+@placed(0x4055f520)
 pub static INIT_SLOT24: InitSlot24Words
 
 @layout(runtime, endian=little)
 struct InitSlot25Words:
     words: [u64; 1]
 
-@placed(0x4055fd28)
+@placed(0x4055f528)
 pub static INIT_SLOT25: InitSlot25Words
 
 @layout(runtime, endian=little)
 struct InitSlot26Words:
     words: [u64; 1]
 
-@placed(0x4055fd30)
+@placed(0x4055f530)
 pub static INIT_SLOT26: InitSlot26Words
 
 @layout(runtime, endian=little)
 struct InitSlot27Words:
     words: [u64; 1]
 
-@placed(0x4055fd38)
+@placed(0x4055f538)
 pub static INIT_SLOT27: InitSlot27Words
 
 @layout(runtime, endian=little)
 struct InitSlot28Words:
     words: [u64; 1]
 
-@placed(0x4055fd40)
+@placed(0x4055f540)
 pub static INIT_SLOT28: InitSlot28Words
 
 @layout(runtime, endian=little)
 struct InitSlot29Words:
     words: [u64; 1]
 
-@placed(0x4055fd48)
+@placed(0x4055f548)
 pub static INIT_SLOT29: InitSlot29Words
 
 @layout(runtime, endian=little)
 struct InitSlot30Words:
     words: [u64; 1]
 
-@placed(0x4055fd50)
+@placed(0x4055f550)
 pub static INIT_SLOT30: InitSlot30Words
 
 @layout(runtime, endian=little)
 struct InitSlot31Words:
     words: [u64; 1]
 
-@placed(0x4055fd58)
+@placed(0x4055f558)
 pub static INIT_SLOT31: InitSlot31Words
 
 @layout(runtime, endian=little)
 struct WakePend0Word:
     word: u64
 
-@placed(0x4055fd60)
+@placed(0x4055f560)
 pub static WAKE_PEND0: WakePend0Word
 
 @layout(runtime, endian=little)
 struct WakePend1Word:
     word: u64
 
-@placed(0x4055fd68)
+@placed(0x4055f568)
 pub static WAKE_PEND1: WakePend1Word
 
 @layout(runtime, endian=little)
 struct WakePend2Word:
     word: u64
 
-@placed(0x4055fd70)
+@placed(0x4055f570)
 pub static WAKE_PEND2: WakePend2Word
 
 @layout(runtime, endian=little)
 struct WakePend3Word:
     word: u64
 
-@placed(0x4055fd78)
+@placed(0x4055f578)
 pub static WAKE_PEND3: WakePend3Word
 
 @layout(runtime, endian=little)
 struct WakePend4Word:
     word: u64
 
-@placed(0x4055fd80)
+@placed(0x4055f580)
 pub static WAKE_PEND4: WakePend4Word
 
 @layout(runtime, endian=little)
 struct WakePend5Word:
     word: u64
 
-@placed(0x4055fd88)
+@placed(0x4055f588)
 pub static WAKE_PEND5: WakePend5Word
 
 @layout(runtime, endian=little)
 struct WakePend6Word:
     word: u64
 
-@placed(0x4055fd90)
+@placed(0x4055f590)
 pub static WAKE_PEND6: WakePend6Word
 
 @layout(runtime, endian=little)
 struct WakePend7Word:
     word: u64
 
-@placed(0x4055fd98)
+@placed(0x4055f598)
 pub static WAKE_PEND7: WakePend7Word
 
 pub fn __wrela_select_count(core: usize) -> usize:
@@ -845,18 +1406,18 @@ pub fn __wrela_select_count(core: usize) -> usize:
         case _:
             return 0
 
-pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
+pub fn __wrela_select_root(core: usize, slot: usize) -> usize:
     match core:
         case 0:
             match slot:
                 case 0:
-                    return __select_0()
-                case 1:
-                    return __select_1()
-                case _:
                     return 0
+                case 1:
+                    return 1
+                case _:
+                    return 255
         case _:
-            return 0
+            return 255
 
 pub fn __wrela_resume_child(site: usize) -> u64:
     match site:
@@ -1103,6 +1664,818 @@ pub fn __wrela_ring_store_word(edge: usize, wi: usize, v: u64):
         case _:
             return
 
+pub fn __wrela_mb_capacity(root: usize) -> u64:
+    match root:
+        case 0:
+            return 8
+        case 1:
+            return 8
+        case _:
+            return 0
+
+pub fn __wrela_mb_slot_words(root: usize) -> usize:
+    match root:
+        case 0:
+            return 3
+        case 1:
+            return 2
+        case _:
+            return 0
+
+pub fn __wrela_mb_turn_index(root: usize) -> usize:
+    match root:
+        case 0:
+            return 0
+        case 1:
+            return 1
+        case _:
+            return 0
+
+pub fn __wrela_mb_core(root: usize) -> usize:
+    match root:
+        case 0:
+            return 0
+        case 1:
+            return 0
+        case _:
+            return 0
+
+pub fn __wrela_mb_state(root: usize) -> usize:
+    match root:
+        case 0:
+            return 1079118848
+        case 1:
+            return 1079119072
+        case _:
+            return 0
+
+pub fn __wrela_mb_has_lineage(root: usize) -> u64:
+    match root:
+        case 0:
+            return 0
+        case 1:
+            return 1
+        case _:
+            return 0
+
+pub fn __wrela_mb_method_count(root: usize) -> usize:
+    match root:
+        case 0:
+            return 2
+        case 1:
+            return 3
+        case _:
+            return 0
+
+pub fn __wrela_mb_get_head(root: usize) -> u64:
+    match root:
+        case 0:
+            return MB0_CTL.head
+        case 1:
+            return MB1_CTL.head
+        case 2:
+            return MB2_CTL.head
+        case 3:
+            return MB3_CTL.head
+        case 4:
+            return MB4_CTL.head
+        case 5:
+            return MB5_CTL.head
+        case 6:
+            return MB6_CTL.head
+        case 7:
+            return MB7_CTL.head
+        case 8:
+            return MB8_CTL.head
+        case 9:
+            return MB9_CTL.head
+        case 10:
+            return MB10_CTL.head
+        case 11:
+            return MB11_CTL.head
+        case 12:
+            return MB12_CTL.head
+        case 13:
+            return MB13_CTL.head
+        case 14:
+            return MB14_CTL.head
+        case 15:
+            return MB15_CTL.head
+        case 16:
+            return MB16_CTL.head
+        case 17:
+            return MB17_CTL.head
+        case 18:
+            return MB18_CTL.head
+        case 19:
+            return MB19_CTL.head
+        case 20:
+            return MB20_CTL.head
+        case 21:
+            return MB21_CTL.head
+        case 22:
+            return MB22_CTL.head
+        case 23:
+            return MB23_CTL.head
+        case 24:
+            return MB24_CTL.head
+        case 25:
+            return MB25_CTL.head
+        case 26:
+            return MB26_CTL.head
+        case 27:
+            return MB27_CTL.head
+        case 28:
+            return MB28_CTL.head
+        case 29:
+            return MB29_CTL.head
+        case 30:
+            return MB30_CTL.head
+        case 31:
+            return MB31_CTL.head
+        case _:
+            return 0
+
+pub fn __wrela_mb_set_head(root: usize, v: u64):
+    match root:
+        case 0:
+            MB0_CTL.head = v
+            return
+        case 1:
+            MB1_CTL.head = v
+            return
+        case 2:
+            MB2_CTL.head = v
+            return
+        case 3:
+            MB3_CTL.head = v
+            return
+        case 4:
+            MB4_CTL.head = v
+            return
+        case 5:
+            MB5_CTL.head = v
+            return
+        case 6:
+            MB6_CTL.head = v
+            return
+        case 7:
+            MB7_CTL.head = v
+            return
+        case 8:
+            MB8_CTL.head = v
+            return
+        case 9:
+            MB9_CTL.head = v
+            return
+        case 10:
+            MB10_CTL.head = v
+            return
+        case 11:
+            MB11_CTL.head = v
+            return
+        case 12:
+            MB12_CTL.head = v
+            return
+        case 13:
+            MB13_CTL.head = v
+            return
+        case 14:
+            MB14_CTL.head = v
+            return
+        case 15:
+            MB15_CTL.head = v
+            return
+        case 16:
+            MB16_CTL.head = v
+            return
+        case 17:
+            MB17_CTL.head = v
+            return
+        case 18:
+            MB18_CTL.head = v
+            return
+        case 19:
+            MB19_CTL.head = v
+            return
+        case 20:
+            MB20_CTL.head = v
+            return
+        case 21:
+            MB21_CTL.head = v
+            return
+        case 22:
+            MB22_CTL.head = v
+            return
+        case 23:
+            MB23_CTL.head = v
+            return
+        case 24:
+            MB24_CTL.head = v
+            return
+        case 25:
+            MB25_CTL.head = v
+            return
+        case 26:
+            MB26_CTL.head = v
+            return
+        case 27:
+            MB27_CTL.head = v
+            return
+        case 28:
+            MB28_CTL.head = v
+            return
+        case 29:
+            MB29_CTL.head = v
+            return
+        case 30:
+            MB30_CTL.head = v
+            return
+        case 31:
+            MB31_CTL.head = v
+            return
+        case _:
+            return
+
+pub fn __wrela_mb_get_tail(root: usize) -> u64:
+    match root:
+        case 0:
+            return MB0_CTL.tail
+        case 1:
+            return MB1_CTL.tail
+        case 2:
+            return MB2_CTL.tail
+        case 3:
+            return MB3_CTL.tail
+        case 4:
+            return MB4_CTL.tail
+        case 5:
+            return MB5_CTL.tail
+        case 6:
+            return MB6_CTL.tail
+        case 7:
+            return MB7_CTL.tail
+        case 8:
+            return MB8_CTL.tail
+        case 9:
+            return MB9_CTL.tail
+        case 10:
+            return MB10_CTL.tail
+        case 11:
+            return MB11_CTL.tail
+        case 12:
+            return MB12_CTL.tail
+        case 13:
+            return MB13_CTL.tail
+        case 14:
+            return MB14_CTL.tail
+        case 15:
+            return MB15_CTL.tail
+        case 16:
+            return MB16_CTL.tail
+        case 17:
+            return MB17_CTL.tail
+        case 18:
+            return MB18_CTL.tail
+        case 19:
+            return MB19_CTL.tail
+        case 20:
+            return MB20_CTL.tail
+        case 21:
+            return MB21_CTL.tail
+        case 22:
+            return MB22_CTL.tail
+        case 23:
+            return MB23_CTL.tail
+        case 24:
+            return MB24_CTL.tail
+        case 25:
+            return MB25_CTL.tail
+        case 26:
+            return MB26_CTL.tail
+        case 27:
+            return MB27_CTL.tail
+        case 28:
+            return MB28_CTL.tail
+        case 29:
+            return MB29_CTL.tail
+        case 30:
+            return MB30_CTL.tail
+        case 31:
+            return MB31_CTL.tail
+        case _:
+            return 0
+
+pub fn __wrela_mb_set_tail(root: usize, v: u64):
+    match root:
+        case 0:
+            MB0_CTL.tail = v
+            return
+        case 1:
+            MB1_CTL.tail = v
+            return
+        case 2:
+            MB2_CTL.tail = v
+            return
+        case 3:
+            MB3_CTL.tail = v
+            return
+        case 4:
+            MB4_CTL.tail = v
+            return
+        case 5:
+            MB5_CTL.tail = v
+            return
+        case 6:
+            MB6_CTL.tail = v
+            return
+        case 7:
+            MB7_CTL.tail = v
+            return
+        case 8:
+            MB8_CTL.tail = v
+            return
+        case 9:
+            MB9_CTL.tail = v
+            return
+        case 10:
+            MB10_CTL.tail = v
+            return
+        case 11:
+            MB11_CTL.tail = v
+            return
+        case 12:
+            MB12_CTL.tail = v
+            return
+        case 13:
+            MB13_CTL.tail = v
+            return
+        case 14:
+            MB14_CTL.tail = v
+            return
+        case 15:
+            MB15_CTL.tail = v
+            return
+        case 16:
+            MB16_CTL.tail = v
+            return
+        case 17:
+            MB17_CTL.tail = v
+            return
+        case 18:
+            MB18_CTL.tail = v
+            return
+        case 19:
+            MB19_CTL.tail = v
+            return
+        case 20:
+            MB20_CTL.tail = v
+            return
+        case 21:
+            MB21_CTL.tail = v
+            return
+        case 22:
+            MB22_CTL.tail = v
+            return
+        case 23:
+            MB23_CTL.tail = v
+            return
+        case 24:
+            MB24_CTL.tail = v
+            return
+        case 25:
+            MB25_CTL.tail = v
+            return
+        case 26:
+            MB26_CTL.tail = v
+            return
+        case 27:
+            MB27_CTL.tail = v
+            return
+        case 28:
+            MB28_CTL.tail = v
+            return
+        case 29:
+            MB29_CTL.tail = v
+            return
+        case 30:
+            MB30_CTL.tail = v
+            return
+        case 31:
+            MB31_CTL.tail = v
+            return
+        case _:
+            return
+
+pub fn __wrela_mb_get_count(root: usize) -> u64:
+    match root:
+        case 0:
+            return MB0_CTL.count
+        case 1:
+            return MB1_CTL.count
+        case 2:
+            return MB2_CTL.count
+        case 3:
+            return MB3_CTL.count
+        case 4:
+            return MB4_CTL.count
+        case 5:
+            return MB5_CTL.count
+        case 6:
+            return MB6_CTL.count
+        case 7:
+            return MB7_CTL.count
+        case 8:
+            return MB8_CTL.count
+        case 9:
+            return MB9_CTL.count
+        case 10:
+            return MB10_CTL.count
+        case 11:
+            return MB11_CTL.count
+        case 12:
+            return MB12_CTL.count
+        case 13:
+            return MB13_CTL.count
+        case 14:
+            return MB14_CTL.count
+        case 15:
+            return MB15_CTL.count
+        case 16:
+            return MB16_CTL.count
+        case 17:
+            return MB17_CTL.count
+        case 18:
+            return MB18_CTL.count
+        case 19:
+            return MB19_CTL.count
+        case 20:
+            return MB20_CTL.count
+        case 21:
+            return MB21_CTL.count
+        case 22:
+            return MB22_CTL.count
+        case 23:
+            return MB23_CTL.count
+        case 24:
+            return MB24_CTL.count
+        case 25:
+            return MB25_CTL.count
+        case 26:
+            return MB26_CTL.count
+        case 27:
+            return MB27_CTL.count
+        case 28:
+            return MB28_CTL.count
+        case 29:
+            return MB29_CTL.count
+        case 30:
+            return MB30_CTL.count
+        case 31:
+            return MB31_CTL.count
+        case _:
+            return 0
+
+pub fn __wrela_mb_set_count(root: usize, v: u64):
+    match root:
+        case 0:
+            MB0_CTL.count = v
+            return
+        case 1:
+            MB1_CTL.count = v
+            return
+        case 2:
+            MB2_CTL.count = v
+            return
+        case 3:
+            MB3_CTL.count = v
+            return
+        case 4:
+            MB4_CTL.count = v
+            return
+        case 5:
+            MB5_CTL.count = v
+            return
+        case 6:
+            MB6_CTL.count = v
+            return
+        case 7:
+            MB7_CTL.count = v
+            return
+        case 8:
+            MB8_CTL.count = v
+            return
+        case 9:
+            MB9_CTL.count = v
+            return
+        case 10:
+            MB10_CTL.count = v
+            return
+        case 11:
+            MB11_CTL.count = v
+            return
+        case 12:
+            MB12_CTL.count = v
+            return
+        case 13:
+            MB13_CTL.count = v
+            return
+        case 14:
+            MB14_CTL.count = v
+            return
+        case 15:
+            MB15_CTL.count = v
+            return
+        case 16:
+            MB16_CTL.count = v
+            return
+        case 17:
+            MB17_CTL.count = v
+            return
+        case 18:
+            MB18_CTL.count = v
+            return
+        case 19:
+            MB19_CTL.count = v
+            return
+        case 20:
+            MB20_CTL.count = v
+            return
+        case 21:
+            MB21_CTL.count = v
+            return
+        case 22:
+            MB22_CTL.count = v
+            return
+        case 23:
+            MB23_CTL.count = v
+            return
+        case 24:
+            MB24_CTL.count = v
+            return
+        case 25:
+            MB25_CTL.count = v
+            return
+        case 26:
+            MB26_CTL.count = v
+            return
+        case 27:
+            MB27_CTL.count = v
+            return
+        case 28:
+            MB28_CTL.count = v
+            return
+        case 29:
+            MB29_CTL.count = v
+            return
+        case 30:
+            MB30_CTL.count = v
+            return
+        case 31:
+            MB31_CTL.count = v
+            return
+        case _:
+            return
+
+pub fn __wrela_mb_load_word(root: usize, wi: usize) -> u64:
+    match root:
+        case 0:
+            return MB0_DATA.words[wi]
+        case 1:
+            return MB1_DATA.words[wi]
+        case 2:
+            return MB2_DATA.words[wi]
+        case 3:
+            return MB3_DATA.words[wi]
+        case 4:
+            return MB4_DATA.words[wi]
+        case 5:
+            return MB5_DATA.words[wi]
+        case 6:
+            return MB6_DATA.words[wi]
+        case 7:
+            return MB7_DATA.words[wi]
+        case 8:
+            return MB8_DATA.words[wi]
+        case 9:
+            return MB9_DATA.words[wi]
+        case 10:
+            return MB10_DATA.words[wi]
+        case 11:
+            return MB11_DATA.words[wi]
+        case 12:
+            return MB12_DATA.words[wi]
+        case 13:
+            return MB13_DATA.words[wi]
+        case 14:
+            return MB14_DATA.words[wi]
+        case 15:
+            return MB15_DATA.words[wi]
+        case 16:
+            return MB16_DATA.words[wi]
+        case 17:
+            return MB17_DATA.words[wi]
+        case 18:
+            return MB18_DATA.words[wi]
+        case 19:
+            return MB19_DATA.words[wi]
+        case 20:
+            return MB20_DATA.words[wi]
+        case 21:
+            return MB21_DATA.words[wi]
+        case 22:
+            return MB22_DATA.words[wi]
+        case 23:
+            return MB23_DATA.words[wi]
+        case 24:
+            return MB24_DATA.words[wi]
+        case 25:
+            return MB25_DATA.words[wi]
+        case 26:
+            return MB26_DATA.words[wi]
+        case 27:
+            return MB27_DATA.words[wi]
+        case 28:
+            return MB28_DATA.words[wi]
+        case 29:
+            return MB29_DATA.words[wi]
+        case 30:
+            return MB30_DATA.words[wi]
+        case 31:
+            return MB31_DATA.words[wi]
+        case _:
+            return 0
+
+pub fn __wrela_mb_store_word(root: usize, wi: usize, v: u64):
+    match root:
+        case 0:
+            MB0_DATA.words[wi] = v
+            return
+        case 1:
+            MB1_DATA.words[wi] = v
+            return
+        case 2:
+            MB2_DATA.words[wi] = v
+            return
+        case 3:
+            MB3_DATA.words[wi] = v
+            return
+        case 4:
+            MB4_DATA.words[wi] = v
+            return
+        case 5:
+            MB5_DATA.words[wi] = v
+            return
+        case 6:
+            MB6_DATA.words[wi] = v
+            return
+        case 7:
+            MB7_DATA.words[wi] = v
+            return
+        case 8:
+            MB8_DATA.words[wi] = v
+            return
+        case 9:
+            MB9_DATA.words[wi] = v
+            return
+        case 10:
+            MB10_DATA.words[wi] = v
+            return
+        case 11:
+            MB11_DATA.words[wi] = v
+            return
+        case 12:
+            MB12_DATA.words[wi] = v
+            return
+        case 13:
+            MB13_DATA.words[wi] = v
+            return
+        case 14:
+            MB14_DATA.words[wi] = v
+            return
+        case 15:
+            MB15_DATA.words[wi] = v
+            return
+        case 16:
+            MB16_DATA.words[wi] = v
+            return
+        case 17:
+            MB17_DATA.words[wi] = v
+            return
+        case 18:
+            MB18_DATA.words[wi] = v
+            return
+        case 19:
+            MB19_DATA.words[wi] = v
+            return
+        case 20:
+            MB20_DATA.words[wi] = v
+            return
+        case 21:
+            MB21_DATA.words[wi] = v
+            return
+        case 22:
+            MB22_DATA.words[wi] = v
+            return
+        case 23:
+            MB23_DATA.words[wi] = v
+            return
+        case 24:
+            MB24_DATA.words[wi] = v
+            return
+        case 25:
+            MB25_DATA.words[wi] = v
+            return
+        case 26:
+            MB26_DATA.words[wi] = v
+            return
+        case 27:
+            MB27_DATA.words[wi] = v
+            return
+        case 28:
+            MB28_DATA.words[wi] = v
+            return
+        case 29:
+            MB29_DATA.words[wi] = v
+            return
+        case 30:
+            MB30_DATA.words[wi] = v
+            return
+        case 31:
+            MB31_DATA.words[wi] = v
+            return
+        case _:
+            return
+
+pub fn __wrela_method_suspends(root: usize, method: usize) -> u64:
+    match root:
+        case 0:
+            match method:
+                case 0:
+                    return 0
+                case 1:
+                    return 0
+                case _:
+                    return 0
+        case 1:
+            match method:
+                case 0:
+                    return 1
+                case 1:
+                    return 1
+                case 2:
+                    return 1
+                case _:
+                    return 0
+        case _:
+            return 0
+
+pub fn __wrela_method_is_aggregate(root: usize, method: usize) -> u64:
+    match root:
+        case 0:
+            match method:
+                case 0:
+                    return 0
+                case 1:
+                    return 0
+                case _:
+                    return 0
+        case 1:
+            match method:
+                case 0:
+                    return 0
+                case 1:
+                    return 0
+                case 2:
+                    return 0
+                case _:
+                    return 0
+        case _:
+            return 0
+
+pub fn __wrela_call_method(root: usize, method: usize, arg0: u64, arg1: u64, stage: u64) -> u64:
+    match root:
+        case 0:
+            match method:
+                case 0:
+                    return __method_0(arg0, arg1, stage)
+                case 1:
+                    return __method_1(arg0, arg1, stage)
+                case _:
+                    return 0
+        case 1:
+            match method:
+                case 0:
+                    return __method_2(arg0, arg1, stage)
+                case 1:
+                    return __method_3(arg0, arg1, stage)
+                case 2:
+                    return __method_4(arg0, arg1, stage)
+                case _:
+                    return 0
+        case _:
+            return 0
+
 pub fn __wrela_xsend_edge(handle: usize, src_core: usize) -> usize:
     match src_core:
         case _:
@@ -1141,14 +2514,14 @@ pub fn __wrela_drain_request_edge(core: usize, slot: usize) -> usize:
         case _:
             return 255
 
-pub fn __wrela_try_enqueue(handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+pub fn __wrela_enqueue_root(handle: usize) -> usize:
     match handle:
         case 0:
-            return __enqueue_0(method, arg0, arg1, waker_turn, waker_core)
+            return 0
         case 1:
-            return __enqueue_1(method, arg0, arg1, waker_turn, waker_core)
-        case _:
             return 1
+        case _:
+            return 255
 
 pub fn __wrela_init_nwords(slot: usize) -> usize:
     match slot:

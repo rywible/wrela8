@@ -98,7 +98,6 @@ from core.__image_runtime import (
     WAKE_PEND6,
     WAKE_PEND7,
     __wrela_select_count,
-    __wrela_try_select,
     __wrela_resume_child,
     __wrela_child_turn_index,
     __wrela_child_slot,
@@ -121,39 +120,6 @@ from core.__image_runtime import (
     __wrela_drain_reply_edge,
     __wrela_drain_request_count,
     __wrela_drain_request_edge,
-    __wrela_try_enqueue,
-    __select_0,
-    __select_1,
-    __select_2,
-    __select_3,
-    __select_4,
-    __select_5,
-    __select_6,
-    __select_7,
-    __select_8,
-    __select_9,
-    __select_10,
-    __select_11,
-    __select_12,
-    __select_13,
-    __select_14,
-    __select_15,
-    __select_16,
-    __select_17,
-    __select_18,
-    __select_19,
-    __select_20,
-    __select_21,
-    __select_22,
-    __select_23,
-    __select_24,
-    __select_25,
-    __select_26,
-    __select_27,
-    __select_28,
-    __select_29,
-    __select_30,
-    __select_31,
     __resume_0,
     __resume_1,
     __resume_2,
@@ -170,38 +136,6 @@ from core.__image_runtime import (
     __resume_13,
     __resume_14,
     __resume_15,
-    __enqueue_0,
-    __enqueue_1,
-    __enqueue_2,
-    __enqueue_3,
-    __enqueue_4,
-    __enqueue_5,
-    __enqueue_6,
-    __enqueue_7,
-    __enqueue_8,
-    __enqueue_9,
-    __enqueue_10,
-    __enqueue_11,
-    __enqueue_12,
-    __enqueue_13,
-    __enqueue_14,
-    __enqueue_15,
-    __enqueue_16,
-    __enqueue_17,
-    __enqueue_18,
-    __enqueue_19,
-    __enqueue_20,
-    __enqueue_21,
-    __enqueue_22,
-    __enqueue_23,
-    __enqueue_24,
-    __enqueue_25,
-    __enqueue_26,
-    __enqueue_27,
-    __enqueue_28,
-    __enqueue_29,
-    __enqueue_30,
-    __enqueue_31,
     __boot_call_0,
     __boot_call_1,
     __boot_call_2,
@@ -250,6 +184,254 @@ from core.__image_runtime import (
     __wake_call_5,
     __wake_call_6,
     __wake_call_7,
+TURNS_BASE,
+    TURN_STRIDE,
+    N_MAILBOXES,
+    MB_POOL_COUNT,
+    MB0_CTL,
+    MB1_CTL,
+    MB2_CTL,
+    MB3_CTL,
+    MB4_CTL,
+    MB5_CTL,
+    MB6_CTL,
+    MB7_CTL,
+    MB8_CTL,
+    MB9_CTL,
+    MB10_CTL,
+    MB11_CTL,
+    MB12_CTL,
+    MB13_CTL,
+    MB14_CTL,
+    MB15_CTL,
+    MB16_CTL,
+    MB17_CTL,
+    MB18_CTL,
+    MB19_CTL,
+    MB20_CTL,
+    MB21_CTL,
+    MB22_CTL,
+    MB23_CTL,
+    MB24_CTL,
+    MB25_CTL,
+    MB26_CTL,
+    MB27_CTL,
+    MB28_CTL,
+    MB29_CTL,
+    MB30_CTL,
+    MB31_CTL,
+    MB0_DATA,
+    MB1_DATA,
+    MB2_DATA,
+    MB3_DATA,
+    MB4_DATA,
+    MB5_DATA,
+    MB6_DATA,
+    MB7_DATA,
+    MB8_DATA,
+    MB9_DATA,
+    MB10_DATA,
+    MB11_DATA,
+    MB12_DATA,
+    MB13_DATA,
+    MB14_DATA,
+    MB15_DATA,
+    MB16_DATA,
+    MB17_DATA,
+    MB18_DATA,
+    MB19_DATA,
+    MB20_DATA,
+    MB21_DATA,
+    MB22_DATA,
+    MB23_DATA,
+    MB24_DATA,
+    MB25_DATA,
+    MB26_DATA,
+    MB27_DATA,
+    MB28_DATA,
+    MB29_DATA,
+    MB30_DATA,
+    MB31_DATA,
+    MB0_WORDS,
+    MB1_WORDS,
+    MB2_WORDS,
+    MB3_WORDS,
+    MB4_WORDS,
+    MB5_WORDS,
+    MB6_WORDS,
+    MB7_WORDS,
+    MB8_WORDS,
+    MB9_WORDS,
+    MB10_WORDS,
+    MB11_WORDS,
+    MB12_WORDS,
+    MB13_WORDS,
+    MB14_WORDS,
+    MB15_WORDS,
+    MB16_WORDS,
+    MB17_WORDS,
+    MB18_WORDS,
+    MB19_WORDS,
+    MB20_WORDS,
+    MB21_WORDS,
+    MB22_WORDS,
+    MB23_WORDS,
+    MB24_WORDS,
+    MB25_WORDS,
+    MB26_WORDS,
+    MB27_WORDS,
+    MB28_WORDS,
+    MB29_WORDS,
+    MB30_WORDS,
+    MB31_WORDS,
+    __wrela_select_root,
+    __wrela_enqueue_root,
+    __wrela_mb_capacity,
+    __wrela_mb_slot_words,
+    __wrela_mb_turn_index,
+    __wrela_mb_core,
+    __wrela_mb_state,
+    __wrela_mb_has_lineage,
+    __wrela_mb_method_count,
+    __wrela_mb_get_head,
+    __wrela_mb_set_head,
+    __wrela_mb_get_tail,
+    __wrela_mb_set_tail,
+    __wrela_mb_get_count,
+    __wrela_mb_set_count,
+    __wrela_mb_load_word,
+    __wrela_mb_store_word,
+    __wrela_method_suspends,
+    __wrela_method_is_aggregate,
+    __wrela_call_method,
+    __method_0,
+    __method_1,
+    __method_2,
+    __method_3,
+    __method_4,
+    __method_5,
+    __method_6,
+    __method_7,
+    __method_8,
+    __method_9,
+    __method_10,
+    __method_11,
+    __method_12,
+    __method_13,
+    __method_14,
+    __method_15,
+    __method_16,
+    __method_17,
+    __method_18,
+    __method_19,
+    __method_20,
+    __method_21,
+    __method_22,
+    __method_23,
+    __method_24,
+    __method_25,
+    __method_26,
+    __method_27,
+    __method_28,
+    __method_29,
+    __method_30,
+    __method_31,
+    __method_32,
+    __method_33,
+    __method_34,
+    __method_35,
+    __method_36,
+    __method_37,
+    __method_38,
+    __method_39,
+    __method_40,
+    __method_41,
+    __method_42,
+    __method_43,
+    __method_44,
+    __method_45,
+    __method_46,
+    __method_47,
+    __method_48,
+    __method_49,
+    __method_50,
+    __method_51,
+    __method_52,
+    __method_53,
+    __method_54,
+    __method_55,
+    __method_56,
+    __method_57,
+    __method_58,
+    __method_59,
+    __method_60,
+    __method_61,
+    __method_62,
+    __method_63,
+    __method_64,
+    __method_65,
+    __method_66,
+    __method_67,
+    __method_68,
+    __method_69,
+    __method_70,
+    __method_71,
+    __method_72,
+    __method_73,
+    __method_74,
+    __method_75,
+    __method_76,
+    __method_77,
+    __method_78,
+    __method_79,
+    __method_80,
+    __method_81,
+    __method_82,
+    __method_83,
+    __method_84,
+    __method_85,
+    __method_86,
+    __method_87,
+    __method_88,
+    __method_89,
+    __method_90,
+    __method_91,
+    __method_92,
+    __method_93,
+    __method_94,
+    __method_95,
+    __method_96,
+    __method_97,
+    __method_98,
+    __method_99,
+    __method_100,
+    __method_101,
+    __method_102,
+    __method_103,
+    __method_104,
+    __method_105,
+    __method_106,
+    __method_107,
+    __method_108,
+    __method_109,
+    __method_110,
+    __method_111,
+    __method_112,
+    __method_113,
+    __method_114,
+    __method_115,
+    __method_116,
+    __method_117,
+    __method_118,
+    __method_119,
+    __method_120,
+    __method_121,
+    __method_122,
+    __method_123,
+    __method_124,
+    __method_125,
+    __method_126,
+    __method_127,
 )
 
 # M10 B2: machine pages the console formatter speaks to (decision 593).
@@ -898,6 +1080,264 @@ pub fn __wrela_xreply_6(turn_and_tag: u64, reply: u64):
 pub fn __wrela_xreply_7(turn_and_tag: u64, reply: u64):
     __wrela_rt_xreply(7, turn_and_tag, reply)
     return
+
+
+# ---------------------------------------------------------------------------
+# M11 item J: rt_enqueue + rt_select_and_run (decisions 830–835). Generic
+# @budget algorithms over mailbox overlays + generated method dispatch.
+# Send sites alias `rt_enqueue <Actor>` onto `__enqueue_N` trampolines;
+# run_one Calls `__wrela_try_select` → `__wrela_rt_select`.
+# ---------------------------------------------------------------------------
+
+const REPLY_TAG_OK: u64 = 0
+const CALL_ERROR_TAG_CANCELLED: u64 = 1
+
+# Admission: bounded ring insert. ABI matches former emit_rt_enqueue.
+pub fn __wrela_rt_enqueue(root: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    if root >= N_MAILBOXES:
+        return 1
+    if root == NO_EDGE:
+        return 1
+    cap = __wrela_mb_capacity(root)
+    count = __wrela_mb_get_count(root)
+    if count >= cap:
+        return 1
+    slot_words = __wrela_mb_slot_words(root)
+    tail = __wrela_mb_get_tail(root)
+    base = (tail *% slot_words.to[u64]()).to[usize]()
+    __wrela_mb_store_word(root, base, method)
+    packed = waker_turn | (waker_core << 32)
+    __wrela_mb_store_word(root, base +% 1, packed)
+    if slot_words >= 3:
+        __wrela_mb_store_word(root, base +% 2, arg0)
+    if slot_words >= 4:
+        __wrela_mb_store_word(root, base +% 3, arg1)
+    t = tail +% 1
+    if t >= cap:
+        t = 0
+    __wrela_mb_set_tail(root, t)
+    __wrela_mb_set_count(root, count +% 1)
+    return 0
+
+# Handle-identity → enqueue (drain request lane).
+pub fn __wrela_try_enqueue(handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    root = __wrela_enqueue_root(handle)
+    if root == NO_EDGE:
+        return 1
+    return __wrela_rt_enqueue(root, method, arg0, arg1, waker_turn, waker_core)
+
+# Fixed trampolines so layout can alias `rt_enqueue <Actor>` → `__enqueue_N`.
+pub fn __enqueue_0(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(0, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_1(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(1, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_2(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(2, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_3(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(3, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_4(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(4, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_5(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(5, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_6(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(6, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_7(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(7, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_8(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(8, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_9(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(9, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_10(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(10, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_11(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(11, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_12(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(12, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_13(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(13, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_14(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(14, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_15(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(15, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_16(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(16, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_17(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(17, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_18(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(18, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_19(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(19, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_20(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(20, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_21(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(21, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_22(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(22, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_23(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(23, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_24(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(24, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_25(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(25, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_26(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(26, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_27(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(27, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_28(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(28, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_29(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(29, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_30(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(30, method, arg0, arg1, waker_turn, waker_core)
+pub fn __enqueue_31(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(31, method, arg0, arg1, waker_turn, waker_core)
+
+# Invoke cross-core reply trampoline by edge index.
+pub fn __wrela_invoke_xreply(edge: usize, turn_and_tag: u64, reply: u64):
+    match edge:
+        case 0:
+            __wrela_xreply_0(turn_and_tag, reply)
+            return
+        case 1:
+            __wrela_xreply_1(turn_and_tag, reply)
+            return
+        case 2:
+            __wrela_xreply_2(turn_and_tag, reply)
+            return
+        case 3:
+            __wrela_xreply_3(turn_and_tag, reply)
+            return
+        case 4:
+            __wrela_xreply_4(turn_and_tag, reply)
+            return
+        case 5:
+            __wrela_xreply_5(turn_and_tag, reply)
+            return
+        case 6:
+            __wrela_xreply_6(turn_and_tag, reply)
+            return
+        case 7:
+            __wrela_xreply_7(turn_and_tag, reply)
+            return
+        case _:
+            return
+
+# Deliver reply to waker (local TurnArea or remote xreply ring).
+pub fn __wrela_deliver_reply(root: usize, ti: usize, reply: u64, tag: u64):
+    wt = RT.turns[ti].waker_turn.to[u64]()
+    if wt == 0:
+        return
+    wc = RT.turns[ti].waker_core.to[u64]()
+    if wc != 0:
+        actor_core = __wrela_mb_core(root)
+        dst = (wc -% 1).to[usize]()
+        edge = __wrela_xreply_edge(actor_core, dst)
+        turn_and_tag = wt | (tag << 32)
+        __wrela_invoke_xreply(edge, turn_and_tag, reply)
+        return
+    wi: usize = (wt -% 1).to[usize]()
+    RT.turns[wi].reply_tag = tag
+    RT.turns[wi].reply = reply
+    RT.turns[wi].resume_ready = 1
+    return
+
+# Select + dispatch one mailbox root. Returns 1 if a turn(-slice) ran.
+pub fn __wrela_rt_select(root: usize) -> u64:
+    if root >= N_MAILBOXES:
+        return 0
+    if root == NO_EDGE:
+        return 0
+    ti = __wrela_mb_turn_index(root)
+    arg0: u64 = 0
+    arg1: u64 = 0
+    method: u64 = 0
+    if RT.turns[ti].busy != 0:
+        if RT.turns[ti].suspended == 0:
+            return 0
+        if RT.turns[ti].resume_ready == 0:
+            return 0
+        method = RT.turns[ti].cur_method
+    else:
+        count = __wrela_mb_get_count(root)
+        if count == 0:
+            return 0
+        RT.turns[ti].busy = 1
+        slot_words = __wrela_mb_slot_words(root)
+        head = __wrela_mb_get_head(root)
+        base = (head *% slot_words.to[u64]()).to[usize]()
+        method = __wrela_mb_load_word(root, base)
+        packed = __wrela_mb_load_word(root, base +% 1)
+        wt = packed & 4294967295
+        wc = packed >> 32
+        RT.turns[ti].cur_method = method
+        RT.turns[ti].waker_turn = wt.to[u32]()
+        RT.turns[ti].waker_core = wc.to[u32]()
+        if __wrela_mb_has_lineage(root) != 0:
+            RT.turns[ti].ambient_group = 0
+            RT.turns[ti].lineage_deadline = 0
+        if slot_words >= 3:
+            arg0 = __wrela_mb_load_word(root, base +% 2)
+        if slot_words >= 4:
+            arg1 = __wrela_mb_load_word(root, base +% 3)
+        h = head +% 1
+        cap = __wrela_mb_capacity(root)
+        if h >= cap:
+            h = 0
+        __wrela_mb_set_head(root, h)
+        c = __wrela_mb_get_count(root)
+        __wrela_mb_set_count(root, c -% 1)
+    mi: usize = method.to[usize]()
+    n_methods = __wrela_mb_method_count(root)
+    if n_methods == 0:
+        MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+        return 0
+    if mi >= n_methods:
+        MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+        return 0
+    stage: u64 = 0
+    is_agg = __wrela_method_is_aggregate(root, mi)
+    if is_agg != 0:
+        wt = RT.turns[ti].waker_turn.to[u64]()
+        if wt == 0:
+            MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+            return 0
+        waker_ti: usize = (wt -% 1).to[usize]()
+        slot_turn = RT.turns[waker_ti].reply_slot_turn.to[u64]()
+        slot_off = RT.turns[waker_ti].reply_slot_off.to[u64]()
+        turn_base = TURNS_BASE +% ((slot_turn -% 1).to[usize]() *% TURN_STRIDE)
+        stage = (turn_base +% slot_off.to[usize]()).to[u64]()
+    status_or_reply = __wrela_call_method(root, mi, arg0, arg1, stage)
+    is_async = __wrela_method_suspends(root, mi)
+    if is_async != 0:
+        if status_or_reply == TURN_STATUS_SUSPENDED:
+            return 1
+        reply: u64 = 0
+        tag: u64 = REPLY_TAG_OK
+        if status_or_reply == TURN_STATUS_CANCELLED:
+            tag = CALL_ERROR_TAG_CANCELLED
+            reply = 0
+        else:
+            reply = RT.turns[ti].reply
+        __wrela_deliver_reply(root, ti, reply, tag)
+        RT.turns[ti].busy = 0
+        RT.turns[ti].waker_turn = 0
+        RT.turns[ti].waker_core = 0
+        return 1
+    reply2: u64 = 0
+    if is_agg == 0:
+        reply2 = status_or_reply
+    __wrela_deliver_reply(root, ti, reply2, REPLY_TAG_OK)
+    RT.turns[ti].busy = 0
+    RT.turns[ti].waker_turn = 0
+    RT.turns[ti].waker_core = 0
+    return 1
+
+# RR slot → select (replaces generated try_select → ImageStatic remap).
+pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
+    root = __wrela_select_root(core, slot)
+    if root == NO_EDGE:
+        return 0
+    return __wrela_rt_select(root)
 
 # ---------------------------------------------------------------------------
 # M11 item H: boot_init + secondary_core_entry (decisions 810–815).

@@ -1,7 +1,7 @@
 //! Image runtime config generator (plans/M11.md item D, decisions 700–702 /
 //! 709 / 760–769; item E, decisions 780–786; item F, decisions 790–796;
 //! item G, decisions 800–809; item H, decisions 810–815; item I, decisions
-//! 820–829).
+//! 820–829; item J, decisions 830–849).
 //!
 //! After `@image` evaluation + placement, the compiler pretty-prints a
 //! hidden facts-only module (`core.__image_runtime`) as source text and
@@ -44,8 +44,31 @@ pub struct RingFact {
     pub target_actor: Option<String>,
 }
 
+/// One mailbox-root's placed facts (plans/M11.md item J / decision 830).
+#[derive(Debug, Clone)]
+pub struct MailboxFact {
+    pub name: String,
+    pub capacity: u64,
+    pub slot_size: u64,
+    pub frame_size: u64,
+    pub state: u64,
+    pub ring: u64,
+    pub head: u64,
+    pub turn_index: usize,
+    pub core: usize,
+    pub methods: Vec<MethodFact>,
+}
+
+/// One dispatch method on a mailbox root (decision 831).
+#[derive(Debug, Clone)]
+pub struct MethodFact {
+    pub key: String,
+    pub is_async: bool,
+    pub reply_is_aggregate: bool,
+}
+
 /// Image-specific facts beyond [`RuntimeTables`] (item F / decision 790;
-/// item G / decision 800).
+/// item G / decision 800; item J / decision 830).
 /// Empty vectors yield match ladders that always return 0 (stub / dump).
 #[derive(Debug, Clone, Default)]
 pub struct RtconfigExtras {
@@ -62,6 +85,8 @@ pub struct RtconfigExtras {
     pub enqueue_handles: Vec<u64>,
     /// Mailbox-root names parallel to `enqueue_handles` (remap targets).
     pub enqueue_actors: Vec<String>,
+    /// M11 J: per-root mailbox overlays + method facts (enqueue_actors order).
+    pub mailboxes: Vec<MailboxFact>,
     /// M11 H: `(state_addr, nwords)` zero-fill slots — actors then drivers
     /// (decision 813), matching former `emit_boot_init` order.
     pub init_slots: Vec<(u64, u64)>,
@@ -95,6 +120,11 @@ pub const RESUME_STUB_COUNT: usize = 16;
 /// handwritten trampoline pools in `runtime.wr`.
 pub const RING_POOL_COUNT: usize = 8;
 pub const ENQUEUE_STUB_COUNT: usize = 32;
+/// Mailbox-root overlay pool (decision 830). Same ceiling as enqueue stubs.
+pub const MB_POOL_COUNT: usize = 32;
+/// Flat method-call stub pool (decision 831). `runtime.wr` imports every
+/// `__method_N` so `__wrela_call_method` bodies can Call them.
+pub const METHOD_CALL_POOL_COUNT: usize = 128;
 /// Boot `init` call stub pool (decision 812).
 pub const BOOT_CALL_POOL_COUNT: usize = 32;
 /// IRQ handler / wake `@task` stub pools (decision 823).
@@ -193,6 +223,98 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
             target_actor,
         });
     }
+    let mut mailboxes = Vec::new();
+    for (i, name) in tables.enqueue_actors.iter().enumerate() {
+        let (capacity, slot_size, frame_size, state, ring, head, turn_index) =
+            if let Some((ai, a)) = tables
+                .actors
+                .iter()
+                .enumerate()
+                .find(|(_, a)| a.name == *name)
+            {
+                let addrs = placement.actors.get(ai).copied().unwrap_or_else(|| {
+                    crate::layout::ActorAddrs {
+                        state: RTDATA_BASE,
+                        ring: RTDATA_BASE,
+                        head: RTDATA_BASE,
+                        tail: RTDATA_BASE,
+                        count: RTDATA_BASE,
+                        turn: RTDATA_BASE,
+                    }
+                });
+                (
+                    a.mailbox_capacity,
+                    a.slot_size,
+                    a.frame_size,
+                    addrs.state,
+                    addrs.ring,
+                    addrs.head,
+                    ai,
+                )
+            } else {
+                let (di, d) = tables
+                    .drivers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, d)| d.name == *name && d.mailbox.is_some())
+                    .expect("enqueue actor must be actor or messageable driver");
+                let mb = d.mailbox.as_ref().unwrap();
+                let addrs = placement
+                    .driver_mailboxes
+                    .get(&di)
+                    .copied()
+                    .unwrap_or_else(|| crate::layout::ActorAddrs {
+                        state: RTDATA_BASE,
+                        ring: RTDATA_BASE,
+                        head: RTDATA_BASE,
+                        tail: RTDATA_BASE,
+                        count: RTDATA_BASE,
+                        turn: RTDATA_BASE,
+                    });
+                let turn_index = tables.actors.len()
+                    + tables
+                        .drivers
+                        .iter()
+                        .take(di)
+                        .filter(|dd| dd.mailbox.is_some())
+                        .count();
+                (
+                    mb.capacity,
+                    mb.slot_size,
+                    mb.frame_size,
+                    addrs.state,
+                    addrs.ring,
+                    addrs.head,
+                    turn_index,
+                )
+            };
+        let methods = tables
+            .root_methods
+            .get(i)
+            .map(|ms| {
+                ms.iter()
+                    .map(|(key, is_async, agg)| MethodFact {
+                        key: key.clone(),
+                        is_async: *is_async,
+                        reply_is_aggregate: *agg,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let core = tables.root_cores.get(i).copied().unwrap_or(0);
+        mailboxes.push(MailboxFact {
+            name: name.clone(),
+            capacity,
+            slot_size,
+            frame_size,
+            state,
+            ring,
+            head,
+            turn_index,
+            core,
+            methods,
+        });
+    }
     RtconfigExtras {
         select_by_core: tables.select_by_core.clone(),
         drain_by_core: tables.drain_by_core.clone(),
@@ -208,6 +330,7 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
         rings,
         enqueue_handles: tables.enqueue_handles.clone(),
         enqueue_actors: tables.enqueue_actors.clone(),
+        mailboxes,
         init_slots,
         n_boot_calls: tables.n_boot_calls,
         irq_vector_bits: tables.irq_vector_bits.clone(),
@@ -247,7 +370,10 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     // Overlay GROUPS at a non-colliding placeholder so RING*_DATA can own
     // the real ring addresses (decision 800) — same move as empty-sched.
     let group_addr = if group_cap == 0 {
-        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX - (RING_POOL_COUNT as u64) * 64 - 96
+        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+            - (RING_POOL_COUNT as u64) * 64
+            - (MB_POOL_COUNT as u64) * 64
+            - 96
     } else {
         placement.group_arena
     };
@@ -280,6 +406,16 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         extras.enqueue_actors.len() <= ENQUEUE_STUB_COUNT,
         "image needs {} enqueue stubs; pool is {ENQUEUE_STUB_COUNT} (decision 802)",
         extras.enqueue_actors.len()
+    );
+    assert!(
+        extras.mailboxes.len() <= MB_POOL_COUNT,
+        "image needs {} mailboxes; pool is {MB_POOL_COUNT} (decision 830)",
+        extras.mailboxes.len()
+    );
+    let n_methods: usize = extras.mailboxes.iter().map(|m| m.methods.len()).sum();
+    assert!(
+        n_methods <= METHOD_CALL_POOL_COUNT,
+        "image needs {n_methods} method stubs; pool is {METHOD_CALL_POOL_COUNT} (decision 831)"
     );
     assert!(
         extras.init_slots.len() <= BOOT_CALL_POOL_COUNT,
@@ -324,6 +460,11 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "N_RINGS", n_rings);
     push_const(&mut out, "RING_POOL_COUNT", RING_POOL_COUNT);
     push_const(&mut out, "ENQUEUE_STUB_COUNT", ENQUEUE_STUB_COUNT);
+    push_const(&mut out, "N_MAILBOXES", extras.mailboxes.len());
+    push_const(&mut out, "MB_POOL_COUNT", MB_POOL_COUNT);
+    push_const(&mut out, "METHOD_CALL_POOL_COUNT", METHOD_CALL_POOL_COUNT);
+    push_const(&mut out, "N_METHODS", n_methods);
+    push_const(&mut out, "TURNS_BASE", RTDATA_BASE as usize);
     push_const(&mut out, "N_INIT_SLOTS", extras.init_slots.len());
     push_const(&mut out, "N_BOOT_CALLS", extras.n_boot_calls);
     push_const(&mut out, "BOOT_CALL_POOL_COUNT", BOOT_CALL_POOL_COUNT);
@@ -340,17 +481,23 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "NO_EDGE", NO_EDGE);
     out.push('\n');
 
-    // Turn header. `reply` at +24 is OFF_TURN_REPLY; `reply_tag` at +0x38
-    // is OFF_TURN_REPLY_TAG (drain writes both — decision 803).
+    // Turn header. Waker / cur_method / reply_slot fill the gap before
+    // reply_tag (decision 832 — select/deliver through RT.turns).
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct TurnArea:\n");
     out.push_str("    busy: u64\n");
     out.push_str("    suspended: u64\n");
     out.push_str("    resume_ready: u64\n");
     out.push_str("    reply: u64\n");
+    out.push_str("    @offset(0x20) waker_turn: u32\n");
+    out.push_str("    waker_core: u32\n");
+    out.push_str("    cur_method: u64\n");
+    out.push_str("    reply_slot_turn: u32\n");
+    out.push_str("    reply_slot_off: u32\n");
     out.push_str("    @offset(0x38) reply_tag: u64\n");
     out.push_str("    @offset(0x40) ambient_group: u64\n");
-    if turn_stride > 0x48 {
+    out.push_str("    lineage_deadline: u64\n");
+    if turn_stride > 0x50 {
         out.push_str(&format!("    @offset({:#x}) _tail: u8\n", turn_stride - 1));
     }
     out.push('\n');
@@ -392,6 +539,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     let rt_addr = if tables.n_turns == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
             - (RING_POOL_COUNT as u64) * 64
+            - (MB_POOL_COUNT as u64) * 64
             - 96
             - (BOOT_CALL_POOL_COUNT as u64) * 8
             - (WAKE_CALL_POOL_COUNT as u64) * 8
@@ -462,20 +610,52 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         out.push('\n');
     }
 
-    // Fixed stub pools (decision 791 / 802).
-    for i in 0..SELECT_STUB_COUNT {
-        out.push_str(&format!("pub fn __select_{i}() -> u64:\n"));
-        out.push_str("    return 0\n");
+    // Mailbox overlays (decision 830). Pool is fixed so runtime.wr can
+    // import every MB*_CTL / MB*_DATA; unused slots sit at placeholders.
+    out.push_str("@layout(runtime, endian=little)\n");
+    out.push_str("struct MbCtl:\n");
+    out.push_str("    head: u64\n");
+    out.push_str("    tail: u64\n");
+    out.push_str("    count: u64\n");
+    out.push('\n');
+    let mb_placeholder = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+        - (RING_POOL_COUNT as u64) * 64
+        - (MB_POOL_COUNT as u64) * 64;
+    for i in 0..MB_POOL_COUNT {
+        let (words, data_addr, ctl_addr) = if let Some(m) = extras.mailboxes.get(i) {
+            let words = ((m.capacity * m.slot_size) / 8).max(1) as usize;
+            (words, m.ring, m.head)
+        } else {
+            (
+                1usize,
+                mb_placeholder + (i as u64) * 64,
+                mb_placeholder + (i as u64) * 64 + 32,
+            )
+        };
+        push_const(&mut out, &format!("MB{i}_WORDS"), words);
+        out.push_str("@layout(runtime, endian=little)\n");
+        out.push_str(&format!("struct Mb{i}Data:\n"));
+        out.push_str(&format!("    words: [u64; MB{i}_WORDS]\n"));
+        out.push('\n');
+        out.push_str(&format!("@placed({data_addr:#x})\n"));
+        out.push_str(&format!("pub static MB{i}_DATA: Mb{i}Data\n"));
+        out.push('\n');
+        out.push_str(&format!("@placed({ctl_addr:#x})\n"));
+        out.push_str(&format!("pub static MB{i}_CTL: MbCtl\n"));
         out.push('\n');
     }
+
+    // Resume stubs (decision 791) + method-call stubs (decision 831).
+    // Select/enqueue stubs deleted in item J — algorithms live in runtime.wr;
+    // method stubs are overwritten at inject with state/x8/bl bodies.
     for i in 0..RESUME_STUB_COUNT {
         out.push_str(&format!("pub fn __resume_{i}() -> u64:\n"));
         out.push_str("    return 0\n");
         out.push('\n');
     }
-    for i in 0..ENQUEUE_STUB_COUNT {
+    for i in 0..METHOD_CALL_POOL_COUNT {
         out.push_str(&format!(
-            "pub fn __enqueue_{i}(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:\n"
+            "pub fn __method_{i}(arg0: u64, arg1: u64, stage: u64) -> u64:\n"
         ));
         out.push_str("    return 0\n");
         out.push('\n');
@@ -506,6 +686,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     // slots get a 1-word non-colliding placeholder.
     let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
         - (RING_POOL_COUNT as u64) * 64
+        - (MB_POOL_COUNT as u64) * 64
         - 96
         - (BOOT_CALL_POOL_COUNT as u64) * 8
         - (WAKE_CALL_POOL_COUNT as u64) * 8;
@@ -554,26 +735,31 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("            return 0\n");
     out.push('\n');
 
-    out.push_str("pub fn __wrela_try_select(core: usize, slot: usize) -> u64:\n");
+    // (core, RR slot) → mailbox-root index (decision 833). Runtime
+    // `__wrela_try_select` Calls `__wrela_rt_select(root)`.
+    out.push_str("pub fn __wrela_select_root(core: usize, slot: usize) -> usize:\n");
     out.push_str("    match core:\n");
-    let mut stub_i = 0usize;
     for (core, actors) in extras.select_by_core.iter().enumerate() {
         out.push_str(&format!("        case {core}:\n"));
         if actors.is_empty() {
-            out.push_str("            return 0\n");
+            out.push_str(&format!("            return {NO_EDGE}\n"));
         } else {
             out.push_str("            match slot:\n");
-            for slot in 0..actors.len() {
+            for (slot, name) in actors.iter().enumerate() {
+                let root = extras
+                    .mailboxes
+                    .iter()
+                    .position(|m| m.name == *name)
+                    .unwrap_or(NO_EDGE);
                 out.push_str(&format!("                case {slot}:\n"));
-                out.push_str(&format!("                    return __select_{stub_i}()\n"));
-                stub_i += 1;
+                out.push_str(&format!("                    return {root}\n"));
             }
             out.push_str("                case _:\n");
-            out.push_str("                    return 0\n");
+            out.push_str(&format!("                    return {NO_EDGE}\n"));
         }
     }
     out.push_str("        case _:\n");
-    out.push_str("            return 0\n");
+    out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
     out.push_str("pub fn __wrela_resume_child(site: usize) -> u64:\n");
@@ -706,6 +892,177 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("            return\n");
     out.push('\n');
 
+    // --- item J: mailbox accessors + method dispatch (decision 830–831) ---
+    emit_mb_u64_ladder(&mut out, "capacity", extras, |m| m.capacity);
+    emit_mb_usize_ladder(&mut out, "slot_words", extras, |m| {
+        (m.slot_size / 8) as usize
+    });
+    emit_mb_usize_ladder(&mut out, "turn_index", extras, |m| m.turn_index);
+    emit_mb_usize_ladder(&mut out, "core", extras, |m| m.core);
+    emit_mb_usize_ladder(&mut out, "state", extras, |m| m.state as usize);
+    emit_mb_u64_ladder(&mut out, "has_lineage", extras, |m| {
+        u64::from(m.frame_size >= crate::codegen::TURN_RECORD_SIZE + 16)
+    });
+    emit_mb_usize_ladder(&mut out, "method_count", extras, |m| m.methods.len());
+
+    out.push_str("pub fn __wrela_mb_get_head(root: usize) -> u64:\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return MB{i}_CTL.head\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_mb_set_head(root: usize, v: u64):\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            MB{i}_CTL.head = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_mb_get_tail(root: usize) -> u64:\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return MB{i}_CTL.tail\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_mb_set_tail(root: usize, v: u64):\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            MB{i}_CTL.tail = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_mb_get_count(root: usize) -> u64:\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return MB{i}_CTL.count\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_mb_set_count(root: usize, v: u64):\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            MB{i}_CTL.count = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_mb_load_word(root: usize, wi: usize) -> u64:\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return MB{i}_DATA.words[wi]\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_mb_store_word(root: usize, wi: usize, v: u64):\n");
+    out.push_str("    match root:\n");
+    for i in 0..MB_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            MB{i}_DATA.words[wi] = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_method_suspends(root: usize, method: usize) -> u64:\n");
+    out.push_str("    match root:\n");
+    for (ri, mb) in extras.mailboxes.iter().enumerate() {
+        out.push_str(&format!("        case {ri}:\n"));
+        if mb.methods.is_empty() {
+            out.push_str("            return 0\n");
+        } else {
+            out.push_str("            match method:\n");
+            for (mi, m) in mb.methods.iter().enumerate() {
+                out.push_str(&format!("                case {mi}:\n"));
+                out.push_str(&format!(
+                    "                    return {}\n",
+                    u64::from(m.is_async)
+                ));
+            }
+            out.push_str("                case _:\n");
+            out.push_str("                    return 0\n");
+        }
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_method_is_aggregate(root: usize, method: usize) -> u64:\n");
+    out.push_str("    match root:\n");
+    for (ri, mb) in extras.mailboxes.iter().enumerate() {
+        out.push_str(&format!("        case {ri}:\n"));
+        if mb.methods.is_empty() {
+            out.push_str("            return 0\n");
+        } else {
+            out.push_str("            match method:\n");
+            for (mi, m) in mb.methods.iter().enumerate() {
+                out.push_str(&format!("                case {mi}:\n"));
+                out.push_str(&format!(
+                    "                    return {}\n",
+                    u64::from(m.reply_is_aggregate)
+                ));
+            }
+            out.push_str("                case _:\n");
+            out.push_str("                    return 0\n");
+        }
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    // Exhaustive actor/method match → direct Calls to `__method_N`
+    // (inject overwrites with state/x8/bl — decision 831).
+    out.push_str(
+        "pub fn __wrela_call_method(root: usize, method: usize, arg0: u64, arg1: u64, stage: u64) -> u64:\n",
+    );
+    out.push_str("    match root:\n");
+    let mut flat = 0usize;
+    for (ri, mb) in extras.mailboxes.iter().enumerate() {
+        out.push_str(&format!("        case {ri}:\n"));
+        if mb.methods.is_empty() {
+            out.push_str("            return 0\n");
+        } else {
+            out.push_str("            match method:\n");
+            for mi in 0..mb.methods.len() {
+                out.push_str(&format!("                case {mi}:\n"));
+                out.push_str(&format!(
+                    "                    return __method_{flat}(arg0, arg1, stage)\n"
+                ));
+                flat += 1;
+            }
+            out.push_str("                case _:\n");
+            out.push_str("                    return 0\n");
+        }
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
     // Handle-identity xsend edge lookup (decision 801).
     out.push_str("pub fn __wrela_xsend_edge(handle: usize, src_core: usize) -> usize:\n");
     out.push_str("    match src_core:\n");
@@ -827,19 +1184,16 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Enqueue by handle identity (decision 801).
-    out.push_str(
-        "pub fn __wrela_try_enqueue(handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:\n",
-    );
+    // Handle → mailbox-root index (decision 833). Runtime
+    // `__wrela_try_enqueue` Calls `__wrela_rt_enqueue(root, …)`.
+    out.push_str("pub fn __wrela_enqueue_root(handle: usize) -> usize:\n");
     out.push_str("    match handle:\n");
     for (i, h) in extras.enqueue_handles.iter().enumerate() {
         out.push_str(&format!("        case {h}:\n"));
-        out.push_str(&format!(
-            "            return __enqueue_{i}(method, arg0, arg1, waker_turn, waker_core)\n"
-        ));
+        out.push_str(&format!("            return {i}\n"));
     }
     out.push_str("        case _:\n");
-    out.push_str("            return 1\n");
+    out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
     // Init zero-fill accessors (decision 813).
@@ -972,28 +1326,48 @@ fn emit_ring_usize_ladder(
     out.push('\n');
 }
 
-/// Call-key remaps from generated stubs onto ImageStatic / resume targets
-/// (decision 791 / 802). Applied to reinjected runtime codegen before insert.
+fn emit_mb_u64_ladder(
+    out: &mut String,
+    field: &str,
+    extras: &RtconfigExtras,
+    f: impl Fn(&MailboxFact) -> u64,
+) {
+    out.push_str(&format!("pub fn __wrela_mb_{field}(root: usize) -> u64:\n"));
+    out.push_str("    match root:\n");
+    for (i, m) in extras.mailboxes.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {}\n", f(m)));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+}
+
+fn emit_mb_usize_ladder(
+    out: &mut String,
+    field: &str,
+    extras: &RtconfigExtras,
+    f: impl Fn(&MailboxFact) -> usize,
+) {
+    out.push_str(&format!(
+        "pub fn __wrela_mb_{field}(root: usize) -> usize:\n"
+    ));
+    out.push_str("    match root:\n");
+    for (i, m) in extras.mailboxes.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {}\n", f(m)));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+}
+
+/// Call-key remaps from generated stubs onto resume targets (decision 791).
+/// Item J: select/enqueue remaps deleted — those bodies are generic wrela.
 pub fn stub_call_remaps(extras: &RtconfigExtras) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut stub_i = 0usize;
-    for actors in &extras.select_by_core {
-        for name in actors {
-            out.push((
-                format!("__select_{stub_i}"),
-                crate::codegen::rt_select_and_run_symbol(name),
-            ));
-            stub_i += 1;
-        }
-    }
     for (i, site) in extras.child_sites.iter().enumerate() {
         out.push((format!("__resume_{i}"), site.callee_key.clone()));
-    }
-    for (i, name) in extras.enqueue_actors.iter().enumerate() {
-        out.push((
-            format!("__enqueue_{i}"),
-            crate::codegen::rt_enqueue_symbol(name),
-        ));
     }
     out
 }
