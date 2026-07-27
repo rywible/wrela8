@@ -1,0 +1,27 @@
+Program
+  Const name=BOUND ty=u64
+    Int text=64 ty=u64
+  Fn name=sum_to ret=u64
+    Param name=n mode=read ty=u64
+    Body
+      Let name=total ty=u64
+        Int text=0 ty=u64
+      Let name=i ty=u64
+        Int text=0 ty=u64
+      While budget=64
+        Binary op=< ty=bool
+          Local name=i ty=u64
+          Local name=n ty=u64
+        Body
+          Assign
+            Local name=total ty=u64
+            Binary op=+ ty=u64
+              Local name=total ty=u64
+              Local name=i ty=u64
+          Assign
+            Local name=i ty=u64
+            Binary op=+ ty=u64
+              Local name=i ty=u64
+              Int text=1 ty=u64
+      Return
+        Local name=total ty=u64

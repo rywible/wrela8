@@ -1,0 +1,1 @@
+error[sema]: `@budget(bound=N)`'s `N` is `Other`, which is not a module-level `const` visible here; a loop bound is an integer literal or the name of a module-level `const` whose comptime value is one or more — a name a `comptime if` removed, a local, or a type is not one (02-language.md §8.1, 03-hardware.md §3.1) at 14:5

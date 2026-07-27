@@ -489,7 +489,8 @@ annotated with a proven `@budget(bound=...)`. Every loop in a synchronous
 `fn` needs a finite bound ([04 §2](04-compiler.md)). Revision 0.1 discharges
 the synchronous half by requiring a statement attribute
 `@budget(bound=N)` immediately preceding the `for` or `while`, where `N` is
-a comptime-known integer ≥ 1 (an integer literal). Acceptance emits a
+a comptime-known integer ≥ 1 (an integer literal or the name of a
+module-level `const` whose comptime value is one or more). Acceptance emits a
 hidden trip counter that aborts if the loop body runs more than `N` times —
 a fail-closed runtime bound, not a cost model. A synchronous `for`/`while`
 without that attribute is `error[sema]`. **Exception (force-rooted runtime
@@ -906,7 +907,7 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 | `@placed(addr)` | Binds a module-level `static` of a `@layout(runtime)` type to a fixed address ([03 §3.1](03-hardware.md)). |
 | `@layout_assert` | Post-layout build assertion over `ImageReport`. |
 | `@test` / `@test(runtime)` / `@test(exhaustive)` | Test declaration (§12.2). |
-| `@budget(...)` | Proven work/memory bound on a function or the loop it precedes. In statement position, `@budget(bound=N)` with comptime-known integer `N` ≥ 1 must immediately precede a `for` or `while` (§8.1). |
+| `@budget(...)` | Proven work/memory bound on a function or the loop it precedes. In statement position, `@budget(bound=N)` with comptime-known integer `N` ≥ 1 (an integer literal or the name of a module-level `const` whose comptime value is one or more) must immediately precede a `for` or `while` (§8.1). |
 | `@no_promote` | Reject image-lifetime promotion in the annotated scope. |
 | `@detached` | Work independent of any enclosing group (§9.5). |
 
